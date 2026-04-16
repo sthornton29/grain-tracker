@@ -1,0 +1,501 @@
+'use client'
+
+import { useEffect, useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { createClient } from '@/lib/supabase/client'
+import { computeBushels } from '@/lib/shrink'
+import type { Bin, Buyer, Contract, Crop, Field, FieldPlanting, Load, Truck } from '@/lib/types'
+
+type Props = {
+  initial?: Partial<Load>
+  mode: 'create' | 'edit'
+}
+
+type FormState = {
+  date: string
+  time: string
+  truck_id: string
+  crop_id: string
+  crop_year: string
+  gross_weight: string
+  tare_weight: string
+  net_weight: string
+  moisture: string
+  test_weight: string
+  dry_bushels_override: string
+  from_type: '' | 'field' | 'bin'
+  from_field_id: string
+  from_bin_id: string
+  to_type: '' | 'bin' | 'buyer'
+  to_bin_id: string
+  to_buyer_id: string
+  contract_id: string
+  ticket_number: string
+}
+
+function todayISO() {
+  const d = new Date()
+  const tz = d.getTimezoneOffset() * 60000
+  return new Date(d.getTime() - tz).toISOString().slice(0, 10)
+}
+function nowHHMM() {
+  const d = new Date()
+  return d.toTimeString().slice(0, 5)
+}
+
+function toForm(initial?: Partial<Load>): FormState {
+  return {
+    date: initial?.date ?? todayISO(),
+    time: initial?.time ?? nowHHMM(),
+    truck_id: initial?.truck_id ?? '',
+    crop_id: initial?.crop_id ?? '',
+    crop_year: initial?.crop_year != null ? String(initial.crop_year) : '',
+    gross_weight: initial?.gross_weight?.toString() ?? '',
+    tare_weight: initial?.tare_weight?.toString() ?? '',
+    net_weight: initial?.net_weight?.toString() ?? '',
+    moisture: initial?.moisture?.toString() ?? '',
+    test_weight: initial?.test_weight?.toString() ?? '',
+    dry_bushels_override: initial?.dry_bushels_override?.toString() ?? '',
+    from_type: (initial?.from_type as any) ?? '',
+    from_field_id: initial?.from_field_id ?? '',
+    from_bin_id: initial?.from_bin_id ?? '',
+    to_type: (initial?.to_type as any) ?? '',
+    to_bin_id: initial?.to_bin_id ?? '',
+    to_buyer_id: initial?.to_buyer_id ?? '',
+    contract_id: initial?.contract_id ?? '',
+    ticket_number: initial?.ticket_number ?? '',
+  }
+}
+
+function num(s: string): number | null {
+  if (s === '' || s == null) return null
+  const n = Number(s)
+  return Number.isFinite(n) ? n : null
+}
+
+function fmt(n: number | null): string {
+  if (n == null) return '—'
+  return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
+}
+
+export default function LoadForm({ initial, mode }: Props) {
+  const router = useRouter()
+  const supabase = useMemo(() => createClient(), [])
+  const [form, setForm] = useState<FormState>(toForm(initial))
+  const [trucks, setTrucks] = useState<Truck[]>([])
+  const [crops, setCrops] = useState<Crop[]>([])
+  const [fields, setFields] = useState<Field[]>([])
+  const [bins, setBins] = useState<Bin[]>([])
+  const [buyers, setBuyers] = useState<Buyer[]>([])
+  const [contracts, setContracts] = useState<Contract[]>([])
+  const [plantings, setPlantings] = useState<FieldPlanting[]>([])
+  const [refsLoaded, setRefsLoaded] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    ;(async () => {
+      const [t, c, f, b, by, ct, pl] = await Promise.all([
+        supabase.from('trucks').select('*').order('name_or_number'),
+        supabase.from('crops').select('*').order('name'),
+        supabase.from('fields').select('*').order('name_or_number'),
+        supabase.from('bins').select('*').order('name_or_number'),
+        supabase.from('buyers').select('*').order('name'),
+        supabase.from('contracts').select('*').order('contract_number'),
+        supabase.from('field_plantings').select('*'),
+      ])
+      setTrucks((t.data as Truck[]) || [])
+      setCrops((c.data as Crop[]) || [])
+      setFields((f.data as Field[]) || [])
+      setBins((b.data as Bin[]) || [])
+      setBuyers((by.data as Buyer[]) || [])
+      setContracts((ct.data as Contract[]) || [])
+      setPlantings((pl.data as FieldPlanting[]) || [])
+      setRefsLoaded(true)
+    })()
+  }, [supabase])
+
+  // On create, pre-fill crop + from/to selections from the most recent load.
+  useEffect(() => {
+    if (mode !== 'create' || !refsLoaded) return
+    ;(async () => {
+      const { data } = await supabase
+        .from('loads')
+        .select('crop_id, crop_year, from_type, from_field_id, from_bin_id, to_type, to_bin_id, to_buyer_id')
+        .order('date', { ascending: false })
+        .order('time', { ascending: false })
+        .limit(1)
+      const recent = data?.[0] as {
+        crop_id: string | null
+        crop_year: number | null
+        from_type: 'field' | 'bin' | null
+        from_field_id: string | null
+        from_bin_id: string | null
+        to_type: 'bin' | 'buyer' | null
+        to_bin_id: string | null
+        to_buyer_id: string | null
+      } | undefined
+      if (!recent) return
+      setForm((f) => ({
+        ...f,
+        crop_id: f.crop_id || (recent.crop_id ?? ''),
+        crop_year: f.crop_year || (recent.crop_year != null ? String(recent.crop_year) : ''),
+        from_type: f.from_type || (recent.from_type ?? ''),
+        from_field_id: f.from_field_id || (recent.from_field_id ?? ''),
+        from_bin_id: f.from_bin_id || (recent.from_bin_id ?? ''),
+        to_type: f.to_type || (recent.to_type ?? ''),
+        to_bin_id: f.to_bin_id || (recent.to_bin_id ?? ''),
+        to_buyer_id: f.to_buyer_id || (recent.to_buyer_id ?? ''),
+      }))
+    })()
+  }, [refsLoaded, mode, supabase])
+
+  // Auto-compute net = gross - tare whenever either changes (user can still override).
+  useEffect(() => {
+    const g = num(form.gross_weight)
+    const t = num(form.tare_weight)
+    if (g != null && t != null) {
+      const net = +(g - t).toFixed(2)
+      setForm((f) => (f.net_weight === String(net) ? f : { ...f, net_weight: String(net) }))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.gross_weight, form.tare_weight])
+
+  const selectedCrop = crops.find((c) => c.id === form.crop_id)
+  const { wetBushels, dryBushels, computedDryBushels, overridden } = computeBushels({
+    netWeightLb: num(form.net_weight),
+    moisturePct: num(form.moisture),
+    baseMoisturePct: selectedCrop?.base_moisture_pct ?? null,
+    baseLbPerBushel: selectedCrop?.base_lb_per_bushel ?? null,
+    dryBushelsOverride: num(form.dry_bushels_override),
+  })
+  const shrinkBu =
+    wetBushels != null && dryBushels != null ? wetBushels - dryBushels : null
+
+  const buyerContracts = contracts.filter(
+    (c) =>
+      (!form.to_buyer_id || c.buyer_id === form.to_buyer_id) &&
+      (!form.crop_id || c.crop_id === form.crop_id)
+  )
+
+  // Only show bins designated to the selected crop; if no crop yet, show all.
+  const filteredBins = useMemo(() => {
+    if (!form.crop_id) return bins
+    return bins.filter((b) => b.crop_id === form.crop_id)
+  }, [bins, form.crop_id])
+
+  // Only show fields with at least one planting for the selected crop.
+  const filteredFields = useMemo(() => {
+    if (!form.crop_id) return fields
+    const plantedFieldIds = new Set(
+      plantings.filter((p) => p.crop_id === form.crop_id).map((p) => p.field_id)
+    )
+    return fields.filter((f) => plantedFieldIds.has(f.id))
+  }, [fields, plantings, form.crop_id])
+
+  // Drop any previously selected field/bin that no longer matches the crop filter.
+  useEffect(() => {
+    if (!refsLoaded) return
+    setForm((f) => {
+      const next = { ...f }
+      if (next.from_field_id && !filteredFields.some((x) => x.id === next.from_field_id)) next.from_field_id = ''
+      if (next.from_bin_id && !filteredBins.some((x) => x.id === next.from_bin_id)) next.from_bin_id = ''
+      if (next.to_bin_id && !filteredBins.some((x) => x.id === next.to_bin_id)) next.to_bin_id = ''
+      return next
+    })
+  }, [refsLoaded, filteredFields, filteredBins])
+
+  function set<K extends keyof FormState>(key: K, value: FormState[K]) {
+    setForm((f) => ({ ...f, [key]: value }))
+  }
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setBusy(true)
+    setError(null)
+
+    const payload = {
+      date: form.date,
+      time: form.time || null,
+      truck_id: form.truck_id || null,
+      crop_id: form.crop_id || null,
+      crop_year: form.crop_year === '' ? null : Number(form.crop_year),
+      gross_weight: num(form.gross_weight),
+      tare_weight: num(form.tare_weight),
+      net_weight: num(form.net_weight),
+      moisture: num(form.moisture),
+      test_weight: num(form.test_weight),
+      bushels: null, // derived at read time from net_weight + moisture + crop base values
+      dry_bushels_override: num(form.dry_bushels_override),
+      from_type: form.from_type || null,
+      from_field_id: form.from_type === 'field' ? form.from_field_id || null : null,
+      from_bin_id: form.from_type === 'bin' ? form.from_bin_id || null : null,
+      to_type: form.to_type || null,
+      to_bin_id: form.to_type === 'bin' ? form.to_bin_id || null : null,
+      to_buyer_id: form.to_type === 'buyer' ? form.to_buyer_id || null : null,
+      contract_id: form.to_type === 'buyer' ? form.contract_id || null : null,
+      ticket_number: form.ticket_number || null,
+    }
+
+    let err
+    if (mode === 'create') {
+      ;({ error: err } = await supabase.from('loads').insert(payload))
+    } else if (initial?.id) {
+      ;({ error: err } = await supabase.from('loads').update(payload).eq('id', initial.id))
+    }
+
+    setBusy(false)
+    if (err) {
+      setError(err.message)
+      return
+    }
+    router.push('/loads')
+    router.refresh()
+  }
+
+  const inputCls = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 text-base bg-white'
+  const labelCls = 'block text-sm text-slate-700'
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-5">
+      <h1 className="text-2xl font-bold">{mode === 'create' ? 'New Load' : 'Edit Load'}</h1>
+
+      <div className="grid grid-cols-2 gap-3">
+        <label className={labelCls}>
+          Date
+          <input type="date" required value={form.date} onChange={(e) => set('date', e.target.value)} className={inputCls} />
+        </label>
+        <label className={labelCls}>
+          Time
+          <input type="time" value={form.time} onChange={(e) => set('time', e.target.value)} className={inputCls} />
+        </label>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className={labelCls}>
+          Truck
+          <select value={form.truck_id} onChange={(e) => set('truck_id', e.target.value)} className={inputCls}>
+            <option value="">— select —</option>
+            {trucks.map((t) => <option key={t.id} value={t.id}>{t.name_or_number}</option>)}
+          </select>
+        </label>
+        <label className={labelCls}>
+          Crop
+          <select value={form.crop_id} onChange={(e) => set('crop_id', e.target.value)} className={inputCls}>
+            <option value="">— select —</option>
+            {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </label>
+      </div>
+
+      <label className={labelCls}>
+        Crop year <span className="text-xs text-slate-400">persists from your last load</span>
+        <input
+          type="number"
+          inputMode="numeric"
+          value={form.crop_year}
+          onChange={(e) => set('crop_year', e.target.value)}
+          placeholder="e.g. 2026"
+          className={inputCls}
+        />
+      </label>
+
+      <fieldset className="border border-slate-200 rounded-xl p-3 space-y-3">
+        <legend className="px-2 text-sm font-semibold">From</legend>
+        <div className="flex gap-2">
+          {(['field', 'bin'] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => set('from_type', t)}
+              className={`flex-1 py-2 rounded-lg border ${
+                form.from_type === t ? 'bg-green-700 text-white border-green-700' : 'bg-white'
+              }`}
+            >
+              {t === 'field' ? 'Field' : 'Bin'}
+            </button>
+          ))}
+        </div>
+        {form.from_type === 'field' && (
+          <>
+            <select value={form.from_field_id} onChange={(e) => set('from_field_id', e.target.value)} className={inputCls}>
+              <option value="">— select field —</option>
+              {filteredFields.map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
+            </select>
+            {form.crop_id && filteredFields.length === 0 && (
+              <p className="text-xs text-amber-700">
+                No fields have a planting recorded for this crop. Add one under Settings → Field Plantings.
+              </p>
+            )}
+          </>
+        )}
+        {form.from_type === 'bin' && (
+          <>
+            <select value={form.from_bin_id} onChange={(e) => set('from_bin_id', e.target.value)} className={inputCls}>
+              <option value="">— select bin —</option>
+              {filteredBins.map((b) => <option key={b.id} value={b.id}>{b.name_or_number}</option>)}
+            </select>
+            {form.crop_id && filteredBins.length === 0 && (
+              <p className="text-xs text-amber-700">
+                No bins are assigned to this crop. Assign one under Settings → Bins.
+              </p>
+            )}
+          </>
+        )}
+      </fieldset>
+
+      <fieldset className="border border-slate-200 rounded-xl p-3 space-y-3">
+        <legend className="px-2 text-sm font-semibold">To</legend>
+        <div className="flex gap-2">
+          {(['bin', 'buyer'] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => set('to_type', t)}
+              className={`flex-1 py-2 rounded-lg border ${
+                form.to_type === t ? 'bg-green-700 text-white border-green-700' : 'bg-white'
+              }`}
+            >
+              {t === 'bin' ? 'Bin' : 'Buyer'}
+            </button>
+          ))}
+        </div>
+        {form.to_type === 'bin' && (
+          <>
+            <select value={form.to_bin_id} onChange={(e) => set('to_bin_id', e.target.value)} className={inputCls}>
+              <option value="">— select bin —</option>
+              {filteredBins.map((b) => <option key={b.id} value={b.id}>{b.name_or_number}</option>)}
+            </select>
+            {form.crop_id && filteredBins.length === 0 && (
+              <p className="text-xs text-amber-700">
+                No bins are assigned to this crop. Assign one under Settings → Bins.
+              </p>
+            )}
+          </>
+        )}
+        {form.to_type === 'buyer' && (
+          <>
+            <select value={form.to_buyer_id} onChange={(e) => { set('to_buyer_id', e.target.value); set('contract_id', '') }} className={inputCls}>
+              <option value="">— select buyer —</option>
+              {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+            <label className={labelCls}>
+              Contract (filtered to buyer + crop)
+              <select value={form.contract_id} onChange={(e) => set('contract_id', e.target.value)} className={inputCls}>
+                <option value="">— none —</option>
+                {buyerContracts.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.contract_number}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </>
+        )}
+      </fieldset>
+
+      <div className="grid grid-cols-2 gap-3">
+        <label className={labelCls}>
+          Gross (lb)
+          <input type="number" inputMode="decimal" step="0.01" value={form.gross_weight} onChange={(e) => set('gross_weight', e.target.value)} className={inputCls} />
+        </label>
+        <label className={labelCls}>
+          Tare (lb)
+          <input type="number" inputMode="decimal" step="0.01" value={form.tare_weight} onChange={(e) => set('tare_weight', e.target.value)} className={inputCls} />
+        </label>
+        <label className={labelCls}>
+          Net (lb) <span className="text-xs text-slate-400">auto</span>
+          <input type="number" inputMode="decimal" step="0.01" value={form.net_weight} onChange={(e) => set('net_weight', e.target.value)} className={inputCls} />
+        </label>
+        <label className={labelCls}>
+          Moisture %
+          <input type="number" inputMode="decimal" step="0.01" value={form.moisture} onChange={(e) => set('moisture', e.target.value)} className={inputCls} />
+        </label>
+        <label className={labelCls}>
+          Test Weight
+          <input type="number" inputMode="decimal" step="0.01" value={form.test_weight} onChange={(e) => set('test_weight', e.target.value)} className={inputCls} />
+        </label>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-3">
+        <div className="text-sm font-semibold text-slate-700">
+          Bushels {selectedCrop ? `— base ${selectedCrop.base_moisture_pct ?? '?'}% MC, ${selectedCrop.base_lb_per_bushel ?? '?'} lb/bu` : ''}
+        </div>
+        <div className="grid grid-cols-3 gap-3 text-sm">
+          <div>
+            <div className="text-xs text-slate-500">Wet</div>
+            <div className="font-mono text-lg">{fmt(wetBushels)}</div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500">Dry (auto)</div>
+            <div className="font-mono text-lg">{fmt(computedDryBushels)}</div>
+          </div>
+          <div>
+            <div className="text-xs text-slate-500">Shrink</div>
+            <div className="font-mono text-lg">{fmt(shrinkBu)}</div>
+          </div>
+        </div>
+
+        <div className="flex items-end gap-2 flex-wrap">
+          <label className="text-sm text-slate-700 flex-1 min-w-[10rem]">
+            Dry bushels override <span className="text-xs text-slate-400">optional</span>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              value={form.dry_bushels_override}
+              onChange={(e) => set('dry_bushels_override', e.target.value)}
+              placeholder={computedDryBushels != null ? fmt(computedDryBushels) : ''}
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 text-base bg-white"
+            />
+          </label>
+          {form.dry_bushels_override !== '' && (
+            <button
+              type="button"
+              onClick={() => set('dry_bushels_override', '')}
+              className="rounded-lg bg-white border border-slate-300 px-3 py-3 text-sm"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+
+        <div className="text-sm">
+          <span className="text-slate-500">Used for reports: </span>
+          <span className="font-mono font-semibold">{fmt(dryBushels)} bu</span>
+          {overridden && <span className="text-amber-700 text-xs ml-2">(manual override)</span>}
+        </div>
+
+        {selectedCrop && selectedCrop.base_lb_per_bushel == null && (
+          <p className="text-xs text-amber-700">
+            This crop has no base lb/bushel set — auto calc unavailable; enter a dry bushels override.
+          </p>
+        )}
+      </div>
+
+      <label className={labelCls}>
+        Ticket #
+        <input type="text" value={form.ticket_number} onChange={(e) => set('ticket_number', e.target.value)} className={inputCls} />
+      </label>
+
+      {error && <p className="text-sm text-red-600">{error}</p>}
+
+      <div className="flex gap-3 sticky bottom-3">
+        <button
+          type="submit"
+          disabled={busy}
+          className="flex-1 rounded-xl bg-green-700 text-white font-semibold py-4 shadow disabled:opacity-60"
+        >
+          {busy ? 'Saving…' : mode === 'create' ? 'Save Load' : 'Update Load'}
+        </button>
+        <button
+          type="button"
+          onClick={() => router.back()}
+          className="rounded-xl bg-white border border-slate-300 px-4 py-4"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  )
+}
