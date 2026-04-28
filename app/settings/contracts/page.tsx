@@ -4,12 +4,13 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
-import type { Buyer, Contract, Crop, DeliveryLocation } from '@/lib/types'
+import type { Buyer, Contract, Crop, DeliveryLocation, Entity } from '@/lib/types'
 
 type Form = {
   contract_number: string
   buyer_id: string
   crop_id: string
+  entity_id: string
   crop_year: string
   contracted_bushels: string
   price_per_bushel: string
@@ -24,6 +25,7 @@ const empty: Form = {
   contract_number: '',
   buyer_id: '',
   crop_id: '',
+  entity_id: '',
   crop_year: '',
   contracted_bushels: '',
   price_per_bushel: '',
@@ -39,6 +41,7 @@ function toForm(c: Contract): Form {
     contract_number: c.contract_number,
     buyer_id: c.buyer_id ?? '',
     crop_id: c.crop_id ?? '',
+    entity_id: c.entity_id ?? '',
     crop_year: c.crop_year != null ? String(c.crop_year) : '',
     contracted_bushels: c.contracted_bushels?.toString() ?? '',
     price_per_bushel: c.price_per_bushel?.toString() ?? '',
@@ -55,6 +58,7 @@ function toPayload(f: Form) {
     contract_number: f.contract_number.trim(),
     buyer_id: f.buyer_id || null,
     crop_id: f.crop_id || null,
+    entity_id: f.entity_id || null,
     crop_year: f.crop_year === '' ? null : Number(f.crop_year),
     contracted_bushels: f.contracted_bushels === '' ? 0 : Number(f.contracted_bushels),
     price_per_bushel: f.price_per_bushel === '' ? null : Number(f.price_per_bushel),
@@ -74,12 +78,14 @@ function FormFields({
   buyers,
   crops,
   locations,
+  entities,
 }: {
   value: Form
   onChange: (f: Form) => void
   buyers: Buyer[]
   crops: Crop[]
   locations: DeliveryLocation[]
+  entities: Entity[]
 }) {
   const f = value
   const set = <K extends keyof Form>(k: K, v: Form[K]) => onChange({ ...f, [k]: v })
@@ -108,6 +114,10 @@ function FormFields({
         </select>
         <input type="number" step="0.0001" placeholder="Price / bushel" value={f.price_per_bushel} onChange={(e) => set('price_per_bushel', e.target.value)} className={INPUT_CLS} />
         <input type="number" inputMode="numeric" placeholder="Crop year (e.g. 2026)" value={f.crop_year} onChange={(e) => set('crop_year', e.target.value)} className={INPUT_CLS} />
+        <select value={f.entity_id} onChange={(e) => set('entity_id', e.target.value)} className={INPUT_CLS}>
+          <option value="">— entity —</option>
+          {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+        </select>
         <label className="text-sm text-slate-700">
           Delivery start
           <input type="date" value={f.delivery_start_date} onChange={(e) => set('delivery_start_date', e.target.value)} className={`w-full ${INPUT_CLS}`} />
@@ -165,6 +175,7 @@ export default function ContractsSettingsPage() {
   const [buyers, setBuyers] = useState<Buyer[]>([])
   const [crops, setCrops] = useState<Crop[]>([])
   const [locations, setLocations] = useState<DeliveryLocation[]>([])
+  const [entities, setEntities] = useState<Entity[]>([])
   const [rows, setRows] = useState<Contract[]>([])
   const [form, setForm] = useState<Form>(empty)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -174,18 +185,32 @@ export default function ContractsSettingsPage() {
   const [q, setQ] = useState('')
 
   async function refresh() {
-    const [b, c, k, l] = await Promise.all([
+    const [b, c, k, l, en] = await Promise.all([
       supabase.from('buyers').select('*').order('name'),
       supabase.from('crops').select('*').order('name'),
       supabase.from('contracts').select('*').order('contract_number'),
       supabase.from('delivery_locations').select('*').order('name'),
+      supabase.from('entities').select('*').order('name'),
     ])
     setBuyers((b.data as Buyer[]) || [])
     setCrops((c.data as Crop[]) || [])
     setRows((k.data as Contract[]) || [])
     setLocations((l.data as DeliveryLocation[]) || [])
+    setEntities((en.data as Entity[]) || [])
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
+
+  // Default the new-contract form's entity to the most recently created
+  // contract's entity (the "last entity you entered a contract under").
+  // Only applies when the user hasn't yet picked one for this draft.
+  useEffect(() => {
+    if (rows.length === 0) return
+    const latest = [...rows]
+      .filter((r) => r.entity_id)
+      .sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))[0]
+    if (!latest?.entity_id) return
+    setForm((f) => (f.entity_id === '' ? { ...f, entity_id: latest.entity_id! } : f))
+  }, [rows])
 
   async function add(e: React.FormEvent) {
     e.preventDefault()
@@ -219,6 +244,7 @@ export default function ContractsSettingsPage() {
   const buyerName = (id: string | null) => buyers.find((b) => b.id === id)?.name ?? ''
   const cropName = (id: string | null) => crops.find((c) => c.id === id)?.name ?? ''
   const locName = (id: string | null) => locations.find((l) => l.id === id)?.name ?? ''
+  const entityName = (id: string | null) => entities.find((e) => e.id === id)?.name ?? ''
 
   const inputCls = INPUT_CLS
 
@@ -234,6 +260,7 @@ export default function ContractsSettingsPage() {
             { key: 'contract_number', required: true },
             { key: 'buyer_id', label: 'buyer', fk: { table: 'buyers', matchColumn: 'name' } },
             { key: 'crop_id', label: 'crop', fk: { table: 'crops', matchColumn: 'name' } },
+            { key: 'entity_id', label: 'entity', fk: { table: 'entities', matchColumn: 'name' } },
             { key: 'crop_year', type: 'number' },
             { key: 'contracted_bushels', type: 'number' },
             { key: 'price_per_bushel', type: 'number' },
@@ -248,7 +275,7 @@ export default function ContractsSettingsPage() {
       />
 
       <form onSubmit={add} className="space-y-2 bg-white p-4 rounded-xl shadow">
-        <FormFields value={form} onChange={setForm} buyers={buyers} crops={crops} locations={locations} />
+        <FormFields value={form} onChange={setForm} buyers={buyers} crops={crops} locations={locations} entities={entities} />
         <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add Contract</button>
       </form>
 
@@ -256,7 +283,7 @@ export default function ContractsSettingsPage() {
 
       {(() => { const visible = rows.filter((c) => {
         if (!q) return true
-        const hay = [c.contract_number, buyerName(c.buyer_id), cropName(c.crop_id), String(c.crop_year ?? ''), c.notes ?? ''].join(' ').toLowerCase()
+        const hay = [c.contract_number, buyerName(c.buyer_id), cropName(c.crop_id), entityName(c.entity_id), String(c.crop_year ?? ''), c.notes ?? ''].join(' ').toLowerCase()
         return hay.includes(q.toLowerCase())
       }); return (
       <>
@@ -315,7 +342,7 @@ export default function ContractsSettingsPage() {
           <li key={c.id} className={`px-4 py-3 space-y-2 ${selected.has(c.id) ? 'bg-sky-50' : ''}`}>
             {editingId === c.id ? (
               <>
-                <FormFields value={editForm} onChange={setEditForm} buyers={buyers} crops={crops} locations={locations} />
+                <FormFields value={editForm} onChange={setEditForm} buyers={buyers} crops={crops} locations={locations} entities={entities} />
                 <div className="flex gap-2">
                   <button onClick={() => save(c.id)} className="text-green-700 font-semibold">Save</button>
                   <button onClick={() => setEditingId(null)} className="text-slate-500">Cancel</button>
@@ -332,6 +359,7 @@ export default function ContractsSettingsPage() {
                   <div className="font-semibold">#{c.contract_number}</div>
                   <div className="text-sm text-slate-500">
                     {buyerName(c.buyer_id)} · {cropName(c.crop_id)}
+                    {c.entity_id && <> · {entityName(c.entity_id)}</>}
                     {c.crop_year != null && <> · {c.crop_year} crop</>}
                     {' · '}{Number(c.contracted_bushels).toLocaleString()} bu
                     {c.price_per_bushel != null && <> · ${Number(c.price_per_bushel).toFixed(4)}/bu</>}

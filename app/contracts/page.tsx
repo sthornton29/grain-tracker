@@ -15,6 +15,7 @@ type ContractRow = {
   delivery_end_date: string | null
   buyer_id: string | null
   crop_id: string | null
+  entity_id: string | null
   buyer: { name: string } | null
   crop: { name: string } | null
   delivery_location: { name: string } | null
@@ -83,7 +84,8 @@ export default async function ContractsPage({
       .from('contracts')
       .select(`
         id, contract_number, contracted_bushels, price_per_bushel, notes,
-        crop_year, delivery_type, delivery_start_date, delivery_end_date, buyer_id, crop_id,
+        crop_year, delivery_type, delivery_start_date, delivery_end_date,
+        buyer_id, crop_id, entity_id,
         buyer:buyers(name), crop:crops(name), delivery_location:delivery_locations(name)
       `)
       .order('contract_number'),
@@ -174,8 +176,14 @@ export default async function ContractsPage({
   const visible = allContracts.filter((c) => {
     if (cropYear != null && c.crop_year !== cropYear) return false
     if (entityId) {
-      const agg = aggByContract.get(c.id)
-      if (!agg || !agg.entityIds.has(entityId)) return false
+      // Honor an explicit contract.entity_id when set; otherwise fall back to
+      // attribution derived from the source fields of delivered loads.
+      if (c.entity_id) {
+        if (c.entity_id !== entityId) return false
+      } else {
+        const agg = aggByContract.get(c.id)
+        if (!agg || !agg.entityIds.has(entityId)) return false
+      }
     }
     return true
   })

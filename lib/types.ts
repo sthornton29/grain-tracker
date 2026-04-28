@@ -50,6 +50,7 @@ export type Contract = {
   contract_number: string
   buyer_id: string | null
   crop_id: string | null
+  entity_id: string | null
   crop_year: number | null
   contracted_bushels: number
   price_per_bushel: number | null
@@ -58,6 +59,7 @@ export type Contract = {
   delivery_location_id: string | null
   delivery_start_date: string | null
   delivery_end_date: string | null
+  created_at: string
 }
 
 export type Settlement = {
