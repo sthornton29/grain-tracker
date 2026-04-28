@@ -22,6 +22,18 @@ export type Crop = {
   base_lb_per_bushel: number | null
 }
 
+export type BinInventoryAdjustment = {
+  id: string
+  bin_id: string
+  crop_id: string
+  adjustment_type: 'beginning_inventory' | 'empty_bin'
+  bushels: number
+  moisture: number | null
+  as_of_date: string
+  notes: string | null
+  created_at: string
+}
+
 export type FieldPlanting = {
   id: string
   field_id: string

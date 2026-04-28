@@ -20,6 +20,19 @@ type LoadRow = {
 
 type CropRow = { id: string; name: string; base_moisture_pct: number | null; base_lb_per_bushel: number | null }
 
+type AdjRow = {
+  crop_id: string
+  adjustment_type: 'beginning_inventory' | 'empty_bin'
+  bushels: number
+  as_of_date: string
+}
+
+function todayISO() {
+  const d = new Date()
+  const tz = d.getTimezoneOffset() * 60000
+  return new Date(d.getTime() - tz).toISOString().slice(0, 10)
+}
+
 export default function EmptyBinButton({ binId, binName }: Props) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
@@ -30,20 +43,24 @@ export default function EmptyBinButton({ binId, binName }: Props) {
     const supabase = createClient()
     setBusy(true)
     try {
-      // Pull every load that touches this bin + crop base values — we need the true
-      // on-hand regardless of any filter active on the page.
-      const [loadsRes, cropsRes] = await Promise.all([
+      const today = todayISO()
+      const [loadsRes, cropsRes, adjRes] = await Promise.all([
         supabase
           .from('loads')
           .select('net_weight, moisture, crop_id, dry_bushels_override, from_type, from_bin_id, to_type, to_bin_id')
           .or(`from_bin_id.eq.${binId},to_bin_id.eq.${binId}`),
         supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel'),
+        supabase
+          .from('bin_inventory_adjustments')
+          .select('crop_id, adjustment_type, bushels, as_of_date')
+          .eq('bin_id', binId)
+          .lte('as_of_date', today),
       ])
       const loads = (loadsRes.data ?? []) as LoadRow[]
       const crops = (cropsRes.data ?? []) as CropRow[]
+      const adjs = (adjRes.data ?? []) as AdjRow[]
       const cropById = new Map(crops.map((c) => [c.id, c]))
 
-      // crop_id -> dry bushels currently on hand
       const onHand = new Map<string, number>()
       for (const l of loads) {
         if (!l.crop_id) continue
@@ -63,8 +80,12 @@ export default function EmptyBinButton({ binId, binName }: Props) {
           onHand.set(l.crop_id, (onHand.get(l.crop_id) ?? 0) - dryBushels)
         }
       }
+      for (const a of adjs) {
+        const sign = a.adjustment_type === 'beginning_inventory' ? 1 : -1
+        onHand.set(a.crop_id, (onHand.get(a.crop_id) ?? 0) + sign * Number(a.bushels))
+      }
 
-      const nonZero = [...onHand.entries()].filter(([, v]) => Math.abs(v) > 0.001)
+      const nonZero = [...onHand.entries()].filter(([, v]) => v > 0.001)
       if (nonZero.length === 0) {
         setErr('This bin is already empty.')
         setBusy(false)
@@ -78,19 +99,15 @@ export default function EmptyBinButton({ binId, binName }: Props) {
         return
       }
 
-      const today = new Date().toISOString().slice(0, 10)
-      const ts = Date.now()
-      const rows = nonZero.map(([cid, v], i) => ({
-        date: today,
+      const rows = nonZero.map(([cid, v]) => ({
+        bin_id: binId,
         crop_id: cid,
-        from_type: 'bin' as const,
-        from_bin_id: binId,
-        to_type: null,
-        dry_bushels_override: Number(v.toFixed(2)),
-        ticket_number: `ADJ-${ts}-${i}`,
-        bushels: null,
+        adjustment_type: 'empty_bin' as const,
+        bushels: Number(v.toFixed(2)),
+        as_of_date: today,
+        notes: 'Cleanout adjustment',
       }))
-      const { error } = await supabase.from('loads').insert(rows)
+      const { error } = await supabase.from('bin_inventory_adjustments').insert(rows)
       setBusy(false)
       if (error) { setErr(error.message); return }
       router.refresh()

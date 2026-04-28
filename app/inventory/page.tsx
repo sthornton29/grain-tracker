@@ -1,6 +1,9 @@
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
 import EmptyBinButton from '@/components/empty-bin-button'
+import BeginningInventoryButton from '@/components/beginning-inventory-button'
+import ExportInventoryCsv, { type InventoryCsvRow } from '@/components/export-inventory-csv'
+import type { BinInventoryAdjustment, Crop } from '@/lib/types'
 
 type LoadRow = {
   net_weight: number | null
@@ -15,18 +18,29 @@ type LoadRow = {
   to_bin_id: string | null
 }
 
-type CropRow = {
-  id: string
-  name: string
-  base_moisture_pct: number | null
-  base_lb_per_bushel: number | null
-}
-
 type FieldRow = { id: string; farm_id: string | null }
 type FarmRow = { id: string; entity_id: string | null }
 type EntityRow = { id: string; name: string }
+type BinRow = { id: string; name_or_number: string; crop_id: string | null }
 
 export const dynamic = 'force-dynamic'
+
+function todayISO() {
+  const d = new Date()
+  const tz = d.getTimezoneOffset() * 60000
+  return new Date(d.getTime() - tz).toISOString().slice(0, 10)
+}
+
+function fmtDate(iso: string) {
+  // "2026-01-15" -> "1/15/2026"
+  const [y, m, d] = iso.split('-').map(Number)
+  if (!y || !m || !d) return iso
+  return `${m}/${d}/${y}`
+}
+
+function fmtBu(n: number) {
+  return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
+}
 
 export default async function InventoryPage({
   searchParams,
@@ -36,22 +50,28 @@ export default async function InventoryPage({
   const supabase = createClient()
   const entityId = searchParams.entity ?? ''
   const cropYear = searchParams.crop_year ? Number(searchParams.crop_year) : null
+  const today = todayISO()
 
-  const [binsRes, cropsRes, loadsRes, fieldsRes, farmsRes, entitiesRes] = await Promise.all([
-    supabase.from('bins').select('id, name_or_number').order('name_or_number'),
+  const [binsRes, cropsRes, loadsRes, fieldsRes, farmsRes, entitiesRes, adjsRes] = await Promise.all([
+    supabase.from('bins').select('id, name_or_number, crop_id').order('name_or_number'),
     supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').order('name'),
     supabase.from('loads').select('net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, from_bin_id, to_type, to_bin_id'),
     supabase.from('fields').select('id, farm_id'),
     supabase.from('farms').select('id, entity_id'),
     supabase.from('entities').select('id, name').order('name'),
+    supabase.from('bin_inventory_adjustments')
+      .select('id, bin_id, crop_id, adjustment_type, bushels, moisture, as_of_date, notes, created_at')
+      .lte('as_of_date', today)
+      .order('as_of_date', { ascending: true }),
   ])
 
-  const bins = binsRes.data ?? []
-  const crops = (cropsRes.data ?? []) as CropRow[]
+  const bins = (binsRes.data ?? []) as BinRow[]
+  const crops = (cropsRes.data ?? []) as Crop[]
   const loads = (loadsRes.data ?? []) as LoadRow[]
   const fields = (fieldsRes.data ?? []) as FieldRow[]
   const farms = (farmsRes.data ?? []) as FarmRow[]
   const entities = (entitiesRes.data ?? []) as EntityRow[]
+  const adjustments = (adjsRes.data ?? []) as BinInventoryAdjustment[]
 
   const cropById = new Map(crops.map((c) => [c.id, c]))
   const farmEntity = new Map(farms.map((f) => [f.id, f.entity_id]))
@@ -59,11 +79,21 @@ export default async function InventoryPage({
     fields.map((f) => [f.id, f.farm_id ? farmEntity.get(f.farm_id) ?? null : null])
   )
 
-  // Map: binId -> cropId -> dry bushels
-  const onHand = new Map<string, Map<string, number>>()
+  // Per bin → per crop totals split by source.
+  type Cell = { loadBacked: number; beginning: number; emptyAdj: number }
+  const cellFor = (bag: Map<string, Map<string, Cell>>, binId: string, cropId: string): Cell => {
+    let inner = bag.get(binId)
+    if (!inner) { inner = new Map(); bag.set(binId, inner) }
+    let cell = inner.get(cropId)
+    if (!cell) { cell = { loadBacked: 0, beginning: 0, emptyAdj: 0 }; inner.set(cropId, cell) }
+    return cell
+  }
+  const onHand = new Map<string, Map<string, Cell>>()
   for (const b of bins) onHand.set(b.id, new Map())
 
-  const cropYearOptions = Array.from(new Set(loads.map((l) => l.crop_year).filter((y): y is number => y != null))).sort((a, b) => b - a)
+  const cropYearOptions = Array.from(
+    new Set(loads.map((l) => l.crop_year).filter((y): y is number => y != null))
+  ).sort((a, b) => b - a)
 
   for (const l of loads) {
     if (!l.crop_id) continue
@@ -84,16 +114,53 @@ export default async function InventoryPage({
     })
     if (!dryBushels) continue
     if (l.to_type === 'bin' && l.to_bin_id && onHand.has(l.to_bin_id)) {
-      const m = onHand.get(l.to_bin_id)!
-      m.set(l.crop_id, (m.get(l.crop_id) ?? 0) + dryBushels)
+      cellFor(onHand, l.to_bin_id, l.crop_id).loadBacked += dryBushels
     }
     if (l.from_type === 'bin' && l.from_bin_id && onHand.has(l.from_bin_id)) {
-      const m = onHand.get(l.from_bin_id)!
-      m.set(l.crop_id, (m.get(l.crop_id) ?? 0) - dryBushels)
+      cellFor(onHand, l.from_bin_id, l.crop_id).loadBacked -= dryBushels
     }
   }
 
-  const cropName = new Map(crops.map((c) => [c.id, c.name]))
+  // Adjustments don't carry a crop_year or entity attribution, so when either
+  // filter is active we leave them out (a note on the page explains this).
+  const includeAdjustments = !entityId && cropYear == null
+  const adjustmentsForBin = new Map<string, BinInventoryAdjustment[]>()
+  if (includeAdjustments) {
+    for (const a of adjustments) {
+      if (!onHand.has(a.bin_id)) continue
+      const cell = cellFor(onHand, a.bin_id, a.crop_id)
+      if (a.adjustment_type === 'beginning_inventory') cell.beginning += Number(a.bushels)
+      else cell.emptyAdj += Number(a.bushels)
+      const list = adjustmentsForBin.get(a.bin_id) ?? []
+      list.push(a)
+      adjustmentsForBin.set(a.bin_id, list)
+    }
+  }
+
+  const cropName = (id: string) => cropById.get(id)?.name ?? '—'
+
+  // Build the export rows once for the whole page.
+  const csvRows: InventoryCsvRow[] = []
+  for (const b of bins) {
+    const inner = onHand.get(b.id) ?? new Map<string, Cell>()
+    for (const [cid, cell] of inner.entries()) {
+      const total = cell.loadBacked + cell.beginning - cell.emptyAdj
+      if (Math.abs(total) < 0.005 && cell.beginning === 0) continue
+      const beginningNotes = (adjustmentsForBin.get(b.id) ?? [])
+        .filter((a) => a.crop_id === cid && a.adjustment_type === 'beginning_inventory')
+        .map((a) => `${fmtBu(Number(a.bushels))} bu as of ${fmtDate(a.as_of_date)}${a.notes ? ` — ${a.notes}` : ''}`)
+        .join('; ')
+      csvRows.push({
+        binName: b.name_or_number,
+        cropName: cropName(cid),
+        loadBackedBu: cell.loadBacked,
+        beginningBu: cell.beginning,
+        emptyAdjBu: cell.emptyAdj,
+        totalBu: total,
+        beginningNotes,
+      })
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -118,41 +185,82 @@ export default async function InventoryPage({
           </select>
           <button className="rounded-lg bg-slate-700 text-white px-3 py-2 text-sm">Apply</button>
         </form>
+        <ExportInventoryCsv rows={csvRows} />
       </div>
       <p className="text-sm text-slate-500">
-        Dry bushels on hand = bushels delivered to bin − bushels pulled from bin (shrunk to base moisture).
+        Dry bushels on hand = beginning inventory + bushels delivered to bin − bushels pulled from bin − empty-bin adjustments (shrunk to base moisture).
         {entityId && (
           <> Showing only loads sourced from this entity&rsquo;s fields; bin-to-bin and bin-to-buyer outflows are excluded.</>
+        )}
+        {!includeAdjustments && (
+          <> Beginning-inventory and empty-bin adjustments are hidden because they aren&rsquo;t attributable to the selected entity / crop year.</>
         )}
       </p>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {bins.map((b) => {
-          const entries = [...(onHand.get(b.id) ?? new Map()).entries()]
-            .filter(([, v]) => v !== 0)
-            .sort((a, b) => (cropName.get(a[0]) || '').localeCompare(cropName.get(b[0]) || ''))
-          const total = entries.reduce((s, [, v]) => s + v, 0)
+          const inner = onHand.get(b.id) ?? new Map<string, Cell>()
+          const entries = [...inner.entries()]
+            .map(([cid, cell]) => {
+              const total = cell.loadBacked + cell.beginning - cell.emptyAdj
+              return { cid, cell, total }
+            })
+            .filter((r) => Math.abs(r.total) >= 0.005)
+            .sort((a, b) => cropName(a.cid).localeCompare(cropName(b.cid)))
+          const total = entries.reduce((s, r) => s + r.total, 0)
+          const beginningRows = (adjustmentsForBin.get(b.id) ?? [])
+            .filter((a) => a.adjustment_type === 'beginning_inventory')
           return (
             <div key={b.id} className="bg-white rounded-xl shadow p-4">
               <div className="flex justify-between items-baseline gap-2 flex-wrap">
                 <h2 className="text-lg font-semibold">Bin {b.name_or_number}</h2>
-                <span className="text-sm text-slate-500">{total.toLocaleString(undefined, { maximumFractionDigits: 2 })} bu total</span>
-                <EmptyBinButton binId={b.id} binName={b.name_or_number} />
+                <span className="text-sm text-slate-500">{fmtBu(total)} bu total</span>
               </div>
               {entries.length === 0 ? (
                 <p className="text-sm text-slate-400 mt-2">Empty.</p>
               ) : (
                 <table className="w-full text-sm mt-2">
+                  <thead>
+                    <tr className="text-xs text-slate-500">
+                      <th className="text-left py-1">Crop</th>
+                      <th className="text-right py-1">Load-backed</th>
+                      <th className="text-right py-1">Beginning</th>
+                      <th className="text-right py-1">Total</th>
+                    </tr>
+                  </thead>
                   <tbody>
-                    {entries.map(([cropId, bu]) => (
-                      <tr key={cropId} className="border-t border-slate-100">
-                        <td className="py-1">{cropName.get(cropId) ?? '—'}</td>
-                        <td className="py-1 text-right font-mono">{bu.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                    {entries.map((r) => (
+                      <tr key={r.cid} className="border-t border-slate-100">
+                        <td className="py-1">{cropName(r.cid)}</td>
+                        <td className="py-1 text-right font-mono">{fmtBu(r.cell.loadBacked - r.cell.emptyAdj)}</td>
+                        <td className="py-1 text-right font-mono text-slate-500">
+                          {r.cell.beginning > 0 ? fmtBu(r.cell.beginning) : '—'}
+                        </td>
+                        <td className="py-1 text-right font-mono font-semibold">{fmtBu(r.total)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               )}
+              {beginningRows.length > 0 && (
+                <ul className="mt-3 space-y-1 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2">
+                  {beginningRows.map((a) => (
+                    <li key={a.id}>
+                      Includes beginning inventory: {fmtBu(Number(a.bushels))} bu {cropName(a.crop_id)} (added {fmtDate(a.as_of_date)})
+                      {a.notes ? ` — ${a.notes}` : ''}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="mt-3 flex flex-wrap items-start gap-2">
+                <EmptyBinButton binId={b.id} binName={b.name_or_number} />
+                <BeginningInventoryButton
+                  binId={b.id}
+                  binName={b.name_or_number}
+                  crops={crops}
+                  defaultCropId={b.crop_id}
+                />
+              </div>
             </div>
           )
         })}
