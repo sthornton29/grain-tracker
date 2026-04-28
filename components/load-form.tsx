@@ -193,6 +193,16 @@ export default function LoadForm({ initial, mode }: Props) {
     return fields.filter((f) => plantedFieldIds.has(f.id))
   }, [fields, plantings, form.crop_id])
 
+  const seasonYearOptions = useMemo(() => {
+    const s = new Set<number>()
+    plantings.forEach((p) => p.season_year != null && s.add(p.season_year))
+    if (form.crop_year !== '' && Number.isFinite(Number(form.crop_year))) {
+      s.add(Number(form.crop_year))
+    }
+    if (s.size === 0) s.add(new Date().getFullYear())
+    return [...s].sort((a, b) => b - a)
+  }, [plantings, form.crop_year])
+
   // Drop any previously selected field/bin that no longer matches the crop filter.
   useEffect(() => {
     if (!refsLoaded) return
@@ -289,15 +299,15 @@ export default function LoadForm({ initial, mode }: Props) {
       </div>
 
       <label className={labelCls}>
-        Crop year <span className="text-xs text-slate-400">persists from your last load</span>
-        <input
-          type="number"
-          inputMode="numeric"
+        Crop year <span className="text-xs text-slate-400">from set-up seasons</span>
+        <select
           value={form.crop_year}
           onChange={(e) => set('crop_year', e.target.value)}
-          placeholder="e.g. 2026"
           className={inputCls}
-        />
+        >
+          <option value="">— select —</option>
+          {seasonYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
+        </select>
       </label>
 
       <fieldset className="border border-slate-200 rounded-xl p-3 space-y-3">
