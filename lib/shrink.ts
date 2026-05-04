@@ -36,8 +36,11 @@ export function computeBushels(input: ShrinkInput): ShrinkResult {
   const wet = net / baseLb
   const mc = toNum(input.moisturePct)
   const baseMc = toNum(input.baseMoisturePct)
-  let computedDry: number | null
-  if (mc == null || baseMc == null) computedDry = null
+  // Without a measured moisture we can't shrink — fall back to wet bushels so
+  // loads that came back from the buyer with no moisture reading still count
+  // toward delivered totals. Same when the crop has no base moisture set.
+  let computedDry: number
+  if (mc == null || baseMc == null) computedDry = wet
   else if (mc <= baseMc) computedDry = wet
   else computedDry = (wet * (100 - mc)) / (100 - baseMc)
   return {
