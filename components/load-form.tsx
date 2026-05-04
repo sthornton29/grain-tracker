@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
+import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import type { Bin, Buyer, Contract, Crop, Field, FieldPlanting, Load, Truck } from '@/lib/types'
 
 type Props = {
@@ -172,11 +173,19 @@ export default function LoadForm({ initial, mode }: Props) {
   const shrinkBu =
     wetBushels != null && dryBushels != null ? wetBushels - dryBushels : null
 
-  const buyerContracts = contracts.filter(
-    (c) =>
-      (!form.to_buyer_id || c.buyer_id === form.to_buyer_id) &&
-      (!form.crop_id || c.crop_id === form.crop_id)
-  )
+  // Contracts must match the picked buyer + crop AND the picked crop year.
+  // When no crop year is picked yet, show no contracts (the dropdown asks for
+  // a year first) so users don't accidentally attach a load to the wrong year.
+  const cropYearNum = form.crop_year === '' ? null : Number(form.crop_year)
+  const buyerContracts =
+    cropYearNum == null
+      ? []
+      : contracts.filter(
+          (c) =>
+            (!form.to_buyer_id || c.buyer_id === form.to_buyer_id) &&
+            (!form.crop_id || c.crop_id === form.crop_id) &&
+            c.crop_year === cropYearNum
+        )
 
   // Only show bins designated to the selected crop; if no crop yet, show all.
   const filteredBins = useMemo(() => {
@@ -193,15 +202,14 @@ export default function LoadForm({ initial, mode }: Props) {
     return fields.filter((f) => plantedFieldIds.has(f.id))
   }, [fields, plantings, form.crop_id])
 
-  const seasonYearOptions = useMemo(() => {
-    const s = new Set<number>()
-    plantings.forEach((p) => p.season_year != null && s.add(p.season_year))
-    if (form.crop_year !== '' && Number.isFinite(Number(form.crop_year))) {
-      s.add(Number(form.crop_year))
-    }
-    if (s.size === 0) s.add(new Date().getFullYear())
-    return [...s].sort((a, b) => b - a)
-  }, [plantings, form.crop_year])
+  const seasonYearOptions = useMemo(
+    () =>
+      cropYearOptionsFromPlantings(
+        plantings.map((p) => p.season_year),
+        form.crop_year === '' ? null : Number(form.crop_year),
+      ),
+    [plantings, form.crop_year],
+  )
 
   // Drop any previously selected field/bin that no longer matches the crop filter.
   useEffect(() => {
@@ -214,6 +222,7 @@ export default function LoadForm({ initial, mode }: Props) {
       return next
     })
   }, [refsLoaded, filteredFields, filteredBins])
+
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }))
@@ -302,7 +311,7 @@ export default function LoadForm({ initial, mode }: Props) {
         Crop year <span className="text-xs text-slate-400">from set-up seasons</span>
         <select
           value={form.crop_year}
-          onChange={(e) => set('crop_year', e.target.value)}
+          onChange={(e) => setForm((f) => ({ ...f, crop_year: e.target.value, contract_id: '' }))}
           className={inputCls}
         >
           <option value="">— select —</option>
@@ -390,9 +399,16 @@ export default function LoadForm({ initial, mode }: Props) {
               {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
             <label className={labelCls}>
-              Contract (filtered to buyer + crop)
-              <select value={form.contract_id} onChange={(e) => set('contract_id', e.target.value)} className={inputCls}>
-                <option value="">— none —</option>
+              Contract (filtered to buyer + crop + crop year)
+              <select
+                value={form.contract_id}
+                onChange={(e) => set('contract_id', e.target.value)}
+                className={inputCls}
+                disabled={cropYearNum == null}
+              >
+                <option value="">
+                  {cropYearNum == null ? 'Select crop year first' : '— none —'}
+                </option>
                 {buyerContracts.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.contract_number}

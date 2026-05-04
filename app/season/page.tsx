@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
-import { buildDoubleCropSoySet } from '@/lib/plantings'
+import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
 import type { Crop, FieldPlanting } from '@/lib/types'
 
 type LoadRow = {
@@ -75,11 +75,13 @@ export default function SeasonSummaryPage() {
     return map
   }, [loads, cropById, year, cropYear])
 
-  const cropYearOptions = useMemo(() => {
-    const set = new Set<number>()
-    loads.forEach((l) => l.crop_year != null && set.add(l.crop_year))
-    return [...set].sort((a, b) => b - a)
-  }, [loads])
+  const cropYearOptions = useMemo(
+    () => cropYearOptionsFromPlantings(
+      plantings.map((p) => p.season_year),
+      cropYear === '' ? null : cropYear,
+    ),
+    [plantings, cropYear],
+  )
 
   type Agg = {
     cropName: string

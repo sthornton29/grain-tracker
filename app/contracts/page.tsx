@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
+import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 
 export const dynamic = 'force-dynamic'
 
@@ -79,7 +80,7 @@ export default async function ContractsPage({
   const entityId = searchParams.entity ?? ''
   const cropYear = searchParams.crop_year ? Number(searchParams.crop_year) : null
 
-  const [contractsRes, loadsRes, cropsRes, fieldsRes, farmsRes, entitiesRes, linesRes] = await Promise.all([
+  const [contractsRes, loadsRes, cropsRes, fieldsRes, farmsRes, entitiesRes, linesRes, plantingsRes] = await Promise.all([
     supabase
       .from('contracts')
       .select(`
@@ -89,12 +90,20 @@ export default async function ContractsPage({
         buyer:buyers(name), crop:crops(name), delivery_location:delivery_locations(name)
       `)
       .order('contract_number'),
-    supabase.from('loads').select('id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override, from_type, from_field_id'),
+    // Only loads attached to a contract contribute to delivery totals. Filter at the
+    // DB level so we never bump into Supabase's default row limit on the loads table,
+    // and so an edited load is always picked up by its current contract_id.
+    supabase
+      .from('loads')
+      .select('id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override, from_type, from_field_id')
+      .not('contract_id', 'is', null)
+      .limit(50000),
     supabase.from('crops').select('id, base_moisture_pct, base_lb_per_bushel'),
     supabase.from('fields').select('id, farm_id'),
     supabase.from('farms').select('id, entity_id'),
     supabase.from('entities').select('id, name').order('name'),
     supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue'),
+    supabase.from('field_plantings').select('season_year'),
   ])
 
   const allContracts = (contractsRes.data as unknown as ContractRow[]) ?? []
@@ -126,9 +135,8 @@ export default async function ContractsPage({
     return null
   }
 
-  const cropYearOptions = Array.from(
-    new Set(allContracts.map((c) => c.crop_year).filter((y): y is number => y != null))
-  ).sort((a, b) => b - a)
+  const plantingYears = ((plantingsRes.data ?? []) as Array<{ season_year: number | null }>).map((p) => p.season_year)
+  const cropYearOptions = cropYearOptionsFromPlantings(plantingYears, cropYear)
 
   function loadDryBu(l: LoadRow): number {
     const crop = l.crop_id ? cropById.get(l.crop_id) : null

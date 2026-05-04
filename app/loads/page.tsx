@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
-import type { Entity, Farm, Field } from '@/lib/types'
+import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import type { Entity, Farm, Field, FieldPlanting } from '@/lib/types'
 
 type Row = {
   id: string
@@ -77,6 +78,7 @@ export default function LoadsPage() {
   const [entities, setEntities] = useState<Entity[]>([])
   const [farms, setFarms] = useState<Farm[]>([])
   const [fields, setFields] = useState<Field[]>([])
+  const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
   const [from, setFrom] = useState('')
@@ -99,17 +101,19 @@ export default function LoadsPage() {
     let query = supabase.from('loads').select(SELECT).order('date', { ascending: false }).order('time', { ascending: false })
     if (from) query = query.gte('date', from)
     if (to) query = query.lte('date', to)
-    const [loadsRes, entitiesRes, farmsRes, fieldsRes, settlementLinesRes] = await Promise.all([
+    const [loadsRes, entitiesRes, farmsRes, fieldsRes, settlementLinesRes, plantingsRes] = await Promise.all([
       query,
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('*'),
       supabase.from('fields').select('*'),
       supabase.from('settlement_lines').select('ticket_number'),
+      supabase.from('field_plantings').select('season_year'),
     ])
     setRows((loadsRes.data as unknown as Row[]) || [])
     setEntities((entitiesRes.data as Entity[]) || [])
     setFarms((farmsRes.data as Farm[]) || [])
     setFields((fieldsRes.data as Field[]) || [])
+    setPlantings((plantingsRes.data as FieldPlanting[]) || [])
     const tickets = new Set<string>()
     for (const l of (settlementLinesRes.data ?? []) as Array<{ ticket_number: string | null }>) {
       if (l.ticket_number) tickets.add(l.ticket_number.trim().toLowerCase())
@@ -119,11 +123,13 @@ export default function LoadsPage() {
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [from, to])
 
-  const cropYearOptions = useMemo(() => {
-    const set = new Set<number>()
-    rows.forEach((r) => r.crop_year != null && set.add(r.crop_year))
-    return [...set].sort((a, b) => b - a)
-  }, [rows])
+  const cropYearOptions = useMemo(
+    () => cropYearOptionsFromPlantings(
+      plantings.map((p) => p.season_year),
+      cropYear === '' ? null : cropYear,
+    ),
+    [plantings, cropYear],
+  )
 
   const fieldEntityId = useMemo(() => {
     const farmEntity = new Map(farms.map((f) => [f.id, f.entity_id]))

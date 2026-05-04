@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
-import type { Buyer, Contract, Crop, Entity } from '@/lib/types'
+import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import type { Buyer, Contract, Crop, Entity, FieldPlanting } from '@/lib/types'
 
 type LoadRow = {
   id: string
@@ -56,6 +57,7 @@ export default function CashFlowPage() {
   const [entities, setEntities] = useState<Entity[]>([])
   const [fields, setFields] = useState<FieldRow[]>([])
   const [farms, setFarms] = useState<FarmRow[]>([])
+  const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [loading, setLoading] = useState(true)
 
   const [cropYear, setCropYear] = useState<number | ''>('')
@@ -65,9 +67,13 @@ export default function CashFlowPage() {
 
   useEffect(() => {
     ;(async () => {
-      const [ct, ld, ln, st, cr, by, en, fi, fa] = await Promise.all([
+      const [ct, ld, ln, st, cr, by, en, fi, fa, pl] = await Promise.all([
         supabase.from('contracts').select('*'),
-        supabase.from('loads').select('id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override, from_type, from_field_id'),
+        supabase
+          .from('loads')
+          .select('id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override, from_type, from_field_id')
+          .not('contract_id', 'is', null)
+          .limit(50000),
         supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue, settlement_id'),
         supabase.from('settlements').select('id, settlement_date'),
         supabase.from('crops').select('*'),
@@ -75,6 +81,7 @@ export default function CashFlowPage() {
         supabase.from('entities').select('*').order('name'),
         supabase.from('fields').select('id, farm_id'),
         supabase.from('farms').select('id, entity_id'),
+        supabase.from('field_plantings').select('season_year'),
       ])
       setContracts((ct.data as Contract[]) || [])
       setLoads((ld.data as LoadRow[]) || [])
@@ -85,6 +92,7 @@ export default function CashFlowPage() {
       setEntities((en.data as Entity[]) || [])
       setFields((fi.data as FieldRow[]) || [])
       setFarms((fa.data as FarmRow[]) || [])
+      setPlantings((pl.data as FieldPlanting[]) || [])
       setLoading(false)
     })()
   }, [supabase])
@@ -127,11 +135,13 @@ export default function CashFlowPage() {
     return dryBushels ?? 0
   }
 
-  const cropYearOptions = useMemo(() => {
-    const s = new Set<number>()
-    contracts.forEach((c) => c.crop_year != null && s.add(c.crop_year))
-    return [...s].sort((a, b) => b - a)
-  }, [contracts])
+  const cropYearOptions = useMemo(
+    () => cropYearOptionsFromPlantings(
+      plantings.map((p) => p.season_year),
+      cropYear === '' ? null : cropYear,
+    ),
+    [plantings, cropYear],
+  )
 
   type Agg = {
     contract: Contract

@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
-import type { Buyer, Contract, Crop, DeliveryLocation, Entity } from '@/lib/types'
+import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import type { Buyer, Contract, Crop, DeliveryLocation, Entity, FieldPlanting } from '@/lib/types'
 
 type Form = {
   contract_number: string
@@ -79,6 +80,7 @@ function FormFields({
   crops,
   locations,
   entities,
+  cropYearOptions,
 }: {
   value: Form
   onChange: (f: Form) => void
@@ -86,6 +88,7 @@ function FormFields({
   crops: Crop[]
   locations: DeliveryLocation[]
   entities: Entity[]
+  cropYearOptions: number[]
 }) {
   const f = value
   const set = <K extends keyof Form>(k: K, v: Form[K]) => onChange({ ...f, [k]: v })
@@ -113,7 +116,10 @@ function FormFields({
           {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <input type="number" step="0.0001" placeholder="Price / bushel" value={f.price_per_bushel} onChange={(e) => set('price_per_bushel', e.target.value)} className={INPUT_CLS} />
-        <input type="number" inputMode="numeric" placeholder="Crop year (e.g. 2026)" value={f.crop_year} onChange={(e) => set('crop_year', e.target.value)} className={INPUT_CLS} />
+        <select value={f.crop_year} onChange={(e) => set('crop_year', e.target.value)} className={INPUT_CLS}>
+          <option value="">— crop year —</option>
+          {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
+        </select>
         <select value={f.entity_id} onChange={(e) => set('entity_id', e.target.value)} className={INPUT_CLS}>
           <option value="">— entity —</option>
           {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
@@ -176,6 +182,7 @@ export default function ContractsSettingsPage() {
   const [crops, setCrops] = useState<Crop[]>([])
   const [locations, setLocations] = useState<DeliveryLocation[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
+  const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [rows, setRows] = useState<Contract[]>([])
   const [form, setForm] = useState<Form>(empty)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -185,20 +192,27 @@ export default function ContractsSettingsPage() {
   const [q, setQ] = useState('')
 
   async function refresh() {
-    const [b, c, k, l, en] = await Promise.all([
+    const [b, c, k, l, en, pl] = await Promise.all([
       supabase.from('buyers').select('*').order('name'),
       supabase.from('crops').select('*').order('name'),
       supabase.from('contracts').select('*').order('contract_number'),
       supabase.from('delivery_locations').select('*').order('name'),
       supabase.from('entities').select('*').order('name'),
+      supabase.from('field_plantings').select('season_year'),
     ])
     setBuyers((b.data as Buyer[]) || [])
     setCrops((c.data as Crop[]) || [])
     setRows((k.data as Contract[]) || [])
     setLocations((l.data as DeliveryLocation[]) || [])
     setEntities((en.data as Entity[]) || [])
+    setPlantings((pl.data as FieldPlanting[]) || [])
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
+
+  const cropYearOptions = useMemo(
+    () => cropYearOptionsFromPlantings(plantings.map((p) => p.season_year)),
+    [plantings],
+  )
 
   // Default the new-contract form's entity to the most recently created
   // contract's entity (the "last entity you entered a contract under").
@@ -275,7 +289,7 @@ export default function ContractsSettingsPage() {
       />
 
       <form onSubmit={add} className="space-y-2 bg-white p-4 rounded-xl shadow">
-        <FormFields value={form} onChange={setForm} buyers={buyers} crops={crops} locations={locations} entities={entities} />
+        <FormFields value={form} onChange={setForm} buyers={buyers} crops={crops} locations={locations} entities={entities} cropYearOptions={cropYearOptions} />
         <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add Contract</button>
       </form>
 
@@ -342,7 +356,7 @@ export default function ContractsSettingsPage() {
           <li key={c.id} className={`px-4 py-3 space-y-2 ${selected.has(c.id) ? 'bg-sky-50' : ''}`}>
             {editingId === c.id ? (
               <>
-                <FormFields value={editForm} onChange={setEditForm} buyers={buyers} crops={crops} locations={locations} entities={entities} />
+                <FormFields value={editForm} onChange={setEditForm} buyers={buyers} crops={crops} locations={locations} entities={entities} cropYearOptions={cropYearOptions} />
                 <div className="flex gap-2">
                   <button onClick={() => save(c.id)} className="text-green-700 font-semibold">Save</button>
                   <button onClick={() => setEditingId(null)} className="text-slate-500">Cancel</button>

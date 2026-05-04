@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
-import { buildDoubleCropSoySet } from '@/lib/plantings'
+import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
 import type { Crop, Farm, Field, FieldPlanting } from '@/lib/types'
 
 type Form = {
@@ -45,12 +45,14 @@ function FormFields({
   fields,
   crops,
   fieldLabel,
+  seasonYearOptions,
 }: {
   value: Form
   onChange: (f: Form) => void
   fields: Field[]
   crops: Crop[]
   fieldLabel: (id: string) => string
+  seasonYearOptions: number[]
 }) {
   const set = <K extends keyof Form>(k: K, v: Form[K]) => onChange({ ...value, [k]: v })
   return (
@@ -63,14 +65,14 @@ function FormFields({
         <option value="">— crop —</option>
         {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
-      <input
-        type="number"
-        inputMode="numeric"
+      <select
         value={value.season_year}
         onChange={(e) => set('season_year', e.target.value)}
-        placeholder="Season year"
         className={INPUT_CLS}
-      />
+      >
+        <option value="">— season year —</option>
+        {seasonYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
+      </select>
       <input
         type="number"
         step="0.01"
@@ -145,6 +147,13 @@ export default function PlantingsPage() {
     plantings.forEach((p) => s.add(p.season_year))
     return [...s].sort((a, b) => b - a)
   }, [plantings])
+
+  // Form-level season year options come from existing plantings (with the active
+  // filter year added so newly-typed years are immediately pickable).
+  const seasonYearOptions = useMemo(
+    () => cropYearOptionsFromPlantings(plantings.map((p) => p.season_year), year),
+    [plantings, year],
+  )
 
   const visible = plantings
     .filter((p) => {
@@ -339,7 +348,7 @@ export default function PlantingsPage() {
 
       <form onSubmit={add} className="bg-white rounded-xl shadow p-4 space-y-3">
         <h2 className="font-semibold">Add planting</h2>
-        <FormFields value={form} onChange={setForm} fields={fields} crops={crops} fieldLabel={fieldLabel} />
+        <FormFields value={form} onChange={setForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} />
         <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add</button>
       </form>
 
@@ -394,7 +403,7 @@ export default function PlantingsPage() {
                 <tr key={p.id} className="border-t border-slate-100 align-top">
                   {isEditing ? (
                     <td colSpan={9} className="px-3 py-3">
-                      <FormFields value={editForm} onChange={setEditForm} fields={fields} crops={crops} fieldLabel={fieldLabel} />
+                      <FormFields value={editForm} onChange={setEditForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} />
                       <div className="flex gap-2 mt-2">
                         <button onClick={() => save(p.id)} className="text-green-700 font-semibold">Save</button>
                         <button onClick={() => setEditingId(null)} className="text-slate-500">Cancel</button>

@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
+import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 
 export const dynamic = 'force-dynamic'
 
@@ -26,7 +27,7 @@ export default async function UnpaidLoadsPage({
   const supabase = createClient()
   const cropYear = searchParams.crop_year ? Number(searchParams.crop_year) : null
 
-  const [loadsRes, linesRes] = await Promise.all([
+  const [loadsRes, linesRes, plantingsRes] = await Promise.all([
     supabase
       .from('loads')
       .select(`
@@ -38,6 +39,7 @@ export default async function UnpaidLoadsPage({
       .eq('to_type', 'buyer')
       .order('date', { ascending: false }),
     supabase.from('settlement_lines').select('ticket_number'),
+    supabase.from('field_plantings').select('season_year'),
   ])
 
   const loads = (loadsRes.data as unknown as Row[]) ?? []
@@ -54,9 +56,8 @@ export default async function UnpaidLoadsPage({
     return true
   })
 
-  const cropYearOptions = Array.from(
-    new Set(loads.map((l) => l.crop_year).filter((y): y is number => y != null))
-  ).sort((a, b) => b - a)
+  const plantingYears = ((plantingsRes.data ?? []) as Array<{ season_year: number | null }>).map((p) => p.season_year)
+  const cropYearOptions = cropYearOptionsFromPlantings(plantingYears, cropYear)
 
   const totalDryBu = unpaid.reduce((sum, r) => {
     const { dryBushels } = computeBushels({

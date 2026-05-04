@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
+import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import EmptyBinButton from '@/components/empty-bin-button'
 import BeginningInventoryButton from '@/components/beginning-inventory-button'
 import ExportInventoryCsv, { type InventoryCsvRow } from '@/components/export-inventory-csv'
@@ -52,7 +53,7 @@ export default async function InventoryPage({
   const cropYear = searchParams.crop_year ? Number(searchParams.crop_year) : null
   const today = todayISO()
 
-  const [binsRes, cropsRes, loadsRes, fieldsRes, farmsRes, entitiesRes, adjsRes] = await Promise.all([
+  const [binsRes, cropsRes, loadsRes, fieldsRes, farmsRes, entitiesRes, adjsRes, plantingsRes] = await Promise.all([
     supabase.from('bins').select('id, name_or_number, crop_id').order('name_or_number'),
     supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').order('name'),
     supabase.from('loads').select('net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, from_bin_id, to_type, to_bin_id'),
@@ -63,6 +64,7 @@ export default async function InventoryPage({
       .select('id, bin_id, crop_id, adjustment_type, bushels, moisture, as_of_date, notes, created_at')
       .lte('as_of_date', today)
       .order('as_of_date', { ascending: true }),
+    supabase.from('field_plantings').select('season_year'),
   ])
 
   const bins = (binsRes.data ?? []) as BinRow[]
@@ -91,9 +93,8 @@ export default async function InventoryPage({
   const onHand = new Map<string, Map<string, Cell>>()
   for (const b of bins) onHand.set(b.id, new Map())
 
-  const cropYearOptions = Array.from(
-    new Set(loads.map((l) => l.crop_year).filter((y): y is number => y != null))
-  ).sort((a, b) => b - a)
+  const plantingYears = ((plantingsRes.data ?? []) as Array<{ season_year: number | null }>).map((p) => p.season_year)
+  const cropYearOptions = cropYearOptionsFromPlantings(plantingYears, cropYear)
 
   for (const l of loads) {
     if (!l.crop_id) continue

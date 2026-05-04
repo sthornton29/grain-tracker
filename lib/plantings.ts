@@ -20,3 +20,20 @@ export function buildDoubleCropSoySet(
   }
   return result
 }
+
+// Crop-year dropdown options sourced from field_plantings.season_year.
+// Falls back to current + previous year when no plantings exist.
+export function cropYearOptionsFromPlantings(
+  seasonYears: ReadonlyArray<number | null | undefined>,
+  extra?: number | null | undefined,
+): number[] {
+  const years = new Set<number>()
+  for (const y of seasonYears) if (y != null) years.add(y)
+  if (extra != null && Number.isFinite(extra)) years.add(extra)
+  if (years.size === 0) {
+    const now = new Date().getFullYear()
+    years.add(now)
+    years.add(now - 1)
+  }
+  return [...years].sort((a, b) => b - a)
+}
