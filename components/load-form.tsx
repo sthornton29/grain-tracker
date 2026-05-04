@@ -116,13 +116,13 @@ export default function LoadForm({ initial, mode }: Props) {
     })()
   }, [supabase])
 
-  // On create, pre-fill crop + from/to selections from the most recent load.
+  // On create, pre-fill crop + from/to + contract selections from the most recent load.
   useEffect(() => {
     if (mode !== 'create' || !refsLoaded) return
     ;(async () => {
       const { data } = await supabase
         .from('loads')
-        .select('crop_id, crop_year, from_type, from_field_id, from_bin_id, to_type, to_bin_id, to_buyer_id')
+        .select('crop_id, crop_year, from_type, from_field_id, from_bin_id, to_type, to_bin_id, to_buyer_id, contract_id')
         .order('date', { ascending: false })
         .order('time', { ascending: false })
         .limit(1)
@@ -135,6 +135,7 @@ export default function LoadForm({ initial, mode }: Props) {
         to_type: 'bin' | 'buyer' | null
         to_bin_id: string | null
         to_buyer_id: string | null
+        contract_id: string | null
       } | undefined
       if (!recent) return
       setForm((f) => ({
@@ -147,6 +148,7 @@ export default function LoadForm({ initial, mode }: Props) {
         to_type: f.to_type || (recent.to_type ?? ''),
         to_bin_id: f.to_bin_id || (recent.to_bin_id ?? ''),
         to_buyer_id: f.to_buyer_id || (recent.to_buyer_id ?? ''),
+        contract_id: f.contract_id || (recent.contract_id ?? ''),
       }))
     })()
   }, [refsLoaded, mode, supabase])
