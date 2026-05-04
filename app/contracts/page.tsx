@@ -90,13 +90,12 @@ export default async function ContractsPage({
         buyer:buyers(name), crop:crops(name), delivery_location:delivery_locations(name)
       `)
       .order('contract_number'),
-    // Only loads attached to a contract contribute to delivery totals. Filter at the
-    // DB level so we never bump into Supabase's default row limit on the loads table,
-    // and so an edited load is always picked up by its current contract_id.
+    // Explicit high limit so we don't bump into Supabase's default row cap on
+    // the loads table — every load with a contract_id must be summed, otherwise
+    // an edited load can disappear from its contract's delivered total.
     supabase
       .from('loads')
       .select('id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override, from_type, from_field_id')
-      .not('contract_id', 'is', null)
       .limit(50000),
     supabase.from('crops').select('id, base_moisture_pct, base_lb_per_bushel'),
     supabase.from('fields').select('id, farm_id'),

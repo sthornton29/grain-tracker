@@ -72,7 +72,6 @@ export default function CashFlowPage() {
         supabase
           .from('loads')
           .select('id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override, from_type, from_field_id')
-          .not('contract_id', 'is', null)
           .limit(50000),
         supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue, settlement_id'),
         supabase.from('settlements').select('id, settlement_date'),
