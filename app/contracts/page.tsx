@@ -169,16 +169,24 @@ export default async function ContractsPage({
     revenue: number
     deliveredUnpaid: number
     entityIds: Set<string>
+    loadCount: number
   }
   const aggByContract = new Map<string, Agg>()
   function ensure(id: string): Agg {
     let a = aggByContract.get(id)
-    if (!a) { a = { delivered: 0, paidBushels: 0, revenue: 0, deliveredUnpaid: 0, entityIds: new Set() }; aggByContract.set(id, a) }
+    if (!a) { a = { delivered: 0, paidBushels: 0, revenue: 0, deliveredUnpaid: 0, entityIds: new Set(), loadCount: 0 }; aggByContract.set(id, a) }
     return a
   }
+  // Tally loads attached to contract_ids that don't actually exist in the
+  // contracts table — a sign the contract was deleted (FK on delete set null
+  // would normally clear this) or that something else has gone sideways.
+  const knownContractIds = new Set(allContracts.map((c) => c.id))
+  let orphanLoadCount = 0
   for (const load of loads) {
     if (!load.contract_id) continue
+    if (!knownContractIds.has(load.contract_id)) { orphanLoadCount++; continue }
     const agg = ensure(load.contract_id)
+    agg.loadCount++
     const bu = loadDryBu(load)
     agg.delivered += bu
     const line = lineForLoad(load)
@@ -193,6 +201,12 @@ export default async function ContractsPage({
       if (ent) agg.entityIds.add(ent)
     }
   }
+
+  // contract_number has no unique constraint, so detect dupes and surface them
+  // with an id suffix in the UI (otherwise two rows look identical and the user
+  // can't tell which one their loads are attached to).
+  const numberCounts = new Map<string, number>()
+  for (const c of allContracts) numberCounts.set(c.contract_number, (numberCounts.get(c.contract_number) ?? 0) + 1)
 
   const visible = allContracts.filter((c) => {
     if (cropYear != null && c.crop_year !== cropYear) return false
@@ -231,6 +245,13 @@ export default async function ContractsPage({
         <span className="ml-4 inline-block h-2 w-2 rounded-full bg-amber-500 mr-1 align-middle" /> end date ≤ 14 days away
       </p>
 
+      {orphanLoadCount > 0 && (
+        <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+          <strong>{orphanLoadCount}</strong> load{orphanLoadCount === 1 ? '' : 's'} reference a contract that doesn&rsquo;t exist
+          in the contracts table. Their bushels can&rsquo;t be totaled here.
+        </div>
+      )}
+
       <div className="overflow-x-auto bg-white rounded-xl shadow">
         <table className="min-w-full text-sm">
           <thead className="bg-slate-100 text-slate-700">
@@ -242,7 +263,8 @@ export default async function ContractsPage({
           <tbody>
             {visible.length === 0 && <tr><td colSpan={13} className="px-3 py-6 text-center text-slate-400">No contracts.</td></tr>}
             {visible.map((c) => {
-              const agg = aggByContract.get(c.id) ?? { delivered: 0, paidBushels: 0, revenue: 0, deliveredUnpaid: 0, entityIds: new Set<string>() }
+              const agg = aggByContract.get(c.id) ?? { delivered: 0, paidBushels: 0, revenue: 0, deliveredUnpaid: 0, entityIds: new Set<string>(), loadCount: 0 }
+              const isDup = (numberCounts.get(c.contract_number) ?? 0) > 1
               const remaining = Math.max(0, Number(c.contracted_bushels) - agg.delivered)
               const pct = Number(c.contracted_bushels) > 0 ? Math.min(100, (agg.delivered / Number(c.contracted_bushels)) * 100) : 0
               const avgPrice = agg.paidBushels > 0 ? agg.revenue / agg.paidBushels : null
@@ -257,6 +279,11 @@ export default async function ContractsPage({
                     {isOpen && <span className="inline-block h-2 w-2 rounded-full bg-green-500 mr-1 align-middle" />}
                     {!isOpen && endWarning && <span className="inline-block h-2 w-2 rounded-full bg-amber-500 mr-1 align-middle" />}
                     {c.contract_number}
+                    {isDup && (
+                      <span className="ml-1 text-xs font-mono text-red-700" title="Duplicate contract number — id suffix shown to disambiguate">
+                        ({c.id.slice(0, 6)})
+                      </span>
+                    )}
                   </td>
                   <td className="px-3 py-2">{c.buyer?.name ?? ''}</td>
                   <td className="px-3 py-2">{c.crop?.name ?? ''}</td>
@@ -272,7 +299,10 @@ export default async function ContractsPage({
                       : <span className="text-slate-400">—</span>}
                   </td>
                   <td className="px-3 py-2 text-right">{fmt(Number(c.contracted_bushels))}</td>
-                  <td className="px-3 py-2 text-right">{fmt(agg.delivered)}</td>
+                  <td className="px-3 py-2 text-right">
+                    {fmt(agg.delivered)}
+                    <span className="ml-1 text-xs text-slate-400">({agg.loadCount} load{agg.loadCount === 1 ? '' : 's'})</span>
+                  </td>
                   <td className="px-3 py-2 text-right">{fmt(agg.paidBushels)}</td>
                   <td className={`px-3 py-2 text-right ${agg.deliveredUnpaid > 0 ? 'text-amber-700 font-semibold' : ''}`}>{fmt(agg.deliveredUnpaid)}</td>
                   <td className="px-3 py-2 text-right">${fmt(agg.revenue)}</td>
