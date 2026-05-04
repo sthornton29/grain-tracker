@@ -67,12 +67,27 @@ export default function CashFlowPage() {
 
   useEffect(() => {
     ;(async () => {
+      // Paginate loads to defeat the project-level db-max-rows cap; one
+      // missed load means a contract's delivered total quietly stays at zero.
+      async function fetchAllLoads(): Promise<LoadRow[]> {
+        const PAGE = 1000
+        const out: LoadRow[] = []
+        for (let from = 0; ; from += PAGE) {
+          const { data, error } = await supabase
+            .from('loads')
+            .select('id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override, from_type, from_field_id')
+            .order('id', { ascending: true })
+            .range(from, from + PAGE - 1)
+          if (error) throw error
+          const batch = (data ?? []) as LoadRow[]
+          out.push(...batch)
+          if (batch.length < PAGE) break
+        }
+        return out
+      }
       const [ct, ld, ln, st, cr, by, en, fi, fa, pl] = await Promise.all([
         supabase.from('contracts').select('*'),
-        supabase
-          .from('loads')
-          .select('id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override, from_type, from_field_id')
-          .limit(50000),
+        fetchAllLoads(),
         supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue, settlement_id'),
         supabase.from('settlements').select('id, settlement_date'),
         supabase.from('crops').select('*'),
@@ -83,7 +98,7 @@ export default function CashFlowPage() {
         supabase.from('field_plantings').select('season_year'),
       ])
       setContracts((ct.data as Contract[]) || [])
-      setLoads((ld.data as LoadRow[]) || [])
+      setLoads(ld)
       setLines((ln.data as LineRow[]) || [])
       setSettlements((st.data as SettlementRow[]) || [])
       setCrops((cr.data as Crop[]) || [])

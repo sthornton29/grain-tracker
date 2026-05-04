@@ -1,3 +1,4 @@
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
@@ -62,6 +63,26 @@ function daysUntil(dateStr: string | null): number | null {
   return Math.ceil((d.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
 }
 
+// Page-scoped paginated fetch of every load with a contract_id. We can't trust
+// .limit() to override the Supabase project-level db-max-rows cap, so we
+// .range() through the table until a short page comes back.
+async function fetchAllContractLoads(supabase: SupabaseClient): Promise<LoadRow[]> {
+  const PAGE = 1000
+  const out: LoadRow[] = []
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await supabase
+      .from('loads')
+      .select('id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override, from_type, from_field_id')
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1)
+    if (error) throw error
+    const batch = (data ?? []) as LoadRow[]
+    out.push(...batch)
+    if (batch.length < PAGE) break
+  }
+  return out
+}
+
 function inWindow(start: string | null, end: string | null): boolean {
   if (!start && !end) return false
   const today = new Date()
@@ -80,7 +101,7 @@ export default async function ContractsPage({
   const entityId = searchParams.entity ?? ''
   const cropYear = searchParams.crop_year ? Number(searchParams.crop_year) : null
 
-  const [contractsRes, loadsRes, cropsRes, fieldsRes, farmsRes, entitiesRes, linesRes, plantingsRes] = await Promise.all([
+  const [contractsRes, loads, cropsRes, fieldsRes, farmsRes, entitiesRes, linesRes, plantingsRes] = await Promise.all([
     supabase
       .from('contracts')
       .select(`
@@ -90,13 +111,7 @@ export default async function ContractsPage({
         buyer:buyers(name), crop:crops(name), delivery_location:delivery_locations(name)
       `)
       .order('contract_number'),
-    // Explicit high limit so we don't bump into Supabase's default row cap on
-    // the loads table — every load with a contract_id must be summed, otherwise
-    // an edited load can disappear from its contract's delivered total.
-    supabase
-      .from('loads')
-      .select('id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override, from_type, from_field_id')
-      .limit(50000),
+    fetchAllContractLoads(supabase),
     supabase.from('crops').select('id, base_moisture_pct, base_lb_per_bushel'),
     supabase.from('fields').select('id, farm_id'),
     supabase.from('farms').select('id, entity_id'),
@@ -106,7 +121,6 @@ export default async function ContractsPage({
   ])
 
   const allContracts = (contractsRes.data as unknown as ContractRow[]) ?? []
-  const loads = (loadsRes.data ?? []) as LoadRow[]
   const crops = (cropsRes.data ?? []) as CropRow[]
   const fields = (fieldsRes.data ?? []) as FieldRow[]
   const farms = (farmsRes.data ?? []) as FarmRow[]
