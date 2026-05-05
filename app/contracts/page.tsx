@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
@@ -95,11 +96,13 @@ function inWindow(start: string | null, end: string | null): boolean {
 export default async function ContractsPage({
   searchParams,
 }: {
-  searchParams: { entity?: string; crop_year?: string }
+  searchParams: { entity?: string; crop_year?: string; sort?: string; dir?: string }
 }) {
   const supabase = createClient()
   const entityId = searchParams.entity ?? ''
   const cropYear = searchParams.crop_year ? Number(searchParams.crop_year) : null
+  const sortKey = searchParams.sort ?? ''
+  const sortDir: 'asc' | 'desc' = searchParams.dir === 'desc' ? 'desc' : 'asc'
 
   const [contractsRes, loads, cropsRes, fieldsRes, farmsRes, entitiesRes, linesRes, plantingsRes] = await Promise.all([
     supabase
@@ -223,6 +226,26 @@ export default async function ContractsPage({
     return true
   })
 
+  if (sortKey === 'crop') {
+    const m = sortDir === 'asc' ? 1 : -1
+    visible.sort((a, b) => {
+      const ac = a.crop?.name ?? ''
+      const bc = b.crop?.name ?? ''
+      const byCrop = m * ac.localeCompare(bc)
+      return byCrop !== 0 ? byCrop : a.contract_number.localeCompare(b.contract_number)
+    })
+  }
+
+  function sortHref(col: string) {
+    const params = new URLSearchParams()
+    if (entityId) params.set('entity', entityId)
+    if (cropYear != null) params.set('crop_year', String(cropYear))
+    const nextDir = sortKey === col && sortDir === 'asc' ? 'desc' : 'asc'
+    params.set('sort', col)
+    params.set('dir', nextDir)
+    return `?${params.toString()}`
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
@@ -256,7 +279,14 @@ export default async function ContractsPage({
         <table className="min-w-full text-sm">
           <thead className="bg-slate-100 text-slate-700">
             <tr>
-              {['Contract #', 'Buyer', 'Crop', 'Year', 'Location', 'Delivery window', 'Contracted', 'Delivered', 'Paid (bu)', 'Unpaid (bu)', 'Revenue', 'Avg $/bu', 'Progress']
+              <th className="text-left px-3 py-2 whitespace-nowrap">Contract #</th>
+              <th className="text-left px-3 py-2 whitespace-nowrap">Buyer</th>
+              <th className="text-left px-3 py-2 whitespace-nowrap">
+                <Link href={sortHref('crop')} className="hover:text-slate-900 select-none" scroll={false}>
+                  Crop{sortKey === 'crop' ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
+                </Link>
+              </th>
+              {['Year', 'Location', 'Delivery window', 'Contracted', 'Delivered', 'Paid (bu)', 'Unpaid (bu)', 'Revenue', 'Avg $/bu', 'Progress']
                 .map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
             </tr>
           </thead>
