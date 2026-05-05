@@ -1,10 +1,28 @@
 export type Entity = { id: string; name: string; notes: string | null }
-export type Farm = { id: string; name: string; entity_id: string | null; fsa_number: string | null }
+export type Farm = {
+  id: string
+  name: string
+  entity_id: string | null
+  fsa_number: string | null
+  county_id: string | null
+}
 export type Field = {
   id: string
   farm_id: string | null
   name_or_number: string
   total_acres: number | null
+  county_id: string | null
+}
+export type County = {
+  id: string
+  name: string
+  state: string
+  state_code: string
+}
+export type EntityCounty = {
+  id: string
+  entity_id: string
+  county_id: string
 }
 export type Bin = { id: string; name_or_number: string; crop_id: string | null }
 export type Truck = { id: string; name_or_number: string }

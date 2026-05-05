@@ -48,9 +48,10 @@ type SettlementLineRow = {
   net_revenue: number | null
 }
 
-type FieldRow = { id: string; farm_id: string | null }
-type FarmRow = { id: string; entity_id: string | null }
+type FieldRow = { id: string; farm_id: string | null; county_id: string | null }
+type FarmRow = { id: string; entity_id: string | null; county_id: string | null }
 type EntityRow = { id: string; name: string }
+type CountyRow = { id: string; name: string; state_code: string }
 
 const fmt = (n: number, d = 2) =>
   n.toLocaleString(undefined, { maximumFractionDigits: d })
@@ -95,13 +96,14 @@ function inWindow(start: string | null, end: string | null): boolean {
 export default async function ContractsPage({
   searchParams,
 }: {
-  searchParams: { entity?: string; crop_year?: string }
+  searchParams: { entity?: string; crop_year?: string; county?: string }
 }) {
   const supabase = createClient()
   const entityId = searchParams.entity ?? ''
+  const countyId = searchParams.county ?? ''
   const cropYear = searchParams.crop_year ? Number(searchParams.crop_year) : null
 
-  const [contractsRes, loads, cropsRes, fieldsRes, farmsRes, entitiesRes, linesRes, plantingsRes] = await Promise.all([
+  const [contractsRes, loads, cropsRes, fieldsRes, farmsRes, entitiesRes, countiesRes, linesRes, plantingsRes] = await Promise.all([
     supabase
       .from('contracts')
       .select(`
@@ -113,9 +115,10 @@ export default async function ContractsPage({
       .order('contract_number'),
     fetchAllContractLoads(supabase),
     supabase.from('crops').select('id, base_moisture_pct, base_lb_per_bushel'),
-    supabase.from('fields').select('id, farm_id'),
-    supabase.from('farms').select('id, entity_id'),
+    supabase.from('fields').select('id, farm_id, county_id'),
+    supabase.from('farms').select('id, entity_id, county_id'),
     supabase.from('entities').select('id, name').order('name'),
+    supabase.from('counties').select('id, name, state_code').order('state_code').order('name'),
     supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue'),
     supabase.from('field_plantings').select('season_year'),
   ])
@@ -125,11 +128,16 @@ export default async function ContractsPage({
   const fields = (fieldsRes.data ?? []) as FieldRow[]
   const farms = (farmsRes.data ?? []) as FarmRow[]
   const entities = (entitiesRes.data ?? []) as EntityRow[]
+  const counties = (countiesRes.data ?? []) as CountyRow[]
   const lines = (linesRes.data ?? []) as SettlementLineRow[]
 
   const cropById = new Map(crops.map((c) => [c.id, c]))
   const farmEntity = new Map(farms.map((f) => [f.id, f.entity_id]))
+  const farmCounty = new Map(farms.map((f) => [f.id, f.county_id]))
   const fieldEntity = new Map(fields.map((f) => [f.id, f.farm_id ? farmEntity.get(f.farm_id) ?? null : null]))
+  const fieldCounty = new Map(
+    fields.map((f) => [f.id, f.county_id ?? (f.farm_id ? farmCounty.get(f.farm_id) ?? null : null)])
+  )
 
   // Build maps:
   //   loadIdToLine:     load_id    -> line (paid lookup by load_id)
@@ -169,12 +177,13 @@ export default async function ContractsPage({
     revenue: number
     deliveredUnpaid: number
     entityIds: Set<string>
+    countyIds: Set<string>
     loadCount: number
   }
   const aggByContract = new Map<string, Agg>()
   function ensure(id: string): Agg {
     let a = aggByContract.get(id)
-    if (!a) { a = { delivered: 0, paidBushels: 0, revenue: 0, deliveredUnpaid: 0, entityIds: new Set(), loadCount: 0 }; aggByContract.set(id, a) }
+    if (!a) { a = { delivered: 0, paidBushels: 0, revenue: 0, deliveredUnpaid: 0, entityIds: new Set(), countyIds: new Set(), loadCount: 0 }; aggByContract.set(id, a) }
     return a
   }
   // Tally loads attached to contract_ids that don't actually exist in the
@@ -199,6 +208,8 @@ export default async function ContractsPage({
     if (load.from_type === 'field' && load.from_field_id) {
       const ent = fieldEntity.get(load.from_field_id) ?? null
       if (ent) agg.entityIds.add(ent)
+      const cty = fieldCounty.get(load.from_field_id) ?? null
+      if (cty) agg.countyIds.add(cty)
     }
   }
 
@@ -220,6 +231,11 @@ export default async function ContractsPage({
         if (!agg || !agg.entityIds.has(entityId)) return false
       }
     }
+    if (countyId) {
+      // Contracts have no direct county; attribute via delivered loads' source fields.
+      const agg = aggByContract.get(c.id)
+      if (!agg || !agg.countyIds.has(countyId)) return false
+    }
     return true
   })
 
@@ -231,6 +247,10 @@ export default async function ContractsPage({
           <select name="entity" defaultValue={entityId} className="rounded-lg border border-slate-300 px-3 py-2">
             <option value="">All entities</option>
             {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+          <select name="county" defaultValue={countyId} className="rounded-lg border border-slate-300 px-3 py-2">
+            <option value="">All counties</option>
+            {counties.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
           </select>
           <select name="crop_year" defaultValue={cropYear ?? ''} className="rounded-lg border border-slate-300 px-3 py-2">
             <option value="">All crop years</option>
@@ -263,7 +283,7 @@ export default async function ContractsPage({
           <tbody>
             {visible.length === 0 && <tr><td colSpan={13} className="px-3 py-6 text-center text-slate-400">No contracts.</td></tr>}
             {visible.map((c) => {
-              const agg = aggByContract.get(c.id) ?? { delivered: 0, paidBushels: 0, revenue: 0, deliveredUnpaid: 0, entityIds: new Set<string>(), loadCount: 0 }
+              const agg = aggByContract.get(c.id) ?? { delivered: 0, paidBushels: 0, revenue: 0, deliveredUnpaid: 0, entityIds: new Set<string>(), countyIds: new Set<string>(), loadCount: 0 }
               const isDup = (numberCounts.get(c.contract_number) ?? 0) > 1
               const remaining = Math.max(0, Number(c.contracted_bushels) - agg.delivered)
               const pct = Number(c.contracted_bushels) > 0 ? Math.min(100, (agg.delivered / Number(c.contracted_bushels)) * 100) : 0

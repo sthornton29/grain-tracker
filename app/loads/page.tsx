@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
-import type { Entity, Farm, Field, FieldPlanting } from '@/lib/types'
+import type { Entity, Farm, Field, FieldPlanting, County } from '@/lib/types'
 
 type Row = {
   id: string
@@ -78,12 +78,14 @@ export default function LoadsPage() {
   const [entities, setEntities] = useState<Entity[]>([])
   const [farms, setFarms] = useState<Farm[]>([])
   const [fields, setFields] = useState<Field[]>([])
+  const [counties, setCounties] = useState<County[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [entityId, setEntityId] = useState('')
+  const [countyId, setCountyId] = useState('')
   const [cropYear, setCropYear] = useState<number | ''>('')
   const [paidTickets, setPaidTickets] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -101,11 +103,12 @@ export default function LoadsPage() {
     let query = supabase.from('loads').select(SELECT).order('date', { ascending: false }).order('time', { ascending: false })
     if (from) query = query.gte('date', from)
     if (to) query = query.lte('date', to)
-    const [loadsRes, entitiesRes, farmsRes, fieldsRes, settlementLinesRes, plantingsRes] = await Promise.all([
+    const [loadsRes, entitiesRes, farmsRes, fieldsRes, countiesRes, settlementLinesRes, plantingsRes] = await Promise.all([
       query,
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('*'),
       supabase.from('fields').select('*'),
+      supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('settlement_lines').select('ticket_number'),
       supabase.from('field_plantings').select('season_year'),
     ])
@@ -113,6 +116,7 @@ export default function LoadsPage() {
     setEntities((entitiesRes.data as Entity[]) || [])
     setFarms((farmsRes.data as Farm[]) || [])
     setFields((fieldsRes.data as Field[]) || [])
+    setCounties((countiesRes.data as County[]) || [])
     setPlantings((plantingsRes.data as FieldPlanting[]) || [])
     const tickets = new Set<string>()
     for (const l of (settlementLinesRes.data ?? []) as Array<{ ticket_number: string | null }>) {
@@ -136,10 +140,21 @@ export default function LoadsPage() {
     return new Map(fields.map((f) => [f.id, f.farm_id ? farmEntity.get(f.farm_id) ?? null : null]))
   }, [farms, fields])
 
+  const fieldCountyId = useMemo(() => {
+    const farmCounty = new Map(farms.map((f) => [f.id, f.county_id]))
+    return new Map(
+      fields.map((f) => [f.id, f.county_id ?? (f.farm_id ? farmCounty.get(f.farm_id) ?? null : null)]),
+    )
+  }, [farms, fields])
+
   const filtered = rows.filter((r) => {
     if (entityId) {
       if (r.from_type !== 'field' || !r.from_field_id) return false
       if (fieldEntityId.get(r.from_field_id) !== entityId) return false
+    }
+    if (countyId) {
+      if (r.from_type !== 'field' || !r.from_field_id) return false
+      if (fieldCountyId.get(r.from_field_id) !== countyId) return false
     }
     if (cropYear !== '' && r.crop_year !== cropYear) return false
     if (!q) return true
@@ -258,7 +273,7 @@ export default function LoadsPage() {
         <button onClick={exportCsv} className="rounded-lg bg-white border border-slate-300 px-4 py-2">Export CSV</button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-5 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         <input
           type="search"
           placeholder="Search ticket, truck, crop, field, bin, buyer…"
@@ -280,6 +295,15 @@ export default function LoadsPage() {
         >
           <option value="">All entities</option>
           {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+        </select>
+        <select
+          value={countyId}
+          onChange={(e) => setCountyId(e.target.value)}
+          className="rounded-lg border border-slate-300 px-3 py-2"
+          title="Filter to loads sourced from a field in this county"
+        >
+          <option value="">All counties</option>
+          {counties.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
         </select>
         <select
           value={cropYear}

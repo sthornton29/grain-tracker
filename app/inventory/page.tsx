@@ -19,9 +19,10 @@ type LoadRow = {
   to_bin_id: string | null
 }
 
-type FieldRow = { id: string; farm_id: string | null }
-type FarmRow = { id: string; entity_id: string | null }
+type FieldRow = { id: string; farm_id: string | null; county_id: string | null }
+type FarmRow = { id: string; entity_id: string | null; county_id: string | null }
 type EntityRow = { id: string; name: string }
+type CountyRow = { id: string; name: string; state_code: string }
 type BinRow = { id: string; name_or_number: string; crop_id: string | null }
 
 export const dynamic = 'force-dynamic'
@@ -46,20 +47,22 @@ function fmtBu(n: number) {
 export default async function InventoryPage({
   searchParams,
 }: {
-  searchParams: { entity?: string; crop_year?: string }
+  searchParams: { entity?: string; crop_year?: string; county?: string }
 }) {
   const supabase = createClient()
   const entityId = searchParams.entity ?? ''
+  const countyId = searchParams.county ?? ''
   const cropYear = searchParams.crop_year ? Number(searchParams.crop_year) : null
   const today = todayISO()
 
-  const [binsRes, cropsRes, loadsRes, fieldsRes, farmsRes, entitiesRes, adjsRes, plantingsRes] = await Promise.all([
+  const [binsRes, cropsRes, loadsRes, fieldsRes, farmsRes, entitiesRes, countiesRes, adjsRes, plantingsRes] = await Promise.all([
     supabase.from('bins').select('id, name_or_number, crop_id').order('name_or_number'),
     supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').order('name'),
     supabase.from('loads').select('net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, from_bin_id, to_type, to_bin_id'),
-    supabase.from('fields').select('id, farm_id'),
-    supabase.from('farms').select('id, entity_id'),
+    supabase.from('fields').select('id, farm_id, county_id'),
+    supabase.from('farms').select('id, entity_id, county_id'),
     supabase.from('entities').select('id, name').order('name'),
+    supabase.from('counties').select('id, name, state_code').order('state_code').order('name'),
     supabase.from('bin_inventory_adjustments')
       .select('id, bin_id, crop_id, adjustment_type, bushels, moisture, as_of_date, notes, created_at')
       .lte('as_of_date', today)
@@ -73,12 +76,17 @@ export default async function InventoryPage({
   const fields = (fieldsRes.data ?? []) as FieldRow[]
   const farms = (farmsRes.data ?? []) as FarmRow[]
   const entities = (entitiesRes.data ?? []) as EntityRow[]
+  const counties = (countiesRes.data ?? []) as CountyRow[]
   const adjustments = (adjsRes.data ?? []) as BinInventoryAdjustment[]
 
   const cropById = new Map(crops.map((c) => [c.id, c]))
   const farmEntity = new Map(farms.map((f) => [f.id, f.entity_id]))
+  const farmCounty = new Map(farms.map((f) => [f.id, f.county_id]))
   const fieldEntity = new Map(
     fields.map((f) => [f.id, f.farm_id ? farmEntity.get(f.farm_id) ?? null : null])
+  )
+  const fieldCounty = new Map(
+    fields.map((f) => [f.id, f.county_id ?? (f.farm_id ? farmCounty.get(f.farm_id) ?? null : null)])
   )
 
   // Per bin → per crop totals split by source.
@@ -105,6 +113,10 @@ export default async function InventoryPage({
       if (l.from_type !== 'field' || !l.from_field_id) continue
       if (fieldEntity.get(l.from_field_id) !== entityId) continue
     }
+    if (countyId) {
+      if (l.from_type !== 'field' || !l.from_field_id) continue
+      if (fieldCounty.get(l.from_field_id) !== countyId) continue
+    }
     const crop = cropById.get(l.crop_id)
     const { dryBushels } = computeBushels({
       netWeightLb: l.net_weight,
@@ -122,9 +134,9 @@ export default async function InventoryPage({
     }
   }
 
-  // Adjustments don't carry a crop_year or entity attribution, so when either
-  // filter is active we leave them out (a note on the page explains this).
-  const includeAdjustments = !entityId && cropYear == null
+  // Adjustments don't carry a crop_year, entity, or county attribution, so when any
+  // of those filters is active we leave them out (a note on the page explains this).
+  const includeAdjustments = !entityId && !countyId && cropYear == null
   const adjustmentsForBin = new Map<string, BinInventoryAdjustment[]>()
   if (includeAdjustments) {
     for (const a of adjustments) {
@@ -177,6 +189,14 @@ export default async function InventoryPage({
             {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
           <select
+            name="county"
+            defaultValue={countyId}
+            className="rounded-lg border border-slate-300 px-3 py-2"
+          >
+            <option value="">All counties</option>
+            {counties.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
+          </select>
+          <select
             name="crop_year"
             defaultValue={cropYear ?? ''}
             className="rounded-lg border border-slate-300 px-3 py-2"
@@ -193,8 +213,11 @@ export default async function InventoryPage({
         {entityId && (
           <> Showing only loads sourced from this entity&rsquo;s fields; bin-to-bin and bin-to-buyer outflows are excluded.</>
         )}
+        {countyId && (
+          <> Showing only loads sourced from fields in the selected county; bin-to-bin and bin-to-buyer outflows are excluded.</>
+        )}
         {!includeAdjustments && (
-          <> Beginning-inventory and empty-bin adjustments are hidden because they aren&rsquo;t attributable to the selected entity / crop year.</>
+          <> Beginning-inventory and empty-bin adjustments are hidden because they aren&rsquo;t attributable to the selected filters.</>
         )}
       </p>
 

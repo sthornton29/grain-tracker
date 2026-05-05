@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
-import type { Crop, Entity, Farm, Field, FieldPlanting } from '@/lib/types'
+import type { Crop, Entity, Farm, Field, FieldPlanting, County } from '@/lib/types'
 
 type LoadRow = {
   date: string
@@ -52,6 +52,7 @@ export default function YieldsPage() {
   const [crops, setCrops] = useState<Crop[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
+  const [counties, setCounties] = useState<County[]>([])
   const [loading, setLoading] = useState(true)
 
   const [view, setView] = useState<ViewMode>('field')
@@ -59,17 +60,19 @@ export default function YieldsPage() {
   const [cropId, setCropId] = useState('')
   const [farmId, setFarmId] = useState('')
   const [entityId, setEntityId] = useState('')
+  const [countyId, setCountyId] = useState('')
   const [cropYear, setCropYear] = useState<number | ''>('')
 
   async function refresh() {
     setLoading(true)
-    const [en, fa, fi, cr, pl, lo] = await Promise.all([
+    const [en, fa, fi, cr, pl, lo, co] = await Promise.all([
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
       supabase.from('loads').select('date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id'),
+      supabase.from('counties').select('*').order('state_code').order('name'),
     ])
     setEntities((en.data as Entity[]) || [])
     setFarms((fa.data as Farm[]) || [])
@@ -77,6 +80,7 @@ export default function YieldsPage() {
     setCrops((cr.data as Crop[]) || [])
     setPlantings((pl.data as FieldPlanting[]) || [])
     setLoads((lo.data as LoadRow[]) || [])
+    setCounties((co.data as County[]) || [])
     setLoading(false)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
@@ -132,9 +136,13 @@ export default function YieldsPage() {
     const fld = fieldById.get(p.field_id)
     if (!fld) return false
     if (farmId && fld.farm_id !== farmId) return false
+    const farm = fld.farm_id ? farmById.get(fld.farm_id) : null
     if (entityId) {
-      const farm = fld.farm_id ? farmById.get(fld.farm_id) : null
       if (!farm || farm.entity_id !== entityId) return false
+    }
+    if (countyId) {
+      const effective = fld.county_id ?? farm?.county_id ?? null
+      if (effective !== countyId) return false
     }
     return true
   })
@@ -261,7 +269,7 @@ export default function YieldsPage() {
           : 'Plantings rolled up to farm × crop × season. Dry bushels divided by planted acres.'}
       </p>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
         <select value={year} onChange={(e) => setYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
           <option value="">All seasons</option>
           {distinctYears.map((y) => <option key={y} value={y}>{y}</option>)}
@@ -281,6 +289,10 @@ export default function YieldsPage() {
         <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
           <option value="">All entities</option>
           {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+        </select>
+        <select value={countyId} onChange={(e) => setCountyId(e.target.value)} className={inputCls}>
+          <option value="">All counties</option>
+          {counties.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
         </select>
       </div>
 

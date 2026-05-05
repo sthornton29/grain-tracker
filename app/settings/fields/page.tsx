@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
 import { buildDoubleCropSoySet } from '@/lib/plantings'
-import type { Crop, Farm, Field, FieldPlanting } from '@/lib/types'
+import type { Crop, Farm, Field, FieldPlanting, County, EntityCounty } from '@/lib/types'
 
 export default function FieldsPage() {
   const supabase = useMemo(() => createClient(), [])
@@ -13,30 +13,38 @@ export default function FieldsPage() {
   const [fields, setFields] = useState<Field[]>([])
   const [crops, setCrops] = useState<Crop[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
+  const [counties, setCounties] = useState<County[]>([])
+  const [entityCounties, setEntityCounties] = useState<EntityCounty[]>([])
   const [name, setName] = useState('')
   const [farmId, setFarmId] = useState('')
+  const [countyId, setCountyId] = useState('')
   const [totalAcres, setTotalAcres] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editName, setEditName] = useState('')
   const [editFarmId, setEditFarmId] = useState('')
+  const [editCountyId, setEditCountyId] = useState('')
   const [editAcres, setEditAcres] = useState('')
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [q, setQ] = useState('')
-  const [sortKey, setSortKey] = useState<'name' | 'farm' | 'acres'>('name')
+  const [sortKey, setSortKey] = useState<'name' | 'farm' | 'acres' | 'county'>('name')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
 
   async function refresh() {
-    const [fa, fi, cr, pl] = await Promise.all([
+    const [fa, fi, cr, pl, co, ec] = await Promise.all([
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*').order('season_year', { ascending: false }),
+      supabase.from('counties').select('*').order('state_code').order('name'),
+      supabase.from('entity_counties').select('*'),
     ])
     setFarms((fa.data as Farm[]) || [])
     setFields((fi.data as Field[]) || [])
     setCrops((cr.data as Crop[]) || [])
     setPlantings((pl.data as FieldPlanting[]) || [])
+    setCounties((co.data as County[]) || [])
+    setEntityCounties((ec.data as EntityCounty[]) || [])
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
@@ -46,22 +54,62 @@ export default function FieldsPage() {
     return Number.isFinite(n) ? n : null
   }
 
+  const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
+  const countyById = useMemo(() => new Map(counties.map((c) => [c.id, c])), [counties])
+
+  // entity_id -> County[]
+  const countiesForEntity = useMemo(() => {
+    const m = new Map<string, County[]>()
+    for (const ec of entityCounties) {
+      const c = countyById.get(ec.county_id)
+      if (!c) continue
+      const list = m.get(ec.entity_id) ?? []
+      list.push(c)
+      m.set(ec.entity_id, list)
+    }
+    for (const [, list] of m) {
+      list.sort((a, b) => a.state_code.localeCompare(b.state_code) || a.name.localeCompare(b.name))
+    }
+    return m
+  }, [entityCounties, countyById])
+
+  function countiesForFarm(fId: string): County[] {
+    const farm = farmById.get(fId)
+    if (!farm || !farm.entity_id) return []
+    return countiesForEntity.get(farm.entity_id) ?? []
+  }
+
+  function onFarmChange(fId: string) {
+    setFarmId(fId)
+    const farm = farmById.get(fId)
+    setCountyId(farm?.county_id ?? '')
+  }
+
+  function onEditFarmChange(fId: string) {
+    setEditFarmId(fId)
+    const farm = farmById.get(fId)
+    setEditCountyId(farm?.county_id ?? '')
+  }
+
   async function add(e: React.FormEvent) {
     e.preventDefault()
     if (!name.trim()) return
     const { error } = await supabase.from('fields').insert({
       name_or_number: name.trim(),
       farm_id: farmId || null,
+      county_id: countyId || null,
       total_acres: parseAcres(totalAcres),
     })
     if (error) { setErr(error.message); return }
     setName(''); setTotalAcres(''); setErr(null); refresh()
+    // Keep farmId + countyId so adding a sibling field is one-click.
   }
 
   async function save(id: string) {
     const { error } = await supabase.from('fields').update({
       name_or_number: editName.trim(),
       farm_id: editFarmId || null,
+      county_id: editCountyId || null,
       total_acres: parseAcres(editAcres),
     }).eq('id', id)
     if (error) { setErr(error.message); return }
@@ -77,12 +125,20 @@ export default function FieldsPage() {
 
   const farmName = (id: string | null) => farms.find((f) => f.id === id)?.name ?? ''
   const cropName = (id: string) => crops.find((c) => c.id === id)?.name ?? '—'
+  const countyLabel = (id: string | null) => {
+    if (!id) return ''
+    const c = countyById.get(id)
+    return c ? `${c.name}, ${c.state_code}` : ''
+  }
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const doubleCropSoyIds = useMemo(
     () => buildDoubleCropSoySet(plantings, cropById),
     [plantings, cropById],
   )
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
+
+  const createCountyOptions = farmId ? countiesForFarm(farmId) : []
+  const editCountyOptions = editFarmId ? countiesForFarm(editFarmId) : []
 
   return (
     <div className="space-y-4">
@@ -106,16 +162,27 @@ export default function FieldsPage() {
         onImported={refresh}
       />
 
-      <form onSubmit={add} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_120px_auto] gap-2">
+      <form onSubmit={add} className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_120px_auto] gap-2">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Field name or number"
           className={inputCls}
         />
-        <select value={farmId} onChange={(e) => setFarmId(e.target.value)} className={inputCls}>
+        <select value={farmId} onChange={(e) => onFarmChange(e.target.value)} className={inputCls}>
           <option value="">— farm (optional) —</option>
           {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+        </select>
+        <select
+          value={countyId}
+          onChange={(e) => setCountyId(e.target.value)}
+          className={inputCls}
+          disabled={!farmId}
+        >
+          <option value="">
+            {!farmId ? 'pick farm first' : createCountyOptions.length === 0 ? 'farm entity has no counties' : '— county —'}
+          </option>
+          {createCountyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
         </select>
         <input
           type="number"
@@ -140,11 +207,12 @@ export default function FieldsPage() {
         />
         <select
           value={sortKey}
-          onChange={(e) => setSortKey(e.target.value as 'name' | 'farm' | 'acres')}
+          onChange={(e) => setSortKey(e.target.value as 'name' | 'farm' | 'acres' | 'county')}
           className="text-sm rounded-lg border border-slate-300 px-3 py-2"
         >
           <option value="name">Sort: Name</option>
           <option value="farm">Sort: Farm</option>
+          <option value="county">Sort: County</option>
           <option value="acres">Sort: Acres</option>
         </select>
         <button
@@ -160,12 +228,18 @@ export default function FieldsPage() {
         const visible = fields
           .filter((f) => {
             if (!q) return true
-            const hay = [f.name_or_number, farmName(f.farm_id), f.total_acres != null ? String(f.total_acres) : ''].join(' ').toLowerCase()
+            const hay = [
+              f.name_or_number,
+              farmName(f.farm_id),
+              countyLabel(f.county_id),
+              f.total_acres != null ? String(f.total_acres) : '',
+            ].join(' ').toLowerCase()
             return hay.includes(q.toLowerCase())
           })
           .sort((a, b) => {
             const dir = sortDir === 'asc' ? 1 : -1
             if (sortKey === 'farm') return dir * (farmName(a.farm_id) || '').localeCompare(farmName(b.farm_id) || '')
+            if (sortKey === 'county') return dir * (countyLabel(a.county_id) || '').localeCompare(countyLabel(b.county_id) || '')
             if (sortKey === 'acres') {
               const av = a.total_acres ?? -1; const bv = b.total_acres ?? -1
               return dir * (Number(av) - Number(bv))
@@ -178,6 +252,7 @@ export default function FieldsPage() {
         {visible.map((f) => {
           const fieldPlantings = plantings.filter((p) => p.field_id === f.id)
           const isExpanded = expandedId === f.id
+          const editOptions = editingId === f.id ? editCountyOptions : []
           return (
             <li key={f.id} className="px-4 py-2">
               <div className="flex items-center gap-2 flex-wrap">
@@ -190,11 +265,22 @@ export default function FieldsPage() {
                     />
                     <select
                       value={editFarmId}
-                      onChange={(e) => setEditFarmId(e.target.value)}
+                      onChange={(e) => onEditFarmChange(e.target.value)}
                       className={inputCls}
                     >
                       <option value="">— no farm —</option>
                       {farms.map((fm) => <option key={fm.id} value={fm.id}>{fm.name}</option>)}
+                    </select>
+                    <select
+                      value={editCountyId}
+                      onChange={(e) => setEditCountyId(e.target.value)}
+                      className={inputCls}
+                      disabled={!editFarmId}
+                    >
+                      <option value="">
+                        {!editFarmId ? 'pick farm' : editOptions.length === 0 ? 'no counties' : '— county —'}
+                      </option>
+                      {editOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
                     </select>
                     <input
                       type="number"
@@ -212,6 +298,7 @@ export default function FieldsPage() {
                     <span className="flex-1">
                       {f.name_or_number}
                       {f.farm_id && <span className="text-slate-400 text-sm"> · {farmName(f.farm_id)}</span>}
+                      {f.county_id && <span className="text-slate-400 text-sm"> · {countyLabel(f.county_id)}</span>}
                       {f.total_acres != null && <span className="text-slate-400 text-sm"> · {Number(f.total_acres)} ac</span>}
                     </span>
                     <button
@@ -225,6 +312,7 @@ export default function FieldsPage() {
                         setEditingId(f.id)
                         setEditName(f.name_or_number)
                         setEditFarmId(f.farm_id ?? '')
+                        setEditCountyId(f.county_id ?? '')
                         setEditAcres(f.total_acres != null ? String(f.total_acres) : '')
                       }}
                       className="text-sky-700"
