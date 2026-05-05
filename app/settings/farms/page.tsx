@@ -89,6 +89,23 @@ export default function FarmsPage() {
     }
   }
 
+  // Keep countyId in sync with the visual auto-fill when the entity has exactly
+  // one county. Covers the case where entity_counties loads after onEntityChange
+  // already ran with empty data.
+  useEffect(() => {
+    if (!entityId) return
+    const list = countiesForEntity.get(entityId) ?? []
+    if (list.length === 1 && countyId !== list[0].id) setCountyId(list[0].id)
+  }, [entityId, countiesForEntity, countyId])
+
+  // Same for edit mode: legacy farms initialize editCountyId = '' but the UI
+  // shows the auto-filled label; this keeps the state matching the display.
+  useEffect(() => {
+    if (!editingId || !editEntityId) return
+    const list = countiesForEntity.get(editEntityId) ?? []
+    if (list.length === 1 && editCountyId !== list[0].id) setEditCountyId(list[0].id)
+  }, [editingId, editEntityId, countiesForEntity, editCountyId])
+
   async function add(e: React.FormEvent) {
     e.preventDefault()
     if (!name.trim()) return
