@@ -5,6 +5,7 @@ const items = [
   { href: '/settings/farms', label: 'Farms' },
   { href: '/settings/fields', label: 'Fields' },
   { href: '/settings/plantings', label: 'Field Plantings' },
+  { href: '/settings/bin-sites', label: 'Bin Sites' },
   { href: '/settings/bins', label: 'Bins' },
   { href: '/settings/trucks', label: 'Trucks' },
   { href: '/settings/buyers', label: 'Buyers' },

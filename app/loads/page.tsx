@@ -14,6 +14,7 @@ type Row = {
   ticket_number: string | null
   crop_year: number | null
   to_buyer_id: string | null
+  contract_id: string | null
   gross_weight: number | null
   tare_weight: number | null
   net_weight: number | null
@@ -32,11 +33,22 @@ type Row = {
   to_type: 'bin' | 'buyer' | null
 }
 
+type ContractOption = {
+  id: string
+  contract_number: string
+  buyer_id: string | null
+  crop_id: string | null
+  entity_id: string | null
+  crop_year: number | null
+  buyer: { name: string } | null
+  crop: { name: string } | null
+}
+
 const SELECT = `
   id, date, time, ticket_number, crop_year,
   gross_weight, tare_weight, net_weight, moisture, test_weight,
   dry_bushels_override,
-  from_type, to_type, from_field_id, to_buyer_id,
+  from_type, to_type, from_field_id, to_buyer_id, contract_id,
   truck:trucks(name_or_number),
   crop:crops(name, base_moisture_pct, base_lb_per_bushel),
   from_field:fields!loads_from_field_id_fkey(name_or_number),
@@ -80,6 +92,7 @@ export default function LoadsPage() {
   const [fields, setFields] = useState<Field[]>([])
   const [counties, setCounties] = useState<County[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
+  const [contracts, setContracts] = useState<ContractOption[]>([])
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
   const [from, setFrom] = useState('')
@@ -87,6 +100,7 @@ export default function LoadsPage() {
   const [entityId, setEntityId] = useState('')
   const [countyId, setCountyId] = useState('')
   const [cropYear, setCropYear] = useState<number | ''>('')
+  const [contractId, setContractId] = useState('')
   const [paidTickets, setPaidTickets] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
   type SortKey = 'date' | 'ticket' | 'truck' | 'crop' | 'net' | 'dry' | 'moisture'
@@ -103,7 +117,7 @@ export default function LoadsPage() {
     let query = supabase.from('loads').select(SELECT).order('date', { ascending: false }).order('time', { ascending: false })
     if (from) query = query.gte('date', from)
     if (to) query = query.lte('date', to)
-    const [loadsRes, entitiesRes, farmsRes, fieldsRes, countiesRes, settlementLinesRes, plantingsRes] = await Promise.all([
+    const [loadsRes, entitiesRes, farmsRes, fieldsRes, countiesRes, settlementLinesRes, plantingsRes, contractsRes] = await Promise.all([
       query,
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('*'),
@@ -111,6 +125,9 @@ export default function LoadsPage() {
       supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('settlement_lines').select('ticket_number'),
       supabase.from('field_plantings').select('season_year'),
+      supabase.from('contracts')
+        .select('id, contract_number, buyer_id, crop_id, entity_id, crop_year, buyer:buyers(name), crop:crops(name)')
+        .order('contract_number'),
     ])
     setRows((loadsRes.data as unknown as Row[]) || [])
     setEntities((entitiesRes.data as Entity[]) || [])
@@ -118,6 +135,7 @@ export default function LoadsPage() {
     setFields((fieldsRes.data as Field[]) || [])
     setCounties((countiesRes.data as County[]) || [])
     setPlantings((plantingsRes.data as FieldPlanting[]) || [])
+    setContracts((contractsRes.data as unknown as ContractOption[]) || [])
     const tickets = new Set<string>()
     for (const l of (settlementLinesRes.data ?? []) as Array<{ ticket_number: string | null }>) {
       if (l.ticket_number) tickets.add(l.ticket_number.trim().toLowerCase())
@@ -155,15 +173,60 @@ export default function LoadsPage() {
     return counties.filter((c) => used.has(c.id))
   }, [farms, counties])
 
+  // Maps used by the expanded entity filter: a load can match an entity via its
+  // field's farm OR via the attached contract's entity OR via any contract that
+  // ties the to-buyer to that entity (covers loads that haven't been linked to
+  // a specific contract yet).
+  const contractEntityById = useMemo(
+    () => new Map(contracts.map((c) => [c.id, c.entity_id])),
+    [contracts],
+  )
+  const buyerEntityIds = useMemo(() => {
+    const m = new Map<string, Set<string>>()
+    for (const c of contracts) {
+      if (!c.buyer_id || !c.entity_id) continue
+      const set = m.get(c.buyer_id) ?? new Set<string>()
+      set.add(c.entity_id)
+      m.set(c.buyer_id, set)
+    }
+    return m
+  }, [contracts])
+
+  // Contract dropdown cascades: respect crop_year (and entity if set) so the
+  // list stays manageable. The buyer-filter rule is conditional — there is no
+  // buyer filter on this page today, so it's a no-op until one is added.
+  const contractOptions = useMemo(() => {
+    return contracts.filter((c) => {
+      if (cropYear !== '' && c.crop_year !== cropYear) return false
+      if (entityId && c.entity_id && c.entity_id !== entityId) return false
+      return true
+    })
+  }, [contracts, cropYear, entityId])
+
+  // If the active contract drops out of the cascade (e.g. user changed crop year),
+  // clear the contract filter so we don't silently show zero results.
+  useEffect(() => {
+    if (contractId && !contractOptions.some((c) => c.id === contractId)) setContractId('')
+  }, [contractOptions, contractId])
+
   const filtered = rows.filter((r) => {
     if (entityId) {
-      if (r.from_type !== 'field' || !r.from_field_id) return false
-      if (fieldEntityId.get(r.from_field_id) !== entityId) return false
+      const fromFieldEntity = r.from_type === 'field' && r.from_field_id
+        ? fieldEntityId.get(r.from_field_id) ?? null
+        : null
+      const contractEntity = r.contract_id ? contractEntityById.get(r.contract_id) ?? null : null
+      const buyerEntities = r.to_buyer_id ? buyerEntityIds.get(r.to_buyer_id) : null
+      const matchesEntity =
+        fromFieldEntity === entityId
+        || contractEntity === entityId
+        || (buyerEntities ? buyerEntities.has(entityId) : false)
+      if (!matchesEntity) return false
     }
     if (countyId) {
       if (r.from_type !== 'field' || !r.from_field_id) return false
       if (fieldCountyId.get(r.from_field_id) !== countyId) return false
     }
+    if (contractId && r.contract_id !== contractId) return false
     if (cropYear !== '' && r.crop_year !== cropYear) return false
     if (!q) return true
     const hay = [
@@ -281,7 +344,7 @@ export default function LoadsPage() {
         <button onClick={exportCsv} className="rounded-lg bg-white border border-slate-300 px-4 py-2">Export CSV</button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-3">
         <input
           type="search"
           placeholder="Search ticket, truck, crop, field, bin, buyer…"
@@ -320,6 +383,23 @@ export default function LoadsPage() {
         >
           <option value="">All crop years</option>
           {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
+        </select>
+        <select
+          value={contractId}
+          onChange={(e) => setContractId(e.target.value)}
+          className="rounded-lg border border-slate-300 px-3 py-2"
+          title="Filter to loads attached to this contract"
+        >
+          <option value="">All contracts</option>
+          {contractOptions.map((c) => {
+            const parts = [
+              `#${c.contract_number}`,
+              c.buyer?.name,
+              c.crop?.name,
+              c.crop_year != null ? `${c.crop_year} crop` : null,
+            ].filter(Boolean)
+            return <option key={c.id} value={c.id}>{parts.join(' · ')}</option>
+          })}
         </select>
       </div>
 

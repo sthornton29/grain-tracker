@@ -24,7 +24,20 @@ export type EntityCounty = {
   entity_id: string
   county_id: string
 }
-export type Bin = { id: string; name_or_number: string; crop_id: string | null }
+export type Bin = {
+  id: string
+  name_or_number: string
+  crop_id: string | null
+  bin_site_id: string | null
+}
+export type BinSite = {
+  id: string
+  name: string
+  entity_id: string
+  county_id: string | null
+  address: string | null
+  notes: string | null
+}
 export type Truck = { id: string; name_or_number: string }
 export type Buyer = { id: string; name: string }
 export type DeliveryLocation = {
