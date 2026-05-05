@@ -38,6 +38,7 @@ type LoadRow = {
 
 type CropRow = {
   id: string
+  name: string
   base_moisture_pct: number | null
   base_lb_per_bushel: number | null
 }
@@ -96,10 +97,11 @@ function inWindow(start: string | null, end: string | null): boolean {
 export default async function ContractsPage({
   searchParams,
 }: {
-  searchParams: { entity?: string; crop_year?: string; sort?: string; dir?: string }
+  searchParams: { entity?: string; crop_year?: string; crop?: string; sort?: string; dir?: string }
 }) {
   const supabase = createClient()
   const entityId = searchParams.entity ?? ''
+  const cropFilter = searchParams.crop ?? ''
   const cropYear = searchParams.crop_year ? Number(searchParams.crop_year) : null
   const sortKey = searchParams.sort ?? ''
   const sortDir: 'asc' | 'desc' = searchParams.dir === 'desc' ? 'desc' : 'asc'
@@ -115,7 +117,7 @@ export default async function ContractsPage({
       `)
       .order('contract_number'),
     fetchAllContractLoads(supabase),
-    supabase.from('crops').select('id, base_moisture_pct, base_lb_per_bushel'),
+    supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').order('name'),
     supabase.from('fields').select('id, farm_id'),
     supabase.from('farms').select('id, entity_id'),
     supabase.from('entities').select('id, name').order('name'),
@@ -213,16 +215,11 @@ export default async function ContractsPage({
 
   const visible = allContracts.filter((c) => {
     if (cropYear != null && c.crop_year !== cropYear) return false
-    if (entityId) {
-      // Honor an explicit contract.entity_id when set; otherwise fall back to
-      // attribution derived from the source fields of delivered loads.
-      if (c.entity_id) {
-        if (c.entity_id !== entityId) return false
-      } else {
-        const agg = aggByContract.get(c.id)
-        if (!agg || !agg.entityIds.has(entityId)) return false
-      }
-    }
+    if (cropFilter && c.crop_id !== cropFilter) return false
+    // Strict entity match: only contracts whose own entity_id matches show up.
+    // Contracts with no entity_id are excluded under an entity filter so loads
+    // delivered against a different entity's contract can't smuggle this one in.
+    if (entityId && c.entity_id !== entityId) return false
     return true
   })
 
@@ -240,6 +237,7 @@ export default async function ContractsPage({
     const params = new URLSearchParams()
     if (entityId) params.set('entity', entityId)
     if (cropYear != null) params.set('crop_year', String(cropYear))
+    if (cropFilter) params.set('crop', cropFilter)
     const nextDir = sortKey === col && sortDir === 'asc' ? 'desc' : 'asc'
     params.set('sort', col)
     params.set('dir', nextDir)
@@ -254,6 +252,10 @@ export default async function ContractsPage({
           <select name="entity" defaultValue={entityId} className="rounded-lg border border-slate-300 px-3 py-2">
             <option value="">All entities</option>
             {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+          <select name="crop" defaultValue={cropFilter} className="rounded-lg border border-slate-300 px-3 py-2">
+            <option value="">All crops</option>
+            {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
           <select name="crop_year" defaultValue={cropYear ?? ''} className="rounded-lg border border-slate-300 px-3 py-2">
             <option value="">All crop years</option>
