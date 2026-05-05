@@ -147,6 +147,14 @@ export default function LoadsPage() {
     )
   }, [farms, fields])
 
+  // Only counties that actually have at least one farm pointed at them — keeps
+  // the filter dropdown focused on the user's operating footprint.
+  const countyOptions = useMemo(() => {
+    const used = new Set<string>()
+    for (const f of farms) if (f.county_id) used.add(f.county_id)
+    return counties.filter((c) => used.has(c.id))
+  }, [farms, counties])
+
   const filtered = rows.filter((r) => {
     if (entityId) {
       if (r.from_type !== 'field' || !r.from_field_id) return false
@@ -303,7 +311,7 @@ export default function LoadsPage() {
           title="Filter to loads sourced from a field in this county"
         >
           <option value="">All counties</option>
-          {counties.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
+          {countyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
         </select>
         <select
           value={cropYear}
