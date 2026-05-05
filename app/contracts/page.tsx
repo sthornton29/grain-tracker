@@ -139,6 +139,10 @@ export default async function ContractsPage({
     fields.map((f) => [f.id, f.county_id ?? (f.farm_id ? farmCounty.get(f.farm_id) ?? null : null)])
   )
 
+  const usedCountyIds = new Set<string>()
+  for (const f of farms) if (f.county_id) usedCountyIds.add(f.county_id)
+  const countyOptions = counties.filter((c) => usedCountyIds.has(c.id))
+
   // Build maps:
   //   loadIdToLine:     load_id    -> line (paid lookup by load_id)
   //   ticketToLine:     ticket#    -> line (paid lookup by ticket, for loads whose line was added later)
@@ -250,7 +254,7 @@ export default async function ContractsPage({
           </select>
           <select name="county" defaultValue={countyId} className="rounded-lg border border-slate-300 px-3 py-2">
             <option value="">All counties</option>
-            {counties.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
+            {countyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
           </select>
           <select name="crop_year" defaultValue={cropYear ?? ''} className="rounded-lg border border-slate-300 px-3 py-2">
             <option value="">All crop years</option>

@@ -89,6 +89,10 @@ export default async function InventoryPage({
     fields.map((f) => [f.id, f.county_id ?? (f.farm_id ? farmCounty.get(f.farm_id) ?? null : null)])
   )
 
+  const usedCountyIds = new Set<string>()
+  for (const f of farms) if (f.county_id) usedCountyIds.add(f.county_id)
+  const countyOptions = counties.filter((c) => usedCountyIds.has(c.id))
+
   // Per bin → per crop totals split by source.
   type Cell = { loadBacked: number; beginning: number; emptyAdj: number }
   const cellFor = (bag: Map<string, Map<string, Cell>>, binId: string, cropId: string): Cell => {
@@ -194,7 +198,7 @@ export default async function InventoryPage({
             className="rounded-lg border border-slate-300 px-3 py-2"
           >
             <option value="">All counties</option>
-            {counties.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
+            {countyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
           </select>
           <select
             name="crop_year"

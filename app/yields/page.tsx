@@ -130,6 +130,12 @@ export default function YieldsPage() {
     return [...s].sort((a, b) => b - a)
   }, [plantings])
 
+  const countyOptions = useMemo(() => {
+    const used = new Set<string>()
+    for (const f of farms) if (f.county_id) used.add(f.county_id)
+    return counties.filter((c) => used.has(c.id))
+  }, [farms, counties])
+
   const visible = plantings.filter((p) => {
     if (year !== '' && p.season_year !== year) return false
     if (cropId && p.crop_id !== cropId) return false
@@ -292,7 +298,7 @@ export default function YieldsPage() {
         </select>
         <select value={countyId} onChange={(e) => setCountyId(e.target.value)} className={inputCls}>
           <option value="">All counties</option>
-          {counties.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
+          {countyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
         </select>
       </div>
 
