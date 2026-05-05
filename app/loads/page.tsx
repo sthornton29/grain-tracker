@@ -214,12 +214,21 @@ export default function LoadsPage() {
       const fromFieldEntity = r.from_type === 'field' && r.from_field_id
         ? fieldEntityId.get(r.from_field_id) ?? null
         : null
-      const contractEntity = r.contract_id ? contractEntityById.get(r.contract_id) ?? null : null
-      const buyerEntities = r.to_buyer_id ? buyerEntityIds.get(r.to_buyer_id) : null
+      // If the load has a contract attached, that contract's entity is
+      // authoritative — don't fall back to "this buyer also sells to entity X".
+      // The buyer fallback only applies to loads not yet linked to a contract.
+      let contractAttribution: string | null = null
+      let buyerMatches = false
+      if (r.contract_id) {
+        contractAttribution = contractEntityById.get(r.contract_id) ?? null
+      } else if (r.to_buyer_id) {
+        const set = buyerEntityIds.get(r.to_buyer_id)
+        if (set) buyerMatches = set.has(entityId)
+      }
       const matchesEntity =
         fromFieldEntity === entityId
-        || contractEntity === entityId
-        || (buyerEntities ? buyerEntities.has(entityId) : false)
+        || contractAttribution === entityId
+        || buyerMatches
       if (!matchesEntity) return false
     }
     if (countyId) {
