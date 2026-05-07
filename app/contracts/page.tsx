@@ -317,7 +317,9 @@ export default async function ContractsPage({
                   <td className="px-3 py-2 font-semibold">
                     {isOpen && <span className="inline-block h-2 w-2 rounded-full bg-green-500 mr-1 align-middle" />}
                     {!isOpen && endWarning && <span className="inline-block h-2 w-2 rounded-full bg-amber-500 mr-1 align-middle" />}
-                    {c.contract_number}
+                    <Link href={`/contracts/${c.id}`} className="text-sky-700 hover:underline">
+                      {c.contract_number}
+                    </Link>
                     {isDup && (
                       <span className="ml-1 text-xs font-mono text-red-700" title="Duplicate contract number — id suffix shown to disambiguate">
                         ({c.id.slice(0, 6)})

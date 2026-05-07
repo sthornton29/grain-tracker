@@ -13,3 +13,9 @@ html, body {
 input, select, textarea, button {
   font-size: 16px;
 }
+
+@media print {
+  html, body { background: white; }
+  nav, header[role="banner"] { display: none !important; }
+  main { max-width: none !important; padding: 0 !important; }
+}
