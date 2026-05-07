@@ -17,6 +17,7 @@ type ContractDetail = {
   delivery_type: 'pickup' | 'delivered'
   delivery_start_date: string | null
   delivery_end_date: string | null
+  completed_at: string | null
   created_at: string
   buyer_id: string | null
   crop_id: string | null
@@ -85,7 +86,7 @@ export default async function ContractDetailPage({ params }: { params: { id: str
     .from('contracts')
     .select(`
       id, contract_number, contracted_bushels, price_per_bushel, notes,
-      crop_year, delivery_type, delivery_start_date, delivery_end_date, created_at,
+      crop_year, delivery_type, delivery_start_date, delivery_end_date, completed_at, created_at,
       buyer_id, crop_id, entity_id, delivery_location_id,
       buyer:buyers(name),
       crop:crops(name, base_moisture_pct, base_lb_per_bushel),
@@ -163,6 +164,9 @@ export default async function ContractDetailPage({ params }: { params: { id: str
   const contractRevenue = contractPrice != null
     ? contractPrice * Number(contract.contracted_bushels)
     : null
+  const autoComplete = Number(contract.contracted_bushels) > 0
+    && delivered >= Number(contract.contracted_bushels)
+  const isComplete = contract.completed_at != null || autoComplete
 
   const detailRows: Array<[string, React.ReactNode]> = [
     ['Buyer', contract.buyer?.name ?? '—'],
@@ -198,7 +202,12 @@ export default async function ContractDetailPage({ params }: { params: { id: str
       <div className="flex items-center gap-3 flex-wrap print:hidden">
         <Link href="/contracts" className="text-sm text-sky-700">← Back to contracts</Link>
         <div className="flex-1" />
-        <ContractActions contractId={contract.id} contractNumber={contract.contract_number} />
+        <ContractActions
+          contractId={contract.id}
+          contractNumber={contract.contract_number}
+          isManuallyComplete={contract.completed_at != null}
+          isAutoComplete={autoComplete}
+        />
       </div>
 
       <div className="bg-white rounded-xl shadow p-6 print:shadow-none print:rounded-none print:p-0 space-y-6">
@@ -212,8 +221,13 @@ export default async function ContractDetailPage({ params }: { params: { id: str
               {contract.crop_year != null ? ` · ${contract.crop_year} crop` : ''}
             </div>
           </div>
-          <div className="text-right text-xs text-slate-500">
-            Created {contract.created_at?.slice(0, 10)}
+          <div className="text-right text-xs text-slate-500 space-y-1">
+            <div>Created {contract.created_at?.slice(0, 10)}</div>
+            {isComplete && (
+              <div className="inline-flex items-center gap-1 rounded-full bg-slate-900 text-white px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide">
+                Complete{contract.completed_at ? ` · ${contract.completed_at.slice(0, 10)}` : ' · auto'}
+              </div>
+            )}
           </div>
         </header>
 

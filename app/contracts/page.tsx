@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import ContractFlagIcon, { type ContractFlag } from '@/components/contract-flag'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,6 +17,7 @@ type ContractRow = {
   delivery_type: 'pickup' | 'delivered'
   delivery_start_date: string | null
   delivery_end_date: string | null
+  completed_at: string | null
   buyer_id: string | null
   crop_id: string | null
   entity_id: string | null
@@ -85,19 +87,25 @@ async function fetchAllContractLoads(supabase: SupabaseClient): Promise<LoadRow[
   return out
 }
 
-function inWindow(start: string | null, end: string | null): boolean {
-  if (!start && !end) return false
+function isFuture(start: string | null): boolean {
+  if (!start) return false
   const today = new Date()
   today.setHours(0, 0, 0, 0)
-  if (start && today < new Date(start + 'T00:00:00')) return false
-  if (end && today > new Date(end + 'T00:00:00')) return false
-  return true
+  return today < new Date(start + 'T00:00:00')
 }
 
 export default async function ContractsPage({
   searchParams,
 }: {
-  searchParams: { entity?: string; crop_year?: string; crop?: string; sort?: string; dir?: string }
+  searchParams: {
+    entity?: string
+    crop_year?: string
+    crop?: string
+    sort?: string
+    dir?: string
+    hide_completed?: string
+    hide_future?: string
+  }
 }) {
   const supabase = createClient()
   const entityId = searchParams.entity ?? ''
@@ -105,13 +113,15 @@ export default async function ContractsPage({
   const cropYear = searchParams.crop_year ? Number(searchParams.crop_year) : null
   const sortKey = searchParams.sort ?? ''
   const sortDir: 'asc' | 'desc' = searchParams.dir === 'desc' ? 'desc' : 'asc'
+  const hideCompleted = searchParams.hide_completed === '1'
+  const hideFuture = searchParams.hide_future === '1'
 
   const [contractsRes, loads, cropsRes, fieldsRes, farmsRes, entitiesRes, linesRes, plantingsRes] = await Promise.all([
     supabase
       .from('contracts')
       .select(`
         id, contract_number, contracted_bushels, price_per_bushel, notes,
-        crop_year, delivery_type, delivery_start_date, delivery_end_date,
+        crop_year, delivery_type, delivery_start_date, delivery_end_date, completed_at,
         buyer_id, crop_id, entity_id,
         buyer:buyers(name), crop:crops(name), delivery_location:delivery_locations(name)
       `)
@@ -213,6 +223,15 @@ export default async function ContractsPage({
   const numberCounts = new Map<string, number>()
   for (const c of allContracts) numberCounts.set(c.contract_number, (numberCounts.get(c.contract_number) ?? 0) + 1)
 
+  function flagFor(c: ContractRow): ContractFlag {
+    const agg = aggByContract.get(c.id)
+    const delivered = agg?.delivered ?? 0
+    if (c.completed_at != null) return 'complete'
+    if (delivered >= Number(c.contracted_bushels) && Number(c.contracted_bushels) > 0) return 'complete'
+    if (isFuture(c.delivery_start_date)) return 'future'
+    return 'open'
+  }
+
   const visible = allContracts.filter((c) => {
     if (cropYear != null && c.crop_year !== cropYear) return false
     if (cropFilter && c.crop_id !== cropFilter) return false
@@ -220,6 +239,9 @@ export default async function ContractsPage({
     // Contracts with no entity_id are excluded under an entity filter so loads
     // delivered against a different entity's contract can't smuggle this one in.
     if (entityId && c.entity_id !== entityId) return false
+    const flag = flagFor(c)
+    if (hideCompleted && flag === 'complete') return false
+    if (hideFuture && flag === 'future') return false
     return true
   })
 
@@ -233,14 +255,30 @@ export default async function ContractsPage({
     })
   }
 
-  function sortHref(col: string) {
+  function baseParams(): URLSearchParams {
     const params = new URLSearchParams()
     if (entityId) params.set('entity', entityId)
     if (cropYear != null) params.set('crop_year', String(cropYear))
     if (cropFilter) params.set('crop', cropFilter)
+    if (hideCompleted) params.set('hide_completed', '1')
+    if (hideFuture) params.set('hide_future', '1')
+    if (sortKey) params.set('sort', sortKey)
+    if (sortKey) params.set('dir', sortDir)
+    return params
+  }
+
+  function sortHref(col: string) {
+    const params = baseParams()
     const nextDir = sortKey === col && sortDir === 'asc' ? 'desc' : 'asc'
     params.set('sort', col)
     params.set('dir', nextDir)
+    return `?${params.toString()}`
+  }
+
+  function toggleHref(key: 'hide_completed' | 'hide_future', currentlyOn: boolean): string {
+    const params = baseParams()
+    if (currentlyOn) params.delete(key)
+    else params.set(key, '1')
     return `?${params.toString()}`
   }
 
@@ -271,10 +309,37 @@ export default async function ContractsPage({
         </form>
       </div>
 
-      <p className="text-sm text-slate-500">
-        <span className="inline-block h-2 w-2 rounded-full bg-green-500 mr-1 align-middle" /> open delivery window
-        <span className="ml-4 inline-block h-2 w-2 rounded-full bg-amber-500 mr-1 align-middle" /> end date ≤ 14 days away
-      </p>
+      <div className="flex items-center gap-4 flex-wrap">
+        <div className="flex items-center gap-2">
+          <Link
+            href={toggleHref('hide_completed', hideCompleted)}
+            scroll={false}
+            className={`rounded-lg border px-3 py-1.5 text-sm font-semibold ${
+              hideCompleted
+                ? 'border-slate-300 bg-white text-slate-500'
+                : 'border-slate-700 bg-slate-700 text-white'
+            }`}
+          >
+            {hideCompleted ? 'Show completed' : 'Hide completed'}
+          </Link>
+          <Link
+            href={toggleHref('hide_future', hideFuture)}
+            scroll={false}
+            className={`rounded-lg border px-3 py-1.5 text-sm font-semibold ${
+              hideFuture
+                ? 'border-slate-300 bg-white text-slate-500'
+                : 'border-slate-700 bg-slate-700 text-white'
+            }`}
+          >
+            {hideFuture ? 'Show not-yet-open' : 'Hide not-yet-open'}
+          </Link>
+        </div>
+        <p className="text-sm text-slate-500 flex items-center gap-3 flex-wrap">
+          <span className="flex items-center"><ContractFlagIcon variant="open" /> delivery period open</span>
+          <span className="flex items-center"><ContractFlagIcon variant="complete" /> contract complete</span>
+          <span className="flex items-center"><ContractFlagIcon variant="future" /> delivery period not open yet</span>
+        </p>
+      </div>
 
       {orphanLoadCount > 0 && (
         <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
@@ -308,15 +373,14 @@ export default async function ContractsPage({
               const contractPrice = c.price_per_bushel != null ? Number(c.price_per_bushel) : null
               const contractRevenue = contractPrice != null ? contractPrice * Number(c.contracted_bushels) : null
 
-              const isOpen = inWindow(c.delivery_start_date, c.delivery_end_date)
               const endIn = daysUntil(c.delivery_end_date)
               const endWarning = endIn != null && endIn >= 0 && endIn <= 14
+              const flag = flagFor(c)
 
               return (
                 <tr key={c.id} className="border-t border-slate-100">
                   <td className="px-3 py-2 font-semibold">
-                    {isOpen && <span className="inline-block h-2 w-2 rounded-full bg-green-500 mr-1 align-middle" />}
-                    {!isOpen && endWarning && <span className="inline-block h-2 w-2 rounded-full bg-amber-500 mr-1 align-middle" />}
+                    <ContractFlagIcon variant={flag} />
                     <Link href={`/contracts/${c.id}`} className="text-sky-700 hover:underline">
                       {c.contract_number}
                     </Link>

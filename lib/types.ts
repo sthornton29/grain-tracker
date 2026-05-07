@@ -90,6 +90,7 @@ export type Contract = {
   delivery_location_id: string | null
   delivery_start_date: string | null
   delivery_end_date: string | null
+  completed_at: string | null
   created_at: string
 }
 
