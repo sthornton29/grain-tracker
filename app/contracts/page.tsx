@@ -248,6 +248,12 @@ export default async function ContractsPage({
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
         <h1 className="text-2xl font-bold flex-1">Contract Tracker</h1>
+        <Link
+          href="/settings/contracts"
+          className="rounded-lg bg-green-700 text-white px-3 py-2 text-sm font-semibold"
+        >
+          New Contract
+        </Link>
         <form className="flex items-center gap-2 flex-wrap">
           <select name="entity" defaultValue={entityId} className="rounded-lg border border-slate-300 px-3 py-2">
             <option value="">All entities</option>
