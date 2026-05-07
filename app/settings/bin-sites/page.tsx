@@ -7,14 +7,17 @@ import type {
   Bin, BinSite, Crop, Entity, County, EntityCounty, BinInventoryAdjustment,
 } from '@/lib/types'
 
-type Form = {
+type SiteForm = {
   name: string
   entityId: string
   countyId: string
   address: string
   notes: string
 }
-const empty: Form = { name: '', entityId: '', countyId: '', address: '', notes: '' }
+const emptySite: SiteForm = { name: '', entityId: '', countyId: '', address: '', notes: '' }
+
+type BinForm = { name: string; cropId: string }
+const emptyBin: BinForm = { name: '', cropId: '' }
 
 type LoadRow = {
   net_weight: number | null
@@ -41,10 +44,16 @@ export default function BinSitesPage() {
   const [crops, setCrops] = useState<Crop[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [adjustments, setAdjustments] = useState<BinInventoryAdjustment[]>([])
-  const [form, setForm] = useState<Form>(empty)
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [editForm, setEditForm] = useState<Form>(empty)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
+
+  const [siteForm, setSiteForm] = useState<SiteForm>(emptySite)
+  const [editingSiteId, setEditingSiteId] = useState<string | null>(null)
+  const [editSiteForm, setEditSiteForm] = useState<SiteForm>(emptySite)
+  const [expandedSiteId, setExpandedSiteId] = useState<string | null>(null)
+
+  const [newBinBySite, setNewBinBySite] = useState<Record<string, BinForm>>({})
+  const [editingBinId, setEditingBinId] = useState<string | null>(null)
+  const [editBinForm, setEditBinForm] = useState<{ name: string; cropId: string; siteId: string }>({ name: '', cropId: '', siteId: '' })
+
   const [err, setErr] = useState<string | null>(null)
 
   async function refresh() {
@@ -126,42 +135,42 @@ export default function BinSitesPage() {
 
   const unsited = useMemo(() => bins.filter((b) => !b.bin_site_id), [bins])
 
-  function validate(f: Form): string | null {
-    if (!f.name.trim()) return 'Name is required.'
+  function validateSite(f: SiteForm): string | null {
+    if (!f.name.trim()) return 'Site name is required.'
     if (!f.entityId) return 'Entity is required.'
     return null
   }
 
-  async function add(e: React.FormEvent) {
+  async function addSite(e: React.FormEvent) {
     e.preventDefault()
-    const v = validate(form)
+    const v = validateSite(siteForm)
     if (v) { setErr(v); return }
     const { error } = await supabase.from('bin_sites').insert({
-      name: form.name.trim(),
-      entity_id: form.entityId,
-      county_id: form.countyId || null,
-      address: form.address.trim() || null,
-      notes: form.notes.trim() || null,
+      name: siteForm.name.trim(),
+      entity_id: siteForm.entityId,
+      county_id: siteForm.countyId || null,
+      address: siteForm.address.trim() || null,
+      notes: siteForm.notes.trim() || null,
     })
     if (error) { setErr(error.message); return }
-    setForm(empty); setErr(null); refresh()
+    setSiteForm(emptySite); setErr(null); refresh()
   }
 
-  async function save(id: string) {
-    const v = validate(editForm)
+  async function saveSite(id: string) {
+    const v = validateSite(editSiteForm)
     if (v) { setErr(v); return }
     const { error } = await supabase.from('bin_sites').update({
-      name: editForm.name.trim(),
-      entity_id: editForm.entityId,
-      county_id: editForm.countyId || null,
-      address: editForm.address.trim() || null,
-      notes: editForm.notes.trim() || null,
+      name: editSiteForm.name.trim(),
+      entity_id: editSiteForm.entityId,
+      county_id: editSiteForm.countyId || null,
+      address: editSiteForm.address.trim() || null,
+      notes: editSiteForm.notes.trim() || null,
     }).eq('id', id)
     if (error) { setErr(error.message); return }
-    setEditingId(null); setErr(null); refresh()
+    setEditingSiteId(null); setErr(null); refresh()
   }
 
-  async function remove(id: string) {
+  async function removeSite(id: string) {
     const list = binsBySite.get(id) ?? []
     if (list.length > 0) {
       if (!confirm(`Delete this site? ${list.length} bin${list.length === 1 ? '' : 's'} will be unassigned.`)) return
@@ -173,9 +182,57 @@ export default function BinSitesPage() {
     refresh()
   }
 
+  function getNewBin(siteId: string): BinForm {
+    return newBinBySite[siteId] ?? emptyBin
+  }
+  function setNewBin(siteId: string, val: BinForm) {
+    setNewBinBySite((s) => ({ ...s, [siteId]: val }))
+  }
+
+  async function addBin(siteId: string, e: React.FormEvent) {
+    e.preventDefault()
+    const f = getNewBin(siteId)
+    if (!f.name.trim()) return
+    const { error } = await supabase.from('bins').insert({
+      name_or_number: f.name.trim(),
+      crop_id: f.cropId || null,
+      bin_site_id: siteId,
+    })
+    if (error) { setErr(error.message); return }
+    setNewBin(siteId, emptyBin)
+    setErr(null)
+    refresh()
+  }
+
+  async function saveBin(id: string) {
+    if (!editBinForm.name.trim()) return
+    if (!editBinForm.siteId) { setErr('Pick a bin site before saving.'); return }
+    const { error } = await supabase.from('bins').update({
+      name_or_number: editBinForm.name.trim(),
+      crop_id: editBinForm.cropId || null,
+      bin_site_id: editBinForm.siteId,
+    }).eq('id', id)
+    if (error) { setErr(error.message); return }
+    setEditingBinId(null); setErr(null); refresh()
+  }
+
+  async function removeBin(id: string) {
+    if (!confirm('Delete this bin?')) return
+    const { error } = await supabase.from('bins').delete().eq('id', id)
+    if (error) { setErr(error.message); return }
+    refresh()
+  }
+
+  async function assignBinToSite(binId: string, siteId: string) {
+    if (!siteId) return
+    const { error } = await supabase.from('bins').update({ bin_site_id: siteId }).eq('id', binId)
+    if (error) { setErr(error.message); return }
+    refresh()
+  }
+
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
-  const formCountyOptions = form.entityId ? (countiesForEntity.get(form.entityId) ?? []) : []
-  const editCountyOptions = editForm.entityId ? (countiesForEntity.get(editForm.entityId) ?? []) : []
+  const formCountyOptions = siteForm.entityId ? (countiesForEntity.get(siteForm.entityId) ?? []) : []
+  const editCountyOptions = editSiteForm.entityId ? (countiesForEntity.get(editSiteForm.entityId) ?? []) : []
 
   function siteStats(siteId: string) {
     const list = binsBySite.get(siteId) ?? []
@@ -187,9 +244,9 @@ export default function BinSitesPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">Bin Sites</h1>
+      <h1 className="text-2xl font-bold">Bin Sites &amp; Bins</h1>
       <p className="text-sm text-slate-500">
-        A bin site is a physical location grouping multiple bins under an entity (e.g., &ldquo;Home Place Bins&rdquo;, &ldquo;North Farm Site&rdquo;).
+        A bin site is a physical location grouping bins under an entity (e.g., &ldquo;Home Place Bins&rdquo;). Expand a site to manage its bins.
       </p>
 
       {hasDefaultSite && (
@@ -199,23 +256,43 @@ export default function BinSitesPage() {
       )}
 
       {unsited.length > 0 && (
-        <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
-          <strong>{unsited.length}</strong> bin{unsited.length === 1 ? '' : 's'} not assigned to a site. Edit them under{' '}
-          <a className="underline" href="/settings/bins">Bins</a>.
+        <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 space-y-2">
+          <div>
+            <strong>{unsited.length}</strong> bin{unsited.length === 1 ? '' : 's'} not assigned to a site. Pick one for each:
+          </div>
+          <ul className="space-y-1">
+            {unsited.map((b) => (
+              <li key={b.id} className="flex items-center gap-2 flex-wrap">
+                <span className="font-medium">{b.name_or_number}</span>
+                <select
+                  defaultValue=""
+                  onChange={(e) => assignBinToSite(b.id, e.target.value)}
+                  className={inputCls}
+                >
+                  <option value="" disabled>— pick a site —</option>
+                  {sites.map((s) => {
+                    const ent = entityById.get(s.entity_id)
+                    return <option key={s.id} value={s.id}>{s.name}{ent ? ` · ${ent.name}` : ''}</option>
+                  })}
+                </select>
+                <button onClick={() => removeBin(b.id)} className="text-red-600 text-sm">Delete bin</button>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
-      <form onSubmit={add} className="space-y-2 bg-white p-4 rounded-xl shadow">
+      <form onSubmit={addSite} className="space-y-2 bg-white p-4 rounded-xl shadow">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <input
-            value={form.name}
-            onChange={(e) => setForm({ ...form, name: e.target.value })}
+            value={siteForm.name}
+            onChange={(e) => setSiteForm({ ...siteForm, name: e.target.value })}
             placeholder="Site name"
             className={inputCls}
           />
           <select
-            value={form.entityId}
-            onChange={(e) => setForm({ ...form, entityId: e.target.value, countyId: '' })}
+            value={siteForm.entityId}
+            onChange={(e) => setSiteForm({ ...siteForm, entityId: e.target.value, countyId: '' })}
             className={inputCls}
           >
             <option value="">— entity —</option>
@@ -224,24 +301,24 @@ export default function BinSitesPage() {
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <select
-            value={form.countyId}
-            onChange={(e) => setForm({ ...form, countyId: e.target.value })}
+            value={siteForm.countyId}
+            onChange={(e) => setSiteForm({ ...siteForm, countyId: e.target.value })}
             className={inputCls}
-            disabled={!form.entityId}
+            disabled={!siteForm.entityId}
           >
-            <option value="">{form.entityId ? '— county (optional) —' : 'pick entity for counties'}</option>
+            <option value="">{siteForm.entityId ? '— county (optional) —' : 'pick entity for counties'}</option>
             {formCountyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
           </select>
           <input
-            value={form.address}
-            onChange={(e) => setForm({ ...form, address: e.target.value })}
+            value={siteForm.address}
+            onChange={(e) => setSiteForm({ ...siteForm, address: e.target.value })}
             placeholder="Address (optional)"
             className={inputCls}
           />
         </div>
         <input
-          value={form.notes}
-          onChange={(e) => setForm({ ...form, notes: e.target.value })}
+          value={siteForm.notes}
+          onChange={(e) => setSiteForm({ ...siteForm, notes: e.target.value })}
           placeholder="Notes (optional)"
           className={inputCls + ' w-full'}
         />
@@ -259,20 +336,21 @@ export default function BinSitesPage() {
           const cty = s.county_id ? countyById.get(s.county_id) : null
           const stats = siteStats(s.id)
           const list = binsBySite.get(s.id) ?? []
-          const isExpanded = expandedId === s.id
+          const isExpanded = expandedSiteId === s.id
+          const newBin = getNewBin(s.id)
           return (
             <li key={s.id} className="px-4 py-3">
-              {editingId === s.id ? (
+              {editingSiteId === s.id ? (
                 <div className="space-y-2">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <input
-                      value={editForm.name}
-                      onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                      value={editSiteForm.name}
+                      onChange={(e) => setEditSiteForm({ ...editSiteForm, name: e.target.value })}
                       className={inputCls}
                     />
                     <select
-                      value={editForm.entityId}
-                      onChange={(e) => setEditForm({ ...editForm, entityId: e.target.value, countyId: '' })}
+                      value={editSiteForm.entityId}
+                      onChange={(e) => setEditSiteForm({ ...editSiteForm, entityId: e.target.value, countyId: '' })}
                       className={inputCls}
                     >
                       <option value="">— entity —</option>
@@ -281,30 +359,30 @@ export default function BinSitesPage() {
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <select
-                      value={editForm.countyId}
-                      onChange={(e) => setEditForm({ ...editForm, countyId: e.target.value })}
+                      value={editSiteForm.countyId}
+                      onChange={(e) => setEditSiteForm({ ...editSiteForm, countyId: e.target.value })}
                       className={inputCls}
-                      disabled={!editForm.entityId}
+                      disabled={!editSiteForm.entityId}
                     >
-                      <option value="">{editForm.entityId ? '— county (optional) —' : 'pick entity for counties'}</option>
+                      <option value="">{editSiteForm.entityId ? '— county (optional) —' : 'pick entity for counties'}</option>
                       {editCountyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
                     </select>
                     <input
-                      value={editForm.address}
-                      onChange={(e) => setEditForm({ ...editForm, address: e.target.value })}
+                      value={editSiteForm.address}
+                      onChange={(e) => setEditSiteForm({ ...editSiteForm, address: e.target.value })}
                       placeholder="Address (optional)"
                       className={inputCls}
                     />
                   </div>
                   <input
-                    value={editForm.notes}
-                    onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                    value={editSiteForm.notes}
+                    onChange={(e) => setEditSiteForm({ ...editSiteForm, notes: e.target.value })}
                     placeholder="Notes (optional)"
                     className={inputCls + ' w-full'}
                   />
                   <div className="flex gap-3">
-                    <button onClick={() => save(s.id)} className="text-green-700 font-semibold">Save</button>
-                    <button onClick={() => setEditingId(null)} className="text-slate-500">Cancel</button>
+                    <button onClick={() => saveSite(s.id)} className="text-green-700 font-semibold">Save</button>
+                    <button onClick={() => setEditingSiteId(null)} className="text-slate-500">Cancel</button>
                   </div>
                 </div>
               ) : (
@@ -323,15 +401,15 @@ export default function BinSitesPage() {
                       {s.notes && <div className="text-xs text-slate-400 mt-1">{s.notes}</div>}
                     </div>
                     <button
-                      onClick={() => setExpandedId(isExpanded ? null : s.id)}
+                      onClick={() => setExpandedSiteId(isExpanded ? null : s.id)}
                       className="text-slate-600 text-sm"
                     >
                       {isExpanded ? 'Hide bins' : 'Show bins'}
                     </button>
                     <button
                       onClick={() => {
-                        setEditingId(s.id)
-                        setEditForm({
+                        setEditingSiteId(s.id)
+                        setEditSiteForm({
                           name: s.name,
                           entityId: s.entity_id,
                           countyId: s.county_id ?? '',
@@ -341,31 +419,96 @@ export default function BinSitesPage() {
                       }}
                       className="text-sky-700"
                     >Edit</button>
-                    <button onClick={() => remove(s.id)} className="text-red-600">Delete</button>
+                    <button onClick={() => removeSite(s.id)} className="text-red-600">Delete</button>
                   </div>
                   {isExpanded && (
-                    <div className="mt-2 ml-2 border-l-2 border-slate-200 pl-3">
+                    <div className="mt-3 ml-2 border-l-2 border-slate-200 pl-3 space-y-2">
+                      <form
+                        onSubmit={(e) => addBin(s.id, e)}
+                        className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2"
+                      >
+                        <input
+                          value={newBin.name}
+                          onChange={(e) => setNewBin(s.id, { ...newBin, name: e.target.value })}
+                          placeholder="Bin name or number"
+                          className={inputCls}
+                        />
+                        <select
+                          value={newBin.cropId}
+                          onChange={(e) => setNewBin(s.id, { ...newBin, cropId: e.target.value })}
+                          className={inputCls}
+                        >
+                          <option value="">— crop (optional) —</option>
+                          {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                        </select>
+                        <button className="rounded-lg bg-green-700 text-white px-3 py-2 font-semibold text-sm">
+                          Add bin
+                        </button>
+                      </form>
+
                       {list.length === 0 ? (
                         <p className="text-sm text-slate-400 py-2">No bins assigned.</p>
                       ) : (
-                        <table className="w-full text-sm">
-                          <thead className="text-slate-500">
-                            <tr>
-                              <th className="text-left py-1">Bin</th>
-                              <th className="text-left py-1">Crop</th>
-                              <th className="text-right py-1">On hand (bu)</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {list.map((b) => (
-                              <tr key={b.id} className="border-t border-slate-100">
-                                <td className="py-1">{b.name_or_number}</td>
-                                <td className="py-1">{b.crop_id ? cropById.get(b.crop_id)?.name ?? '—' : '—'}</td>
-                                <td className="py-1 text-right font-mono">{fmtBu(bushelsByBin.get(b.id) ?? 0)}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                        <ul className="divide-y divide-slate-100">
+                          {list.map((b) => (
+                            <li key={b.id} className="py-2">
+                              {editingBinId === b.id ? (
+                                <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_auto_auto] gap-2">
+                                  <input
+                                    value={editBinForm.name}
+                                    onChange={(e) => setEditBinForm({ ...editBinForm, name: e.target.value })}
+                                    className={inputCls}
+                                  />
+                                  <select
+                                    value={editBinForm.siteId}
+                                    onChange={(e) => setEditBinForm({ ...editBinForm, siteId: e.target.value })}
+                                    className={inputCls}
+                                  >
+                                    {sites.map((opt) => {
+                                      const en = entityById.get(opt.entity_id)
+                                      return <option key={opt.id} value={opt.id}>{opt.name}{en ? ` · ${en.name}` : ''}</option>
+                                    })}
+                                  </select>
+                                  <select
+                                    value={editBinForm.cropId}
+                                    onChange={(e) => setEditBinForm({ ...editBinForm, cropId: e.target.value })}
+                                    className={inputCls}
+                                  >
+                                    <option value="">— no crop —</option>
+                                    {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                  </select>
+                                  <button onClick={() => saveBin(b.id)} className="text-green-700 font-semibold">Save</button>
+                                  <button onClick={() => setEditingBinId(null)} className="text-slate-500">Cancel</button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <div className="flex-1 min-w-0">
+                                    <div className="font-medium">{b.name_or_number}</div>
+                                    <div className="text-xs text-slate-500">
+                                      {b.crop_id
+                                        ? cropById.get(b.crop_id)?.name
+                                        : <span className="text-amber-600">no crop assigned</span>}
+                                      {' · '}
+                                      <span className="font-mono">{fmtBu(bushelsByBin.get(b.id) ?? 0)} bu</span>
+                                    </div>
+                                  </div>
+                                  <button
+                                    onClick={() => {
+                                      setEditingBinId(b.id)
+                                      setEditBinForm({
+                                        name: b.name_or_number,
+                                        cropId: b.crop_id ?? '',
+                                        siteId: b.bin_site_id ?? s.id,
+                                      })
+                                    }}
+                                    className="text-sky-700 text-sm"
+                                  >Edit</button>
+                                  <button onClick={() => removeBin(b.id)} className="text-red-600 text-sm">Delete</button>
+                                </div>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
                       )}
                     </div>
                   )}

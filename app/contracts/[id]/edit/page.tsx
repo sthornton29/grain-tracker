@@ -224,7 +224,7 @@ export default function EditContractPage() {
                 {buyerLocations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
               </select>
               {form.buyer_id && buyerLocations.length === 0 && (
-                <Link href="/settings/delivery-locations" className="text-sm text-sky-700 underline">
+                <Link href="/settings/buyers" className="text-sm text-sky-700 underline">
                   Add a location for this buyer
                 </Link>
               )}

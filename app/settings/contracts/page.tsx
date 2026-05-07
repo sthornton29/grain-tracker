@@ -165,7 +165,7 @@ function FormFields({
               {buyerLocations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
             </select>
             {f.buyer_id && buyerLocations.length === 0 && (
-              <Link href="/settings/delivery-locations" className="text-sm text-sky-700 underline">
+              <Link href="/settings/buyers" className="text-sm text-sky-700 underline">
                 Add a location for this buyer
               </Link>
             )}

@@ -5,11 +5,9 @@ const items = [
   { href: '/settings/farms', label: 'Farms' },
   { href: '/settings/fields', label: 'Fields' },
   { href: '/settings/plantings', label: 'Field Plantings' },
-  { href: '/settings/bin-sites', label: 'Bin Sites' },
-  { href: '/settings/bins', label: 'Bins' },
+  { href: '/settings/bin-sites', label: 'Bin Sites & Bins' },
   { href: '/settings/trucks', label: 'Trucks' },
-  { href: '/settings/buyers', label: 'Buyers' },
-  { href: '/settings/delivery-locations', label: 'Delivery Locations' },
+  { href: '/settings/buyers', label: 'Buyers & Delivery Locations' },
   { href: '/settings/crops', label: 'Crops' },
   { href: '/settings/contracts', label: 'Contracts' },
 ]
