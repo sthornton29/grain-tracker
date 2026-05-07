@@ -294,7 +294,7 @@ export default async function ContractsPage({
                   Crop{sortKey === 'crop' ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
                 </Link>
               </th>
-              {['Year', 'Location', 'Delivery window', 'Contracted', 'Delivered', 'Paid (bu)', 'Unpaid (bu)', 'Revenue', 'Avg $/bu', 'Progress']
+              {['Year', 'Location', 'Delivery window', 'Contracted', 'Delivered', 'Paid (bu)', 'Unpaid (bu)', '$/bu', 'Revenue', 'Progress']
                 .map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
             </tr>
           </thead>
@@ -305,7 +305,8 @@ export default async function ContractsPage({
               const isDup = (numberCounts.get(c.contract_number) ?? 0) > 1
               const remaining = Math.max(0, Number(c.contracted_bushels) - agg.delivered)
               const pct = Number(c.contracted_bushels) > 0 ? Math.min(100, (agg.delivered / Number(c.contracted_bushels)) * 100) : 0
-              const avgPrice = agg.paidBushels > 0 ? agg.revenue / agg.paidBushels : null
+              const contractPrice = c.price_per_bushel != null ? Number(c.price_per_bushel) : null
+              const contractRevenue = contractPrice != null ? contractPrice * Number(c.contracted_bushels) : null
 
               const isOpen = inWindow(c.delivery_start_date, c.delivery_end_date)
               const endIn = daysUntil(c.delivery_end_date)
@@ -343,8 +344,8 @@ export default async function ContractsPage({
                   </td>
                   <td className="px-3 py-2 text-right">{fmt(agg.paidBushels)}</td>
                   <td className={`px-3 py-2 text-right ${agg.deliveredUnpaid > 0 ? 'text-amber-700 font-semibold' : ''}`}>{fmt(agg.deliveredUnpaid)}</td>
-                  <td className="px-3 py-2 text-right">${fmt(agg.revenue)}</td>
-                  <td className="px-3 py-2 text-right font-mono">{avgPrice != null ? avgPrice.toFixed(4) : ''}</td>
+                  <td className="px-3 py-2 text-right font-mono">{contractPrice != null ? contractPrice.toFixed(4) : ''}</td>
+                  <td className="px-3 py-2 text-right">{contractRevenue != null ? `$${fmt(contractRevenue)}` : ''}</td>
                   <td className="px-3 py-2 w-40">
                     <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
                       <div className="h-2 bg-green-600" style={{ width: `${pct}%` }} />
