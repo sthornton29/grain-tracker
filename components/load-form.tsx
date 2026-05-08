@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
@@ -92,6 +92,7 @@ export default function LoadForm({ initial, mode }: Props) {
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [refsLoaded, setRefsLoaded] = useState(false)
   const [busy, setBusy] = useState(false)
+  const submittingRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -232,6 +233,12 @@ export default function LoadForm({ initial, mode }: Props) {
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
+    // Synchronous guard against double-submit (iPad double-tap, double-click,
+    // Enter+tap). React's `busy` state only disables the button on the next
+    // render, so without this a second tap a few ms later passes through and
+    // we get duplicate inserts.
+    if (submittingRef.current) return
+    submittingRef.current = true
     setBusy(true)
     setError(null)
 
@@ -265,11 +272,14 @@ export default function LoadForm({ initial, mode }: Props) {
       ;({ error: err } = await supabase.from('loads').update(payload).eq('id', initial.id))
     }
 
-    setBusy(false)
     if (err) {
+      submittingRef.current = false
+      setBusy(false)
       setError(err.message)
       return
     }
+    // Leave submittingRef = true; we're navigating away. Resetting it here
+    // would briefly re-enable the button before the route change commits.
     router.push('/loads')
     router.refresh()
   }
