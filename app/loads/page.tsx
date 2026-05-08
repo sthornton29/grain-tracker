@@ -316,13 +316,13 @@ export default function LoadsPage() {
     refresh()
   }
 
-  function exportCsv() {
+  function downloadCsv(rowsToExport: Row[], filenameSuffix = '') {
     const headers = [
       'date','time','ticket','truck','crop','from','to','contract',
       'gross_lb','tare_lb','net_lb','wet_bu','dry_bu','moisture','test_weight',
     ]
     const lines = [headers.join(',')]
-    for (const r of filtered) {
+    for (const r of rowsToExport) {
       const { wetBushels, dryBushels } = bushelsFor(r)
       lines.push([
         r.date, r.time ?? '', r.ticket_number ?? '',
@@ -338,9 +338,18 @@ export default function LoadsPage() {
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `loads-${new Date().toISOString().slice(0,10)}.csv`
+    a.download = `loads${filenameSuffix}-${new Date().toISOString().slice(0,10)}.csv`
     a.click()
     URL.revokeObjectURL(url)
+  }
+  function exportCsv() {
+    downloadCsv(filtered)
+  }
+  function exportSelected() {
+    if (selected.size === 0) return
+    // Preserve current sort order in the export by filtering `sorted`, not `rows`.
+    const rowsToExport = sorted.filter((r) => selected.has(r.id))
+    downloadCsv(rowsToExport, '-selected')
   }
 
   return (
@@ -415,6 +424,7 @@ export default function LoadsPage() {
       {selected.size > 0 && (
         <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm">
           <span className="font-semibold">{selected.size} selected</span>
+          <button onClick={exportSelected} className="rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-sm font-semibold">Export selected</button>
           <button onClick={bulkDelete} className="rounded-lg bg-red-600 text-white px-3 py-1.5 text-sm font-semibold">Delete selected</button>
           <button onClick={() => setSelected(new Set())} className="text-slate-600">Clear</button>
         </div>
