@@ -4,7 +4,7 @@ import Anthropic from '@anthropic-ai/sdk'
 export const runtime = 'nodejs'
 export const maxDuration = 60
 
-const MODEL = 'claude-sonnet-4-20250514'
+const MODEL = 'claude-sonnet-4-6'
 const MAX_TOKENS = 4096
 
 // Server-side cap on the decoded PDF size. The browser also enforces 20 MB on
@@ -133,6 +133,8 @@ export async function POST(req: NextRequest) {
     resp = await client.messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
+      thinking: { type: 'disabled' },
+      output_config: { effort: 'low' },
       messages: [
         {
           role: 'user',
