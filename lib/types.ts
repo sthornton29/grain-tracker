@@ -100,6 +100,7 @@ export type Settlement = {
   settlement_date: string
   settlement_number: string | null
   notes: string | null
+  source_pdf_url: string | null
   created_at: string
 }
 
@@ -138,6 +139,7 @@ export type Load = {
   to_buyer_id: string | null
   contract_id: string | null
   ticket_number: string | null
+  source_pdf_url: string | null
   created_at: string
   updated_at: string
 }

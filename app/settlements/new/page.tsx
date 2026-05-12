@@ -5,6 +5,14 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { parseCsv } from '@/lib/csv'
+import { findBestMatch } from '@/lib/fuzzy'
+import {
+  MAX_PDF_BYTES,
+  PdfTooLargeError,
+  parseDocument,
+  uploadPdfToStorage,
+} from '@/lib/pdf-upload'
+import PdfViewer from '@/components/pdf-viewer'
 import type { Buyer } from '@/lib/types'
 
 type LoadMatch = {
@@ -47,6 +55,18 @@ function computed(r: RowDraft) {
   return { netRev, price }
 }
 
+function rowIssues(r: RowDraft) {
+  const net = num(r.net_bushels)
+  const gross = num(r.gross_revenue) ?? 0
+  const disc = num(r.discounts) ?? 0
+  return {
+    ticket: !r.ticket_number.trim(),
+    net: net == null || net <= 0,
+    gross: gross === 0,
+    discounts: disc > gross && gross > 0,
+  }
+}
+
 const TEMPLATE_HEADERS = ['ticket_number', 'net_bushels', 'gross_revenue', 'discounts']
 
 function downloadTemplate() {
@@ -71,6 +91,11 @@ export default function NewSettlementPage() {
   const [rows, setRows] = useState<RowDraft[]>([])
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+
+  // AI-assisted PDF extraction state.
+  const [aiFile, setAiFile] = useState<File | null>(null)
+  const [aiStage, setAiStage] = useState<string | null>(null)
+  const [aiBanner, setAiBanner] = useState<string | null>(null)
 
   useEffect(() => {
     ;(async () => {
@@ -131,6 +156,73 @@ export default function NewSettlementPage() {
     }
   }
 
+  async function onPdf(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setErr(null)
+    setAiBanner(null)
+    if (file.size > MAX_PDF_BYTES) {
+      setErr('That PDF is larger than 20 MB. Please use a smaller file.')
+      return
+    }
+    setAiFile(file)
+    setAiStage('Reading document…')
+    try {
+      // Give the user a beat to see the first stage label before it flips.
+      await new Promise((r) => setTimeout(r, 250))
+      setAiStage('Extracting data…')
+      const data = await parseDocument(file, 'settlement')
+
+      const extractedLines = Array.isArray(data.line_items) ? data.line_items : []
+      if (extractedLines.length === 0) {
+        setErr('No records found in this document. The scan may be too blurry or the format may not be readable.')
+        setAiStage(null)
+        return
+      }
+
+      // Fuzzy-match buyer to existing dropdown.
+      const buyerHit = findBestMatch(data.buyer_name, buyers, (b) => b.name)
+      if (buyerHit) setBuyerId(buyerHit.id)
+
+      if (data.settlement_date && /^\d{4}-\d{2}-\d{2}$/.test(data.settlement_date)) {
+        setSettlementDate(data.settlement_date)
+      }
+      if (data.settlement_number != null) setSettlementNumber(String(data.settlement_number))
+
+      const nextRows: RowDraft[] = extractedLines.map((li) => ({
+        ticket_number: li.ticket_number != null ? String(li.ticket_number) : '',
+        net_bushels: li.net_bushels != null ? String(li.net_bushels) : '',
+        gross_revenue: li.gross_revenue != null ? String(li.gross_revenue) : '',
+        discounts: li.discounts != null ? String(li.discounts) : '',
+        notes: '',
+      }))
+      setRows(nextRows)
+      setAiBanner(
+        `AI extracted ${nextRows.length} line item${nextRows.length === 1 ? '' : 's'} from settlement PDF. Please review before saving.`,
+      )
+    } catch (e: any) {
+      if (e instanceof PdfTooLargeError) {
+        setErr(e.message)
+      } else {
+        setErr(
+          e?.message
+            ? `Couldn't read this PDF: ${e.message}. Try uploading a clearer scan or use the manual entry method.`
+            : "Couldn't read this PDF. Try uploading a clearer scan or use the manual entry method.",
+        )
+      }
+    } finally {
+      setAiStage(null)
+    }
+  }
+
+  function discardPdf() {
+    setAiFile(null)
+    setAiBanner(null)
+    setAiStage(null)
+    setRows([])
+  }
+
   function updateRow(i: number, patch: Partial<RowDraft>) {
     setRows((rs) => rs.map((r, j) => (i === j ? { ...r, ...patch } : r)))
   }
@@ -145,6 +237,18 @@ export default function NewSettlementPage() {
     if (!settlementDate) { setErr('Pick a settlement date.'); return }
     if (rows.length === 0) { setErr('Add at least one line.'); return }
     setSaving(true)
+
+    let pdfUrl: string | null = null
+    if (aiFile) {
+      try {
+        pdfUrl = await uploadPdfToStorage(supabase, aiFile, 'settlements')
+      } catch (e: any) {
+        setSaving(false)
+        setErr(e?.message ?? 'Could not upload settlement PDF.')
+        return
+      }
+    }
+
     const { data: settlement, error: sErr } = await supabase
       .from('settlements')
       .insert({
@@ -152,6 +256,7 @@ export default function NewSettlementPage() {
         settlement_date: settlementDate,
         settlement_number: settlementNumber.trim() || null,
         notes: notes.trim() || null,
+        source_pdf_url: pdfUrl,
       })
       .select('id')
       .single()
@@ -235,6 +340,25 @@ export default function NewSettlementPage() {
             Upload CSV
             <input type="file" accept=".csv,text/csv,text/plain" onChange={onFile} className="hidden" />
           </label>
+          <label className={`text-sm rounded-lg px-3 py-2 cursor-pointer text-white ${aiStage ? 'bg-slate-400 cursor-wait' : 'bg-green-700'}`}>
+            {aiStage ? aiStage : 'Upload Settlement PDF (AI)'}
+            <input
+              type="file"
+              accept="application/pdf,.pdf"
+              onChange={onPdf}
+              disabled={aiStage != null}
+              className="hidden"
+            />
+          </label>
+          {aiFile && !aiStage && (
+            <button
+              type="button"
+              onClick={discardPdf}
+              className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2"
+            >
+              Discard &amp; Start Over
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setRows((rs) => [...rs, emptyRow()])}
@@ -244,59 +368,75 @@ export default function NewSettlementPage() {
           </button>
         </div>
 
+        {aiBanner && (
+          <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">
+            {aiBanner}
+          </div>
+        )}
         {err && <p className="text-sm text-red-600">{err}</p>}
 
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-100 text-slate-700">
-              <tr>
-                {['Ticket #', 'Match', 'Net bu', 'Gross $', 'Discounts $', 'Net $', '$/bu', 'Notes', '']
-                  .map((h) => <th key={h} className="text-left px-2 py-2 whitespace-nowrap">{h}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 && (
-                <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">Upload a CSV or add rows manually.</td></tr>
-              )}
-              {rows.map((r, i) => {
-                const { netRev, price } = computed(r)
-                const m = matchFor(r.ticket_number)
-                let status: React.ReactNode
-                if (!r.ticket_number.trim()) {
-                  status = <span className="text-slate-400 text-xs">—</span>
-                } else if (m === 'ambiguous') {
-                  status = <span className="text-amber-700 text-xs">Ambiguous (multiple loads)</span>
-                } else if (m) {
-                  status = <span className="text-green-700 text-xs">Matched · {m.date} · {m.crop?.name ?? '—'}</span>
-                } else {
-                  status = <span className="text-amber-700 text-xs">No match</span>
-                }
-                return (
-                  <tr key={i} className="border-t border-slate-100 align-top">
-                    <td className="px-2 py-1" style={{ minWidth: 120 }}>
-                      <input value={r.ticket_number} onChange={(e) => updateRow(i, { ticket_number: e.target.value })} className={inputCls} />
-                    </td>
-                    <td className="px-2 py-1" style={{ minWidth: 180 }}>{status}</td>
-                    <td className="px-2 py-1" style={{ minWidth: 90 }}>
-                      <input type="number" step="0.01" value={r.net_bushels} onChange={(e) => updateRow(i, { net_bushels: e.target.value })} className={inputCls} />
-                    </td>
-                    <td className="px-2 py-1" style={{ minWidth: 100 }}>
-                      <input type="number" step="0.01" value={r.gross_revenue} onChange={(e) => updateRow(i, { gross_revenue: e.target.value })} className={inputCls} />
-                    </td>
-                    <td className="px-2 py-1" style={{ minWidth: 100 }}>
-                      <input type="number" step="0.01" value={r.discounts} onChange={(e) => updateRow(i, { discounts: e.target.value })} className={inputCls} />
-                    </td>
-                    <td className="px-2 py-1 text-right font-mono">${fmt(netRev)}</td>
-                    <td className="px-2 py-1 text-right font-mono">{fmt4(price)}</td>
-                    <td className="px-2 py-1" style={{ minWidth: 140 }}>
-                      <input value={r.notes} onChange={(e) => updateRow(i, { notes: e.target.value })} className={inputCls} />
-                    </td>
-                    <td className="px-2 py-1"><button type="button" onClick={() => deleteRow(i)} className="text-red-600 text-sm">✕</button></td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+        <div className={aiFile ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : ''}>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-100 text-slate-700">
+                <tr>
+                  {['Ticket #', 'Match', 'Net bu', 'Gross $', 'Discounts $', 'Net $', '$/bu', 'Notes', '']
+                    .map((h) => <th key={h} className="text-left px-2 py-2 whitespace-nowrap">{h}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.length === 0 && (
+                  <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">Upload a CSV, upload a PDF (AI), or add rows manually.</td></tr>
+                )}
+                {rows.map((r, i) => {
+                  const { netRev, price } = computed(r)
+                  const m = matchFor(r.ticket_number)
+                  const issues = rowIssues(r)
+                  const flagCls = 'bg-amber-50'
+                  let status: React.ReactNode
+                  if (!r.ticket_number.trim()) {
+                    status = <span className="text-slate-400 text-xs">—</span>
+                  } else if (m === 'ambiguous') {
+                    status = <span className="text-amber-700 text-xs">Ambiguous (multiple loads)</span>
+                  } else if (m) {
+                    status = <span className="text-green-700 text-xs">Matched · {m.date} · {m.crop?.name ?? '—'}</span>
+                  } else {
+                    status = <span className="text-amber-700 text-xs">No match</span>
+                  }
+                  return (
+                    <tr key={i} className="border-t border-slate-100 align-top">
+                      <td className={`px-2 py-1 ${issues.ticket ? flagCls : ''}`} style={{ minWidth: 120 }}>
+                        <input value={r.ticket_number} onChange={(e) => updateRow(i, { ticket_number: e.target.value })} className={inputCls} />
+                      </td>
+                      <td className="px-2 py-1" style={{ minWidth: 180 }}>{status}</td>
+                      <td className={`px-2 py-1 ${issues.net ? flagCls : ''}`} style={{ minWidth: 90 }}>
+                        <input type="number" step="0.01" value={r.net_bushels} onChange={(e) => updateRow(i, { net_bushels: e.target.value })} className={inputCls} />
+                      </td>
+                      <td className={`px-2 py-1 ${issues.gross ? flagCls : ''}`} style={{ minWidth: 100 }}>
+                        <input type="number" step="0.01" value={r.gross_revenue} onChange={(e) => updateRow(i, { gross_revenue: e.target.value })} className={inputCls} />
+                      </td>
+                      <td className={`px-2 py-1 ${issues.discounts ? flagCls : ''}`} style={{ minWidth: 100 }}>
+                        <input type="number" step="0.01" value={r.discounts} onChange={(e) => updateRow(i, { discounts: e.target.value })} className={inputCls} />
+                      </td>
+                      <td className="px-2 py-1 text-right font-mono">${fmt(netRev)}</td>
+                      <td className="px-2 py-1 text-right font-mono">{fmt4(price)}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 140 }}>
+                        <input value={r.notes} onChange={(e) => updateRow(i, { notes: e.target.value })} className={inputCls} />
+                      </td>
+                      <td className="px-2 py-1"><button type="button" onClick={() => deleteRow(i)} className="text-red-600 text-sm">✕</button></td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {aiFile && (
+            <div className="lg:sticky lg:top-3 self-start h-[70vh] min-h-[400px]">
+              <div className="text-xs text-slate-500 mb-1">Source PDF — cross-reference while reviewing</div>
+              <PdfViewer file={aiFile} className="h-full" title="Settlement PDF" />
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm bg-slate-50 rounded-lg p-3">
