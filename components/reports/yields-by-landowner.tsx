@@ -21,18 +21,9 @@ type LoadRow = {
   from_field_id: string | null
 }
 
-type FieldRow = {
-  fieldName: string
-  cropName: string
-  acres: number
-  dryBu: number
-  yieldBuPerAc: number | null
-}
-
 type FarmAgg = {
   farmName: string
   fsaNumber: string | null
-  fields: FieldRow[]
   byCrop: Map<string, { acres: number; dryBu: number; cropName: string }>
 }
 
@@ -185,18 +176,10 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
         farmAgg = {
           farmName: farm?.name ?? '— no farm —',
           fsaNumber: farm?.fsa_number ?? null,
-          fields: [],
           byCrop: new Map(),
         }
         group.farms.push(farmAgg)
       }
-      farmAgg.fields.push({
-        fieldName: fld.name_or_number,
-        cropName,
-        acres,
-        dryBu,
-        yieldBuPerAc: acres > 0 ? dryBu / acres : null,
-      })
       const farmCropTotal = farmAgg.byCrop.get(p.crop_id) ?? { acres: 0, dryBu: 0, cropName }
       farmCropTotal.acres += acres
       farmCropTotal.dryBu += dryBu
@@ -225,45 +208,31 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
     return parts.join(' · ')
   }
 
-  // Build the export payload — flat table with one row per (landowner, farm,
-  // field) plus subtotal rows. Excel and PDF both consume this.
+  // Export payload mirrors what's on screen: one row per (landowner, farm,
+  // crop). Per-field detail is intentionally omitted — the report rolls up to
+  // the farm level for readability.
   function buildExportPayload(): ExportPayload {
     const rows: Array<Array<string | number | null>> = []
     for (const g of groups) {
       for (const f of g.farms) {
-        for (const r of f.fields) {
+        for (const t of f.byCrop.values()) {
           rows.push([
             g.landownerName,
             f.farmName,
             f.fsaNumber ?? '',
-            r.cropName,
-            r.fieldName,
-            r.acres.toFixed(2),
-            r.dryBu.toFixed(2),
-            r.yieldBuPerAc != null ? r.yieldBuPerAc.toFixed(2) : '',
-          ])
-        }
-        // Farm subtotal row(s) — one per crop.
-        for (const [, t] of f.byCrop) {
-          rows.push([
-            g.landownerName,
-            `${f.farmName} — ${t.cropName} subtotal`,
-            f.fsaNumber ?? '',
             t.cropName,
-            '',
             t.acres.toFixed(2),
             t.dryBu.toFixed(2),
             t.acres > 0 ? (t.dryBu / t.acres).toFixed(2) : '',
           ])
         }
       }
-      for (const [, t] of g.byCrop) {
+      for (const t of g.byCrop.values()) {
         rows.push([
-          `${g.landownerName} — ${t.cropName} TOTAL`,
+          `${g.landownerName} — TOTAL`,
           '',
           '',
           t.cropName,
-          '',
           t.acres.toFixed(2),
           t.dryBu.toFixed(2),
           t.acres > 0 ? (t.dryBu / t.acres).toFixed(2) : '',
@@ -280,7 +249,6 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
             { label: 'Farm' },
             { label: 'FSA #' },
             { label: 'Crop' },
-            { label: 'Field' },
             { label: 'Acres', align: 'right' },
             { label: 'Dry bu', align: 'right' },
             { label: 'Yield (bu/ac)', align: 'right' },
@@ -344,7 +312,6 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
                   <table className="min-w-full text-sm">
                     <thead className="text-slate-500">
                       <tr>
-                        <th className="text-left pr-4 font-medium">Field</th>
                         <th className="text-left pr-4 font-medium">Crop</th>
                         <th className="text-right pr-4 font-medium">Acres</th>
                         <th className="text-right pr-4 font-medium">Dry bu</th>
@@ -352,19 +319,9 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
                       </tr>
                     </thead>
                     <tbody>
-                      {f.fields.map((r, ri) => (
-                        <tr key={ri} className="border-t border-slate-100">
-                          <td className="pr-4 py-1">{r.fieldName}</td>
-                          <td className="pr-4 py-1">{r.cropName}</td>
-                          <td className="pr-4 py-1 text-right font-mono">{fmt(r.acres)}</td>
-                          <td className="pr-4 py-1 text-right font-mono">{fmt(r.dryBu)}</td>
-                          <td className="pr-4 py-1 text-right font-mono">{r.yieldBuPerAc != null ? r.yieldBuPerAc.toFixed(1) : '—'}</td>
-                        </tr>
-                      ))}
                       {[...f.byCrop.values()].map((t) => (
-                        <tr key={`sub-${t.cropName}`} className="border-t border-slate-200 bg-slate-50 text-slate-700">
-                          <td className="pr-4 py-1 italic">{t.cropName} subtotal</td>
-                          <td></td>
+                        <tr key={t.cropName} className="border-t border-slate-100">
+                          <td className="pr-4 py-1 font-medium">{t.cropName}</td>
                           <td className="pr-4 py-1 text-right font-mono">{fmt(t.acres)}</td>
                           <td className="pr-4 py-1 text-right font-mono">{fmt(t.dryBu)}</td>
                           <td className="pr-4 py-1 text-right font-mono">{t.acres > 0 ? (t.dryBu / t.acres).toFixed(1) : '—'}</td>
