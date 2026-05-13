@@ -292,12 +292,19 @@ export default function YieldsPage() {
           </button>
         )}
       </div>
-      <p className="text-sm text-slate-500">
-        {view === 'field'
-          ? 'Dry bushels harvested ÷ planted acres, matched to plantings by field + crop + load year.'
-          : 'Plantings rolled up to farm × crop × season. Dry bushels divided by planted acres.'}
-      </p>
+      {view !== 'landowner' && (
+        <p className="text-sm text-slate-500">
+          {view === 'field'
+            ? 'Dry bushels harvested ÷ planted acres, matched to plantings by field + crop + load year.'
+            : 'Plantings rolled up to farm × crop × season. Dry bushels divided by planted acres.'}
+        </p>
+      )}
 
+      {/* The outer filter strip drives the field- and farm-view tables. The
+          landowner view has its own filter set inside <YieldsByLandowner /> so
+          this row is hidden when that tab is active (otherwise the user would
+          see two filter rows and only the inner one would actually apply). */}
+      {view !== 'landowner' && (
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
         <select value={year} onChange={(e) => setYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
           <option value="">All seasons</option>
@@ -324,6 +331,7 @@ export default function YieldsPage() {
           {countyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
         </select>
       </div>
+      )}
 
       {view === 'landowner' ? (
         <YieldsByLandowner />
