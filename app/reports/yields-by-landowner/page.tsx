@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import ExportBar from '@/components/export-bar'
 import type { ExportPayload } from '@/lib/exports'
@@ -11,6 +11,12 @@ export default function YieldsByLandownerReport() {
   const [buildPayload, setBuildPayload] = useState<() => ExportPayload>(
     () => () => ({ title: 'Yields by Landowner', sections: [{ columns: [], rows: [] }] }),
   )
+  // Must be useCallback — an inline arrow changes identity each render, and
+  // the child's effect deps include this prop. New identity → effect fires →
+  // it calls back here → setState → re-render → new identity → loop.
+  const handlePayload = useCallback((fn: () => ExportPayload) => {
+    setBuildPayload(() => fn)
+  }, [])
 
   return (
     <div className="space-y-4">
@@ -18,7 +24,7 @@ export default function YieldsByLandownerReport() {
         <h1 className="text-2xl font-bold flex-1">Yields by Landowner</h1>
         <ExportBar buildPayload={() => buildPayload()} />
       </div>
-      <YieldsByLandowner onPayloadChange={(fn) => setBuildPayload(() => fn)} />
+      <YieldsByLandowner onPayloadChange={handlePayload} />
     </div>
   )
 }
