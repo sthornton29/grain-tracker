@@ -1,10 +1,22 @@
 export type Entity = { id: string; name: string; notes: string | null }
+export type Landowner = {
+  id: string
+  name: string
+  phone: string | null
+  email: string | null
+  address: string | null
+  notes: string | null
+  created_at: string
+}
 export type Farm = {
   id: string
   name: string
   entity_id: string | null
   fsa_number: string | null
   county_id: string | null
+  landowner_id: string | null
+  is_share_rent: boolean
+  landlord_share_percentage: number | null
 }
 export type Field = {
   id: string

@@ -16,6 +16,13 @@ input, select, textarea, button {
 
 @media print {
   html, body { background: white; }
-  nav, header[role="banner"] { display: none !important; }
+  nav, header[role="banner"], .no-print { display: none !important; }
   main { max-width: none !important; padding: 0 !important; }
+  /* When a printable area is marked, hide everything else on the page. */
+  body:has(.print-area) > :not(.print-area) { display: none !important; }
+  .print-area { width: 100% !important; max-width: none !important; }
+  /* Table rows shouldn't split across pages mid-row. */
+  tr, .avoid-break { break-inside: avoid; page-break-inside: avoid; }
+  thead { display: table-header-group; }
+  tfoot { display: table-footer-group; }
 }

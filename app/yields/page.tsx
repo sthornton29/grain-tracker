@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
+import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import type { Crop, Entity, Farm, Field, FieldPlanting, County, LoadSplit } from '@/lib/types'
 
 type LoadRow = {
@@ -18,7 +19,7 @@ type LoadRow = {
   from_field_id: string | null
 }
 
-type ViewMode = 'field' | 'farm'
+type ViewMode = 'field' | 'farm' | 'landowner'
 
 const currentYear = () => new Date().getFullYear()
 
@@ -270,23 +271,26 @@ export default function YieldsPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3">
         <h1 className="text-2xl font-bold flex-1">
-          Yields {view === 'field' ? 'by Field' : 'by Farm'}
+          Yields {view === 'field' ? 'by Field' : view === 'farm' ? 'by Farm' : 'by Landowner'}
         </h1>
         <label className="text-sm flex items-center gap-2">
           View
           <select value={view} onChange={(e) => setView(e.target.value as ViewMode)} className={inputCls}>
             <option value="field">By field</option>
             <option value="farm">By farm</option>
+            <option value="landowner">By landowner</option>
           </select>
         </label>
-        <button
-          type="button"
-          onClick={view === 'field' ? exportFieldCsv : exportFarmCsv}
-          disabled={loading || (view === 'field' ? visible.length === 0 : byFarm.length === 0)}
-          className="rounded-lg bg-green-700 text-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
-        >
-          Export CSV
-        </button>
+        {view !== 'landowner' && (
+          <button
+            type="button"
+            onClick={view === 'field' ? exportFieldCsv : exportFarmCsv}
+            disabled={loading || (view === 'field' ? visible.length === 0 : byFarm.length === 0)}
+            className="rounded-lg bg-green-700 text-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
+          >
+            Export CSV
+          </button>
+        )}
       </div>
       <p className="text-sm text-slate-500">
         {view === 'field'
@@ -321,7 +325,9 @@ export default function YieldsPage() {
         </select>
       </div>
 
-      {view === 'field' ? (
+      {view === 'landowner' ? (
+        <YieldsByLandowner />
+      ) : view === 'field' ? (
         <div className="overflow-x-auto bg-white rounded-xl shadow">
           <table className="min-w-full text-sm">
             <thead className="bg-slate-100 text-slate-700">

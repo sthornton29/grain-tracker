@@ -12,6 +12,7 @@ const links = [
   { href: '/cash-flow', label: 'Cash Flow' },
   { href: '/yields', label: 'Yields' },
   { href: '/season', label: 'Season' },
+  { href: '/reports', label: 'Reports' },
   { href: '/settings', label: 'Settings' },
 ]
 

@@ -2,6 +2,7 @@ import Link from 'next/link'
 
 const items = [
   { href: '/settings/entities', label: 'Entities' },
+  { href: '/settings/landowners', label: 'Landowners' },
   { href: '/settings/farms', label: 'Farms' },
   { href: '/settings/fields', label: 'Fields' },
   { href: '/settings/plantings', label: 'Field Plantings' },
