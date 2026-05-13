@@ -217,7 +217,12 @@ export default function ScanTicketsPage() {
 
   function fieldsForCrop(crop_id: string): Field[] {
     if (!crop_id) return fields
-    const ids = new Set(plantings.filter((p) => p.crop_id === crop_id).map((p) => p.field_id))
+    const yearNum = cropYear === '' ? null : Number(cropYear)
+    const ids = new Set(
+      plantings
+        .filter((p) => p.crop_id === crop_id && (yearNum == null || p.season_year === yearNum))
+        .map((p) => p.field_id),
+    )
     return fields.filter((f) => ids.has(f.id))
   }
 

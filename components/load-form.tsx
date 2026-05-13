@@ -213,14 +213,19 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     return bins.filter((b) => b.crop_id === form.crop_id)
   }, [bins, form.crop_id])
 
-  // Only show fields with at least one planting for the selected crop.
+  // Only show fields with a planting that matches BOTH the selected crop and
+  // the selected crop year. Filtering on crop alone surfaced last year's wheat
+  // fields when entering 2026 wheat loads.
   const filteredFields = useMemo(() => {
     if (!form.crop_id) return fields
+    const yearNum = form.crop_year === '' ? null : Number(form.crop_year)
     const plantedFieldIds = new Set(
-      plantings.filter((p) => p.crop_id === form.crop_id).map((p) => p.field_id)
+      plantings
+        .filter((p) => p.crop_id === form.crop_id && (yearNum == null || p.season_year === yearNum))
+        .map((p) => p.field_id),
     )
     return fields.filter((f) => plantedFieldIds.has(f.id))
-  }, [fields, plantings, form.crop_id])
+  }, [fields, plantings, form.crop_id, form.crop_year])
 
   const seasonYearOptions = useMemo(
     () =>
@@ -262,8 +267,8 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [splitMode])
 
-  // If the user changes crop while in split mode, drop any split row whose
-  // selected field no longer has a planting for the new crop.
+  // If the crop or crop year changes (which narrows filteredFields), clear
+  // any split row whose selected field no longer qualifies.
   useEffect(() => {
     if (!splitMode) return
     setSplits((rs) =>
@@ -273,8 +278,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
           : r,
       ),
     )
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.crop_id])
+  }, [splitMode, filteredFields])
 
   const totalNetLb = num(form.net_weight) ?? 0
   const splitParsedWeights = splits.map((s) => num(s.weight) ?? 0)
