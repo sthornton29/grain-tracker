@@ -117,6 +117,19 @@ export type SettlementLine = {
   notes: string | null
 }
 
+export type LoadSplit = {
+  id: string
+  load_id: string
+  field_id: string
+  crop_id: string
+  net_weight: number
+  percentage: number
+  wet_bushels: number | null
+  dry_bushels: number | null
+  notes: string | null
+  created_at: string
+}
+
 export type Load = {
   id: string
   date: string

@@ -5,12 +5,16 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
-import type { Bin, Buyer, Contract, Crop, Field, FieldPlanting, Load, Truck } from '@/lib/types'
+import { allocateSplits, validateSplitDrafts, type SplitDraft } from '@/lib/load-splits'
+import type { Bin, Buyer, Contract, Crop, Field, FieldPlanting, Load, LoadSplit, Truck } from '@/lib/types'
 
 type Props = {
   initial?: Partial<Load>
+  initialSplits?: LoadSplit[]
   mode: 'create' | 'edit'
 }
+
+type SplitRow = { field_id: string; weight: string }
 
 type FormState = {
   date: string
@@ -79,10 +83,23 @@ function fmt(n: number | null): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
 }
 
-export default function LoadForm({ initial, mode }: Props) {
+export default function LoadForm({ initial, initialSplits, mode }: Props) {
   const router = useRouter()
   const supabase = useMemo(() => createClient(), [])
   const [form, setForm] = useState<FormState>(toForm(initial))
+  const [splitMode, setSplitMode] = useState<boolean>(() => (initialSplits?.length ?? 0) > 0)
+  const [splitEntryMode, setSplitEntryMode] = useState<'weight' | 'percentage'>('weight')
+  const [splits, setSplits] = useState<SplitRow[]>(() =>
+    initialSplits && initialSplits.length > 0
+      ? initialSplits.map((s) => ({ field_id: s.field_id, weight: String(s.net_weight) }))
+      : [],
+  )
+  // Tracks whether the user has manually typed into the last split row. When
+  // false, the last row auto-fills as (total net − sum of earlier rows). On
+  // edit-load (splits pre-populated), every row is user-set, so this is true.
+  const [lastSplitManual, setLastSplitManual] = useState<boolean>(
+    () => (initialSplits?.length ?? 0) > 0,
+  )
   const [trucks, setTrucks] = useState<Truck[]>([])
   const [crops, setCrops] = useState<Crop[]>([])
   const [fields, setFields] = useState<Field[]>([])
@@ -231,6 +248,90 @@ export default function LoadForm({ initial, mode }: Props) {
     setForm((f) => ({ ...f, [key]: value }))
   }
 
+  // First time the user activates Split Load with no prior split rows, seed
+  // two rows — prefilling row 1 with the currently selected field when there
+  // is one (so conversion in edit mode doesn't drop the existing field).
+  useEffect(() => {
+    if (!splitMode) return
+    if (splits.length > 0) return
+    setSplits([
+      { field_id: form.from_field_id || '', weight: '' },
+      { field_id: '', weight: '' },
+    ])
+    setLastSplitManual(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [splitMode])
+
+  // If the user changes crop while in split mode, drop any split row whose
+  // selected field no longer has a planting for the new crop.
+  useEffect(() => {
+    if (!splitMode) return
+    setSplits((rs) =>
+      rs.map((r) =>
+        r.field_id && !filteredFields.some((f) => f.id === r.field_id)
+          ? { ...r, field_id: '' }
+          : r,
+      ),
+    )
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.crop_id])
+
+  const totalNetLb = num(form.net_weight) ?? 0
+  const splitParsedWeights = splits.map((s) => num(s.weight) ?? 0)
+  function displayedSplitWeight(i: number): string {
+    if (i < splits.length - 1) return splits[i].weight
+    if (lastSplitManual) return splits[i].weight
+    const otherSum = splitParsedWeights.reduce(
+      (a, v, j) => (j === splits.length - 1 ? a : a + v),
+      0,
+    )
+    const remaining = totalNetLb - otherSum
+    if (!(remaining > 0)) return ''
+    return String(Math.round(remaining * 100) / 100)
+  }
+  function resolvedSplitWeight(i: number): number {
+    return num(displayedSplitWeight(i)) ?? 0
+  }
+  function displayedSplitPct(i: number): string {
+    if (totalNetLb <= 0) return ''
+    const w = resolvedSplitWeight(i)
+    return String(Math.round((w / totalNetLb) * 1000) / 10)
+  }
+  function setSplitWeight(i: number, weight: string) {
+    setSplits((rs) => rs.map((r, j) => (i === j ? { ...r, weight } : r)))
+    if (i === splits.length - 1) setLastSplitManual(true)
+  }
+  function setSplitPct(i: number, pct: string) {
+    if (pct === '') {
+      setSplitWeight(i, '')
+      return
+    }
+    const p = Number(pct)
+    if (!Number.isFinite(p)) return
+    const w = totalNetLb * (p / 100)
+    setSplitWeight(i, w > 0 ? String(Math.round(w * 100) / 100) : '')
+  }
+  function setSplitField(i: number, field_id: string) {
+    setSplits((rs) => rs.map((r, j) => (i === j ? { ...r, field_id } : r)))
+  }
+  function addSplit() {
+    setSplits((rs) => [...rs, { field_id: '', weight: '' }])
+    setLastSplitManual(false)
+  }
+  function removeSplit(i: number) {
+    if (splits.length <= 2) return
+    setSplits((rs) => rs.filter((_, j) => j !== i))
+    setLastSplitManual(false)
+  }
+
+  const splitsResolved: SplitDraft[] = splits.map((s, i) => ({
+    field_id: s.field_id,
+    net_weight: resolvedSplitWeight(i),
+  }))
+  const splitTotalLb = splitsResolved.reduce((a, d) => a + d.net_weight, 0)
+  const splitTotalPct = totalNetLb > 0 ? (splitTotalLb / totalNetLb) * 100 : 0
+  const splitError = splitMode ? validateSplitDrafts(splitsResolved, totalNetLb) : null
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
     // Synchronous guard against double-submit (iPad double-tap, double-click,
@@ -238,6 +339,19 @@ export default function LoadForm({ initial, mode }: Props) {
     // render, so without this a second tap a few ms later passes through and
     // we get duplicate inserts.
     if (submittingRef.current) return
+
+    // Block save when split rows don't add up (or any other split-level
+    // validation fails). Run this BEFORE flipping the busy state so the UI
+    // doesn't briefly grey out for a save that won't proceed.
+    const useSplits = splitMode && form.from_type === 'field'
+    if (useSplits) {
+      const err = validateSplitDrafts(splitsResolved, totalNetLb)
+      if (err) {
+        setError(err)
+        return
+      }
+    }
+
     submittingRef.current = true
     setBusy(true)
     setError(null)
@@ -256,7 +370,12 @@ export default function LoadForm({ initial, mode }: Props) {
       bushels: null, // derived at read time from net_weight + moisture + crop base values
       dry_bushels_override: num(form.dry_bushels_override),
       from_type: form.from_type || null,
-      from_field_id: form.from_type === 'field' ? form.from_field_id || null : null,
+      // Split loads aggregate across fields — clear the single field pointer.
+      from_field_id: useSplits
+        ? null
+        : form.from_type === 'field'
+        ? form.from_field_id || null
+        : null,
       from_bin_id: form.from_type === 'bin' ? form.from_bin_id || null : null,
       to_type: form.to_type || null,
       to_bin_id: form.to_type === 'bin' ? form.to_bin_id || null : null,
@@ -265,11 +384,16 @@ export default function LoadForm({ initial, mode }: Props) {
       ticket_number: form.ticket_number || null,
     }
 
-    let err
+    let savedLoadId: string | null = null
+    let err: { message: string } | null = null
     if (mode === 'create') {
-      ;({ error: err } = await supabase.from('loads').insert(payload))
+      const res = await supabase.from('loads').insert(payload).select('id').single()
+      err = res.error
+      savedLoadId = (res.data as { id: string } | null)?.id ?? null
     } else if (initial?.id) {
-      ;({ error: err } = await supabase.from('loads').update(payload).eq('id', initial.id))
+      const res = await supabase.from('loads').update(payload).eq('id', initial.id)
+      err = res.error
+      savedLoadId = initial.id
     }
 
     if (err) {
@@ -277,6 +401,44 @@ export default function LoadForm({ initial, mode }: Props) {
       setBusy(false)
       setError(err.message)
       return
+    }
+
+    // Persist splits. Edit mode wipes any existing rows first so removed
+    // splits don't linger, then re-inserts the current set. When the user
+    // converted a split load back to single-field, useSplits is false and we
+    // only do the delete.
+    if (savedLoadId) {
+      if (mode === 'edit') {
+        const { error: delErr } = await supabase
+          .from('load_splits')
+          .delete()
+          .eq('load_id', savedLoadId)
+        if (delErr) {
+          submittingRef.current = false
+          setBusy(false)
+          setError(`Saved load but couldn’t update splits: ${delErr.message}`)
+          return
+        }
+      }
+      if (useSplits && payload.crop_id) {
+        const allocated = allocateSplits(
+          {
+            crop_id: payload.crop_id,
+            net_weight: payload.net_weight ?? 0,
+            moisture: payload.moisture,
+          },
+          splitsResolved,
+          selectedCrop ?? null,
+        )
+        const rows = allocated.map((a) => ({ ...a, load_id: savedLoadId }))
+        const { error: insErr } = await supabase.from('load_splits').insert(rows)
+        if (insErr) {
+          submittingRef.current = false
+          setBusy(false)
+          setError(`Saved load but couldn’t save splits: ${insErr.message}`)
+          return
+        }
+      }
     }
     // Leave submittingRef = true; we're navigating away. Resetting it here
     // would briefly re-enable the button before the route change commits.
@@ -347,7 +509,7 @@ export default function LoadForm({ initial, mode }: Props) {
             </button>
           ))}
         </div>
-        {form.from_type === 'field' && (
+        {form.from_type === 'field' && !splitMode && (
           <>
             <select value={form.from_field_id} onChange={(e) => set('from_field_id', e.target.value)} className={inputCls}>
               <option value="">— select field —</option>
@@ -358,7 +520,138 @@ export default function LoadForm({ initial, mode }: Props) {
                 No fields have a planting recorded for this crop. Add one under Settings → Field Plantings.
               </p>
             )}
+            <button
+              type="button"
+              onClick={() => setSplitMode(true)}
+              className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2 w-full sm:w-auto"
+            >
+              Split load across multiple fields
+            </button>
           </>
+        )}
+        {form.from_type === 'field' && splitMode && (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-slate-700 flex-1">
+                Split across {splits.length} field{splits.length === 1 ? '' : 's'}
+              </span>
+              <div className="inline-flex rounded-lg border border-slate-300 overflow-hidden">
+                {(['weight', 'percentage'] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setSplitEntryMode(m)}
+                    className={`px-3 py-2 text-sm ${splitEntryMode === m ? 'bg-green-700 text-white' : 'bg-white'}`}
+                  >
+                    {m === 'weight' ? 'By weight' : 'By percentage'}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => setSplitMode(false)}
+                className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2"
+              >
+                Use single field
+              </button>
+            </div>
+
+            {splitEntryMode === 'percentage' && totalNetLb <= 0 && (
+              <p className="text-xs text-amber-700">
+                Enter the load’s net weight above before allocating by percentage.
+              </p>
+            )}
+
+            {splits.map((row, i) => {
+              const isLast = i === splits.length - 1
+              const weightVal = displayedSplitWeight(i)
+              const pctVal = displayedSplitPct(i)
+              const isAutoFilled = isLast && !lastSplitManual && !!weightVal
+              return (
+                <div key={i} className="rounded-lg border border-slate-200 p-2 space-y-2 bg-slate-50">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500 w-16">Field {i + 1}</span>
+                    <select
+                      value={row.field_id}
+                      onChange={(e) => setSplitField(i, e.target.value)}
+                      className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-base bg-white"
+                    >
+                      <option value="">— select field —</option>
+                      {filteredFields.map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
+                    </select>
+                    {splits.length > 2 && (
+                      <button
+                        type="button"
+                        onClick={() => removeSplit(i)}
+                        className="text-red-600 text-sm px-2"
+                        aria-label="Remove split"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {splitEntryMode === 'weight' ? (
+                      <>
+                        <label className="text-xs text-slate-500 w-16">Net lb</label>
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.01"
+                          value={weightVal}
+                          onChange={(e) => setSplitWeight(i, e.target.value)}
+                          className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-base bg-white"
+                          placeholder={isAutoFilled ? 'auto' : ''}
+                        />
+                        <span className="text-xs text-slate-500 w-20 text-right">
+                          {pctVal ? `${pctVal}%` : ''}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <label className="text-xs text-slate-500 w-16">%</label>
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.01"
+                          value={pctVal}
+                          onChange={(e) => setSplitPct(i, e.target.value)}
+                          className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-base bg-white"
+                          disabled={totalNetLb <= 0}
+                        />
+                        <span className="text-xs text-slate-500 w-24 text-right font-mono">
+                          {weightVal ? `${Number(weightVal).toLocaleString()} lb` : ''}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                  {isAutoFilled && (
+                    <p className="text-[11px] text-slate-500">Auto-filled from remainder — type a value to override.</p>
+                  )}
+                </div>
+              )
+            })}
+
+            <button
+              type="button"
+              onClick={addSplit}
+              className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2"
+            >
+              + Add another field
+            </button>
+
+            <div className={`rounded-lg p-2 text-sm ${splitError ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-700'}`}>
+              <div className="flex justify-between font-mono">
+                <span>Total:</span>
+                <span>
+                  {splitTotalLb.toLocaleString(undefined, { maximumFractionDigits: 0 })} / {totalNetLb.toLocaleString(undefined, { maximumFractionDigits: 0 })} lb
+                  {' · '}
+                  {splitTotalPct.toFixed(1)}%
+                </span>
+              </div>
+              {splitError && <div className="mt-1 text-xs">{splitError}</div>}
+            </div>
+          </div>
         )}
         {form.from_type === 'bin' && (
           <>

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
-import type { Buyer, Contract, Crop, Entity, FieldPlanting } from '@/lib/types'
+import type { Buyer, Contract, Crop, Entity, FieldPlanting, LoadSplit } from '@/lib/types'
 
 type LoadRow = {
   id: string
@@ -58,6 +58,7 @@ export default function CashFlowPage() {
   const [fields, setFields] = useState<FieldRow[]>([])
   const [farms, setFarms] = useState<FarmRow[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
+  const [loadSplits, setLoadSplits] = useState<LoadSplit[]>([])
   const [loading, setLoading] = useState(true)
 
   const [cropYear, setCropYear] = useState<number | ''>('')
@@ -85,7 +86,7 @@ export default function CashFlowPage() {
         }
         return out
       }
-      const [ct, ld, ln, st, cr, by, en, fi, fa, pl] = await Promise.all([
+      const [ct, ld, ln, st, cr, by, en, fi, fa, pl, sp] = await Promise.all([
         supabase.from('contracts').select('*'),
         fetchAllLoads(),
         supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue, settlement_id'),
@@ -96,6 +97,7 @@ export default function CashFlowPage() {
         supabase.from('fields').select('id, farm_id'),
         supabase.from('farms').select('id, entity_id'),
         supabase.from('field_plantings').select('season_year'),
+        supabase.from('load_splits').select('load_id, field_id'),
       ])
       setContracts((ct.data as Contract[]) || [])
       setLoads(ld)
@@ -107,6 +109,7 @@ export default function CashFlowPage() {
       setFields((fi.data as FieldRow[]) || [])
       setFarms((fa.data as FarmRow[]) || [])
       setPlantings((pl.data as FieldPlanting[]) || [])
+      setLoadSplits((sp.data as LoadSplit[]) || [])
       setLoading(false)
     })()
   }, [supabase])
@@ -118,6 +121,15 @@ export default function CashFlowPage() {
     const farmEntity = new Map(farms.map((f) => [f.id, f.entity_id]))
     return new Map(fields.map((f) => [f.id, f.farm_id ? farmEntity.get(f.farm_id) ?? null : null]))
   }, [farms, fields])
+  const splitsByLoadId = useMemo(() => {
+    const m = new Map<string, string[]>()
+    for (const s of loadSplits) {
+      const list = m.get(s.load_id) ?? []
+      list.push(s.field_id)
+      m.set(s.load_id, list)
+    }
+    return m
+  }, [loadSplits])
 
   const lineByLoadId = useMemo(() => {
     const m = new Map<string, LineRow>()
@@ -189,13 +201,22 @@ export default function CashFlowPage() {
       } else {
         agg.deliveredUnpaid += bu
       }
-      if (load.from_type === 'field' && load.from_field_id) {
-        const ent = fieldEntity.get(load.from_field_id) ?? null
-        if (ent) agg.entityIds.add(ent)
+      if (load.from_type === 'field') {
+        if (load.from_field_id) {
+          const ent = fieldEntity.get(load.from_field_id) ?? null
+          if (ent) agg.entityIds.add(ent)
+        } else {
+          // Split load — attribute to every entity its constituent fields touch.
+          const fieldIds = splitsByLoadId.get(load.id) ?? []
+          for (const fid of fieldIds) {
+            const ent = fieldEntity.get(fid) ?? null
+            if (ent) agg.entityIds.add(ent)
+          }
+        }
       }
     }
     return map
-  }, [contracts, loads, cropById, lineByLoadId, lineByTicket, settlementById, fieldEntity])
+  }, [contracts, loads, cropById, lineByLoadId, lineByTicket, settlementById, fieldEntity, splitsByLoadId])
 
   const visibleContracts = contracts.filter((c) => {
     if (cropYear !== '' && c.crop_year !== cropYear) return false

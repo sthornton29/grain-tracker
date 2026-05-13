@@ -4,9 +4,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
-import type { Crop, FieldPlanting } from '@/lib/types'
+import type { Crop, FieldPlanting, LoadSplit } from '@/lib/types'
 
 type LoadRow = {
+  id: string
   date: string
   net_weight: number | null
   moisture: number | null
@@ -24,20 +25,23 @@ export default function SeasonSummaryPage() {
   const [crops, setCrops] = useState<Crop[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
+  const [splits, setSplits] = useState<LoadSplit[]>([])
   const [loading, setLoading] = useState(true)
   const [year, setYear] = useState<number>(currentYear())
   const [cropYear, setCropYear] = useState<number | ''>('')
 
   async function refresh() {
     setLoading(true)
-    const [cr, pl, lo] = await Promise.all([
+    const [cr, pl, lo, sp] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
-      supabase.from('loads').select('date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id'),
+      supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id'),
+      supabase.from('load_splits').select('*'),
     ])
     setCrops((cr.data as Crop[]) || [])
     setPlantings((pl.data as FieldPlanting[]) || [])
     setLoads((lo.data as LoadRow[]) || [])
+    setSplits((sp.data as LoadSplit[]) || [])
     setLoading(false)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
@@ -52,7 +56,9 @@ export default function SeasonSummaryPage() {
 
   const yearPlantings = plantings.filter((p) => p.season_year === year)
 
-  // dry bushels per (fieldId, cropId, year)
+  // dry bushels per (fieldId, cropId, year). Single-field loads aggregate by
+  // from_field_id; split loads (from_field_id NULL) allocate per load_splits
+  // row using the bushels already stored at save time.
   const dryBuByKey = useMemo(() => {
     const map = new Map<string, number>()
     for (const l of loads) {
@@ -72,8 +78,19 @@ export default function SeasonSummaryPage() {
       const key = `${l.from_field_id}|${l.crop_id}|${yr}`
       map.set(key, (map.get(key) ?? 0) + dryBushels)
     }
+    const loadById = new Map(loads.map((l) => [l.id, l]))
+    for (const s of splits) {
+      const parent = loadById.get(s.load_id)
+      if (!parent) continue
+      const yr = Number(parent.date.slice(0, 4))
+      if (yr !== year) continue
+      if (cropYear !== '' && parent.crop_year !== cropYear) continue
+      if (s.dry_bushels == null) continue
+      const key = `${s.field_id}|${s.crop_id}|${yr}`
+      map.set(key, (map.get(key) ?? 0) + s.dry_bushels)
+    }
     return map
-  }, [loads, cropById, year, cropYear])
+  }, [loads, splits, cropById, year, cropYear])
 
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings(

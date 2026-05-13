@@ -1,11 +1,12 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
-import type { Entity, Farm, Field, FieldPlanting, County } from '@/lib/types'
+import { splitFieldLabel } from '@/lib/load-splits'
+import type { Entity, Farm, Field, FieldPlanting, County, LoadSplit } from '@/lib/types'
 
 type Row = {
   id: string
@@ -68,8 +69,11 @@ function bushelsFor(r: Row) {
   })
 }
 
-function fromLabel(r: Row) {
-  if (r.from_type === 'field') return r.from_field?.name_or_number ?? ''
+function fromLabel(r: Row, splits: LoadSplit[] | undefined, fieldNameById: Map<string, string>) {
+  if (r.from_type === 'field') {
+    if (splits && splits.length > 0) return splitFieldLabel(splits, fieldNameById)
+    return r.from_field?.name_or_number ?? ''
+  }
   if (r.from_type === 'bin') return r.from_bin?.name_or_number ?? ''
   return ''
 }
@@ -103,6 +107,8 @@ export default function LoadsPage() {
   const [contractId, setContractId] = useState('')
   const [paidTickets, setPaidTickets] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [splitsByLoad, setSplitsByLoad] = useState<Map<string, LoadSplit[]>>(new Map())
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   type SortKey = 'date' | 'ticket' | 'truck' | 'crop' | 'net' | 'dry' | 'moisture'
   const [sortKey, setSortKey] = useState<SortKey>('date')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
@@ -117,7 +123,7 @@ export default function LoadsPage() {
     let query = supabase.from('loads').select(SELECT).order('date', { ascending: false }).order('time', { ascending: false })
     if (from) query = query.gte('date', from)
     if (to) query = query.lte('date', to)
-    const [loadsRes, entitiesRes, farmsRes, fieldsRes, countiesRes, settlementLinesRes, plantingsRes, contractsRes] = await Promise.all([
+    const [loadsRes, entitiesRes, farmsRes, fieldsRes, countiesRes, settlementLinesRes, plantingsRes, contractsRes, splitsRes] = await Promise.all([
       query,
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('*'),
@@ -128,8 +134,16 @@ export default function LoadsPage() {
       supabase.from('contracts')
         .select('id, contract_number, buyer_id, crop_id, entity_id, crop_year, buyer:buyers(name), crop:crops(name)')
         .order('contract_number'),
+      supabase.from('load_splits').select('*'),
     ])
     setRows((loadsRes.data as unknown as Row[]) || [])
+    const splitMap = new Map<string, LoadSplit[]>()
+    for (const s of ((splitsRes.data as LoadSplit[]) || [])) {
+      const list = splitMap.get(s.load_id) ?? []
+      list.push(s)
+      splitMap.set(s.load_id, list)
+    }
+    setSplitsByLoad(splitMap)
     setEntities((entitiesRes.data as Entity[]) || [])
     setFarms((farmsRes.data as Farm[]) || [])
     setFields((fieldsRes.data as Field[]) || [])
@@ -151,6 +165,11 @@ export default function LoadsPage() {
       cropYear === '' ? null : cropYear,
     ),
     [plantings, cropYear],
+  )
+
+  const fieldNameById = useMemo(
+    () => new Map(fields.map((f) => [f.id, f.name_or_number])),
+    [fields],
   )
 
   const fieldEntityId = useMemo(() => {
@@ -210,10 +229,18 @@ export default function LoadsPage() {
   }, [contractOptions, contractId])
 
   const filtered = rows.filter((r) => {
+    const rSplits = splitsByLoad.get(r.id)
     if (entityId) {
-      const fromFieldEntity = r.from_type === 'field' && r.from_field_id
-        ? fieldEntityId.get(r.from_field_id) ?? null
-        : null
+      // Split loads spread across multiple fields — match if ANY field maps
+      // to the requested entity. For a single-field load this reduces to the
+      // original from_field_id check.
+      const fromFieldIds: string[] = []
+      if (rSplits && rSplits.length > 0) {
+        for (const s of rSplits) fromFieldIds.push(s.field_id)
+      } else if (r.from_type === 'field' && r.from_field_id) {
+        fromFieldIds.push(r.from_field_id)
+      }
+      const fromFieldMatches = fromFieldIds.some((id) => fieldEntityId.get(id) === entityId)
       // If the load has a contract attached, that contract's entity is
       // authoritative — don't fall back to "this buyer also sells to entity X".
       // The buyer fallback only applies to loads not yet linked to a contract.
@@ -226,21 +253,27 @@ export default function LoadsPage() {
         if (set) buyerMatches = set.has(entityId)
       }
       const matchesEntity =
-        fromFieldEntity === entityId
+        fromFieldMatches
         || contractAttribution === entityId
         || buyerMatches
       if (!matchesEntity) return false
     }
     if (countyId) {
-      if (r.from_type !== 'field' || !r.from_field_id) return false
-      if (fieldCountyId.get(r.from_field_id) !== countyId) return false
+      if (r.from_type !== 'field') return false
+      const fieldIds: string[] = []
+      if (rSplits && rSplits.length > 0) {
+        for (const s of rSplits) fieldIds.push(s.field_id)
+      } else if (r.from_field_id) {
+        fieldIds.push(r.from_field_id)
+      }
+      if (!fieldIds.some((id) => fieldCountyId.get(id) === countyId)) return false
     }
     if (contractId && r.contract_id !== contractId) return false
     if (cropYear !== '' && r.crop_year !== cropYear) return false
     if (!q) return true
     const hay = [
       r.ticket_number, r.truck?.name_or_number, r.crop?.name,
-      fromLabel(r), toLabel(r), r.contract?.contract_number, r.date,
+      fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number, r.date,
     ].filter(Boolean).join(' ').toLowerCase()
     return hay.includes(q.toLowerCase())
   })
@@ -270,6 +303,14 @@ export default function LoadsPage() {
     })
     return arr
   }, [filtered, sortKey, sortDir])
+
+  function toggleExpanded(id: string) {
+    setExpanded((s) => {
+      const next = new Set(s)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
 
   function toggleRow(id: string) {
     setSelected((s) => {
@@ -320,18 +361,32 @@ export default function LoadsPage() {
     const headers = [
       'date','time','ticket','truck','crop','from','to','contract',
       'gross_lb','tare_lb','net_lb','wet_bu','dry_bu','moisture','test_weight',
+      'is_split','split_details',
     ]
     const lines = [headers.join(',')]
     for (const r of rowsToExport) {
       const { wetBushels, dryBushels } = bushelsFor(r)
+      const rSplits = splitsByLoad.get(r.id)
+      const isSplit = !!(rSplits && rSplits.length > 0)
+      const splitDetails = isSplit
+        ? [...rSplits!]
+            .sort((a, b) => b.net_weight - a.net_weight)
+            .map((s) => {
+              const name = fieldNameById.get(s.field_id) ?? '?'
+              const dry = s.dry_bushels != null ? s.dry_bushels.toFixed(2) : ''
+              return `${name}: ${dry} bu (${s.percentage.toFixed(1)}%)`
+            })
+            .join('; ')
+        : ''
       lines.push([
         r.date, r.time ?? '', r.ticket_number ?? '',
         r.truck?.name_or_number ?? '', r.crop?.name ?? '',
-        fromLabel(r), toLabel(r), r.contract?.contract_number ?? '',
+        fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number ?? '',
         r.gross_weight ?? '', r.tare_weight ?? '', r.net_weight ?? '',
         wetBushels != null ? wetBushels.toFixed(2) : '',
         dryBushels != null ? dryBushels.toFixed(2) : '',
         r.moisture ?? '', r.test_weight ?? '',
+        isSplit ? 'true' : 'false', splitDetails,
       ].map(csvEscape).join(','))
     }
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
@@ -463,14 +518,31 @@ export default function LoadsPage() {
             {sorted.map((r) => {
               const { wetBushels, dryBushels } = bushelsFor(r)
               const fmt = (n: number | null) => n != null ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : ''
+              const rSplits = splitsByLoad.get(r.id)
+              const isSplit = !!(rSplits && rSplits.length > 0)
+              const isExpanded = expanded.has(r.id)
               return (
-                <tr key={r.id} className={`border-t border-slate-100 ${selected.has(r.id) ? 'bg-sky-50' : ''}`}>
+                <Fragment key={r.id}>
+                <tr className={`border-t border-slate-100 ${selected.has(r.id) ? 'bg-sky-50' : ''}`}>
                   <td className="px-3 py-2"><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleRow(r.id)} /></td>
                   <td className="px-3 py-2 whitespace-nowrap">{r.date}{r.time ? ` ${r.time.slice(0,5)}` : ''}</td>
                   <td className="px-3 py-2">{r.ticket_number}</td>
                   <td className="px-3 py-2">{r.truck?.name_or_number}</td>
                   <td className="px-3 py-2">{r.crop?.name}</td>
-                  <td className="px-3 py-2">{fromLabel(r)}</td>
+                  <td className="px-3 py-2">
+                    <span>{fromLabel(r, rSplits, fieldNameById)}</span>
+                    {isSplit && (
+                      <button
+                        type="button"
+                        onClick={() => toggleExpanded(r.id)}
+                        className="ml-2 inline-flex items-center gap-1 text-xs bg-sky-100 text-sky-800 rounded px-2 py-0.5 hover:bg-sky-200"
+                        title="Show split breakdown"
+                      >
+                        <span>{isExpanded ? '▾' : '▸'}</span>
+                        <span>Split · {rSplits!.length}</span>
+                      </button>
+                    )}
+                  </td>
                   <td className="px-3 py-2">
                     {toLabel(r)}{r.contract?.contract_number ? ` (#${r.contract.contract_number})` : ''}
                     {(() => {
@@ -487,6 +559,36 @@ export default function LoadsPage() {
                   <td className="px-3 py-2"><Link href={`/loads/${r.id}/edit`} className="text-sky-700">Edit</Link></td>
                   <td className="px-3 py-2"><button onClick={() => onDelete(r.id)} className="text-red-600">Delete</button></td>
                 </tr>
+                {isSplit && isExpanded && (
+                  <tr className="bg-slate-50 border-t border-slate-100">
+                    <td></td>
+                    <td colSpan={12} className="px-3 py-2">
+                      <table className="text-xs">
+                        <thead>
+                          <tr className="text-slate-500">
+                            <th className="text-left pr-6 font-medium">Field</th>
+                            <th className="text-right pr-6 font-medium">Net lb</th>
+                            <th className="text-right pr-6 font-medium">%</th>
+                            <th className="text-right pr-6 font-medium">Wet bu</th>
+                            <th className="text-right pr-6 font-medium">Dry bu</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[...rSplits!].sort((a, b) => b.net_weight - a.net_weight).map((s) => (
+                            <tr key={s.id}>
+                              <td className="pr-6 py-0.5">{fieldNameById.get(s.field_id) ?? '—'}</td>
+                              <td className="pr-6 py-0.5 text-right font-mono">{s.net_weight.toLocaleString()}</td>
+                              <td className="pr-6 py-0.5 text-right font-mono">{s.percentage.toFixed(1)}%</td>
+                              <td className="pr-6 py-0.5 text-right font-mono">{fmt(s.wet_bushels)}</td>
+                              <td className="pr-6 py-0.5 text-right font-mono">{fmt(s.dry_bushels)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               )
             })}
           </tbody>
