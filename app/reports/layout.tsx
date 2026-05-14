@@ -11,6 +11,7 @@ const categories = [
       { label: 'Yields by Field', href: '/yields', external: true },
       { label: 'Yields by Farm', href: '/yields', external: true },
       { label: 'Yields by Landowner', href: '/reports/yields-by-landowner', external: false },
+      { label: 'Crop Insurance Production', href: '/reports/crop-insurance', external: false },
       { label: 'Season Summary', href: '/season', external: true },
     ],
   },

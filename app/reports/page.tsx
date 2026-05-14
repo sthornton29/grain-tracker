@@ -31,6 +31,17 @@ export default function ReportsLanding() {
             share of bushels at the configured percentage. Ready to hand to a landowner.
           </p>
         </Link>
+        <Link
+          href="/reports/crop-insurance"
+          className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
+        >
+          <h2 className="font-bold mb-1">Crop Insurance Production Report</h2>
+          <p className="text-sm text-slate-600">
+            County × practice (irrigated / dryland) production report formatted for crop
+            insurance agents. Summary plus a detail sheet per county/practice, with Excel,
+            PDF, and print exports.
+          </p>
+        </Link>
       </div>
     </div>
   )
