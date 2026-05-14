@@ -15,6 +15,26 @@ type Props = {
   onImported?: () => void
 }
 
+// Emits a CSV with just the header row matching the import config's column
+// labels, so a user can fill in their data offline and import it back here.
+// Required columns get a "*" suffix in the header to match the live hint.
+function downloadTemplate(config: ImportConfig) {
+  const headers = config.columns.map((c) => {
+    const base = c.label ?? c.key
+    return c.required ? `${base}*` : base
+  })
+  const csv = headers.join(',') + '\n'
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${config.tableName}-template.csv`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
 export default function CsvImport({ config, onImported }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [open, setOpen] = useState(false)
@@ -112,6 +132,13 @@ export default function CsvImport({ config, onImported }: Props) {
                 </span>
               ))}
             </p>
+            <button
+              type="button"
+              onClick={() => downloadTemplate(config)}
+              className="text-sm text-sky-700 underline mt-2"
+            >
+              Download template CSV
+            </button>
           </div>
 
           {err && <p className="text-sm text-red-600">{err}</p>}
