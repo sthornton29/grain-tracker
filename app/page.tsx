@@ -10,6 +10,7 @@ export default function Home() {
     { href: '/cash-flow', label: 'Cash Flow', sub: 'Monthly revenue forecast', color: 'bg-indigo-700' },
     { href: '/yields', label: 'Yields', sub: 'Bushels per acre by field', color: 'bg-emerald-700' },
     { href: '/season', label: 'Season Summary', sub: 'Acres + yield by crop', color: 'bg-lime-700' },
+    { href: '/reports', label: 'Reports', sub: 'Yields by landowner, share rent', color: 'bg-rose-700' },
     { href: '/settings', label: 'Settings', sub: 'Entities, farms, plantings…', color: 'bg-slate-500' },
   ]
   return (
