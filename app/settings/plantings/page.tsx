@@ -11,6 +11,7 @@ type Form = {
   crop_id: string
   season_year: string
   planted_acres: string
+  irrigated_acres: string
   planting_date: string
   notes: string
 }
@@ -22,22 +23,44 @@ const empty = (year: number): Form => ({
   crop_id: '',
   season_year: String(year),
   planted_acres: '',
+  irrigated_acres: '',
   planting_date: '',
   notes: '',
 })
 
+function dryFromInputs(plantedStr: string, irrStr: string): number {
+  const p = Number(plantedStr || 0) || 0
+  const i = Number(irrStr || 0) || 0
+  return Math.max(0, p - i)
+}
+
+function irrigatedExceedsPlanted(plantedStr: string, irrStr: string): boolean {
+  const p = Number(plantedStr || 0) || 0
+  const i = Number(irrStr || 0) || 0
+  return i > p
+}
+
+function irrigatedNegative(irrStr: string): boolean {
+  return Number(irrStr || 0) < 0
+}
+
 function payload(f: Form) {
+  const planted = f.planted_acres === '' ? 0 : Number(f.planted_acres)
+  const irr = f.irrigated_acres === '' ? 0 : Number(f.irrigated_acres)
   return {
     field_id: f.field_id,
     crop_id: f.crop_id,
     season_year: Number(f.season_year),
-    planted_acres: f.planted_acres === '' ? 0 : Number(f.planted_acres),
+    planted_acres: planted,
+    irrigated_acres: irr,
+    dryland_acres: Math.max(0, planted - irr),
     planting_date: f.planting_date || null,
     notes: f.notes.trim() || null,
   }
 }
 
 const INPUT_CLS = 'rounded-lg border border-slate-300 px-3 py-2'
+const READONLY_CLS = 'rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-slate-600'
 
 function FormFields({
   value,
@@ -55,45 +78,137 @@ function FormFields({
   seasonYearOptions: number[]
 }) {
   const set = <K extends keyof Form>(k: K, v: Form[K]) => onChange({ ...value, [k]: v })
+  const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
+
+  // Default irrigated_acres to min(field.irrigated_acres, planted_acres) when
+  // the user picks a field or changes planted_acres — but only if the user
+  // hasn't typed an irrigated value yet. The override happens by leaving the
+  // field empty initially; once they type, we stop touching it.
+  function onPickField(id: string) {
+    const next: Form = { ...value, field_id: id }
+    if (value.irrigated_acres === '' && id) {
+      const f = fieldById.get(id)
+      const fieldIrr = f ? Number(f.irrigated_acres) || 0 : 0
+      const planted = Number(value.planted_acres || 0) || 0
+      // If planted is still 0, use the field's full irrigated_acres as the
+      // hint so the user sees the field's irrigated baseline. Once they type
+      // planted_acres, we'll clamp again below.
+      const seed = planted > 0 ? Math.min(fieldIrr, planted) : fieldIrr
+      if (seed > 0) next.irrigated_acres = String(seed)
+    }
+    onChange(next)
+  }
+
+  function onChangePlanted(v: string) {
+    const next: Form = { ...value, planted_acres: v }
+    // Clamp the seeded default down if planted < irrigated and the seed
+    // matched the field's irrigated_acres. We only clamp when the user
+    // hasn't deviated from the field's irrigated value.
+    const f = value.field_id ? fieldById.get(value.field_id) : null
+    const fieldIrr = f ? Number(f.irrigated_acres) || 0 : 0
+    const currentIrr = Number(value.irrigated_acres || 0) || 0
+    const planted = Number(v || 0) || 0
+    if (currentIrr === fieldIrr && planted > 0 && currentIrr > planted) {
+      next.irrigated_acres = String(planted)
+    }
+    onChange(next)
+  }
+
+  const dryShown =
+    value.planted_acres === '' && value.irrigated_acres === ''
+      ? ''
+      : String(dryFromInputs(value.planted_acres, value.irrigated_acres))
+
+  const invalid =
+    irrigatedExceedsPlanted(value.planted_acres, value.irrigated_acres) ||
+    irrigatedNegative(value.irrigated_acres)
+
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-      <select value={value.field_id} onChange={(e) => set('field_id', e.target.value)} className={INPUT_CLS}>
-        <option value="">— field —</option>
-        {fields.map((f) => <option key={f.id} value={f.id}>{fieldLabel(f.id)}</option>)}
-      </select>
-      <select value={value.crop_id} onChange={(e) => set('crop_id', e.target.value)} className={INPUT_CLS}>
-        <option value="">— crop —</option>
-        {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-      </select>
-      <select
-        value={value.season_year}
-        onChange={(e) => set('season_year', e.target.value)}
-        className={INPUT_CLS}
-      >
-        <option value="">— season year —</option>
-        {seasonYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
-      </select>
-      <input
-        type="number"
-        step="0.01"
-        value={value.planted_acres}
-        onChange={(e) => set('planted_acres', e.target.value)}
-        placeholder="Planted acres"
-        className={INPUT_CLS}
-      />
-      <input
-        type="date"
-        value={value.planting_date}
-        onChange={(e) => set('planting_date', e.target.value)}
-        className={INPUT_CLS}
-      />
+    <div className="space-y-2">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <select value={value.field_id} onChange={(e) => onPickField(e.target.value)} className={INPUT_CLS}>
+          <option value="">— field —</option>
+          {fields.map((f) => <option key={f.id} value={f.id}>{fieldLabel(f.id)}</option>)}
+        </select>
+        <select value={value.crop_id} onChange={(e) => set('crop_id', e.target.value)} className={INPUT_CLS}>
+          <option value="">— crop —</option>
+          {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        <select
+          value={value.season_year}
+          onChange={(e) => set('season_year', e.target.value)}
+          className={INPUT_CLS}
+        >
+          <option value="">— season year —</option>
+          {seasonYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
+        </select>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <label className="text-xs text-slate-500 flex flex-col gap-1">
+          Planted acres
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            value={value.planted_acres}
+            onChange={(e) => onChangePlanted(e.target.value)}
+            placeholder="0"
+            className={INPUT_CLS}
+          />
+        </label>
+        <label className="text-xs text-slate-500 flex flex-col gap-1">
+          Irrigated acres
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            value={value.irrigated_acres}
+            onChange={(e) => set('irrigated_acres', e.target.value)}
+            placeholder="0"
+            className={INPUT_CLS}
+          />
+        </label>
+        <label className="text-xs text-slate-500 flex flex-col gap-1">
+          Dryland acres
+          <input
+            type="text"
+            value={dryShown}
+            readOnly
+            tabIndex={-1}
+            className={READONLY_CLS}
+          />
+        </label>
+        <label className="text-xs text-slate-500 flex flex-col gap-1">
+          Planting date
+          <input
+            type="date"
+            value={value.planting_date}
+            onChange={(e) => set('planting_date', e.target.value)}
+            className={INPUT_CLS}
+          />
+        </label>
+      </div>
+      {invalid && (
+        <p className="text-sm text-red-600">
+          {irrigatedNegative(value.irrigated_acres)
+            ? 'Irrigated acres cannot be negative'
+            : 'Irrigated acres cannot exceed planted acres'}
+        </p>
+      )}
       <input
         value={value.notes}
         onChange={(e) => set('notes', e.target.value)}
         placeholder="Notes"
-        className={INPUT_CLS}
+        className={`${INPUT_CLS} w-full`}
       />
     </div>
+  )
+}
+
+function formInvalid(f: Form): boolean {
+  return (
+    irrigatedExceedsPlanted(f.planted_acres, f.irrigated_acres) ||
+    irrigatedNegative(f.irrigated_acres)
   )
 }
 
@@ -183,6 +298,10 @@ export default function PlantingsPage() {
       setErr('Field, crop, and season year are required.')
       return
     }
+    if (formInvalid(form)) {
+      setErr('Fix the irrigated acres value before saving.')
+      return
+    }
     const { error } = await supabase.from('field_plantings').insert(payload(form))
     if (error) { setErr(error.message); return }
     setForm(empty(year))
@@ -193,6 +312,10 @@ export default function PlantingsPage() {
   async function save(id: string) {
     if (!editForm.field_id || !editForm.crop_id || !editForm.season_year) {
       setErr('Field, crop, and season year are required.')
+      return
+    }
+    if (formInvalid(editForm)) {
+      setErr('Fix the irrigated acres value before saving.')
       return
     }
     const { error } = await supabase.from('field_plantings').update(payload(editForm)).eq('id', id)
@@ -231,6 +354,8 @@ export default function PlantingsPage() {
         crop_id: p.crop_id,
         season_year: year,
         planted_acres: Number(p.planted_acres),
+        irrigated_acres: Number(p.irrigated_acres) || 0,
+        dryland_acres: Math.max(0, Number(p.planted_acres) - (Number(p.irrigated_acres) || 0)),
         planting_date: null,
         notes: null,
       }))
@@ -257,13 +382,17 @@ export default function PlantingsPage() {
       return
     }
     setBusy(true)
+    const planted = Number(p.planted_acres)
+    const irr = Number(p.irrigated_acres) || 0
     const { data: inserted, error: insErr } = await supabase
       .from('field_plantings')
       .insert({
         field_id: p.field_id,
         crop_id: soybeanCropId,
         season_year: p.season_year,
-        planted_acres: Number(p.planted_acres),
+        planted_acres: planted,
+        irrigated_acres: irr,
+        dryland_acres: Math.max(0, planted - irr),
         planting_date: null,
         paired_planting_id: p.id,
         notes: 'Double-crop pair',
@@ -305,6 +434,7 @@ export default function PlantingsPage() {
             { key: 'crop_id', label: 'crop', required: true, fk: { table: 'crops', matchColumn: 'name' } },
             { key: 'season_year', type: 'number', required: true },
             { key: 'planted_acres', type: 'number' },
+            { key: 'irrigated_acres', type: 'number' },
             { key: 'planting_date', type: 'date' },
             { key: 'notes' },
           ],
@@ -349,7 +479,12 @@ export default function PlantingsPage() {
       <form onSubmit={add} className="bg-white rounded-xl shadow p-4 space-y-3">
         <h2 className="font-semibold">Add planting</h2>
         <FormFields value={form} onChange={setForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} />
-        <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add</button>
+        <button
+          disabled={formInvalid(form)}
+          className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50"
+        >
+          Add
+        </button>
       </form>
 
       {err && <p className="text-sm text-red-600">{err}</p>}
@@ -384,14 +519,14 @@ export default function PlantingsPage() {
         <table className="min-w-full text-sm">
           <thead className="bg-slate-100 text-slate-700">
             <tr>
-              {['Field', 'Crop', 'Acres', 'Planted', '', 'Notes', '', '', ''].map((h, i) => (
+              {['Field', 'Crop', 'Planted ac', 'Irrigated ac', 'Dryland ac', 'Planted', '', 'Notes', '', '', ''].map((h, i) => (
                 <th key={i} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {visible.length === 0 && (
-              <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">No plantings for {year}.</td></tr>
+              <tr><td colSpan={11} className="px-3 py-6 text-center text-slate-400">No plantings for {year}.</td></tr>
             )}
             {visible.map((p) => {
               const isEditing = editingId === p.id
@@ -402,10 +537,14 @@ export default function PlantingsPage() {
               return (
                 <tr key={p.id} className="border-t border-slate-100 align-top">
                   {isEditing ? (
-                    <td colSpan={9} className="px-3 py-3">
+                    <td colSpan={11} className="px-3 py-3">
                       <FormFields value={editForm} onChange={setEditForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} />
                       <div className="flex gap-2 mt-2">
-                        <button onClick={() => save(p.id)} className="text-green-700 font-semibold">Save</button>
+                        <button
+                          onClick={() => save(p.id)}
+                          disabled={formInvalid(editForm)}
+                          className="text-green-700 font-semibold disabled:opacity-50"
+                        >Save</button>
                         <button onClick={() => setEditingId(null)} className="text-slate-500">Cancel</button>
                       </div>
                     </td>
@@ -414,6 +553,12 @@ export default function PlantingsPage() {
                       <td className="px-3 py-2">{fieldLabel(p.field_id)}</td>
                       <td className="px-3 py-2">{cropNm}</td>
                       <td className="px-3 py-2 text-right">{Number(p.planted_acres)}</td>
+                      <td className="px-3 py-2 text-right">
+                        {Number(p.irrigated_acres) > 0 ? Number(p.irrigated_acres) : '—'}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        {Number(p.dryland_acres) > 0 ? Number(p.dryland_acres) : '—'}
+                      </td>
                       <td className="px-3 py-2">{p.planting_date ?? ''}</td>
                       <td className="px-3 py-2">
                         {doubleCropSoyIds.has(p.id) && (
@@ -442,6 +587,7 @@ export default function PlantingsPage() {
                               crop_id: p.crop_id,
                               season_year: String(p.season_year),
                               planted_acres: String(p.planted_acres),
+                              irrigated_acres: Number(p.irrigated_acres) > 0 ? String(p.irrigated_acres) : '',
                               planting_date: p.planting_date ?? '',
                               notes: p.notes ?? '',
                             })

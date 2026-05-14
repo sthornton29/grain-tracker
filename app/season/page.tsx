@@ -105,6 +105,8 @@ export default function SeasonSummaryPage() {
     fullSeasonAcres: number
     doubleCropAcres: number
     totalAcres: number
+    irrigatedAcres: number
+    drylandAcres: number
     dryBu: number
   }
 
@@ -118,10 +120,16 @@ export default function SeasonSummaryPage() {
     for (const p of yearPlantings) {
       const cropName = cropById.get(p.crop_id)?.name ?? '—'
       const key = p.crop_id
-      if (!m.has(key)) m.set(key, { cropName, fullSeasonAcres: 0, doubleCropAcres: 0, totalAcres: 0, dryBu: 0 })
+      if (!m.has(key)) m.set(key, {
+        cropName,
+        fullSeasonAcres: 0, doubleCropAcres: 0, totalAcres: 0,
+        irrigatedAcres: 0, drylandAcres: 0, dryBu: 0,
+      })
       const agg = m.get(key)!
       const acres = Number(p.planted_acres)
       agg.totalAcres += acres
+      agg.irrigatedAcres += Number(p.irrigated_acres) || 0
+      agg.drylandAcres   += Number(p.dryland_acres)   || 0
       if (doubleCropSoyIds.has(p.id)) agg.doubleCropAcres += acres
       else agg.fullSeasonAcres += acres
       agg.dryBu += dryBuByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`) ?? 0
@@ -135,9 +143,11 @@ export default function SeasonSummaryPage() {
       acc.dryBu += r.dryBu
       acc.fullSeason += r.fullSeasonAcres
       acc.doubleCrop += r.doubleCropAcres
+      acc.irrigated += r.irrigatedAcres
+      acc.dryland += r.drylandAcres
       return acc
     },
-    { acres: 0, dryBu: 0, fullSeason: 0, doubleCrop: 0 }
+    { acres: 0, dryBu: 0, fullSeason: 0, doubleCrop: 0, irrigated: 0, dryland: 0 }
   )
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
@@ -170,21 +180,21 @@ export default function SeasonSummaryPage() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <Stat label="Crops planted" value={String(byCrop.length)} />
             <Stat label="Total acres" value={fmt(totals.acres, 2)} />
-            <Stat label="Full-season acres" value={fmt(totals.fullSeason, 2)} />
-            <Stat label="Double-crop acres" value={fmt(totals.doubleCrop, 2)} />
+            <Stat label="Irrigated acres" value={fmt(totals.irrigated, 2)} />
+            <Stat label="Dryland acres" value={fmt(totals.dryland, 2)} />
           </div>
 
           <div className="overflow-x-auto bg-white rounded-xl shadow">
             <table className="min-w-full text-sm">
               <thead className="bg-slate-100 text-slate-700">
                 <tr>
-                  {['Crop','Full-season ac','Double-crop ac','Total ac','Dry bu','Yield (bu/ac)']
+                  {['Crop','Full-season ac','Double-crop ac','Total ac','Irrigated ac','Dryland ac','Dry bu','Yield (bu/ac)']
                     .map((h, i) => <th key={i} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
                 </tr>
               </thead>
               <tbody>
                 {byCrop.length === 0 && (
-                  <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-400">No plantings recorded for {year}.</td></tr>
+                  <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">No plantings recorded for {year}.</td></tr>
                 )}
                 {byCrop.map((r) => {
                   const yld = r.totalAcres > 0 ? r.dryBu / r.totalAcres : null
@@ -194,6 +204,8 @@ export default function SeasonSummaryPage() {
                       <td className="px-3 py-2 text-right">{fmt(r.fullSeasonAcres, 2)}</td>
                       <td className="px-3 py-2 text-right">{fmt(r.doubleCropAcres, 2)}</td>
                       <td className="px-3 py-2 text-right">{fmt(r.totalAcres, 2)}</td>
+                      <td className="px-3 py-2 text-right">{r.irrigatedAcres > 0 ? fmt(r.irrigatedAcres, 2) : '—'}</td>
+                      <td className="px-3 py-2 text-right">{r.drylandAcres > 0 ? fmt(r.drylandAcres, 2) : '—'}</td>
                       <td className="px-3 py-2 text-right">{fmt(r.dryBu, 2)}</td>
                       <td className="px-3 py-2 text-right font-semibold">{yld != null ? yld.toFixed(1) : '—'}</td>
                     </tr>
@@ -205,6 +217,8 @@ export default function SeasonSummaryPage() {
                     <td className="px-3 py-2 text-right">{fmt(totals.fullSeason, 2)}</td>
                     <td className="px-3 py-2 text-right">{fmt(totals.doubleCrop, 2)}</td>
                     <td className="px-3 py-2 text-right">{fmt(totals.acres, 2)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(totals.irrigated, 2)}</td>
+                    <td className="px-3 py-2 text-right">{fmt(totals.dryland, 2)}</td>
                     <td className="px-3 py-2 text-right">{fmt(totals.dryBu, 2)}</td>
                     <td className="px-3 py-2"></td>
                   </tr>

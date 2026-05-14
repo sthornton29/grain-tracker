@@ -23,6 +23,8 @@ export type Field = {
   farm_id: string | null
   name_or_number: string
   total_acres: number | null
+  irrigated_acres: number
+  dryland_acres: number
   county_id: string | null
 }
 export type County = {
@@ -83,6 +85,11 @@ export type FieldPlanting = {
   crop_id: string
   season_year: number
   planted_acres: number
+  irrigated_acres: number
+  dryland_acres: number
+  irrigated_bushels: number | null
+  dryland_bushels: number | null
+  yield_breakout_entered: boolean
   planting_date: string | null
   paired_planting_id: string | null
   notes: string | null

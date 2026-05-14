@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
@@ -20,6 +20,8 @@ type LoadRow = {
 }
 
 type ViewMode = 'field' | 'farm' | 'landowner'
+type YieldView = 'total' | 'breakdown'
+type PracticeFilter = 'all' | 'irrigated' | 'dryland'
 
 const currentYear = () => new Date().getFullYear()
 
@@ -46,6 +48,18 @@ function fmtNum(n: number, d = 2) {
   return n.toLocaleString(undefined, { maximumFractionDigits: d })
 }
 
+// Practice classification per planting.
+//   pure-dry: irrigated_acres == 0
+//   pure-irr: dryland_acres == 0
+//   mixed:    both > 0 (the only case where yield breakout makes sense)
+function practiceOf(p: FieldPlanting): 'pure-dry' | 'pure-irr' | 'mixed' {
+  const irr = Number(p.irrigated_acres) || 0
+  const dry = Number(p.dryland_acres) || 0
+  if (irr > 0 && dry > 0) return 'mixed'
+  if (irr > 0) return 'pure-irr'
+  return 'pure-dry'
+}
+
 export default function YieldsPage() {
   const supabase = useMemo(() => createClient(), [])
   const [entities, setEntities] = useState<Entity[]>([])
@@ -65,6 +79,19 @@ export default function YieldsPage() {
   const [entityId, setEntityId] = useState('')
   const [countyId, setCountyId] = useState('')
   const [cropYear, setCropYear] = useState<number | ''>('')
+  const [yieldView, setYieldView] = useState<YieldView>('total')
+  const [practiceFilter, setPracticeFilter] = useState<PracticeFilter>('all')
+
+  // Breakout-entry UI state. Tracks which planting's row is being allocated
+  // and the in-flight input values. `lastTouched` records which of the two
+  // inputs the user typed in most recently — used to auto-fill the other so
+  // the pair sums to total dry bushels.
+  const [breakoutId, setBreakoutId] = useState<string | null>(null)
+  const [breakoutIrr, setBreakoutIrr] = useState('')
+  const [breakoutDry, setBreakoutDry] = useState('')
+  const [lastTouched, setLastTouched] = useState<'irr' | 'dry' | null>(null)
+  const [breakoutSaving, setBreakoutSaving] = useState(false)
+  const [breakoutErr, setBreakoutErr] = useState<string | null>(null)
 
   async function refresh() {
     setLoading(true)
@@ -99,13 +126,8 @@ export default function YieldsPage() {
     [plantings, cropById],
   )
 
-  // dry bushels per (fieldId, cropId, year). Two passes: single-field loads
-  // (from_field_id present) and split loads (rows in load_splits). A split
-  // load's parent has from_field_id NULL, so it falls through the single-field
-  // branch and is allocated to its constituent fields from load_splits.
   const dryBuByKey = useMemo(() => {
     const map = new Map<string, number>()
-    // Single-field loads.
     for (const l of loads) {
       if (l.from_type !== 'field' || !l.from_field_id || !l.crop_id) continue
       if (cropYear !== '' && l.crop_year !== cropYear) continue
@@ -122,7 +144,6 @@ export default function YieldsPage() {
       const key = `${l.from_field_id}|${l.crop_id}|${yr}`
       map.set(key, (map.get(key) ?? 0) + dryBushels)
     }
-    // Split loads — each load_splits row contributes its own dry_bushels.
     const loadById = new Map(loads.map((l) => [l.id, l]))
     for (const s of splits) {
       const parent = loadById.get(s.load_id)
@@ -170,8 +191,34 @@ export default function YieldsPage() {
       const effective = fld.county_id ?? farm?.county_id ?? null
       if (effective !== countyId) return false
     }
+    // Practice filter: irrigated_acres > 0 or dryland_acres > 0. Mixed
+    // plantings appear in both filters, since both halves have acres.
+    if (practiceFilter === 'irrigated' && !(Number(p.irrigated_acres) > 0)) return false
+    if (practiceFilter === 'dryland' && !(Number(p.dryland_acres) > 0)) return false
     return true
   })
+
+  // Toggle visibility: hide when nothing irrigated and no breakouts entered.
+  // Once any season has an irrigated planting or an allocated breakout, the
+  // breakdown view becomes useful, so we show the toggle.
+  const showYieldToggle = useMemo(() => {
+    return visible.some(
+      (p) => p.yield_breakout_entered || Number(p.irrigated_acres) > 0,
+    )
+  }, [visible])
+
+  // Column visibility:
+  //   All practice  + total      -> Total only
+  //   All practice  + breakdown  -> Irrigated + Dryland + Total
+  //   Irrigated only             -> Irrigated only (falls back to total when
+  //                                 a mixed planting has no breakout yet)
+  //   Dryland only               -> Dryland only (same fall-back)
+  // The yield toggle is hidden when there's nothing to break out, so we
+  // never land in a "breakdown + irrigated-only" mismatch that would show
+  // two columns.
+  const showIrrigatedCol = practiceFilter === 'irrigated' || (practiceFilter === 'all' && yieldView === 'breakdown')
+  const showDrylandCol   = practiceFilter === 'dryland'   || (practiceFilter === 'all' && yieldView === 'breakdown')
+  const showTotalCol     = practiceFilter === 'all'
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
 
@@ -182,8 +229,27 @@ export default function YieldsPage() {
     const crop = cropById.get(p.crop_id)
     const dryBu = dryBuByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`) ?? 0
     const acres = Number(p.planted_acres)
-    const yieldBuPerAc = acres > 0 ? dryBu / acres : null
-    return { fld, farm, ent, crop, dryBu, acres, yieldBuPerAc }
+    const irrAc = Number(p.irrigated_acres) || 0
+    const dryAc = Number(p.dryland_acres) || 0
+    const totalYield = acres > 0 ? dryBu / acres : null
+    const practice = practiceOf(p)
+    // Practice-specific yields per the spec:
+    //   pure-dry  -> dryland yield uses total dry bushels / dryland acres
+    //   pure-irr  -> irrigated yield uses total dry bushels / irrigated acres
+    //   mixed     -> use the user-entered breakout when present, else null
+    let irrigatedYield: number | null = null
+    let drylandYield: number | null = null
+    if (practice === 'pure-dry') {
+      drylandYield = dryAc > 0 ? dryBu / dryAc : null
+    } else if (practice === 'pure-irr') {
+      irrigatedYield = irrAc > 0 ? dryBu / irrAc : null
+    } else if (p.yield_breakout_entered) {
+      const ib = p.irrigated_bushels != null ? Number(p.irrigated_bushels) : null
+      const db = p.dryland_bushels != null ? Number(p.dryland_bushels) : null
+      if (ib != null && irrAc > 0) irrigatedYield = ib / irrAc
+      if (db != null && dryAc > 0) drylandYield = db / dryAc
+    }
+    return { fld, farm, ent, crop, dryBu, acres, irrAc, dryAc, totalYield, irrigatedYield, drylandYield, practice }
   }
 
   type FarmAgg = {
@@ -233,7 +299,9 @@ export default function YieldsPage() {
   }, [visible, fieldById, farmById, entityById, cropById, dryBuByKey])
 
   function exportFieldCsv() {
-    const header = ['Field', 'Farm', 'FSA#', 'Entity', 'Crop', 'Year', 'Acres', 'Dry bu', 'Yield (bu/ac)', 'Double-crop']
+    const header = ['Field', 'Farm', 'FSA#', 'Entity', 'Crop', 'Year',
+      'Acres', 'Irr ac', 'Dry ac', 'Dry bu',
+      'Yield (bu/ac)', 'Irrigated yield', 'Dryland yield', 'Double-crop']
     const body = visible.map((p) => {
       const r = rowFor(p)
       return [
@@ -244,8 +312,12 @@ export default function YieldsPage() {
         r.crop?.name ?? '',
         p.season_year,
         r.acres.toFixed(2),
+        r.irrAc.toFixed(2),
+        r.dryAc.toFixed(2),
         r.dryBu.toFixed(2),
-        r.yieldBuPerAc != null ? r.yieldBuPerAc.toFixed(2) : '',
+        r.totalYield != null ? r.totalYield.toFixed(2) : '',
+        r.irrigatedYield != null ? r.irrigatedYield.toFixed(2) : '',
+        r.drylandYield != null ? r.drylandYield.toFixed(2) : '',
         doubleCropSoyIds.has(p.id) ? 'yes' : '',
       ]
     })
@@ -266,6 +338,90 @@ export default function YieldsPage() {
     ])
     downloadCsv(`yields-by-farm-${new Date().toISOString().slice(0, 10)}.csv`, [header, ...body])
   }
+
+  function openBreakout(p: FieldPlanting) {
+    setBreakoutId(p.id)
+    setBreakoutErr(null)
+    setLastTouched(null)
+    if (p.yield_breakout_entered) {
+      setBreakoutIrr(p.irrigated_bushels != null ? String(p.irrigated_bushels) : '')
+      setBreakoutDry(p.dryland_bushels != null ? String(p.dryland_bushels) : '')
+    } else {
+      // No prior allocation — leave inputs blank so the auto-calc kicks in
+      // the moment the user types the first number.
+      setBreakoutIrr('')
+      setBreakoutDry('')
+    }
+  }
+
+  function onBreakoutIrr(v: string, totalDryBu: number) {
+    setBreakoutIrr(v)
+    setLastTouched('irr')
+    // Auto-fill the dryland side if it hasn't been manually overridden in
+    // this session (lastTouched stays 'irr' until user clicks the dry input).
+    if (lastTouched !== 'dry') {
+      const n = Number(v || 0) || 0
+      const dry = Math.max(0, totalDryBu - n)
+      setBreakoutDry(v === '' ? '' : String(Number(dry.toFixed(2))))
+    }
+  }
+
+  function onBreakoutDry(v: string, totalDryBu: number) {
+    setBreakoutDry(v)
+    setLastTouched('dry')
+    if (lastTouched !== 'irr') {
+      const n = Number(v || 0) || 0
+      const irr = Math.max(0, totalDryBu - n)
+      setBreakoutIrr(v === '' ? '' : String(Number(irr.toFixed(2))))
+    }
+  }
+
+  function breakoutSumValid(totalDryBu: number): boolean {
+    const i = Number(breakoutIrr || 0) || 0
+    const d = Number(breakoutDry || 0) || 0
+    // Allow a tiny fudge for floating point — yield maps come in with two
+    // decimals so 0.01 is plenty of slack.
+    return Math.abs(i + d - totalDryBu) < 0.01
+  }
+
+  async function saveBreakout(p: FieldPlanting, totalDryBu: number) {
+    if (!breakoutSumValid(totalDryBu)) return
+    setBreakoutSaving(true)
+    const { error } = await supabase
+      .from('field_plantings')
+      .update({
+        irrigated_bushels: Number(breakoutIrr || 0),
+        dryland_bushels: Number(breakoutDry || 0),
+        yield_breakout_entered: true,
+      })
+      .eq('id', p.id)
+    setBreakoutSaving(false)
+    if (error) { setBreakoutErr(error.message); return }
+    setBreakoutId(null)
+    refresh()
+  }
+
+  async function clearBreakout(p: FieldPlanting) {
+    if (!confirm('Clear the irrigated/dryland breakout for this planting?')) return
+    setBreakoutSaving(true)
+    const { error } = await supabase
+      .from('field_plantings')
+      .update({
+        irrigated_bushels: null,
+        dryland_bushels: null,
+        yield_breakout_entered: false,
+      })
+      .eq('id', p.id)
+    setBreakoutSaving(false)
+    if (error) { setBreakoutErr(error.message); return }
+    setBreakoutId(null)
+    refresh()
+  }
+
+  // Column count for table colspan calculations.
+  const visibleYieldCols = [showIrrigatedCol, showDrylandCol, showTotalCol].filter(Boolean).length
+  const fieldColCount = 5 /* Field/Farm/Entity/Crop/Year */ + 3 /* Acres + Irr + Dry */
+    + 1 /* Dry bu */ + visibleYieldCols + 1 /* actions */
 
   return (
     <div className="space-y-4">
@@ -333,6 +489,41 @@ export default function YieldsPage() {
       </div>
       )}
 
+      {view === 'field' && (
+        <div className="flex flex-wrap gap-3 items-center">
+          <label className="text-sm flex items-center gap-2">
+            Practice
+            <select
+              value={practiceFilter}
+              onChange={(e) => setPracticeFilter(e.target.value as PracticeFilter)}
+              className={inputCls}
+            >
+              <option value="all">All</option>
+              <option value="irrigated">Irrigated only</option>
+              <option value="dryland">Dryland only</option>
+            </select>
+          </label>
+          {showYieldToggle && (
+            <div className="inline-flex rounded-lg border border-slate-300 overflow-hidden text-sm">
+              <button
+                type="button"
+                onClick={() => setYieldView('total')}
+                className={`px-3 py-2 ${yieldView === 'total' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700'}`}
+              >
+                Total yield only
+              </button>
+              <button
+                type="button"
+                onClick={() => setYieldView('breakdown')}
+                className={`px-3 py-2 ${yieldView === 'breakdown' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700'}`}
+              >
+                Irrigated / Dryland breakdown
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {view === 'landowner' ? (
         <YieldsByLandowner />
       ) : view === 'field' ? (
@@ -340,35 +531,138 @@ export default function YieldsPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-slate-100 text-slate-700">
               <tr>
-                {['Field','Farm','Entity','Crop','Year','Acres','Dry bu','Yield (bu/ac)','']
-                  .map((h, i) => <th key={i} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
+                <th className="text-left px-3 py-2 whitespace-nowrap">Field</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap">Farm</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap">Entity</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>
+                <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
+                <th className="text-right px-3 py-2 whitespace-nowrap">Irr ac</th>
+                <th className="text-right px-3 py-2 whitespace-nowrap">Dry ac</th>
+                <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
+                {showIrrigatedCol && <th className="text-right px-3 py-2 whitespace-nowrap">Irrigated yield</th>}
+                {showDrylandCol   && <th className="text-right px-3 py-2 whitespace-nowrap">Dryland yield</th>}
+                {showTotalCol     && <th className="text-right px-3 py-2 whitespace-nowrap">Yield (bu/ac)</th>}
+                <th className="text-left px-3 py-2 whitespace-nowrap"></th>
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
+              {loading && <tr><td colSpan={fieldColCount} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
               {!loading && visible.length === 0 && (
-                <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">No plantings match these filters.</td></tr>
+                <tr><td colSpan={fieldColCount} className="px-3 py-6 text-center text-slate-400">No plantings match these filters.</td></tr>
               )}
               {visible.map((p) => {
                 const r = rowFor(p)
+                const showAllocateButton = r.practice === 'mixed'
+                const isBreakoutOpen = breakoutId === p.id
                 return (
-                  <tr key={p.id} className="border-t border-slate-100">
-                    <td className="px-3 py-2">{r.fld?.name_or_number ?? '—'}</td>
-                    <td className="px-3 py-2">{r.farm?.name ?? ''}</td>
-                    <td className="px-3 py-2">{r.ent?.name ?? ''}</td>
-                    <td className="px-3 py-2">{r.crop?.name ?? '—'}</td>
-                    <td className="px-3 py-2">{p.season_year}</td>
-                    <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
-                    <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
-                    <td className="px-3 py-2 text-right font-semibold">
-                      {r.yieldBuPerAc != null ? r.yieldBuPerAc.toFixed(1) : '—'}
-                    </td>
-                    <td className="px-3 py-2">
-                      {doubleCropSoyIds.has(p.id) && (
-                        <span className="text-xs bg-amber-100 text-amber-800 rounded px-2 py-0.5">double-crop</span>
+                  <Fragment key={p.id}>
+                    <tr className="border-t border-slate-100">
+                      <td className="px-3 py-2">{r.fld?.name_or_number ?? '—'}</td>
+                      <td className="px-3 py-2">{r.farm?.name ?? ''}</td>
+                      <td className="px-3 py-2">{r.ent?.name ?? ''}</td>
+                      <td className="px-3 py-2">{r.crop?.name ?? '—'}</td>
+                      <td className="px-3 py-2">{p.season_year}</td>
+                      <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
+                      <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>
+                      <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>
+                      <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
+                      {showIrrigatedCol && (
+                        <td className="px-3 py-2 text-right font-semibold">
+                          {r.irrigatedYield != null
+                            ? r.irrigatedYield.toFixed(1)
+                            : practiceFilter === 'irrigated' && r.totalYield != null
+                              ? r.totalYield.toFixed(1)
+                              : '—'}
+                        </td>
                       )}
-                    </td>
-                  </tr>
+                      {showDrylandCol && (
+                        <td className="px-3 py-2 text-right font-semibold">
+                          {r.drylandYield != null
+                            ? r.drylandYield.toFixed(1)
+                            : practiceFilter === 'dryland' && r.totalYield != null
+                              ? r.totalYield.toFixed(1)
+                              : '—'}
+                        </td>
+                      )}
+                      {showTotalCol && (
+                        <td className="px-3 py-2 text-right font-semibold">
+                          {r.totalYield != null ? r.totalYield.toFixed(1) : '—'}
+                        </td>
+                      )}
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {doubleCropSoyIds.has(p.id) && (
+                          <span className="text-xs bg-amber-100 text-amber-800 rounded px-2 py-0.5 mr-2">double-crop</span>
+                        )}
+                        {showAllocateButton && yieldView === 'breakdown' && !isBreakoutOpen && (
+                          <button
+                            type="button"
+                            onClick={() => openBreakout(p)}
+                            className="text-sky-700 text-sm whitespace-nowrap"
+                          >
+                            {p.yield_breakout_entered ? 'Edit breakout' : 'Allocate irr/dry'}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {isBreakoutOpen && (
+                      <tr className="bg-sky-50">
+                        <td colSpan={fieldColCount} className="px-3 py-3">
+                          <div className="flex flex-wrap items-end gap-3">
+                            <div className="text-sm text-slate-600">
+                              Total dry bushels: <span className="font-semibold">{fmtNum(r.dryBu)}</span>
+                            </div>
+                            <label className="text-xs text-slate-500 flex flex-col gap-1">
+                              Irrigated bushels
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={breakoutIrr}
+                                onChange={(e) => onBreakoutIrr(e.target.value, r.dryBu)}
+                                className={`${inputCls} w-40`}
+                              />
+                            </label>
+                            <label className="text-xs text-slate-500 flex flex-col gap-1">
+                              Dryland bushels
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={breakoutDry}
+                                onChange={(e) => onBreakoutDry(e.target.value, r.dryBu)}
+                                className={`${inputCls} w-40`}
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              disabled={breakoutSaving || !breakoutSumValid(r.dryBu)}
+                              onClick={() => saveBreakout(p, r.dryBu)}
+                              className="rounded-lg bg-green-700 text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                            >Save</button>
+                            <button
+                              type="button"
+                              onClick={() => { setBreakoutId(null); setBreakoutErr(null) }}
+                              className="text-slate-500 text-sm"
+                            >Cancel</button>
+                            {p.yield_breakout_entered && (
+                              <button
+                                type="button"
+                                onClick={() => clearBreakout(p)}
+                                className="text-red-600 text-sm ml-auto"
+                              >Clear breakout</button>
+                            )}
+                          </div>
+                          {!breakoutSumValid(r.dryBu) && (breakoutIrr !== '' || breakoutDry !== '') && (
+                            <p className="text-sm text-red-600 mt-2">
+                              Irrigated + Dryland bushels must equal total bushels ({fmtNum(r.dryBu)})
+                            </p>
+                          )}
+                          {breakoutErr && <p className="text-sm text-red-600 mt-2">{breakoutErr}</p>}
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 )
               })}
             </tbody>
