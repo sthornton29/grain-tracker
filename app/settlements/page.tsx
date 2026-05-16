@@ -8,6 +8,7 @@ type Row = {
   settlement_date: string
   settlement_number: string | null
   notes: string | null
+  source_pdf_url: string | null
   buyer: { name: string } | null
   settlement_lines: Array<{
     net_bushels: number | null
@@ -20,7 +21,7 @@ export default async function SettlementsListPage() {
   const supabase = createClient()
   const { data } = await supabase
     .from('settlements')
-    .select('id, settlement_date, settlement_number, notes, buyer:buyers(name), settlement_lines(net_bushels, net_revenue, load_id)')
+    .select('id, settlement_date, settlement_number, notes, source_pdf_url, buyer:buyers(name), settlement_lines(net_bushels, net_revenue, load_id)')
     .order('settlement_date', { ascending: false })
 
   const rows = (data as unknown as Row[]) ?? []
@@ -37,13 +38,13 @@ export default async function SettlementsListPage() {
         <table className="min-w-full text-sm">
           <thead className="bg-slate-100 text-slate-700">
             <tr>
-              {['Date', 'Settlement #', 'Buyer', 'Lines', 'Unmatched', 'Net bu', 'Net revenue', '']
+              {['Date', 'Settlement #', 'Buyer', 'Lines', 'Unmatched', 'Net bu', 'Net revenue', 'PDF', '']
                 .map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && (
-              <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">No settlements yet.</td></tr>
+              <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">No settlements yet.</td></tr>
             )}
             {rows.map((r) => {
               const lines = r.settlement_lines ?? []
@@ -63,6 +64,20 @@ export default async function SettlementsListPage() {
                   </td>
                   <td className="px-3 py-2 text-right">{fmt(netBu)}</td>
                   <td className="px-3 py-2 text-right">${fmt(netRev)}</td>
+                  <td className="px-3 py-2">
+                    {r.source_pdf_url ? (
+                      <a
+                        href={r.source_pdf_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-sky-700"
+                      >
+                        View ↗
+                      </a>
+                    ) : (
+                      <span className="text-slate-300">—</span>
+                    )}
+                  </td>
                   <td className="px-3 py-2"><Link href={`/settlements/${r.id}`} className="text-sky-700">Review →</Link></td>
                 </tr>
               )
