@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
+import SettlementPdfPanel from '@/components/settlement-pdf-panel'
 
 export const dynamic = 'force-dynamic'
 
@@ -11,6 +12,7 @@ type Settlement = {
   settlement_date: string
   settlement_number: string | null
   notes: string | null
+  source_pdf_url: string | null
   buyer: { name: string } | null
 }
 
@@ -57,7 +59,7 @@ function dryBu(l: LoadShape) {
 export default async function SettlementDetailPage({ params }: { params: { id: string } }) {
   const supabase = createClient()
   const [sRes, linesRes] = await Promise.all([
-    supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_number, notes, buyer:buyers(name)').eq('id', params.id).single(),
+    supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_number, notes, source_pdf_url, buyer:buyers(name)').eq('id', params.id).single(),
     supabase
       .from('settlement_lines')
       .select(`
@@ -122,6 +124,8 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
         </div>
         <Link href="/settlements" className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Back</Link>
       </div>
+
+      <SettlementPdfPanel settlementId={settlement.id} currentUrl={settlement.source_pdf_url} />
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <StatCard label="Lines" value={String(lines.length)} />

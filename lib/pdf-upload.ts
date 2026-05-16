@@ -97,13 +97,44 @@ export async function uploadPdfToStorage(
   file: File,
   prefix: 'settlements' | 'tickets',
 ): Promise<string> {
+  const { publicUrl } = await uploadFileToStorage(supabase, file, prefix, 'application/pdf')
+  return publicUrl
+}
+
+// Generic uploader — accepts any file (PDF, image, etc.) and returns both the
+// public URL and the storage path. Callers need the path to delete the object
+// later (parsing the public URL is brittle if the bucket name ever changes).
+export async function uploadFileToStorage(
+  supabase: SupabaseClient,
+  file: File,
+  prefix: string,
+  contentType?: string,
+): Promise<{ publicUrl: string; path: string }> {
   const rand = Math.random().toString(36).slice(2, 10)
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]+/g, '_')
   const path = `${prefix}/${Date.now()}-${rand}-${safeName}`
   const { error } = await supabase.storage
     .from(PDF_BUCKET)
-    .upload(path, file, { contentType: 'application/pdf', upsert: false })
-  if (error) throw new Error(`Could not upload PDF: ${error.message}`)
+    .upload(path, file, {
+      contentType: contentType ?? file.type ?? 'application/octet-stream',
+      upsert: false,
+    })
+  if (error) throw new Error(`Could not upload file: ${error.message}`)
   const { data } = supabase.storage.from(PDF_BUCKET).getPublicUrl(path)
-  return data.publicUrl
+  return { publicUrl: data.publicUrl, path }
+}
+
+// Best-effort delete: pulls the path out of a Supabase public URL of the form
+// .../storage/v1/object/public/<bucket>/<path>. Silently no-ops if the URL
+// isn't in that shape (e.g., legacy data, manually entered link).
+export async function deleteStorageObjectByUrl(
+  supabase: SupabaseClient,
+  url: string,
+): Promise<void> {
+  const marker = `/object/public/${PDF_BUCKET}/`
+  const i = url.indexOf(marker)
+  if (i < 0) return
+  const path = decodeURIComponent(url.slice(i + marker.length))
+  if (!path) return
+  await supabase.storage.from(PDF_BUCKET).remove([path])
 }
