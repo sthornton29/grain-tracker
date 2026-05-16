@@ -418,10 +418,14 @@ export default function YieldsPage() {
     refresh()
   }
 
-  // Column count for table colspan calculations.
+  // Column count for table colspan calculations. Irr ac / Dry ac follow the
+  // same visibility rules as the irrigated/dryland yield columns, so the table
+  // collapses to just total acres + total yield in the default "Total yield
+  // only" view.
   const visibleYieldCols = [showIrrigatedCol, showDrylandCol, showTotalCol].filter(Boolean).length
-  const fieldColCount = 5 /* Field/Farm/Entity/Crop/Year */ + 3 /* Acres + Irr + Dry */
-    + 1 /* Dry bu */ + visibleYieldCols + 1 /* actions */
+  const visibleAcresBreakoutCols = [showIrrigatedCol, showDrylandCol].filter(Boolean).length
+  const fieldColCount = 5 /* Field/Farm/Entity/Crop/Year */ + 1 /* Acres */
+    + visibleAcresBreakoutCols + 1 /* Dry bu */ + visibleYieldCols + 1 /* actions */
 
   return (
     <div className="space-y-4">
@@ -537,8 +541,8 @@ export default function YieldsPage() {
                 <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>
                 <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
-                <th className="text-right px-3 py-2 whitespace-nowrap">Irr ac</th>
-                <th className="text-right px-3 py-2 whitespace-nowrap">Dry ac</th>
+                {showIrrigatedCol && <th className="text-right px-3 py-2 whitespace-nowrap">Irr ac</th>}
+                {showDrylandCol   && <th className="text-right px-3 py-2 whitespace-nowrap">Dry ac</th>}
                 <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
                 {showIrrigatedCol && <th className="text-right px-3 py-2 whitespace-nowrap">Irrigated yield</th>}
                 {showDrylandCol   && <th className="text-right px-3 py-2 whitespace-nowrap">Dryland yield</th>}
@@ -564,8 +568,12 @@ export default function YieldsPage() {
                       <td className="px-3 py-2">{r.crop?.name ?? '—'}</td>
                       <td className="px-3 py-2">{p.season_year}</td>
                       <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
-                      <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>
-                      <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>
+                      {showIrrigatedCol && (
+                        <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>
+                      )}
+                      {showDrylandCol && (
+                        <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>
+                      )}
                       <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
                       {showIrrigatedCol && (
                         <td className="px-3 py-2 text-right font-semibold">
