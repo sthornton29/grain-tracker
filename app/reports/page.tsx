@@ -42,6 +42,17 @@ export default function ReportsLanding() {
             PDF, and print exports.
           </p>
         </Link>
+        <Link
+          href="/reports/settlement-pdfs"
+          className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
+        >
+          <h2 className="font-bold mb-1">Settlement Statements (Crop Insurance Audit)</h2>
+          <p className="text-sm text-slate-600">
+            Bundles every attached buyer settlement PDF for a crop &amp; crop year into a
+            single zip — what the auditor needs to confirm sales match your self-reported
+            production.
+          </p>
+        </Link>
       </div>
     </div>
   )

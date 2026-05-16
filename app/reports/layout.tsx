@@ -26,6 +26,7 @@ const categories = [
     reports: [
       { label: 'Contract Tracker', href: '/contracts', external: true },
       { label: 'Unpaid Loads', href: '/loads/unpaid', external: true },
+      { label: 'Settlement Statements (Audit)', href: '/reports/settlement-pdfs', external: false },
     ],
   },
   {
