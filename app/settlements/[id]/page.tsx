@@ -78,14 +78,29 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
   if (!settlement) notFound()
 
   const lines = (linesRes.data as unknown as Line[]) ?? []
-  const matched = lines.filter((l) => l.load_id && l.load)
-  const unmatched = lines.filter((l) => !l.load_id)
 
-  // Missing loads: buyer-delivered loads under this buyer, not on this settlement,
-  // with contracts whose delivery period covers settlement_date (if dates present).
-  const paidTicketKeys = new Set(
-    lines.map((l) => (l.ticket_number ?? '').trim().toLowerCase()).filter(Boolean)
-  )
+  // Missing loads: buyer-delivered loads under this buyer with NO settlement info
+  // on any settlement for this buyer (not just this one), inside the contract's
+  // delivery window when dates are present.
+  const { data: buyerSettlements } = await supabase
+    .from('settlements')
+    .select('id')
+    .eq('buyer_id', settlement.buyer_id)
+  const buyerSettlementIds = (buyerSettlements ?? []).map((s) => s.id)
+  const { data: buyerSettlementLines } = buyerSettlementIds.length
+    ? await supabase
+        .from('settlement_lines')
+        .select('load_id, ticket_number')
+        .in('settlement_id', buyerSettlementIds)
+    : { data: [] as { load_id: string | null; ticket_number: string | null }[] }
+  const settledLoadIds = new Set<string>()
+  const settledTicketKeys = new Set<string>()
+  for (const sl of buyerSettlementLines ?? []) {
+    if (sl.load_id) settledLoadIds.add(sl.load_id)
+    const t = (sl.ticket_number ?? '').trim().toLowerCase()
+    if (t) settledTicketKeys.add(t)
+  }
+
   const { data: buyerLoads } = await supabase
     .from('loads')
     .select(`
@@ -96,9 +111,28 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
     .eq('to_buyer_id', settlement.buyer_id)
     .eq('to_type', 'buyer')
   const allBuyerLoads = (buyerLoads as unknown as LoadShape[]) ?? []
-  const missing = allBuyerLoads.filter((l) => {
+
+  // Re-resolve unmatched lines by ticket number at view time. A line's load_id FK
+  // is set when the PDF is uploaded; if the user later corrects a load's ticket
+  // number to match, we re-pair the line here without persisting back to the DB.
+  const buyerLoadByTicket = new Map<string, LoadShape>()
+  for (const l of allBuyerLoads) {
     const t = (l.ticket_number ?? '').trim().toLowerCase()
-    if (t && paidTicketKeys.has(t)) return false
+    if (t && !buyerLoadByTicket.has(t)) buyerLoadByTicket.set(t, l)
+  }
+  const resolvedLines: Line[] = lines.map((l) => {
+    if (l.load) return l
+    const t = (l.ticket_number ?? '').trim().toLowerCase()
+    const m = t ? buyerLoadByTicket.get(t) : undefined
+    return m ? { ...l, load: m } : l
+  })
+  const matched = resolvedLines.filter((l) => l.load)
+  const unmatched = resolvedLines.filter((l) => !l.load)
+
+  const missing = allBuyerLoads.filter((l) => {
+    if (settledLoadIds.has(l.id)) return false
+    const t = (l.ticket_number ?? '').trim().toLowerCase()
+    if (t && settledTicketKeys.has(t)) return false
     if (l.contract?.delivery_start_date || l.contract?.delivery_end_date) {
       const s = l.contract.delivery_start_date ? new Date(l.contract.delivery_start_date) : null
       const e = l.contract.delivery_end_date ? new Date(l.contract.delivery_end_date) : null
@@ -180,8 +214,8 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
         )}
       </Section>
 
-      <Section title="Missing loads" subtitle="Loads we delivered to this buyer in the contract's delivery window that are NOT on this settlement.">
-        {missing.length === 0 ? <Empty>None — every buyer-delivered load in-window is on this settlement.</Empty> : (
+      <Section title="Missing loads" subtitle="Loads we delivered to this buyer in the contract's delivery window with no settlement info on any settlement yet.">
+        {missing.length === 0 ? <Empty>None — every buyer-delivered load in-window has been settled.</Empty> : (
           <Table headers={['Date', 'Ticket', 'Crop', 'Contract', 'Dry bu']}>
             {missing.map((l) => (
               <tr key={l.id} className="border-t border-slate-100 bg-red-50">
