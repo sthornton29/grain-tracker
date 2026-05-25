@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import ContractFlagIcon, { type ContractFlag } from '@/components/contract-flag'
+import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, type ContractType, type PricingStatus } from '@/lib/contracts'
 
 export const dynamic = 'force-dynamic'
 
@@ -21,6 +22,12 @@ type ContractRow = {
   buyer_id: string | null
   crop_id: string | null
   entity_id: string | null
+  contract_month: string | null
+  contract_type: ContractType
+  pricing_status: PricingStatus
+  futures_price: number | null
+  basis: number | null
+  cash_price: number | null
   buyer: { name: string } | null
   crop: { name: string } | null
   delivery_location: { name: string } | null
@@ -105,11 +112,15 @@ export default async function ContractsPage({
     dir?: string
     hide_completed?: string
     hide_future?: string
+    type?: string
+    pricing?: string
   }
 }) {
   const supabase = createClient()
   const entityId = searchParams.entity ?? ''
   const cropFilter = searchParams.crop ?? ''
+  const typeFilter = searchParams.type ?? ''
+  const pricingFilter = searchParams.pricing ?? ''
   const cropYear = searchParams.crop_year ? Number(searchParams.crop_year) : null
   const sortKey = searchParams.sort ?? ''
   const sortDir: 'asc' | 'desc' = searchParams.dir === 'desc' ? 'desc' : 'asc'
@@ -123,6 +134,7 @@ export default async function ContractsPage({
         id, contract_number, contracted_bushels, price_per_bushel, notes,
         crop_year, delivery_type, delivery_start_date, delivery_end_date, completed_at,
         buyer_id, crop_id, entity_id,
+        contract_month, contract_type, pricing_status, futures_price, basis, cash_price,
         buyer:buyers(name), crop:crops(name), delivery_location:delivery_locations(name)
       `)
       .order('contract_number'),
@@ -239,6 +251,8 @@ export default async function ContractsPage({
     // Contracts with no entity_id are excluded under an entity filter so loads
     // delivered against a different entity's contract can't smuggle this one in.
     if (entityId && c.entity_id !== entityId) return false
+    if (typeFilter && c.contract_type !== typeFilter) return false
+    if (pricingFilter && c.pricing_status !== pricingFilter) return false
     const flag = flagFor(c)
     if (hideCompleted && flag === 'complete') return false
     if (hideFuture && flag === 'future') return false
@@ -260,6 +274,8 @@ export default async function ContractsPage({
     if (entityId) params.set('entity', entityId)
     if (cropYear != null) params.set('crop_year', String(cropYear))
     if (cropFilter) params.set('crop', cropFilter)
+    if (typeFilter) params.set('type', typeFilter)
+    if (pricingFilter) params.set('pricing', pricingFilter)
     if (hideCompleted) params.set('hide_completed', '1')
     if (hideFuture) params.set('hide_future', '1')
     if (sortKey) params.set('sort', sortKey)
@@ -281,6 +297,18 @@ export default async function ContractsPage({
     else params.set(key, '1')
     return `?${params.toString()}`
   }
+
+  // Pricing-status breakdown for the tracker sections (over the filtered set).
+  const missingMonthCount = allContracts.filter((c) => !c.contract_month).length
+  const sumBu = (arr: ContractRow[]) => arr.reduce((s, c) => s + Number(c.contracted_bushels), 0)
+  const fullyPriced = visible.filter((c) => c.pricing_status === 'fully_priced')
+  const awaitingBasis = visible.filter((c) => c.pricing_status === 'awaiting_basis')
+  const awaitingFutures = visible.filter((c) => c.pricing_status === 'awaiting_futures')
+  const fullyAvgCash = (() => {
+    let bu = 0, w = 0
+    for (const c of fullyPriced) if (c.cash_price != null) { const b = Number(c.contracted_bushels); bu += b; w += Number(c.cash_price) * b }
+    return bu > 0 ? w / bu : null
+  })()
 
   return (
     <div className="space-y-4">
@@ -304,6 +332,18 @@ export default async function ContractsPage({
           <select name="crop_year" defaultValue={cropYear ?? ''} className="rounded-lg border border-slate-300 px-3 py-2">
             <option value="">All crop years</option>
             {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
+          </select>
+          <select name="type" defaultValue={typeFilter} className="rounded-lg border border-slate-300 px-3 py-2">
+            <option value="">All types</option>
+            <option value="forward">Forward</option>
+            <option value="hta">HTA</option>
+            <option value="basis">Basis</option>
+          </select>
+          <select name="pricing" defaultValue={pricingFilter} className="rounded-lg border border-slate-300 px-3 py-2">
+            <option value="">All pricing</option>
+            <option value="fully_priced">Fully priced</option>
+            <option value="awaiting_basis">Awaiting basis</option>
+            <option value="awaiting_futures">Awaiting futures</option>
           </select>
           <button className="rounded-lg bg-slate-700 text-white px-3 py-2 text-sm">Apply</button>
         </form>
@@ -348,6 +388,30 @@ export default async function ContractsPage({
         </div>
       )}
 
+      {missingMonthCount > 0 && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <strong>{missingMonthCount}</strong> contract{missingMonthCount === 1 ? '' : 's'} {missingMonthCount === 1 ? 'is' : 'are'} missing a contract month. Please update them.
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="bg-white rounded-xl shadow p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">Fully priced</div>
+          <div className="text-lg font-bold">{fullyPriced.length} contracts · {fmt(sumBu(fullyPriced), 0)} bu</div>
+          <div className="text-sm text-slate-600">Avg cash {fullyAvgCash != null ? `$${fullyAvgCash.toFixed(4)}/bu` : '—'}</div>
+        </div>
+        <div className="bg-white rounded-xl shadow p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">Open HTAs — awaiting basis</div>
+          <div className="text-lg font-bold">{awaitingBasis.length} contracts · {fmt(sumBu(awaitingBasis), 0)} bu</div>
+          <div className="text-sm text-amber-700">Futures locked, basis to be set</div>
+        </div>
+        <div className="bg-white rounded-xl shadow p-4">
+          <div className="text-xs uppercase tracking-wide text-slate-500">Open basis — awaiting futures</div>
+          <div className="text-lg font-bold">{awaitingFutures.length} contracts · {fmt(sumBu(awaitingFutures), 0)} bu</div>
+          <div className="text-sm text-amber-700">Basis locked, futures to be set</div>
+        </div>
+      </div>
+
       <div className="overflow-x-auto bg-white rounded-xl shadow">
         <table className="min-w-full text-sm">
           <thead className="bg-slate-100 text-slate-700">
@@ -359,12 +423,12 @@ export default async function ContractsPage({
                   Crop{sortKey === 'crop' ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
                 </Link>
               </th>
-              {['Year', 'Location', 'Delivery window', 'Contracted', 'Delivered', 'Progress', '$/bu', 'Revenue', 'Paid (bu)', 'Unpaid (bu)']
+              {['Type', 'Month', 'Year', 'Location', 'Delivery window', 'Contracted', 'Delivered', 'Progress', '$/bu', 'Revenue', 'Paid (bu)', 'Unpaid (bu)']
                 .map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
             </tr>
           </thead>
           <tbody>
-            {visible.length === 0 && <tr><td colSpan={13} className="px-3 py-6 text-center text-slate-400">No contracts.</td></tr>}
+            {visible.length === 0 && <tr><td colSpan={15} className="px-3 py-6 text-center text-slate-400">No contracts.</td></tr>}
             {visible.map((c) => {
               const agg = aggByContract.get(c.id) ?? { delivered: 0, paidBushels: 0, revenue: 0, deliveredUnpaid: 0, entityIds: new Set<string>(), loadCount: 0 }
               const isDup = (numberCounts.get(c.contract_number) ?? 0) > 1
@@ -392,6 +456,10 @@ export default async function ContractsPage({
                   </td>
                   <td className="px-3 py-2">{c.buyer?.name ?? ''}</td>
                   <td className="px-3 py-2">{c.crop?.name ?? ''}</td>
+                  <td className="px-3 py-2">
+                    <span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']}</span>
+                  </td>
+                  <td className="px-3 py-2 whitespace-nowrap">{c.contract_month ?? <span className="text-amber-600 text-xs">—</span>}</td>
                   <td className="px-3 py-2">{c.crop_year ?? ''}</td>
                   <td className="px-3 py-2">
                     {c.delivery_type === 'delivered'
@@ -414,7 +482,13 @@ export default async function ContractsPage({
                     </div>
                     <div className="text-xs text-slate-500 mt-0.5">{pct.toFixed(1)}% · {fmt(remaining)} bu left</div>
                   </td>
-                  <td className="px-3 py-2 text-right font-mono">{contractPrice != null ? contractPrice.toFixed(2) : ''}</td>
+                  <td className="px-3 py-2 text-right font-mono whitespace-nowrap">
+                    {c.pricing_status === 'fully_priced'
+                      ? (c.cash_price != null ? `$${Number(c.cash_price).toFixed(2)}` : '')
+                      : c.pricing_status === 'awaiting_basis'
+                      ? <span>F ${Number(c.futures_price ?? 0).toFixed(2)} <span className="text-[10px] rounded bg-amber-100 text-amber-800 px-1">basis?</span></span>
+                      : <span>B {Number(c.basis ?? 0).toFixed(2)} <span className="text-[10px] rounded bg-amber-100 text-amber-800 px-1">futures?</span></span>}
+                  </td>
                   <td className="px-3 py-2 text-right">{contractRevenue != null ? `$${fmt(contractRevenue)}` : ''}</td>
                   <td className="px-3 py-2 text-right">{fmt(agg.paidBushels)}</td>
                   <td className={`px-3 py-2 text-right ${agg.deliveredUnpaid > 0 ? 'text-amber-700 font-semibold' : ''}`}>{fmt(agg.deliveredUnpaid)}</td>

@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
+import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, type ContractType, type PricingStatus } from '@/lib/contracts'
 import ContractActions from './contract-actions'
 
 export const dynamic = 'force-dynamic'
@@ -14,6 +15,13 @@ type ContractDetail = {
   price_per_bushel: number | null
   notes: string | null
   crop_year: number | null
+  contract_month: string | null
+  contract_type: ContractType
+  pricing_status: PricingStatus
+  futures_price: number | null
+  basis: number | null
+  cash_price: number | null
+  service_fee: number
   delivery_type: 'pickup' | 'delivered'
   delivery_start_date: string | null
   delivery_end_date: string | null
@@ -86,7 +94,8 @@ export default async function ContractDetailPage({ params }: { params: { id: str
     .from('contracts')
     .select(`
       id, contract_number, contracted_bushels, price_per_bushel, notes,
-      crop_year, delivery_type, delivery_start_date, delivery_end_date, completed_at, created_at,
+      crop_year, contract_month, contract_type, pricing_status, futures_price, basis, cash_price, service_fee,
+      delivery_type, delivery_start_date, delivery_end_date, completed_at, created_at,
       buyer_id, crop_id, entity_id, delivery_location_id,
       buyer:buyers(name),
       crop:crops(name, base_moisture_pct, base_lb_per_bushel),
@@ -172,10 +181,16 @@ export default async function ContractDetailPage({ params }: { params: { id: str
     ['Buyer', contract.buyer?.name ?? '—'],
     ['Crop', contract.crop?.name ?? '—'],
     ['Crop year', contract.crop_year ?? '—'],
+    ['Contract month', contract.contract_month ?? '—'],
+    ['Contract type', CONTRACT_TYPE_LABEL[contract.contract_type ?? 'forward']],
+    ['Pricing status', PRICING_STATUS_LABEL[contract.pricing_status]],
     ['Entity', contract.entity?.name ?? '—'],
     ['Contracted bushels', fmt(Number(contract.contracted_bushels))],
-    ['Price / bushel', contractPrice != null ? `$${contractPrice.toFixed(4)}` : '—'],
-    ['Total revenue (at contract price)', contractRevenue != null ? `$${fmt(contractRevenue)}` : '—'],
+    ['Futures price', contract.futures_price != null ? `$${Number(contract.futures_price).toFixed(4)}` : '—'],
+    ['Basis', contract.basis != null ? Number(contract.basis).toFixed(4) : '—'],
+    ['Service fee', contract.service_fee ? `$${Number(contract.service_fee).toFixed(4)}` : '—'],
+    ['Cash price', contract.cash_price != null ? `$${Number(contract.cash_price).toFixed(4)}` : (contract.pricing_status === 'awaiting_basis' ? 'Pending — awaiting basis' : contract.pricing_status === 'awaiting_futures' ? 'Pending — awaiting futures' : '—')],
+    ['Total revenue (at cash price)', contractRevenue != null ? `$${fmt(contractRevenue)}` : '—'],
     ['Delivery type', contract.delivery_type === 'delivered' ? 'Delivered' : 'Pickup'],
     [
       'Delivery location',

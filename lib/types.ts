@@ -111,6 +111,29 @@ export type Contract = {
   delivery_end_date: string | null
   completed_at: string | null
   created_at: string
+  // Pricing breakdown (forward / HTA / basis). cash_price is the canonical flat
+  // price; price_per_bushel is kept in sync for backward compatibility.
+  contract_month: string | null
+  contract_type: 'forward' | 'hta' | 'basis'
+  futures_price: number | null
+  basis: number | null
+  cash_price: number | null
+  service_fee: number
+  futures_set_date: string | null
+  basis_set_date: string | null
+  pricing_status: 'fully_priced' | 'awaiting_basis' | 'awaiting_futures'
+}
+
+export type CropAssumption = {
+  id: string
+  crop_id: string
+  crop_year: number
+  expected_yield: number | null
+  harvest_complete: boolean
+  cost_per_acre: number | null
+  notes: string | null
+  created_at: string
+  updated_at: string
 }
 
 export type Settlement = {

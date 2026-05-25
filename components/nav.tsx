@@ -10,6 +10,7 @@ const links = [
   { href: '/contracts', label: 'Contracts' },
   { href: '/settlements', label: 'Settlements' },
   { href: '/hedging', label: 'Hedging' },
+  { href: '/marketing', label: 'Marketing' },
   { href: '/cash-flow', label: 'Cash Flow' },
   { href: '/yields', label: 'Yields' },
   { href: '/season', label: 'Season' },

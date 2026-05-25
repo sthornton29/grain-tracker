@@ -43,6 +43,16 @@ export default function ReportsLanding() {
           </p>
         </Link>
         <Link
+          href="/reports/marketing"
+          className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
+        >
+          <h2 className="font-bold mb-1">Marketing Dashboard</h2>
+          <p className="text-sm text-slate-600">
+            Per-crop marketing position for a crop year — production, contracted vs. remaining bushels, average
+            futures/basis/cash price, cost, and projected profit. Base and Detailed views, Excel/PDF export.
+          </p>
+        </Link>
+        <Link
           href="/reports/hedging-summary"
           className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
         >
