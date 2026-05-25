@@ -181,6 +181,10 @@ export default function StatementImport({ entities, existingPositions, onClose, 
     setOpenRows((rs) => rs.map((r) => (r.existing ? r : { ...r, crop_year: bulkCropYear })))
     setClosedRows((rs) => rs.map((r) => (r.matchedOpenId ? r : { ...r, crop_year: bulkCropYear })))
   }
+  function applyBulkSide(side: Side) {
+    setOpenRows((rs) => rs.map((r) => ({ ...r, side })))
+    setClosedRows((rs) => rs.map((r) => ({ ...r, side })))
+  }
 
   const newOpen = openRows.filter((r) => r.include && !r.existing)
   const closesMatched = closedRows.filter((r) => r.include && r.matchedOpenId)
@@ -300,6 +304,13 @@ export default function StatementImport({ entities, existingPositions, onClose, 
                 <button type="button" onClick={applyBulkCropYear} className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Apply to all</button>
               </div>
             </label>
+            <label className="text-sm text-slate-700">
+              Set all sides <span className="text-xs text-slate-400">if the import read them wrong</span>
+              <div className="mt-1 flex gap-2">
+                <button type="button" onClick={() => applyBulkSide('short')} className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">All Short</button>
+                <button type="button" onClick={() => applyBulkSide('long')} className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">All Long</button>
+              </div>
+            </label>
             <div className="flex-1" />
             <button type="button" onClick={() => { setExtraction(null); setFile(null); setOpenRows([]); setClosedRows([]) }} className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2">
               Start over
@@ -341,7 +352,7 @@ export default function StatementImport({ entities, existingPositions, onClose, 
                           <td className="px-2 py-1 whitespace-nowrap">{r.commodity}</td>
                           <td className="px-2 py-1 whitespace-nowrap">{r.contract_month}</td>
                           <td className="px-2 py-1 font-mono whitespace-nowrap">{buildContractSymbol(r.commodity, r.contract_month)}</td>
-                          <td className="px-2 py-1">
+                          <td className="px-2 py-1" style={{ minWidth: 92 }}>
                             <select value={r.side} onChange={(e) => setOpen(i, { side: e.target.value as Side })} className={cellInput}>
                               <option value="short">Short</option>
                               <option value="long">Long</option>
@@ -383,7 +394,7 @@ export default function StatementImport({ entities, existingPositions, onClose, 
                           </td>
                           <td className="px-2 py-1 whitespace-nowrap">{r.commodity}</td>
                           <td className="px-2 py-1 whitespace-nowrap">{r.contract_month}</td>
-                          <td className="px-2 py-1">
+                          <td className="px-2 py-1" style={{ minWidth: 92 }}>
                             <select value={r.side} onChange={(e) => setClosed(i, { side: e.target.value as Side })} className={cellInput}>
                               <option value="short">Short</option>
                               <option value="long">Long</option>
