@@ -207,6 +207,45 @@ export default function HedgingPage() {
 
       {banner && <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">{banner}</div>}
 
+      {/* Filters */}
+      <div className="bg-white rounded-xl shadow p-3 flex flex-wrap items-end gap-3">
+        <Filter label="Crop Year">
+          <select value={fCropYear} onChange={(e) => setFCropYear(e.target.value)} className={selCls}>
+            <option value="All">All</option>
+            {cropYears.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </Filter>
+        <Filter label="Commodity">
+          <select value={fCommodity} onChange={(e) => setFCommodity(e.target.value as 'All' | Commodity)} className={selCls}>
+            <option value="All">All</option>
+            {COMMODITIES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </Filter>
+        <Filter label="Entity">
+          <select value={fEntity} onChange={(e) => setFEntity(e.target.value)} className={selCls}>
+            <option value="All">All</option>
+            {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+        </Filter>
+        <Filter label="Status">
+          <select value={fStatus} onChange={(e) => setFStatus(e.target.value as StatusFilter)} className={selCls}>
+            <option value="open">Open</option>
+            <option value="closed">Closed</option>
+            <option value="all">All</option>
+          </select>
+        </Filter>
+        {showClosed && (
+          <>
+            <Filter label="Closed from">
+              <input type="date" value={closedFrom} onChange={(e) => setClosedFrom(e.target.value)} className={selCls} />
+            </Filter>
+            <Filter label="Closed to">
+              <input type="date" value={closedTo} onChange={(e) => setClosedTo(e.target.value)} className={selCls} />
+            </Filter>
+          </>
+        )}
+      </div>
+
       {/* Prices + refresh */}
       <div className="flex items-center gap-3 flex-wrap">
         <span className="text-sm text-slate-500">
@@ -252,45 +291,6 @@ export default function HedgingPage() {
 
       {/* Price board */}
       <PriceBoard positions={base} prices={prices} priceDate={priceDate} />
-
-      {/* Filters */}
-      <div className="bg-white rounded-xl shadow p-3 flex flex-wrap items-end gap-3">
-        <Filter label="Crop Year">
-          <select value={fCropYear} onChange={(e) => setFCropYear(e.target.value)} className={selCls}>
-            <option value="All">All</option>
-            {cropYears.map((y) => <option key={y} value={y}>{y}</option>)}
-          </select>
-        </Filter>
-        <Filter label="Commodity">
-          <select value={fCommodity} onChange={(e) => setFCommodity(e.target.value as 'All' | Commodity)} className={selCls}>
-            <option value="All">All</option>
-            {COMMODITIES.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-        </Filter>
-        <Filter label="Entity">
-          <select value={fEntity} onChange={(e) => setFEntity(e.target.value)} className={selCls}>
-            <option value="All">All</option>
-            {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-          </select>
-        </Filter>
-        <Filter label="Status">
-          <select value={fStatus} onChange={(e) => setFStatus(e.target.value as StatusFilter)} className={selCls}>
-            <option value="open">Open</option>
-            <option value="closed">Closed</option>
-            <option value="all">All</option>
-          </select>
-        </Filter>
-        {showClosed && (
-          <>
-            <Filter label="Closed from">
-              <input type="date" value={closedFrom} onChange={(e) => setClosedFrom(e.target.value)} className={selCls} />
-            </Filter>
-            <Filter label="Closed to">
-              <input type="date" value={closedTo} onChange={(e) => setClosedTo(e.target.value)} className={selCls} />
-            </Filter>
-          </>
-        )}
-      </div>
 
       {loading && <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">Loading…</div>}
 
