@@ -88,10 +88,38 @@ export type BrokerageClosedTrade = {
   realized_pnl: number | null
 }
 
+export type BrokerageOpenOption = {
+  trade_date: string | null
+  side: 'buy' | 'sell' | null
+  option_type: 'put' | 'call' | null
+  num_contracts: number | null
+  commodity: string | null
+  underlying_contract_month: string | null
+  strike_price: number | null
+  premium_cents: number | null
+  unrealized_pnl: number | null
+}
+
+export type BrokerageClosedOption = {
+  open_trade_date: string | null
+  close_trade_date: string | null
+  side: 'buy' | 'sell' | null
+  option_type: 'put' | 'call' | null
+  num_contracts: number | null
+  commodity: string | null
+  underlying_contract_month: string | null
+  strike_price: number | null
+  open_premium_cents: number | null
+  close_premium_cents: number | null
+  realized_pnl: number | null
+}
+
 export type BrokerageStatementExtraction = {
   statement_date: string | null
   open_positions: BrokerageOpenPosition[]
   closed_trades: BrokerageClosedTrade[]
+  open_options?: BrokerageOpenOption[]
+  closed_options?: BrokerageClosedOption[]
   account_summary: {
     beginning_balance: number | null
     ending_balance: number | null

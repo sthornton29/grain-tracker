@@ -201,6 +201,33 @@ export type MarketPrice = {
   fetched_at: string
 }
 
+export type OptionPosition = {
+  id: string
+  entity_id: string | null
+  commodity: string
+  option_type: 'call' | 'put'
+  side: 'buy' | 'sell'
+  underlying_contract_month: string
+  underlying_symbol: string
+  strike_price: number
+  num_contracts: number
+  premium_cents: number
+  premium_total: number
+  trade_date: string
+  expiration_date: string | null
+  crop_year: number
+  status: 'open' | 'closed_offset' | 'expired_worthless' | 'exercised'
+  close_price_cents: number | null
+  close_date: string | null
+  realized_pnl: number | null
+  commission: number
+  manual_current_value_cents: number | null
+  exercised_position_id: string | null
+  notes: string | null
+  source: 'manual' | 'statement_import'
+  created_at: string
+}
+
 export type Load = {
   id: string
   date: string

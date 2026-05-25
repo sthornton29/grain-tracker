@@ -120,6 +120,24 @@ For each PURCHASE & SALE (closed trade), extract:
 - close_price (decimal, converted from fractional)
 - realized_pnl (the GROSS PROFIT/LOSS amount — negative if DR)
 
+ALSO extract any OPTIONS positions from the statement. Options appear in the OPEN POSITIONS section and may look like:
+- "DEC 26 CORN 480 PUT" (a put option on DEC 26 Corn with strike price 480, meaning $4.80/bu)
+- "NOV 26 SOYBEANS 1150 CALL" (a call option on NOV 26 Soybeans with strike 1150, meaning $11.50/bu)
+- The strike price is typically shown as a whole number that needs to be converted to dollars per bushel (480 = $4.80, 1150 = $11.50, 650 = $6.50)
+
+For each OPTIONS position, extract:
+- trade_date (format YYYY-MM-DD)
+- side ("buy" if the position shows a debit/premium paid, "sell" if credit/premium received. Use the same long/short column logic: if quantity is in the LONG column it was bought, SHORT column means it was sold)
+- option_type ("put" or "call")
+- num_contracts (number)
+- commodity ("Corn", "Soybeans", or "Chicago Wheat" — ignore COTTON)
+- underlying_contract_month (e.g., "DEC 26")
+- strike_price (decimal dollars per bushel — convert from the whole number shown: 480 = 4.80)
+- premium_cents (the trade price shown, in cents per bushel — e.g., if price shows "15 1/2" that means 15.5 cents)
+- unrealized_pnl (the debit/credit amount — negative if DR)
+
+For each CLOSED option (offset in PURCHASE & SALE), extract open_trade_date, close_trade_date, side, option_type, num_contracts, commodity, underlying_contract_month, strike_price, open_premium_cents, close_premium_cents, and realized_pnl (GROSS, negative if DR).
+
 Also extract the account summary:
 - statement_date (format YYYY-MM-DD)
 - beginning_balance (decimal)
@@ -157,6 +175,34 @@ Respond ONLY in JSON with no other text, no markdown backticks:
       "contract_month": "string like JUL 26",
       "open_price": number,
       "close_price": number,
+      "realized_pnl": number
+    }
+  ],
+  "open_options": [
+    {
+      "trade_date": "YYYY-MM-DD",
+      "side": "buy or sell",
+      "option_type": "put or call",
+      "num_contracts": number,
+      "commodity": "Corn or Soybeans or Chicago Wheat",
+      "underlying_contract_month": "string like DEC 26",
+      "strike_price": number,
+      "premium_cents": number,
+      "unrealized_pnl": number
+    }
+  ],
+  "closed_options": [
+    {
+      "open_trade_date": "YYYY-MM-DD",
+      "close_trade_date": "YYYY-MM-DD",
+      "side": "buy or sell",
+      "option_type": "put or call",
+      "num_contracts": number,
+      "commodity": "Corn or Soybeans or Chicago Wheat",
+      "underlying_contract_month": "string like DEC 26",
+      "strike_price": number,
+      "open_premium_cents": number,
+      "close_premium_cents": number,
       "realized_pnl": number
     }
   ],

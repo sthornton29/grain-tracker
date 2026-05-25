@@ -178,6 +178,109 @@ export function realizedPnl(args: {
   return { gross: Math.round(gross * 100) / 100, net: Math.round(net * 100) / 100 }
 }
 
+// ---------- Options ----------
+
+export type OptionType = 'call' | 'put'
+export type OptionSide = 'buy' | 'sell'
+
+// Parse a value with an optional whole + fraction part, e.g. "15 1/2" -> 15.5,
+// "15.5" -> 15.5, "15" -> 15. Used for option premiums quoted in cents/bu,
+// where the fraction is a fraction of a cent added directly (1/2 = 0.5¢).
+export function parseFractional(input: string | null | undefined): number | null {
+  if (input == null) return null
+  const s = String(input).trim()
+  if (s === '') return null
+  const withFrac = s.match(/^(-?\d+(?:\.\d+)?)\s+(\d+)\/(\d+)$/)
+  if (withFrac) {
+    const den = parseInt(withFrac[3], 10)
+    if (!den) return null
+    return parseFloat(withFrac[1]) + parseInt(withFrac[2], 10) / den
+  }
+  const bareFrac = s.match(/^(\d+)\/(\d+)$/)
+  if (bareFrac) {
+    const den = parseInt(bareFrac[2], 10)
+    if (!den) return null
+    return parseInt(bareFrac[1], 10) / den
+  }
+  const n = Number(s)
+  return Number.isFinite(n) ? n : null
+}
+
+// Total premium dollars: cents/bu / 100 * contracts * bu/contract.
+export function optionPremiumTotal(
+  premiumCents: number,
+  numContracts: number,
+  contractSizeBu = CONTRACT_SIZE_BU,
+): number {
+  return Math.round((premiumCents / 100) * numContracts * contractSizeBu * 100) / 100
+}
+
+// Mark-to-market P&L on an open option from a current premium in cents/bu. A
+// bought option gains when the premium rises; a written (sold) one gains when
+// it falls. null when no current value is known.
+export function optionUnrealizedPnl(args: {
+  side: OptionSide
+  premiumCents: number
+  currentCents: number | null | undefined
+  numContracts: number
+  contractSizeBu?: number
+}): number | null {
+  if (args.currentCents == null) return null
+  const size = args.contractSizeBu ?? CONTRACT_SIZE_BU
+  const perBu = args.side === 'buy' ? args.currentCents - args.premiumCents : args.premiumCents - args.currentCents
+  return Math.round((perBu / 100) * args.numContracts * size * 100) / 100
+}
+
+// Realized P&L when an option is offset (traded back) at a closing premium,
+// net of commissions.
+export function optionOffsetPnl(args: {
+  side: OptionSide
+  premiumCents: number
+  closeCents: number
+  numContracts: number
+  contractSizeBu?: number
+  commission?: number
+}): number {
+  const size = args.contractSizeBu ?? CONTRACT_SIZE_BU
+  const perBu = args.side === 'buy' ? args.closeCents - args.premiumCents : args.premiumCents - args.closeCents
+  const gross = (perBu / 100) * args.numContracts * size
+  return Math.round((gross - (args.commission ?? 0)) * 100) / 100
+}
+
+// Realized P&L when an option expires worthless or is exercised: the whole
+// premium is a cost (bought) or income (sold), net of commissions.
+export function optionFullPremiumPnl(args: {
+  side: OptionSide
+  premiumCents: number
+  numContracts: number
+  contractSizeBu?: number
+  commission?: number
+}): number {
+  const total = optionPremiumTotal(args.premiumCents, args.numContracts, args.contractSizeBu)
+  const signed = args.side === 'buy' ? -total : total
+  return Math.round((signed - (args.commission ?? 0)) * 100) / 100
+}
+
+// The futures side an exercised/assigned option converts into:
+//   buy put -> short, buy call -> long, sell put -> long, sell call -> short.
+export function exerciseFuturesSide(optionType: OptionType, optionSide: OptionSide): Side {
+  if (optionType === 'put') return optionSide === 'buy' ? 'short' : 'long'
+  return optionSide === 'buy' ? 'long' : 'short'
+}
+
+export function fmtCents(n: number | null | undefined): string {
+  if (n == null) return '—'
+  return `${Number(n).toLocaleString(undefined, { maximumFractionDigits: 4 })}¢`
+}
+
+// Normalize an option type / side parsed from a statement.
+export function normalizeOptionType(raw: string | null | undefined): OptionType | null {
+  const s = (raw ?? '').trim().toLowerCase()
+  if (s.includes('put')) return 'put'
+  if (s.includes('call')) return 'call'
+  return null
+}
+
 // Normalize a commodity name from a brokerage statement to our canonical form.
 // Returns null for commodities we don't track (e.g. COTTON).
 export function normalizeCommodity(raw: string | null | undefined): Commodity | null {

@@ -4,18 +4,25 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import PositionForm from '@/components/hedging/position-form'
 import ClosePositionDialog from '@/components/hedging/close-position-dialog'
+import OptionForm from '@/components/hedging/option-form'
+import CloseOptionDialog from '@/components/hedging/close-option-dialog'
 import StatementImport from '@/components/hedging/statement-import'
 import PriceBoard, { type PriceMap } from '@/components/hedging/price-board'
 import {
   COMMODITIES,
+  COMMODITY_SPECS,
   type Commodity,
   contractMonthSortKey,
   unrealizedPnl,
+  optionUnrealizedPnl,
+  optionPremiumTotal,
+  parseFractional,
   bushelsFor,
   fmtPrice,
   fmtPnl,
+  fmtCents,
 } from '@/lib/hedging'
-import type { Entity, FuturesPosition } from '@/lib/types'
+import type { Entity, FuturesPosition, OptionPosition } from '@/lib/types'
 
 type StatusFilter = 'open' | 'closed' | 'all'
 
@@ -23,10 +30,14 @@ export default function HedgingPage() {
   const supabase = useMemo(() => createClient(), [])
 
   const [positions, setPositions] = useState<FuturesPosition[]>([])
+  const [options, setOptions] = useState<OptionPosition[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
   const [prices, setPrices] = useState<PriceMap>(new Map())
   const [priceDate, setPriceDate] = useState<string | null>(null)
   const [priceNote, setPriceNote] = useState<string | null>(null)
+  // Live option premiums (cents/bu) keyed by option id, from Barchart when available.
+  const [optionValueById, setOptionValueById] = useState<Map<string, number>>(new Map())
+  const [optionPriceNote, setOptionPriceNote] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
 
@@ -42,6 +53,9 @@ export default function HedgingPage() {
   const [showNew, setShowNew] = useState(false)
   const [editTarget, setEditTarget] = useState<FuturesPosition | null>(null)
   const [closeTarget, setCloseTarget] = useState<FuturesPosition | null>(null)
+  const [showNewOption, setShowNewOption] = useState(false)
+  const [editOption, setEditOption] = useState<OptionPosition | null>(null)
+  const [closeOptionTarget, setCloseOptionTarget] = useState<OptionPosition | null>(null)
   const [showImport, setShowImport] = useState(false)
   const [banner, setBanner] = useState<string | null>(null)
 
@@ -78,17 +92,49 @@ export default function HedgingPage() {
     [],
   )
 
+  // Best-effort live option premiums. Falls back silently when Barchart options
+  // pricing isn't available; the UI then uses each option's manual value.
+  const fetchOptionPrices = useCallback(async (opts: OptionPosition[]) => {
+    const open = opts.filter((o) => o.status === 'open')
+    if (open.length === 0) { setOptionValueById(new Map()); setOptionPriceNote(null); return }
+    const requests = open.map((o) => ({
+      id: o.id,
+      root: COMMODITY_SPECS[o.commodity as Commodity]?.symbol ?? o.underlying_symbol.slice(0, 2),
+      contract: o.underlying_symbol,
+      optionType: o.option_type,
+      strike: o.strike_price,
+    }))
+    try {
+      const res = await fetch('/api/options-prices', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ requests }),
+      })
+      const data = await res.json()
+      const map = new Map<string, number>()
+      for (const [id, v] of Object.entries(data.values ?? {})) if (typeof v === 'number') map.set(id, v)
+      setOptionValueById(map)
+      setOptionPriceNote(data.available ? null : data.note ?? 'Live options pricing not available.')
+    } catch {
+      setOptionPriceNote('Live options pricing not available — enter current values manually.')
+    }
+  }, [])
+
   const loadAll = useCallback(async () => {
-    const [pos, ent] = await Promise.all([
+    const [pos, ent, opt] = await Promise.all([
       supabase.from('futures_positions').select('*').order('trade_date', { ascending: false }),
       supabase.from('entities').select('*').order('name'),
+      supabase.from('options_positions').select('*').order('trade_date', { ascending: false }),
     ])
     const list = (pos.data as FuturesPosition[]) ?? []
+    const optList = (opt.data as OptionPosition[]) ?? []
     setPositions(list)
     setEntities((ent.data as Entity[]) ?? [])
+    setOptions(optList)
     setLoading(false)
     await refreshPrices(list, false)
-  }, [supabase, refreshPrices])
+    await fetchOptionPrices(optList)
+  }, [supabase, refreshPrices, fetchOptionPrices])
 
   useEffect(() => {
     loadAll()
@@ -100,8 +146,8 @@ export default function HedgingPage() {
   )
 
   const cropYears = useMemo(
-    () => Array.from(new Set(positions.map((p) => p.crop_year))).sort((a, b) => b - a),
-    [positions],
+    () => Array.from(new Set([...positions.map((p) => p.crop_year), ...options.map((o) => o.crop_year)])).sort((a, b) => b - a),
+    [positions, options],
   )
 
   // Apply the crop-year / commodity / entity filters (status handled separately).
@@ -135,6 +181,37 @@ export default function HedgingPage() {
     unrealizedPnl({ side: p.side, tradePrice: p.trade_price, currentPrice: curPrice(p.contract_symbol), numContracts: p.num_contracts })
   const netRealized = (p: FuturesPosition) => (p.realized_pnl ?? 0) - (p.commission ?? 0)
 
+  // Options: same crop-year / commodity / entity filters; status split with the
+  // closed date-range. Closed options' realized_pnl is already net of commission.
+  const baseOptions = useMemo(
+    () =>
+      options.filter(
+        (o) =>
+          (fCropYear === 'All' || o.crop_year === Number(fCropYear)) &&
+          (fCommodity === 'All' || o.commodity === fCommodity) &&
+          (fEntity === 'All' || o.entity_id === fEntity),
+      ),
+    [options, fCropYear, fCommodity, fEntity],
+  )
+  const openOptions = useMemo(() => baseOptions.filter((o) => o.status === 'open'), [baseOptions])
+  const closedOptions = useMemo(
+    () =>
+      baseOptions
+        .filter(
+          (o) =>
+            o.status !== 'open' &&
+            (!closedFrom || (o.close_date != null && o.close_date >= closedFrom)) &&
+            (!closedTo || (o.close_date != null && o.close_date <= closedTo)),
+        )
+        .sort((a, b) => (b.close_date ?? '').localeCompare(a.close_date ?? '')),
+    [baseOptions, closedFrom, closedTo],
+  )
+  // Live Barchart value, else the manually-entered value, else unknown.
+  const optCurrentCents = (o: OptionPosition) => optionValueById.get(o.id) ?? o.manual_current_value_cents ?? null
+  const optUnrealized = (o: OptionPosition) =>
+    optionUnrealizedPnl({ side: o.side, premiumCents: o.premium_cents, currentCents: optCurrentCents(o), numContracts: o.num_contracts })
+  const optNetRealized = (o: OptionPosition) => o.realized_pnl ?? 0
+
   // Net realized P&L across the filtered closed positions (closed-table total).
   const totalRealizedNet = closedPos.reduce((s, p) => s + netRealized(p), 0)
 
@@ -150,35 +227,57 @@ export default function HedgingPage() {
     return m
   }, [openPos])
 
-  // Crop-year × commodity summary (open + closed within current filters).
-  const cropYearSummaries = useMemo(() => {
-    const m = new Map<string, {
-      cropYear: number; commodity: Commodity; contracts: number; bushels: number
-      priceWeight: number; unrealized: number; realized: number; hasOpen: boolean
-    }>()
-    for (const p of base) {
-      const key = `${p.crop_year}|${p.commodity}`
-      const cur = m.get(key) ?? {
-        cropYear: p.crop_year, commodity: p.commodity as Commodity, contracts: 0, bushels: 0,
-        priceWeight: 0, unrealized: 0, realized: 0, hasOpen: false,
-      }
-      cur.contracts += p.num_contracts
-      cur.bushels += bushelsFor(p.num_contracts)
-      cur.priceWeight += p.trade_price * p.num_contracts
-      if (p.status === 'open') { cur.unrealized += posUnrealized(p) ?? 0; cur.hasOpen = true }
-      else cur.realized += netRealized(p)
-      m.set(key, cur)
+  // Open options grouped by commodity, then sorted by underlying month.
+  const optionGroups = useMemo(() => {
+    const m = new Map<Commodity, OptionPosition[]>()
+    for (const o of openOptions) {
+      const arr = m.get(o.commodity as Commodity) ?? []
+      arr.push(o)
+      m.set(o.commodity as Commodity, arr)
     }
-    return Array.from(m.values()).sort(
-      (a, b) => b.cropYear - a.cropYear || a.commodity.localeCompare(b.commodity),
-    )
+    for (const arr of m.values()) arr.sort((a, b) => contractMonthSortKey(a.underlying_contract_month) - contractMonthSortKey(b.underlying_contract_month))
+    return m
+  }, [openOptions])
+
+  // Crop-year × commodity summary, combining futures and options.
+  type Leg = { contracts: number; bushels: number; priceWeight: number; premium: number; unrealized: number; realized: number; hasOpen: boolean }
+  const emptyLeg = (): Leg => ({ contracts: 0, bushels: 0, priceWeight: 0, premium: 0, unrealized: 0, realized: 0, hasOpen: false })
+  const cropYearSummaries = useMemo(() => {
+    const m = new Map<string, { cropYear: number; commodity: Commodity; fut: Leg; opt: Leg }>()
+    const get = (cropYear: number, commodity: Commodity) => {
+      const key = `${cropYear}|${commodity}`
+      let cur = m.get(key)
+      if (!cur) { cur = { cropYear, commodity, fut: emptyLeg(), opt: emptyLeg() }; m.set(key, cur) }
+      return cur
+    }
+    for (const p of base) {
+      const f = get(p.crop_year, p.commodity as Commodity).fut
+      f.contracts += p.num_contracts
+      f.bushels += bushelsFor(p.num_contracts)
+      f.priceWeight += p.trade_price * p.num_contracts
+      if (p.status === 'open') { f.unrealized += posUnrealized(p) ?? 0; f.hasOpen = true }
+      else f.realized += netRealized(p)
+    }
+    for (const o of baseOptions) {
+      const g = get(o.crop_year, o.commodity as Commodity).opt
+      g.contracts += o.num_contracts
+      g.bushels += bushelsFor(o.num_contracts)
+      // Net premium cash: buying pays out (negative), selling collects (positive).
+      g.premium += (o.side === 'buy' ? -1 : 1) * (o.premium_total ?? optionPremiumTotal(o.premium_cents, o.num_contracts))
+      if (o.status === 'open') { g.unrealized += optUnrealized(o) ?? 0; g.hasOpen = true }
+      else g.realized += optNetRealized(o)
+    }
+    return Array.from(m.values()).sort((a, b) => b.cropYear - a.cropYear || a.commodity.localeCompare(b.commodity))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [base, prices])
+  }, [base, baseOptions, prices, optionValueById])
 
   function afterMutation() {
     setShowNew(false)
     setEditTarget(null)
     setCloseTarget(null)
+    setShowNewOption(false)
+    setEditOption(null)
+    setCloseOptionTarget(null)
     setShowImport(false)
     loadAll()
   }
@@ -187,6 +286,24 @@ export default function HedgingPage() {
     if (!window.confirm(`Delete ${p.side} ${p.num_contracts} ${p.contract_month} ${p.commodity} (${p.contract_symbol})? This can't be undone.`)) return
     const { error } = await supabase.from('futures_positions').delete().eq('id', p.id)
     if (error) { setBanner(`Delete failed: ${error.message}`); return }
+    loadAll()
+  }
+
+  async function deleteOption(o: OptionPosition) {
+    if (!window.confirm(`Delete ${o.side} ${o.num_contracts} ${o.underlying_contract_month} ${o.commodity} ${fmtPrice(o.strike_price)} ${o.option_type}? This can't be undone.`)) return
+    const { error } = await supabase.from('options_positions').delete().eq('id', o.id)
+    if (error) { setBanner(`Delete failed: ${error.message}`); return }
+    loadAll()
+  }
+
+  async function updateOptionValue(o: OptionPosition) {
+    const cur = optCurrentCents(o)
+    const input = window.prompt(`Current premium for ${o.underlying_symbol} ${o.option_type.toUpperCase()} ${fmtPrice(o.strike_price)} (¢/bu):`, cur != null ? String(cur) : '')
+    if (input == null) return
+    const v = parseFractional(input)
+    if (v == null) { setBanner('Could not read that premium value.'); return }
+    const { error } = await supabase.from('options_positions').update({ manual_current_value_cents: v }).eq('id', o.id)
+    if (error) { setBanner(`Update failed: ${error.message}`); return }
     loadAll()
   }
 
@@ -260,27 +377,41 @@ export default function HedgingPage() {
         </button>
       </div>
       {priceNote && <p className="text-xs text-amber-700">{priceNote}</p>}
+      {optionPriceNote && <p className="text-xs text-amber-700">Options: {optionPriceNote}</p>}
 
-      {/* Hedging summary by crop year — the meaningful, crop-specific view */}
+      {/* Hedging summary by crop year — combines futures and options per crop. */}
       {!loading && cropYearSummaries.length > 0 && (
         <div>
           <h2 className="font-semibold mb-2">Hedging Summary by Crop Year</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {cropYearSummaries.map((s) => {
-              const avg = s.contracts > 0 ? s.priceWeight / s.contracts : null
-              const total = s.unrealized + s.realized
+              const avg = s.fut.contracts > 0 ? s.fut.priceWeight / s.fut.contracts : null
+              const futTotal = s.fut.unrealized + s.fut.realized
+              const optTotal = s.opt.unrealized + s.opt.realized
+              const combined = futTotal + optTotal
               return (
-                <div key={`${s.cropYear}-${s.commodity}`} className="bg-white rounded-xl shadow p-4 space-y-1">
-                  <div className="flex items-baseline justify-between">
-                    <h3 className="font-bold">{s.cropYear} {s.commodity}</h3>
-                    <span className="text-xs text-slate-500">{s.contracts} contracts</span>
-                  </div>
-                  <Row label="Bushels hedged" value={`${s.bushels.toLocaleString()} bu`} />
-                  <Row label="Avg hedge price" value={fmtPrice(avg)} />
-                  {s.hasOpen && <Row label="Unrealized P&L" value={fmtPnl(s.unrealized)} tone={s.unrealized >= 0 ? 'green' : 'red'} />}
-                  <Row label="Realized P&L (net)" value={fmtPnl(s.realized)} tone={s.realized >= 0 ? 'green' : 'red'} />
+                <div key={`${s.cropYear}-${s.commodity}`} className="bg-white rounded-xl shadow p-4 space-y-2">
+                  <h3 className="font-bold">{s.cropYear} {s.commodity}</h3>
+                  {s.fut.contracts > 0 && (
+                    <div className="space-y-0.5">
+                      <div className="text-xs uppercase tracking-wide text-slate-400">Futures</div>
+                      <Row label="Bushels hedged" value={`${s.fut.bushels.toLocaleString()} bu (${s.fut.contracts})`} />
+                      <Row label="Avg hedge price" value={fmtPrice(avg)} />
+                      {s.fut.hasOpen && <Row label="Unrealized" value={fmtPnl(s.fut.unrealized)} tone={s.fut.unrealized >= 0 ? 'green' : 'red'} />}
+                      <Row label="Realized (net)" value={fmtPnl(s.fut.realized)} tone={s.fut.realized >= 0 ? 'green' : 'red'} />
+                    </div>
+                  )}
+                  {s.opt.contracts > 0 && (
+                    <div className="space-y-0.5">
+                      <div className="text-xs uppercase tracking-wide text-slate-400">Options</div>
+                      <Row label="Bushels covered" value={`${s.opt.bushels.toLocaleString()} bu (${s.opt.contracts})`} />
+                      <Row label={s.opt.premium < 0 ? 'Premium paid' : 'Premium received'} value={fmtPnl(Math.abs(s.opt.premium))} />
+                      {s.opt.hasOpen && <Row label="Unrealized" value={fmtPnl(s.opt.unrealized)} tone={s.opt.unrealized >= 0 ? 'green' : 'red'} />}
+                      <Row label="Realized (net)" value={fmtPnl(s.opt.realized)} tone={s.opt.realized >= 0 ? 'green' : 'red'} />
+                    </div>
+                  )}
                   <div className="border-t border-slate-100 pt-1">
-                    <Row label="Total P&L" value={fmtPnl(total)} tone={total >= 0 ? 'green' : 'red'} bold />
+                    <Row label="Combined Total P&L" value={fmtPnl(combined)} tone={combined >= 0 ? 'green' : 'red'} bold />
                   </div>
                 </div>
               )
@@ -406,15 +537,136 @@ export default function HedgingPage() {
         </div>
       )}
 
+      {/* Open options */}
+      {!loading && showOpen && (
+        <div className="bg-white rounded-xl shadow overflow-hidden">
+          <div className="px-4 pt-3 pb-2 border-b border-slate-100 flex items-center gap-3 flex-wrap">
+            <div className="flex-1">
+              <h2 className="font-semibold">Open Options</h2>
+              <p className="text-xs text-slate-500">
+                Grouped by commodity, then underlying month.{optionPriceNote ? ' Live pricing unavailable — use “Update” to enter current premiums.' : ''}
+              </p>
+            </div>
+            <button onClick={() => setShowNewOption(true)} className="rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold">+ New Option</button>
+          </div>
+          {openOptions.length === 0 ? (
+            <Empty>No open options for these filters.</Empty>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-50 text-slate-600">
+                  <tr>{['Commodity', 'Type', 'Side', 'Month', 'Strike', '# Contracts', 'Bushels', 'Trade Date', 'Premium ¢', 'Premium $', 'Current ¢', 'Unrealized P&L', 'Crop Yr', 'Actions'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {COMMODITIES.filter((c) => (optionGroups.get(c)?.length ?? 0) > 0).map((c) => {
+                    const rows = optionGroups.get(c)!
+                    const subContracts = rows.reduce((s, o) => s + o.num_contracts, 0)
+                    const subUnreal = rows.reduce((s, o) => s + (optUnrealized(o) ?? 0), 0)
+                    return (
+                      <FragmentGroup key={c}>
+                        {rows.map((o) => {
+                          const u = optUnrealized(o)
+                          const cv = optCurrentCents(o)
+                          return (
+                            <tr key={o.id} className="border-t border-slate-100">
+                              <td className="px-3 py-2">{o.commodity}</td>
+                              <td className="px-3 py-2 capitalize">{o.option_type}</td>
+                              <td className="px-3 py-2 capitalize">{o.side}</td>
+                              <td className="px-3 py-2">{o.underlying_contract_month}</td>
+                              <td className="px-3 py-2 text-right font-mono">{fmtPrice(o.strike_price)}</td>
+                              <td className="px-3 py-2 text-right">{o.num_contracts}</td>
+                              <td className="px-3 py-2 text-right font-mono">{bushelsFor(o.num_contracts).toLocaleString()}</td>
+                              <td className="px-3 py-2 whitespace-nowrap">{o.trade_date}</td>
+                              <td className="px-3 py-2 text-right font-mono">{fmtCents(o.premium_cents)}</td>
+                              <td className="px-3 py-2 text-right font-mono">{fmtPnl(o.premium_total)}</td>
+                              <td className="px-3 py-2 text-right font-mono">{cv == null ? <span className="text-slate-400">N/A</span> : fmtCents(cv)}</td>
+                              <td className={`px-3 py-2 text-right font-mono ${u == null ? 'text-slate-400' : u >= 0 ? 'text-green-700' : 'text-red-700'}`}>{u == null ? 'N/A' : fmtPnl(u)}</td>
+                              <td className="px-3 py-2">{o.crop_year}</td>
+                              <td className="px-3 py-2 whitespace-nowrap">
+                                <button onClick={() => setCloseOptionTarget(o)} className="text-sky-700 mr-2">Close</button>
+                                <button onClick={() => updateOptionValue(o)} className="text-slate-600 mr-2">Update</button>
+                                <button onClick={() => setEditOption(o)} className="text-slate-600 mr-2">Edit</button>
+                                <button onClick={() => deleteOption(o)} className="text-red-600">Delete</button>
+                              </td>
+                            </tr>
+                          )
+                        })}
+                        <tr className="border-t border-slate-200 bg-slate-50 font-semibold">
+                          <td className="px-3 py-2" colSpan={5}>{c} subtotal</td>
+                          <td className="px-3 py-2 text-right">{subContracts}</td>
+                          <td className="px-3 py-2 text-right font-mono">{bushelsFor(subContracts).toLocaleString()}</td>
+                          <td colSpan={4} />
+                          <td className={`px-3 py-2 text-right font-mono ${subUnreal >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(subUnreal)}</td>
+                          <td colSpan={2} />
+                        </tr>
+                      </FragmentGroup>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Closed options */}
+      {!loading && showClosed && (
+        <div className="bg-white rounded-xl shadow overflow-hidden">
+          <div className="px-4 pt-3 pb-2 border-b border-slate-100"><h2 className="font-semibold">Closed Options</h2></div>
+          {closedOptions.length === 0 ? (
+            <Empty>No closed options for these filters.</Empty>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-50 text-slate-600">
+                  <tr>{['Commodity', 'Type', 'Side', 'Month', 'Strike', '# Contracts', 'Trade Date', 'Premium ¢', 'Close Date', 'Status', 'Close ¢', 'Realized P&L', 'Crop Yr'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {closedOptions.map((o) => {
+                    const statusLabel = o.status === 'closed_offset' ? 'Offset' : o.status === 'expired_worthless' ? 'Expired' : 'Exercised'
+                    return (
+                      <tr key={o.id} className="border-t border-slate-100">
+                        <td className="px-3 py-2">{o.commodity}</td>
+                        <td className="px-3 py-2 capitalize">{o.option_type}</td>
+                        <td className="px-3 py-2 capitalize">{o.side}</td>
+                        <td className="px-3 py-2">{o.underlying_contract_month}</td>
+                        <td className="px-3 py-2 text-right font-mono">{fmtPrice(o.strike_price)}</td>
+                        <td className="px-3 py-2 text-right">{o.num_contracts}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{o.trade_date}</td>
+                        <td className="px-3 py-2 text-right font-mono">{fmtCents(o.premium_cents)}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{o.close_date ?? '—'}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{statusLabel}{o.status === 'exercised' && <span className="text-xs text-slate-400"> → futures</span>}</td>
+                        <td className="px-3 py-2 text-right font-mono">{o.close_price_cents != null ? fmtCents(o.close_price_cents) : '—'}</td>
+                        <td className={`px-3 py-2 text-right font-mono ${(o.realized_pnl ?? 0) >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(o.realized_pnl)}</td>
+                        <td className="px-3 py-2">{o.crop_year}</td>
+                      </tr>
+                    )
+                  })}
+                  <tr className="border-t border-slate-200 bg-slate-50 font-semibold">
+                    <td className="px-3 py-2" colSpan={11}>Total realized P&L (net)</td>
+                    <td className={`px-3 py-2 text-right font-mono ${closedOptions.reduce((s, o) => s + (o.realized_pnl ?? 0), 0) >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(closedOptions.reduce((s, o) => s + (o.realized_pnl ?? 0), 0))}</td>
+                    <td />
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
       {showNew && <PositionForm entities={entities} onClose={() => setShowNew(false)} onSaved={afterMutation} />}
       {editTarget && <PositionForm entities={entities} initial={editTarget} onClose={() => setEditTarget(null)} onSaved={afterMutation} />}
       {closeTarget && <ClosePositionDialog position={closeTarget} onClose={() => setCloseTarget(null)} onSaved={afterMutation} />}
+      {showNewOption && <OptionForm entities={entities} onClose={() => setShowNewOption(false)} onSaved={afterMutation} />}
+      {editOption && <OptionForm entities={entities} initial={editOption} onClose={() => setEditOption(null)} onSaved={afterMutation} />}
+      {closeOptionTarget && <CloseOptionDialog position={closeOptionTarget} onClose={() => setCloseOptionTarget(null)} onSaved={afterMutation} />}
       {showImport && (
         <StatementImport
           entities={entities}
           existingPositions={positions}
+          existingOptions={options}
           onClose={() => setShowImport(false)}
-          onImported={(s) => { setBanner(`Imported ${s.inserted} position${s.inserted === 1 ? '' : 's'}${s.closed ? ` and closed ${s.closed} matched` : ''}.`); afterMutation() }}
+          onImported={(s) => { setBanner(`Imported ${s.inserted} item${s.inserted === 1 ? '' : 's'}${s.closed ? ` and closed ${s.closed} matched` : ''}.`); afterMutation() }}
         />
       )}
     </div>

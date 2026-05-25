@@ -13,14 +13,19 @@ import {
 import {
   buildContractSymbol,
   normalizeCommodity,
+  normalizeOptionType,
+  optionPremiumTotal,
   fmtPrice,
   fmtPnl,
+  fmtCents,
   bushelsFor,
   COMMODITY_SPECS,
   type Commodity,
   type Side,
+  type OptionType,
+  type OptionSide,
 } from '@/lib/hedging'
-import type { Entity, FuturesPosition } from '@/lib/types'
+import type { Entity, FuturesPosition, OptionPosition } from '@/lib/types'
 
 function cropYearOptions(): number[] {
   const y = new Date().getFullYear()
@@ -70,15 +75,46 @@ type ClosedRow = {
   crop_year: string
   include: boolean
 }
+type OptionOpenRow = {
+  commodity: Commodity
+  option_type: OptionType
+  side: OptionSide
+  underlying_contract_month: string
+  strike_price: number
+  num_contracts: number
+  premium_cents: number
+  trade_date: string
+  unrealized_pnl: number | null
+  crop_year: string
+  include: boolean
+  existing: boolean
+}
+type OptionClosedRow = {
+  commodity: Commodity
+  option_type: OptionType
+  side: OptionSide
+  underlying_contract_month: string
+  strike_price: number
+  num_contracts: number
+  open_trade_date: string
+  close_trade_date: string
+  open_premium_cents: number
+  close_premium_cents: number
+  realized_pnl: number
+  crop_year: string
+  include: boolean
+  alreadyImported: boolean
+}
 
 type Props = {
   entities: Entity[]
   existingPositions: FuturesPosition[]
+  existingOptions: OptionPosition[]
   onClose: () => void
   onImported: (summary: { inserted: number; closed: number }) => void
 }
 
-export default function StatementImport({ entities, existingPositions, onClose, onImported }: Props) {
+export default function StatementImport({ entities, existingPositions, existingOptions, onClose, onImported }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [file, setFile] = useState<File | null>(null)
   const [stage, setStage] = useState<string | null>(null)
@@ -86,7 +122,9 @@ export default function StatementImport({ entities, existingPositions, onClose, 
   const [extraction, setExtraction] = useState<BrokerageStatementExtraction | null>(null)
   const [openRows, setOpenRows] = useState<OpenRow[]>([])
   const [closedRows, setClosedRows] = useState<ClosedRow[]>([])
-  const [tab, setTab] = useState<'open' | 'closed' | 'summary'>('open')
+  const [openOptionRows, setOpenOptionRows] = useState<OptionOpenRow[]>([])
+  const [closedOptionRows, setClosedOptionRows] = useState<OptionClosedRow[]>([])
+  const [tab, setTab] = useState<'open' | 'closed' | 'options' | 'summary'>('open')
   const [importEntityId, setImportEntityId] = useState('')
   const [bulkCropYear, setBulkCropYear] = useState('')
   const [saving, setSaving] = useState(false)
@@ -175,6 +213,75 @@ export default function StatementImport({ entities, existingPositions, onClose, 
     }
   }
 
+  // Options dedup uses a strong fingerprint (commodity + type + month + strike +
+  // trade date + premium), excluding side and num_contracts for the same reason
+  // as futures: those are the AI-read fields most likely to flip on re-upload.
+  function buildOpenOptionRow(o: NonNullable<BrokerageStatementExtraction['open_options']>[number]): OptionOpenRow | null {
+    const commodity = normalizeCommodity(o.commodity)
+    const option_type = normalizeOptionType(o.option_type)
+    if (!commodity || !option_type || o.side == null || !o.underlying_contract_month || o.strike_price == null || o.num_contracts == null || o.premium_cents == null || !o.trade_date) {
+      return null
+    }
+    const existing = existingOptions.some(
+      (ex) =>
+        ex.commodity === commodity &&
+        ex.option_type === option_type &&
+        up(ex.underlying_contract_month) === up(o.underlying_contract_month!) &&
+        priceEq(ex.strike_price, o.strike_price!) &&
+        ex.trade_date === o.trade_date &&
+        priceEq(ex.premium_cents, o.premium_cents!),
+    )
+    return {
+      commodity,
+      option_type,
+      side: o.side,
+      underlying_contract_month: up(o.underlying_contract_month),
+      strike_price: o.strike_price,
+      num_contracts: o.num_contracts,
+      premium_cents: o.premium_cents,
+      trade_date: o.trade_date,
+      unrealized_pnl: o.unrealized_pnl ?? null,
+      crop_year: '',
+      include: !existing,
+      existing,
+    }
+  }
+
+  function buildClosedOptionRow(o: NonNullable<BrokerageStatementExtraction['closed_options']>[number]): OptionClosedRow | null {
+    const commodity = normalizeCommodity(o.commodity)
+    const option_type = normalizeOptionType(o.option_type)
+    if (!commodity || !option_type || o.side == null || !o.underlying_contract_month || o.strike_price == null || o.num_contracts == null || o.open_premium_cents == null || o.close_premium_cents == null || !o.open_trade_date || !o.close_trade_date) {
+      return null
+    }
+    const alreadyImported = existingOptions.some(
+      (ex) =>
+        ex.status !== 'open' &&
+        ex.commodity === commodity &&
+        ex.option_type === option_type &&
+        up(ex.underlying_contract_month) === up(o.underlying_contract_month!) &&
+        priceEq(ex.strike_price, o.strike_price!) &&
+        ex.trade_date === o.open_trade_date &&
+        priceEq(ex.premium_cents, o.open_premium_cents!) &&
+        ex.close_date === o.close_trade_date,
+    )
+    return {
+      commodity,
+      option_type,
+      side: o.side,
+      underlying_contract_month: up(o.underlying_contract_month),
+      strike_price: o.strike_price,
+      num_contracts: o.num_contracts,
+      open_trade_date: o.open_trade_date,
+      close_trade_date: o.close_trade_date,
+      open_premium_cents: o.open_premium_cents,
+      close_premium_cents: o.close_premium_cents,
+      realized_pnl: o.realized_pnl ?? 0,
+      crop_year: '',
+      include: !alreadyImported,
+      alreadyImported,
+    }
+  }
+
   async function onPdf(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0]
     e.target.value = ''
@@ -193,9 +300,13 @@ export default function StatementImport({ entities, existingPositions, onClose, 
       setExtraction(data)
       const open = (data.open_positions ?? []).map(buildOpenRow).filter((r): r is OpenRow => r !== null)
       const closed = (data.closed_trades ?? []).map(buildClosedRow).filter((r): r is ClosedRow => r !== null)
+      const openOpts = (data.open_options ?? []).map(buildOpenOptionRow).filter((r): r is OptionOpenRow => r !== null)
+      const closedOpts = (data.closed_options ?? []).map(buildClosedOptionRow).filter((r): r is OptionClosedRow => r !== null)
       setOpenRows(open)
       setClosedRows(closed)
-      setTab(open.length > 0 ? 'open' : closed.length > 0 ? 'closed' : 'summary')
+      setOpenOptionRows(openOpts)
+      setClosedOptionRows(closedOpts)
+      setTab(open.length > 0 ? 'open' : closed.length > 0 ? 'closed' : openOpts.length + closedOpts.length > 0 ? 'options' : 'summary')
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) setErr(e.message)
       else setErr(e?.message ? `Couldn't read this statement: ${e.message}.` : "Couldn't read this statement.")
@@ -211,10 +322,18 @@ export default function StatementImport({ entities, existingPositions, onClose, 
   function setClosed(i: number, patch: Partial<ClosedRow>) {
     setClosedRows((rs) => rs.map((r, j) => (i === j ? { ...r, ...patch } : r)))
   }
+  function setOpenOption(i: number, patch: Partial<OptionOpenRow>) {
+    setOpenOptionRows((rs) => rs.map((r, j) => (i === j ? { ...r, ...patch } : r)))
+  }
+  function setClosedOption(i: number, patch: Partial<OptionClosedRow>) {
+    setClosedOptionRows((rs) => rs.map((r, j) => (i === j ? { ...r, ...patch } : r)))
+  }
   function applyBulkCropYear() {
     if (!bulkCropYear) return
     setOpenRows((rs) => rs.map((r) => (r.existing ? r : { ...r, crop_year: bulkCropYear })))
     setClosedRows((rs) => rs.map((r) => (r.matchedOpenId || r.alreadyImported ? r : { ...r, crop_year: bulkCropYear })))
+    setOpenOptionRows((rs) => rs.map((r) => (r.existing ? r : { ...r, crop_year: bulkCropYear })))
+    setClosedOptionRows((rs) => rs.map((r) => (r.alreadyImported ? r : { ...r, crop_year: bulkCropYear })))
   }
   function applyBulkSide(side: Side) {
     setOpenRows((rs) => rs.map((r) => ({ ...r, side })))
@@ -224,12 +343,16 @@ export default function StatementImport({ entities, existingPositions, onClose, 
   const newOpen = openRows.filter((r) => r.include && !r.existing)
   const closesMatched = closedRows.filter((r) => r.include && r.matchedOpenId && !r.alreadyImported)
   const closedToImport = closedRows.filter((r) => r.include && !r.matchedOpenId && !r.alreadyImported)
+  const newOpenOptions = openOptionRows.filter((r) => r.include && !r.existing)
+  const newClosedOptions = closedOptionRows.filter((r) => r.include && !r.alreadyImported)
 
   async function save() {
     setErr(null)
     if (newOpen.some((r) => !r.crop_year)) return setErr('Set a crop year on every new open position before saving.')
     if (closedToImport.some((r) => !r.crop_year)) return setErr('Set a crop year on every closed trade you are importing.')
-    if (newOpen.length === 0 && closesMatched.length === 0 && closedToImport.length === 0) {
+    if (newOpenOptions.some((r) => !r.crop_year)) return setErr('Set a crop year on every new option before saving.')
+    if (newClosedOptions.some((r) => !r.crop_year)) return setErr('Set a crop year on every closed option you are importing.')
+    if (newOpen.length === 0 && closesMatched.length === 0 && closedToImport.length === 0 && newOpenOptions.length === 0 && newClosedOptions.length === 0) {
       return setErr('Nothing selected to import.')
     }
     setSaving(true)
@@ -275,6 +398,50 @@ export default function StatementImport({ entities, existingPositions, onClose, 
       if (error) { setSaving(false); setErr(`Insert failed: ${error.message}`); return }
     }
 
+    const optionInserts = [
+      ...newOpenOptions.map((r) => ({
+        entity_id: importEntityId || null,
+        commodity: r.commodity,
+        option_type: r.option_type,
+        side: r.side,
+        underlying_contract_month: r.underlying_contract_month,
+        underlying_symbol: buildContractSymbol(r.commodity, r.underlying_contract_month),
+        strike_price: r.strike_price,
+        num_contracts: r.num_contracts,
+        premium_cents: r.premium_cents,
+        trade_date: r.trade_date,
+        crop_year: Number(r.crop_year),
+        status: 'open' as const,
+        commission: 0,
+        notes: null,
+        source: 'statement_import' as const,
+      })),
+      ...newClosedOptions.map((r) => ({
+        entity_id: importEntityId || null,
+        commodity: r.commodity,
+        option_type: r.option_type,
+        side: r.side,
+        underlying_contract_month: r.underlying_contract_month,
+        underlying_symbol: buildContractSymbol(r.commodity, r.underlying_contract_month),
+        strike_price: r.strike_price,
+        num_contracts: r.num_contracts,
+        premium_cents: r.open_premium_cents,
+        trade_date: r.open_trade_date,
+        crop_year: Number(r.crop_year),
+        status: 'closed_offset' as const,
+        close_price_cents: r.close_premium_cents,
+        close_date: r.close_trade_date,
+        realized_pnl: r.realized_pnl,
+        commission: 0,
+        notes: null,
+        source: 'statement_import' as const,
+      })),
+    ]
+    if (optionInserts.length > 0) {
+      const { error } = await supabase.from('options_positions').insert(optionInserts)
+      if (error) { setSaving(false); setErr(`Option insert failed: ${error.message}`); return }
+    }
+
     let closedCount = 0
     for (const r of closesMatched) {
       const { error } = await supabase
@@ -291,7 +458,7 @@ export default function StatementImport({ entities, existingPositions, onClose, 
     }
 
     setSaving(false)
-    onImported({ inserted: inserts.length, closed: closedCount })
+    onImported({ inserted: inserts.length + optionInserts.length, closed: closedCount })
   }
 
   const summary = extraction?.account_summary
@@ -348,7 +515,7 @@ export default function StatementImport({ entities, existingPositions, onClose, 
               </div>
             </label>
             <div className="flex-1" />
-            <button type="button" onClick={() => { setExtraction(null); setFile(null); setOpenRows([]); setClosedRows([]) }} className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2">
+            <button type="button" onClick={() => { setExtraction(null); setFile(null); setOpenRows([]); setClosedRows([]); setOpenOptionRows([]); setClosedOptionRows([]) }} className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2">
               Start over
             </button>
           </div>
@@ -364,6 +531,7 @@ export default function StatementImport({ entities, existingPositions, onClose, 
               <div className="flex gap-1 border-b border-slate-200 mb-3">
                 <button className={tabCls(tab === 'open')} onClick={() => setTab('open')}>Open Positions ({openRows.length})</button>
                 <button className={tabCls(tab === 'closed')} onClick={() => setTab('closed')}>Closed Trades ({closedRows.length})</button>
+                <button className={tabCls(tab === 'options')} onClick={() => setTab('options')}>Options ({openOptionRows.length + closedOptionRows.length})</button>
                 <button className={tabCls(tab === 'summary')} onClick={() => setTab('summary')}>Account Summary</button>
               </div>
 
@@ -459,6 +627,83 @@ export default function StatementImport({ entities, existingPositions, onClose, 
                 </div>
               )}
 
+              {tab === 'options' && (
+                <div className="space-y-4">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-700 mb-1">Open options</div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead className="bg-slate-100 text-slate-700">
+                          <tr>{['', 'Status', 'Commodity', 'Month', 'Type', 'Side', 'Strike', '#', 'Premium ¢', 'Total $', 'Crop Yr *'].map((h) => <th key={h} className="text-left px-2 py-2 whitespace-nowrap">{h}</th>)}</tr>
+                        </thead>
+                        <tbody>
+                          {openOptionRows.length === 0 && <tr><td colSpan={11} className="px-3 py-6 text-center text-slate-400">No open options found.</td></tr>}
+                          {openOptionRows.map((r, i) => (
+                            <tr key={i} className={`border-t border-slate-100 align-top ${r.existing ? 'opacity-60' : ''}`}>
+                              <td className="px-2 py-1"><input type="checkbox" checked={r.include} disabled={r.existing} onChange={(e) => setOpenOption(i, { include: e.target.checked })} /></td>
+                              <td className="px-2 py-1 whitespace-nowrap">{r.existing ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Already exists</span> : <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">New</span>}</td>
+                              <td className="px-2 py-1 whitespace-nowrap">{r.commodity}</td>
+                              <td className="px-2 py-1 whitespace-nowrap">{r.underlying_contract_month}</td>
+                              <td className="px-2 py-1 capitalize">{r.option_type}</td>
+                              <td className="px-2 py-1 capitalize">{r.side}</td>
+                              <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(r.strike_price)}</td>
+                              <td className="px-2 py-1 text-right">{r.num_contracts}</td>
+                              <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtCents(r.premium_cents)}</td>
+                              <td className="px-2 py-1 font-mono whitespace-nowrap">${optionPremiumTotal(r.premium_cents, r.num_contracts).toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                              <td className={`px-2 py-1 ${!r.existing && r.include && !r.crop_year ? 'bg-amber-50' : ''}`} style={{ minWidth: 90 }}>
+                                {r.existing ? <span className="text-slate-400 text-xs">—</span> : (
+                                  <select value={r.crop_year} onChange={(e) => setOpenOption(i, { crop_year: e.target.value })} className={cellInput}>
+                                    <option value="">— pick —</option>
+                                    {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
+                                  </select>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  {closedOptionRows.length > 0 && (
+                    <div>
+                      <div className="text-sm font-semibold text-slate-700 mb-1">Closed options</div>
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full text-sm">
+                          <thead className="bg-slate-100 text-slate-700">
+                            <tr>{['', 'Match', 'Commodity', 'Month', 'Type', 'Side', 'Strike', '#', 'Open ¢', 'Close ¢', 'Realized', 'Crop Yr *'].map((h) => <th key={h} className="text-left px-2 py-2 whitespace-nowrap">{h}</th>)}</tr>
+                          </thead>
+                          <tbody>
+                            {closedOptionRows.map((r, i) => (
+                              <tr key={i} className={`border-t border-slate-100 align-top ${r.alreadyImported ? 'opacity-60' : ''}`}>
+                                <td className="px-2 py-1"><input type="checkbox" checked={r.include} disabled={r.alreadyImported} onChange={(e) => setClosedOption(i, { include: e.target.checked })} /></td>
+                                <td className="px-2 py-1 whitespace-nowrap">{r.alreadyImported ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Already imported</span> : <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">Import as closed</span>}</td>
+                                <td className="px-2 py-1 whitespace-nowrap">{r.commodity}</td>
+                                <td className="px-2 py-1 whitespace-nowrap">{r.underlying_contract_month}</td>
+                                <td className="px-2 py-1 capitalize">{r.option_type}</td>
+                                <td className="px-2 py-1 capitalize">{r.side}</td>
+                                <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(r.strike_price)}</td>
+                                <td className="px-2 py-1 text-right">{r.num_contracts}</td>
+                                <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtCents(r.open_premium_cents)}</td>
+                                <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtCents(r.close_premium_cents)}</td>
+                                <td className={`px-2 py-1 font-mono whitespace-nowrap ${r.realized_pnl >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(r.realized_pnl)}</td>
+                                <td className={`px-2 py-1 ${!r.alreadyImported && r.include && !r.crop_year ? 'bg-amber-50' : ''}`} style={{ minWidth: 90 }}>
+                                  {r.alreadyImported ? <span className="text-slate-400 text-xs">—</span> : (
+                                    <select value={r.crop_year} onChange={(e) => setClosedOption(i, { crop_year: e.target.value })} className={cellInput}>
+                                      <option value="">— pick —</option>
+                                      {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
+                                    </select>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {tab === 'summary' && (
                 <div className="text-sm">
                   {summary ? (
@@ -495,7 +740,7 @@ export default function StatementImport({ entities, existingPositions, onClose, 
 
           <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3">
             <div className="text-sm text-slate-600 flex-1">
-              Will import <b>{newOpen.length}</b> new open · close <b>{closesMatched.length}</b> matched · import <b>{closedToImport.length}</b> closed
+              Will import <b>{newOpen.length}</b> new open · close <b>{closesMatched.length}</b> matched · import <b>{closedToImport.length}</b> closed · <b>{newOpenOptions.length + newClosedOptions.length}</b> options
             </div>
             <button type="button" onClick={save} disabled={saving} className="rounded-xl bg-green-700 text-white font-semibold py-2.5 px-5 disabled:opacity-60">
               {saving ? 'Saving…' : 'Save Import'}
