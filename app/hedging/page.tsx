@@ -135,9 +135,7 @@ export default function HedgingPage() {
     unrealizedPnl({ side: p.side, tradePrice: p.trade_price, currentPrice: curPrice(p.contract_symbol), numContracts: p.num_contracts })
   const netRealized = (p: FuturesPosition) => (p.realized_pnl ?? 0) - (p.commission ?? 0)
 
-  // Summary bar
-  const totalOpenContracts = openPos.reduce((s, p) => s + p.num_contracts, 0)
-  const totalUnrealized = openPos.reduce((s, p) => s + (posUnrealized(p) ?? 0), 0)
+  // Net realized P&L across the filtered closed positions (closed-table total).
   const totalRealizedNet = closedPos.reduce((s, p) => s + netRealized(p), 0)
 
   // Open positions grouped by commodity, then sorted by contract month.
@@ -209,25 +207,48 @@ export default function HedgingPage() {
 
       {banner && <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">{banner}</div>}
 
-      {/* Summary bar */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <StatCard label="Open Contracts" value={String(totalOpenContracts)} />
-        <StatCard label="Bushels Hedged" value={bushelsFor(totalOpenContracts).toLocaleString()} />
-        <StatCard label="Unrealized P&L" value={fmtPnl(totalUnrealized)} tone={totalUnrealized >= 0 ? 'green' : 'red'} />
-        <StatCard label="Realized P&L (net)" value={fmtPnl(totalRealizedNet)} tone={totalRealizedNet >= 0 ? 'green' : 'red'} />
-        <div className="bg-white rounded-xl shadow p-4 flex flex-col justify-between">
-          <div className="text-xs text-slate-500 uppercase tracking-wide">Prices as of</div>
-          <div className="font-semibold">{priceDate ?? '—'}</div>
-          <button
-            onClick={() => refreshPrices(positions, true)}
-            disabled={refreshing}
-            className="mt-1 rounded-lg bg-slate-700 text-white px-3 py-1.5 text-xs font-semibold disabled:opacity-50 self-start"
-          >
-            {refreshing ? 'Refreshing…' : 'Refresh Prices'}
-          </button>
-        </div>
+      {/* Prices + refresh */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="text-sm text-slate-500">
+          Prices as of <span className="font-semibold text-slate-700">{priceDate ?? '—'}</span>
+        </span>
+        <button
+          onClick={() => refreshPrices(positions, true)}
+          disabled={refreshing}
+          className="rounded-lg bg-slate-700 text-white px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+        >
+          {refreshing ? 'Refreshing…' : 'Refresh Prices'}
+        </button>
       </div>
       {priceNote && <p className="text-xs text-amber-700">{priceNote}</p>}
+
+      {/* Hedging summary by crop year — the meaningful, crop-specific view */}
+      {!loading && cropYearSummaries.length > 0 && (
+        <div>
+          <h2 className="font-semibold mb-2">Hedging Summary by Crop Year</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {cropYearSummaries.map((s) => {
+              const avg = s.contracts > 0 ? s.priceWeight / s.contracts : null
+              const total = s.unrealized + s.realized
+              return (
+                <div key={`${s.cropYear}-${s.commodity}`} className="bg-white rounded-xl shadow p-4 space-y-1">
+                  <div className="flex items-baseline justify-between">
+                    <h3 className="font-bold">{s.cropYear} {s.commodity}</h3>
+                    <span className="text-xs text-slate-500">{s.contracts} contracts</span>
+                  </div>
+                  <Row label="Bushels hedged" value={`${s.bushels.toLocaleString()} bu`} />
+                  <Row label="Avg hedge price" value={fmtPrice(avg)} />
+                  {s.hasOpen && <Row label="Unrealized P&L" value={fmtPnl(s.unrealized)} tone={s.unrealized >= 0 ? 'green' : 'red'} />}
+                  <Row label="Realized P&L (net)" value={fmtPnl(s.realized)} tone={s.realized >= 0 ? 'green' : 'red'} />
+                  <div className="border-t border-slate-100 pt-1">
+                    <Row label="Total P&L" value={fmtPnl(total)} tone={total >= 0 ? 'green' : 'red'} bold />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Price board */}
       <PriceBoard positions={base} prices={prices} priceDate={priceDate} />
@@ -385,34 +406,6 @@ export default function HedgingPage() {
         </div>
       )}
 
-      {/* Crop-year summary cards */}
-      {!loading && cropYearSummaries.length > 0 && (
-        <div>
-          <h2 className="font-semibold mb-2">Hedging Summary by Crop Year</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {cropYearSummaries.map((s) => {
-              const avg = s.contracts > 0 ? s.priceWeight / s.contracts : null
-              const total = s.unrealized + s.realized
-              return (
-                <div key={`${s.cropYear}-${s.commodity}`} className="bg-white rounded-xl shadow p-4 space-y-1">
-                  <div className="flex items-baseline justify-between">
-                    <h3 className="font-bold">{s.cropYear} {s.commodity}</h3>
-                    <span className="text-xs text-slate-500">{s.contracts} contracts</span>
-                  </div>
-                  <Row label="Bushels hedged" value={`${s.bushels.toLocaleString()} bu`} />
-                  <Row label="Avg hedge price" value={fmtPrice(avg)} />
-                  {s.hasOpen && <Row label="Unrealized P&L" value={fmtPnl(s.unrealized)} tone={s.unrealized >= 0 ? 'green' : 'red'} />}
-                  <Row label="Realized P&L (net)" value={fmtPnl(s.realized)} tone={s.realized >= 0 ? 'green' : 'red'} />
-                  <div className="border-t border-slate-100 pt-1">
-                    <Row label="Total P&L" value={fmtPnl(total)} tone={total >= 0 ? 'green' : 'red'} bold />
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
       {showNew && <PositionForm entities={entities} onClose={() => setShowNew(false)} onSaved={afterMutation} />}
       {editTarget && <PositionForm entities={entities} initial={editTarget} onClose={() => setEditTarget(null)} onSaved={afterMutation} />}
       {closeTarget && <ClosePositionDialog position={closeTarget} onClose={() => setCloseTarget(null)} onSaved={afterMutation} />}
@@ -432,16 +425,6 @@ const selCls = 'mt-1 rounded-lg border border-slate-300 px-3 py-2 text-sm bg-whi
 
 function Filter({ label, children }: { label: string; children: React.ReactNode }) {
   return <label className="text-sm text-slate-700 flex flex-col">{label}{children}</label>
-}
-
-function StatCard({ label, value, tone }: { label: string; value: string; tone?: 'green' | 'red' }) {
-  const color = tone === 'green' ? 'text-green-700' : tone === 'red' ? 'text-red-700' : 'text-slate-800'
-  return (
-    <div className="bg-white rounded-xl shadow p-4">
-      <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
-      <div className={`text-2xl font-bold mt-1 ${color}`}>{value}</div>
-    </div>
-  )
 }
 
 function Row({ label, value, tone, bold }: { label: string; value: string; tone?: 'green' | 'red'; bold?: boolean }) {
