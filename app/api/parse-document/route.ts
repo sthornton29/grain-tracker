@@ -84,9 +84,23 @@ The statement has up to three sections:
 2. PURCHASE & SALE - closed positions with realized profit/loss
 3. OPEN POSITIONS - currently held positions
 
+CRITICAL RULES FOR DETERMINING LONG VS SHORT:
+
+1. The OPEN POSITIONS section has two quantity columns: LONG and SHORT. The number of contracts appears in ONE of these columns. The other column is blank for that row.
+
+2. PRIMARY METHOD: Look at the DEBIT(DR)/CREDIT column and compare to the current market price vs trade price:
+   - If the current settlement price (shown on the subtotal line with an asterisk like "30*" followed by a price) is HIGHER than the trade_price AND the P&L shows "DR" (debit/loss), the position is SHORT. This is because a short seller loses money when prices go up.
+   - If the settlement price is HIGHER than the trade_price AND the P&L shows a credit (no DR), the position is LONG. A long buyer gains money when prices go up.
+   - If the settlement price is LOWER than the trade_price AND the P&L shows "DR", the position is LONG (long buyer loses when prices drop).
+   - If the settlement price is LOWER than the trade_price AND the P&L shows a credit, the position is SHORT (short seller gains when prices drop).
+
+3. FARMER CONTEXT: This is a farmer's hedging account. Farmers almost always SHORT (sell) futures to lock in prices for crops they are growing. If ambiguous, default to SHORT, but still apply rule #2 above.
+
+4. For the PURCHASE & SALE section (closed trades): if the SELL column has the quantity on the opening trade date (first line) and the BUY column has the quantity on the closing date (second line), the position was originally SHORT (sold first, bought back to close). If BUY is first and SELL is second, it was LONG.
+
 For each OPEN POSITION, extract:
 - trade_date (format YYYY-MM-DD — the statement may show dates as M/DD/Y like "3/09/6" meaning 2026-03-09)
-- side — read each line's columns carefully. These statements have a LONG (bought) column and a SHORT (sold) column. If the contract quantity sits in the SHORT column it is "short"; if it sits in the LONG column it is "long". A short quantity may also be shown in parentheses, with a trailing "S", or as a negative number; a long quantity may have a trailing "B". Determine the side independently for every line — do NOT default to "long".
+- side ("long" or "short" — determine using the CRITICAL RULES above; apply them to every line and do NOT default to "long")
 - num_contracts (the number of contracts)
 - contract_description (exactly as shown, e.g., "DEC 26 CORN", "NOV 26 SOYBEANS", "JUL 27 WHEAT")
 - commodity (parsed from description: "CORN", "SOYBEANS", or "WHEAT" — ignore COTTON or other commodities)
@@ -97,7 +111,7 @@ For each OPEN POSITION, extract:
 For each PURCHASE & SALE (closed trade), extract:
 - open_trade_date (format YYYY-MM-DD)
 - close_trade_date (format YYYY-MM-DD)
-- side ("long" if bought first then sold, "short" if sold first then bought back)
+- side ("long" or "short" — determine using CRITICAL RULE #4 above: sold first then bought back = short; bought first then sold = long)
 - num_contracts (the number of contracts)
 - contract_description (e.g., "JUL 26 CORN")
 - commodity (parsed from description)
@@ -118,8 +132,6 @@ Also extract the account summary:
 IMPORTANT: Dates on these statements use abbreviated years. "3/09/6" means March 9, 2026. "5/05/6" means May 5, 2026. Use the statement date's year as context for interpreting 2-digit years.
 
 IMPORTANT: Ignore any COTTON positions — only extract CORN, SOYBEANS, and WHEAT.
-
-IMPORTANT: Long vs short is determined per line by which column the quantity is in (or its sign/parentheses), never by assumption. Do not mark every position "long". A grain producer's hedges are frequently short (sold), so if you find yourself labeling every position "long", re-check the LONG/SHORT columns.
 
 Respond ONLY in JSON with no other text, no markdown backticks:
 {
