@@ -291,19 +291,25 @@ export default function StatementImport({ entities, existingPositions, onClose, 
               </select>
             </label>
             <label className="text-sm text-slate-700">
-              Set all crop years to
+              Quick-fill crop year <span className="text-xs text-slate-400">optional shortcut</span>
               <div className="mt-1 flex gap-2">
                 <select value={bulkCropYear} onChange={(e) => setBulkCropYear(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 bg-white">
                   <option value="">—</option>
                   {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
                 </select>
-                <button type="button" onClick={applyBulkCropYear} className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Apply</button>
+                <button type="button" onClick={applyBulkCropYear} className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Apply to all</button>
               </div>
             </label>
             <div className="flex-1" />
             <button type="button" onClick={() => { setExtraction(null); setFile(null); setOpenRows([]); setClosedRows([]) }} className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2">
               Start over
             </button>
+          </div>
+
+          <div className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-sm text-sky-900">
+            Set a <b>crop year for each contract</b> in the <b>Crop Yr</b> column below — different contracts on the same
+            statement can be for different crop years. The Quick-fill above is just a shortcut; you can still change any row
+            afterward. Every imported contract needs a crop year before you can save.
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -318,7 +324,7 @@ export default function StatementImport({ entities, existingPositions, onClose, 
                 <div className="overflow-x-auto">
                   <table className="min-w-full text-sm">
                     <thead className="bg-slate-100 text-slate-700">
-                      <tr>{['', 'Status', 'Commodity', 'Month', 'Symbol', 'Side', '#', 'Trade date', 'Price', 'Crop Yr'].map((h) => <th key={h} className="text-left px-2 py-2 whitespace-nowrap">{h}</th>)}</tr>
+                      <tr>{['', 'Status', 'Commodity', 'Month', 'Symbol', 'Side', '#', 'Trade date', 'Price', 'Crop Yr *'].map((h) => <th key={h} className="text-left px-2 py-2 whitespace-nowrap">{h}</th>)}</tr>
                     </thead>
                     <tbody>
                       {openRows.length === 0 && <tr><td colSpan={10} className="px-3 py-6 text-center text-slate-400">No open positions found.</td></tr>}
@@ -339,10 +345,10 @@ export default function StatementImport({ entities, existingPositions, onClose, 
                           <td className="px-2 py-1 text-right">{r.num_contracts}</td>
                           <td className="px-2 py-1 whitespace-nowrap">{r.trade_date}</td>
                           <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(r.trade_price)}</td>
-                          <td className="px-2 py-1" style={{ minWidth: 90 }}>
+                          <td className={`px-2 py-1 ${!r.existing && r.include && !r.crop_year ? 'bg-amber-50' : ''}`} style={{ minWidth: 90 }}>
                             {r.existing ? <span className="text-slate-400 text-xs">—</span> : (
                               <select value={r.crop_year} onChange={(e) => setOpen(i, { crop_year: e.target.value })} className={cellInput}>
-                                <option value="">—</option>
+                                <option value="">— pick —</option>
                                 {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
                               </select>
                             )}
@@ -358,7 +364,7 @@ export default function StatementImport({ entities, existingPositions, onClose, 
                 <div className="overflow-x-auto">
                   <table className="min-w-full text-sm">
                     <thead className="bg-slate-100 text-slate-700">
-                      <tr>{['', 'Match', 'Commodity', 'Month', 'Side', '#', 'Open', 'Close', 'Open $', 'Close $', 'Realized', 'Crop Yr'].map((h) => <th key={h} className="text-left px-2 py-2 whitespace-nowrap">{h}</th>)}</tr>
+                      <tr>{['', 'Match', 'Commodity', 'Month', 'Side', '#', 'Open', 'Close', 'Open $', 'Close $', 'Realized', 'Crop Yr *'].map((h) => <th key={h} className="text-left px-2 py-2 whitespace-nowrap">{h}</th>)}</tr>
                     </thead>
                     <tbody>
                       {closedRows.length === 0 && <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">No closed trades found.</td></tr>}
@@ -379,10 +385,10 @@ export default function StatementImport({ entities, existingPositions, onClose, 
                           <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(r.open_price)}</td>
                           <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(r.close_price)}</td>
                           <td className={`px-2 py-1 font-mono whitespace-nowrap ${r.realized_pnl >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(r.realized_pnl)}</td>
-                          <td className="px-2 py-1" style={{ minWidth: 90 }}>
+                          <td className={`px-2 py-1 ${!r.matchedOpenId && r.include && !r.crop_year ? 'bg-amber-50' : ''}`} style={{ minWidth: 90 }}>
                             {r.matchedOpenId ? <span className="text-slate-400 text-xs">existing</span> : (
                               <select value={r.crop_year} onChange={(e) => setClosed(i, { crop_year: e.target.value })} className={cellInput}>
-                                <option value="">—</option>
+                                <option value="">— pick —</option>
                                 {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
                               </select>
                             )}
