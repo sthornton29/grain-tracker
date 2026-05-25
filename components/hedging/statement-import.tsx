@@ -66,6 +66,7 @@ type ClosedRow = {
   close_price: number
   realized_pnl: number
   matchedOpenId: string | null
+  alreadyImported: boolean
   crop_year: string
   include: boolean
 }
@@ -95,11 +96,16 @@ export default function StatementImport({ entities, existingPositions, onClose, 
     if (!commodity || !p.contract_month || p.side == null || p.num_contracts == null || p.trade_price == null || !p.trade_date) {
       return null
     }
+    // Identify an already-imported position by its fill fingerprint:
+    // commodity + contract month + trade date + trade price. Side is
+    // intentionally NOT part of the key — the AI sometimes mis-reads long/short,
+    // and a re-upload must not create a duplicate just because the side flipped.
+    // (A long and short of the same contract at the same price/date doesn't
+    // happen in a hedging account.) Matches against open OR closed positions.
     const existing = existingPositions.some(
       (ex) =>
         ex.commodity === commodity &&
         up(ex.contract_month) === up(p.contract_month!) &&
-        ex.side === p.side &&
         ex.trade_date === p.trade_date &&
         priceEq(ex.trade_price, p.trade_price!),
     )
@@ -125,15 +131,33 @@ export default function StatementImport({ entities, existingPositions, onClose, 
     ) {
       return null
     }
-    const match = existingPositions.find(
+    // Already imported as a closed position? (Statements keep listing recent
+    // closed trades, so a periodic re-upload would otherwise duplicate them.)
+    // Matched on the full closed-trade fingerprint, ignoring side.
+    const alreadyImported = existingPositions.some(
       (ex) =>
-        ex.status === 'open' &&
+        ex.status === 'closed' &&
         ex.commodity === commodity &&
         up(ex.contract_month) === up(t.contract_month!) &&
-        ex.side === t.side &&
         ex.trade_date === t.open_trade_date &&
-        priceEq(ex.trade_price, t.open_price!),
+        priceEq(ex.trade_price, t.open_price!) &&
+        ex.close_date === t.close_trade_date &&
+        ex.close_price != null &&
+        priceEq(ex.close_price, t.close_price!),
     )
+    // Otherwise, does it close an open position we already hold? (Side omitted
+    // from the key for the same reason as open dedup; we keep the stored
+    // position's own side when closing it.)
+    const match = alreadyImported
+      ? undefined
+      : existingPositions.find(
+          (ex) =>
+            ex.status === 'open' &&
+            ex.commodity === commodity &&
+            up(ex.contract_month) === up(t.contract_month!) &&
+            ex.trade_date === t.open_trade_date &&
+            priceEq(ex.trade_price, t.open_price!),
+        )
     return {
       commodity,
       contract_month: up(t.contract_month),
@@ -145,8 +169,9 @@ export default function StatementImport({ entities, existingPositions, onClose, 
       close_price: t.close_price,
       realized_pnl: t.realized_pnl ?? 0,
       matchedOpenId: match?.id ?? null,
+      alreadyImported,
       crop_year: match?.crop_year != null ? String(match.crop_year) : '',
-      include: true,
+      include: !alreadyImported,
     }
   }
 
@@ -189,7 +214,7 @@ export default function StatementImport({ entities, existingPositions, onClose, 
   function applyBulkCropYear() {
     if (!bulkCropYear) return
     setOpenRows((rs) => rs.map((r) => (r.existing ? r : { ...r, crop_year: bulkCropYear })))
-    setClosedRows((rs) => rs.map((r) => (r.matchedOpenId ? r : { ...r, crop_year: bulkCropYear })))
+    setClosedRows((rs) => rs.map((r) => (r.matchedOpenId || r.alreadyImported ? r : { ...r, crop_year: bulkCropYear })))
   }
   function applyBulkSide(side: Side) {
     setOpenRows((rs) => rs.map((r) => ({ ...r, side })))
@@ -197,8 +222,8 @@ export default function StatementImport({ entities, existingPositions, onClose, 
   }
 
   const newOpen = openRows.filter((r) => r.include && !r.existing)
-  const closesMatched = closedRows.filter((r) => r.include && r.matchedOpenId)
-  const closedToImport = closedRows.filter((r) => r.include && !r.matchedOpenId)
+  const closesMatched = closedRows.filter((r) => r.include && r.matchedOpenId && !r.alreadyImported)
+  const closedToImport = closedRows.filter((r) => r.include && !r.matchedOpenId && !r.alreadyImported)
 
   async function save() {
     setErr(null)
@@ -281,6 +306,7 @@ export default function StatementImport({ entities, existingPositions, onClose, 
           <p className="text-sm text-slate-600">
             Upload a daily statement PDF (R.J. O’Brien or similar). The AI extracts open positions and closed trades for
             Corn, Soybeans, and Wheat — cotton and other commodities are ignored. You’ll review and assign crop years before anything is saved.
+            Positions and closed trades you’ve already imported are detected and skipped, so you can upload each new statement without creating duplicates.
           </p>
           <label className={`inline-block text-sm rounded-lg px-4 py-2 cursor-pointer text-white ${stage ? 'bg-slate-400 cursor-wait' : 'bg-green-700'}`}>
             {stage ?? 'Choose Statement PDF'}
@@ -395,10 +421,12 @@ export default function StatementImport({ entities, existingPositions, onClose, 
                     <tbody>
                       {closedRows.length === 0 && <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">No closed trades found.</td></tr>}
                       {closedRows.map((r, i) => (
-                        <tr key={i} className="border-t border-slate-100 align-top">
-                          <td className="px-2 py-1"><input type="checkbox" checked={r.include} onChange={(e) => setClosed(i, { include: e.target.checked })} /></td>
+                        <tr key={i} className={`border-t border-slate-100 align-top ${r.alreadyImported ? 'opacity-60' : ''}`}>
+                          <td className="px-2 py-1"><input type="checkbox" checked={r.include} disabled={r.alreadyImported} onChange={(e) => setClosed(i, { include: e.target.checked })} /></td>
                           <td className="px-2 py-1 whitespace-nowrap">
-                            {r.matchedOpenId
+                            {r.alreadyImported
+                              ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Already imported</span>
+                              : r.matchedOpenId
                               ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">Closes open position</span>
                               : <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">Import as closed</span>}
                           </td>
@@ -416,8 +444,8 @@ export default function StatementImport({ entities, existingPositions, onClose, 
                           <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(r.open_price)}</td>
                           <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(r.close_price)}</td>
                           <td className={`px-2 py-1 font-mono whitespace-nowrap ${r.realized_pnl >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(r.realized_pnl)}</td>
-                          <td className={`px-2 py-1 ${!r.matchedOpenId && r.include && !r.crop_year ? 'bg-amber-50' : ''}`} style={{ minWidth: 90 }}>
-                            {r.matchedOpenId ? <span className="text-slate-400 text-xs">existing</span> : (
+                          <td className={`px-2 py-1 ${!r.matchedOpenId && !r.alreadyImported && r.include && !r.crop_year ? 'bg-amber-50' : ''}`} style={{ minWidth: 90 }}>
+                            {r.matchedOpenId ? <span className="text-slate-400 text-xs">existing</span> : r.alreadyImported ? <span className="text-slate-400 text-xs">—</span> : (
                               <select value={r.crop_year} onChange={(e) => setClosed(i, { crop_year: e.target.value })} className={cellInput}>
                                 <option value="">— pick —</option>
                                 {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
