@@ -86,7 +86,7 @@ The statement has up to three sections:
 
 For each OPEN POSITION, extract:
 - trade_date (format YYYY-MM-DD — the statement may show dates as M/DD/Y like "3/09/6" meaning 2026-03-09)
-- side ("long" if quantity is in the LONG column, "short" if in the SHORT column)
+- side — read each line's columns carefully. These statements have a LONG (bought) column and a SHORT (sold) column. If the contract quantity sits in the SHORT column it is "short"; if it sits in the LONG column it is "long". A short quantity may also be shown in parentheses, with a trailing "S", or as a negative number; a long quantity may have a trailing "B". Determine the side independently for every line — do NOT default to "long".
 - num_contracts (the number of contracts)
 - contract_description (exactly as shown, e.g., "DEC 26 CORN", "NOV 26 SOYBEANS", "JUL 27 WHEAT")
 - commodity (parsed from description: "CORN", "SOYBEANS", or "WHEAT" — ignore COTTON or other commodities)
@@ -118,6 +118,8 @@ Also extract the account summary:
 IMPORTANT: Dates on these statements use abbreviated years. "3/09/6" means March 9, 2026. "5/05/6" means May 5, 2026. Use the statement date's year as context for interpreting 2-digit years.
 
 IMPORTANT: Ignore any COTTON positions — only extract CORN, SOYBEANS, and WHEAT.
+
+IMPORTANT: Long vs short is determined per line by which column the quantity is in (or its sign/parentheses), never by assumption. Do not mark every position "long". A grain producer's hedges are frequently short (sold), so if you find yourself labeling every position "long", re-check the LONG/SHORT columns.
 
 Respond ONLY in JSON with no other text, no markdown backticks:
 {

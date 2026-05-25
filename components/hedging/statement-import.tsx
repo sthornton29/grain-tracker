@@ -341,7 +341,12 @@ export default function StatementImport({ entities, existingPositions, onClose, 
                           <td className="px-2 py-1 whitespace-nowrap">{r.commodity}</td>
                           <td className="px-2 py-1 whitespace-nowrap">{r.contract_month}</td>
                           <td className="px-2 py-1 font-mono whitespace-nowrap">{buildContractSymbol(r.commodity, r.contract_month)}</td>
-                          <td className="px-2 py-1 capitalize">{r.side}</td>
+                          <td className="px-2 py-1">
+                            <select value={r.side} onChange={(e) => setOpen(i, { side: e.target.value as Side })} className={cellInput}>
+                              <option value="short">Short</option>
+                              <option value="long">Long</option>
+                            </select>
+                          </td>
                           <td className="px-2 py-1 text-right">{r.num_contracts}</td>
                           <td className="px-2 py-1 whitespace-nowrap">{r.trade_date}</td>
                           <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(r.trade_price)}</td>
@@ -378,7 +383,12 @@ export default function StatementImport({ entities, existingPositions, onClose, 
                           </td>
                           <td className="px-2 py-1 whitespace-nowrap">{r.commodity}</td>
                           <td className="px-2 py-1 whitespace-nowrap">{r.contract_month}</td>
-                          <td className="px-2 py-1 capitalize">{r.side}</td>
+                          <td className="px-2 py-1">
+                            <select value={r.side} onChange={(e) => setClosed(i, { side: e.target.value as Side })} className={cellInput}>
+                              <option value="short">Short</option>
+                              <option value="long">Long</option>
+                            </select>
+                          </td>
                           <td className="px-2 py-1 text-right">{r.num_contracts}</td>
                           <td className="px-2 py-1 whitespace-nowrap">{r.open_trade_date}</td>
                           <td className="px-2 py-1 whitespace-nowrap">{r.close_trade_date}</td>
