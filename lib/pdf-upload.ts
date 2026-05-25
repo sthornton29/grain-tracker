@@ -31,7 +31,7 @@ export function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export type DocumentType = 'settlement' | 'tickets'
+export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement'
 
 export type SettlementExtraction = {
   buyer_name: string | null
@@ -66,12 +66,49 @@ export type TicketsExtraction = {
   tickets: TicketExtraction[]
 }
 
+export type BrokerageOpenPosition = {
+  trade_date: string | null
+  side: 'long' | 'short' | null
+  num_contracts: number | null
+  commodity: string | null
+  contract_month: string | null
+  trade_price: number | null
+  unrealized_pnl: number | null
+}
+
+export type BrokerageClosedTrade = {
+  open_trade_date: string | null
+  close_trade_date: string | null
+  side: 'long' | 'short' | null
+  num_contracts: number | null
+  commodity: string | null
+  contract_month: string | null
+  open_price: number | null
+  close_price: number | null
+  realized_pnl: number | null
+}
+
+export type BrokerageStatementExtraction = {
+  statement_date: string | null
+  open_positions: BrokerageOpenPosition[]
+  closed_trades: BrokerageClosedTrade[]
+  account_summary: {
+    beginning_balance: number | null
+    ending_balance: number | null
+    open_trade_equity: number | null
+    total_equity: number | null
+    margin_requirement: number | null
+    excess_equity: number | null
+  } | null
+}
+
 export async function parseDocument(file: File, documentType: 'settlement'): Promise<SettlementExtraction>
 export async function parseDocument(file: File, documentType: 'tickets'): Promise<TicketsExtraction>
+export async function parseDocument(file: File, documentType: 'brokerage_statement'): Promise<BrokerageStatementExtraction>
 export async function parseDocument(
   file: File,
   documentType: DocumentType,
-): Promise<SettlementExtraction | TicketsExtraction> {
+): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction> {
   if (file.size > MAX_PDF_BYTES) throw new PdfTooLargeError()
   const pdf_base64 = await fileToBase64(file)
   const res = await fetch('/api/parse-document', {
@@ -87,7 +124,7 @@ export async function parseDocument(
   if (!body || typeof body !== 'object' || !('data' in body)) {
     throw new Error('Malformed response from server.')
   }
-  return body.data as SettlementExtraction | TicketsExtraction
+  return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction
 }
 
 // Uploads to the public "documents" bucket and returns the public URL.

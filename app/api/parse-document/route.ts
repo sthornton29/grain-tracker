@@ -77,6 +77,93 @@ Respond ONLY in JSON with no other text, no markdown backticks. Use this exact f
   ]
 }`
 
+const BROKERAGE_PROMPT = `This is a daily brokerage statement from a commodity futures broker (likely R.J. O'Brien). Extract all positions and trades from the document.
+
+The statement has up to three sections:
+1. CONFIRMATION - today's new trades
+2. PURCHASE & SALE - closed positions with realized profit/loss
+3. OPEN POSITIONS - currently held positions
+
+For each OPEN POSITION, extract:
+- trade_date (format YYYY-MM-DD — the statement may show dates as M/DD/Y like "3/09/6" meaning 2026-03-09)
+- side ("long" if quantity is in the LONG column, "short" if in the SHORT column)
+- num_contracts (the number of contracts)
+- contract_description (exactly as shown, e.g., "DEC 26 CORN", "NOV 26 SOYBEANS", "JUL 27 WHEAT")
+- commodity (parsed from description: "CORN", "SOYBEANS", or "WHEAT" — ignore COTTON or other commodities)
+- contract_month (parsed from description, e.g., "DEC 26", "NOV 26", "JUL 27")
+- trade_price (as a decimal number — convert fractional prices: "4.93 1/4" = 4.9325, "11.43 1/2" = 11.435, "6.16 1/2" = 6.165)
+- unrealized_pnl (the DEBIT(DR)/CREDIT amount — negative if DR, positive if credit)
+
+For each PURCHASE & SALE (closed trade), extract:
+- open_trade_date (format YYYY-MM-DD)
+- close_trade_date (format YYYY-MM-DD)
+- side ("long" if bought first then sold, "short" if sold first then bought back)
+- num_contracts (the number of contracts)
+- contract_description (e.g., "JUL 26 CORN")
+- commodity (parsed from description)
+- contract_month (e.g., "JUL 26")
+- open_price (decimal, converted from fractional)
+- close_price (decimal, converted from fractional)
+- realized_pnl (the GROSS PROFIT/LOSS amount — negative if DR)
+
+Also extract the account summary:
+- statement_date (format YYYY-MM-DD)
+- beginning_balance (decimal)
+- ending_balance (decimal)
+- open_trade_equity (decimal — negative if DR)
+- total_equity (decimal)
+- margin_requirement (decimal)
+- excess_equity (decimal)
+
+IMPORTANT: Dates on these statements use abbreviated years. "3/09/6" means March 9, 2026. "5/05/6" means May 5, 2026. Use the statement date's year as context for interpreting 2-digit years.
+
+IMPORTANT: Ignore any COTTON positions — only extract CORN, SOYBEANS, and WHEAT.
+
+Respond ONLY in JSON with no other text, no markdown backticks:
+{
+  "statement_date": "YYYY-MM-DD",
+  "open_positions": [
+    {
+      "trade_date": "YYYY-MM-DD",
+      "side": "long or short",
+      "num_contracts": number,
+      "commodity": "Corn or Soybeans or Chicago Wheat",
+      "contract_month": "string like DEC 26",
+      "trade_price": number,
+      "unrealized_pnl": number
+    }
+  ],
+  "closed_trades": [
+    {
+      "open_trade_date": "YYYY-MM-DD",
+      "close_trade_date": "YYYY-MM-DD",
+      "side": "long or short",
+      "num_contracts": number,
+      "commodity": "Corn or Soybeans or Chicago Wheat",
+      "contract_month": "string like JUL 26",
+      "open_price": number,
+      "close_price": number,
+      "realized_pnl": number
+    }
+  ],
+  "account_summary": {
+    "beginning_balance": number,
+    "ending_balance": number,
+    "open_trade_equity": number,
+    "total_equity": number,
+    "margin_requirement": number,
+    "excess_equity": number
+  }
+}`
+
+type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement'
+
+const PROMPTS: Record<DocumentType, string> = {
+  settlement: SETTLEMENT_PROMPT,
+  tickets: TICKETS_PROMPT,
+  brokerage_statement: BROKERAGE_PROMPT,
+}
+
 type ParseBody = {
   pdf_base64?: unknown
   document_type?: unknown
@@ -117,14 +204,14 @@ export async function POST(req: NextRequest) {
   const pdfBase64 = typeof body.pdf_base64 === 'string' ? body.pdf_base64 : ''
   const documentType = body.document_type
   if (!pdfBase64) return badRequest('pdf_base64 is required.')
-  if (documentType !== 'settlement' && documentType !== 'tickets') {
-    return badRequest('document_type must be "settlement" or "tickets".')
+  if (documentType !== 'settlement' && documentType !== 'tickets' && documentType !== 'brokerage_statement') {
+    return badRequest('document_type must be "settlement", "tickets", or "brokerage_statement".')
   }
   if (pdfBase64.length > MAX_BASE64_LEN) {
     return badRequest('PDF exceeds the 20 MB size limit.')
   }
 
-  const prompt = documentType === 'settlement' ? SETTLEMENT_PROMPT : TICKETS_PROMPT
+  const prompt = PROMPTS[documentType]
 
   const client = new Anthropic({ apiKey })
 

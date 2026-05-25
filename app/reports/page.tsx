@@ -43,6 +43,16 @@ export default function ReportsLanding() {
           </p>
         </Link>
         <Link
+          href="/reports/hedging-summary"
+          className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
+        >
+          <h2 className="font-bold mb-1">Hedging Summary</h2>
+          <p className="text-sm text-slate-600">
+            All futures positions (open and closed) with realized and unrealized P&amp;L, summarized by
+            crop year. Excel and PDF exports suitable for a lender or business partner.
+          </p>
+        </Link>
+        <Link
           href="/reports/settlement-pdfs"
           className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
         >

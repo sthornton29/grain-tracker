@@ -37,6 +37,12 @@ const categories = [
     ],
   },
   {
+    title: 'Risk Management',
+    reports: [
+      { label: 'Hedging Summary', href: '/reports/hedging-summary', external: false },
+    ],
+  },
+  {
     title: 'Operations Reports',
     reports: [
       { label: 'Load Log', href: '/loads', external: true },

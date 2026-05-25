@@ -160,6 +160,47 @@ export type LoadSplit = {
   created_at: string
 }
 
+export type CommoditySpec = {
+  id: string
+  commodity: string
+  symbol: string
+  exchange: string
+  contract_size_bu: number
+  tick_size_cents: number
+  tick_value_usd: number
+  contract_months: string
+  created_at: string
+}
+
+export type FuturesPosition = {
+  id: string
+  entity_id: string | null
+  commodity: string
+  contract_month: string
+  contract_symbol: string
+  crop_year: number
+  side: 'long' | 'short'
+  num_contracts: number
+  trade_price: number
+  trade_date: string
+  status: 'open' | 'closed'
+  close_price: number | null
+  close_date: string | null
+  realized_pnl: number | null
+  commission: number
+  notes: string | null
+  source: 'manual' | 'statement_import'
+  created_at: string
+}
+
+export type MarketPrice = {
+  id: string
+  contract_symbol: string
+  price: number
+  price_date: string
+  fetched_at: string
+}
+
 export type Load = {
   id: string
   date: string
