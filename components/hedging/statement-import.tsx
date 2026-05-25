@@ -33,14 +33,15 @@ function up(s: string) {
   return s.trim().toUpperCase()
 }
 
-// Freeze the first two columns when the review tables scroll horizontally.
-// Column 1 is a fixed 44px so column 2's left offset lines up exactly. Header
-// cells sit above body cells (z-20 vs z-10) and carry solid backgrounds so
-// scrolling cells pass cleanly underneath.
-const STICKY_HEAD_1 = 'sticky left-0 z-20 bg-slate-100 w-[44px] min-w-[44px]'
-const STICKY_HEAD_2 = 'sticky left-[44px] z-20 bg-slate-100'
-const STICKY_CELL_1 = 'sticky left-0 z-10 bg-white w-[44px] min-w-[44px]'
-const STICKY_CELL_2 = 'sticky left-[44px] z-10 bg-white'
+// Freeze the Commodity and Month columns when the review tables scroll
+// horizontally, so each row stays identifiable while reaching Side/Price/Crop
+// Yr. Commodity is a fixed 130px (fits "Chicago Wheat") so Month's left offset
+// lines up exactly. Header cells sit above body cells (z-20 vs z-10) and carry
+// solid backgrounds so scrolling cells pass cleanly underneath.
+const STICKY_HEAD_1 = 'sticky left-0 z-20 bg-slate-100 w-[130px] min-w-[130px]'
+const STICKY_HEAD_2 = 'sticky left-[130px] z-20 bg-slate-100'
+const STICKY_CELL_1 = 'sticky left-0 z-10 bg-white w-[130px] min-w-[130px]'
+const STICKY_CELL_2 = 'sticky left-[130px] z-10 bg-white'
 
 type OpenRow = {
   commodity: Commodity
@@ -344,22 +345,22 @@ export default function StatementImport({ entities, existingPositions, onClose, 
                 <div className="overflow-x-auto">
                   <table className="min-w-full text-sm">
                     <thead className="bg-slate-100 text-slate-700">
-                      <tr>{['', 'Status', 'Commodity', 'Month', 'Symbol', 'Side', '#', 'Trade date', 'Price', 'Crop Yr *'].map((h, idx) => <th key={h} className={`text-left px-2 py-2 whitespace-nowrap ${idx === 0 ? STICKY_HEAD_1 : idx === 1 ? STICKY_HEAD_2 : ''}`}>{h}</th>)}</tr>
+                      <tr>{['', 'Status', 'Commodity', 'Month', 'Symbol', 'Side', '#', 'Trade date', 'Price', 'Crop Yr *'].map((h, idx) => <th key={h} className={`text-left px-2 py-2 whitespace-nowrap ${idx === 2 ? STICKY_HEAD_1 : idx === 3 ? STICKY_HEAD_2 : ''}`}>{h}</th>)}</tr>
                     </thead>
                     <tbody>
                       {openRows.length === 0 && <tr><td colSpan={10} className="px-3 py-6 text-center text-slate-400">No open positions found.</td></tr>}
                       {openRows.map((r, i) => (
                         <tr key={i} className={`border-t border-slate-100 align-top ${r.existing ? 'opacity-60' : ''}`}>
-                          <td className={`px-2 py-1 ${STICKY_CELL_1}`}>
+                          <td className="px-2 py-1">
                             <input type="checkbox" checked={r.include} disabled={r.existing} onChange={(e) => setOpen(i, { include: e.target.checked })} />
                           </td>
-                          <td className={`px-2 py-1 whitespace-nowrap ${STICKY_CELL_2}`}>
+                          <td className="px-2 py-1 whitespace-nowrap">
                             {r.existing
                               ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Already exists</span>
                               : <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">New</span>}
                           </td>
-                          <td className="px-2 py-1 whitespace-nowrap">{r.commodity}</td>
-                          <td className="px-2 py-1 whitespace-nowrap">{r.contract_month}</td>
+                          <td className={`px-2 py-1 whitespace-nowrap ${STICKY_CELL_1}`}>{r.commodity}</td>
+                          <td className={`px-2 py-1 whitespace-nowrap ${STICKY_CELL_2}`}>{r.contract_month}</td>
                           <td className="px-2 py-1 font-mono whitespace-nowrap">{buildContractSymbol(r.commodity, r.contract_month)}</td>
                           <td className="px-2 py-1" style={{ minWidth: 92 }}>
                             <select value={r.side} onChange={(e) => setOpen(i, { side: e.target.value as Side })} className={cellInput}>
@@ -389,20 +390,20 @@ export default function StatementImport({ entities, existingPositions, onClose, 
                 <div className="overflow-x-auto">
                   <table className="min-w-full text-sm">
                     <thead className="bg-slate-100 text-slate-700">
-                      <tr>{['', 'Match', 'Commodity', 'Month', 'Side', '#', 'Open', 'Close', 'Open $', 'Close $', 'Realized', 'Crop Yr *'].map((h, idx) => <th key={h} className={`text-left px-2 py-2 whitespace-nowrap ${idx === 0 ? STICKY_HEAD_1 : idx === 1 ? STICKY_HEAD_2 : ''}`}>{h}</th>)}</tr>
+                      <tr>{['', 'Match', 'Commodity', 'Month', 'Side', '#', 'Open', 'Close', 'Open $', 'Close $', 'Realized', 'Crop Yr *'].map((h, idx) => <th key={h} className={`text-left px-2 py-2 whitespace-nowrap ${idx === 2 ? STICKY_HEAD_1 : idx === 3 ? STICKY_HEAD_2 : ''}`}>{h}</th>)}</tr>
                     </thead>
                     <tbody>
                       {closedRows.length === 0 && <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">No closed trades found.</td></tr>}
                       {closedRows.map((r, i) => (
                         <tr key={i} className="border-t border-slate-100 align-top">
-                          <td className={`px-2 py-1 ${STICKY_CELL_1}`}><input type="checkbox" checked={r.include} onChange={(e) => setClosed(i, { include: e.target.checked })} /></td>
-                          <td className={`px-2 py-1 whitespace-nowrap ${STICKY_CELL_2}`}>
+                          <td className="px-2 py-1"><input type="checkbox" checked={r.include} onChange={(e) => setClosed(i, { include: e.target.checked })} /></td>
+                          <td className="px-2 py-1 whitespace-nowrap">
                             {r.matchedOpenId
                               ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">Closes open position</span>
                               : <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">Import as closed</span>}
                           </td>
-                          <td className="px-2 py-1 whitespace-nowrap">{r.commodity}</td>
-                          <td className="px-2 py-1 whitespace-nowrap">{r.contract_month}</td>
+                          <td className={`px-2 py-1 whitespace-nowrap ${STICKY_CELL_1}`}>{r.commodity}</td>
+                          <td className={`px-2 py-1 whitespace-nowrap ${STICKY_CELL_2}`}>{r.contract_month}</td>
                           <td className="px-2 py-1" style={{ minWidth: 92 }}>
                             <select value={r.side} onChange={(e) => setClosed(i, { side: e.target.value as Side })} className={cellInput}>
                               <option value="short">Short</option>
