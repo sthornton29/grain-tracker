@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { allocateSplits, validateSplitDrafts, type SplitDraft } from '@/lib/load-splits'
+import { relinkSettlementLinesForLoad } from '@/lib/settlement-link'
 import type { Bin, Buyer, Contract, Crop, Field, FieldPlanting, Load, LoadSplit, Truck } from '@/lib/types'
 
 type Props = {
@@ -444,6 +445,24 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         }
       }
     }
+    // Back-fill load_id on any settlement line that was waiting on this load's
+    // ticket (e.g. the settlement was entered before the load, or the ticket
+    // was just corrected here). Best-effort: the load already saved, and the
+    // settlement views resolve unmatched lines by ticket at read time, so a
+    // failure here isn't worth blocking navigation over.
+    if (savedLoadId) {
+      try {
+        await relinkSettlementLinesForLoad(supabase, {
+          id: savedLoadId,
+          to_type: payload.to_type,
+          to_buyer_id: payload.to_buyer_id,
+          ticket_number: payload.ticket_number,
+        })
+      } catch {
+        /* ignore — view-time resolution still covers display */
+      }
+    }
+
     // Leave submittingRef = true; we're navigating away. Resetting it here
     // would briefly re-enable the button before the route change commits.
     router.push('/loads')
