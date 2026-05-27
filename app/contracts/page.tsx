@@ -75,11 +75,11 @@ function daysUntil(dateStr: string | null): number | null {
   return Math.ceil((d.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
 }
 
-// ISO (YYYY-MM-DD) -> mm/dd/YYYY for display.
+// ISO (YYYY-MM-DD) -> m/dd/YYYY for display (month has no leading zero).
 function fmtDate(iso: string | null): string {
   if (!iso) return '?'
   const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/)
-  return m ? `${m[2]}/${m[3]}/${m[1]}` : iso
+  return m ? `${Number(m[2])}/${m[3]}/${m[1]}` : iso
 }
 
 // Days until a contract month's first notice day, approximated as the last
