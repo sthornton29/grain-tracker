@@ -346,7 +346,7 @@ function BinCard({
           </tbody>
         </table>
       )}
-      {beginningRows.length > 0 && (
+      {beginningRows.length > 0 && Math.abs(v.total) >= 0.005 && (
         <ul className="mt-3 space-y-1 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2">
           {beginningRows.map((a) => (
             <li key={a.id}>
