@@ -4,7 +4,8 @@ import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import ContractFlagIcon, { type ContractFlag } from '@/components/contract-flag'
-import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, type ContractType, type PricingStatus } from '@/lib/contracts'
+import { CONTRACT_TYPE_LABEL, type ContractType, type PricingStatus } from '@/lib/contracts'
+import { parseContractMonth } from '@/lib/hedging'
 
 export const dynamic = 'force-dynamic'
 
@@ -72,6 +73,26 @@ function daysUntil(dateStr: string | null): number | null {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
   return Math.ceil((d.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+}
+
+// ISO (YYYY-MM-DD) -> mm/dd/YYYY for display.
+function fmtDate(iso: string | null): string {
+  if (!iso) return '?'
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  return m ? `${m[2]}/${m[3]}/${m[1]}` : iso
+}
+
+// Days until a contract month's first notice day, approximated as the last
+// calendar day of the month before the delivery month (CBOT grain convention).
+// Negative = already passed. null when the month can't be parsed.
+function daysUntilFirstNotice(contractMonth: string | null): number | null {
+  const p = parseContractMonth(contractMonth)
+  if (!p) return null
+  const fnd = new Date(p.year4, p.monthNum - 1, 0)
+  fnd.setHours(0, 0, 0, 0)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return Math.ceil((fnd.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
 }
 
 // Page-scoped paginated fetch of every load with a contract_id. We can't trust
@@ -298,22 +319,19 @@ export default async function ContractsPage({
     return `?${params.toString()}`
   }
 
-  // Pricing-status breakdown for the tracker sections (over the filtered set).
-  const missingMonthCount = allContracts.filter((c) => !c.contract_month).length
-  const sumBu = (arr: ContractRow[]) => arr.reduce((s, c) => s + Number(c.contracted_bushels), 0)
-  const fullyPriced = visible.filter((c) => c.pricing_status === 'fully_priced')
-  const awaitingBasis = visible.filter((c) => c.pricing_status === 'awaiting_basis')
-  const awaitingFutures = visible.filter((c) => c.pricing_status === 'awaiting_futures')
-  const fullyAvgCash = (() => {
-    let bu = 0, w = 0
-    for (const c of fullyPriced) if (c.cash_price != null) { const b = Number(c.contracted_bushels); bu += b; w += Number(c.cash_price) * b }
-    return bu > 0 ? w / bu : null
-  })()
+  // First-notice-day warning: HTAs awaiting basis / basis contracts awaiting
+  // futures whose contract month's first notice day is within 30 days (or past).
+  // Computed over all contracts so a filter can't hide a looming deadline.
+  const fndWarnings = allContracts
+    .filter((c) => c.pricing_status === 'awaiting_basis' || c.pricing_status === 'awaiting_futures')
+    .map((c) => ({ c, days: daysUntilFirstNotice(c.contract_month) }))
+    .filter((x): x is { c: ContractRow; days: number } => x.days != null && x.days <= 30)
+    .sort((a, b) => a.days - b.days)
 
   return (
     <div className="space-y-4">
+      <h1 className="text-2xl font-bold">Contract Tracker</h1>
       <div className="flex items-end gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold flex-1">Contract Tracker</h1>
         <Link
           href="/settings/contracts"
           className="rounded-lg bg-green-700 text-white px-3 py-2 text-sm font-semibold"
@@ -388,29 +406,23 @@ export default async function ContractsPage({
         </div>
       )}
 
-      {missingMonthCount > 0 && (
-        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          <strong>{missingMonthCount}</strong> contract{missingMonthCount === 1 ? '' : 's'} {missingMonthCount === 1 ? 'is' : 'are'} missing a contract month. Please update them.
+      {fndWarnings.length > 0 && (
+        <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800 space-y-1">
+          <div className="font-semibold">
+            {fndWarnings.length} contract{fndWarnings.length === 1 ? '' : 's'} approaching first notice day without pricing set:
+          </div>
+          <ul className="list-disc pl-5 space-y-0.5">
+            {fndWarnings.map(({ c, days }) => (
+              <li key={c.id}>
+                <Link href={`/contracts/${c.id}`} className="underline font-semibold">#{c.contract_number}</Link>
+                {' '}({CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']} {c.contract_month}) — needs{' '}
+                {c.pricing_status === 'awaiting_basis' ? 'basis' : 'futures'} set ·{' '}
+                first notice {days < 0 ? `${-days}d ago` : days === 0 ? 'today' : `in ${days}d`}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
-
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <div className="bg-white rounded-xl shadow p-4">
-          <div className="text-xs uppercase tracking-wide text-slate-500">Fully priced</div>
-          <div className="text-lg font-bold">{fullyPriced.length} contracts · {fmt(sumBu(fullyPriced), 0)} bu</div>
-          <div className="text-sm text-slate-600">Avg cash {fullyAvgCash != null ? `$${fullyAvgCash.toFixed(4)}/bu` : '—'}</div>
-        </div>
-        <div className="bg-white rounded-xl shadow p-4">
-          <div className="text-xs uppercase tracking-wide text-slate-500">Open HTAs — awaiting basis</div>
-          <div className="text-lg font-bold">{awaitingBasis.length} contracts · {fmt(sumBu(awaitingBasis), 0)} bu</div>
-          <div className="text-sm text-amber-700">Futures locked, basis to be set</div>
-        </div>
-        <div className="bg-white rounded-xl shadow p-4">
-          <div className="text-xs uppercase tracking-wide text-slate-500">Open basis — awaiting futures</div>
-          <div className="text-lg font-bold">{awaitingFutures.length} contracts · {fmt(sumBu(awaitingFutures), 0)} bu</div>
-          <div className="text-sm text-amber-700">Basis locked, futures to be set</div>
-        </div>
-      </div>
 
       <div className="overflow-x-auto bg-white rounded-xl shadow">
         <table className="min-w-full text-sm">
@@ -423,12 +435,12 @@ export default async function ContractsPage({
                   Crop{sortKey === 'crop' ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
                 </Link>
               </th>
-              {['Type', 'Month', 'Year', 'Location', 'Delivery window', 'Contracted', 'Delivered', 'Progress', '$/bu', 'Revenue', 'Paid (bu)', 'Unpaid (bu)']
+              {['Type', 'Year', 'Location', 'Delivery window', 'Contracted', 'Delivered', 'Progress', '$/bu', 'Revenue', 'Paid (bu)', 'Unpaid (bu)']
                 .map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
             </tr>
           </thead>
           <tbody>
-            {visible.length === 0 && <tr><td colSpan={15} className="px-3 py-6 text-center text-slate-400">No contracts.</td></tr>}
+            {visible.length === 0 && <tr><td colSpan={14} className="px-3 py-6 text-center text-slate-400">No contracts.</td></tr>}
             {visible.map((c) => {
               const agg = aggByContract.get(c.id) ?? { delivered: 0, paidBushels: 0, revenue: 0, deliveredUnpaid: 0, entityIds: new Set<string>(), loadCount: 0 }
               const isDup = (numberCounts.get(c.contract_number) ?? 0) > 1
@@ -459,7 +471,6 @@ export default async function ContractsPage({
                   <td className="px-3 py-2">
                     <span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']}</span>
                   </td>
-                  <td className="px-3 py-2 whitespace-nowrap">{c.contract_month ?? <span className="text-amber-600 text-xs">—</span>}</td>
                   <td className="px-3 py-2">{c.crop_year ?? ''}</td>
                   <td className="px-3 py-2">
                     {c.delivery_type === 'delivered'
@@ -468,7 +479,7 @@ export default async function ContractsPage({
                   </td>
                   <td className={`px-3 py-2 text-xs whitespace-nowrap ${endWarning ? 'text-amber-700 font-semibold' : ''}`}>
                     {(c.delivery_start_date || c.delivery_end_date)
-                      ? <>{c.delivery_start_date ?? '?'} → {c.delivery_end_date ?? '?'}{endWarning ? ` (${endIn}d)` : ''}</>
+                      ? <>{fmtDate(c.delivery_start_date)} → {fmtDate(c.delivery_end_date)}{endWarning ? ` (${endIn}d)` : ''}</>
                       : <span className="text-slate-400">—</span>}
                   </td>
                   <td className="px-3 py-2 text-right">{fmt(Number(c.contracted_bushels))}</td>

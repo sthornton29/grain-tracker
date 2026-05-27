@@ -108,7 +108,6 @@ export function contractFormToPayload(f: ContractFormState) {
 
 export function validateContractForm(f: ContractFormState): string | null {
   if (!f.contract_number.trim()) return 'Contract # is required.'
-  if (!f.contract_month) return 'Contract month is required.'
   if (f.delivery_type === 'delivered' && !f.delivery_location_id) return 'Pick a delivery location for delivered contracts.'
   if (f.contract_type === 'hta' && parsePrice(f.futures_price) == null) return 'HTA contracts need a futures price.'
   if (f.contract_type === 'basis' && parsePrice(f.basis) == null) return 'Basis contracts need a basis.'
@@ -241,7 +240,7 @@ export function ContractFields({
           {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <label className="text-sm text-slate-700">
-          Contract month <span className="text-red-600">*</span>
+          Contract month <span className="text-xs text-slate-400">optional</span>
           <select value={f.contract_month} onChange={(e) => set('contract_month', e.target.value)} className={`w-full ${INPUT_CLS}`}>
             <option value="">— select —</option>
             {f.contract_month && !monthOptions.some((m) => m.label === f.contract_month) && <option value={f.contract_month}>{f.contract_month}</option>}

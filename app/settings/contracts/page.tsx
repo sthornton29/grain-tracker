@@ -90,17 +90,9 @@ export default function ContractsSettingsPage() {
   const locName = (id: string | null) => locations.find((l) => l.id === id)?.name ?? ''
   const entityName = (id: string | null) => entities.find((e) => e.id === id)?.name ?? ''
 
-  const missingMonth = rows.filter((c) => !c.contract_month).length
-
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Contracts</h1>
-
-      {missingMonth > 0 && (
-        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          <strong>{missingMonth}</strong> contract{missingMonth === 1 ? '' : 's'} {missingMonth === 1 ? 'is' : 'are'} missing a contract month. Please edit and set it.
-        </div>
-      )}
 
       <CsvImport
         config={{
