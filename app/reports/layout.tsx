@@ -40,7 +40,7 @@ const categories = [
     title: 'Risk Management',
     reports: [
       { label: 'Hedging Summary', href: '/reports/hedging-summary', external: false },
-      { label: 'Marketing Dashboard', href: '/reports/marketing', external: false },
+      { label: 'Marketing Dashboard', href: '/marketing', external: true },
     ],
   },
   {

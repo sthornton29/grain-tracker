@@ -24,6 +24,17 @@ export default function SettingsPage() {
           </Link>
         ))}
       </div>
+
+      <div className="border-t border-slate-200 pt-6 mt-4">
+        <form action="/logout" method="post">
+          <button
+            type="submit"
+            className="rounded-xl bg-slate-800 text-white px-5 py-2.5 font-semibold hover:bg-slate-900"
+          >
+            Sign Out
+          </button>
+        </form>
+      </div>
     </div>
   )
 }

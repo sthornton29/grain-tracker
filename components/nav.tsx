@@ -6,19 +6,16 @@ import { usePathname } from 'next/navigation'
 const links = [
   { href: '/loads/new', label: 'New Load' },
   { href: '/loads', label: 'Loads' },
-  { href: '/inventory', label: 'Inventory' },
+  { href: '/inventory', label: 'Bin Inventory' },
   { href: '/contracts', label: 'Contracts' },
   { href: '/settlements', label: 'Settlements' },
   { href: '/hedging', label: 'Hedging' },
-  { href: '/marketing', label: 'Marketing' },
-  { href: '/cash-flow', label: 'Cash Flow' },
   { href: '/yields', label: 'Yields' },
-  { href: '/season', label: 'Season' },
   { href: '/reports', label: 'Reports' },
   { href: '/settings', label: 'Settings' },
 ]
 
-export default function Nav({ email }: { email: string }) {
+export default function Nav() {
   const pathname = usePathname()
   return (
     <nav className="sticky top-0 z-10 bg-green-800 text-white shadow">
@@ -42,11 +39,6 @@ export default function Nav({ email }: { email: string }) {
             )
           })}
         </div>
-        <form action="/logout" method="post" className="ml-2">
-          <button className="text-xs opacity-80 hover:opacity-100 whitespace-nowrap" title={email}>
-            Sign out
-          </button>
-        </form>
       </div>
     </nav>
   )

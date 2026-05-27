@@ -33,7 +33,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     <html lang="en">
       <body className="min-h-screen">
         <PwaRegister />
-        {user ? <Nav email={user.email ?? ''} /> : null}
+        {user ? <Nav /> : null}
         <main className="max-w-6xl mx-auto p-4 pb-24">{children}</main>
       </body>
     </html>

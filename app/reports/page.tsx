@@ -43,13 +43,14 @@ export default function ReportsLanding() {
           </p>
         </Link>
         <Link
-          href="/reports/marketing"
+          href="/marketing"
           className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
         >
-          <h2 className="font-bold mb-1">Marketing Dashboard</h2>
+          <h2 className="font-bold mb-1">Marketing Dashboard <span className="text-slate-400 text-sm">↗</span></h2>
           <p className="text-sm text-slate-600">
             Per-crop marketing position for a crop year — production, contracted vs. remaining bushels, average
-            futures/basis/cash price, cost, and projected profit. Base and Detailed views, Excel/PDF export.
+            futures/basis/cash price, cost, and projected profit. Base and Detailed views, with assumptions and
+            supporting contract/hedge detail.
           </p>
         </Link>
         <Link
@@ -71,6 +72,25 @@ export default function ReportsLanding() {
             Bundles every attached buyer settlement PDF for a crop &amp; crop year into a
             single zip — what the auditor needs to confirm sales match your self-reported
             production.
+          </p>
+        </Link>
+        <Link
+          href="/cash-flow"
+          className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
+        >
+          <h2 className="font-bold mb-1">Cash Flow Forecast <span className="text-slate-400 text-sm">↗</span></h2>
+          <p className="text-sm text-slate-600">
+            Monthly projected revenue from contracts and delivered grain — the same forecast view,
+            filters, and exports as before.
+          </p>
+        </Link>
+        <Link
+          href="/season"
+          className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
+        >
+          <h2 className="font-bold mb-1">Season Summary <span className="text-slate-400 text-sm">↗</span></h2>
+          <p className="text-sm text-slate-600">
+            Acres and yield by crop for a season, with the same views and exports as before.
           </p>
         </Link>
       </div>
