@@ -232,8 +232,9 @@ Extract these fields:
 - crop_year (the production/crop year as a 4-digit number, e.g. 2026)
 - contracted_bushels (total bushels on the contract, as a number)
 - futures_price (futures reference price in DOLLARS per bushel — convert fractional grain prices: "4.93 1/4" = 4.9325, "11.43 1/2" = 11.435)
-- basis (basis in DOLLARS per bushel; may be negative, e.g. -0.30 or 0.10)
+- basis (basis in DOLLARS per bushel — this equals cash_price minus futures_price). SIGN MATTERS: a basis "over" the futures (cash ABOVE futures) is POSITIVE (e.g. +0.10); a basis "under" the futures (cash BELOW futures) is NEGATIVE (e.g. -0.30). When both a futures price and a cash price are present, compute basis = cash_price − futures_price so the sign is correct — do not just copy a number whose sign you are unsure of.
 - cash_price (the flat cash price in DOLLARS per bushel; for a forward contract this is the locked price)
+- IMPORTANT consistency check: futures_price + basis must equal cash_price (minus any service_fee). If your extracted values don't satisfy this, re-read the basis sign.
 - service_fee (any per-bushel service or elevator fee in DOLLARS, if stated; otherwise null)
 - delivery_type ("delivered" if the producer delivers to a location, "pickup" if picked up at the farm)
 - delivery_start_date and delivery_end_date (the delivery window, format YYYY-MM-DD)

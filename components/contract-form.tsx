@@ -111,6 +111,14 @@ export function validateContractForm(f: ContractFormState): string | null {
   if (f.delivery_type === 'delivered' && !f.delivery_location_id) return 'Pick a delivery location for delivered contracts.'
   if (f.contract_type === 'hta' && parsePrice(f.futures_price) == null) return 'HTA contracts need a futures price.'
   if (f.contract_type === 'basis' && parsePrice(f.basis) == null) return 'Basis contracts need a basis.'
+  // When all three pricing legs are entered they must reconcile.
+  const F = parsePrice(f.futures_price)
+  const B = parsePrice(f.basis)
+  const C = parsePrice(f.cash_price)
+  const fee = parsePrice(f.service_fee) ?? 0
+  if (F != null && B != null && C != null && Math.abs(C - (F + B - fee)) > 0.005) {
+    return `Cash price must equal futures + basis${fee ? ' − service fee' : ''}. Check the basis sign or values.`
+  }
   return null
 }
 
@@ -208,8 +216,12 @@ export function ContractFields({
 
   const F = parsePrice(f.futures_price)
   const B = parsePrice(f.basis)
+  const C = parsePrice(f.cash_price)
   const fee = parsePrice(f.service_fee) ?? 0
   const previewCash = F != null && B != null ? cashFromFuturesBasis(F, B, fee) : null
+  // Flag when all three legs are present but don't reconcile (e.g. a flipped
+  // basis sign): cash should equal futures + basis − fee.
+  const priceMismatch = F != null && B != null && C != null && Math.abs(C - (F + B - fee)) > 0.005
 
   return (
     <div className="space-y-3">
@@ -319,6 +331,11 @@ export function ContractFields({
           )}
         </div>
         {f.contract_type === 'forward' && <p className="text-xs text-slate-500">Enter any two of futures / basis / cash and the third is calculated (shown italic). You can also just enter the flat cash price.</p>}
+        {priceMismatch && (
+          <p className="rounded-lg bg-amber-50 border border-amber-200 px-2 py-1 text-xs text-amber-800">
+            ⚠ Cash price {fmtPrice(C)} doesn’t equal futures + basis{fee ? ' − fee' : ''} ({fmtPrice(F! + B! - fee)}). Check the basis sign.
+          </p>
+        )}
       </fieldset>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

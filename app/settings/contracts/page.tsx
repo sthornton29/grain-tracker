@@ -12,7 +12,7 @@ import {
   emptyContractForm,
   type ContractFormState,
 } from '@/components/contract-form'
-import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL } from '@/lib/contracts'
+import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, basisFromCashFutures } from '@/lib/contracts'
 import { MAX_PDF_BYTES, PdfTooLargeError, parseDocument, uploadFileToStorage, type ContractExtraction } from '@/lib/pdf-upload'
 import { findBestMatch } from '@/lib/fuzzy'
 import type { Buyer, Contract, Crop, DeliveryLocation, Entity, FieldPlanting } from '@/lib/types'
@@ -22,6 +22,13 @@ import type { Buyer, Contract, Crop, DeliveryLocation, Entity, FieldPlanting } f
 function contractExtractionToForm(x: ContractExtraction, buyers: Buyer[], crops: Crop[], baseEntityId: string): ContractFormState {
   const buyer = x.buyer_name ? findBestMatch(x.buyer_name, buyers, (b) => b.name) : null
   const crop = x.crop ? findBestMatch(x.crop, crops, (c) => c.name) : null
+  const fee = x.service_fee ?? 0
+  // When the contract gives both a futures and a cash price, derive the basis
+  // (cash − futures + fee) so it's internally consistent — the AI sometimes
+  // flips the basis sign. Otherwise keep whatever basis was extracted.
+  const basisStr = x.futures_price != null && x.cash_price != null
+    ? String(basisFromCashFutures(x.cash_price, x.futures_price, fee))
+    : x.basis != null ? String(x.basis) : ''
   return {
     ...emptyContractForm,
     entity_id: baseEntityId,
@@ -33,7 +40,7 @@ function contractExtractionToForm(x: ContractExtraction, buyers: Buyer[], crops:
     crop_year: x.crop_year != null ? String(x.crop_year) : '',
     contracted_bushels: x.contracted_bushels != null ? String(x.contracted_bushels) : '',
     futures_price: x.futures_price != null ? String(x.futures_price) : '',
-    basis: x.basis != null ? String(x.basis) : '',
+    basis: basisStr,
     cash_price: x.cash_price != null ? String(x.cash_price) : '',
     service_fee: x.service_fee != null ? String(x.service_fee) : '',
     delivery_type: x.delivery_type ?? 'pickup',
