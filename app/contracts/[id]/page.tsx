@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
 import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, type ContractType, type PricingStatus } from '@/lib/contracts'
 import ContractActions from './contract-actions'
+import ContractAttachments from '@/components/contract-attachments'
 
 export const dynamic = 'force-dynamic'
 
@@ -341,6 +342,8 @@ export default async function ContractDetailPage({ params }: { params: { id: str
           )}
         </section>
       </div>
+
+      <ContractAttachments contractId={contract.id} />
     </div>
   )
 }

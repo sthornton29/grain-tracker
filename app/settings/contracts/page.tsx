@@ -13,7 +13,35 @@ import {
   type ContractFormState,
 } from '@/components/contract-form'
 import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL } from '@/lib/contracts'
+import { MAX_PDF_BYTES, PdfTooLargeError, parseDocument, uploadFileToStorage, type ContractExtraction } from '@/lib/pdf-upload'
+import { findBestMatch } from '@/lib/fuzzy'
 import type { Buyer, Contract, Crop, DeliveryLocation, Entity, FieldPlanting } from '@/lib/types'
+
+// Map an AI contract extraction onto the editable form. Buyer/crop are fuzzy-
+// matched to existing records; everything is editable before saving.
+function contractExtractionToForm(x: ContractExtraction, buyers: Buyer[], crops: Crop[], baseEntityId: string): ContractFormState {
+  const buyer = x.buyer_name ? findBestMatch(x.buyer_name, buyers, (b) => b.name) : null
+  const crop = x.crop ? findBestMatch(x.crop, crops, (c) => c.name) : null
+  return {
+    ...emptyContractForm,
+    entity_id: baseEntityId,
+    contract_number: x.contract_number ?? '',
+    buyer_id: buyer?.id ?? '',
+    crop_id: crop?.id ?? '',
+    contract_type: x.contract_type ?? 'forward',
+    contract_month: x.contract_month ? x.contract_month.toUpperCase() : '',
+    crop_year: x.crop_year != null ? String(x.crop_year) : '',
+    contracted_bushels: x.contracted_bushels != null ? String(x.contracted_bushels) : '',
+    futures_price: x.futures_price != null ? String(x.futures_price) : '',
+    basis: x.basis != null ? String(x.basis) : '',
+    cash_price: x.cash_price != null ? String(x.cash_price) : '',
+    service_fee: x.service_fee != null ? String(x.service_fee) : '',
+    delivery_type: x.delivery_type ?? 'pickup',
+    delivery_start_date: x.delivery_start_date ?? '',
+    delivery_end_date: x.delivery_end_date ?? '',
+    notes: x.notes ?? '',
+  }
+}
 
 export default function ContractsSettingsPage() {
   const supabase = useMemo(() => createClient(), [])
@@ -29,6 +57,10 @@ export default function ContractsSettingsPage() {
   const [err, setErr] = useState<string | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [q, setQ] = useState('')
+  // AI contract upload (prefills the add form; the PDF is attached on save).
+  const [aiFile, setAiFile] = useState<File | null>(null)
+  const [aiStage, setAiStage] = useState<string | null>(null)
+  const [aiBanner, setAiBanner] = useState<string | null>(null)
 
   async function refresh() {
     const [b, c, k, l, en, pl] = await Promise.all([
@@ -61,13 +93,46 @@ export default function ContractsSettingsPage() {
     setForm((f) => (f.entity_id === '' ? { ...f, entity_id: latest.entity_id! } : f))
   }, [rows])
 
+  async function onContractPdf(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setErr(null); setAiBanner(null)
+    if (file.size > MAX_PDF_BYTES) { setErr('That PDF is larger than 20 MB. Please use a smaller file.'); return }
+    setAiStage('Reading contract…')
+    try {
+      await new Promise((r) => setTimeout(r, 200))
+      setAiStage('Extracting…')
+      const x = await parseDocument(file, 'contract')
+      setForm(contractExtractionToForm(x, buyers, crops, form.entity_id))
+      setAiFile(file)
+      setAiBanner('AI filled in the contract from the PDF. Review and edit anything below, then Add Contract — the PDF attaches automatically.')
+    } catch (e: any) {
+      if (e instanceof PdfTooLargeError) setErr(e.message)
+      else setErr(e?.message ? `Couldn't read this contract: ${e.message}.` : "Couldn't read this contract.")
+    } finally {
+      setAiStage(null)
+    }
+  }
+
   async function add(e: React.FormEvent) {
     e.preventDefault()
     const v = validateContractForm(form)
     if (v) { setErr(v); return }
-    const { error } = await supabase.from('contracts').insert(contractFormToPayload(form))
+    const { data, error } = await supabase.from('contracts').insert(contractFormToPayload(form)).select('id').single()
     if (error) { setErr(error.message); return }
-    setForm(emptyContractForm); setErr(null); refresh()
+    // Auto-attach the AI-uploaded PDF to the new contract (best-effort).
+    if (aiFile && data?.id) {
+      try {
+        const { publicUrl, path } = await uploadFileToStorage(supabase, aiFile, 'contract-attachments')
+        await supabase.from('contract_attachments').insert({
+          contract_id: (data as { id: string }).id,
+          file_url: publicUrl, file_path: path, file_name: aiFile.name,
+          mime_type: aiFile.type || null, file_size: aiFile.size,
+        })
+      } catch { /* contract saved; attachment is best-effort */ }
+    }
+    setForm(emptyContractForm); setAiFile(null); setAiBanner(null); setErr(null); refresh()
   }
 
   async function save(id: string) {
@@ -119,6 +184,20 @@ export default function ContractsSettingsPage() {
       />
 
       <form onSubmit={add} className="space-y-2 bg-white p-4 rounded-xl shadow">
+        <div className="flex items-center gap-3 flex-wrap border-b border-slate-100 pb-2">
+          <label className={`text-sm rounded-lg px-3 py-2 cursor-pointer text-white ${aiStage ? 'bg-slate-400 cursor-wait' : 'bg-sky-700'}`}>
+            {aiStage ?? 'Upload Contract PDF (AI)'}
+            <input type="file" accept="application/pdf,.pdf" onChange={onContractPdf} disabled={aiStage != null} className="hidden" />
+          </label>
+          {aiFile && (
+            <span className="text-xs text-slate-600">
+              “{aiFile.name}” will attach on save ·{' '}
+              <button type="button" onClick={() => { setAiFile(null); setAiBanner(null) }} className="text-red-600 underline">clear</button>
+            </span>
+          )}
+          <span className="text-xs text-slate-400">or fill the form manually below</span>
+        </div>
+        {aiBanner && <div className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-sm text-sky-900">{aiBanner}</div>}
         <ContractFields value={form} onChange={setForm} buyers={buyers} crops={crops} locations={locations} entities={entities} cropYearOptions={cropYearOptions} />
         <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add Contract</button>
       </form>

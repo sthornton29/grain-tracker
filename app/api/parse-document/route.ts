@@ -216,12 +216,55 @@ Respond ONLY in JSON with no other text, no markdown backticks:
   }
 }`
 
-type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement'
+const CONTRACT_PROMPT = `This is a grain purchase contract between a farmer and a grain buyer or elevator. Extract the contract details. For any field you cannot determine, use null — do not guess.
+
+First determine the contract type:
+- "forward" — a flat cash price per bushel is locked in (most common).
+- "hta" — Hedge-to-Arrive: the futures price is locked now, the basis is set later.
+- "basis" — the basis is locked now, the futures price is set later.
+
+Extract these fields:
+- contract_number (the contract or confirmation number)
+- buyer_name (the grain buyer / elevator company name)
+- crop (the commodity, e.g. "Corn", "Soybeans", "Wheat")
+- contract_type ("forward", "hta", or "basis")
+- contract_month (the futures contract month referenced, formatted as a 3-letter month + 2-digit year like "DEC 26", "JUL 27", "NOV 26")
+- crop_year (the production/crop year as a 4-digit number, e.g. 2026)
+- contracted_bushels (total bushels on the contract, as a number)
+- futures_price (futures reference price in DOLLARS per bushel — convert fractional grain prices: "4.93 1/4" = 4.9325, "11.43 1/2" = 11.435)
+- basis (basis in DOLLARS per bushel; may be negative, e.g. -0.30 or 0.10)
+- cash_price (the flat cash price in DOLLARS per bushel; for a forward contract this is the locked price)
+- service_fee (any per-bushel service or elevator fee in DOLLARS, if stated; otherwise null)
+- delivery_type ("delivered" if the producer delivers to a location, "pickup" if picked up at the farm)
+- delivery_start_date and delivery_end_date (the delivery window, format YYYY-MM-DD)
+- notes (any other notable terms worth recording — keep brief)
+
+Respond ONLY in JSON with no other text and no markdown backticks:
+{
+  "contract_number": "string or null",
+  "buyer_name": "string or null",
+  "crop": "string or null",
+  "contract_type": "forward or hta or basis or null",
+  "contract_month": "string like DEC 26 or null",
+  "crop_year": number or null,
+  "contracted_bushels": number or null,
+  "futures_price": number or null,
+  "basis": number or null,
+  "cash_price": number or null,
+  "service_fee": number or null,
+  "delivery_type": "delivered or pickup or null",
+  "delivery_start_date": "YYYY-MM-DD or null",
+  "delivery_end_date": "YYYY-MM-DD or null",
+  "notes": "string or null"
+}`
+
+type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract'
 
 const PROMPTS: Record<DocumentType, string> = {
   settlement: SETTLEMENT_PROMPT,
   tickets: TICKETS_PROMPT,
   brokerage_statement: BROKERAGE_PROMPT,
+  contract: CONTRACT_PROMPT,
 }
 
 type ParseBody = {
@@ -264,8 +307,8 @@ export async function POST(req: NextRequest) {
   const pdfBase64 = typeof body.pdf_base64 === 'string' ? body.pdf_base64 : ''
   const documentType = body.document_type
   if (!pdfBase64) return badRequest('pdf_base64 is required.')
-  if (documentType !== 'settlement' && documentType !== 'tickets' && documentType !== 'brokerage_statement') {
-    return badRequest('document_type must be "settlement", "tickets", or "brokerage_statement".')
+  if (documentType !== 'settlement' && documentType !== 'tickets' && documentType !== 'brokerage_statement' && documentType !== 'contract') {
+    return badRequest('document_type must be "settlement", "tickets", "brokerage_statement", or "contract".')
   }
   if (pdfBase64.length > MAX_BASE64_LEN) {
     return badRequest('PDF exceeds the 20 MB size limit.')

@@ -31,7 +31,7 @@ export function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement'
+export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract'
 
 export type SettlementExtraction = {
   buyer_name: string | null
@@ -130,13 +130,32 @@ export type BrokerageStatementExtraction = {
   } | null
 }
 
+export type ContractExtraction = {
+  contract_number: string | null
+  buyer_name: string | null
+  crop: string | null
+  contract_type: 'forward' | 'hta' | 'basis' | null
+  contract_month: string | null
+  crop_year: number | null
+  contracted_bushels: number | null
+  futures_price: number | null
+  basis: number | null
+  cash_price: number | null
+  service_fee: number | null
+  delivery_type: 'pickup' | 'delivered' | null
+  delivery_start_date: string | null
+  delivery_end_date: string | null
+  notes: string | null
+}
+
 export async function parseDocument(file: File, documentType: 'settlement'): Promise<SettlementExtraction>
 export async function parseDocument(file: File, documentType: 'tickets'): Promise<TicketsExtraction>
 export async function parseDocument(file: File, documentType: 'brokerage_statement'): Promise<BrokerageStatementExtraction>
+export async function parseDocument(file: File, documentType: 'contract'): Promise<ContractExtraction>
 export async function parseDocument(
   file: File,
   documentType: DocumentType,
-): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction> {
+): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction> {
   if (file.size > MAX_PDF_BYTES) throw new PdfTooLargeError()
   const pdf_base64 = await fileToBase64(file)
   const res = await fetch('/api/parse-document', {
@@ -152,7 +171,7 @@ export async function parseDocument(
   if (!body || typeof body !== 'object' || !('data' in body)) {
     throw new Error('Malformed response from server.')
   }
-  return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction
+  return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction
 }
 
 // Uploads to the public "documents" bucket and returns the public URL.

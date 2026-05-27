@@ -170,6 +170,17 @@ export type LoadAttachment = {
   created_at: string
 }
 
+export type ContractAttachment = {
+  id: string
+  contract_id: string
+  file_url: string
+  file_path: string
+  file_name: string
+  mime_type: string | null
+  file_size: number | null
+  created_at: string
+}
+
 export type LoadSplit = {
   id: string
   load_id: string
