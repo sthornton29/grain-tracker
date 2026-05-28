@@ -14,6 +14,8 @@ import {
 } from '@/components/contract-form'
 import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, basisFromCashFutures } from '@/lib/contracts'
 import { MAX_PDF_BYTES, PdfTooLargeError, parseDocument, uploadFileToStorage, type ContractExtraction } from '@/lib/pdf-upload'
+import { imagesToPdf } from '@/lib/image-capture'
+import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import { findBestMatch } from '@/lib/fuzzy'
 import type { Buyer, Contract, Crop, DeliveryLocation, Entity, FieldPlanting } from '@/lib/types'
 
@@ -65,7 +67,7 @@ export default function ContractsSettingsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [q, setQ] = useState('')
   // AI contract upload (prefills the add form; the PDF is attached on save).
-  const [aiFile, setAiFile] = useState<File | null>(null)
+  const [source, setSource] = useState<DocumentSource | null>(null)
   const [aiStage, setAiStage] = useState<string | null>(null)
   const [aiBanner, setAiBanner] = useState<string | null>(null)
 
@@ -100,20 +102,17 @@ export default function ContractsSettingsPage() {
     setForm((f) => (f.entity_id === '' ? { ...f, entity_id: latest.entity_id! } : f))
   }, [rows])
 
-  async function onContractPdf(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
+  async function onSource(src: DocumentSource) {
     setErr(null); setAiBanner(null)
-    if (file.size > MAX_PDF_BYTES) { setErr('That PDF is larger than 20 MB. Please use a smaller file.'); return }
+    if (src.kind === 'pdf' && src.file.size > MAX_PDF_BYTES) { setErr('That PDF is larger than 20 MB. Please use a smaller file.'); return }
     setAiStage('Reading contract…')
     try {
       await new Promise((r) => setTimeout(r, 200))
       setAiStage('Extracting…')
-      const x = await parseDocument(file, 'contract')
+      const x = await parseDocument(src.kind === 'pdf' ? src.file : src.images, 'contract')
       setForm(contractExtractionToForm(x, buyers, crops, form.entity_id))
-      setAiFile(file)
-      setAiBanner('AI filled in the contract from the PDF. Review and edit anything below, then Add Contract — the PDF attaches automatically.')
+      setSource(src)
+      setAiBanner('AI filled in the contract from the document. Review and edit anything below, then Add Contract — the document attaches automatically.')
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) setErr(e.message)
       else setErr(e?.message ? `Couldn't read this contract: ${e.message}.` : "Couldn't read this contract.")
@@ -129,17 +128,18 @@ export default function ContractsSettingsPage() {
     const { data, error } = await supabase.from('contracts').insert(contractFormToPayload(form)).select('id').single()
     if (error) { setErr(error.message); return }
     // Auto-attach the AI-uploaded PDF to the new contract (best-effort).
-    if (aiFile && data?.id) {
+    if (source && data?.id) {
       try {
-        const { publicUrl, path } = await uploadFileToStorage(supabase, aiFile, 'contract-attachments')
+        const attach = source.kind === 'pdf' ? source.file : await imagesToPdf(source.images, 'contract')
+        const { publicUrl, path } = await uploadFileToStorage(supabase, attach, 'contract-attachments')
         await supabase.from('contract_attachments').insert({
           contract_id: (data as { id: string }).id,
-          file_url: publicUrl, file_path: path, file_name: aiFile.name,
-          mime_type: aiFile.type || null, file_size: aiFile.size,
+          file_url: publicUrl, file_path: path, file_name: attach.name,
+          mime_type: attach.type || null, file_size: attach.size,
         })
       } catch { /* contract saved; attachment is best-effort */ }
     }
-    setForm(emptyContractForm); setAiFile(null); setAiBanner(null); setErr(null); refresh()
+    setForm(emptyContractForm); setSource(null); setAiBanner(null); setErr(null); refresh()
   }
 
   async function save(id: string) {
@@ -192,14 +192,18 @@ export default function ContractsSettingsPage() {
 
       <form onSubmit={add} className="space-y-2 bg-white p-4 rounded-xl shadow">
         <div className="flex items-center gap-3 flex-wrap border-b border-slate-100 pb-2">
-          <label className={`text-sm rounded-lg px-3 py-2 cursor-pointer text-white ${aiStage ? 'bg-slate-400 cursor-wait' : 'bg-sky-700'}`}>
-            {aiStage ?? 'Upload Contract PDF (AI)'}
-            <input type="file" accept="application/pdf,.pdf" onChange={onContractPdf} disabled={aiStage != null} className="hidden" />
-          </label>
-          {aiFile && (
+          <DocumentCapture
+            onSource={onSource}
+            busy={aiStage != null}
+            stageLabel={aiStage}
+            pdfLabel="Upload Contract PDF or Photo (AI)"
+          />
+          {source && (
             <span className="text-xs text-slate-600">
-              “{aiFile.name}” will attach on save ·{' '}
-              <button type="button" onClick={() => { setAiFile(null); setAiBanner(null) }} className="text-red-600 underline">clear</button>
+              {source.kind === 'pdf'
+                ? `“${source.file.name}” will attach on save`
+                : `${source.images.length} photo${source.images.length === 1 ? '' : 's'} will attach on save`}{' '}·{' '}
+              <button type="button" onClick={() => { setSource(null); setAiBanner(null) }} className="text-red-600 underline">clear</button>
             </span>
           )}
           <span className="text-xs text-slate-400">or fill the form manually below</span>

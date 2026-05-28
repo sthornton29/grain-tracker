@@ -3,7 +3,8 @@
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Modal } from './position-form'
-import PdfViewer from '@/components/pdf-viewer'
+import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
+import SourcePreview from '@/components/source-preview'
 import {
   MAX_PDF_BYTES,
   PdfTooLargeError,
@@ -116,7 +117,7 @@ type Props = {
 
 export default function StatementImport({ entities, existingPositions, existingOptions, onClose, onImported }: Props) {
   const supabase = useMemo(() => createClient(), [])
-  const [file, setFile] = useState<File | null>(null)
+  const [source, setSource] = useState<DocumentSource | null>(null)
   const [stage, setStage] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [extraction, setExtraction] = useState<BrokerageStatementExtraction | null>(null)
@@ -282,21 +283,18 @@ export default function StatementImport({ entities, existingPositions, existingO
     }
   }
 
-  async function onPdf(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0]
-    e.target.value = ''
-    if (!f) return
+  async function onSource(src: DocumentSource) {
     setErr(null)
-    if (f.size > MAX_PDF_BYTES) {
+    if (src.kind === 'pdf' && src.file.size > MAX_PDF_BYTES) {
       setErr('That PDF is larger than 20 MB. Please use a smaller file.')
       return
     }
-    setFile(f)
+    setSource(src)
     setStage('Reading document…')
     try {
       await new Promise((r) => setTimeout(r, 200))
       setStage('Extracting positions…')
-      const data = await parseDocument(f, 'brokerage_statement')
+      const data = await parseDocument(src.kind === 'pdf' ? src.file : src.images, 'brokerage_statement')
       setExtraction(data)
       const open = (data.open_positions ?? []).map(buildOpenRow).filter((r): r is OpenRow => r !== null)
       const closed = (data.closed_trades ?? []).map(buildClosedRow).filter((r): r is ClosedRow => r !== null)
@@ -310,7 +308,7 @@ export default function StatementImport({ entities, existingPositions, existingO
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) setErr(e.message)
       else setErr(e?.message ? `Couldn't read this statement: ${e.message}.` : "Couldn't read this statement.")
-      setFile(null)
+      setSource(null)
     } finally {
       setStage(null)
     }
@@ -471,14 +469,16 @@ export default function StatementImport({ entities, existingPositions, existingO
       {!extraction && (
         <div className="space-y-3">
           <p className="text-sm text-slate-600">
-            Upload a daily statement PDF (R.J. O’Brien or similar). The AI extracts open positions and closed trades for
+            Upload a daily statement PDF (R.J. O’Brien or similar), or photograph the pages with your camera. The AI extracts open positions and closed trades for
             Corn, Soybeans, and Wheat — cotton and other commodities are ignored. You’ll review and assign crop years before anything is saved.
             Positions and closed trades you’ve already imported are detected and skipped, so you can upload each new statement without creating duplicates.
           </p>
-          <label className={`inline-block text-sm rounded-lg px-4 py-2 cursor-pointer text-white ${stage ? 'bg-slate-400 cursor-wait' : 'bg-green-700'}`}>
-            {stage ?? 'Choose Statement PDF'}
-            <input type="file" accept="application/pdf,.pdf" onChange={onPdf} disabled={stage != null} className="hidden" />
-          </label>
+          <DocumentCapture
+            onSource={onSource}
+            busy={stage != null}
+            stageLabel={stage}
+            pdfLabel="Choose Statement PDF or Photo"
+          />
           {err && <p className="text-sm text-red-600">{err}</p>}
         </div>
       )}
@@ -515,7 +515,7 @@ export default function StatementImport({ entities, existingPositions, existingO
               </div>
             </label>
             <div className="flex-1" />
-            <button type="button" onClick={() => { setExtraction(null); setFile(null); setOpenRows([]); setClosedRows([]); setOpenOptionRows([]); setClosedOptionRows([]) }} className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2">
+            <button type="button" onClick={() => { setExtraction(null); setSource(null); setOpenRows([]); setClosedRows([]); setOpenOptionRows([]); setClosedOptionRows([]) }} className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2">
               Start over
             </button>
           </div>
@@ -728,10 +728,10 @@ export default function StatementImport({ entities, existingPositions, existingO
               )}
             </div>
 
-            {file && (
+            {source && (
               <div className="lg:sticky lg:top-3 self-start h-[60vh] min-h-[360px]">
                 <div className="text-xs text-slate-500 mb-1">Source statement — cross-reference while reviewing</div>
-                <PdfViewer file={file} className="h-full" title="Brokerage statement" />
+                <SourcePreview source={source} className="h-full" title="Brokerage statement" />
               </div>
             )}
           </div>

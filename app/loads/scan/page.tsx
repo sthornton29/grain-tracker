@@ -14,7 +14,9 @@ import {
   uploadPdfToStorage,
   type TicketExtraction,
 } from '@/lib/pdf-upload'
-import PdfViewer from '@/components/pdf-viewer'
+import { imagesToPdf } from '@/lib/image-capture'
+import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
+import SourcePreview from '@/components/source-preview'
 import type { Bin, Buyer, Contract, Crop, Field, FieldPlanting, Truck } from '@/lib/types'
 
 type Row = {
@@ -165,7 +167,7 @@ export default function ScanTicketsPage() {
   const [refsLoaded, setRefsLoaded] = useState(false)
 
   const [cropYear, setCropYear] = useState<string>('')
-  const [pdfFile, setPdfFile] = useState<File | null>(null)
+  const [source, setSource] = useState<DocumentSource | null>(null)
   const [aiStage, setAiStage] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
@@ -242,24 +244,21 @@ export default function ScanTicketsPage() {
     )
   }
 
-  async function onPdf(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
+  async function onSource(src: DocumentSource) {
     setErr(null)
     setBanner(null)
     setSaveSummary(null)
-    if (file.size > MAX_PDF_BYTES) {
+    if (src.kind === 'pdf' && src.file.size > MAX_PDF_BYTES) {
       setErr('That PDF is larger than 20 MB. Please use a smaller file.')
       return
     }
-    setPdfFile(file)
+    setSource(src)
     setRows([])
     setAiStage('Reading document…')
     try {
       await new Promise((r) => setTimeout(r, 250))
       setAiStage('Extracting data…')
-      const data = await parseDocument(file, 'tickets')
+      const data = await parseDocument(src.kind === 'pdf' ? src.file : src.images, 'tickets')
       const tickets = Array.isArray(data.tickets) ? data.tickets : []
       if (tickets.length === 0) {
         setErr('No records found in this document. The scan may be too blurry or the format may not be readable.')
@@ -283,7 +282,7 @@ export default function ScanTicketsPage() {
   }
 
   function discard() {
-    setPdfFile(null)
+    setSource(null)
     setRows([])
     setBanner(null)
     setErr(null)
@@ -343,9 +342,12 @@ export default function ScanTicketsPage() {
     setBanner(null)
 
     let pdfUrl: string | null = null
-    if (pdfFile) {
+    if (source) {
       try {
-        pdfUrl = await uploadPdfToStorage(supabase, pdfFile, 'tickets')
+        const fileToStore = source.kind === 'pdf'
+          ? source.file
+          : await imagesToPdf(source.images, 'tickets')
+        pdfUrl = await uploadPdfToStorage(supabase, fileToStore, 'tickets')
       } catch (e: any) {
         setSaving(false)
         setErr(e?.message ?? 'Could not upload the ticket PDF.')
@@ -425,17 +427,13 @@ export default function ScanTicketsPage() {
               {seasonYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
             </select>
           </label>
-          <label className={`text-sm rounded-lg px-3 py-2 cursor-pointer text-white ${aiStage ? 'bg-slate-400 cursor-wait' : 'bg-green-700'}`}>
-            {aiStage ? aiStage : pdfFile ? 'Replace PDF' : 'Upload Ticket PDF'}
-            <input
-              type="file"
-              accept="application/pdf,.pdf"
-              onChange={onPdf}
-              disabled={aiStage != null}
-              className="hidden"
-            />
-          </label>
-          {pdfFile && !aiStage && (
+          <DocumentCapture
+            onSource={onSource}
+            busy={aiStage != null}
+            stageLabel={aiStage}
+            pdfLabel="Upload Ticket PDF or Image"
+          />
+          {source && !aiStage && (
             <button
               type="button"
               onClick={discard}
@@ -472,13 +470,13 @@ export default function ScanTicketsPage() {
         {err && <p className="text-sm text-red-600">{err}</p>}
       </div>
 
-      {!pdfFile && !aiStage && rows.length === 0 && (
+      {!source && !aiStage && rows.length === 0 && (
         <div className="bg-white rounded-xl shadow p-6 text-center text-slate-500">
-          Upload a PDF of scanned scale tickets to extract loads. Each ticket becomes one editable row.
+          Take a photo or upload a PDF of scanned scale tickets to extract loads. Each ticket becomes one editable row.
         </div>
       )}
 
-      {(pdfFile || rows.length > 0) && (
+      {(source || rows.length > 0) && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <div className="bg-white rounded-xl shadow p-3 overflow-x-auto">
             <table className="min-w-full text-sm">
@@ -491,7 +489,7 @@ export default function ScanTicketsPage() {
               <tbody>
                 {rows.length === 0 && (
                   <tr><td colSpan={16} className="px-3 py-6 text-center text-slate-400">
-                    {aiStage ? 'Working…' : 'No tickets yet — upload a PDF.'}
+                    {aiStage ? 'Working…' : 'No tickets yet — take a photo or upload a PDF.'}
                   </td></tr>
                 )}
                 {rows.map((r, i) => {
@@ -646,8 +644,8 @@ export default function ScanTicketsPage() {
           </div>
 
           <div className="xl:sticky xl:top-3 self-start h-[80vh] min-h-[400px]">
-            <div className="text-xs text-slate-500 mb-1">Source PDF — cross-reference while reviewing</div>
-            <PdfViewer file={pdfFile} className="h-full" title="Tickets PDF" />
+            <div className="text-xs text-slate-500 mb-1">Source document — cross-reference while reviewing</div>
+            <SourcePreview source={source} className="h-full" title="Tickets" />
           </div>
         </div>
       )}

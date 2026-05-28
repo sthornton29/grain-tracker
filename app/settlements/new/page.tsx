@@ -12,7 +12,9 @@ import {
   parseDocument,
   uploadPdfToStorage,
 } from '@/lib/pdf-upload'
-import PdfViewer from '@/components/pdf-viewer'
+import { imagesToPdf } from '@/lib/image-capture'
+import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
+import SourcePreview from '@/components/source-preview'
 import type { Buyer } from '@/lib/types'
 
 type LoadMatch = {
@@ -92,8 +94,8 @@ export default function NewSettlementPage() {
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
-  // AI-assisted PDF extraction state.
-  const [aiFile, setAiFile] = useState<File | null>(null)
+  // AI-assisted extraction state. `source` is the PDF or captured photos.
+  const [source, setSource] = useState<DocumentSource | null>(null)
   const [aiStage, setAiStage] = useState<string | null>(null)
   const [aiBanner, setAiBanner] = useState<string | null>(null)
 
@@ -156,23 +158,20 @@ export default function NewSettlementPage() {
     }
   }
 
-  async function onPdf(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    e.target.value = ''
-    if (!file) return
+  async function onSource(src: DocumentSource) {
     setErr(null)
     setAiBanner(null)
-    if (file.size > MAX_PDF_BYTES) {
+    if (src.kind === 'pdf' && src.file.size > MAX_PDF_BYTES) {
       setErr('That PDF is larger than 20 MB. Please use a smaller file.')
       return
     }
-    setAiFile(file)
+    setSource(src)
     setAiStage('Reading document…')
     try {
       // Give the user a beat to see the first stage label before it flips.
       await new Promise((r) => setTimeout(r, 250))
       setAiStage('Extracting data…')
-      const data = await parseDocument(file, 'settlement')
+      const data = await parseDocument(src.kind === 'pdf' ? src.file : src.images, 'settlement')
 
       const extractedLines = Array.isArray(data.line_items) ? data.line_items : []
       if (extractedLines.length === 0) {
@@ -217,7 +216,7 @@ export default function NewSettlementPage() {
   }
 
   function discardPdf() {
-    setAiFile(null)
+    setSource(null)
     setAiBanner(null)
     setAiStage(null)
     setRows([])
@@ -239,9 +238,12 @@ export default function NewSettlementPage() {
     setSaving(true)
 
     let pdfUrl: string | null = null
-    if (aiFile) {
+    if (source) {
       try {
-        pdfUrl = await uploadPdfToStorage(supabase, aiFile, 'settlements')
+        const fileToStore = source.kind === 'pdf'
+          ? source.file
+          : await imagesToPdf(source.images, 'settlement')
+        pdfUrl = await uploadPdfToStorage(supabase, fileToStore, 'settlements')
       } catch (e: any) {
         setSaving(false)
         setErr(e?.message ?? 'Could not upload settlement PDF.')
@@ -340,17 +342,13 @@ export default function NewSettlementPage() {
             Upload CSV
             <input type="file" accept=".csv,text/csv,text/plain" onChange={onFile} className="hidden" />
           </label>
-          <label className={`text-sm rounded-lg px-3 py-2 cursor-pointer text-white ${aiStage ? 'bg-slate-400 cursor-wait' : 'bg-green-700'}`}>
-            {aiStage ? aiStage : 'Upload Settlement PDF (AI)'}
-            <input
-              type="file"
-              accept="application/pdf,.pdf"
-              onChange={onPdf}
-              disabled={aiStage != null}
-              className="hidden"
-            />
-          </label>
-          {aiFile && !aiStage && (
+          <DocumentCapture
+            onSource={onSource}
+            busy={aiStage != null}
+            stageLabel={aiStage}
+            pdfLabel="Settlement PDF or Photo (AI)"
+          />
+          {source && !aiStage && (
             <button
               type="button"
               onClick={discardPdf}
@@ -375,7 +373,7 @@ export default function NewSettlementPage() {
         )}
         {err && <p className="text-sm text-red-600">{err}</p>}
 
-        <div className={aiFile ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : ''}>
+        <div className={source ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : ''}>
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead className="bg-slate-100 text-slate-700">
@@ -386,7 +384,7 @@ export default function NewSettlementPage() {
               </thead>
               <tbody>
                 {rows.length === 0 && (
-                  <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">Upload a CSV, upload a PDF (AI), or add rows manually.</td></tr>
+                  <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">Upload a CSV, take a photo or upload a PDF (AI), or add rows manually.</td></tr>
                 )}
                 {rows.map((r, i) => {
                   const { netRev, price } = computed(r)
@@ -431,10 +429,10 @@ export default function NewSettlementPage() {
             </table>
           </div>
 
-          {aiFile && (
+          {source && (
             <div className="lg:sticky lg:top-3 self-start h-[70vh] min-h-[400px]">
-              <div className="text-xs text-slate-500 mb-1">Source PDF — cross-reference while reviewing</div>
-              <PdfViewer file={aiFile} className="h-full" title="Settlement PDF" />
+              <div className="text-xs text-slate-500 mb-1">Source document — cross-reference while reviewing</div>
+              <SourcePreview source={source} className="h-full" title="Settlement" />
             </div>
           )}
         </div>

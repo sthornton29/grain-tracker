@@ -148,20 +148,35 @@ export type ContractExtraction = {
   notes: string | null
 }
 
-export async function parseDocument(file: File, documentType: 'settlement'): Promise<SettlementExtraction>
-export async function parseDocument(file: File, documentType: 'tickets'): Promise<TicketsExtraction>
-export async function parseDocument(file: File, documentType: 'brokerage_statement'): Promise<BrokerageStatementExtraction>
-export async function parseDocument(file: File, documentType: 'contract'): Promise<ContractExtraction>
+// A compressed photo page ready for the API. lib/image-capture.ts' CapturedImage
+// structurally satisfies this, so callers can pass captured images directly.
+export type ParseImage = { base64: string; mediaType: string }
+
+// parseDocument accepts either a single PDF File (the original path) or an array
+// of compressed photo pages. Both send the identical extraction prompt; only the
+// content blocks differ on the server.
+export async function parseDocument(input: File | ParseImage[], documentType: 'settlement'): Promise<SettlementExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'tickets'): Promise<TicketsExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'brokerage_statement'): Promise<BrokerageStatementExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'contract'): Promise<ContractExtraction>
 export async function parseDocument(
-  file: File,
+  input: File | ParseImage[],
   documentType: DocumentType,
 ): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction> {
-  if (file.size > MAX_PDF_BYTES) throw new PdfTooLargeError()
-  const pdf_base64 = await fileToBase64(file)
+  let payload: Record<string, unknown>
+  if (Array.isArray(input)) {
+    payload = {
+      document_type: documentType,
+      images: input.map((img) => ({ media_type: img.mediaType, data: img.base64 })),
+    }
+  } else {
+    if (input.size > MAX_PDF_BYTES) throw new PdfTooLargeError()
+    payload = { document_type: documentType, pdf_base64: await fileToBase64(input) }
+  }
   const res = await fetch('/api/parse-document', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ pdf_base64, document_type: documentType }),
+    body: JSON.stringify(payload),
   })
   const body = await res.json().catch(() => null)
   if (!res.ok) {

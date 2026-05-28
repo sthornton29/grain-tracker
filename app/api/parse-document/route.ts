@@ -13,6 +13,13 @@ const MAX_TOKENS = 4096
 const MAX_PDF_BYTES = 20 * 1024 * 1024
 const MAX_BASE64_LEN = Math.ceil((MAX_PDF_BYTES * 4) / 3) + 16
 
+// Photos are compressed client-side (longest edge 2000px, JPEG q0.85), so each
+// page is well under a megabyte. Cap the combined base64 across all pages and
+// the page count as a backstop against a runaway payload.
+const MAX_IMAGES = 20
+const MAX_IMAGES_BASE64_LEN = Math.ceil((25 * 1024 * 1024 * 4) / 3) + 16
+const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+
 const SETTLEMENT_PROMPT = `This is a grain settlement sheet from a grain buyer. Extract every line item from this document. For each line item, extract:
 - ticket_number (the scale ticket or load ticket number)
 - net_bushels (the net bushels paid for on this line)
@@ -270,7 +277,33 @@ const PROMPTS: Record<DocumentType, string> = {
 
 type ParseBody = {
   pdf_base64?: unknown
+  images?: unknown
   document_type?: unknown
+}
+
+type ImageInput = { media_type: string; data: string }
+
+// Validate the images[] payload into well-typed image blocks, or return an
+// error string describing the first problem found.
+function validateImages(raw: unknown): { images: ImageInput[] } | { error: string } {
+  if (!Array.isArray(raw) || raw.length === 0) return { error: 'images must be a non-empty array.' }
+  if (raw.length > MAX_IMAGES) return { error: `Too many photos — ${MAX_IMAGES} pages max per document.` }
+  const out: ImageInput[] = []
+  let totalLen = 0
+  for (const item of raw) {
+    const media_type = (item as { media_type?: unknown })?.media_type
+    const data = (item as { data?: unknown })?.data
+    if (typeof media_type !== 'string' || !ALLOWED_IMAGE_TYPES.has(media_type)) {
+      return { error: 'Each image needs a media_type of image/jpeg, png, webp, or gif.' }
+    }
+    if (typeof data !== 'string' || data.length === 0) {
+      return { error: 'Each image needs base64 data.' }
+    }
+    totalLen += data.length
+    out.push({ media_type, data })
+  }
+  if (totalLen > MAX_IMAGES_BASE64_LEN) return { error: 'Photos exceed the 25 MB combined size limit.' }
+  return { images: out }
 }
 
 function badRequest(message: string) {
@@ -305,14 +338,29 @@ export async function POST(req: NextRequest) {
     return badRequest('Request body must be JSON.')
   }
 
-  const pdfBase64 = typeof body.pdf_base64 === 'string' ? body.pdf_base64 : ''
   const documentType = body.document_type
-  if (!pdfBase64) return badRequest('pdf_base64 is required.')
   if (documentType !== 'settlement' && documentType !== 'tickets' && documentType !== 'brokerage_statement' && documentType !== 'contract') {
     return badRequest('document_type must be "settlement", "tickets", "brokerage_statement", or "contract".')
   }
-  if (pdfBase64.length > MAX_BASE64_LEN) {
-    return badRequest('PDF exceeds the 20 MB size limit.')
+
+  // Build the document content block(s): either a single PDF (existing path) or
+  // one or more compressed photos. The text prompt is identical either way.
+  const pdfBase64 = typeof body.pdf_base64 === 'string' ? body.pdf_base64 : ''
+  let docBlocks: Anthropic.ContentBlockParam[]
+  if (body.images !== undefined) {
+    const v = validateImages(body.images)
+    if ('error' in v) return badRequest(v.error)
+    docBlocks = v.images.map((img) => ({
+      type: 'image',
+      source: { type: 'base64', media_type: img.media_type as 'image/jpeg', data: img.data },
+    }))
+  } else if (pdfBase64) {
+    if (pdfBase64.length > MAX_BASE64_LEN) return badRequest('PDF exceeds the 20 MB size limit.')
+    docBlocks = [
+      { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
+    ]
+  } else {
+    return badRequest('pdf_base64 or images is required.')
   }
 
   const prompt = PROMPTS[documentType]
@@ -329,17 +377,7 @@ export async function POST(req: NextRequest) {
       messages: [
         {
           role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: {
-                type: 'base64',
-                media_type: 'application/pdf',
-                data: pdfBase64,
-              },
-            },
-            { type: 'text', text: prompt },
-          ],
+          content: [...docBlocks, { type: 'text', text: prompt }],
         },
       ],
     })
