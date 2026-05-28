@@ -266,13 +266,63 @@ Respond ONLY in JSON with no other text and no markdown backticks:
   "notes": "string or null"
 }`
 
-type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract'
+const FIELDS_PROMPT = `This document lists a farm operation's fields and their acreage — it may be an FSA-578 Report of Acreage, a crop-insurance acreage report, or an informal field/acreage list. Extract every distinct field (or tract/field combination). For any value you cannot determine, use null — do not guess.
+
+For each field, extract:
+- field_name (the field's name or number. If only a tract and field number are shown, combine them like "T1234 F2". Prefer a plain field name when one is present)
+- farm_name (the farm or operation name this field belongs to, if shown — else null)
+- total_acres (the field's total farmland/cropland acres as a number — else null)
+- irrigated_acres (acres under irrigation if the document distinguishes irrigated vs dryland practice — else null)
+
+List each physical field once. If the same field appears on multiple crop lines, still report it a single time with its total acreage.
+
+Respond ONLY in JSON with no other text, no markdown backticks:
+{
+  "fields": [
+    {
+      "field_name": "string",
+      "farm_name": "string or null",
+      "total_acres": number or null,
+      "irrigated_acres": number or null
+    }
+  ]
+}`
+
+const PLANTINGS_PROMPT = `This document lists crops planted on fields for a season — it may be an FSA-578 Report of Acreage, a crop-insurance acreage report, or a planting schedule. Extract every planting line (one row per field + crop). For any value you cannot determine, use null — do not guess.
+
+For each planting, extract:
+- field_name (the field name or number the crop is planted on. Combine tract + field like "T1234 F2" if no plain name is shown)
+- crop (the commodity name, e.g. "Corn", "Soybeans", "Wheat", "Cotton")
+- season_year (the 4-digit crop/harvest year if shown — else null)
+- planted_acres (planted/reported acres for this field+crop as a number)
+- irrigated_acres (irrigated acres for this line if the practice is distinguished — else null)
+- planting_date (the planting/seeding date, format YYYY-MM-DD — else null)
+- notes (any short note worth keeping, e.g. an intended-use or practice code — else null)
+
+Respond ONLY in JSON with no other text, no markdown backticks:
+{
+  "plantings": [
+    {
+      "field_name": "string",
+      "crop": "string or null",
+      "season_year": number or null,
+      "planted_acres": number or null,
+      "irrigated_acres": number or null,
+      "planting_date": "YYYY-MM-DD or null",
+      "notes": "string or null"
+    }
+  ]
+}`
+
+type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings'
 
 const PROMPTS: Record<DocumentType, string> = {
   settlement: SETTLEMENT_PROMPT,
   tickets: TICKETS_PROMPT,
   brokerage_statement: BROKERAGE_PROMPT,
   contract: CONTRACT_PROMPT,
+  fields: FIELDS_PROMPT,
+  plantings: PLANTINGS_PROMPT,
 }
 
 type ParseBody = {
@@ -339,9 +389,10 @@ export async function POST(req: NextRequest) {
   }
 
   const documentType = body.document_type
-  if (documentType !== 'settlement' && documentType !== 'tickets' && documentType !== 'brokerage_statement' && documentType !== 'contract') {
-    return badRequest('document_type must be "settlement", "tickets", "brokerage_statement", or "contract".')
+  if (typeof documentType !== 'string' || !(documentType in PROMPTS)) {
+    return badRequest('document_type must be one of: ' + Object.keys(PROMPTS).join(', ') + '.')
   }
+  const docType = documentType as DocumentType
 
   // Build the document content block(s): either a single PDF (existing path) or
   // one or more compressed photos. The text prompt is identical either way.
@@ -363,7 +414,7 @@ export async function POST(req: NextRequest) {
     return badRequest('pdf_base64 or images is required.')
   }
 
-  const prompt = PROMPTS[documentType]
+  const prompt = PROMPTS[docType]
 
   const client = new Anthropic({ apiKey })
 

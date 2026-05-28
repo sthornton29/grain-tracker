@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import PlantingsAiImport from '@/components/plantings-ai-import'
 import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
 import type { Crop, Farm, Field, FieldPlanting } from '@/lib/types'
 
@@ -439,6 +440,15 @@ export default function PlantingsPage() {
             { key: 'notes' },
           ],
         }}
+        onImported={refresh}
+      />
+
+      <PlantingsAiImport
+        fields={fields}
+        crops={crops}
+        existingPlantings={plantings}
+        defaultYear={year}
+        fieldLabel={fieldLabel}
         onImported={refresh}
       />
 

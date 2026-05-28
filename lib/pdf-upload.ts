@@ -31,7 +31,7 @@ export function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract'
+export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings'
 
 export type SettlementExtraction = {
   buyer_name: string | null
@@ -148,6 +148,31 @@ export type ContractExtraction = {
   notes: string | null
 }
 
+export type FieldExtraction = {
+  field_name: string | null
+  farm_name: string | null
+  total_acres: number | null
+  irrigated_acres: number | null
+}
+
+export type FieldsExtraction = {
+  fields: FieldExtraction[]
+}
+
+export type PlantingExtraction = {
+  field_name: string | null
+  crop: string | null
+  season_year: number | null
+  planted_acres: number | null
+  irrigated_acres: number | null
+  planting_date: string | null
+  notes: string | null
+}
+
+export type PlantingsExtraction = {
+  plantings: PlantingExtraction[]
+}
+
 // A compressed photo page ready for the API. lib/image-capture.ts' CapturedImage
 // structurally satisfies this, so callers can pass captured images directly.
 export type ParseImage = { base64: string; mediaType: string }
@@ -159,10 +184,12 @@ export async function parseDocument(input: File | ParseImage[], documentType: 's
 export async function parseDocument(input: File | ParseImage[], documentType: 'tickets'): Promise<TicketsExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'brokerage_statement'): Promise<BrokerageStatementExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'contract'): Promise<ContractExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'fields'): Promise<FieldsExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'plantings'): Promise<PlantingsExtraction>
 export async function parseDocument(
   input: File | ParseImage[],
   documentType: DocumentType,
-): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction> {
+): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction> {
   let payload: Record<string, unknown>
   if (Array.isArray(input)) {
     payload = {
@@ -186,7 +213,7 @@ export async function parseDocument(
   if (!body || typeof body !== 'object' || !('data' in body)) {
     throw new Error('Malformed response from server.')
   }
-  return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction
+  return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction
 }
 
 // Uploads to the public "documents" bucket and returns the public URL.

@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import FieldsAiImport from '@/components/fields-ai-import'
 import { buildDoubleCropSoySet } from '@/lib/plantings'
 import type { Crop, Farm, Field, FieldPlanting, County, EntityCounty } from '@/lib/types'
 
@@ -200,6 +201,8 @@ export default function FieldsPage() {
         }}
         onImported={refresh}
       />
+
+      <FieldsAiImport farms={farms} existingFields={fields} onImported={refresh} />
 
       <form onSubmit={add} className="space-y-2">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
