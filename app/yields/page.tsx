@@ -1,10 +1,12 @@
 'use client'
 
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
+import ExportBar from '@/components/export-bar'
+import type { ExportPayload } from '@/lib/exports'
 import type { Crop, Entity, Farm, Field, FieldPlanting, County, LoadSplit } from '@/lib/types'
 
 type LoadRow = {
@@ -24,25 +26,6 @@ type YieldView = 'total' | 'breakdown'
 type PracticeFilter = 'all' | 'irrigated' | 'dryland'
 
 const currentYear = () => new Date().getFullYear()
-
-function csvCell(v: unknown): string {
-  if (v == null) return ''
-  const s = String(v)
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-}
-
-function downloadCsv(filename: string, rows: (string | number | null)[][]) {
-  const csv = rows.map((r) => r.map(csvCell).join(',')).join('\n')
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
 
 function fmtNum(n: number, d = 2) {
   return n.toLocaleString(undefined, { maximumFractionDigits: d })
@@ -92,6 +75,18 @@ export default function YieldsPage() {
   const [lastTouched, setLastTouched] = useState<'irr' | 'dry' | null>(null)
   const [breakoutSaving, setBreakoutSaving] = useState(false)
   const [breakoutErr, setBreakoutErr] = useState<string | null>(null)
+
+  // The landowner view renders <YieldsByLandowner />, which owns its own
+  // filters and data, so it hands a fresh export-payload builder up through
+  // onPayloadChange. Default to an empty payload until the first build lands.
+  const [landownerBuild, setLandownerBuild] = useState<() => ExportPayload>(
+    () => () => ({ title: 'Yields by Landowner', sections: [{ columns: [], rows: [] }] }),
+  )
+  // useCallback so the child's effect dep stays stable — an inline arrow would
+  // change identity each render and loop the callback.
+  const handleLandownerPayload = useCallback((fn: () => ExportPayload) => {
+    setLandownerBuild(() => fn)
+  }, [])
 
   async function refresh() {
     setLoading(true)
@@ -298,11 +293,25 @@ export default function YieldsPage() {
     })
   }, [visible, fieldById, farmById, entityById, cropById, dryBuByKey])
 
-  function exportFieldCsv() {
-    const header = ['Field', 'Farm', 'FSA#', 'Entity', 'Crop', 'Year',
-      'Acres', 'Irr ac', 'Dry ac', 'Dry bu',
-      'Yield (bu/ac)', 'Irrigated yield', 'Dryland yield', 'Double-crop']
-    const body = visible.map((p) => {
+  // Filter summary shared by the field and farm exports — mirrors the filter
+  // strip that drives both tables.
+  function fieldFiltersLabel(): string {
+    const parts: string[] = []
+    parts.push(`Season: ${year === '' ? 'all' : year}`)
+    parts.push(`Crop year: ${cropYear === '' ? 'all' : cropYear}`)
+    if (cropId) parts.push(`Crop: ${cropById.get(cropId)?.name ?? '?'}`)
+    if (farmId) parts.push(`Farm: ${farmById.get(farmId)?.name ?? '?'}`)
+    if (entityId) parts.push(`Entity: ${entityById.get(entityId)?.name ?? '?'}`)
+    if (countyId) {
+      const c = counties.find((c) => c.id === countyId)
+      parts.push(`County: ${c ? `${c.name}, ${c.state_code}` : '?'}`)
+    }
+    if (view === 'field' && practiceFilter !== 'all') parts.push(`Practice: ${practiceFilter}`)
+    return parts.join(' · ')
+  }
+
+  function buildFieldPayload(): ExportPayload {
+    const rows = visible.map((p) => {
       const r = rowFor(p)
       return [
         r.fld?.name_or_number ?? '',
@@ -321,12 +330,35 @@ export default function YieldsPage() {
         doubleCropSoyIds.has(p.id) ? 'yes' : '',
       ]
     })
-    downloadCsv(`yields-by-field-${new Date().toISOString().slice(0, 10)}.csv`, [header, ...body])
+    return {
+      title: 'Yields by Field',
+      filters: fieldFiltersLabel(),
+      sections: [
+        {
+          columns: [
+            { label: 'Field' },
+            { label: 'Farm' },
+            { label: 'FSA #' },
+            { label: 'Entity' },
+            { label: 'Crop' },
+            { label: 'Year' },
+            { label: 'Acres', align: 'right' },
+            { label: 'Irr ac', align: 'right' },
+            { label: 'Dry ac', align: 'right' },
+            { label: 'Dry bu', align: 'right' },
+            { label: 'Yield (bu/ac)', align: 'right' },
+            { label: 'Irrigated yield', align: 'right' },
+            { label: 'Dryland yield', align: 'right' },
+            { label: 'Double-crop' },
+          ],
+          rows,
+        },
+      ],
+    }
   }
 
-  function exportFarmCsv() {
-    const header = ['Farm', 'FSA#', 'Entity', 'Crop', 'Year', 'Acres', 'Dry bu', 'Yield (bu/ac)']
-    const body = byFarm.map((r) => [
+  function buildFarmPayload(): ExportPayload {
+    const rows = byFarm.map((r) => [
       r.farmName,
       r.fsaNumber ?? '',
       r.entityName,
@@ -336,7 +368,25 @@ export default function YieldsPage() {
       r.dryBu.toFixed(2),
       r.acres > 0 ? (r.dryBu / r.acres).toFixed(2) : '',
     ])
-    downloadCsv(`yields-by-farm-${new Date().toISOString().slice(0, 10)}.csv`, [header, ...body])
+    return {
+      title: 'Yields by Farm',
+      filters: fieldFiltersLabel(),
+      sections: [
+        {
+          columns: [
+            { label: 'Farm' },
+            { label: 'FSA #' },
+            { label: 'Entity' },
+            { label: 'Crop' },
+            { label: 'Year' },
+            { label: 'Acres', align: 'right' },
+            { label: 'Dry bu', align: 'right' },
+            { label: 'Yield (bu/ac)', align: 'right' },
+          ],
+          rows,
+        },
+      ],
+    }
   }
 
   function openBreakout(p: FieldPlanting) {
@@ -433,7 +483,7 @@ export default function YieldsPage() {
         <h1 className="text-2xl font-bold flex-1">
           Yields {view === 'field' ? 'by Field' : view === 'farm' ? 'by Farm' : 'by Landowner'}
         </h1>
-        <label className="text-sm flex items-center gap-2">
+        <label className="text-sm flex items-center gap-2 no-print">
           View
           <select value={view} onChange={(e) => setView(e.target.value as ViewMode)} className={inputCls}>
             <option value="field">By field</option>
@@ -441,16 +491,15 @@ export default function YieldsPage() {
             <option value="landowner">By landowner</option>
           </select>
         </label>
-        {view !== 'landowner' && (
-          <button
-            type="button"
-            onClick={view === 'field' ? exportFieldCsv : exportFarmCsv}
-            disabled={loading || (view === 'field' ? visible.length === 0 : byFarm.length === 0)}
-            className="rounded-lg bg-green-700 text-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
-          >
-            Export CSV
-          </button>
-        )}
+        <ExportBar
+          buildPayload={() =>
+            view === 'landowner'
+              ? landownerBuild()
+              : view === 'farm'
+                ? buildFarmPayload()
+                : buildFieldPayload()
+          }
+        />
       </div>
       {view !== 'landowner' && (
         <p className="text-sm text-slate-500">
@@ -465,7 +514,7 @@ export default function YieldsPage() {
           this row is hidden when that tab is active (otherwise the user would
           see two filter rows and only the inner one would actually apply). */}
       {view !== 'landowner' && (
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 no-print">
         <select value={year} onChange={(e) => setYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
           <option value="">All seasons</option>
           {distinctYears.map((y) => <option key={y} value={y}>{y}</option>)}
@@ -494,7 +543,7 @@ export default function YieldsPage() {
       )}
 
       {view === 'field' && (
-        <div className="flex flex-wrap gap-3 items-center">
+        <div className="flex flex-wrap gap-3 items-center no-print">
           <label className="text-sm flex items-center gap-2">
             Practice
             <select
@@ -529,7 +578,7 @@ export default function YieldsPage() {
       )}
 
       {view === 'landowner' ? (
-        <YieldsByLandowner />
+        <YieldsByLandowner onPayloadChange={handleLandownerPayload} />
       ) : view === 'field' ? (
         <div className="overflow-x-auto bg-white rounded-xl shadow">
           <table className="min-w-full text-sm">
@@ -606,7 +655,7 @@ export default function YieldsPage() {
                           <button
                             type="button"
                             onClick={() => openBreakout(p)}
-                            className="text-sky-700 text-sm whitespace-nowrap"
+                            className="text-sky-700 text-sm whitespace-nowrap no-print"
                           >
                             {p.yield_breakout_entered ? 'Edit breakout' : 'Allocate irr/dry'}
                           </button>
@@ -614,7 +663,7 @@ export default function YieldsPage() {
                       </td>
                     </tr>
                     {isBreakoutOpen && (
-                      <tr className="bg-sky-50">
+                      <tr className="bg-sky-50 no-print">
                         <td colSpan={fieldColCount} className="px-3 py-3">
                           <div className="flex flex-wrap items-end gap-3">
                             <div className="text-sm text-slate-600">
