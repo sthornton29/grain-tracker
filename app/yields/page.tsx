@@ -6,7 +6,7 @@ import { computeBushels } from '@/lib/shrink'
 import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import ExportBar from '@/components/export-bar'
-import type { ExportPayload } from '@/lib/exports'
+import type { ExportColumn, ExportPayload } from '@/lib/exports'
 import type { Crop, Entity, Farm, Field, FieldPlanting, County, LoadSplit } from '@/lib/types'
 
 type LoadRow = {
@@ -187,9 +187,13 @@ export default function YieldsPage() {
       if (effective !== countyId) return false
     }
     // Practice filter: irrigated_acres > 0 or dryland_acres > 0. Mixed
-    // plantings appear in both filters, since both halves have acres.
-    if (practiceFilter === 'irrigated' && !(Number(p.irrigated_acres) > 0)) return false
-    if (practiceFilter === 'dryland' && !(Number(p.dryland_acres) > 0)) return false
+    // plantings appear in both filters, since both halves have acres. The
+    // filter is a by-field concept only — the farm rollup always sees every
+    // practice so its irrigated/dryland breakdown is complete.
+    if (view === 'field') {
+      if (practiceFilter === 'irrigated' && !(Number(p.irrigated_acres) > 0)) return false
+      if (practiceFilter === 'dryland' && !(Number(p.dryland_acres) > 0)) return false
+    }
     return true
   })
 
@@ -214,6 +218,10 @@ export default function YieldsPage() {
   const showIrrigatedCol = practiceFilter === 'irrigated' || (practiceFilter === 'all' && yieldView === 'breakdown')
   const showDrylandCol   = practiceFilter === 'dryland'   || (practiceFilter === 'all' && yieldView === 'breakdown')
   const showTotalCol     = practiceFilter === 'all'
+
+  // Farm view has no practice filter, so its breakdown is driven purely by the
+  // toggle: total only, or irrigated + dryland + total side by side.
+  const farmShowBreakdown = yieldView === 'breakdown'
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
 
@@ -256,6 +264,15 @@ export default function YieldsPage() {
     seasonYear: number
     acres: number
     dryBu: number
+    // Irrigated/dryland breakdown, rolled up from the same per-planting rules
+    // rowFor() uses. Only the determinable portion contributes: pure-irr and
+    // pure-dry plantings, plus mixed plantings that have an entered breakout.
+    // A mixed planting with no breakout adds to acres/dryBu (the totals) but
+    // not to either side, exactly as it shows "—" in the by-field view.
+    irrAc: number
+    dryAc: number
+    irrBu: number
+    dryBuLand: number
   }
 
   const byFarm = useMemo<FarmAgg[]>(() => {
@@ -267,11 +284,30 @@ export default function YieldsPage() {
       const crop = cropById.get(p.crop_id)
       const dryBu = dryBuByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`) ?? 0
       const acres = Number(p.planted_acres)
+      const irrAcP = Number(p.irrigated_acres) || 0
+      const dryAcP = Number(p.dryland_acres) || 0
+
+      // Per-side contributions for this planting.
+      let irrBu = 0, irrAc = 0, dryBuLand = 0, dryAc = 0
+      const practice = practiceOf(p)
+      if (practice === 'pure-irr') {
+        irrBu = dryBu; irrAc = irrAcP
+      } else if (practice === 'pure-dry') {
+        dryBuLand = dryBu; dryAc = dryAcP
+      } else if (p.yield_breakout_entered) {
+        if (p.irrigated_bushels != null) { irrBu = Number(p.irrigated_bushels); irrAc = irrAcP }
+        if (p.dryland_bushels != null) { dryBuLand = Number(p.dryland_bushels); dryAc = dryAcP }
+      }
+
       const key = `${farm?.id ?? '∅'}|${p.crop_id}|${p.season_year}`
       const existing = m.get(key)
       if (existing) {
         existing.acres += acres
         existing.dryBu += dryBu
+        existing.irrAc += irrAc
+        existing.dryAc += dryAc
+        existing.irrBu += irrBu
+        existing.dryBuLand += dryBuLand
       } else {
         m.set(key, {
           farmId: farm?.id ?? null,
@@ -282,6 +318,10 @@ export default function YieldsPage() {
           seasonYear: p.season_year,
           acres,
           dryBu,
+          irrAc,
+          dryAc,
+          irrBu,
+          dryBuLand,
         })
       }
     }
@@ -292,6 +332,16 @@ export default function YieldsPage() {
       return a.cropName.localeCompare(b.cropName)
     })
   }, [visible, fieldById, farmById, entityById, cropById, dryBuByKey])
+
+  // Farm-level yields from the rolled-up bushels and acres. Each side divides
+  // its own bushels by its own determinable acres; null when no acres on a side.
+  function farmYields(r: FarmAgg) {
+    return {
+      total: r.acres > 0 ? r.dryBu / r.acres : null,
+      irrigated: r.irrAc > 0 ? r.irrBu / r.irrAc : null,
+      dryland: r.dryAc > 0 ? r.dryBuLand / r.dryAc : null,
+    }
+  }
 
   // Filter summary shared by the field and farm exports — mirrors the filter
   // strip that drives both tables.
@@ -307,86 +357,94 @@ export default function YieldsPage() {
       parts.push(`County: ${c ? `${c.name}, ${c.state_code}` : '?'}`)
     }
     if (view === 'field' && practiceFilter !== 'all') parts.push(`Practice: ${practiceFilter}`)
+    if (showYieldToggle && yieldView === 'breakdown') parts.push('Irrigated/Dryland breakdown')
     return parts.join(' · ')
   }
 
+  // Both exports emit only the columns the current toggle/filter shows on
+  // screen, so a "total only" export isn't padded with empty breakdown columns.
   function buildFieldPayload(): ExportPayload {
+    const columns: ExportColumn[] = [
+      { label: 'Field' },
+      { label: 'Farm' },
+      { label: 'FSA #' },
+      { label: 'Crop' },
+      { label: 'Year' },
+      { label: 'Acres', align: 'right' },
+    ]
+    if (showIrrigatedCol) columns.push({ label: 'Irr ac', align: 'right' })
+    if (showDrylandCol) columns.push({ label: 'Dry ac', align: 'right' })
+    columns.push({ label: 'Dry bu', align: 'right' })
+    if (showIrrigatedCol) columns.push({ label: 'Irrigated yield', align: 'right' })
+    if (showDrylandCol) columns.push({ label: 'Dryland yield', align: 'right' })
+    if (showTotalCol) columns.push({ label: 'Yield (bu/ac)', align: 'right' })
+    columns.push({ label: 'Double-crop' })
+
     const rows = visible.map((p) => {
       const r = rowFor(p)
-      return [
+      // Mirror the on-screen fall-back: an irrigated/dryland-only filter shows
+      // the total yield in its single column when no breakout exists.
+      const irrY = r.irrigatedYield ?? (practiceFilter === 'irrigated' ? r.totalYield : null)
+      const dryY = r.drylandYield ?? (practiceFilter === 'dryland' ? r.totalYield : null)
+      const cells: (string | number)[] = [
         r.fld?.name_or_number ?? '',
         r.farm?.name ?? '',
         r.farm?.fsa_number ?? '',
-        r.ent?.name ?? '',
         r.crop?.name ?? '',
         p.season_year,
         r.acres.toFixed(2),
-        r.irrAc.toFixed(2),
-        r.dryAc.toFixed(2),
-        r.dryBu.toFixed(2),
-        r.totalYield != null ? r.totalYield.toFixed(2) : '',
-        r.irrigatedYield != null ? r.irrigatedYield.toFixed(2) : '',
-        r.drylandYield != null ? r.drylandYield.toFixed(2) : '',
-        doubleCropSoyIds.has(p.id) ? 'yes' : '',
       ]
+      if (showIrrigatedCol) cells.push(r.irrAc.toFixed(2))
+      if (showDrylandCol) cells.push(r.dryAc.toFixed(2))
+      cells.push(r.dryBu.toFixed(2))
+      if (showIrrigatedCol) cells.push(irrY != null ? irrY.toFixed(2) : '')
+      if (showDrylandCol) cells.push(dryY != null ? dryY.toFixed(2) : '')
+      if (showTotalCol) cells.push(r.totalYield != null ? r.totalYield.toFixed(2) : '')
+      cells.push(doubleCropSoyIds.has(p.id) ? 'yes' : '')
+      return cells
     })
-    return {
-      title: 'Yields by Field',
-      filters: fieldFiltersLabel(),
-      sections: [
-        {
-          columns: [
-            { label: 'Field' },
-            { label: 'Farm' },
-            { label: 'FSA #' },
-            { label: 'Entity' },
-            { label: 'Crop' },
-            { label: 'Year' },
-            { label: 'Acres', align: 'right' },
-            { label: 'Irr ac', align: 'right' },
-            { label: 'Dry ac', align: 'right' },
-            { label: 'Dry bu', align: 'right' },
-            { label: 'Yield (bu/ac)', align: 'right' },
-            { label: 'Irrigated yield', align: 'right' },
-            { label: 'Dryland yield', align: 'right' },
-            { label: 'Double-crop' },
-          ],
-          rows,
-        },
-      ],
-    }
+    return { title: 'Yields by Field', filters: fieldFiltersLabel(), sections: [{ columns, rows }] }
   }
 
   function buildFarmPayload(): ExportPayload {
-    const rows = byFarm.map((r) => [
-      r.farmName,
-      r.fsaNumber ?? '',
-      r.entityName,
-      r.cropName,
-      r.seasonYear,
-      r.acres.toFixed(2),
-      r.dryBu.toFixed(2),
-      r.acres > 0 ? (r.dryBu / r.acres).toFixed(2) : '',
-    ])
-    return {
-      title: 'Yields by Farm',
-      filters: fieldFiltersLabel(),
-      sections: [
-        {
-          columns: [
-            { label: 'Farm' },
-            { label: 'FSA #' },
-            { label: 'Entity' },
-            { label: 'Crop' },
-            { label: 'Year' },
-            { label: 'Acres', align: 'right' },
-            { label: 'Dry bu', align: 'right' },
-            { label: 'Yield (bu/ac)', align: 'right' },
-          ],
-          rows,
-        },
-      ],
+    const columns: ExportColumn[] = [
+      { label: 'Farm' },
+      { label: 'FSA #' },
+      { label: 'Entity' },
+      { label: 'Crop' },
+      { label: 'Year' },
+      { label: 'Acres', align: 'right' },
+    ]
+    if (farmShowBreakdown) {
+      columns.push({ label: 'Irr ac', align: 'right' }, { label: 'Dry ac', align: 'right' })
     }
+    columns.push({ label: 'Dry bu', align: 'right' })
+    if (farmShowBreakdown) {
+      columns.push({ label: 'Irrigated yield', align: 'right' }, { label: 'Dryland yield', align: 'right' })
+    }
+    columns.push({ label: 'Yield (bu/ac)', align: 'right' })
+
+    const rows = byFarm.map((r) => {
+      const y = farmYields(r)
+      const cells: (string | number)[] = [
+        r.farmName,
+        r.fsaNumber ?? '',
+        r.entityName,
+        r.cropName,
+        r.seasonYear,
+        r.acres.toFixed(2),
+      ]
+      if (farmShowBreakdown) {
+        cells.push(r.irrAc > 0 ? r.irrAc.toFixed(2) : '', r.dryAc > 0 ? r.dryAc.toFixed(2) : '')
+      }
+      cells.push(r.dryBu.toFixed(2))
+      if (farmShowBreakdown) {
+        cells.push(y.irrigated != null ? y.irrigated.toFixed(2) : '', y.dryland != null ? y.dryland.toFixed(2) : '')
+      }
+      cells.push(y.total != null ? y.total.toFixed(2) : '')
+      return cells
+    })
+    return { title: 'Yields by Farm', filters: fieldFiltersLabel(), sections: [{ columns, rows }] }
   }
 
   function openBreakout(p: FieldPlanting) {
@@ -474,8 +532,11 @@ export default function YieldsPage() {
   // only" view.
   const visibleYieldCols = [showIrrigatedCol, showDrylandCol, showTotalCol].filter(Boolean).length
   const visibleAcresBreakoutCols = [showIrrigatedCol, showDrylandCol].filter(Boolean).length
-  const fieldColCount = 5 /* Field/Farm/Entity/Crop/Year */ + 1 /* Acres */
+  const fieldColCount = 4 /* Field/Farm/Crop/Year */ + 1 /* Acres */
     + visibleAcresBreakoutCols + 1 /* Dry bu */ + visibleYieldCols + 1 /* actions */
+  // Farm: Farm/FSA#/Entity/Crop/Year/Acres/Dry bu/Yield = 8, plus 4 in breakdown
+  // (Irr ac, Dry ac, Irrigated yield, Dryland yield).
+  const farmColCount = 8 + (farmShowBreakdown ? 4 : 0)
 
   return (
     <div className="space-y-4">
@@ -542,20 +603,22 @@ export default function YieldsPage() {
       </div>
       )}
 
-      {view === 'field' && (
+      {view !== 'landowner' && (view === 'field' || showYieldToggle) && (
         <div className="flex flex-wrap gap-3 items-center no-print">
-          <label className="text-sm flex items-center gap-2">
-            Practice
-            <select
-              value={practiceFilter}
-              onChange={(e) => setPracticeFilter(e.target.value as PracticeFilter)}
-              className={inputCls}
-            >
-              <option value="all">All</option>
-              <option value="irrigated">Irrigated only</option>
-              <option value="dryland">Dryland only</option>
-            </select>
-          </label>
+          {view === 'field' && (
+            <label className="text-sm flex items-center gap-2">
+              Practice
+              <select
+                value={practiceFilter}
+                onChange={(e) => setPracticeFilter(e.target.value as PracticeFilter)}
+                className={inputCls}
+              >
+                <option value="all">All</option>
+                <option value="irrigated">Irrigated only</option>
+                <option value="dryland">Dryland only</option>
+              </select>
+            </label>
+          )}
           {showYieldToggle && (
             <div className="inline-flex rounded-lg border border-slate-300 overflow-hidden text-sm">
               <button
@@ -586,7 +649,6 @@ export default function YieldsPage() {
               <tr>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Field</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Farm</th>
-                <th className="text-left px-3 py-2 whitespace-nowrap">Entity</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>
                 <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
@@ -613,7 +675,6 @@ export default function YieldsPage() {
                     <tr className="border-t border-slate-100">
                       <td className="px-3 py-2">{r.fld?.name_or_number ?? '—'}</td>
                       <td className="px-3 py-2">{r.farm?.name ?? ''}</td>
-                      <td className="px-3 py-2">{r.ent?.name ?? ''}</td>
                       <td className="px-3 py-2">{r.crop?.name ?? '—'}</td>
                       <td className="px-3 py-2">{p.season_year}</td>
                       <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
@@ -730,17 +791,27 @@ export default function YieldsPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-slate-100 text-slate-700">
               <tr>
-                {['Farm','FSA#','Entity','Crop','Year','Acres','Dry bu','Yield (bu/ac)']
-                  .map((h, i) => <th key={i} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
+                <th className="text-left px-3 py-2 whitespace-nowrap">Farm</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap">FSA#</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap">Entity</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>
+                <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
+                {farmShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Irr ac</th>}
+                {farmShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Dry ac</th>}
+                <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
+                {farmShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Irrigated yield</th>}
+                {farmShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Dryland yield</th>}
+                <th className="text-right px-3 py-2 whitespace-nowrap">Yield (bu/ac)</th>
               </tr>
             </thead>
             <tbody>
-              {loading && <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
+              {loading && <tr><td colSpan={farmColCount} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
               {!loading && byFarm.length === 0 && (
-                <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">No plantings match these filters.</td></tr>
+                <tr><td colSpan={farmColCount} className="px-3 py-6 text-center text-slate-400">No plantings match these filters.</td></tr>
               )}
               {byFarm.map((r, i) => {
-                const yld = r.acres > 0 ? r.dryBu / r.acres : null
+                const y = farmYields(r)
                 return (
                   <tr key={i} className="border-t border-slate-100">
                     <td className="px-3 py-2 font-semibold">{r.farmName}</td>
@@ -749,9 +820,17 @@ export default function YieldsPage() {
                     <td className="px-3 py-2">{r.cropName}</td>
                     <td className="px-3 py-2">{r.seasonYear}</td>
                     <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
+                    {farmShowBreakdown && <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>}
+                    {farmShowBreakdown && <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>}
                     <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
+                    {farmShowBreakdown && (
+                      <td className="px-3 py-2 text-right font-semibold">{y.irrigated != null ? y.irrigated.toFixed(1) : '—'}</td>
+                    )}
+                    {farmShowBreakdown && (
+                      <td className="px-3 py-2 text-right font-semibold">{y.dryland != null ? y.dryland.toFixed(1) : '—'}</td>
+                    )}
                     <td className="px-3 py-2 text-right font-semibold">
-                      {yld != null ? yld.toFixed(1) : '—'}
+                      {y.total != null ? y.total.toFixed(1) : '—'}
                     </td>
                   </tr>
                 )
