@@ -5,7 +5,9 @@ import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
 import PlantingsAiImport from '@/components/plantings-ai-import'
 import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
-import type { Crop, Farm, Field, FieldPlanting } from '@/lib/types'
+import type { Crop, Farm, Field, FieldPlanting, FieldPlantingVariety } from '@/lib/types'
+
+type VarietyInput = { variety: string; acres: string }
 
 type Form = {
   field_id: string
@@ -14,6 +16,7 @@ type Form = {
   planted_acres: string
   irrigated_acres: string
   planting_date: string
+  varieties: VarietyInput[]
   notes: string
 }
 
@@ -26,6 +29,7 @@ const empty = (year: number): Form => ({
   planted_acres: '',
   irrigated_acres: '',
   planting_date: '',
+  varieties: [],
   notes: '',
 })
 
@@ -45,6 +49,21 @@ function irrigatedNegative(irrStr: string): boolean {
   return Number(irrStr || 0) < 0
 }
 
+function varietyAcresSum(vs: VarietyInput[]): number {
+  return vs.reduce((s, v) => s + (Number(v.acres) || 0), 0)
+}
+
+function varietyAcresExceedPlanted(f: Form): boolean {
+  const planted = Number(f.planted_acres) || 0
+  if (planted === 0) return false
+  // 0.01 fudge for float display.
+  return varietyAcresSum(f.varieties) > planted + 0.01
+}
+
+function varietyMissingName(vs: VarietyInput[]): boolean {
+  return vs.some((v) => !v.variety.trim() && (Number(v.acres) || 0) > 0)
+}
+
 function payload(f: Form) {
   const planted = f.planted_acres === '' ? 0 : Number(f.planted_acres)
   const irr = f.irrigated_acres === '' ? 0 : Number(f.irrigated_acres)
@@ -58,6 +77,15 @@ function payload(f: Form) {
     planting_date: f.planting_date || null,
     notes: f.notes.trim() || null,
   }
+}
+
+// Variety rows ready for insert. Drops blank-name rows so a half-typed row
+// doesn't poison the save.
+function varietyInserts(plantingId: string, vs: VarietyInput[]) {
+  return vs
+    .map((v) => ({ variety: v.variety.trim(), acres: Number(v.acres) || 0 }))
+    .filter((v) => v.variety !== '')
+    .map((v) => ({ planting_id: plantingId, variety: v.variety, acres: v.acres }))
 }
 
 const INPUT_CLS = 'rounded-lg border border-slate-300 px-3 py-2'
@@ -91,9 +119,6 @@ function FormFields({
       const f = fieldById.get(id)
       const fieldIrr = f ? Number(f.irrigated_acres) || 0 : 0
       const planted = Number(value.planted_acres || 0) || 0
-      // If planted is still 0, use the field's full irrigated_acres as the
-      // hint so the user sees the field's irrigated baseline. Once they type
-      // planted_acres, we'll clamp again below.
       const seed = planted > 0 ? Math.min(fieldIrr, planted) : fieldIrr
       if (seed > 0) next.irrigated_acres = String(seed)
     }
@@ -102,9 +127,6 @@ function FormFields({
 
   function onChangePlanted(v: string) {
     const next: Form = { ...value, planted_acres: v }
-    // Clamp the seeded default down if planted < irrigated and the seed
-    // matched the field's irrigated_acres. We only clamp when the user
-    // hasn't deviated from the field's irrigated value.
     const f = value.field_id ? fieldById.get(value.field_id) : null
     const fieldIrr = f ? Number(f.irrigated_acres) || 0 : 0
     const currentIrr = Number(value.irrigated_acres || 0) || 0
@@ -115,6 +137,17 @@ function FormFields({
     onChange(next)
   }
 
+  function updateVariety(i: number, patch: Partial<VarietyInput>) {
+    const next = value.varieties.map((v, j) => (i === j ? { ...v, ...patch } : v))
+    onChange({ ...value, varieties: next })
+  }
+  function addVariety() {
+    onChange({ ...value, varieties: [...value.varieties, { variety: '', acres: '' }] })
+  }
+  function removeVariety(i: number) {
+    onChange({ ...value, varieties: value.varieties.filter((_, j) => j !== i) })
+  }
+
   const dryShown =
     value.planted_acres === '' && value.irrigated_acres === ''
       ? ''
@@ -123,6 +156,9 @@ function FormFields({
   const invalid =
     irrigatedExceedsPlanted(value.planted_acres, value.irrigated_acres) ||
     irrigatedNegative(value.irrigated_acres)
+
+  const varietyExceeds = varietyAcresExceedPlanted(value)
+  const varietyBlank = varietyMissingName(value.varieties)
 
   return (
     <div className="space-y-2">
@@ -196,6 +232,49 @@ function FormFields({
             : 'Irrigated acres cannot exceed planted acres'}
         </p>
       )}
+
+      <div className="space-y-1">
+        <div className="text-xs text-slate-500">Varieties (optional)</div>
+        {value.varieties.map((v, i) => (
+          <div key={i} className="grid grid-cols-[1fr_7rem_auto] gap-2 items-center">
+            <input
+              value={v.variety}
+              onChange={(e) => updateVariety(i, { variety: e.target.value })}
+              placeholder="Variety / hybrid"
+              className={INPUT_CLS}
+            />
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={v.acres}
+              onChange={(e) => updateVariety(i, { acres: e.target.value })}
+              placeholder="acres"
+              className={INPUT_CLS}
+            />
+            <button
+              type="button"
+              onClick={() => removeVariety(i)}
+              className="text-red-600 px-2 text-lg leading-none"
+              aria-label="Remove variety"
+            >×</button>
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={addVariety}
+          className="text-sm text-sky-700"
+        >
+          + Add variety
+        </button>
+        {varietyExceeds && (
+          <p className="text-xs text-red-600">Variety acres exceed planted acres</p>
+        )}
+        {varietyBlank && (
+          <p className="text-xs text-red-600">Variety name required when acres are set</p>
+        )}
+      </div>
+
       <input
         value={value.notes}
         onChange={(e) => set('notes', e.target.value)}
@@ -209,7 +288,9 @@ function FormFields({
 function formInvalid(f: Form): boolean {
   return (
     irrigatedExceedsPlanted(f.planted_acres, f.irrigated_acres) ||
-    irrigatedNegative(f.irrigated_acres)
+    irrigatedNegative(f.irrigated_acres) ||
+    varietyAcresExceedPlanted(f) ||
+    varietyMissingName(f.varieties)
   )
 }
 
@@ -219,6 +300,7 @@ export default function PlantingsPage() {
   const [fields, setFields] = useState<Field[]>([])
   const [crops, setCrops] = useState<Crop[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
+  const [varieties, setVarieties] = useState<FieldPlantingVariety[]>([])
   const [year, setYear] = useState<number>(currentYear())
   const [fieldFilter, setFieldFilter] = useState('')
   const [form, setForm] = useState<Form>(empty(currentYear()))
@@ -231,16 +313,18 @@ export default function PlantingsPage() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
 
   async function refresh() {
-    const [fa, fi, cr, pl] = await Promise.all([
+    const [fa, fi, cr, pl, vv] = await Promise.all([
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*').order('season_year', { ascending: false }),
+      supabase.from('field_planting_varieties').select('*').order('variety'),
     ])
     setFarms((fa.data as Farm[]) || [])
     setFields((fi.data as Field[]) || [])
     setCrops((cr.data as Crop[]) || [])
     setPlantings((pl.data as FieldPlanting[]) || [])
+    setVarieties((vv.data as FieldPlantingVariety[]) || [])
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
@@ -258,6 +342,17 @@ export default function PlantingsPage() {
     [plantings, cropById],
   )
 
+  // Grouped varieties by planting id, in display/insert order.
+  const varietiesByPlanting = useMemo(() => {
+    const m = new Map<string, FieldPlantingVariety[]>()
+    for (const v of varieties) {
+      const list = m.get(v.planting_id) ?? []
+      list.push(v)
+      m.set(v.planting_id, list)
+    }
+    return m
+  }, [varieties])
+
   const distinctYears = useMemo(() => {
     const s = new Set<number>([currentYear()])
     plantings.forEach((p) => s.add(p.season_year))
@@ -271,6 +366,12 @@ export default function PlantingsPage() {
     [plantings, year],
   )
 
+  function varietySummary(pid: string): string {
+    const vs = varietiesByPlanting.get(pid) ?? []
+    if (vs.length === 0) return ''
+    return vs.map((v) => Number(v.acres) > 0 ? `${v.variety} (${Number(v.acres)})` : v.variety).join(', ')
+  }
+
   const visible = plantings
     .filter((p) => {
       if (p.season_year !== year) return false
@@ -278,7 +379,8 @@ export default function PlantingsPage() {
       if (q) {
         const hay = [
           fieldLabel(p.field_id), cropById.get(p.crop_id)?.name ?? '',
-          String(p.planted_acres), p.planting_date ?? '', p.notes ?? '',
+          String(p.planted_acres), p.planting_date ?? '',
+          varietySummary(p.id), p.notes ?? '',
         ].join(' ').toLowerCase()
         if (!hay.includes(q.toLowerCase())) return false
       }
@@ -293,6 +395,11 @@ export default function PlantingsPage() {
       return dir * fieldLabel(a.field_id).localeCompare(fieldLabel(b.field_id))
     })
 
+  async function saveVarieties(plantingId: string, vs: VarietyInput[]) {
+    const inserts = varietyInserts(plantingId, vs)
+    return supabase.from('field_planting_varieties').insert(inserts)
+  }
+
   async function add(e: React.FormEvent) {
     e.preventDefault()
     if (!form.field_id || !form.crop_id || !form.season_year) {
@@ -300,11 +407,20 @@ export default function PlantingsPage() {
       return
     }
     if (formInvalid(form)) {
-      setErr('Fix the irrigated acres value before saving.')
+      setErr('Fix the highlighted fields before saving.')
       return
     }
-    const { error } = await supabase.from('field_plantings').insert(payload(form))
-    if (error) { setErr(error.message); return }
+    const { data, error } = await supabase
+      .from('field_plantings')
+      .insert(payload(form))
+      .select('id')
+      .single()
+    if (error || !data) { setErr(error?.message ?? 'Insert failed'); return }
+    const inserts = varietyInserts(data.id, form.varieties)
+    if (inserts.length > 0) {
+      const { error: vErr } = await supabase.from('field_planting_varieties').insert(inserts)
+      if (vErr) { setErr(`Planting saved but variety save failed: ${vErr.message}`); refresh(); return }
+    }
     setForm(empty(year))
     setErr(null)
     refresh()
@@ -316,11 +432,24 @@ export default function PlantingsPage() {
       return
     }
     if (formInvalid(editForm)) {
-      setErr('Fix the irrigated acres value before saving.')
+      setErr('Fix the highlighted fields before saving.')
       return
     }
     const { error } = await supabase.from('field_plantings').update(payload(editForm)).eq('id', id)
     if (error) { setErr(error.message); return }
+    // Replace varieties for this planting. Done in two steps because the JS
+    // client has no diff/upsert flow for child rows; the brief window with no
+    // variety rows is acceptable for a single-user farm app.
+    const { error: delErr } = await supabase
+      .from('field_planting_varieties')
+      .delete()
+      .eq('planting_id', id)
+    if (delErr) { setErr(delErr.message); return }
+    const inserts = varietyInserts(id, editForm.varieties)
+    if (inserts.length > 0) {
+      const { error: vErr } = await supabase.from('field_planting_varieties').insert(inserts)
+      if (vErr) { setErr(vErr.message); refresh(); return }
+    }
     setEditingId(null)
     refresh()
   }
@@ -348,27 +477,47 @@ export default function PlantingsPage() {
     const existing = new Set(
       plantings.filter((p) => p.season_year === year).map((p) => `${p.field_id}|${p.crop_id}`)
     )
-    const toInsert = source
-      .filter((p) => !existing.has(`${p.field_id}|${p.crop_id}`))
-      .map((p) => ({
-        field_id: p.field_id,
-        crop_id: p.crop_id,
-        season_year: year,
-        planted_acres: Number(p.planted_acres),
-        irrigated_acres: Number(p.irrigated_acres) || 0,
-        dryland_acres: Math.max(0, Number(p.planted_acres) - (Number(p.irrigated_acres) || 0)),
-        planting_date: null,
-        notes: null,
-      }))
-    if (toInsert.length === 0) {
+    const toCopy = source.filter((p) => !existing.has(`${p.field_id}|${p.crop_id}`))
+    if (toCopy.length === 0) {
       setErr(`All ${prior} plantings already have a ${year} counterpart.`)
       return
     }
-    if (!confirm(`Copy ${toInsert.length} planting(s) from ${prior} to ${year}?`)) return
+    if (!confirm(`Copy ${toCopy.length} planting(s) from ${prior} to ${year}?`)) return
     setBusy(true)
-    const { error } = await supabase.from('field_plantings').insert(toInsert)
+    // Insert plantings one-by-one so we can map each returned id back to its
+    // source for variety copying. The volume here is small (a single farm-year).
+    let lastErr: string | null = null
+    for (const src of toCopy) {
+      const planted = Number(src.planted_acres)
+      const irr = Number(src.irrigated_acres) || 0
+      const { data, error } = await supabase
+        .from('field_plantings')
+        .insert({
+          field_id: src.field_id,
+          crop_id: src.crop_id,
+          season_year: year,
+          planted_acres: planted,
+          irrigated_acres: irr,
+          dryland_acres: Math.max(0, planted - irr),
+          planting_date: null,
+          notes: null,
+        })
+        .select('id')
+        .single()
+      if (error || !data) { lastErr = error?.message ?? 'Insert failed'; break }
+      const srcVarieties = varietiesByPlanting.get(src.id) ?? []
+      if (srcVarieties.length > 0) {
+        const inserts = srcVarieties.map((v) => ({
+          planting_id: data.id,
+          variety: v.variety,
+          acres: Number(v.acres) || 0,
+        }))
+        const { error: vErr } = await supabase.from('field_planting_varieties').insert(inserts)
+        if (vErr) { lastErr = vErr.message; break }
+      }
+    }
     setBusy(false)
-    if (error) { setErr(error.message); return }
+    if (lastErr) setErr(lastErr)
     refresh()
   }
 
@@ -502,7 +651,7 @@ export default function PlantingsPage() {
       <div className="flex items-center gap-2 flex-wrap">
         <input
           type="search"
-          placeholder="Search field, crop, notes…"
+          placeholder="Search field, crop, variety, notes…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           className="rounded-lg border border-slate-300 px-3 py-2 flex-1 min-w-[12rem]"
@@ -529,14 +678,14 @@ export default function PlantingsPage() {
         <table className="min-w-full text-sm">
           <thead className="bg-slate-100 text-slate-700">
             <tr>
-              {['Field', 'Crop', 'Planted ac', 'Irrigated ac', 'Dryland ac', 'Planted', '', 'Notes', '', '', ''].map((h, i) => (
+              {['Field', 'Crop', 'Varieties', 'Planted ac', 'Irrigated ac', 'Dryland ac', 'Planted', '', 'Notes', '', '', ''].map((h, i) => (
                 <th key={i} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {visible.length === 0 && (
-              <tr><td colSpan={11} className="px-3 py-6 text-center text-slate-400">No plantings for {year}.</td></tr>
+              <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">No plantings for {year}.</td></tr>
             )}
             {visible.map((p) => {
               const isEditing = editingId === p.id
@@ -547,7 +696,7 @@ export default function PlantingsPage() {
               return (
                 <tr key={p.id} className="border-t border-slate-100 align-top">
                   {isEditing ? (
-                    <td colSpan={11} className="px-3 py-3">
+                    <td colSpan={12} className="px-3 py-3">
                       <FormFields value={editForm} onChange={setEditForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} />
                       <div className="flex gap-2 mt-2">
                         <button
@@ -562,6 +711,7 @@ export default function PlantingsPage() {
                     <>
                       <td className="px-3 py-2">{fieldLabel(p.field_id)}</td>
                       <td className="px-3 py-2">{cropNm}</td>
+                      <td className="px-3 py-2 text-slate-600">{varietySummary(p.id)}</td>
                       <td className="px-3 py-2 text-right">{Number(p.planted_acres)}</td>
                       <td className="px-3 py-2 text-right">
                         {Number(p.irrigated_acres) > 0 ? Number(p.irrigated_acres) : '—'}
@@ -591,6 +741,7 @@ export default function PlantingsPage() {
                       <td className="px-3 py-2">
                         <button
                           onClick={() => {
+                            const vs = varietiesByPlanting.get(p.id) ?? []
                             setEditingId(p.id)
                             setEditForm({
                               field_id: p.field_id,
@@ -599,6 +750,10 @@ export default function PlantingsPage() {
                               planted_acres: String(p.planted_acres),
                               irrigated_acres: Number(p.irrigated_acres) > 0 ? String(p.irrigated_acres) : '',
                               planting_date: p.planting_date ?? '',
+                              varieties: vs.map((v) => ({
+                                variety: v.variety,
+                                acres: Number(v.acres) > 0 ? String(Number(v.acres)) : '',
+                              })),
                               notes: p.notes ?? '',
                             })
                           }}

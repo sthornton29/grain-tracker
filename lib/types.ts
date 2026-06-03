@@ -95,6 +95,15 @@ export type FieldPlanting = {
   notes: string | null
 }
 
+export type FieldPlantingVariety = {
+  id: string
+  planting_id: string
+  variety: string
+  acres: number
+  bushels: number | null
+  created_at: string
+}
+
 export type Contract = {
   id: string
   contract_number: string

@@ -7,7 +7,7 @@ import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plant
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import ExportBar from '@/components/export-bar'
 import type { ExportColumn, ExportPayload } from '@/lib/exports'
-import type { Crop, Entity, Farm, Field, FieldPlanting, County, LoadSplit } from '@/lib/types'
+import type { Crop, Entity, Farm, Field, FieldPlanting, FieldPlantingVariety, County, LoadSplit } from '@/lib/types'
 
 type LoadRow = {
   id: string
@@ -21,7 +21,7 @@ type LoadRow = {
   from_field_id: string | null
 }
 
-type ViewMode = 'field' | 'farm' | 'landowner'
+type ViewMode = 'field' | 'farm' | 'variety' | 'landowner'
 type YieldView = 'total' | 'breakdown'
 type PracticeFilter = 'all' | 'irrigated' | 'dryland'
 
@@ -50,6 +50,7 @@ export default function YieldsPage() {
   const [fields, setFields] = useState<Field[]>([])
   const [crops, setCrops] = useState<Crop[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
+  const [varieties, setVarieties] = useState<FieldPlantingVariety[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
   const [counties, setCounties] = useState<County[]>([])
@@ -76,6 +77,13 @@ export default function YieldsPage() {
   const [breakoutSaving, setBreakoutSaving] = useState(false)
   const [breakoutErr, setBreakoutErr] = useState<string | null>(null)
 
+  // Per-variety bushel allocation state. varAllocId is the planting whose
+  // variety editor is open; varAllocBu maps each variety row id → typed bushels.
+  const [varAllocId, setVarAllocId] = useState<string | null>(null)
+  const [varAllocBu, setVarAllocBu] = useState<Record<string, string>>({})
+  const [varAllocSaving, setVarAllocSaving] = useState(false)
+  const [varAllocErr, setVarAllocErr] = useState<string | null>(null)
+
   // The landowner view renders <YieldsByLandowner />, which owns its own
   // filters and data, so it hands a fresh export-payload builder up through
   // onPayloadChange. Default to an empty payload until the first build lands.
@@ -90,7 +98,7 @@ export default function YieldsPage() {
 
   async function refresh() {
     setLoading(true)
-    const [en, fa, fi, cr, pl, lo, co, sp] = await Promise.all([
+    const [en, fa, fi, cr, pl, lo, co, sp, vv] = await Promise.all([
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
@@ -99,6 +107,7 @@ export default function YieldsPage() {
       supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id'),
       supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('load_splits').select('*'),
+      supabase.from('field_planting_varieties').select('*').order('variety'),
     ])
     setEntities((en.data as Entity[]) || [])
     setFarms((fa.data as Farm[]) || [])
@@ -108,6 +117,7 @@ export default function YieldsPage() {
     setLoads((lo.data as LoadRow[]) || [])
     setSplits((sp.data as LoadSplit[]) || [])
     setCounties((co.data as County[]) || [])
+    setVarieties((vv.data as FieldPlantingVariety[]) || [])
     setLoading(false)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
@@ -120,6 +130,16 @@ export default function YieldsPage() {
     () => buildDoubleCropSoySet(plantings, cropById),
     [plantings, cropById],
   )
+
+  const varietiesByPlanting = useMemo(() => {
+    const m = new Map<string, FieldPlantingVariety[]>()
+    for (const v of varieties) {
+      const list = m.get(v.planting_id) ?? []
+      list.push(v)
+      m.set(v.planting_id, list)
+    }
+    return m
+  }, [varieties])
 
   const dryBuByKey = useMemo(() => {
     const map = new Map<string, number>()
@@ -343,6 +363,80 @@ export default function YieldsPage() {
     }
   }
 
+  type VarietyAgg = {
+    cropName: string
+    variety: string
+    seasonYear: number
+    acres: number
+    dryBu: number
+    plantings: number
+  }
+
+  // Variety aggregation:
+  //   - 0 varieties on a planting: excluded (no way to attribute the bushels)
+  //   - 1 variety: all of the planting's dry bushels go to that variety; acres
+  //     come from the variety row (falling back to planted_acres when the user
+  //     left variety acres at 0)
+  //   - 2+ varieties: ignored unless the user has manually allocated bushels
+  //     to every variety row on that planting
+  const varietyAgg = useMemo<VarietyAgg[]>(() => {
+    const m = new Map<string, VarietyAgg>()
+    const bump = (key: string, init: VarietyAgg) => {
+      const existing = m.get(key)
+      if (existing) {
+        existing.acres += init.acres
+        existing.dryBu += init.dryBu
+        existing.plantings += 1
+      } else {
+        m.set(key, init)
+      }
+    }
+    for (const p of visible) {
+      const vs = varietiesByPlanting.get(p.id) ?? []
+      if (vs.length === 0) continue
+      const dryBu = dryBuByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`) ?? 0
+      const cropName = cropById.get(p.crop_id)?.name ?? '—'
+      const planted = Number(p.planted_acres) || 0
+      if (vs.length === 1) {
+        const v = vs[0]
+        const acres = Number(v.acres) > 0 ? Number(v.acres) : planted
+        bump(`${cropName}|${v.variety}|${p.season_year}`, {
+          cropName, variety: v.variety, seasonYear: p.season_year, acres, dryBu, plantings: 1,
+        })
+      } else {
+        const allAllocated = vs.every((v) => v.bushels != null)
+        if (!allAllocated) continue
+        for (const v of vs) {
+          const bu = Number(v.bushels) || 0
+          const acres = Number(v.acres) || 0
+          bump(`${cropName}|${v.variety}|${p.season_year}`, {
+            cropName, variety: v.variety, seasonYear: p.season_year, acres, dryBu: bu, plantings: 1,
+          })
+        }
+      }
+    }
+    return [...m.values()].sort((a, b) => {
+      if (b.seasonYear !== a.seasonYear) return b.seasonYear - a.seasonYear
+      const cn = a.cropName.localeCompare(b.cropName)
+      if (cn !== 0) return cn
+      return a.variety.localeCompare(b.variety)
+    })
+  }, [visible, varietiesByPlanting, dryBuByKey, cropById])
+
+  // Multi-variety plantings in the current filter. Surface all of them at the
+  // top of the variety view: unallocated ones need attention, allocated ones
+  // need to stay editable since the rollup table doesn't show per-planting.
+  const multiVarietyPlantings = useMemo(() => {
+    return visible.filter((p) => (varietiesByPlanting.get(p.id) ?? []).length >= 2)
+  }, [visible, varietiesByPlanting])
+
+  const unallocatedCount = useMemo(() => {
+    return multiVarietyPlantings.filter((p) => {
+      const vs = varietiesByPlanting.get(p.id) ?? []
+      return !vs.every((v) => v.bushels != null)
+    }).length
+  }, [multiVarietyPlantings, varietiesByPlanting])
+
   // Filter summary shared by the field and farm exports — mirrors the filter
   // strip that drives both tables.
   function fieldFiltersLabel(): string {
@@ -447,6 +541,31 @@ export default function YieldsPage() {
     return { title: 'Yields by Farm', filters: fieldFiltersLabel(), sections: [{ columns, rows }] }
   }
 
+  function buildVarietyPayload(): ExportPayload {
+    const columns: ExportColumn[] = [
+      { label: 'Crop' },
+      { label: 'Variety' },
+      { label: 'Year' },
+      { label: 'Plantings', align: 'right' },
+      { label: 'Acres', align: 'right' },
+      { label: 'Dry bu', align: 'right' },
+      { label: 'Yield (bu/ac)', align: 'right' },
+    ]
+    const rows = varietyAgg.map((r) => {
+      const yld = r.acres > 0 ? r.dryBu / r.acres : null
+      return [
+        r.cropName,
+        r.variety,
+        r.seasonYear,
+        r.plantings,
+        r.acres.toFixed(2),
+        r.dryBu.toFixed(2),
+        yld != null ? yld.toFixed(2) : '',
+      ]
+    })
+    return { title: 'Yields by Variety', filters: fieldFiltersLabel(), sections: [{ columns, rows }] }
+  }
+
   function openBreakout(p: FieldPlanting) {
     setBreakoutId(p.id)
     setBreakoutErr(null)
@@ -526,6 +645,60 @@ export default function YieldsPage() {
     refresh()
   }
 
+  function openVarAlloc(p: FieldPlanting) {
+    const vs = varietiesByPlanting.get(p.id) ?? []
+    const seed: Record<string, string> = {}
+    for (const v of vs) seed[v.id] = v.bushels != null ? String(Number(v.bushels)) : ''
+    setVarAllocId(p.id)
+    setVarAllocBu(seed)
+    setVarAllocErr(null)
+  }
+
+  function varAllocSum(vs: FieldPlantingVariety[]): number {
+    return vs.reduce((s, v) => s + (Number(varAllocBu[v.id] ?? 0) || 0), 0)
+  }
+
+  function varAllocValid(vs: FieldPlantingVariety[], totalDryBu: number): boolean {
+    if (vs.some((v) => (varAllocBu[v.id] ?? '') === '')) return false
+    return Math.abs(varAllocSum(vs) - totalDryBu) < 0.01
+  }
+
+  async function saveVarAlloc(p: FieldPlanting, totalDryBu: number) {
+    const vs = varietiesByPlanting.get(p.id) ?? []
+    if (!varAllocValid(vs, totalDryBu)) return
+    setVarAllocSaving(true)
+    const updates = vs.map((v) =>
+      supabase
+        .from('field_planting_varieties')
+        .update({ bushels: Number(varAllocBu[v.id] ?? 0) })
+        .eq('id', v.id),
+    )
+    const results = await Promise.all(updates)
+    setVarAllocSaving(false)
+    const firstErr = results.find((r) => r.error)?.error
+    if (firstErr) { setVarAllocErr(firstErr.message); return }
+    setVarAllocId(null)
+    refresh()
+  }
+
+  async function clearVarAlloc(p: FieldPlanting) {
+    if (!confirm('Clear the variety bushel allocation for this planting?')) return
+    const vs = varietiesByPlanting.get(p.id) ?? []
+    setVarAllocSaving(true)
+    const updates = vs.map((v) =>
+      supabase
+        .from('field_planting_varieties')
+        .update({ bushels: null })
+        .eq('id', v.id),
+    )
+    const results = await Promise.all(updates)
+    setVarAllocSaving(false)
+    const firstErr = results.find((r) => r.error)?.error
+    if (firstErr) { setVarAllocErr(firstErr.message); return }
+    setVarAllocId(null)
+    refresh()
+  }
+
   // Column count for table colspan calculations. Irr ac / Dry ac follow the
   // same visibility rules as the irrigated/dryland yield columns, so the table
   // collapses to just total acres + total yield in the default "Total yield
@@ -542,13 +715,19 @@ export default function YieldsPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3">
         <h1 className="text-2xl font-bold flex-1">
-          Yields {view === 'field' ? 'by Field' : view === 'farm' ? 'by Farm' : 'by Landowner'}
+          Yields {
+            view === 'field'   ? 'by Field' :
+            view === 'farm'    ? 'by Farm' :
+            view === 'variety' ? 'by Variety' :
+            'by Landowner'
+          }
         </h1>
         <label className="text-sm flex items-center gap-2 no-print">
           View
           <select value={view} onChange={(e) => setView(e.target.value as ViewMode)} className={inputCls}>
             <option value="field">By field</option>
             <option value="farm">By farm</option>
+            <option value="variety">By variety</option>
             <option value="landowner">By landowner</option>
           </select>
         </label>
@@ -558,7 +737,9 @@ export default function YieldsPage() {
               ? landownerBuild()
               : view === 'farm'
                 ? buildFarmPayload()
-                : buildFieldPayload()
+                : view === 'variety'
+                  ? buildVarietyPayload()
+                  : buildFieldPayload()
           }
         />
       </div>
@@ -566,7 +747,9 @@ export default function YieldsPage() {
         <p className="text-sm text-slate-500">
           {view === 'field'
             ? 'Dry bushels harvested ÷ planted acres, matched to plantings by field + crop + load year.'
-            : 'Plantings rolled up to farm × crop × season. Dry bushels divided by planted acres.'}
+            : view === 'farm'
+              ? 'Plantings rolled up to farm × crop × season. Dry bushels divided by planted acres.'
+              : 'Bushels rolled up by crop × variety × season. Single-variety plantings are attributed automatically; multi-variety plantings only count once you allocate bushels to each variety.'}
         </p>
       )}
 
@@ -603,7 +786,7 @@ export default function YieldsPage() {
       </div>
       )}
 
-      {view !== 'landowner' && (view === 'field' || showYieldToggle) && (
+      {view !== 'landowner' && view !== 'variety' && (view === 'field' || showYieldToggle) && (
         <div className="flex flex-wrap gap-3 items-center no-print">
           {view === 'field' && (
             <label className="text-sm flex items-center gap-2">
@@ -642,6 +825,172 @@ export default function YieldsPage() {
 
       {view === 'landowner' ? (
         <YieldsByLandowner onPayloadChange={handleLandownerPayload} />
+      ) : view === 'variety' ? (
+        <div className="space-y-4">
+          {multiVarietyPlantings.length > 0 && (
+            <div className="overflow-x-auto bg-white border border-slate-200 rounded-xl shadow">
+              <div className="px-3 py-2 text-sm border-b border-slate-200 flex flex-wrap items-center gap-2">
+                <span className="font-semibold">Multi-variety plantings ({multiVarietyPlantings.length})</span>
+                {unallocatedCount > 0 && (
+                  <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">
+                    {unallocatedCount} need allocation
+                  </span>
+                )}
+              </div>
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-50 text-slate-700">
+                  <tr>
+                    <th className="text-left px-3 py-2 whitespace-nowrap">Field</th>
+                    <th className="text-left px-3 py-2 whitespace-nowrap">Farm</th>
+                    <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
+                    <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>
+                    <th className="text-right px-3 py-2 whitespace-nowrap">Total dry bu</th>
+                    <th className="text-left px-3 py-2 whitespace-nowrap">Varieties</th>
+                    <th className="text-left px-3 py-2 whitespace-nowrap no-print"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {multiVarietyPlantings.map((p) => {
+                    const r = rowFor(p)
+                    const vs = varietiesByPlanting.get(p.id) ?? []
+                    const allocated = vs.every((v) => v.bushels != null)
+                    const isOpen = varAllocId === p.id
+                    return (
+                      <Fragment key={p.id}>
+                        <tr className="border-t border-slate-100">
+                          <td className="px-3 py-2">{r.fld?.name_or_number ?? '—'}</td>
+                          <td className="px-3 py-2">{r.farm?.name ?? ''}</td>
+                          <td className="px-3 py-2">{r.crop?.name ?? '—'}</td>
+                          <td className="px-3 py-2">{p.season_year}</td>
+                          <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
+                          <td className="px-3 py-2 text-slate-600">
+                            {vs.map((v) => {
+                              const acres = Number(v.acres)
+                              const bu = v.bushels != null ? Number(v.bushels) : null
+                              const parts: string[] = []
+                              if (acres > 0) parts.push(`${acres} ac`)
+                              if (bu != null) parts.push(`${fmtNum(bu)} bu`)
+                              const tail = parts.length > 0 ? ` (${parts.join(', ')})` : ''
+                              return `${v.variety}${tail}`
+                            }).join(', ')}
+                          </td>
+                          <td className="px-3 py-2 no-print whitespace-nowrap">
+                            {!allocated && (
+                              <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 mr-2">
+                                Needs allocation
+                              </span>
+                            )}
+                            {!isOpen && (
+                              <button
+                                type="button"
+                                onClick={() => openVarAlloc(p)}
+                                className="text-sky-700 text-sm whitespace-nowrap"
+                              >{allocated ? 'Edit allocation' : 'Allocate bushels'}</button>
+                            )}
+                          </td>
+                        </tr>
+                        {isOpen && (
+                          <tr className="bg-sky-50 no-print">
+                            <td colSpan={7} className="px-3 py-3">
+                              <div className="space-y-2">
+                                <div className="text-sm text-slate-600">
+                                  Total dry bushels: <span className="font-semibold">{fmtNum(r.dryBu)}</span> · enter how many of those came from each variety
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                  {vs.map((v) => (
+                                    <label key={v.id} className="text-xs text-slate-500 flex items-center gap-2">
+                                      <span className="min-w-32">{v.variety}{Number(v.acres) > 0 ? ` (${Number(v.acres)} ac)` : ''}</span>
+                                      <input
+                                        type="number"
+                                        step="0.01"
+                                        min="0"
+                                        value={varAllocBu[v.id] ?? ''}
+                                        onChange={(e) => setVarAllocBu({ ...varAllocBu, [v.id]: e.target.value })}
+                                        className={`${inputCls} w-40`}
+                                        placeholder="bushels"
+                                      />
+                                    </label>
+                                  ))}
+                                </div>
+                                <div className="flex flex-wrap items-center gap-3">
+                                  <div className="text-sm text-slate-600">
+                                    Sum: <span className="font-semibold">{fmtNum(varAllocSum(vs))}</span> / {fmtNum(r.dryBu)}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    disabled={varAllocSaving || !varAllocValid(vs, r.dryBu)}
+                                    onClick={() => saveVarAlloc(p, r.dryBu)}
+                                    className="rounded-lg bg-green-700 text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                                  >Save</button>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setVarAllocId(null); setVarAllocErr(null) }}
+                                    className="text-slate-500 text-sm"
+                                  >Cancel</button>
+                                  {vs.some((v) => v.bushels != null) && (
+                                    <button
+                                      type="button"
+                                      onClick={() => clearVarAlloc(p)}
+                                      className="text-red-600 text-sm ml-auto"
+                                    >Clear allocation</button>
+                                  )}
+                                </div>
+                                {!varAllocValid(vs, r.dryBu) && (
+                                  <p className="text-sm text-red-600">
+                                    Variety bushels must each be filled in and sum to {fmtNum(r.dryBu)}
+                                  </p>
+                                )}
+                                {varAllocErr && <p className="text-sm text-red-600">{varAllocErr}</p>}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          <div className="overflow-x-auto bg-white rounded-xl shadow">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-100 text-slate-700">
+                <tr>
+                  <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
+                  <th className="text-left px-3 py-2 whitespace-nowrap">Variety</th>
+                  <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>
+                  <th className="text-right px-3 py-2 whitespace-nowrap">Plantings</th>
+                  <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
+                  <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
+                  <th className="text-right px-3 py-2 whitespace-nowrap">Yield (bu/ac)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {loading && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
+                {!loading && varietyAgg.length === 0 && (
+                  <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">
+                    No varieties recorded for these filters. Add varieties on the Plantings page, or allocate bushels on any multi-variety plantings above.
+                  </td></tr>
+                )}
+                {varietyAgg.map((r, i) => {
+                  const yld = r.acres > 0 ? r.dryBu / r.acres : null
+                  return (
+                    <tr key={i} className="border-t border-slate-100">
+                      <td className="px-3 py-2">{r.cropName}</td>
+                      <td className="px-3 py-2 font-semibold">{r.variety}</td>
+                      <td className="px-3 py-2">{r.seasonYear}</td>
+                      <td className="px-3 py-2 text-right">{r.plantings}</td>
+                      <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
+                      <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
+                      <td className="px-3 py-2 text-right font-semibold">{yld != null ? yld.toFixed(1) : '—'}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
       ) : view === 'field' ? (
         <div className="overflow-x-auto bg-white rounded-xl shadow">
           <table className="min-w-full text-sm">

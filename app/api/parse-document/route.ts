@@ -297,7 +297,10 @@ For each planting, extract:
 - planted_acres (planted/reported acres for this field+crop as a number)
 - irrigated_acres (irrigated acres for this line if the practice is distinguished — else null)
 - planting_date (the planting/seeding date, format YYYY-MM-DD — else null)
+- varieties (a list of {variety, acres} for any hybrid/variety/seed names shown on this field+crop line. Use the per-variety acres when shown; if a single variety is listed without its own acres, set acres to the planted_acres; if no variety information is shown, return []. Example variety names: "P2089", "DKC65-95", "AG46X9", "Croplan 5380".)
 - notes (any short note worth keeping, e.g. an intended-use or practice code — else null)
+
+Multiple varieties on the same field+crop+year belong on the SAME row, inside the varieties array. Do not split a single field+crop line into multiple rows just because more than one variety is listed.
 
 Respond ONLY in JSON with no other text, no markdown backticks:
 {
@@ -309,6 +312,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
       "planted_acres": number or null,
       "irrigated_acres": number or null,
       "planting_date": "YYYY-MM-DD or null",
+      "varieties": [{"variety": "string", "acres": number or null}],
       "notes": "string or null"
     }
   ]

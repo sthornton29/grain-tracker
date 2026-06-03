@@ -17,6 +17,8 @@ type Props = {
   onImported: () => void
 }
 
+type RowVariety = { variety: string; acres: string }
+
 type Row = {
   field_id: string
   raw_field: string | null
@@ -26,6 +28,7 @@ type Row = {
   planted_acres: string
   irrigated_acres: string
   planting_date: string
+  varieties: RowVariety[]
   notes: string
   exists: boolean // a planting for this field+crop+year already exists
   include: boolean
@@ -89,6 +92,13 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
         const field_id = field?.id ?? ''
         const crop_id = crop?.id ?? ''
         const exists = !!field_id && !!crop_id && existingKeys.has(`${field_id}|${crop_id}|${year}`)
+        const varietiesRaw = Array.isArray(p.varieties) ? p.varieties : []
+        const varieties: RowVariety[] = varietiesRaw
+          .map((v) => ({
+            variety: (v.variety ?? '').toString().trim(),
+            acres: numStr(v.acres),
+          }))
+          .filter((v) => v.variety !== '')
         return {
           field_id,
           raw_field: p.field_name,
@@ -98,6 +108,7 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
           planted_acres: numStr(p.planted_acres),
           irrigated_acres: numStr(p.irrigated_acres),
           planting_date: p.planting_date && /^\d{4}-\d{2}-\d{2}$/.test(p.planting_date) ? p.planting_date : '',
+          varieties,
           notes: p.notes ?? '',
           exists,
           include: !exists,
@@ -123,6 +134,24 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
       }
       return nextRow
     }))
+  }
+  function setRowVarieties(i: number, varieties: RowVariety[]) {
+    setRows((rs) => rs.map((r, j) => (i === j ? { ...r, varieties } : r)))
+  }
+  function addVariety(i: number) {
+    const r = rows[i]
+    if (!r) return
+    setRowVarieties(i, [...r.varieties, { variety: '', acres: '' }])
+  }
+  function updateVariety(i: number, vi: number, patch: Partial<RowVariety>) {
+    const r = rows[i]
+    if (!r) return
+    setRowVarieties(i, r.varieties.map((v, j) => (j === vi ? { ...v, ...patch } : v)))
+  }
+  function removeVariety(i: number, vi: number) {
+    const r = rows[i]
+    if (!r) return
+    setRowVarieties(i, r.varieties.filter((_, j) => j !== vi))
   }
   function removeRow(i: number) {
     setRows((rs) => rs.filter((_, j) => j !== i))
@@ -157,9 +186,36 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
         notes: r.notes.trim() || null,
       }
     })
-    const { error } = await supabase.from('field_plantings').insert(payloads)
+    const { data: inserted, error } = await supabase
+      .from('field_plantings')
+      .insert(payloads)
+      .select('id')
+    if (error || !inserted) {
+      setSaving(false)
+      setErr(`Could not save: ${error?.message ?? 'unknown error'}`)
+      return
+    }
+    // Map each inserted row back to its source by order — supabase insert
+    // preserves input order for the returned rows. Build variety inserts only
+    // for rows that have at least one named variety.
+    const varietyInserts = inserted.flatMap((row, i) => {
+      const src = toSave[i]
+      if (!src) return []
+      return src.varieties
+        .map((v) => ({ variety: v.variety.trim(), acres: num(v.acres) ?? 0 }))
+        .filter((v) => v.variety !== '')
+        .map((v) => ({ planting_id: row.id, variety: v.variety, acres: v.acres }))
+    })
+    if (varietyInserts.length > 0) {
+      const { error: vErr } = await supabase.from('field_planting_varieties').insert(varietyInserts)
+      if (vErr) {
+        setSaving(false)
+        setErr(`Plantings saved but varieties failed: ${vErr.message}`)
+        onImported()
+        return
+      }
+    }
     setSaving(false)
-    if (error) { setErr(`Could not save: ${error.message}`); return }
     setBanner(`Saved ${payloads.length} planting${payloads.length === 1 ? '' : 's'}.`)
     setRows([])
     setSource(null)
@@ -205,14 +261,14 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
             <table className="min-w-full text-sm">
               <thead className="bg-slate-100 text-slate-700">
                 <tr>
-                  {['', 'Status', 'Field', 'Crop', 'Year', 'Planted ac', 'Irrigated ac', 'Dryland ac', 'Planted', ''].map((h, i) => (
+                  {['', 'Status', 'Field', 'Crop', 'Year', 'Planted ac', 'Irrigated ac', 'Dryland ac', 'Planted', 'Varieties', ''].map((h, i) => (
                     <th key={i} className="text-left px-2 py-2 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {rows.length === 0 && (
-                  <tr><td colSpan={10} className="px-3 py-6 text-center text-slate-400">
+                  <tr><td colSpan={11} className="px-3 py-6 text-center text-slate-400">
                     {stage ? 'Working…' : 'No plantings extracted yet.'}
                   </td></tr>
                 )}
@@ -260,6 +316,38 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
                       </td>
                       <td className="px-2 py-1" style={{ minWidth: 130 }}>
                         <input type="date" value={r.planting_date} onChange={(e) => setRow(i, { planting_date: e.target.value })} className={inputCls} />
+                      </td>
+                      <td className="px-2 py-1" style={{ minWidth: 200 }}>
+                        <div className="space-y-1">
+                          {r.varieties.map((v, vi) => (
+                            <div key={vi} className="grid grid-cols-[1fr_4.5rem_auto] gap-1 items-center">
+                              <input
+                                value={v.variety}
+                                onChange={(e) => updateVariety(i, vi, { variety: e.target.value })}
+                                placeholder="Variety"
+                                className={inputCls}
+                              />
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={v.acres}
+                                onChange={(e) => updateVariety(i, vi, { acres: e.target.value })}
+                                placeholder="ac"
+                                className={inputCls}
+                              />
+                              <button
+                                type="button"
+                                onClick={() => removeVariety(i, vi)}
+                                className="text-red-600 text-sm px-1"
+                                aria-label="Remove variety"
+                              >×</button>
+                            </div>
+                          ))}
+                          <button type="button" onClick={() => addVariety(i)} className="text-xs text-sky-700">
+                            + Add variety
+                          </button>
+                        </div>
                       </td>
                       <td className="px-2 py-1">
                         <button type="button" onClick={() => removeRow(i)} className="text-red-600 text-sm">✕</button>

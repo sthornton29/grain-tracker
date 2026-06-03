@@ -159,6 +159,11 @@ export type FieldsExtraction = {
   fields: FieldExtraction[]
 }
 
+export type PlantingExtractionVariety = {
+  variety: string | null
+  acres: number | null
+}
+
 export type PlantingExtraction = {
   field_name: string | null
   crop: string | null
@@ -166,6 +171,7 @@ export type PlantingExtraction = {
   planted_acres: number | null
   irrigated_acres: number | null
   planting_date: string | null
+  varieties: PlantingExtractionVariety[] | null
   notes: string | null
 }
 
