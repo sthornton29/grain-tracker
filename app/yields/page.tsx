@@ -67,7 +67,10 @@ export default function YieldsPage() {
   const [entityId, setEntityId] = usePersistentState('yields:entityId', '')
   const [countyId, setCountyId] = usePersistentState('yields:countyId', '')
   const [cropYear, setCropYear] = usePersistentState<number | ''>('yields:cropYear', '')
-  const [yieldView, setYieldView] = usePersistentState<YieldView>('yields:yieldView', 'total')
+  // yieldView intentionally does NOT persist: it defaults to total every visit
+  // and is only flipped to breakdown when arriving from the crop-insurance
+  // report to enter irrigated/dryland breakouts (see the ?breakout=1 effect).
+  const [yieldView, setYieldView] = useState<YieldView>('total')
   const [practiceFilter, setPracticeFilter] = usePersistentState<PracticeFilter>('yields:practiceFilter', 'all')
 
   // Breakout-entry UI state. Tracks which planting's row is being allocated
@@ -129,6 +132,22 @@ export default function YieldsPage() {
     setLoading(false)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
+
+  // Arriving from the crop-insurance report (?breakout=1): jump to the by-field
+  // view with the irrigated/dryland breakdown on, so the user can enter the
+  // breakouts. Strip the param afterward so the toggle doesn't stick on refresh
+  // or persist to later visits.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('breakout') !== '1') return
+    setView('field')
+    setYieldView('breakdown')
+    params.delete('breakout')
+    const qs = params.toString()
+    window.history.replaceState(null, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
   const farmById  = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])

@@ -524,7 +524,7 @@ export default function CropInsuranceReport() {
           </ul>
           <div className="flex gap-2 flex-wrap">
             <Link
-              href="/yields"
+              href="/yields?breakout=1"
               className="rounded-lg bg-sky-700 text-white px-3 py-2 text-sm font-semibold"
             >
               Enter breakouts on Yields →
