@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
+import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import type { ExportPayload } from '@/lib/exports'
 import type {
   Crop, Entity, Farm, Field, FieldPlanting, Landowner, LoadSplit,
@@ -91,39 +92,13 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const landownerById = useMemo(() => new Map(landowners.map((l) => [l.id, l])), [landowners])
 
-  // Per (fieldId, cropId, year) → dryBu. Same allocation rules as the existing
-  // yields page: single-field loads contribute by from_field_id; split loads
-  // contribute via load_splits.dry_bushels.
-  const dryBuByKey = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const l of loads) {
-      if (l.from_type !== 'field' || !l.from_field_id || !l.crop_id) continue
-      if (cropYear !== '' && l.crop_year !== cropYear) continue
-      const crop = cropById.get(l.crop_id)
-      const { dryBushels } = computeBushels({
-        netWeightLb: l.net_weight,
-        moisturePct: l.moisture,
-        baseMoisturePct: crop?.base_moisture_pct ?? null,
-        baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
-        dryBushelsOverride: l.dry_bushels_override,
-      })
-      if (!dryBushels) continue
-      const yr = Number(l.date.slice(0, 4))
-      const key = `${l.from_field_id}|${l.crop_id}|${yr}`
-      map.set(key, (map.get(key) ?? 0) + dryBushels)
-    }
-    const loadById = new Map(loads.map((l) => [l.id, l]))
-    for (const s of splits) {
-      const parent = loadById.get(s.load_id)
-      if (!parent) continue
-      if (cropYear !== '' && parent.crop_year !== cropYear) continue
-      if (s.dry_bushels == null) continue
-      const yr = Number(parent.date.slice(0, 4))
-      const key = `${s.field_id}|${s.crop_id}|${yr}`
-      map.set(key, (map.get(key) ?? 0) + s.dry_bushels)
-    }
-    return map
-  }, [loads, splits, cropById, cropYear])
+  // Dry bushels + most-recent load date per field+crop+year (shared rules).
+  const aggByKey = useMemo(
+    () => fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear }),
+    [loads, splits, cropById, cropYear],
+  )
+  const dryBuFor = (fieldId: string, cropId2: string, year: number) =>
+    aggByKey.get(`${fieldId}|${cropId2}|${year}`)?.dryBu ?? 0
 
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings(
@@ -133,8 +108,37 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
     [plantings, cropYear],
   )
 
+  // Plantings matching the active filters (before the harvest exclusion).
+  const filteredPlantings = useMemo(() => plantings.filter((p) => {
+    if (cropYear !== '' && p.season_year !== cropYear) return false
+    if (cropId && p.crop_id !== cropId) return false
+    const fld = fieldById.get(p.field_id)
+    if (!fld) return false
+    const farm = fld.farm_id ? farmById.get(fld.farm_id) ?? null : null
+    if (entityId && farm?.entity_id !== entityId) return false
+    const ownerKey = farm?.landowner_id ?? NO_LANDOWNER_KEY
+    if (landownerId && ownerKey !== landownerId) return false
+    return true
+  }), [plantings, fieldById, farmById, cropYear, cropId, entityId, landownerId])
+
+  // Drop unharvested / in-progress fields from the rolled-up numbers and the
+  // average-yield header (per crop, over the filtered plantings).
+  const yieldAnalysis = useMemo(() => analyzeYields(
+    filteredPlantings.map((p) => {
+      const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
+      return {
+        id: p.id,
+        cropId: p.crop_id,
+        acres: Number(p.planted_acres),
+        dryBu: agg?.dryBu ?? 0,
+        lastLoadDate: agg?.lastLoadDate ?? null,
+      }
+    }),
+  ), [filteredPlantings, aggByKey])
+
   // Build per-landowner aggregation.
   const groups = useMemo<LandownerGroup[]>(() => {
+    const excluded = yieldAnalysis.excluded
     const byOwner = new Map<string, LandownerGroup>()
 
     // Pre-create the groups for landowners that exist so an empty owner still
@@ -149,15 +153,12 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
       })
     }
 
-    for (const p of plantings) {
-      if (cropYear !== '' && p.season_year !== cropYear) continue
-      if (cropId && p.crop_id !== cropId) continue
+    for (const p of filteredPlantings) {
+      if (excluded.has(p.id)) continue
       const fld = fieldById.get(p.field_id)
       if (!fld) continue
       const farm = fld.farm_id ? farmById.get(fld.farm_id) ?? null : null
-      if (entityId && farm?.entity_id !== entityId) continue
       const ownerKey = farm?.landowner_id ?? NO_LANDOWNER_KEY
-      if (landownerId && ownerKey !== landownerId) continue
       if (!byOwner.has(ownerKey)) {
         const l = farm?.landowner_id ? landownerById.get(farm.landowner_id) : null
         byOwner.set(ownerKey, {
@@ -170,7 +171,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
       const group = byOwner.get(ownerKey)!
 
       const acres = Number(p.planted_acres)
-      const dryBu = dryBuByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`) ?? 0
+      const dryBu = dryBuFor(p.field_id, p.crop_id, p.season_year)
       const cropName = cropById.get(p.crop_id)?.name ?? '—'
 
       let farmAgg = group.farms.find((f) => f.farmName === (farm?.name ?? '— no farm —'))
@@ -199,7 +200,8 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
       if (b.key === NO_LANDOWNER_KEY) return -1
       return a.landownerName.localeCompare(b.landownerName)
     })
-  }, [plantings, fieldById, farmById, landownerById, cropById, dryBuByKey, cropYear, cropId, entityId, landownerId])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredPlantings, yieldAnalysis, fieldById, farmById, landownerById, cropById, aggByKey, landownerId])
 
   function filtersLabel(): string {
     const parts: string[] = []
@@ -292,6 +294,10 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
           {landowners.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
       </div>
+
+      {!loading && (
+        <AvgYieldHeader averages={yieldAnalysis.averages} cropName={(id) => cropById.get(id)?.name ?? '—'} />
+      )}
 
       {loading ? (
         <p className="text-slate-500">Loading…</p>

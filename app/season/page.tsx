@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { computeBushels } from '@/lib/shrink'
 import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
+import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import type { Crop, FieldPlanting, LoadSplit } from '@/lib/types'
 
 type LoadRow = {
@@ -58,41 +59,33 @@ export default function SeasonSummaryPage() {
 
   const yearPlantings = plantings.filter((p) => p.season_year === year)
 
-  // dry bushels per (fieldId, cropId, year). Single-field loads aggregate by
-  // from_field_id; split loads (from_field_id NULL) allocate per load_splits
-  // row using the bushels already stored at save time.
-  const dryBuByKey = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const l of loads) {
-      if (l.from_type !== 'field' || !l.from_field_id || !l.crop_id) continue
-      const yr = Number(l.date.slice(0, 4))
-      if (yr !== year) continue
-      if (cropYear !== '' && l.crop_year !== cropYear) continue
-      const crop = cropById.get(l.crop_id)
-      const { dryBushels } = computeBushels({
-        netWeightLb: l.net_weight,
-        moisturePct: l.moisture,
-        baseMoisturePct: crop?.base_moisture_pct ?? null,
-        baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
-        dryBushelsOverride: l.dry_bushels_override,
-      })
-      if (!dryBushels) continue
-      const key = `${l.from_field_id}|${l.crop_id}|${yr}`
-      map.set(key, (map.get(key) ?? 0) + dryBushels)
-    }
-    const loadById = new Map(loads.map((l) => [l.id, l]))
-    for (const s of splits) {
-      const parent = loadById.get(s.load_id)
-      if (!parent) continue
-      const yr = Number(parent.date.slice(0, 4))
-      if (yr !== year) continue
-      if (cropYear !== '' && parent.crop_year !== cropYear) continue
-      if (s.dry_bushels == null) continue
-      const key = `${s.field_id}|${s.crop_id}|${yr}`
-      map.set(key, (map.get(key) ?? 0) + s.dry_bushels)
-    }
-    return map
-  }, [loads, splits, cropById, year, cropYear])
+  // Dry bushels + most-recent load date per field+crop+year (shared rules),
+  // scoped to the selected season year and optional crop year.
+  const aggByKey = useMemo(
+    () => fieldCropAggregates(loads, splits, cropById, {
+      loadYear: year,
+      cropYear: cropYear === '' ? null : cropYear,
+    }),
+    [loads, splits, cropById, year, cropYear],
+  )
+  const dryBuFor = (fieldId: string, cropId: string, yr: number) =>
+    aggByKey.get(`${fieldId}|${cropId}|${yr}`)?.dryBu ?? 0
+
+  // Unharvested / in-progress fields are excluded from the season's production
+  // and yield (per crop). Acreage columns still count every planted field.
+  const yieldAnalysis = useMemo(() => analyzeYields(
+    yearPlantings.map((p) => {
+      const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
+      return {
+        id: p.id,
+        cropId: p.crop_id,
+        acres: Number(p.planted_acres),
+        dryBu: agg?.dryBu ?? 0,
+        lastLoadDate: agg?.lastLoadDate ?? null,
+      }
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [plantings, aggByKey, year])
 
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings(
@@ -110,6 +103,9 @@ export default function SeasonSummaryPage() {
     irrigatedAcres: number
     drylandAcres: number
     dryBu: number
+    // Acres of the harvested, included fields only — the denominator for yield
+    // so partial/unharvested fields don't drag bu/ac down.
+    harvestedAcres: number
   }
 
   const doubleCropSoyIds = useMemo(
@@ -118,6 +114,7 @@ export default function SeasonSummaryPage() {
   )
 
   const byCrop = useMemo(() => {
+    const excluded = yieldAnalysis.excluded
     const m = new Map<string, Agg>()
     for (const p of yearPlantings) {
       const cropName = cropById.get(p.crop_id)?.name ?? '—'
@@ -125,7 +122,7 @@ export default function SeasonSummaryPage() {
       if (!m.has(key)) m.set(key, {
         cropName,
         fullSeasonAcres: 0, doubleCropAcres: 0, totalAcres: 0,
-        irrigatedAcres: 0, drylandAcres: 0, dryBu: 0,
+        irrigatedAcres: 0, drylandAcres: 0, dryBu: 0, harvestedAcres: 0,
       })
       const agg = m.get(key)!
       const acres = Number(p.planted_acres)
@@ -134,10 +131,15 @@ export default function SeasonSummaryPage() {
       agg.drylandAcres   += Number(p.dryland_acres)   || 0
       if (doubleCropSoyIds.has(p.id)) agg.doubleCropAcres += acres
       else agg.fullSeasonAcres += acres
-      agg.dryBu += dryBuByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`) ?? 0
+      // Production + yield count only harvested, non-in-progress fields.
+      if (!excluded.has(p.id)) {
+        agg.dryBu += dryBuFor(p.field_id, p.crop_id, p.season_year)
+        agg.harvestedAcres += acres
+      }
     }
     return [...m.values()].sort((a, b) => a.cropName.localeCompare(b.cropName))
-  }, [yearPlantings, cropById, dryBuByKey, doubleCropSoyIds])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [yearPlantings, cropById, aggByKey, yieldAnalysis, doubleCropSoyIds])
 
   const totals = byCrop.reduce(
     (acc, r) => {
@@ -179,6 +181,8 @@ export default function SeasonSummaryPage() {
         <p className="text-slate-500">Loading…</p>
       ) : (
         <>
+          <AvgYieldHeader averages={yieldAnalysis.averages} cropName={(id) => cropById.get(id)?.name ?? '—'} />
+
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <Stat label="Crops planted" value={String(byCrop.length)} />
             <Stat label="Total acres" value={fmt(totals.acres, 2)} />
@@ -199,7 +203,7 @@ export default function SeasonSummaryPage() {
                   <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">No plantings recorded for {year}.</td></tr>
                 )}
                 {byCrop.map((r) => {
-                  const yld = r.totalAcres > 0 ? r.dryBu / r.totalAcres : null
+                  const yld = r.harvestedAcres > 0 ? r.dryBu / r.harvestedAcres : null
                   return (
                     <tr key={r.cropName} className="border-t border-slate-100">
                       <td className="px-3 py-2 font-semibold">{r.cropName}</td>

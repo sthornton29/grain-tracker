@@ -2,10 +2,11 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { computeBushels } from '@/lib/shrink'
 import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
+import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import ExportBar from '@/components/export-bar'
 import type { ExportColumn, ExportPayload } from '@/lib/exports'
 import type { Crop, Entity, Farm, Field, FieldPlanting, FieldPlantingVariety, County, LoadSplit } from '@/lib/types'
@@ -144,36 +145,15 @@ export default function YieldsPage() {
     return m
   }, [varieties])
 
-  const dryBuByKey = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const l of loads) {
-      if (l.from_type !== 'field' || !l.from_field_id || !l.crop_id) continue
-      if (cropYear !== '' && l.crop_year !== cropYear) continue
-      const crop = cropById.get(l.crop_id)
-      const { dryBushels } = computeBushels({
-        netWeightLb: l.net_weight,
-        moisturePct: l.moisture,
-        baseMoisturePct: crop?.base_moisture_pct ?? null,
-        baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
-        dryBushelsOverride: l.dry_bushels_override,
-      })
-      if (!dryBushels) continue
-      const yr = Number(l.date.slice(0, 4))
-      const key = `${l.from_field_id}|${l.crop_id}|${yr}`
-      map.set(key, (map.get(key) ?? 0) + dryBushels)
-    }
-    const loadById = new Map(loads.map((l) => [l.id, l]))
-    for (const s of splits) {
-      const parent = loadById.get(s.load_id)
-      if (!parent) continue
-      if (cropYear !== '' && parent.crop_year !== cropYear) continue
-      if (s.dry_bushels == null) continue
-      const yr = Number(parent.date.slice(0, 4))
-      const key = `${s.field_id}|${s.crop_id}|${yr}`
-      map.set(key, (map.get(key) ?? 0) + s.dry_bushels)
-    }
-    return map
-  }, [loads, splits, cropById, cropYear])
+  // Dry bushels + most-recent load date per field+crop+year (shared allocation
+  // rules). dryBuFor() is the bushel lookup; aggByKey also carries the load
+  // dates the yield analysis needs.
+  const aggByKey = useMemo(
+    () => fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear }),
+    [loads, splits, cropById, cropYear],
+  )
+  const dryBuFor = (fieldId: string, cropId: string, year: number) =>
+    aggByKey.get(`${fieldId}|${cropId}|${year}`)?.dryBu ?? 0
 
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings(
@@ -220,6 +200,25 @@ export default function YieldsPage() {
     return true
   })
 
+  // Drop unharvested and in-progress fields from the yield numbers (per crop,
+  // over the currently-filtered plantings). The by-field table still shows them,
+  // flagged; every rollup, average, and export uses `includedPlantings`.
+  const yieldAnalysis = useMemo(() => analyzeYields(
+    visible.map((p) => {
+      const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
+      return {
+        id: p.id,
+        cropId: p.crop_id,
+        acres: Number(p.planted_acres),
+        dryBu: agg?.dryBu ?? 0,
+        lastLoadDate: agg?.lastLoadDate ?? null,
+      }
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [plantings, aggByKey, fieldById, farmById, year, cropId, farmId, entityId, countyId, view, practiceFilter])
+  const excludedFields = yieldAnalysis.excluded
+  const includedPlantings = visible.filter((p) => !excludedFields.has(p.id))
+
   // Toggle visibility: hide when nothing irrigated and no breakouts entered.
   // Once any season has an irrigated planting or an allocated breakout, the
   // breakdown view becomes useful, so we show the toggle.
@@ -253,7 +252,7 @@ export default function YieldsPage() {
     const farm = fld?.farm_id ? farmById.get(fld.farm_id) : null
     const ent = farm?.entity_id ? entityById.get(farm.entity_id) : null
     const crop = cropById.get(p.crop_id)
-    const dryBu = dryBuByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`) ?? 0
+    const dryBu = dryBuFor(p.field_id, p.crop_id, p.season_year)
     const acres = Number(p.planted_acres)
     const irrAc = Number(p.irrigated_acres) || 0
     const dryAc = Number(p.dryland_acres) || 0
@@ -300,12 +299,12 @@ export default function YieldsPage() {
 
   const byFarm = useMemo<FarmAgg[]>(() => {
     const m = new Map<string, FarmAgg>()
-    for (const p of visible) {
+    for (const p of includedPlantings) {
       const fld = fieldById.get(p.field_id)
       const farm = fld?.farm_id ? farmById.get(fld.farm_id) : null
       const ent = farm?.entity_id ? entityById.get(farm.entity_id) : null
       const crop = cropById.get(p.crop_id)
-      const dryBu = dryBuByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`) ?? 0
+      const dryBu = dryBuFor(p.field_id, p.crop_id, p.season_year)
       const acres = Number(p.planted_acres)
       const irrAcP = Number(p.irrigated_acres) || 0
       const dryAcP = Number(p.dryland_acres) || 0
@@ -354,7 +353,8 @@ export default function YieldsPage() {
       if (fn !== 0) return fn
       return a.cropName.localeCompare(b.cropName)
     })
-  }, [visible, fieldById, farmById, entityById, cropById, dryBuByKey])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [includedPlantings, fieldById, farmById, entityById, cropById, aggByKey])
 
   // Farm-level yields from the rolled-up bushels and acres. Each side divides
   // its own bushels by its own determinable acres; null when no acres on a side.
@@ -394,10 +394,10 @@ export default function YieldsPage() {
         m.set(key, init)
       }
     }
-    for (const p of visible) {
+    for (const p of includedPlantings) {
       const vs = varietiesByPlanting.get(p.id) ?? []
       if (vs.length === 0) continue
-      const dryBu = dryBuByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`) ?? 0
+      const dryBu = dryBuFor(p.field_id, p.crop_id, p.season_year)
       const cropName = cropById.get(p.crop_id)?.name ?? '—'
       const planted = Number(p.planted_acres) || 0
       if (vs.length === 1) {
@@ -424,7 +424,8 @@ export default function YieldsPage() {
       if (cn !== 0) return cn
       return a.variety.localeCompare(b.variety)
     })
-  }, [visible, varietiesByPlanting, dryBuByKey, cropById])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [includedPlantings, varietiesByPlanting, aggByKey, cropById])
 
   // Multi-variety plantings in the current filter. Surface all of them at the
   // top of the variety view: unallocated ones need attention, allocated ones
@@ -476,7 +477,7 @@ export default function YieldsPage() {
     if (showDrylandCol) columns.push({ label: 'Dryland yield', align: 'right' })
     if (showTotalCol) columns.push({ label: 'Yield (bu/ac)', align: 'right' })
 
-    const rows = visible.map((p) => {
+    const rows = includedPlantings.map((p) => {
       const r = rowFor(p)
       // Mirror the on-screen fall-back: an irrigated/dryland-only filter shows
       // the total yield in its single column when no breakout exists.
@@ -754,6 +755,10 @@ export default function YieldsPage() {
         </p>
       )}
 
+      {view !== 'landowner' && (
+        <AvgYieldHeader averages={yieldAnalysis.averages} cropName={(id) => cropById.get(id)?.name ?? '—'} />
+      )}
+
       {/* The outer filter strip drives the field- and farm-view tables. The
           landowner view has its own filter set inside <YieldsByLandowner /> so
           this row is hidden when that tab is active (otherwise the user would
@@ -1020,10 +1025,18 @@ export default function YieldsPage() {
                 const r = rowFor(p)
                 const showAllocateButton = r.practice === 'mixed'
                 const isBreakoutOpen = breakoutId === p.id
+                const exclusion = excludedFields.get(p.id)
                 return (
                   <Fragment key={p.id}>
-                    <tr className="border-t border-slate-100">
-                      <td className="px-3 py-2">{r.fld?.name_or_number ?? '—'}</td>
+                    <tr className={`border-t border-slate-100 ${exclusion ? 'text-slate-400' : ''}`}>
+                      <td className="px-3 py-2">
+                        {r.fld?.name_or_number ?? '—'}
+                        {exclusion && (
+                          <span className={`ml-2 text-xs rounded px-2 py-0.5 ${exclusion === 'in_progress' ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-600'}`}>
+                            {exclusion === 'in_progress' ? 'in progress' : 'unharvested'}
+                          </span>
+                        )}
+                      </td>
                       <td className="px-3 py-2">{r.farm?.name ?? ''}</td>
                       <td className="px-3 py-2">{r.crop?.name ?? '—'}</td>
                       <td className="px-3 py-2">{p.season_year}</td>
