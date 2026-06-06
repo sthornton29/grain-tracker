@@ -795,7 +795,12 @@ export default function YieldsPage() {
       )}
 
       {view !== 'landowner' && (
-        <AvgYieldHeader averages={yieldAnalysis.averages} cropName={(id) => cropById.get(id)?.name ?? '—'} />
+        <AvgYieldHeader
+          averages={yieldAnalysis.averages}
+          cropName={(id) => cropById.get(id)?.name ?? '—'}
+          progress={view === 'field' ? yieldAnalysis.progress : undefined}
+          label={view === 'field' ? 'Yield & harvest progress by crop' : undefined}
+        />
       )}
 
       {overrideErr && <p className="text-sm text-red-600 no-print">{overrideErr}</p>}

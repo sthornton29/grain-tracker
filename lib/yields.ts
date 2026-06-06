@@ -115,6 +115,19 @@ export type CropAverage = {
   yield: number
 }
 
+export type HarvestProgress = {
+  cropId: string
+  /** Acres of completed fields (harvested, not in-progress; includes any
+   *  in-progress field the user overrode to "count anyway"). */
+  completedAcres: number
+  inProgressAcres: number
+  /** Acres of fields with no bushels yet. */
+  remainingAcres: number
+  totalAcres: number
+  /** completedAcres / totalAcres, 0–100. */
+  pctComplete: number
+}
+
 export type YieldAnalysis = {
   /** Row id → why it's excluded *after* overrides. Only excluded rows appear. */
   excluded: Map<string, ExclusionReason>
@@ -123,6 +136,8 @@ export type YieldAnalysis = {
   autoExcluded: Map<string, ExclusionReason>
   /** Crop id → weighted average over the surviving (included) rows. */
   averages: Map<string, CropAverage>
+  /** Crop id → harvest completion (acres completed / in-progress / remaining). */
+  progress: Map<string, HarvestProgress>
 }
 
 // A field whose yield is more than this far below its crop's harvested average is
@@ -143,6 +158,7 @@ export function analyzeYields(
   const excluded = new Map<string, ExclusionReason>()
   const autoExcluded = new Map<string, ExclusionReason>()
   const averages = new Map<string, CropAverage>()
+  const progress = new Map<string, HarvestProgress>()
 
   const byCrop = new Map<string, YieldInput[]>()
   for (const r of rows) {
@@ -201,7 +217,28 @@ export function analyzeYields(
       ac += r.acres
     }
     if (ac > 0) averages.set(cropId, { cropId, acres: ac, dryBu: bu, yield: bu / ac })
+
+    // Harvest progress (by acres), using the effective classification so a
+    // "count anyway" override moves a field from in-progress into completed.
+    let completedAcres = 0
+    let inProgressAcres = 0
+    let remainingAcres = 0
+    for (const r of list) {
+      const eff = excluded.get(r.id)
+      if (eff === 'unharvested') remainingAcres += r.acres
+      else if (eff === 'in_progress') inProgressAcres += r.acres
+      else completedAcres += r.acres
+    }
+    const totalAcres = completedAcres + inProgressAcres + remainingAcres
+    progress.set(cropId, {
+      cropId,
+      completedAcres,
+      inProgressAcres,
+      remainingAcres,
+      totalAcres,
+      pctComplete: totalAcres > 0 ? (completedAcres / totalAcres) * 100 : 0,
+    })
   }
 
-  return { excluded, autoExcluded, averages }
+  return { excluded, autoExcluded, averages, progress }
 }
