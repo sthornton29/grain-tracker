@@ -16,13 +16,24 @@ export type ExportColumn = {
   align?: 'left' | 'right'
 }
 
+/** Visual role of a row, used by the PDF/Excel renderers to style it.
+ *  'data'    — a normal table row.
+ *  'subhead' — a group label that spans the whole table (e.g. a farm name).
+ *              Only the first cell's text is shown.
+ *  'total'   — an emphasized summary row (bold, tinted background). */
+export type RowKind = 'data' | 'subhead' | 'total'
+
 export type ExportSection = {
-  /** Section label, e.g. "Crop totals". Used as a sub-header in PDF / a sheet
-   *  name in Excel when present. Optional. */
+  /** Section label, e.g. "Crop totals". Rendered as a heading bar in the PDF
+   *  and a sheet name / banner row in Excel when present. Optional. */
   title?: string
   columns: ExportColumn[]
   /** One value per column, per row. Strings render as-is; numbers format. */
   rows: Array<Array<string | number | null>>
+  /** Optional per-row role, parallel to `rows`. Missing entries default to
+   *  'data'. Lets a section embed sub-headers and totals so the PDF can match
+   *  an on-screen grouped layout. */
+  rowMeta?: RowKind[]
 }
 
 export type ExportPayload = {
@@ -34,6 +45,10 @@ export type ExportPayload = {
   sections: ExportSection[]
   /** Filename without extension (defaults to slug of the title + date). */
   filename?: string
+  /** Excel only: stack every section onto one worksheet instead of one sheet
+   *  per section. Use for reports whose sections are groups of one report
+   *  (e.g. one section per landowner) rather than independent tables. */
+  singleSheet?: boolean
 }
 
 function defaultFilename(title: string): string {
@@ -48,10 +63,42 @@ function cellForExcel(v: string | number | null): string | number {
 
 // ---------- Excel (xlsx via SheetJS) ----------
 
+function autoWidths(aoa: Array<Array<string | number>>): Array<{ wch: number }> {
+  const widths: number[] = []
+  for (const r of aoa) {
+    r.forEach((v, idx) => {
+      const len = String(v ?? '').length
+      if (!widths[idx] || len > widths[idx]) widths[idx] = len
+    })
+  }
+  return widths.map((w) => ({ wch: Math.min(40, Math.max(10, w + 2)) }))
+}
+
 export async function exportToExcel(payload: ExportPayload): Promise<void> {
   const XLSX = await import('xlsx')
   const wb = XLSX.utils.book_new()
   const today = new Date().toLocaleString()
+
+  // Single-sheet mode: every section flows down one worksheet, each preceded
+  // by its title and column header. Mirrors a grouped on-screen report.
+  if (payload.singleSheet) {
+    const aoa: Array<Array<string | number>> = []
+    aoa.push([payload.title])
+    if (payload.filters) aoa.push([payload.filters])
+    aoa.push([`Generated: ${today}`])
+    for (const section of payload.sections) {
+      aoa.push([])
+      if (section.title) aoa.push([section.title])
+      aoa.push(section.columns.map((c) => c.label))
+      for (const row of section.rows) aoa.push(row.map(cellForExcel))
+    }
+    const ws = XLSX.utils.aoa_to_sheet(aoa)
+    ws['!cols'] = autoWidths(aoa)
+    const sheetName = payload.title.slice(0, 31).replace(/[\\/?*[\]:]/g, '-') || 'Report'
+    XLSX.utils.book_append_sheet(wb, ws, sheetName)
+    XLSX.writeFile(wb, `${payload.filename || defaultFilename(payload.title)}.xlsx`)
+    return
+  }
 
   for (let i = 0; i < payload.sections.length; i++) {
     const section = payload.sections[i]
@@ -67,15 +114,7 @@ export async function exportToExcel(payload: ExportPayload): Promise<void> {
     for (const row of section.rows) aoa.push(row.map(cellForExcel))
 
     const ws = XLSX.utils.aoa_to_sheet(aoa)
-    // Auto-width: pick max length per column (including header row).
-    const widths: number[] = []
-    for (const r of aoa) {
-      r.forEach((v, idx) => {
-        const len = String(v ?? '').length
-        if (!widths[idx] || len > widths[idx]) widths[idx] = len
-      })
-    }
-    ws['!cols'] = widths.map((w) => ({ wch: Math.min(40, Math.max(10, w + 2)) }))
+    ws['!cols'] = autoWidths(aoa)
 
     const sheetName = (section.title || `Sheet ${i + 1}`).slice(0, 31).replace(/[\\/?*[\]:]/g, '-')
     XLSX.utils.book_append_sheet(wb, ws, sheetName || `Sheet ${i + 1}`)
@@ -104,6 +143,8 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
   doc.text(`Generated ${today}`, pageWidth - 40, 40, { align: 'right' })
   doc.setTextColor(0)
 
+  const pageHeight = doc.internal.pageSize.getHeight()
+
   let cursorY = 60
   if (payload.filters) {
     doc.setFontSize(10)
@@ -113,15 +154,49 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
 
   for (let i = 0; i < payload.sections.length; i++) {
     const section = payload.sections[i]
+    const meta = section.rowMeta ?? []
+
     if (section.title) {
+      // Keep a section's heading bar with the first rows of its table — start a
+      // fresh page if we're too close to the bottom to fit the header + a row.
+      if (cursorY > pageHeight - 90) {
+        doc.addPage()
+        cursorY = 40
+      }
+      doc.setFillColor(241, 245, 249) // slate-100, matching the on-screen card header
+      doc.rect(40, cursorY + 2, pageWidth - 80, 22, 'F')
       doc.setFontSize(12)
-      doc.text(section.title, 40, cursorY + 16)
-      cursorY += 20
+      doc.setTextColor(15, 23, 42)
+      doc.text(section.title, 48, cursorY + 17)
+      doc.setTextColor(0)
+      cursorY += 30
     }
+
+    // Build the body, turning 'subhead' rows into a single full-width cell so a
+    // farm name (etc.) spans the table just like its row on the page.
+    const body = section.rows.map((r, ri) => {
+      if (meta[ri] === 'subhead') {
+        const label = r.find((v) => v != null && v !== '') ?? ''
+        return [
+          {
+            content: String(label),
+            colSpan: section.columns.length,
+            styles: {
+              fontStyle: 'bold' as const,
+              fillColor: [241, 245, 249] as [number, number, number],
+              textColor: [51, 65, 85] as [number, number, number],
+              halign: 'left' as const,
+            },
+          },
+        ]
+      }
+      return r.map((v) => (v == null ? '' : String(v)))
+    })
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(autoTable as any)(doc, {
       head: [section.columns.map((c) => c.label)],
-      body: section.rows.map((r) => r.map((v) => (v == null ? '' : String(v)))),
+      body,
       startY: cursorY + 4,
       styles: { fontSize: 9, cellPadding: 4 },
       headStyles: { fillColor: [22, 101, 52] }, // green-800 to match the nav
@@ -129,8 +204,14 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
         section.columns.map((c, idx) => [idx, { halign: c.align ?? 'left' }]),
       ),
       margin: { left: 40, right: 40 },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      didParseCell: (data: any) => {
+        if (data.section === 'body' && meta[data.row.index] === 'total') {
+          data.cell.styles.fontStyle = 'bold'
+          data.cell.styles.fillColor = [248, 250, 252] // slate-50
+        }
+      },
       didDrawPage: (data: { pageNumber: number }) => {
-        const pageHeight = doc.internal.pageSize.getHeight()
         doc.setFontSize(8)
         doc.setTextColor(140)
         doc.text(`Page ${data.pageNumber}`, pageWidth - 40, pageHeight - 20, { align: 'right' })

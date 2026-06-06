@@ -208,54 +208,55 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
     return parts.join(' · ')
   }
 
-  // Export payload mirrors what's on screen: one row per (landowner, farm,
-  // crop). Per-field detail is intentionally omitted — the report rolls up to
-  // the farm level for readability.
+  // Export payload mirrors the on-screen layout: one section per landowner,
+  // with a sub-header row per farm followed by its crop rows, then a tinted
+  // totals block. Per-field detail is intentionally omitted — the report rolls
+  // up to the farm level for readability.
   function buildExportPayload(): ExportPayload {
-    const rows: Array<Array<string | number | null>> = []
-    for (const g of groups) {
+    const columns: ExportPayload['sections'][number]['columns'] = [
+      { label: 'Crop' },
+      { label: 'Acres', align: 'right' },
+      { label: 'Dry bu', align: 'right' },
+      { label: 'Yield (bu/ac)', align: 'right' },
+    ]
+    const yld = (acres: number, dryBu: number) => (acres > 0 ? (dryBu / acres).toFixed(1) : '—')
+
+    const sections = groups.map((g) => {
+      const rows: Array<Array<string | number | null>> = []
+      const rowMeta: NonNullable<ExportPayload['sections'][number]['rowMeta']> = []
+
       for (const f of g.farms) {
+        rows.push([f.fsaNumber ? `${f.farmName}  ·  FSA #${f.fsaNumber}` : f.farmName])
+        rowMeta.push('subhead')
         for (const t of f.byCrop.values()) {
-          rows.push([
-            g.landownerName,
-            f.farmName,
-            f.fsaNumber ?? '',
-            t.cropName,
-            t.acres.toFixed(2),
-            t.dryBu.toFixed(2),
-            t.acres > 0 ? (t.dryBu / t.acres).toFixed(2) : '',
-          ])
+          rows.push([t.cropName, t.acres.toFixed(2), t.dryBu.toFixed(2), yld(t.acres, t.dryBu)])
+          rowMeta.push('data')
         }
       }
-      for (const t of g.byCrop.values()) {
-        rows.push([
-          `${g.landownerName} — TOTAL`,
-          '',
-          '',
-          t.cropName,
-          t.acres.toFixed(2),
-          t.dryBu.toFixed(2),
-          t.acres > 0 ? (t.dryBu / t.acres).toFixed(2) : '',
-        ])
+
+      if (g.byCrop.size > 0) {
+        rows.push([`${g.landownerName} totals`])
+        rowMeta.push('subhead')
+        for (const t of g.byCrop.values()) {
+          rows.push([t.cropName, t.acres.toFixed(2), t.dryBu.toFixed(2), yld(t.acres, t.dryBu)])
+          rowMeta.push('total')
+        }
       }
-    }
+
+      const farmCount = `${g.farms.length} farm${g.farms.length === 1 ? '' : 's'}`
+      return {
+        title: `${g.landownerName}  —  ${farmCount}`,
+        columns,
+        rows,
+        rowMeta,
+      }
+    })
+
     return {
       title: 'Yields by Landowner',
       filters: filtersLabel(),
-      sections: [
-        {
-          columns: [
-            { label: 'Landowner' },
-            { label: 'Farm' },
-            { label: 'FSA #' },
-            { label: 'Crop' },
-            { label: 'Acres', align: 'right' },
-            { label: 'Dry bu', align: 'right' },
-            { label: 'Yield (bu/ac)', align: 'right' },
-          ],
-          rows,
-        },
-      ],
+      singleSheet: true,
+      sections,
     }
   }
 
