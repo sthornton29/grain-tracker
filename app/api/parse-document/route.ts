@@ -331,6 +331,7 @@ const PROMPTS: Record<DocumentType, string> = {
 
 type ParseBody = {
   pdf_base64?: unknown
+  pdf_url?: unknown
   images?: unknown
   document_type?: unknown
 }
@@ -398,8 +399,11 @@ export async function POST(req: NextRequest) {
   }
   const docType = documentType as DocumentType
 
-  // Build the document content block(s): either a single PDF (existing path) or
-  // one or more compressed photos. The text prompt is identical either way.
+  // Build the document content block(s): a PDF by URL (the default path — keeps
+  // the request body tiny so it clears Vercel's 4.5 MB serverless limit; the
+  // PDF can be up to our 20 MB cap), a base64 PDF (legacy/fallback), or one or
+  // more compressed photos. The text prompt is identical either way.
+  const pdfUrl = typeof body.pdf_url === 'string' ? body.pdf_url : ''
   const pdfBase64 = typeof body.pdf_base64 === 'string' ? body.pdf_base64 : ''
   let docBlocks: Anthropic.ContentBlockParam[]
   if (body.images !== undefined) {
@@ -409,13 +413,18 @@ export async function POST(req: NextRequest) {
       type: 'image',
       source: { type: 'base64', media_type: img.media_type as 'image/jpeg', data: img.data },
     }))
+  } else if (pdfUrl) {
+    if (!/^https:\/\//i.test(pdfUrl)) return badRequest('pdf_url must be an https URL.')
+    docBlocks = [
+      { type: 'document', source: { type: 'url', url: pdfUrl } },
+    ]
   } else if (pdfBase64) {
     if (pdfBase64.length > MAX_BASE64_LEN) return badRequest('PDF exceeds the 20 MB size limit.')
     docBlocks = [
       { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 } },
     ]
   } else {
-    return badRequest('pdf_base64 or images is required.')
+    return badRequest('pdf_url, pdf_base64, or images is required.')
   }
 
   const prompt = PROMPTS[docType]

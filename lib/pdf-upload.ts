@@ -7,6 +7,7 @@
 // how to talk to /api/parse-document on the same origin.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { createClient } from '@/lib/supabase/client'
 
 export const MAX_PDF_BYTES = 20 * 1024 * 1024
 export const PDF_BUCKET = 'documents'
@@ -196,7 +197,14 @@ export async function parseDocument(
   input: File | ParseImage[],
   documentType: DocumentType,
 ): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction> {
+  // Build the request body. Photos are compressed small enough to inline as
+  // base64. A PDF, however, is uploaded to storage first and sent as a URL:
+  // Vercel rejects serverless request bodies over 4.5 MB with a 413, well below
+  // our 20 MB PDF limit, so base64-inlining a real-world contract scan fails.
+  // The temp upload is deleted once parsing returns (Anthropic has fetched it
+  // by then, since the route awaits the API call before responding).
   let payload: Record<string, unknown>
+  let cleanup: (() => void) | null = null
   if (Array.isArray(input)) {
     payload = {
       document_type: documentType,
@@ -204,22 +212,29 @@ export async function parseDocument(
     }
   } else {
     if (input.size > MAX_PDF_BYTES) throw new PdfTooLargeError()
-    payload = { document_type: documentType, pdf_base64: await fileToBase64(input) }
+    const supabase = createClient()
+    const { publicUrl, path } = await uploadFileToStorage(supabase, input, 'parse-uploads', 'application/pdf')
+    payload = { document_type: documentType, pdf_url: publicUrl }
+    cleanup = () => { void supabase.storage.from(PDF_BUCKET).remove([path]).then(() => {}, () => {}) }
   }
-  const res = await fetch('/api/parse-document', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  const body = await res.json().catch(() => null)
-  if (!res.ok) {
-    const msg = body?.error || `Server returned ${res.status}.`
-    throw new Error(msg)
+  try {
+    const res = await fetch('/api/parse-document', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    const body = await res.json().catch(() => null)
+    if (!res.ok) {
+      const msg = body?.error || `Server returned ${res.status}.`
+      throw new Error(msg)
+    }
+    if (!body || typeof body !== 'object' || !('data' in body)) {
+      throw new Error('Malformed response from server.')
+    }
+    return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction
+  } finally {
+    cleanup?.()
   }
-  if (!body || typeof body !== 'object' || !('data' in body)) {
-    throw new Error('Malformed response from server.')
-  }
-  return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction
 }
 
 // Uploads to the public "documents" bucket and returns the public URL.
