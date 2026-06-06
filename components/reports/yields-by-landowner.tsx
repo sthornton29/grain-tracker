@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { usePersistentState } from '@/lib/use-persistent-state'
 import type { ExportPayload } from '@/lib/exports'
 import type {
   Crop, Entity, Farm, Field, FieldPlanting, Landowner, LoadSplit,
@@ -55,10 +56,11 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
   const [landowners, setLandowners] = useState<Landowner[]>([])
   const [loading, setLoading] = useState(true)
 
-  const [cropYear, setCropYear] = useState<number | ''>(() => new Date().getFullYear())
-  const [cropId, setCropId] = useState('')
-  const [entityId, setEntityId] = useState('')
-  const [landownerId, setLandownerId] = useState('')
+  // Filters persist across visits; default the crop year to the current year.
+  const [cropYear, setCropYear] = usePersistentState<number | ''>('yields-by-landowner:cropYear', new Date().getFullYear())
+  const [cropId, setCropId] = usePersistentState('yields-by-landowner:cropId', '')
+  const [entityId, setEntityId] = usePersistentState('yields-by-landowner:entityId', '')
+  const [landownerId, setLandownerId] = usePersistentState('yields-by-landowner:landownerId', '')
 
   useEffect(() => {
     ;(async () => {

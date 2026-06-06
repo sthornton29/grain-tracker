@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { usePersistentState } from '@/lib/use-persistent-state'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import ExportBar from '@/components/export-bar'
 import type { ExportColumn, ExportPayload } from '@/lib/exports'
@@ -56,15 +57,17 @@ export default function YieldsPage() {
   const [counties, setCounties] = useState<County[]>([])
   const [loading, setLoading] = useState(true)
 
-  const [view, setView] = useState<ViewMode>('field')
-  const [year, setYear] = useState<number | ''>(currentYear())
-  const [cropId, setCropId] = useState('')
-  const [farmId, setFarmId] = useState('')
-  const [entityId, setEntityId] = useState('')
-  const [countyId, setCountyId] = useState('')
-  const [cropYear, setCropYear] = useState<number | ''>('')
-  const [yieldView, setYieldView] = useState<YieldView>('total')
-  const [practiceFilter, setPracticeFilter] = useState<PracticeFilter>('all')
+  // Filters persist in localStorage so the user returns to the same view and
+  // filter set they last used (see usePersistentState).
+  const [view, setView] = usePersistentState<ViewMode>('yields:view', 'field')
+  const [year, setYear] = usePersistentState<number | ''>('yields:year', currentYear())
+  const [cropId, setCropId] = usePersistentState('yields:cropId', '')
+  const [farmId, setFarmId] = usePersistentState('yields:farmId', '')
+  const [entityId, setEntityId] = usePersistentState('yields:entityId', '')
+  const [countyId, setCountyId] = usePersistentState('yields:countyId', '')
+  const [cropYear, setCropYear] = usePersistentState<number | ''>('yields:cropYear', '')
+  const [yieldView, setYieldView] = usePersistentState<YieldView>('yields:yieldView', 'total')
+  const [practiceFilter, setPracticeFilter] = usePersistentState<PracticeFilter>('yields:practiceFilter', 'all')
 
   // Breakout-entry UI state. Tracks which planting's row is being allocated
   // and the in-flight input values. `lastTouched` records which of the two

@@ -16,6 +16,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { usePersistentState } from '@/lib/use-persistent-state'
 import type {
   County, Crop, Entity, Farm, Field, FieldPlanting, LoadSplit,
 } from '@/lib/types'
@@ -99,8 +100,9 @@ export default function CropInsuranceReport() {
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
 
-  const [cropYear, setCropYear] = useState<number | ''>('')
-  const [entityId, setEntityId] = useState('')
+  // Filters persist across visits (see usePersistentState).
+  const [cropYear, setCropYear] = usePersistentState<number | ''>('crop-insurance:cropYear', '')
+  const [entityId, setEntityId] = usePersistentState('crop-insurance:entityId', '')
   // Gate state for mixed-without-breakout plantings. The user must explicitly
   // resolve this before we generate the report — either fill in the breakout
   // upstream or accept that production rolls into dryland.

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { usePersistentState } from '@/lib/use-persistent-state'
 import type { ExportPayload } from '@/lib/exports'
 import type {
   Crop, Entity, Farm, Field, FieldPlanting, Landowner, LoadSplit,
@@ -68,10 +69,11 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
   const [landowners, setLandowners] = useState<Landowner[]>([])
   const [loading, setLoading] = useState(true)
 
-  const [cropYear, setCropYear] = useState<number | ''>('')
-  const [cropId, setCropId] = useState('')
-  const [entityId, setEntityId] = useState('')
-  const [landownerId, setLandownerId] = useState('')
+  // Filters persist across visits (see usePersistentState).
+  const [cropYear, setCropYear] = usePersistentState<number | ''>('share-rent:cropYear', '')
+  const [cropId, setCropId] = usePersistentState('share-rent:cropId', '')
+  const [entityId, setEntityId] = usePersistentState('share-rent:entityId', '')
+  const [landownerId, setLandownerId] = usePersistentState('share-rent:landownerId', '')
 
   useEffect(() => {
     ;(async () => {

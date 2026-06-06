@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { usePersistentState } from '@/lib/use-persistent-state'
 import type { Crop, FieldPlanting, LoadSplit } from '@/lib/types'
 
 type LoadRow = {
@@ -27,8 +28,9 @@ export default function SeasonSummaryPage() {
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
   const [loading, setLoading] = useState(true)
-  const [year, setYear] = useState<number>(currentYear())
-  const [cropYear, setCropYear] = useState<number | ''>('')
+  // Filters persist across visits (see usePersistentState).
+  const [year, setYear] = usePersistentState<number>('season:year', currentYear())
+  const [cropYear, setCropYear] = usePersistentState<number | ''>('season:cropYear', '')
 
   async function refresh() {
     setLoading(true)
