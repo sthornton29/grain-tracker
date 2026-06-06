@@ -223,12 +223,14 @@ export default function YieldsPage() {
   ), [plantings, aggByKey, fieldById, farmById, year, cropId, farmId, entityId, countyId, view, practiceFilter])
   const excludedFields = yieldAnalysis.excluded
   const includedPlantings = visible.filter((p) => !excludedFields.has(p.id))
-  // By-field rows: harvested (counted) fields first, the flagged unharvested /
-  // in-progress fields sink to the bottom. Stable, so original order holds
-  // within each group.
-  const fieldRows = [...visible].sort(
-    (a, b) => (excludedFields.has(a.id) ? 1 : 0) - (excludedFields.has(b.id) ? 1 : 0),
-  )
+  // By-field row order: completed (counted) fields first, then in-progress,
+  // then unharvested. Stable, so original order holds within each group.
+  const fieldRank = (id: string) => {
+    const reason = excludedFields.get(id)
+    if (!reason) return 0
+    return reason === 'in_progress' ? 1 : 2
+  }
+  const fieldRows = [...visible].sort((a, b) => fieldRank(a.id) - fieldRank(b.id))
 
   // Toggle visibility: hide when nothing irrigated and no breakouts entered.
   // Once any season has an irrigated planting or an allocated breakout, the
