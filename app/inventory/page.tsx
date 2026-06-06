@@ -344,7 +344,7 @@ function BinCard({
   return (
     <div className="bg-white rounded-xl shadow p-4">
       <div className="flex justify-between items-baseline gap-2 flex-wrap">
-        <h3 className="text-base font-semibold">Bin {v.bin.name_or_number}</h3>
+        <h3 className="text-base font-semibold">{v.bin.name_or_number}</h3>
         <span className="text-sm text-slate-500">{fmtBu(v.total)} bu total</span>
       </div>
       {rows.length === 0 ? (
