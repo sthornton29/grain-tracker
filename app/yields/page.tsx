@@ -475,7 +475,6 @@ export default function YieldsPage() {
     if (showIrrigatedCol) columns.push({ label: 'Irrigated yield', align: 'right' })
     if (showDrylandCol) columns.push({ label: 'Dryland yield', align: 'right' })
     if (showTotalCol) columns.push({ label: 'Yield (bu/ac)', align: 'right' })
-    columns.push({ label: 'Double-crop' })
 
     const rows = visible.map((p) => {
       const r = rowFor(p)
@@ -497,7 +496,6 @@ export default function YieldsPage() {
       if (showIrrigatedCol) cells.push(irrY != null ? irrY.toFixed(2) : '')
       if (showDrylandCol) cells.push(dryY != null ? dryY.toFixed(2) : '')
       if (showTotalCol) cells.push(r.totalYield != null ? r.totalYield.toFixed(2) : '')
-      cells.push(doubleCropSoyIds.has(p.id) ? 'yes' : '')
       return cells
     })
     return { title: 'Yields by Field', filters: fieldFiltersLabel(), sections: [{ columns, rows }] }
