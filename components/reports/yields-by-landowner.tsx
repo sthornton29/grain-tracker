@@ -55,7 +55,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
   const [landowners, setLandowners] = useState<Landowner[]>([])
   const [loading, setLoading] = useState(true)
 
-  const [cropYear, setCropYear] = useState<number | ''>('')
+  const [cropYear, setCropYear] = useState<number | ''>(() => new Date().getFullYear())
   const [cropId, setCropId] = useState('')
   const [entityId, setEntityId] = useState('')
   const [landownerId, setLandownerId] = useState('')
