@@ -223,6 +223,12 @@ export default function YieldsPage() {
   ), [plantings, aggByKey, fieldById, farmById, year, cropId, farmId, entityId, countyId, view, practiceFilter])
   const excludedFields = yieldAnalysis.excluded
   const includedPlantings = visible.filter((p) => !excludedFields.has(p.id))
+  // By-field rows: harvested (counted) fields first, the flagged unharvested /
+  // in-progress fields sink to the bottom. Stable, so original order holds
+  // within each group.
+  const fieldRows = [...visible].sort(
+    (a, b) => (excludedFields.has(a.id) ? 1 : 0) - (excludedFields.has(b.id) ? 1 : 0),
+  )
 
   // Toggle visibility: hide when nothing irrigated and no breakouts entered.
   // Once any season has an irrigated planting or an allocated breakout, the
@@ -735,7 +741,7 @@ export default function YieldsPage() {
   // only" view.
   const visibleYieldCols = [showIrrigatedCol, showDrylandCol, showTotalCol].filter(Boolean).length
   const visibleAcresBreakoutCols = [showIrrigatedCol, showDrylandCol].filter(Boolean).length
-  const fieldColCount = 3 /* Field/Farm/Crop */ + (showFieldYear ? 1 : 0) + 1 /* Acres */
+  const fieldColCount = 2 /* Field/Crop */ + (showFieldYear ? 1 : 0) + 1 /* Acres */
     + visibleAcresBreakoutCols + 1 /* Dry bu */ + visibleYieldCols + 1 /* actions */
   // Farm: Farm/FSA#/Entity/Crop/Acres/Dry bu/Yield = 7 (+Year), plus 4 in
   // breakdown (Irr ac, Dry ac, Irrigated yield, Dryland yield).
@@ -1036,7 +1042,6 @@ export default function YieldsPage() {
             <thead className="bg-slate-100 text-slate-700">
               <tr>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Field</th>
-                <th className="text-left px-3 py-2 whitespace-nowrap">Farm</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
                 {showFieldYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
                 <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
@@ -1054,13 +1059,15 @@ export default function YieldsPage() {
               {!loading && visible.length === 0 && (
                 <tr><td colSpan={fieldColCount} className="px-3 py-6 text-center text-slate-400">No plantings match these filters.</td></tr>
               )}
-              {visible.map((p) => {
+              {fieldRows.map((p) => {
                 const r = rowFor(p)
                 const showAllocateButton = r.practice === 'mixed'
                 const isBreakoutOpen = breakoutId === p.id
                 const exclusion = excludedFields.get(p.id)         // effective (after override)
                 const autoFlag = yieldAnalysis.autoExcluded.get(p.id) // what the auto rule says
-                const overridden = p.yield_include_override === true && autoFlag != null
+                // Override only makes sense for in-progress fields — an
+                // unharvested field has no bushels to count.
+                const overridden = p.yield_include_override === true && autoFlag === 'in_progress'
                 const savingOverride = overrideSavingId === p.id
                 const flagLabel = (k: 'in_progress' | 'unharvested') => k === 'in_progress' ? 'in progress' : 'unharvested'
                 return (
@@ -1074,12 +1081,12 @@ export default function YieldsPage() {
                               {flagLabel(exclusion)}
                             </span>
                           )}
-                          {overridden && autoFlag && (
+                          {overridden && (
                             <span className="text-xs rounded px-2 py-0.5 bg-green-100 text-green-800">
-                              {flagLabel(autoFlag)} · counted
+                              in progress · counted
                             </span>
                           )}
-                          {exclusion && (
+                          {exclusion === 'in_progress' && (
                             <button
                               type="button"
                               disabled={savingOverride}
@@ -1097,7 +1104,6 @@ export default function YieldsPage() {
                           )}
                         </div>
                       </td>
-                      <td className="px-3 py-2">{r.farm?.name ?? ''}</td>
                       <td className="px-3 py-2">{r.crop?.name ?? '—'}</td>
                       {showFieldYear && <td className="px-3 py-2">{p.season_year}</td>}
                       <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>

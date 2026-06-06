@@ -186,12 +186,14 @@ export function analyzeYields(
     }
 
     // --- Apply overrides → effective exclusion + averages ---
+    // The override only un-excludes an in-progress field — an unharvested field
+    // has no bushels, so "count anyway" never applies to it.
     let bu = 0
     let ac = 0
     for (const r of list) {
       const auto = autoExcluded.get(r.id)
-      const isExcluded = auto != null && r.override !== true
-      if (isExcluded) {
+      const overrideCounts = auto === 'in_progress' && r.override === true
+      if (auto != null && !overrideCounts) {
         excluded.set(r.id, auto)
         continue
       }
