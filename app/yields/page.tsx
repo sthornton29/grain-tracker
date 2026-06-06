@@ -1069,16 +1069,15 @@ export default function YieldsPage() {
                 // unharvested field has no bushels to count.
                 const overridden = p.yield_include_override === true && autoFlag === 'in_progress'
                 const savingOverride = overrideSavingId === p.id
-                const flagLabel = (k: 'in_progress' | 'unharvested') => k === 'in_progress' ? 'in progress' : 'unharvested'
                 return (
                   <Fragment key={p.id}>
                     <tr className={`border-t border-slate-100 ${exclusion ? 'text-slate-400' : ''}`}>
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span>{r.fld?.name_or_number ?? '—'}</span>
-                          {exclusion && (
-                            <span className={`text-xs rounded px-2 py-0.5 ${exclusion === 'in_progress' ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-600'}`}>
-                              {flagLabel(exclusion)}
+                          {exclusion === 'in_progress' && (
+                            <span className="text-xs rounded px-2 py-0.5 bg-amber-100 text-amber-800">
+                              in progress
                             </span>
                           )}
                           {overridden && (
