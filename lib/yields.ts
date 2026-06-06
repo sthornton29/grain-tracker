@@ -102,6 +102,9 @@ export type YieldInput = {
   acres: number
   dryBu: number
   lastLoadDate: string | null
+  /** Manual override: true forces the field to be counted despite an auto flag;
+   *  null/undefined leaves the automatic classification in effect. */
+  override?: boolean | null
 }
 
 export type CropAverage = {
@@ -113,8 +116,11 @@ export type CropAverage = {
 }
 
 export type YieldAnalysis = {
-  /** Row id → why it was excluded. Only excluded rows appear. */
+  /** Row id → why it's excluded *after* overrides. Only excluded rows appear. */
   excluded: Map<string, ExclusionReason>
+  /** Row id → the automatic classification, ignoring overrides. Lets the UI
+   *  show "flagged but counted" when the user has overridden a row. */
+  autoExcluded: Map<string, ExclusionReason>
   /** Crop id → weighted average over the surviving (included) rows. */
   averages: Map<string, CropAverage>
 }
@@ -135,6 +141,7 @@ export function analyzeYields(
   threshold: number = IN_PROGRESS_THRESHOLD,
 ): YieldAnalysis {
   const excluded = new Map<string, ExclusionReason>()
+  const autoExcluded = new Map<string, ExclusionReason>()
   const averages = new Map<string, CropAverage>()
 
   const byCrop = new Map<string, YieldInput[]>()
@@ -145,46 +152,54 @@ export function analyzeYields(
   }
 
   for (const [cropId, list] of byCrop) {
+    // --- Automatic classification (ignores overrides) ---
     const harvested: YieldInput[] = []
     for (const r of list) {
       if (r.dryBu > 0) harvested.push(r)
-      else excluded.set(r.id, 'unharvested')
-    }
-    if (harvested.length === 0) continue
-
-    // The field currently being harvested = the one with the most recent load.
-    let candidate: YieldInput | null = null
-    for (const r of harvested) {
-      if (r.lastLoadDate == null) continue
-      if (candidate == null || r.lastLoadDate > (candidate.lastLoadDate as string)) candidate = r
+      else autoExcluded.set(r.id, 'unharvested')
     }
 
-    // Only flag it as in-progress when there are other harvested fields to
-    // compare against — otherwise we have no baseline.
-    if (candidate && harvested.length >= 2) {
-      let bu = 0
-      let ac = 0
+    if (harvested.length > 0) {
+      // The field currently being harvested = the one with the most recent load.
+      let candidate: YieldInput | null = null
       for (const r of harvested) {
-        if (r.id === candidate.id) continue
-        bu += r.dryBu
-        ac += r.acres
+        if (r.lastLoadDate == null) continue
+        if (candidate == null || r.lastLoadDate > (candidate.lastLoadDate as string)) candidate = r
       }
-      const baseline = ac > 0 ? bu / ac : null
-      const candYield = candidate.acres > 0 ? candidate.dryBu / candidate.acres : null
-      if (baseline != null && candYield != null && candYield < baseline * (1 - threshold)) {
-        excluded.set(candidate.id, 'in_progress')
+
+      // Only flag it as in-progress when there are other harvested fields to
+      // compare against — otherwise we have no baseline.
+      if (candidate && harvested.length >= 2) {
+        let bu = 0
+        let ac = 0
+        for (const r of harvested) {
+          if (r.id === candidate.id) continue
+          bu += r.dryBu
+          ac += r.acres
+        }
+        const baseline = ac > 0 ? bu / ac : null
+        const candYield = candidate.acres > 0 ? candidate.dryBu / candidate.acres : null
+        if (baseline != null && candYield != null && candYield < baseline * (1 - threshold)) {
+          autoExcluded.set(candidate.id, 'in_progress')
+        }
       }
     }
 
+    // --- Apply overrides → effective exclusion + averages ---
     let bu = 0
     let ac = 0
-    for (const r of harvested) {
-      if (excluded.has(r.id)) continue
+    for (const r of list) {
+      const auto = autoExcluded.get(r.id)
+      const isExcluded = auto != null && r.override !== true
+      if (isExcluded) {
+        excluded.set(r.id, auto)
+        continue
+      }
       bu += r.dryBu
       ac += r.acres
     }
     if (ac > 0) averages.set(cropId, { cropId, acres: ac, dryBu: bu, yield: bu / ac })
   }
 
-  return { excluded, averages }
+  return { excluded, autoExcluded, averages }
 }

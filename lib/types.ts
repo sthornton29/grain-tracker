@@ -93,6 +93,9 @@ export type FieldPlanting = {
   planting_date: string | null
   paired_planting_id: string | null
   notes: string | null
+  // Manual override of the yield harvest classification: null = automatic,
+  // true = always count this field despite an unharvested/in-progress flag.
+  yield_include_override: boolean | null
 }
 
 export type FieldPlantingVariety = {

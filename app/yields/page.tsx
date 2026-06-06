@@ -81,6 +81,10 @@ export default function YieldsPage() {
   const [breakoutSaving, setBreakoutSaving] = useState(false)
   const [breakoutErr, setBreakoutErr] = useState<string | null>(null)
 
+  // Manual override of a field's harvest classification (count anyway / reset).
+  const [overrideErr, setOverrideErr] = useState<string | null>(null)
+  const [overrideSavingId, setOverrideSavingId] = useState<string | null>(null)
+
   // Per-variety bushel allocation state. varAllocId is the planting whose
   // variety editor is open; varAllocBu maps each variety row id → typed bushels.
   const [varAllocId, setVarAllocId] = useState<string | null>(null)
@@ -212,6 +216,7 @@ export default function YieldsPage() {
         acres: Number(p.planted_acres),
         dryBu: agg?.dryBu ?? 0,
         lastLoadDate: agg?.lastLoadDate ?? null,
+        override: p.yield_include_override,
       }
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -647,6 +652,21 @@ export default function YieldsPage() {
     refresh()
   }
 
+  // Override the auto harvest classification. value=true counts the field
+  // despite an unharvested/in-progress flag; value=null restores the automatic
+  // behavior.
+  async function setInclusionOverride(p: FieldPlanting, value: boolean | null) {
+    setOverrideErr(null)
+    setOverrideSavingId(p.id)
+    const { error } = await supabase
+      .from('field_plantings')
+      .update({ yield_include_override: value })
+      .eq('id', p.id)
+    setOverrideSavingId(null)
+    if (error) { setOverrideErr(error.message); return }
+    refresh()
+  }
+
   function openVarAlloc(p: FieldPlanting) {
     const vs = varietiesByPlanting.get(p.id) ?? []
     const seed: Record<string, string> = {}
@@ -701,17 +721,28 @@ export default function YieldsPage() {
     refresh()
   }
 
+  // Hide the per-row Year column when every visible row is the same year — it's
+  // just clutter once the data is scoped to a single season.
+  const showFieldYear = new Set(visible.map((p) => p.season_year)).size > 1
+  const showFarmYear = new Set(byFarm.map((r) => r.seasonYear)).size > 1
+  const showVarietyYear = new Set(varietyAgg.map((r) => r.seasonYear)).size > 1
+  const multiVarYears = new Set(multiVarietyPlantings.map((p) => p.season_year))
+  const showMultiVarYear = multiVarYears.size > 1
+
   // Column count for table colspan calculations. Irr ac / Dry ac follow the
   // same visibility rules as the irrigated/dryland yield columns, so the table
   // collapses to just total acres + total yield in the default "Total yield
   // only" view.
   const visibleYieldCols = [showIrrigatedCol, showDrylandCol, showTotalCol].filter(Boolean).length
   const visibleAcresBreakoutCols = [showIrrigatedCol, showDrylandCol].filter(Boolean).length
-  const fieldColCount = 4 /* Field/Farm/Crop/Year */ + 1 /* Acres */
+  const fieldColCount = 3 /* Field/Farm/Crop */ + (showFieldYear ? 1 : 0) + 1 /* Acres */
     + visibleAcresBreakoutCols + 1 /* Dry bu */ + visibleYieldCols + 1 /* actions */
-  // Farm: Farm/FSA#/Entity/Crop/Year/Acres/Dry bu/Yield = 8, plus 4 in breakdown
-  // (Irr ac, Dry ac, Irrigated yield, Dryland yield).
-  const farmColCount = 8 + (farmShowBreakdown ? 4 : 0)
+  // Farm: Farm/FSA#/Entity/Crop/Acres/Dry bu/Yield = 7 (+Year), plus 4 in
+  // breakdown (Irr ac, Dry ac, Irrigated yield, Dryland yield).
+  const farmColCount = 7 + (showFarmYear ? 1 : 0) + (farmShowBreakdown ? 4 : 0)
+  const multiVarColCount = 6 + (showMultiVarYear ? 1 : 0)
+  // Variety rollup: Crop/Variety/Plantings/Acres/Dry bu/Yield = 6 (+Year).
+  const varietyColCount = 6 + (showVarietyYear ? 1 : 0)
 
   return (
     <div className="space-y-4">
@@ -758,6 +789,8 @@ export default function YieldsPage() {
       {view !== 'landowner' && (
         <AvgYieldHeader averages={yieldAnalysis.averages} cropName={(id) => cropById.get(id)?.name ?? '—'} />
       )}
+
+      {overrideErr && <p className="text-sm text-red-600 no-print">{overrideErr}</p>}
 
       {/* The outer filter strip drives the field- and farm-view tables. The
           landowner view has its own filter set inside <YieldsByLandowner /> so
@@ -849,7 +882,7 @@ export default function YieldsPage() {
                     <th className="text-left px-3 py-2 whitespace-nowrap">Field</th>
                     <th className="text-left px-3 py-2 whitespace-nowrap">Farm</th>
                     <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
-                    <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>
+                    {showMultiVarYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
                     <th className="text-right px-3 py-2 whitespace-nowrap">Total dry bu</th>
                     <th className="text-left px-3 py-2 whitespace-nowrap">Varieties</th>
                     <th className="text-left px-3 py-2 whitespace-nowrap no-print"></th>
@@ -867,7 +900,7 @@ export default function YieldsPage() {
                           <td className="px-3 py-2">{r.fld?.name_or_number ?? '—'}</td>
                           <td className="px-3 py-2">{r.farm?.name ?? ''}</td>
                           <td className="px-3 py-2">{r.crop?.name ?? '—'}</td>
-                          <td className="px-3 py-2">{p.season_year}</td>
+                          {showMultiVarYear && <td className="px-3 py-2">{p.season_year}</td>}
                           <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
                           <td className="px-3 py-2 text-slate-600">
                             {vs.map((v) => {
@@ -897,7 +930,7 @@ export default function YieldsPage() {
                         </tr>
                         {isOpen && (
                           <tr className="bg-sky-50 no-print">
-                            <td colSpan={7} className="px-3 py-3">
+                            <td colSpan={multiVarColCount} className="px-3 py-3">
                               <div className="space-y-2">
                                 <div className="text-sm text-slate-600">
                                   Total dry bushels: <span className="font-semibold">{fmtNum(r.dryBu)}</span> · enter how many of those came from each variety
@@ -965,7 +998,7 @@ export default function YieldsPage() {
                 <tr>
                   <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
                   <th className="text-left px-3 py-2 whitespace-nowrap">Variety</th>
-                  <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>
+                  {showVarietyYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
                   <th className="text-right px-3 py-2 whitespace-nowrap">Plantings</th>
                   <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
                   <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
@@ -973,9 +1006,9 @@ export default function YieldsPage() {
                 </tr>
               </thead>
               <tbody>
-                {loading && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
+                {loading && <tr><td colSpan={varietyColCount} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
                 {!loading && varietyAgg.length === 0 && (
-                  <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">
+                  <tr><td colSpan={varietyColCount} className="px-3 py-6 text-center text-slate-400">
                     No varieties recorded for these filters. Add varieties on the Plantings page, or allocate bushels on any multi-variety plantings above.
                   </td></tr>
                 )}
@@ -985,7 +1018,7 @@ export default function YieldsPage() {
                     <tr key={i} className="border-t border-slate-100">
                       <td className="px-3 py-2">{r.cropName}</td>
                       <td className="px-3 py-2 font-semibold">{r.variety}</td>
-                      <td className="px-3 py-2">{r.seasonYear}</td>
+                      {showVarietyYear && <td className="px-3 py-2">{r.seasonYear}</td>}
                       <td className="px-3 py-2 text-right">{r.plantings}</td>
                       <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
                       <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
@@ -1005,7 +1038,7 @@ export default function YieldsPage() {
                 <th className="text-left px-3 py-2 whitespace-nowrap">Field</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Farm</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
-                <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>
+                {showFieldYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
                 <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
                 {showIrrigatedCol && <th className="text-right px-3 py-2 whitespace-nowrap">Irr ac</th>}
                 {showDrylandCol   && <th className="text-right px-3 py-2 whitespace-nowrap">Dry ac</th>}
@@ -1025,21 +1058,48 @@ export default function YieldsPage() {
                 const r = rowFor(p)
                 const showAllocateButton = r.practice === 'mixed'
                 const isBreakoutOpen = breakoutId === p.id
-                const exclusion = excludedFields.get(p.id)
+                const exclusion = excludedFields.get(p.id)         // effective (after override)
+                const autoFlag = yieldAnalysis.autoExcluded.get(p.id) // what the auto rule says
+                const overridden = p.yield_include_override === true && autoFlag != null
+                const savingOverride = overrideSavingId === p.id
+                const flagLabel = (k: 'in_progress' | 'unharvested') => k === 'in_progress' ? 'in progress' : 'unharvested'
                 return (
                   <Fragment key={p.id}>
                     <tr className={`border-t border-slate-100 ${exclusion ? 'text-slate-400' : ''}`}>
                       <td className="px-3 py-2">
-                        {r.fld?.name_or_number ?? '—'}
-                        {exclusion && (
-                          <span className={`ml-2 text-xs rounded px-2 py-0.5 ${exclusion === 'in_progress' ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-600'}`}>
-                            {exclusion === 'in_progress' ? 'in progress' : 'unharvested'}
-                          </span>
-                        )}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span>{r.fld?.name_or_number ?? '—'}</span>
+                          {exclusion && (
+                            <span className={`text-xs rounded px-2 py-0.5 ${exclusion === 'in_progress' ? 'bg-amber-100 text-amber-800' : 'bg-slate-200 text-slate-600'}`}>
+                              {flagLabel(exclusion)}
+                            </span>
+                          )}
+                          {overridden && autoFlag && (
+                            <span className="text-xs rounded px-2 py-0.5 bg-green-100 text-green-800">
+                              {flagLabel(autoFlag)} · counted
+                            </span>
+                          )}
+                          {exclusion && (
+                            <button
+                              type="button"
+                              disabled={savingOverride}
+                              onClick={() => setInclusionOverride(p, true)}
+                              className="text-sky-700 text-xs underline disabled:opacity-50 no-print"
+                            >Count anyway</button>
+                          )}
+                          {overridden && (
+                            <button
+                              type="button"
+                              disabled={savingOverride}
+                              onClick={() => setInclusionOverride(p, null)}
+                              className="text-slate-500 text-xs underline disabled:opacity-50 no-print"
+                            >Reset</button>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-2">{r.farm?.name ?? ''}</td>
                       <td className="px-3 py-2">{r.crop?.name ?? '—'}</td>
-                      <td className="px-3 py-2">{p.season_year}</td>
+                      {showFieldYear && <td className="px-3 py-2">{p.season_year}</td>}
                       <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
                       {showIrrigatedCol && (
                         <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>
@@ -1158,7 +1218,7 @@ export default function YieldsPage() {
                 <th className="text-left px-3 py-2 whitespace-nowrap">FSA#</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Entity</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
-                <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>
+                {showFarmYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
                 <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
                 {farmShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Irr ac</th>}
                 {farmShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Dry ac</th>}
@@ -1181,7 +1241,7 @@ export default function YieldsPage() {
                     <td className="px-3 py-2 font-mono text-xs">{r.fsaNumber ?? ''}</td>
                     <td className="px-3 py-2">{r.entityName}</td>
                     <td className="px-3 py-2">{r.cropName}</td>
-                    <td className="px-3 py-2">{r.seasonYear}</td>
+                    {showFarmYear && <td className="px-3 py-2">{r.seasonYear}</td>}
                     <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
                     {farmShowBreakdown && <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>}
                     {farmShowBreakdown && <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>}

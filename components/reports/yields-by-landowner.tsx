@@ -132,6 +132,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
         acres: Number(p.planted_acres),
         dryBu: agg?.dryBu ?? 0,
         lastLoadDate: agg?.lastLoadDate ?? null,
+        override: p.yield_include_override,
       }
     }),
   ), [filteredPlantings, aggByKey])

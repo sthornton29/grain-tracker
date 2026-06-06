@@ -82,6 +82,7 @@ export default function SeasonSummaryPage() {
         acres: Number(p.planted_acres),
         dryBu: agg?.dryBu ?? 0,
         lastLoadDate: agg?.lastLoadDate ?? null,
+        override: p.yield_include_override,
       }
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
