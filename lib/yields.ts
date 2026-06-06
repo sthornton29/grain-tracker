@@ -144,16 +144,25 @@ export type YieldAnalysis = {
 // treated as still-being-harvested (in progress) when it's the latest field.
 export const IN_PROGRESS_THRESHOLD = 0.15
 
+// ...but only while harvest is recent. Once the last load is older than this,
+// the field has clearly finished — its low number is its real yield, so it
+// moves to completed instead of sitting at "in progress" forever.
+export const IN_PROGRESS_STALE_DAYS = 5
+
 // Per crop:
 //   * a row with no bushels is "unharvested" → excluded.
 //   * the field whose most recent load is the latest for that crop is the one
 //     currently being combined; if its yield is more than `threshold` below the
-//     weighted average of the crop's OTHER harvested fields, it's "in_progress"
-//     → excluded (its partial bushels would understate the true yield).
+//     weighted average of the crop's OTHER harvested fields AND its last load was
+//     within IN_PROGRESS_STALE_DAYS, it's "in_progress" → excluded (its partial
+//     bushels would understate the true yield). A field within `threshold` of the
+//     average, or whose last load is older than the stale window, counts as
+//     completed.
 // Averages are weighted (Σ dry bu / Σ acres) over the survivors.
 export function analyzeYields(
   rows: readonly YieldInput[],
   threshold: number = IN_PROGRESS_THRESHOLD,
+  now: Date = new Date(),
 ): YieldAnalysis {
   const excluded = new Map<string, ExclusionReason>()
   const autoExcluded = new Map<string, ExclusionReason>()
@@ -196,7 +205,14 @@ export function analyzeYields(
         const baseline = ac > 0 ? bu / ac : null
         const candYield = candidate.acres > 0 ? candidate.dryBu / candidate.acres : null
         if (baseline != null && candYield != null && candYield < baseline * (1 - threshold)) {
-          autoExcluded.set(candidate.id, 'in_progress')
+          // Low yield alone isn't enough — the harvest must still be active. If
+          // the last load was more than IN_PROGRESS_STALE_DAYS ago, treat the
+          // field as finished (completed) rather than in-progress.
+          const last = candidate.lastLoadDate ? new Date(candidate.lastLoadDate) : null
+          const days = last ? (now.getTime() - last.getTime()) / 86_400_000 : null
+          if (days != null && days <= IN_PROGRESS_STALE_DAYS) {
+            autoExcluded.set(candidate.id, 'in_progress')
+          }
         }
       }
     }
