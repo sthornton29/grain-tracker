@@ -38,6 +38,18 @@ function fmtBu(n: number) {
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
 }
 
+// A beginning inventory is still the live baseline only if it was entered and
+// the bin hasn't been emptied for that crop since (an empty resets the bin, so
+// the beginning no longer applies and the inventory is purely load-backed).
+function hasActiveBeginning(adjs: BinInventoryAdjustment[], cropId: string): boolean {
+  const beginnings = adjs.filter((a) => a.crop_id === cropId && a.adjustment_type === 'beginning_inventory')
+  if (beginnings.length === 0) return false
+  const latest = beginnings.reduce((m, a) => (a.created_at > m.created_at ? a : m))
+  return !adjs.some(
+    (a) => a.crop_id === cropId && a.adjustment_type === 'empty_bin' && a.created_at > latest.created_at,
+  )
+}
+
 export default async function InventoryPage({
   searchParams,
 }: {
@@ -179,20 +191,27 @@ export default async function InventoryPage({
   // Sites available in the dropdown: filtered by entity if active.
   const siteOptions = entityId ? sites.filter((s) => s.entity_id === entityId) : sites
 
+  // CSV mirrors the page: break out load-backed vs. beginning only when a
+  // beginning inventory is still active; otherwise it's a single total.
   const csvRows: InventoryCsvRow[] = []
   for (const list of binsBySite.values()) {
     for (const v of list) {
+      const adjs = adjustmentsForBin.get(v.bin.id) ?? []
       for (const r of v.rows) {
-        const beginningNotes = (adjustmentsForBin.get(v.bin.id) ?? [])
-          .filter((a) => a.crop_id === r.cid && a.adjustment_type === 'beginning_inventory')
-          .map((a) => `${fmtBu(Number(a.bushels))} bu as of ${fmtDate(a.as_of_date)}${a.notes ? ` — ${a.notes}` : ''}`)
-          .join('; ')
+        const active = hasActiveBeginning(adjs, r.cid)
+        const beginningBu = active ? r.cell.beginning : 0
+        const loadBackedBu = r.total - beginningBu
+        const beginningNotes = active
+          ? adjs
+              .filter((a) => a.crop_id === r.cid && a.adjustment_type === 'beginning_inventory')
+              .map((a) => `${fmtBu(Number(a.bushels))} bu as of ${fmtDate(a.as_of_date)}${a.notes ? ` — ${a.notes}` : ''}`)
+              .join('; ')
+          : ''
         csvRows.push({
           binName: v.bin.name_or_number,
           cropName: cropName(r.cid),
-          loadBackedBu: r.cell.loadBacked,
-          beginningBu: r.cell.beginning,
-          emptyAdjBu: r.cell.emptyAdj,
+          loadBackedBu,
+          beginningBu,
           totalBu: r.total,
           beginningNotes,
         })
@@ -312,17 +331,25 @@ function BinCard({
   adjustmentsForBin: Map<string, BinInventoryAdjustment[]>
   cropName: (id: string) => string
 }) {
-  const beginningRows = (adjustmentsForBin.get(v.bin.id) ?? [])
-    .filter((a) => a.adjustment_type === 'beginning_inventory')
+  const adjs = adjustmentsForBin.get(v.bin.id) ?? []
+
+  const rows = v.rows.map((r) => ({ ...r, active: hasActiveBeginning(adjs, r.cid) }))
+  // Only break out load-backed vs. beginning when a beginning inventory is
+  // actually in play; otherwise the inventory is just one number.
+  const showBreakout = rows.some((r) => r.active)
+  const beginningNotes = adjs.filter(
+    (a) => a.adjustment_type === 'beginning_inventory' && hasActiveBeginning(adjs, a.crop_id),
+  )
+
   return (
     <div className="bg-white rounded-xl shadow p-4">
       <div className="flex justify-between items-baseline gap-2 flex-wrap">
         <h3 className="text-base font-semibold">Bin {v.bin.name_or_number}</h3>
         <span className="text-sm text-slate-500">{fmtBu(v.total)} bu total</span>
       </div>
-      {v.rows.length === 0 ? (
+      {rows.length === 0 ? (
         <p className="text-sm text-slate-400 mt-2">Empty.</p>
-      ) : (
+      ) : showBreakout ? (
         <table className="w-full text-sm mt-2">
           <thead>
             <tr className="text-xs text-slate-500">
@@ -333,22 +360,37 @@ function BinCard({
             </tr>
           </thead>
           <tbody>
-            {v.rows.map((r) => (
+            {rows.map((r) => {
+              const beginning = r.active ? r.cell.beginning : 0
+              const loadBacked = r.total - beginning
+              return (
+                <tr key={r.cid} className="border-t border-slate-100">
+                  <td className="py-1">{cropName(r.cid)}</td>
+                  <td className="py-1 text-right font-mono">{fmtBu(loadBacked)}</td>
+                  <td className="py-1 text-right font-mono text-slate-500">
+                    {beginning > 0 ? fmtBu(beginning) : '—'}
+                  </td>
+                  <td className="py-1 text-right font-mono font-semibold">{fmtBu(r.total)}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      ) : (
+        <table className="w-full text-sm mt-2">
+          <tbody>
+            {rows.map((r) => (
               <tr key={r.cid} className="border-t border-slate-100">
                 <td className="py-1">{cropName(r.cid)}</td>
-                <td className="py-1 text-right font-mono">{fmtBu(r.cell.loadBacked - r.cell.emptyAdj)}</td>
-                <td className="py-1 text-right font-mono text-slate-500">
-                  {r.cell.beginning > 0 ? fmtBu(r.cell.beginning) : '—'}
-                </td>
                 <td className="py-1 text-right font-mono font-semibold">{fmtBu(r.total)}</td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
-      {beginningRows.length > 0 && Math.abs(v.total) >= 0.005 && (
+      {beginningNotes.length > 0 && Math.abs(v.total) >= 0.005 && (
         <ul className="mt-3 space-y-1 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2">
-          {beginningRows.map((a) => (
+          {beginningNotes.map((a) => (
             <li key={a.id}>
               Includes beginning inventory: {fmtBu(Number(a.bushels))} bu {cropName(a.crop_id)} (added {fmtDate(a.as_of_date)})
               {a.notes ? ` — ${a.notes}` : ''}

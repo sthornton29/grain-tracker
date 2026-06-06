@@ -5,7 +5,6 @@ export type InventoryCsvRow = {
   cropName: string
   loadBackedBu: number
   beginningBu: number
-  emptyAdjBu: number
   totalBu: number
   beginningNotes: string
 }
@@ -20,7 +19,7 @@ export default function ExportInventoryCsv({ rows }: { rows: InventoryCsvRow[] }
   function download() {
     const header = [
       'Bin', 'Crop',
-      'Load-backed bu', 'Beginning inventory bu', 'Empty-bin adjustments bu',
+      'Load-backed bu', 'Beginning inventory bu',
       'Total bu', 'Beginning inventory notes',
     ]
     const body = rows.map((r) => [
@@ -28,7 +27,6 @@ export default function ExportInventoryCsv({ rows }: { rows: InventoryCsvRow[] }
       r.cropName,
       r.loadBackedBu.toFixed(2),
       r.beginningBu.toFixed(2),
-      r.emptyAdjBu.toFixed(2),
       r.totalBu.toFixed(2),
       r.beginningNotes,
     ])
