@@ -332,6 +332,98 @@ export type HarvestPriceEstimate = {
   created_at: string
 }
 
+export type CoveredCommodity = {
+  id: string
+  name: string
+  crop_id: string | null
+  statutory_reference_price: number
+  unit: 'bushel' | 'pound'
+  national_loan_rate: number
+  marketing_year_start_month: number
+  marketing_year_end_month: number
+  created_at: string
+}
+
+export type FarmBaseAcres = {
+  id: string
+  farm_id: string
+  commodity_id: string
+  base_acres: number
+  plc_yield: number
+  source: 'manual' | 'document_import'
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type ArcPlcElectionType = 'PLC' | 'ARC_CO' | 'ARC_IC'
+
+export type ArcPlcElection = {
+  id: string
+  farm_id: string
+  commodity_id: string
+  crop_year: number
+  election: ArcPlcElectionType
+  created_at: string
+}
+
+export type ArcPlcPriceData = {
+  id: string
+  commodity_id: string
+  crop_year: number
+  effective_reference_price: number | null
+  mya_price_estimate: number | null
+  mya_price_final: number | null
+  source: 'manual' | 'barchart' | 'usda'
+  updated_at: string
+}
+
+export type ArcPlcPayment = {
+  id: string
+  farm_id: string
+  commodity_id: string
+  crop_year: number
+  election: ArcPlcElectionType
+  base_acres: number
+  plc_yield: number
+  payment_rate_per_unit: number
+  gross_payment: number
+  payment_factor: number
+  sequestration_pct: number
+  net_payment: number
+  payment_status: 'projected' | 'confirmed' | 'received'
+  expected_payment_date: string | null
+  actual_payment_date: string | null
+  actual_payment_amount: number | null
+  notes: string | null
+  created_at: string
+}
+
+export type OtherGovernmentPayment = {
+  id: string
+  entity_id: string | null
+  program_name: string
+  crop_year: number
+  crop_id: string | null
+  farm_id: string | null
+  amount: number
+  payment_date: string | null
+  payment_status: 'projected' | 'confirmed' | 'received'
+  notes: string | null
+  created_at: string
+}
+
+export type PaymentLimitConfig = {
+  id: string
+  entity_id: string
+  crop_year: number
+  eligible_persons: number
+  per_person_limit: number
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
 export type Load = {
   id: string
   date: string

@@ -4,7 +4,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
-import type { Buyer, Contract, Crop, Entity, FieldPlanting, LoadSplit } from '@/lib/types'
+import { projectPayments, expectedArcPlcDate } from '@/lib/government-payments'
+import { computePolicy, type PolicyInputs, type ScoConfig, type EcoConfig } from '@/lib/crop-insurance'
+import type {
+  Buyer, Contract, Crop, Entity, FieldPlanting, LoadSplit,
+  CropAssumption, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate,
+  CoveredCommodity, FarmBaseAcres, ArcPlcElection, ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment,
+} from '@/lib/types'
 
 type LoadRow = {
   id: string
@@ -59,7 +65,21 @@ export default function CashFlowPage() {
   const [farms, setFarms] = useState<FarmRow[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [loadSplits, setLoadSplits] = useState<LoadSplit[]>([])
+  // Safety-net data: crop insurance + government payments.
+  const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
+  const [policies, setPolicies] = useState<CropInsurancePolicy[]>([])
+  const [scos, setScos] = useState<CropInsuranceSco[]>([])
+  const [ecos, setEcos] = useState<CropInsuranceEco[]>([])
+  const [harvestEstimates, setHarvestEstimates] = useState<HarvestPriceEstimate[]>([])
+  const [commodities, setCommodities] = useState<CoveredCommodity[]>([])
+  const [baseAcres, setBaseAcres] = useState<FarmBaseAcres[]>([])
+  const [elections, setElections] = useState<ArcPlcElection[]>([])
+  const [arcPriceData, setArcPriceData] = useState<ArcPlcPriceData[]>([])
+  const [arcPayments, setArcPayments] = useState<ArcPlcPayment[]>([])
+  const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
   const [loading, setLoading] = useState(true)
+  // Month (1-12) crop insurance proceeds are assumed to arrive; default December.
+  const [insuranceMonth, setInsuranceMonth] = useState(12)
 
   const [cropYear, setCropYear] = useState<number | ''>('')
   const [cropId, setCropId] = useState('')
@@ -99,6 +119,19 @@ export default function CashFlowPage() {
         supabase.from('field_plantings').select('season_year'),
         supabase.from('load_splits').select('load_id, field_id'),
       ])
+      const [ca, po, sc, ec, hpe, cc, ba, el, apd, apay, ogp] = await Promise.all([
+        supabase.from('crop_assumptions').select('*'),
+        supabase.from('crop_insurance_policies').select('*'),
+        supabase.from('crop_insurance_sco').select('*'),
+        supabase.from('crop_insurance_eco').select('*'),
+        supabase.from('harvest_price_estimates').select('*').order('price_date', { ascending: false }),
+        supabase.from('covered_commodities').select('*'),
+        supabase.from('farm_base_acres').select('*'),
+        supabase.from('arc_plc_elections').select('*'),
+        supabase.from('arc_plc_price_data').select('*'),
+        supabase.from('arc_plc_payments').select('*'),
+        supabase.from('other_government_payments').select('*'),
+      ])
       setContracts((ct.data as Contract[]) || [])
       setLoads(ld)
       setLines((ln.data as LineRow[]) || [])
@@ -110,6 +143,17 @@ export default function CashFlowPage() {
       setFarms((fa.data as FarmRow[]) || [])
       setPlantings((pl.data as FieldPlanting[]) || [])
       setLoadSplits((sp.data as LoadSplit[]) || [])
+      setAssumptions((ca.data as CropAssumption[]) || [])
+      setPolicies((po.data as CropInsurancePolicy[]) || [])
+      setScos((sc.data as CropInsuranceSco[]) || [])
+      setEcos((ec.data as CropInsuranceEco[]) || [])
+      setHarvestEstimates((hpe.data as HarvestPriceEstimate[]) || [])
+      setCommodities((cc.data as CoveredCommodity[]) || [])
+      setBaseAcres((ba.data as FarmBaseAcres[]) || [])
+      setElections((el.data as ArcPlcElection[]) || [])
+      setArcPriceData((apd.data as ArcPlcPriceData[]) || [])
+      setArcPayments((apay.data as ArcPlcPayment[]) || [])
+      setOtherPayments((ogp.data as OtherGovernmentPayment[]) || [])
       setLoading(false)
     })()
   }, [supabase])
@@ -286,16 +330,106 @@ export default function CashFlowPage() {
     return buckets
   }, [visibleContracts, aggByContract])
 
+  // Farm -> entity, for filtering ARC/PLC by the entity dropdown.
+  const farmEntity = useMemo(() => new Map(farms.map((f) => [f.id, f.entity_id])), [farms])
+
+  // Safety net (crop insurance + government payments) bucketed by month, with the
+  // program-specific timing: ARC/PLC in October of crop_year + 1, crop insurance
+  // proceeds in the chosen month (default December), other USDA payments on their
+  // payment date (else December of the crop year). Respects the crop-year, crop,
+  // and entity filters where each program is scoped to those dimensions.
+  type SafetyBucket = { arcPlc: number; insurance: number; other: number }
+  const safetyNet = useMemo(() => {
+    const buckets = new Map<string, SafetyBucket>()
+    const ensure = (k: string) => {
+      let b = buckets.get(k)
+      if (!b) { b = { arcPlc: 0, insurance: 0, other: 0 }; buckets.set(k, b) }
+      return b
+    }
+
+    // ARC/PLC — net projections per crop year, placed in October of year + 1.
+    const electionYears = cropYear !== '' ? [cropYear] : Array.from(new Set(elections.map((e) => e.crop_year)))
+    for (const yr of electionYears) {
+      if (!cropId) {
+        const projected = projectPayments({ cropYear: yr, baseAcres, commodities, elections, priceData: arcPriceData, payments: arcPayments })
+        let net = 0
+        for (const p of projected) {
+          if (entityId && farmEntity.get(p.farmId) !== entityId) continue
+          net += p.result.net
+        }
+        if (net !== 0) ensure(monthKey(new Date(expectedArcPlcDate(yr) + 'T00:00:00'))).arcPlc += net
+      }
+    }
+
+    // Crop insurance — total indemnity per policy, placed in the chosen month.
+    const scoBy = new Map(scos.map((s) => [s.policy_id, s]))
+    const ecoBy = new Map(ecos.map((e) => [e.policy_id, e]))
+    for (const p of policies) {
+      if (cropYear !== '' && p.crop_year !== cropYear) continue
+      if (entityId && p.entity_id !== entityId) continue
+      if (cropId && p.crop_id !== cropId) continue
+      let harvest = p.harvest_price != null ? Number(p.harvest_price) : null
+      if (harvest == null) {
+        const fin = harvestEstimates.find((e) => e.crop_id === p.crop_id && e.crop_year === p.crop_year && e.price_type === 'harvest_final')
+        const est = harvestEstimates.find((e) => e.crop_id === p.crop_id && e.crop_year === p.crop_year && e.price_type === 'harvest_estimate')
+        harvest = fin ? Number(fin.price) : est ? Number(est.price) : Number(p.projected_price)
+      }
+      const a = assumptions.find((x) => x.crop_id === p.crop_id && x.crop_year === p.crop_year)
+      const assumedYield = a?.expected_yield != null ? Number(a.expected_yield) : Number(p.aph_yield)
+      const base: PolicyInputs = {
+        planType: p.plan_type, coverageLevel: Number(p.coverage_level), aphYield: Number(p.aph_yield),
+        projectedPrice: Number(p.projected_price), harvestPrice: harvest, insuredAcres: Number(p.insured_acres), actualYield: assumedYield,
+      }
+      const scoRow = scoBy.get(p.id)
+      const ecoRow = ecoBy.get(p.id)
+      const sco: ScoConfig | null = scoRow ? {
+        coverageTrigger: Number(scoRow.coverage_trigger), expectedCountyYield: Number(scoRow.expected_county_yield),
+        countyYieldAssumptionPct: scoRow.county_yield_assumption_pct == null ? 0 : Number(scoRow.county_yield_assumption_pct),
+        premiumPerAcre: scoRow.premium_per_acre == null ? null : Number(scoRow.premium_per_acre),
+        totalPremium: scoRow.total_premium == null ? null : Number(scoRow.total_premium),
+      } : null
+      const eco: EcoConfig | null = ecoRow ? {
+        ecoTriggerLevel: Number(ecoRow.eco_trigger_level), expectedCountyYield: Number(ecoRow.expected_county_yield),
+        countyYieldAssumptionPct: ecoRow.county_yield_assumption_pct == null ? 0 : Number(ecoRow.county_yield_assumption_pct),
+        premiumPerAcre: ecoRow.premium_per_acre == null ? null : Number(ecoRow.premium_per_acre),
+        totalPremium: ecoRow.total_premium == null ? null : Number(ecoRow.total_premium),
+      } : null
+      const comp = computePolicy({ base, basePremium: 0, sco, eco })
+      if (comp.totalIndemnity > 0) {
+        ensure(`${p.crop_year}-${String(insuranceMonth).padStart(2, '0')}`).insurance += comp.totalIndemnity
+      }
+    }
+
+    // Other USDA payments — on payment_date, else December of the crop year.
+    for (const o of otherPayments) {
+      if (cropYear !== '' && o.crop_year !== cropYear) continue
+      if (entityId && o.entity_id !== entityId) continue
+      if (cropId && o.crop_id !== cropId) continue
+      const key = o.payment_date ? monthKey(new Date(o.payment_date + 'T00:00:00')) : `${o.crop_year}-12`
+      ensure(key).other += Number(o.amount)
+    }
+
+    return buckets
+  }, [cropYear, cropId, entityId, elections, baseAcres, commodities, arcPriceData, arcPayments, farmEntity, policies, scos, ecos, harvestEstimates, assumptions, insuranceMonth, otherPayments])
+
   const monthlyRows = useMemo(() => {
-    const keys = [...monthly.keys()].sort()
+    const keys = [...new Set([...monthly.keys(), ...safetyNet.keys()])].sort()
     let running = 0
     return keys.map((k) => {
-      const b = monthly.get(k)!
-      const total = b.received + b.outstanding + b.projected
+      const b = monthly.get(k) ?? { received: 0, outstanding: 0, projected: 0 }
+      const s = safetyNet.get(k) ?? { arcPlc: 0, insurance: 0, other: 0 }
+      const total = b.received + b.outstanding + b.projected + s.arcPlc + s.insurance + s.other
       running += total
-      return { key: k, label: monthLabel(k), ...b, total, cumulative: running }
+      return { key: k, label: monthLabel(k), ...b, ...s, total, cumulative: running }
     })
-  }, [monthly])
+  }, [monthly, safetyNet])
+
+  // Safety-net totals across the visible window, for the summary cards.
+  const safetyTotals = useMemo(() => {
+    let arcPlc = 0, insurance = 0, other = 0
+    for (const s of safetyNet.values()) { arcPlc += s.arcPlc; insurance += s.insurance; other += s.other }
+    return { arcPlc, insurance, other, total: arcPlc + insurance + other }
+  }, [safetyNet])
 
   const summary = useMemo(() => {
     let value = 0, received = 0, outstanding = 0, remaining = 0
@@ -345,19 +479,45 @@ export default function CashFlowPage() {
 
       {loading ? <p className="text-slate-500">Loading…</p> : (
         <>
+          {/* Total Safety Net — crop insurance + government program cash, with timing. */}
+          <div className="bg-white rounded-xl shadow p-4 space-y-3">
+            <div className="flex items-center gap-3 flex-wrap">
+              <h2 className="font-semibold flex-1">Total Safety Net (projected)</h2>
+              <label className="text-xs text-slate-500 flex items-center gap-2">
+                Insurance proceeds month
+                <select value={insuranceMonth} onChange={(e) => setInsuranceMonth(Number(e.target.value))} className="rounded-lg border border-slate-300 px-2 py-1 text-sm">
+                  {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
+                    <option key={m} value={m}>{new Date(2000, m - 1, 1).toLocaleDateString(undefined, { month: 'short' })}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <SumCard label="ARC/PLC" value={`$${fmt(safetyTotals.arcPlc)}`} tone="sky" />
+              <SumCard label="Crop Insurance" value={`$${fmt(safetyTotals.insurance)}`} tone="sky" />
+              <SumCard label="Other Govt" value={`$${fmt(safetyTotals.other)}`} tone="sky" />
+              <SumCard label="Total Safety Net" value={`$${fmt(safetyTotals.total)}`} tone="green" />
+            </div>
+            <p className="text-xs text-slate-500">
+              <strong>Estimated</strong> — ARC/PLC lands in October of the year after the crop year, crop insurance
+              proceeds in the selected month (default December), other payments on their entered date. Final amounts are
+              determined by RMA / FSA after harvest and the marketing year.
+            </p>
+          </div>
+
           <div className="bg-white rounded-xl shadow overflow-hidden">
             <div className="px-4 py-2 border-b border-slate-100 font-semibold">Monthly forecast</div>
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-50 text-slate-600">
                   <tr>
-                    {['Month', 'Received', 'Outstanding', 'Projected', 'Month total', 'Cumulative']
+                    {['Month', 'Received', 'Outstanding', 'Projected', 'ARC/PLC', 'Crop Insurance', 'Other Govt', 'Month total', 'Cumulative']
                       .map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
                   </tr>
                 </thead>
                 <tbody>
                   {monthlyRows.length === 0 && (
-                    <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-400">No forecast data.</td></tr>
+                    <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">No forecast data.</td></tr>
                   )}
                   {monthlyRows.map((r) => (
                     <tr key={r.key} className="border-t border-slate-100">
@@ -365,6 +525,9 @@ export default function CashFlowPage() {
                       <td className="px-3 py-2 text-right text-green-700 font-mono">${fmt(r.received)}</td>
                       <td className="px-3 py-2 text-right text-amber-700 font-mono">${fmt(r.outstanding)}</td>
                       <td className="px-3 py-2 text-right text-sky-700 font-mono">${fmt(r.projected)}</td>
+                      <td className="px-3 py-2 text-right text-indigo-700 font-mono">${fmt(r.arcPlc)}</td>
+                      <td className="px-3 py-2 text-right text-purple-700 font-mono">${fmt(r.insurance)}</td>
+                      <td className="px-3 py-2 text-right text-teal-700 font-mono">${fmt(r.other)}</td>
                       <td className="px-3 py-2 text-right font-mono">${fmt(r.total)}</td>
                       <td className="px-3 py-2 text-right font-mono font-semibold">${fmt(r.cumulative)}</td>
                     </tr>

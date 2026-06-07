@@ -386,7 +386,45 @@ Respond ONLY in JSON with no other text, no markdown backticks:
   ]
 }`
 
-type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings' | 'crop_insurance_policy'
+const FSA_BASE_ACRES_PROMPT = `This is an FSA document — either a Form 156EZ (Farm Record), a Base and Yield Notice, or a Base Allocation Summary from the USDA Farm Service Agency. Extract all farm base acre and yield information.
+
+For each farm found in the document, extract:
+- fsa_farm_number (the FSA farm serial number)
+- county (county name if shown)
+- state (state if shown)
+
+For each covered commodity on that farm, extract:
+- commodity_name (e.g., "Corn", "Soybeans", "Wheat", "Seed Cotton", "Grain Sorghum")
+- base_acres (the number of base acres for this commodity on this farm)
+- plc_yield (the PLC payment yield in bushels per acre or pounds per acre)
+- arc_plc_election (if shown: "PLC", "ARC-CO", or "ARC-IC" — null if not on this document)
+
+If the document is a Base Allocation Summary (the newer OBBBA format), also extract:
+- new_base_acres (any additional base acres being allocated)
+- total_base_acres (existing + new)
+
+Respond ONLY in JSON with no other text, no markdown backticks:
+{
+  "farms": [
+    {
+      "fsa_farm_number": "string",
+      "county": "string or null",
+      "state": "string or null",
+      "commodities": [
+        {
+          "commodity_name": "string",
+          "base_acres": number,
+          "plc_yield": number,
+          "arc_plc_election": "PLC or ARC-CO or ARC-IC or null",
+          "new_base_acres": number or null,
+          "total_base_acres": number or null
+        }
+      ]
+    }
+  ]
+}`
+
+type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings' | 'crop_insurance_policy' | 'fsa_base_acres'
 
 const PROMPTS: Record<DocumentType, string> = {
   settlement: SETTLEMENT_PROMPT,
@@ -396,6 +434,7 @@ const PROMPTS: Record<DocumentType, string> = {
   fields: FIELDS_PROMPT,
   plantings: PLANTINGS_PROMPT,
   crop_insurance_policy: CROP_INSURANCE_POLICY_PROMPT,
+  fsa_base_acres: FSA_BASE_ACRES_PROMPT,
 }
 
 type ParseBody = {

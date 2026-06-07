@@ -74,13 +74,33 @@ export default function ReportsLanding() {
           </p>
         </Link>
         <Link
+          href="/reports/arc-plc-decision-aid"
+          className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
+        >
+          <h2 className="font-bold mb-1">ARC/PLC Decision Aid</h2>
+          <p className="text-sm text-slate-600">
+            Compare projected PLC vs ARC-CO payments per farm and commodity, test MYA price assumptions, set your
+            election, and export the decision to take to the FSA office.
+          </p>
+        </Link>
+        <Link
+          href="/reports/government-payments"
+          className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
+        >
+          <h2 className="font-bold mb-1">Government Payments</h2>
+          <p className="text-sm text-slate-600">
+            Projected ARC/PLC payments per farm and commodity plus other USDA payments, with per-entity payment-limit
+            tracking and a per-farm calculation breakdown. Excel and PDF exports.
+          </p>
+        </Link>
+        <Link
           href="/reports/revenue-projections"
           className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
         >
           <h2 className="font-bold mb-1">Revenue Projections</h2>
           <p className="text-sm text-slate-600">
-            Every revenue source for a crop year — crop sales, insurance proceeds, and government payments (coming
-            soon) — with cost, profit, and breakeven. A one-page financial summary for a lender or farm meeting.
+            Every revenue source for a crop year — crop sales, insurance proceeds, and government payments — with cost,
+            profit, and breakeven. A one-page financial summary for a lender or farm meeting.
           </p>
         </Link>
         <Link

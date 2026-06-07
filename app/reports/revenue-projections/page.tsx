@@ -18,7 +18,7 @@ export default function RevenueProjectionsReportPage() {
       </div>
       <p className="text-sm text-slate-600 no-print max-w-3xl">
         Every revenue source for a crop year in one view — crop sales, crop insurance proceeds, and government payments
-        (coming soon) — with cost, profit, and breakeven. A one-page financial summary for a lender or farm meeting.
+        (ARC/PLC + other USDA) — with cost, profit, and breakeven. A one-page financial summary for a lender or farm meeting.
       </p>
       <RevenueProjectionsReport onPayloadChange={handlePayload} />
     </div>

@@ -3,8 +3,9 @@
 // Revenue Projections — one financial picture per crop for a crop year,
 // combining crop sales revenue (from the Marketing dashboard logic), net crop
 // insurance proceeds (from the Claims Monitor engine), and government payments
-// (placeholder), then layering cost, profit, and breakeven. Updates live as
-// loads, contracts, insurance assumptions, or futures prices change.
+// (ARC/PLC + other USDA payments, allocated by planted acres), then layering
+// cost, profit, and breakeven. Updates live as loads, contracts, insurance
+// assumptions, government payments, or futures prices change.
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
@@ -18,11 +19,13 @@ import {
   computePolicy, harvestContractLabel, policyPremium,
   type PolicyInputs, type ScoConfig, type EcoConfig,
 } from '@/lib/crop-insurance'
-import { computeRevenueProjections, type InsuranceProceeds } from '@/lib/revenue-projections'
+import { projectPayments } from '@/lib/government-payments'
+import { computeRevenueProjections, type InsuranceProceeds, type GovtProceeds } from '@/lib/revenue-projections'
 import type { ExportPayload } from '@/lib/exports'
 import type {
   Crop, Contract, CropAssumption, FieldPlanting, FuturesPosition, OptionPosition,
   CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate,
+  CoveredCommodity, FarmBaseAcres, ArcPlcElection, ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment,
 } from '@/lib/types'
 
 type LoadRow = {
@@ -55,12 +58,20 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   const [ecos, setEcos] = useState<CropInsuranceEco[]>([])
   const [priceEstimates, setPriceEstimates] = useState<HarvestPriceEstimate[]>([])
   const [liveEstimates, setLiveEstimates] = useState<Map<string, number>>(new Map())
+  // Government payments data.
+  const [commodities, setCommodities] = useState<CoveredCommodity[]>([])
+  const [baseAcres, setBaseAcres] = useState<FarmBaseAcres[]>([])
+  const [elections, setElections] = useState<ArcPlcElection[]>([])
+  const [arcPriceData, setArcPriceData] = useState<ArcPlcPriceData[]>([])
+  const [arcPayments, setArcPayments] = useState<ArcPlcPayment[]>([])
+  const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
+  const [liveMya, setLiveMya] = useState<Map<string, number>>(new Map())
 
   const [cropYear, setCropYear] = usePersistentState<number | ''>('rev-proj:cropYear', '')
 
   useEffect(() => {
     ;(async () => {
-      const [cr, pl, ct, fp, op, ca, ld, po, sc, ec, hpe] = await Promise.all([
+      const [cr, pl, ct, fp, op, ca, ld, po, sc, ec, hpe, cc, ba, el, apd, apay, ogp] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('field_plantings').select('*'),
         supabase.from('contracts').select('*'),
@@ -72,6 +83,12 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
         supabase.from('crop_insurance_sco').select('*'),
         supabase.from('crop_insurance_eco').select('*'),
         supabase.from('harvest_price_estimates').select('*').order('price_date', { ascending: false }),
+        supabase.from('covered_commodities').select('*'),
+        supabase.from('farm_base_acres').select('*'),
+        supabase.from('arc_plc_elections').select('*'),
+        supabase.from('arc_plc_price_data').select('*'),
+        supabase.from('arc_plc_payments').select('*'),
+        supabase.from('other_government_payments').select('*'),
       ])
       setCrops((cr.data as Crop[]) || [])
       setPlantings((pl.data as FieldPlanting[]) || [])
@@ -84,6 +101,12 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       setScos((sc.data as CropInsuranceSco[]) || [])
       setEcos((ec.data as CropInsuranceEco[]) || [])
       setPriceEstimates((hpe.data as HarvestPriceEstimate[]) || [])
+      setCommodities((cc.data as CoveredCommodity[]) || [])
+      setBaseAcres((ba.data as FarmBaseAcres[]) || [])
+      setElections((el.data as ArcPlcElection[]) || [])
+      setArcPriceData((apd.data as ArcPlcPriceData[]) || [])
+      setArcPayments((apay.data as ArcPlcPayment[]) || [])
+      setOtherPayments((ogp.data as OtherGovernmentPayment[]) || [])
       const yrs = (pl.data as FieldPlanting[] | null)?.map((p) => p.season_year) ?? []
       const pyrs = (po.data as CropInsurancePolicy[] | null)?.map((p) => p.crop_year) ?? []
       const all = [...yrs, ...pyrs]
@@ -230,12 +253,64 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [marketingRows, liveEstimates, priceEstimates, policies, cropYear])
 
+  // Refresh live MYA for the tradeable commodities (feeds PLC projections).
+  useEffect(() => {
+    if (cropYear === '' || commodities.length === 0) return
+    const tradeable = commodities.filter((c) => ['Corn', 'Soybeans', 'Wheat'].includes(c.name))
+    if (tradeable.length === 0) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/mya-estimate', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ crop_year: cropYear, commodities: tradeable.map((c) => ({ commodity_id: c.id, name: c.name })) }),
+        })
+        const json = await res.json().catch(() => null)
+        if (cancelled || !json) return
+        const m = new Map<string, number>()
+        for (const e of (json.estimates ?? []) as Array<{ commodity_id: string; price: number | null }>) if (e.price != null) m.set(e.commodity_id, Number(e.price))
+        setLiveMya(m)
+      } catch { /* fall back to stored */ }
+    })()
+    return () => { cancelled = true }
+  }, [cropYear, commodities])
+
+  // Government payments allocated per crop: total ARC/PLC (across all farms) and
+  // non-crop-specific other payments are split by planted acres; crop-specific
+  // other payments go straight to their crop.
+  const govtByCrop = useMemo(() => {
+    const m = new Map<string, GovtProceeds>()
+    if (cropYear === '') return m
+    const effPrice = arcPriceData.map((p) => (p.crop_year === cropYear && liveMya.has(p.commodity_id) ? { ...p, mya_price_estimate: liveMya.get(p.commodity_id)! } : p))
+    for (const [cid, price] of liveMya) {
+      if (!effPrice.some((p) => p.commodity_id === cid && p.crop_year === cropYear)) {
+        effPrice.push({ id: `live-${cid}`, commodity_id: cid, crop_year: cropYear, effective_reference_price: null, mya_price_estimate: price, mya_price_final: null, source: 'barchart', updated_at: '' })
+      }
+    }
+    const projected = projectPayments({ cropYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments })
+    const totalArcPlc = projected.reduce((s, p) => s + p.result.net, 0)
+    const yearOther = otherPayments.filter((o) => o.crop_year === cropYear)
+    const nonSpecificOther = yearOther.filter((o) => !o.crop_id).reduce((s, o) => s + Number(o.amount), 0)
+    const cropSpecific = new Map<string, number>()
+    for (const o of yearOther) if (o.crop_id) cropSpecific.set(o.crop_id, (cropSpecific.get(o.crop_id) ?? 0) + Number(o.amount))
+    const totalAcres = marketingRows.reduce((s, r) => s + r.acres, 0)
+    for (const r of marketingRows) {
+      const share = totalAcres > 0 ? r.acres / totalAcres : 0
+      m.set(r.cropId, {
+        arcPlc: totalArcPlc * share,
+        allocatedOther: nonSpecificOther * share,
+        cropSpecificOther: cropSpecific.get(r.cropId) ?? 0,
+      })
+    }
+    return m
+  }, [cropYear, arcPriceData, liveMya, baseAcres, commodities, elections, arcPayments, otherPayments, marketingRows])
+
   const { rows, totals } = useMemo(
     () => computeRevenueProjections({
       marketingRows, contracts: contracts.filter((c) => c.crop_year === cropYear),
-      cropYear: cropYear === '' ? 0 : cropYear, marketPriceByCrop, insuranceByCrop,
+      cropYear: cropYear === '' ? 0 : cropYear, marketPriceByCrop, insuranceByCrop, govtByCrop,
     }),
-    [marketingRows, contracts, cropYear, marketPriceByCrop, insuranceByCrop],
+    [marketingRows, contracts, cropYear, marketPriceByCrop, insuranceByCrop, govtByCrop],
   )
 
   const harvestLabelFor = (cropId: string) => {
@@ -342,7 +417,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                     <td className="px-2 py-1 text-right font-mono">{bu(r.totalProduction)}</td>
                     <td className="px-2 py-1 text-right font-mono">{usd(r.cropSalesRevenue)}</td>
                     <td className={`px-2 py-1 text-right font-mono ${r.insuranceProceeds >= 0 ? 'text-green-700' : 'text-red-700'}`}>{usd(r.insuranceProceeds)}</td>
-                    <td className="px-2 py-1 text-right font-mono text-slate-400">{usd(r.govtPayments)}</td>
+                    <td className="px-2 py-1 text-right font-mono" title={`ARC/PLC: ${usd(r.govtArcPlc)} | Conservation/Other (allocated): ${usd(r.govtAllocatedOther)} | Crop-specific other: ${usd(r.govtCropSpecificOther)}`}>{usd(r.govtPayments)}</td>
                     <td className="px-2 py-1 text-right font-mono font-semibold">{usd(r.totalRevenue)}</td>
                     <td className="px-2 py-1 text-right font-mono">{usd(r.revenuePerAcre)}</td>
                   </tr>
@@ -354,7 +429,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                   <td className="px-2 py-1 text-right font-mono">{bu(totals.totalProduction)}</td>
                   <td className="px-2 py-1 text-right font-mono">{usd(totals.cropSalesRevenue)}</td>
                   <td className={`px-2 py-1 text-right font-mono ${totals.insuranceProceeds >= 0 ? 'text-green-700' : 'text-red-700'}`}>{usd(totals.insuranceProceeds)}</td>
-                  <td className="px-2 py-1 text-right font-mono text-slate-400">{usd(totals.govtPayments)}</td>
+                  <td className="px-2 py-1 text-right font-mono">{usd(totals.govtPayments)}</td>
                   <td className="px-2 py-1 text-right font-mono">{usd(totals.totalRevenue)}</td>
                   <td className="px-2 py-1 text-right font-mono">{usd(totals.revenuePerAcre)}</td>
                 </tr>
@@ -362,7 +437,8 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
             </table>
             <p className="text-xs text-slate-500 mt-2">
               Crop Sales Revenue = locked contract value + uncontracted bushels at the current market price. Government
-              payments are a placeholder (Coming Soon) until that section is built. Insurance Proceeds = total indemnity − premium.
+              Payments = ARC/PLC and other USDA payments allocated by planted acres (hover a cell for the breakdown).
+              Insurance Proceeds = total indemnity − premium.
             </p>
           </section>
 

@@ -15,6 +15,12 @@ export type InsuranceProceeds = {
   premium: number
 }
 
+export type GovtProceeds = {
+  arcPlc: number
+  cropSpecificOther: number
+  allocatedOther: number
+}
+
 export type RevenueRow = {
   cropId: string
   cropName: string
@@ -32,8 +38,11 @@ export type RevenueRow = {
   insuranceProceeds: number
   insuranceIndemnity: number
   insurancePremium: number
-  // Government (placeholder)
+  // Government payments (allocated from ARC/PLC + other USDA payments)
   govtPayments: number
+  govtArcPlc: number
+  govtCropSpecificOther: number
+  govtAllocatedOther: number
   // Totals
   totalRevenue: number
   revenuePerAcre: number | null
@@ -71,8 +80,9 @@ export function computeRevenueProjections(args: {
   cropYear: number
   marketPriceByCrop: Map<string, number>
   insuranceByCrop: Map<string, InsuranceProceeds>
+  govtByCrop?: Map<string, GovtProceeds>
 }): { rows: RevenueRow[]; totals: RevenueTotals } {
-  const { marketingRows, contracts, cropYear, marketPriceByCrop, insuranceByCrop } = args
+  const { marketingRows, contracts, cropYear, marketPriceByCrop, insuranceByCrop, govtByCrop } = args
 
   const rows: RevenueRow[] = marketingRows.map((m) => {
     // Priced contract revenue: only contracts with a locked cash price.
@@ -97,7 +107,8 @@ export function computeRevenueProjections(args: {
     const cropSalesRevenue = round2(pricedRevenue + uncontractedRevenue)
 
     const ins = insuranceByCrop.get(m.cropId) ?? { netPnl: 0, totalIndemnity: 0, premium: 0 }
-    const govtPayments = 0
+    const g = govtByCrop?.get(m.cropId) ?? { arcPlc: 0, cropSpecificOther: 0, allocatedOther: 0 }
+    const govtPayments = round2(g.arcPlc + g.cropSpecificOther + g.allocatedOther)
 
     const totalRevenue = round2(cropSalesRevenue + ins.netPnl + govtPayments)
     const revenuePerAcre = m.acres > 0 ? round2(totalRevenue / m.acres) : null
@@ -132,6 +143,9 @@ export function computeRevenueProjections(args: {
       insuranceIndemnity: round2(ins.totalIndemnity),
       insurancePremium: round2(ins.premium),
       govtPayments,
+      govtArcPlc: round2(g.arcPlc),
+      govtCropSpecificOther: round2(g.cropSpecificOther),
+      govtAllocatedOther: round2(g.allocatedOther),
       totalRevenue,
       revenuePerAcre,
       costPerAcre,

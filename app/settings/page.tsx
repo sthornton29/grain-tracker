@@ -12,6 +12,7 @@ const items = [
   { href: '/settings/crops', label: 'Crops' },
   { href: '/settings/contracts', label: 'Contracts' },
   { href: '/settings/crop-insurance', label: 'Crop Insurance' },
+  { href: '/settings/government-payments', label: 'Government Payments' },
 ]
 
 export default function SettingsPage() {
