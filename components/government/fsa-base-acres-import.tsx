@@ -259,7 +259,7 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
 
       {(source || rows.length > 0) && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <div className="space-y-3">
+          <div className="space-y-3 min-w-0">
             {rows.length === 0 && <p className="text-sm text-slate-400">{stage ? 'Working…' : 'No farms extracted yet.'}</p>}
             {rows.map((r, i) => (
               <div key={i} className="rounded-lg border border-slate-300 p-3 space-y-2">
@@ -274,6 +274,7 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
                     {farms.map((f) => <option key={f.id} value={f.id}>{f.name}{f.fsa_number ? ` (#${f.fsa_number})` : ''}</option>)}
                   </select>
                 </div>
+                <div className="overflow-x-auto">
                 <table className="min-w-full text-xs">
                   <thead className="text-slate-500">
                     <tr>{['', 'Commodity', 'Base acres', 'PLC yield', 'Election', 'Unassigned', ''].map((h) => <th key={h} className="text-left px-1 py-1">{h}</th>)}</tr>
@@ -329,6 +330,7 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
                     })}
                   </tbody>
                 </table>
+                </div>
               </div>
             ))}
           </div>
