@@ -274,6 +274,64 @@ export type OptionPosition = {
   created_at: string
 }
 
+export type CropInsurancePolicy = {
+  id: string
+  entity_id: string | null
+  crop_id: string
+  crop_year: number
+  county_id: string | null
+  policy_number: string | null
+  plan_type: 'RP' | 'RP_HPE' | 'YP'
+  coverage_level: number
+  unit_structure: 'enterprise' | 'basic' | 'optional'
+  aph_yield: number
+  projected_price: number
+  harvest_price: number | null
+  volatility_factor: number | null
+  insured_acres: number
+  premium_per_acre: number | null
+  total_premium: number | null
+  premium_subsidy_pct: number | null
+  notes: string | null
+  source: 'manual' | 'document_import'
+  created_at: string
+}
+
+export type CropInsuranceSco = {
+  id: string
+  policy_id: string
+  coverage_trigger: number
+  expected_county_yield: number
+  county_yield_assumption_pct: number | null
+  premium_per_acre: number | null
+  total_premium: number | null
+  notes: string | null
+  created_at: string
+}
+
+export type CropInsuranceEco = {
+  id: string
+  policy_id: string
+  eco_trigger_level: number
+  expected_county_yield: number
+  county_yield_assumption_pct: number | null
+  premium_per_acre: number | null
+  total_premium: number | null
+  notes: string | null
+  created_at: string
+}
+
+export type HarvestPriceEstimate = {
+  id: string
+  crop_id: string
+  crop_year: number
+  price_type: 'projected' | 'harvest_final' | 'harvest_estimate'
+  price: number
+  source: string | null
+  price_date: string
+  created_at: string
+}
+
 export type Load = {
   id: string
   date: string

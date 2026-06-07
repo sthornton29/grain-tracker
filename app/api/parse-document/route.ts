@@ -318,7 +318,75 @@ Respond ONLY in JSON with no other text, no markdown backticks:
   ]
 }`
 
-type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings'
+const CROP_INSURANCE_POLICY_PROMPT = `This is a crop insurance policy summary, premium billing statement, or coverage confirmation document. Extract all policy information from it.
+
+For each crop/county combination found in the document, extract:
+- crop (e.g., "Corn", "Soybeans", "Wheat")
+- county (the county name)
+- state (the state)
+- crop_year (the crop year)
+- plan_type ("RP" for Revenue Protection, "RP_HPE" for Revenue Protection with Harvest Price Exclusion, "YP" for Yield Protection)
+- coverage_level (as a decimal, e.g., 0.80 for 80%)
+- unit_structure ("enterprise", "basic", or "optional")
+- aph_yield (the APH or approved yield in bushels per acre)
+- projected_price (the spring/projected price per bushel)
+- insured_acres (total insured acres)
+- premium_per_acre (the producer-paid premium per acre, after subsidy)
+- total_premium (total producer premium for this crop/county)
+- premium_subsidy_pct (the federal subsidy percentage if shown)
+- policy_number (if shown)
+
+Also check for SCO (Supplemental Coverage Option) endorsements:
+- sco_present (true/false)
+- sco_coverage_trigger (decimal, typically 0.86)
+- sco_expected_county_yield (bushels per acre if shown)
+- sco_premium_per_acre (if shown)
+- sco_total_premium (if shown)
+
+Also check for ECO (Enhanced Coverage Option) endorsements:
+- eco_present (true/false)
+- eco_trigger_level (0.90 or 0.95)
+- eco_expected_county_yield (if shown)
+- eco_premium_per_acre (if shown)
+- eco_total_premium (if shown)
+
+Respond ONLY in JSON with no other text, no markdown backticks:
+{
+  "policies": [
+    {
+      "crop": "string",
+      "county": "string",
+      "state": "string",
+      "crop_year": number,
+      "plan_type": "RP or RP_HPE or YP",
+      "coverage_level": number,
+      "unit_structure": "enterprise or basic or optional",
+      "aph_yield": number,
+      "projected_price": number,
+      "insured_acres": number,
+      "premium_per_acre": number or null,
+      "total_premium": number or null,
+      "premium_subsidy_pct": number or null,
+      "policy_number": "string or null",
+      "sco": {
+        "present": true/false,
+        "coverage_trigger": number or null,
+        "expected_county_yield": number or null,
+        "premium_per_acre": number or null,
+        "total_premium": number or null
+      },
+      "eco": {
+        "present": true/false,
+        "trigger_level": number or null,
+        "expected_county_yield": number or null,
+        "premium_per_acre": number or null,
+        "total_premium": number or null
+      }
+    }
+  ]
+}`
+
+type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings' | 'crop_insurance_policy'
 
 const PROMPTS: Record<DocumentType, string> = {
   settlement: SETTLEMENT_PROMPT,
@@ -327,6 +395,7 @@ const PROMPTS: Record<DocumentType, string> = {
   contract: CONTRACT_PROMPT,
   fields: FIELDS_PROMPT,
   plantings: PLANTINGS_PROMPT,
+  crop_insurance_policy: CROP_INSURANCE_POLICY_PROMPT,
 }
 
 type ParseBody = {

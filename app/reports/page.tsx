@@ -64,6 +64,26 @@ export default function ReportsLanding() {
           </p>
         </Link>
         <Link
+          href="/reports/crop-insurance-claims"
+          className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
+        >
+          <h2 className="font-bold mb-1">Crop Insurance Claims Monitor</h2>
+          <p className="text-sm text-slate-600">
+            Estimated indemnity for each RP / RP-HPE / YP policy (with SCO &amp; ECO) at your current yields and the
+            running harvest-price estimate, netted against premium. What-If sliders, per-policy math, and Excel/PDF exports.
+          </p>
+        </Link>
+        <Link
+          href="/reports/revenue-projections"
+          className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
+        >
+          <h2 className="font-bold mb-1">Revenue Projections</h2>
+          <p className="text-sm text-slate-600">
+            Every revenue source for a crop year — crop sales, insurance proceeds, and government payments (coming
+            soon) — with cost, profit, and breakeven. A one-page financial summary for a lender or farm meeting.
+          </p>
+        </Link>
+        <Link
           href="/reports/settlement-pdfs"
           className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
         >

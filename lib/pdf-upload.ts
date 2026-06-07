@@ -32,7 +32,7 @@ export function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings'
+export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings' | 'crop_insurance_policy'
 
 export type SettlementExtraction = {
   buyer_name: string | null
@@ -180,6 +180,45 @@ export type PlantingsExtraction = {
   plantings: PlantingExtraction[]
 }
 
+export type CropInsuranceScoExtraction = {
+  present: boolean | null
+  coverage_trigger: number | null
+  expected_county_yield: number | null
+  premium_per_acre: number | null
+  total_premium: number | null
+}
+
+export type CropInsuranceEcoExtraction = {
+  present: boolean | null
+  trigger_level: number | null
+  expected_county_yield: number | null
+  premium_per_acre: number | null
+  total_premium: number | null
+}
+
+export type CropInsurancePolicyExtraction = {
+  crop: string | null
+  county: string | null
+  state: string | null
+  crop_year: number | null
+  plan_type: 'RP' | 'RP_HPE' | 'YP' | null
+  coverage_level: number | null
+  unit_structure: 'enterprise' | 'basic' | 'optional' | null
+  aph_yield: number | null
+  projected_price: number | null
+  insured_acres: number | null
+  premium_per_acre: number | null
+  total_premium: number | null
+  premium_subsidy_pct: number | null
+  policy_number: string | null
+  sco: CropInsuranceScoExtraction | null
+  eco: CropInsuranceEcoExtraction | null
+}
+
+export type CropInsuranceExtraction = {
+  policies: CropInsurancePolicyExtraction[]
+}
+
 // A compressed photo page ready for the API. lib/image-capture.ts' CapturedImage
 // structurally satisfies this, so callers can pass captured images directly.
 export type ParseImage = { base64: string; mediaType: string }
@@ -193,10 +232,11 @@ export async function parseDocument(input: File | ParseImage[], documentType: 'b
 export async function parseDocument(input: File | ParseImage[], documentType: 'contract'): Promise<ContractExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'fields'): Promise<FieldsExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'plantings'): Promise<PlantingsExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'crop_insurance_policy'): Promise<CropInsuranceExtraction>
 export async function parseDocument(
   input: File | ParseImage[],
   documentType: DocumentType,
-): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction> {
+): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction | CropInsuranceExtraction> {
   // Build the request body. Photos are compressed small enough to inline as
   // base64. A PDF, however, is uploaded to storage first and sent as a URL:
   // Vercel rejects serverless request bodies over 4.5 MB with a 413, well below
@@ -231,7 +271,7 @@ export async function parseDocument(
     if (!body || typeof body !== 'object' || !('data' in body)) {
       throw new Error('Malformed response from server.')
     }
-    return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction
+    return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction | CropInsuranceExtraction
   } finally {
     cleanup?.()
   }

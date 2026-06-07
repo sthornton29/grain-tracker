@@ -40,6 +40,8 @@ const categories = [
     title: 'Risk Management',
     reports: [
       { label: 'Hedging Summary', href: '/reports/hedging-summary', external: false },
+      { label: 'Crop Insurance Claims Monitor', href: '/reports/crop-insurance-claims', external: false },
+      { label: 'Revenue Projections', href: '/reports/revenue-projections', external: false },
       { label: 'Marketing Dashboard', href: '/marketing', external: true },
     ],
   },

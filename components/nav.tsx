@@ -11,6 +11,7 @@ const links = [
   { href: '/settlements', label: 'Settlements' },
   { href: '/hedging', label: 'Hedging' },
   { href: '/yields', label: 'Yields' },
+  { href: '/revenue-projections', label: 'Revenue Projections' },
   { href: '/reports', label: 'Reports' },
   { href: '/settings', label: 'Settings' },
 ]
