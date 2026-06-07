@@ -5,7 +5,9 @@ export const runtime = 'nodejs'
 export const maxDuration = 60
 
 const MODEL = 'claude-sonnet-4-6'
-const MAX_TOKENS = 4096
+// Headroom for multi-record documents (e.g. a 156EZ packet or a multi-crop
+// insurance summary) so a batch with several records doesn't truncate the JSON.
+const MAX_TOKENS = 8192
 
 // Server-side cap on the decoded PDF size. The browser also enforces 20 MB on
 // the raw file; this is the corresponding base64-payload check so we don't ship

@@ -10,6 +10,7 @@ import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { findBestMatch } from '@/lib/fuzzy'
 import { PdfTooLargeError, parseDocument, type FsaFarmExtraction } from '@/lib/pdf-upload'
+import { splitPdfIntoBatches } from '@/lib/pdf-split'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
 import type { Farm, CoveredCommodity, FarmBaseAcres, ArcPlcElectionType } from '@/lib/types'
@@ -96,9 +97,23 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
     setStage('Reading FSA document…')
     try {
       await new Promise((r) => setTimeout(r, 200))
-      setStage('Extracting base acres…')
-      const data = await parseDocument(src.kind === 'pdf' ? src.file : src.images, 'fsa_base_acres')
-      const extracted = Array.isArray(data.farms) ? data.farms : []
+      // A whole 156EZ packet is many pages; one Anthropic call over all of them
+      // can time out (504). Split the PDF into small page-batches, parse each
+      // under the limit, and merge the farms. Photos go in a single call.
+      const extracted: FsaFarmExtraction[] = []
+      if (src.kind === 'pdf') {
+        let batches: File[] = [src.file]
+        try { batches = await splitPdfIntoBatches(src.file, 4) } catch { batches = [src.file] }
+        for (let i = 0; i < batches.length; i++) {
+          setStage(batches.length > 1 ? `Extracting base acres (batch ${i + 1} of ${batches.length})…` : 'Extracting base acres…')
+          const data = await parseDocument(batches[i], 'fsa_base_acres')
+          if (Array.isArray(data.farms)) extracted.push(...data.farms)
+        }
+      } else {
+        setStage('Extracting base acres…')
+        const data = await parseDocument(src.images, 'fsa_base_acres')
+        if (Array.isArray(data.farms)) extracted.push(...data.farms)
+      }
       if (extracted.length === 0) {
         setErr('No farms found in this document. The scan may be unclear or the format may not be readable.')
         return
@@ -109,7 +124,9 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
       setBanner(`AI extracted ${next.length} farm${next.length === 1 ? '' : 's'} with ${totalCmds} commodity line${totalCmds === 1 ? '' : 's'}. Review before saving.`)
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) setErr(e.message)
-      else setErr(e?.message ? `Couldn't read this document: ${e.message}.` : "Couldn't read this document.")
+      else if (e?.message?.includes('504') || e?.message?.toLowerCase?.().includes('timeout')) {
+        setErr("That document took too long to read in one pass. Try uploading fewer farms at a time, or use clearer photos of each page.")
+      } else setErr(e?.message ? `Couldn't read this document: ${e.message}.` : "Couldn't read this document.")
     } finally {
       setStage(null)
     }
