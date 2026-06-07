@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { usePersistentState } from '@/lib/use-persistent-state'
+import EntityFilter from '@/components/entity-filter'
 import {
   PolicyFields, emptyPolicyForm, policyToForm, policyFormToPayloads, validatePolicyForm,
   type PolicyFormState,
@@ -30,6 +32,7 @@ export default function CropInsuranceSettingsPage() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editForm, setEditForm] = useState<PolicyFormState>(emptyPolicyForm)
   const [err, setErr] = useState<string | null>(null)
+  const [entityFilter, setEntityFilter] = usePersistentState('crop-insurance-settings:entity', '')
 
   async function refresh() {
     const [cr, co, en, pl, po, sc, ec] = await Promise.all([
@@ -136,6 +139,17 @@ export default function CropInsuranceSettingsPage() {
     const c = countyById.get(id)
     return c ? `${c.name}, ${c.state_code}` : '—'
   }
+  const entityName = (id: string | null) => (id ? entities.find((e) => e.id === id)?.name ?? '' : '')
+
+  // Policies shown in the list, scoped to the selected entity.
+  const visiblePolicies = useMemo(
+    () => (entityFilter ? policies.filter((p) => p.entity_id === entityFilter) : policies),
+    [policies, entityFilter],
+  )
+  // New policies default to the selected entity.
+  useEffect(() => {
+    if (entityFilter) setForm((f) => ({ ...f, entity_id: entityFilter }))
+  }, [entityFilter])
 
   return (
     <div className="space-y-4">
@@ -150,12 +164,14 @@ export default function CropInsuranceSettingsPage() {
         summary and let AI fill them in. These feed the Crop Insurance Claims Monitor and the Revenue Projections report.
       </p>
 
+      <EntityFilter entities={entities} value={entityFilter} onChange={setEntityFilter} />
+
       <PolicyAiImport
         crops={crops}
         counties={counties}
         existingPolicies={policies}
         defaultYear={cropYearOptions[0] ?? new Date().getFullYear()}
-        defaultEntityId={form.entity_id}
+        defaultEntityId={entityFilter || form.entity_id}
         onImported={refresh}
       />
 
@@ -180,8 +196,8 @@ export default function CropInsuranceSettingsPage() {
 
       {/* List */}
       <ul className="bg-white rounded-xl shadow divide-y">
-        {policies.length === 0 && <li className="px-4 py-6 text-center text-slate-400">No policies yet.</li>}
-        {policies.map((p) => {
+        {visiblePolicies.length === 0 && <li className="px-4 py-6 text-center text-slate-400">{policies.length === 0 ? 'No policies yet.' : 'No policies for this entity.'}</li>}
+        {visiblePolicies.map((p) => {
           const sco = scoByPolicy.get(p.id)
           const eco = ecoByPolicy.get(p.id)
           return (
@@ -201,6 +217,7 @@ export default function CropInsuranceSettingsPage() {
                       {cropName(p.crop_id)} · {countyName(p.county_id)}
                       <span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{PLAN_TYPE_SHORT[p.plan_type]} {Math.round(Number(p.coverage_level) * 100)}%</span>
                       <span className="text-xs text-slate-500">{p.crop_year} crop</span>
+                      {entities.length > 1 && p.entity_id && <span className="text-xs text-slate-500">· {entityName(p.entity_id)}</span>}
                       {sco && <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">SCO</span>}
                       {eco && <span className="text-xs rounded-full bg-indigo-100 text-indigo-800 px-2 py-0.5">ECO</span>}
                       {p.source === 'document_import' && <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">imported</span>}

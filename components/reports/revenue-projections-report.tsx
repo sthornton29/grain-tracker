@@ -393,8 +393,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       {cropYear !== '' && rows.length > 0 && (
         <>
           <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print">
-            <strong>Projection</strong> — sales use locked contract prices plus uncontracted bushels at the current
-            market estimate; insurance proceeds and harvest prices are estimates until RMA finalizes them after harvest.
+            <strong>Projection</strong> — crop sales use each crop&apos;s average marketed price (futures + basis, net of
+            realized futures/options P&amp;L) applied to total production; insurance proceeds and harvest prices are
+            estimates until RMA finalizes them after harvest.
           </div>
 
           {/* Revenue summary */}
@@ -403,7 +404,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
             <table className="min-w-full text-sm border-collapse">
               <thead className="bg-slate-100 text-slate-700">
                 <tr>
-                  {['Crop', 'Acres', 'Yield', 'Total Production', 'Crop Sales Revenue', 'Insurance Proceeds', 'Govt Payments', 'Total Revenue', 'Revenue/Acre'].map((h) => (
+                  {['Crop', 'Acres', 'Yield', 'Total Production', 'Crop Sales Revenue *', 'Insurance Proceeds', 'Govt Payments', 'Total Revenue', 'Revenue/Acre'].map((h) => (
                     <th key={h} className="text-left px-2 py-1 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -415,7 +416,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                     <td className="px-2 py-1 text-right font-mono">{bu(r.acres)}</td>
                     <td className="px-2 py-1 text-right font-mono">{r.yield != null ? `${r.yield.toFixed(1)}` : '—'} <span className="text-xs text-slate-400">{r.yield != null ? r.yieldLabel : ''}</span></td>
                     <td className="px-2 py-1 text-right font-mono">{bu(r.totalProduction)}</td>
-                    <td className="px-2 py-1 text-right font-mono">{usd(r.cropSalesRevenue)}</td>
+                    <td className="px-2 py-1 text-right font-mono" title={r.avgSalesPrice != null ? `Avg marketed price ${fmtPrice(r.avgSalesPrice)} (${r.salesPriceSource}) × ${bu(r.totalProduction)} bu — net of realized futures/options P&L` : 'No marketed price available'}>{usd(r.cropSalesRevenue)}</td>
                     <td className={`px-2 py-1 text-right font-mono ${r.insuranceProceeds >= 0 ? 'text-green-700' : 'text-red-700'}`}>{usd(r.insuranceProceeds)}</td>
                     <td className="px-2 py-1 text-right font-mono" title={`ARC/PLC: ${usd(r.govtArcPlc)} | Conservation/Other (allocated): ${usd(r.govtAllocatedOther)} | Crop-specific other: ${usd(r.govtCropSpecificOther)}`}>{usd(r.govtPayments)}</td>
                     <td className="px-2 py-1 text-right font-mono font-semibold">{usd(r.totalRevenue)}</td>
@@ -436,7 +437,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
               </tbody>
             </table>
             <p className="text-xs text-slate-500 mt-2">
-              Crop Sales Revenue = locked contract value + uncontracted bushels at the current market price. Government
+              <strong>*</strong> Crop Sales Revenue = each crop&apos;s average marketed price (futures + basis) × total
+              production — and is <strong>net of realized futures &amp; options P&amp;L</strong>, since that P&amp;L is
+              folded into the average futures price. Falls back to average cash, then current market price. Government
               Payments = ARC/PLC and other USDA payments allocated by planted acres (hover a cell for the breakdown).
               Insurance Proceeds = total indemnity − premium.
             </p>

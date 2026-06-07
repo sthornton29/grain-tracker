@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { usePersistentState } from '@/lib/use-persistent-state'
+import EntityFilter from '@/components/entity-filter'
 import {
   ELECTION_LABEL, COMMON_PROGRAMS, PER_PERSON_LIMIT_2026, effectiveReferencePrice,
   computeArcCoPayment, expectedArcPlcDate, paymentLimitTotal,
@@ -37,6 +39,7 @@ export default function GovernmentPaymentsSettingsPage() {
   const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
   const [limits, setLimits] = useState<PaymentLimitConfig[]>([])
   const [cropYear, setCropYear] = useState<number>(new Date().getFullYear())
+  const [entityFilter, setEntityFilter] = usePersistentState('gov-pay-settings:entity', '')
   const [err, setErr] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [open, setOpen] = useState<string>('base')
@@ -180,21 +183,33 @@ export default function GovernmentPaymentsSettingsPage() {
     refresh()
   }
 
+  // Entity scoping: base acres/elections are per farm, farms belong to entities.
+  const entityFarms = useMemo(
+    () => (entityFilter ? farms.filter((f) => f.entity_id === entityFilter) : farms),
+    [farms, entityFilter],
+  )
+  const entityFarmIds = useMemo(() => (entityFilter ? new Set(entityFarms.map((f) => f.id)) : null), [entityFarms, entityFilter])
+  const entityBaseAcres = useMemo(
+    () => (entityFarmIds ? baseAcres.filter((b) => entityFarmIds.has(b.farm_id)) : baseAcres),
+    [baseAcres, entityFarmIds],
+  )
+  const entityList = useMemo(() => (entityFilter ? entities.filter((e) => e.id === entityFilter) : entities), [entities, entityFilter])
+
   // Eligible (assigned) base vs unassigned/generic base.
   const byFarmName = (a: FarmBaseAcres, b: FarmBaseAcres) => (farmById.get(a.farm_id)?.name ?? '').localeCompare(farmById.get(b.farm_id)?.name ?? '')
-  const eligibleRows = useMemo(() => baseAcres.filter((b) => !b.is_unassigned).sort(byFarmName), [baseAcres, farmById]) // eslint-disable-line react-hooks/exhaustive-deps
-  const unassignedRows = useMemo(() => baseAcres.filter((b) => b.is_unassigned).sort(byFarmName), [baseAcres, farmById]) // eslint-disable-line react-hooks/exhaustive-deps
+  const eligibleRows = useMemo(() => entityBaseAcres.filter((b) => !b.is_unassigned).sort(byFarmName), [entityBaseAcres, farmById]) // eslint-disable-line react-hooks/exhaustive-deps
+  const unassignedRows = useMemo(() => entityBaseAcres.filter((b) => b.is_unassigned).sort(byFarmName), [entityBaseAcres, farmById]) // eslint-disable-line react-hooks/exhaustive-deps
   // Per-farm base totals: eligible, unassigned, total.
   const perFarmBase = useMemo(() => {
     const m = new Map<string, { eligible: number; unassigned: number }>()
-    for (const b of baseAcres) {
+    for (const b of entityBaseAcres) {
       const cur = m.get(b.farm_id) ?? { eligible: 0, unassigned: 0 }
       if (b.is_unassigned) cur.unassigned += Number(b.base_acres)
       else cur.eligible += Number(b.base_acres)
       m.set(b.farm_id, cur)
     }
     return m
-  }, [baseAcres])
+  }, [entityBaseAcres])
   const arcElectedRows = useMemo(
     () => eligibleRows.filter((b) => b.commodity_id && electionFor(b.farm_id, b.commodity_id) !== 'PLC'),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -210,18 +225,21 @@ export default function GovernmentPaymentsSettingsPage() {
         <Link href="/reports/arc-plc-decision-aid" className="text-sm rounded-lg bg-slate-700 text-white px-3 py-2 font-semibold">Decision Aid →</Link>
         <Link href="/reports/government-payments" className="text-sm rounded-lg bg-slate-700 text-white px-3 py-2 font-semibold">Tracker →</Link>
       </div>
-      <label className="text-sm flex items-center gap-2">
-        <span className="text-slate-500">Crop year</span>
-        <select value={cropYear} onChange={(e) => setCropYear(Number(e.target.value))} className={inputCls}>
-          {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
-        </select>
-      </label>
+      <div className="flex items-end gap-3 flex-wrap">
+        <label className="text-sm flex flex-col gap-1">
+          <span className="text-slate-500">Crop year</span>
+          <select value={cropYear} onChange={(e) => setCropYear(Number(e.target.value))} className={inputCls}>
+            {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </label>
+        <EntityFilter entities={entities} value={entityFilter} onChange={setEntityFilter} />
+      </div>
       {err && <p className="text-sm text-red-600">{err}</p>}
 
       {/* Base Acres & Yields */}
       <Section title="Base Acres & Yields" open={open === 'base'} onToggle={() => setOpen(open === 'base' ? '' : 'base')}>
-        <FsaBaseAcresImport farms={farms} commodities={commodities} existingBaseAcres={baseAcres} cropYear={cropYear} onImported={refresh} />
-        <AddBaseAcreForm farms={farms} commodities={commodities} onSave={saveBaseAcre} />
+        <FsaBaseAcresImport farms={entityFarms} commodities={commodities} existingBaseAcres={entityBaseAcres} cropYear={cropYear} onImported={refresh} />
+        <AddBaseAcreForm farms={entityFarms} commodities={commodities} onSave={saveBaseAcre} />
 
         {/* Per-farm base totals */}
         {perFarmBase.size > 0 && (
@@ -350,8 +368,8 @@ export default function GovernmentPaymentsSettingsPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-slate-600"><tr>{['Entity', 'Eligible Persons', 'Per-Person Limit', 'Total Limit', ''].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
             <tbody>
-              {entities.length === 0 && <tr><td colSpan={5} className="px-3 py-6 text-center text-slate-400">No entities.</td></tr>}
-              {entities.map((e) => (
+              {entityList.length === 0 && <tr><td colSpan={5} className="px-3 py-6 text-center text-slate-400">No entities.</td></tr>}
+              {entityList.map((e) => (
                 <LimitRow key={e.id} entity={e} config={limits.find((l) => l.entity_id === e.id && l.crop_year === cropYear) ?? null} onSave={saveLimit} />
               ))}
             </tbody>
@@ -361,13 +379,14 @@ export default function GovernmentPaymentsSettingsPage() {
 
       {/* Other payments */}
       <Section title="Other USDA Payments" open={open === 'other'} onToggle={() => setOpen(open === 'other' ? '' : 'other')}>
-        <AddOtherPaymentForm entities={entities} crops={crops} farms={farms} cropYear={cropYear} onSaved={refresh} onErr={setErr} />
+        <AddOtherPaymentForm entities={entityList} crops={crops} farms={entityFarms} cropYear={cropYear} defaultEntityId={entityFilter} onSaved={refresh} onErr={setErr} />
+        {(() => { const visibleOther = entityFilter ? otherPayments.filter((p) => p.entity_id === entityFilter) : otherPayments; return (
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-slate-600"><tr>{['Program', 'Year', 'Entity', 'Crop', 'Farm', 'Amount', 'Date', 'Status', ''].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
             <tbody>
-              {otherPayments.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">No other payments.</td></tr>}
-              {otherPayments.map((p) => (
+              {visibleOther.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">No other payments.</td></tr>}
+              {visibleOther.map((p) => (
                 <tr key={p.id} className="border-t border-slate-100">
                   <td className="px-3 py-2 font-semibold">{p.program_name}</td>
                   <td className="px-3 py-2">{p.crop_year}</td>
@@ -383,6 +402,7 @@ export default function GovernmentPaymentsSettingsPage() {
             </tbody>
           </table>
         </div>
+        ) })()}
       </Section>
     </div>
   )
@@ -528,12 +548,13 @@ function LimitRow({ entity, config, onSave }: { entity: Entity; config: PaymentL
   )
 }
 
-function AddOtherPaymentForm({ entities, crops, farms, cropYear, onSaved, onErr }: { entities: Entity[]; crops: Crop[]; farms: Farm[]; cropYear: number; onSaved: () => void; onErr: (s: string) => void }) {
+function AddOtherPaymentForm({ entities, crops, farms, cropYear, defaultEntityId = '', onSaved, onErr }: { entities: Entity[]; crops: Crop[]; farms: Farm[]; cropYear: number; defaultEntityId?: string; onSaved: () => void; onErr: (s: string) => void }) {
   const supabase = useMemo(() => createClient(), [])
   const [program, setProgram] = useState(''); const [customProgram, setCustomProgram] = useState('')
-  const [entityId, setEntityId] = useState(''); const [cropId, setCropId] = useState(''); const [farmId, setFarmId] = useState('')
+  const [entityId, setEntityId] = useState(defaultEntityId); const [cropId, setCropId] = useState(''); const [farmId, setFarmId] = useState('')
   const [amount, setAmount] = useState(''); const [date, setDate] = useState(''); const [status, setStatus] = useState<'projected' | 'confirmed' | 'received'>('projected'); const [year, setYear] = useState(String(cropYear))
   useEffect(() => { setYear(String(cropYear)) }, [cropYear])
+  useEffect(() => { setEntityId(defaultEntityId) }, [defaultEntityId])
   const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm bg-white'
 
   async function add() {
@@ -545,7 +566,7 @@ function AddOtherPaymentForm({ entities, crops, farms, cropYear, onSaved, onErr 
       payment_date: date || null, payment_status: status,
     })
     if (error) { onErr(error.message); return }
-    setProgram(''); setCustomProgram(''); setEntityId(''); setCropId(''); setFarmId(''); setAmount(''); setDate(''); setStatus('projected')
+    setProgram(''); setCustomProgram(''); setEntityId(defaultEntityId); setCropId(''); setFarmId(''); setAmount(''); setDate(''); setStatus('projected')
     onSaved()
   }
   return (

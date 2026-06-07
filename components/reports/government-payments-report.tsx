@@ -9,6 +9,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import EntityFilter from '@/components/entity-filter'
 import {
   projectPayments, computeCommodityPayment, ELECTION_LABEL, paymentLimitTotal, PER_PERSON_LIMIT_2026,
   type ProjectedPayment,
@@ -41,6 +42,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   const [limits, setLimits] = useState<PaymentLimitConfig[]>([])
   const [liveMya, setLiveMya] = useState<Map<string, number>>(new Map())
   const [cropYear, setCropYear] = usePersistentState<number | ''>('gov-pay:cropYear', '')
+  const [entityId, setEntityId] = usePersistentState('gov-pay:entity', '')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   useEffect(() => {
@@ -139,11 +141,11 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     return commodities.filter((c) => ids.has(c.id))
   }, [eligibleBase, commodities])
 
-  // Farms that have any eligible base acres.
+  // Farms that have any eligible base acres, scoped to the selected entity.
   const shownFarms = useMemo(() => {
     const ids = new Set(eligibleBase.map((b) => b.farm_id))
-    return farms.filter((f) => ids.has(f.id)).sort((a, b) => a.name.localeCompare(b.name))
-  }, [farms, eligibleBase])
+    return farms.filter((f) => ids.has(f.id) && (!entityId || f.entity_id === entityId)).sort((a, b) => a.name.localeCompare(b.name))
+  }, [farms, eligibleBase, entityId])
 
   // (farmId|commodityId) -> projected payment.
   const projByKey = useMemo(() => new Map(projected.map((p) => [`${p.farmId}|${p.commodityId}`, p])), [projected])
@@ -185,7 +187,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   // Per-entity payment-limit status: sum ARC/PLC for that entity's farms + the
   // entity's other payments (farm-specific and not).
   const limitRows = useMemo(() => {
-    return entities.map((e) => {
+    return entities.filter((e) => !entityId || e.id === entityId).map((e) => {
       const entityFarms = new Set(farms.filter((f) => f.entity_id === e.id).map((f) => f.id))
       let projTotal = 0
       for (const r of farmRows) if (entityFarms.has(r.farm.id)) projTotal += r.arcPlcTotal
@@ -196,7 +198,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
       const limit = paymentLimitTotal(persons, perPerson)
       return { entity: e, persons, perPerson, limit, projTotal, remaining: limit - projTotal, pct: limit > 0 ? projTotal / limit : 0 }
     }).filter((r) => r.projTotal > 0 || limits.some((l) => l.entity_id === r.entity.id && l.crop_year === cropYear))
-  }, [entities, farms, farmRows, yearOther, limits, cropYear])
+  }, [entities, farms, farmRows, yearOther, limits, cropYear, entityId])
 
   function toggle(id: string) { setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n }) }
 
@@ -220,7 +222,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     rows.push(totalRow)
     return {
       title: 'Government Payments',
-      filters: `Crop year: ${cropYear || '—'}`,
+      filters: `Crop year: ${cropYear || '—'}${entityId ? ` · Entity: ${entityById.get(entityId)?.name ?? ''}` : ''}`,
       sections: [{ title: 'Projected Payments by Farm', columns: cols, rows, rowMeta: [...farmRows.map(() => 'data' as const), 'total'] }],
     }
   }
@@ -243,6 +245,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
             {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </label>
+        <EntityFilter entities={entities} value={entityId} onChange={setEntityId} />
       </div>
 
       {cropYear !== '' && farmRows.length === 0 && (

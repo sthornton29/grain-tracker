@@ -10,12 +10,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import EntityFilter from '@/components/entity-filter'
 import {
   computePlcPayment, computeArcCoPayment, effectiveReferencePrice, myaPrice, ELECTION_LABEL,
 } from '@/lib/government-payments'
 import type { ExportPayload } from '@/lib/exports'
 import type {
-  Farm, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection, ArcPlcPriceData, ArcPlcPayment, ArcPlcElectionType,
+  Farm, Entity, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection, ArcPlcPriceData, ArcPlcPayment, ArcPlcElectionType,
 } from '@/lib/types'
 
 type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
@@ -27,6 +28,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [loading, setLoading] = useState(true)
   const [farms, setFarms] = useState<Farm[]>([])
+  const [entities, setEntities] = useState<Entity[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [commodities, setCommodities] = useState<CoveredCommodity[]>([])
   const [baseAcres, setBaseAcres] = useState<FarmBaseAcres[]>([])
@@ -35,11 +37,13 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
   const [payments, setPayments] = useState<ArcPlcPayment[]>([])
   const [liveMya, setLiveMya] = useState<Map<string, number>>(new Map())
   const [cropYear, setCropYear] = usePersistentState<number | ''>('arc-plc-aid:cropYear', '')
+  const [entityId, setEntityId] = usePersistentState('arc-plc-aid:entity', '')
   const [myaPct, setMyaPct] = useState(0)
 
   async function refresh() {
-    const [fa, pl, cc, ba, el, pd, pay] = await Promise.all([
+    const [fa, en, pl, cc, ba, el, pd, pay] = await Promise.all([
       supabase.from('farms').select('*').order('name'),
+      supabase.from('entities').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
       supabase.from('covered_commodities').select('*').order('name'),
       supabase.from('farm_base_acres').select('*'),
@@ -48,6 +52,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
       supabase.from('arc_plc_payments').select('*'),
     ])
     setFarms((fa.data as Farm[]) || [])
+    setEntities((en.data as Entity[]) || [])
     setPlantings((pl.data as FieldPlanting[]) || [])
     setCommodities((cc.data as CoveredCommodity[]) || [])
     setBaseAcres((ba.data as FarmBaseAcres[]) || [])
@@ -126,7 +131,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
   const rows: Row[] = useMemo(() => {
     if (cropYear === '') return []
     return baseAcres
-      .filter((b) => !b.is_unassigned && b.commodity_id)
+      .filter((b) => !b.is_unassigned && b.commodity_id && (!entityId || farmById.get(b.farm_id)?.entity_id === entityId))
       .map((b) => {
         const commodity = commodityById.get(b.commodity_id!)
         if (!commodity) return null
@@ -143,7 +148,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
       .filter((r): r is Row => r != null)
       .sort((a, b) => a.farmName.localeCompare(b.farmName) || a.commodity.name.localeCompare(b.commodity.name))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseAcres, commodityById, farmById, cropYear, priceData, payments, elections, liveMya, myaPct])
+  }, [baseAcres, commodityById, farmById, cropYear, entityId, priceData, payments, elections, liveMya, myaPct])
 
   async function setElection(farmId: string, commodityId: string | null, election: ArcPlcElectionType) {
     if (commodityId == null) return
@@ -154,7 +159,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
   function buildExportPayload(): ExportPayload {
     return {
       title: 'ARC/PLC Decision Aid',
-      filters: `Crop year: ${cropYear || '—'}${myaPct !== 0 ? ` · MYA what-if: ${myaPct > 0 ? '+' : ''}${myaPct}%` : ''}`,
+      filters: `Crop year: ${cropYear || '—'}${entityId ? ` · Entity: ${entities.find((e) => e.id === entityId)?.name ?? ''}` : ''}${myaPct !== 0 ? ` · MYA what-if: ${myaPct > 0 ? '+' : ''}${myaPct}%` : ''}`,
       sections: [{
         title: 'Projected Payments by Farm × Commodity',
         columns: [
@@ -173,7 +178,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, cropYear, myaPct, onPayloadChange])
+  }, [rows, cropYear, entityId, myaPct, onPayloadChange])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   if (loading) return <p className="text-slate-500">Loading…</p>
@@ -188,6 +193,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
             {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </label>
+        <EntityFilter entities={entities} value={entityId} onChange={setEntityId} />
       </div>
 
       {cropYear === '' && <p className="text-amber-700 text-sm">Pick a crop year.</p>}

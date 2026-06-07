@@ -33,6 +33,11 @@ export type RevenueRow = {
   pricedRevenue: number
   uncontractedBu: number
   marketPrice: number | null
+  // The average price applied to total production, and where it came from. The
+  // futures+basis average already folds in realized futures/options P&L, so crop
+  // sales revenue is reported NET of that P&L.
+  avgSalesPrice: number | null
+  salesPriceSource: 'futures+basis' | 'cash' | 'market' | null
   cropSalesRevenue: number
   // Insurance
   insuranceProceeds: number
@@ -98,13 +103,21 @@ export function computeRevenueProjections(args: {
     }
 
     const uncontractedBu = Math.max(0, m.totalProduction - pricedBu)
-    // Value uncontracted bushels at the current market price; fall back to the
-    // priced average, then to nothing, so a missing price never inflates revenue.
+    // Current market price for uncontracted bushels / breakeven; fall back to the
+    // priced average so a missing price never inflates revenue.
     const marketPrice =
       marketPriceByCrop.get(m.cropId) ??
       (pricedBu > 0 ? pricedRevenue / pricedBu : null)
-    const uncontractedRevenue = marketPrice != null ? uncontractedBu * marketPrice : 0
-    const cropSalesRevenue = round2(pricedRevenue + uncontractedRevenue)
+
+    // Crop sales revenue = the crop's average marketed price × total production.
+    // Prefer the futures+basis average (which already incorporates realized
+    // futures and options P&L), then the average cash price, then market. Because
+    // the futures average folds in hedge/option P&L, this figure is NET of
+    // futures/options P&L.
+    const avgSalesPrice = m.totalAvgPrice ?? m.avgCashPrice ?? marketPrice
+    const salesPriceSource: RevenueRow['salesPriceSource'] =
+      m.totalAvgPrice != null ? 'futures+basis' : m.avgCashPrice != null ? 'cash' : marketPrice != null ? 'market' : null
+    const cropSalesRevenue = avgSalesPrice != null ? round2(avgSalesPrice * m.totalProduction) : 0
 
     const ins = insuranceByCrop.get(m.cropId) ?? { netPnl: 0, totalIndemnity: 0, premium: 0 }
     const g = govtByCrop?.get(m.cropId) ?? { arcPlc: 0, cropSpecificOther: 0, allocatedOther: 0 }
@@ -138,6 +151,8 @@ export function computeRevenueProjections(args: {
       pricedRevenue: round2(pricedRevenue),
       uncontractedBu,
       marketPrice: marketPrice != null ? round2(marketPrice) : null,
+      avgSalesPrice: avgSalesPrice != null ? Math.round(avgSalesPrice * 1e4) / 1e4 : null,
+      salesPriceSource,
       cropSalesRevenue,
       insuranceProceeds: round2(ins.netPnl),
       insuranceIndemnity: round2(ins.totalIndemnity),
