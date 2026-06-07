@@ -76,9 +76,10 @@ export default function GovernmentPaymentsSettingsPage() {
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const commodityById = useMemo(() => new Map(commodities.map((c) => [c.id, c])), [commodities])
   const priceFor = (commodityId: string) => priceData.find((p) => p.commodity_id === commodityId && p.crop_year === cropYear) ?? null
-  const electionFor = (farmId: string, commodityId: string): ArcPlcElectionType =>
-    elections.find((e) => e.farm_id === farmId && e.commodity_id === commodityId && e.crop_year === cropYear)?.election ?? 'PLC'
-  const arcRateFor = (farmId: string, commodityId: string): number | null => {
+  const electionFor = (farmId: string, commodityId: string | null): ArcPlcElectionType =>
+    commodityId == null ? 'PLC' : elections.find((e) => e.farm_id === farmId && e.commodity_id === commodityId && e.crop_year === cropYear)?.election ?? 'PLC'
+  const arcRateFor = (farmId: string, commodityId: string | null): number | null => {
+    if (commodityId == null) return null
     const p = payments.find((x) => x.farm_id === farmId && x.commodity_id === commodityId && x.crop_year === cropYear)
     return p ? Number(p.payment_rate_per_unit) : null
   }
@@ -96,6 +97,28 @@ export default function GovernmentPaymentsSettingsPage() {
   async function deleteBaseAcre(id: string) {
     if (!confirm('Delete this base-acre record?')) return
     await supabase.from('farm_base_acres').delete().eq('id', id); refresh()
+  }
+  // Convert unassigned/generic base into eligible base for a commodity: add (or
+  // increment) the eligible row and reduce/remove the unassigned row.
+  async function convertUnassigned(row: FarmBaseAcres, commodity_id: string, acres: number, plc_yield: number) {
+    if (!commodity_id || acres <= 0) { setErr('Pick a commodity and a positive number of acres to convert.'); return }
+    if (acres > Number(row.base_acres)) { setErr('Cannot convert more than the unassigned acres available.'); return }
+    setErr(null)
+    const existing = baseAcres.find((b) => b.farm_id === row.farm_id && b.commodity_id === commodity_id && !b.is_unassigned)
+    const newAcres = (existing ? Number(existing.base_acres) : 0) + acres
+    const newYield = plc_yield > 0 ? plc_yield : (existing ? Number(existing.plc_yield) : 0)
+    const up = await supabase.from('farm_base_acres').upsert(
+      { farm_id: row.farm_id, commodity_id, base_acres: newAcres, plc_yield: newYield, is_unassigned: false, source: 'manual', updated_at: new Date().toISOString() },
+      { onConflict: 'farm_id,commodity_id' },
+    )
+    if (up.error) { setErr(up.error.message); return }
+    const remaining = Number(row.base_acres) - acres
+    if (remaining <= 0.0001) {
+      await supabase.from('farm_base_acres').delete().eq('id', row.id)
+    } else {
+      await supabase.from('farm_base_acres').update({ base_acres: remaining, updated_at: new Date().toISOString() }).eq('id', row.id)
+    }
+    refresh()
   }
   async function setElection(farm_id: string, commodity_id: string, election: ArcPlcElectionType) {
     const { error } = await supabase.from('arc_plc_elections').upsert(
@@ -157,15 +180,25 @@ export default function GovernmentPaymentsSettingsPage() {
     refresh()
   }
 
-  // Base-acre rows for the table (every farm×commodity record).
-  const baseRows = useMemo(
-    () => [...baseAcres].sort((a, b) => (farmById.get(a.farm_id)?.name ?? '').localeCompare(farmById.get(b.farm_id)?.name ?? '')),
-    [baseAcres, farmById],
-  )
+  // Eligible (assigned) base vs unassigned/generic base.
+  const byFarmName = (a: FarmBaseAcres, b: FarmBaseAcres) => (farmById.get(a.farm_id)?.name ?? '').localeCompare(farmById.get(b.farm_id)?.name ?? '')
+  const eligibleRows = useMemo(() => baseAcres.filter((b) => !b.is_unassigned).sort(byFarmName), [baseAcres, farmById]) // eslint-disable-line react-hooks/exhaustive-deps
+  const unassignedRows = useMemo(() => baseAcres.filter((b) => b.is_unassigned).sort(byFarmName), [baseAcres, farmById]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Per-farm base totals: eligible, unassigned, total.
+  const perFarmBase = useMemo(() => {
+    const m = new Map<string, { eligible: number; unassigned: number }>()
+    for (const b of baseAcres) {
+      const cur = m.get(b.farm_id) ?? { eligible: 0, unassigned: 0 }
+      if (b.is_unassigned) cur.unassigned += Number(b.base_acres)
+      else cur.eligible += Number(b.base_acres)
+      m.set(b.farm_id, cur)
+    }
+    return m
+  }, [baseAcres])
   const arcElectedRows = useMemo(
-    () => baseRows.filter((b) => electionFor(b.farm_id, b.commodity_id) !== 'PLC'),
+    () => eligibleRows.filter((b) => b.commodity_id && electionFor(b.farm_id, b.commodity_id) !== 'PLC'),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [baseRows, elections, cropYear],
+    [eligibleRows, elections, cropYear],
   )
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2 bg-white'
@@ -189,17 +222,62 @@ export default function GovernmentPaymentsSettingsPage() {
       <Section title="Base Acres & Yields" open={open === 'base'} onToggle={() => setOpen(open === 'base' ? '' : 'base')}>
         <FsaBaseAcresImport farms={farms} commodities={commodities} existingBaseAcres={baseAcres} cropYear={cropYear} onImported={refresh} />
         <AddBaseAcreForm farms={farms} commodities={commodities} onSave={saveBaseAcre} />
+
+        {/* Per-farm base totals */}
+        {perFarmBase.size > 0 && (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-50 text-slate-600"><tr>{['Farm', 'Eligible Base', 'Unassigned Base', 'Total Base'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+              <tbody>
+                {[...perFarmBase.entries()]
+                  .sort((a, b) => (farmById.get(a[0])?.name ?? '').localeCompare(farmById.get(b[0])?.name ?? ''))
+                  .map(([fid, t]) => (
+                    <tr key={fid} className="border-t border-slate-100">
+                      <td className="px-3 py-2 font-semibold">{farmById.get(fid)?.name ?? '—'}</td>
+                      <td className="px-3 py-2 text-right font-mono">{t.eligible.toLocaleString()}</td>
+                      <td className="px-3 py-2 text-right font-mono text-slate-400">{t.unassigned.toLocaleString()}</td>
+                      <td className="px-3 py-2 text-right font-mono font-semibold">{(t.eligible + t.unassigned).toLocaleString()}</td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Eligible base */}
         <div className="overflow-x-auto">
+          <div className="text-sm font-semibold text-slate-700 mb-1">Eligible Base (ARC/PLC payment-eligible)</div>
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-slate-600"><tr>{['Farm', 'FSA #', 'Commodity', 'Base Acres', 'PLC Yield', 'Source', ''].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
             <tbody>
-              {baseRows.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">No base acres yet.</td></tr>}
-              {baseRows.map((b) => (
-                <BaseAcreRow key={b.id} row={b} farm={farmById.get(b.farm_id)} commodity={commodityById.get(b.commodity_id)} onSave={saveBaseAcre} onDelete={deleteBaseAcre} />
+              {eligibleRows.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">No eligible base acres yet.</td></tr>}
+              {eligibleRows.map((b) => (
+                <BaseAcreRow key={b.id} row={b} farm={farmById.get(b.farm_id)} commodity={b.commodity_id ? commodityById.get(b.commodity_id) : undefined} onSave={saveBaseAcre} onDelete={deleteBaseAcre} />
               ))}
             </tbody>
           </table>
         </div>
+
+        {/* Unassigned / generic base */}
+        {unassignedRows.length > 0 && (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+            <div className="text-sm font-semibold text-slate-500">Unassigned Base (not eligible for ARC/PLC)</div>
+            <p className="text-xs text-slate-400">
+              These acres are retained on the farm record by FSA but are not currently eligible for ARC/PLC payments.
+              Under the One Big Beautiful Bill Act, some unassigned acres may become eligible starting with the 2026 crop year.
+            </p>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm text-slate-500">
+                <thead className="text-slate-400"><tr>{['Farm', 'Unassigned Acres', 'Convert to commodity', 'Acres', 'PLC yield', '', ''].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+                <tbody>
+                  {unassignedRows.map((b) => (
+                    <ConvertUnassignedRow key={b.id} row={b} farmName={farmById.get(b.farm_id)?.name ?? '—'} commodities={commodities} onConvert={convertUnassigned} onDelete={deleteBaseAcre} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </Section>
 
       {/* Elections */}
@@ -209,14 +287,14 @@ export default function GovernmentPaymentsSettingsPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-slate-600"><tr>{['Farm', 'Commodity', 'Base Acres', 'Election'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
             <tbody>
-              {baseRows.length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-400">Add base acres first.</td></tr>}
-              {baseRows.map((b) => (
+              {eligibleRows.length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-400">Add eligible base acres first.</td></tr>}
+              {eligibleRows.filter((b) => b.commodity_id).map((b) => (
                 <tr key={b.id} className="border-t border-slate-100">
                   <td className="px-3 py-2">{farmById.get(b.farm_id)?.name ?? '—'}</td>
-                  <td className="px-3 py-2">{commodityById.get(b.commodity_id)?.name ?? '—'}</td>
+                  <td className="px-3 py-2">{b.commodity_id ? commodityById.get(b.commodity_id)?.name ?? '—' : '—'}</td>
                   <td className="px-3 py-2 text-right font-mono">{Number(b.base_acres).toLocaleString()}</td>
                   <td className="px-3 py-2">
-                    <select value={electionFor(b.farm_id, b.commodity_id)} onChange={(e) => setElection(b.farm_id, b.commodity_id, e.target.value as ArcPlcElectionType)} className="rounded border border-slate-300 px-2 py-1">
+                    <select value={electionFor(b.farm_id, b.commodity_id)} onChange={(e) => b.commodity_id && setElection(b.farm_id, b.commodity_id, e.target.value as ArcPlcElectionType)} className="rounded border border-slate-300 px-2 py-1">
                       {(['PLC', 'ARC_CO', 'ARC_IC'] as ArcPlcElectionType[]).map((opt) => <option key={opt} value={opt}>{ELECTION_LABEL[opt]}</option>)}
                     </select>
                   </td>
@@ -257,7 +335,7 @@ export default function GovernmentPaymentsSettingsPage() {
             <tbody>
               {arcElectedRows.length === 0 && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-400">No farm/commodity is elected to ARC for {cropYear}.</td></tr>}
               {arcElectedRows.map((b) => (
-                <ArcRateRow key={b.id} row={b} farmName={farmById.get(b.farm_id)?.name ?? '—'} commodityName={commodityById.get(b.commodity_id)?.name ?? '—'}
+                <ArcRateRow key={b.id} row={b} farmName={farmById.get(b.farm_id)?.name ?? '—'} commodityName={(b.commodity_id ? commodityById.get(b.commodity_id)?.name : null) ?? '—'}
                   election={ELECTION_LABEL[electionFor(b.farm_id, b.commodity_id)]} rate={arcRateFor(b.farm_id, b.commodity_id)} onSave={saveArcRate} />
               ))}
             </tbody>
@@ -349,7 +427,7 @@ function BaseAcreRow({ row, farm, commodity, onSave, onDelete }: { row: FarmBase
       <td className="px-3 py-2"><input type="number" step="0.1" value={yld} onChange={(e) => setYld(e.target.value)} className={inputCls} /></td>
       <td className="px-3 py-2 text-xs text-slate-400">{row.source === 'document_import' ? 'imported' : 'manual'}</td>
       <td className="px-3 py-2 whitespace-nowrap">
-        <button onClick={() => onSave(row.farm_id, row.commodity_id, num(acres) ?? 0, num(yld) ?? 0)} className="text-green-700 font-semibold mr-3">Save</button>
+        <button onClick={() => onSave(row.farm_id, row.commodity_id ?? '', num(acres) ?? 0, num(yld) ?? 0)} className="text-green-700 font-semibold mr-3">Save</button>
         <button onClick={() => onDelete(row.id)} className="text-red-600">Delete</button>
       </td>
     </tr>
@@ -394,7 +472,42 @@ function ArcRateRow({ row, farmName, commodityName, election, rate, onSave }: { 
       <td className="px-3 py-2"><span className="text-xs rounded-full bg-indigo-100 text-indigo-800 px-2 py-0.5">{election}</span></td>
       <td className="px-3 py-2 text-right font-mono">{Number(row.base_acres).toLocaleString()}</td>
       <td className="px-3 py-2"><input type="number" step="0.01" value={val} onChange={(e) => setVal(e.target.value)} className="rounded border border-slate-300 px-2 py-1 w-28" /></td>
-      <td className="px-3 py-2"><button onClick={() => onSave(row.farm_id, row.commodity_id, num(val) ?? 0)} className="text-green-700 font-semibold">Save</button></td>
+      <td className="px-3 py-2"><button onClick={() => onSave(row.farm_id, row.commodity_id ?? '', num(val) ?? 0)} className="text-green-700 font-semibold">Save</button></td>
+    </tr>
+  )
+}
+
+function ConvertUnassignedRow({ row, farmName, commodities, onConvert, onDelete }: {
+  row: FarmBaseAcres
+  farmName: string
+  commodities: CoveredCommodity[]
+  onConvert: (row: FarmBaseAcres, commodityId: string, acres: number, plcYield: number) => void
+  onDelete: (id: string) => void
+}) {
+  const [commodity, setCommodity] = useState('')
+  const [acres, setAcres] = useState(String(Number(row.base_acres)))
+  const [yld, setYld] = useState('')
+  const inputCls = 'rounded border border-slate-300 px-2 py-1'
+  return (
+    <tr className="border-t border-slate-100">
+      <td className="px-3 py-2 font-semibold">{farmName}</td>
+      <td className="px-3 py-2 text-right font-mono">{Number(row.base_acres).toLocaleString()}</td>
+      <td className="px-3 py-2">
+        <select value={commodity} onChange={(e) => setCommodity(e.target.value)} className={inputCls}>
+          <option value="">— commodity —</option>
+          {commodities.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </td>
+      <td className="px-3 py-2"><input type="number" step="0.01" value={acres} onChange={(e) => setAcres(e.target.value)} className={`${inputCls} w-24`} /></td>
+      <td className="px-3 py-2"><input type="number" step="0.1" placeholder="opt" value={yld} onChange={(e) => setYld(e.target.value)} className={`${inputCls} w-20`} /></td>
+      <td className="px-3 py-2">
+        <button
+          onClick={() => commodity && onConvert(row, commodity, num(acres) ?? 0, num(yld) ?? 0)}
+          disabled={!commodity}
+          className="rounded-lg bg-sky-700 text-white px-3 py-1 text-xs font-semibold disabled:opacity-50"
+        >Convert</button>
+      </td>
+      <td className="px-3 py-2"><button onClick={() => onDelete(row.id)} className="text-red-600 text-xs">Delete</button></td>
     </tr>
   )
 }

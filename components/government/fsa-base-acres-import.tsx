@@ -2,9 +2,12 @@
 
 // AI import for FSA base-acre documents (Form 156EZ, Base & Yield Notice, Base
 // Allocation Summary). Matches each FSA farm number to an existing farm, maps
-// commodities to covered_commodities, flags duplicates against existing
-// farm_base_acres, and lets the user review/edit before saving. Optionally
-// records the ARC/PLC election shown on the document for the selected year.
+// commodities to covered_commodities, flags duplicates, and lets the user review
+// before saving. Handles two OBBBA wrinkles:
+//   * Unassigned / generic base — flagged is_unassigned, stored without a
+//     commodity, and excluded from every payment calculation.
+//   * Unrecognized commodities (crambe, safflower, sesame, …) — offered as new
+//     covered_commodities created on save (reference price entered later).
 
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
@@ -23,12 +26,16 @@ type Props = {
   onImported: () => void
 }
 
+const NEW_COMMODITY = '__new__'
+
 type CommodityRow = {
-  commodity_id: string
+  commodity_id: string // matched existing commodity, or '' (new/unassigned)
+  createName: string // when set + no commodity_id, create this covered_commodity on save
   raw_name: string | null
   base_acres: string
   plc_yield: string
   election: '' | ArcPlcElectionType
+  is_unassigned: boolean
   include: boolean
 }
 type FarmRow = {
@@ -55,6 +62,10 @@ function normalizeElection(raw: string | null | undefined): '' | ArcPlcElectionT
   return ''
 }
 
+function looksUnassigned(name: string | null | undefined): boolean {
+  return /unassign|generic/i.test(name ?? '')
+}
+
 export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcres, cropYear, onImported }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [source, setSource] = useState<DocumentSource | null>(null)
@@ -64,22 +75,28 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
   const [rows, setRows] = useState<FarmRow[]>([])
   const [saving, setSaving] = useState(false)
 
+  // Existing assigned (farm, commodity) pairs, to flag duplicate imports.
   const existingKeys = useMemo(
-    () => new Set(existingBaseAcres.map((b) => `${b.farm_id}|${b.commodity_id}`)),
+    () => new Set(existingBaseAcres.filter((b) => !b.is_unassigned && b.commodity_id).map((b) => `${b.farm_id}|${b.commodity_id}`)),
     [existingBaseAcres],
   )
 
   function extractionToRow(f: FsaFarmExtraction): FarmRow {
     const farm = f.fsa_farm_number ? findBestMatch(f.fsa_farm_number, farms, (x) => x.fsa_number ?? '') : null
     const cmds: CommodityRow[] = (f.commodities ?? []).map((c) => {
-      const commodity = findBestMatch(c.commodity_name, commodities, (x) => x.name)
+      const unassigned = c.is_unassigned === true || looksUnassigned(c.commodity_name)
+      const commodity = unassigned ? null : findBestMatch(c.commodity_name, commodities, (x) => x.name)
       const acres = c.total_base_acres ?? c.base_acres
+      // Unmatched, named, non-unassigned commodity → offer to add it as new.
+      const createName = !unassigned && !commodity && c.commodity_name ? c.commodity_name.trim() : ''
       return {
         commodity_id: commodity?.id ?? '',
+        createName,
         raw_name: c.commodity_name,
         base_acres: numStr(acres),
         plc_yield: numStr(c.plc_yield),
-        election: normalizeElection(c.arc_plc_election),
+        election: unassigned ? '' : normalizeElection(c.arc_plc_election),
+        is_unassigned: unassigned,
         include: true,
       }
     })
@@ -140,45 +157,78 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
   }
   function discard() { setSource(null); setRows([]); setBanner(null); setErr(null) }
 
-  function isDup(farm_id: string, commodity_id: string): boolean {
-    return !!farm_id && !!commodity_id && existingKeys.has(`${farm_id}|${commodity_id}`)
+  function isDup(c: CommodityRow, farm_id: string): boolean {
+    return !c.is_unassigned && !!farm_id && !!c.commodity_id && existingKeys.has(`${farm_id}|${c.commodity_id}`)
   }
 
   async function saveAll() {
     setErr(null)
-    const baseInserts: Array<{ farm_id: string; commodity_id: string; base_acres: number; plc_yield: number; source: string }> = []
-    const electionUpserts: Array<{ farm_id: string; commodity_id: string; crop_year: number; election: ArcPlcElectionType }> = []
-    for (const r of rows) {
-      if (!r.farm_id) continue
-      for (const c of r.commodities) {
-        if (!c.include || !c.commodity_id) continue
-        baseInserts.push({
-          farm_id: r.farm_id,
-          commodity_id: c.commodity_id,
-          base_acres: num(c.base_acres) ?? 0,
-          plc_yield: num(c.plc_yield) ?? 0,
-          source: 'document_import',
-        })
-        if (c.election) electionUpserts.push({ farm_id: r.farm_id, commodity_id: c.commodity_id, crop_year: cropYear, election: c.election })
-      }
-    }
-    if (baseInserts.length === 0) {
-      setErr('Nothing to save — each line needs a matched farm and commodity.')
-      return
-    }
     setSaving(true)
     try {
-      // Upsert by (farm_id, commodity_id) so re-importing updates in place.
-      const { error } = await supabase.from('farm_base_acres').upsert(
-        baseInserts.map((b) => ({ ...b, updated_at: new Date().toISOString() })),
-        { onConflict: 'farm_id,commodity_id' },
-      )
-      if (error) throw new Error(error.message)
-      if (electionUpserts.length > 0) {
-        const { error: e2 } = await supabase.from('arc_plc_elections').upsert(electionUpserts, { onConflict: 'farm_id,commodity_id,crop_year' })
-        if (e2) throw new Error(e2.message)
+      const now = new Date().toISOString()
+      // 1. Create any new covered_commodities the user opted into (reference
+      //    price defaults to 0 for them to fill in later).
+      const newNames = Array.from(new Set(
+        rows.flatMap((r) => r.commodities)
+          .filter((c) => c.include && !c.is_unassigned && !c.commodity_id && c.createName)
+          .map((c) => c.createName),
+      ))
+      const idByName = new Map<string, string>()
+      for (const name of newNames) {
+        const existing = commodities.find((c) => c.name.toLowerCase() === name.toLowerCase())
+        if (existing) { idByName.set(name, existing.id); continue }
+        const { data, error } = await supabase.from('covered_commodities').insert({
+          name, statutory_reference_price: 0, unit: 'bushel', national_loan_rate: 0,
+          marketing_year_start_month: 9, marketing_year_end_month: 8,
+        }).select('id').single()
+        if (error || !data) throw new Error(error?.message ?? `Could not add commodity ${name}`)
+        idByName.set(name, (data as { id: string }).id)
       }
-      setBanner(`Saved base acres for ${baseInserts.length} commodity line${baseInserts.length === 1 ? '' : 's'}.`)
+
+      // 2. Assigned base — upsert by (farm_id, commodity_id). Unassigned base —
+      //    summed per farm into one generic (null-commodity) row.
+      const eligible: Array<Record<string, unknown>> = []
+      const electionUpserts: Array<{ farm_id: string; commodity_id: string; crop_year: number; election: ArcPlcElectionType }> = []
+      const unassignedByFarm = new Map<string, number>()
+      for (const r of rows) {
+        if (!r.farm_id) continue
+        for (const c of r.commodities) {
+          if (!c.include) continue
+          if (c.is_unassigned) {
+            unassignedByFarm.set(r.farm_id, (unassignedByFarm.get(r.farm_id) ?? 0) + (num(c.base_acres) ?? 0))
+            continue
+          }
+          const cid = c.commodity_id || (c.createName ? idByName.get(c.createName) : undefined)
+          if (!cid) continue
+          eligible.push({ farm_id: r.farm_id, commodity_id: cid, base_acres: num(c.base_acres) ?? 0, plc_yield: num(c.plc_yield) ?? 0, is_unassigned: false, source: 'document_import', updated_at: now })
+          if (c.election) electionUpserts.push({ farm_id: r.farm_id, commodity_id: cid, crop_year: cropYear, election: c.election })
+        }
+      }
+
+      if (eligible.length === 0 && unassignedByFarm.size === 0) {
+        setErr('Nothing to save — each line needs a matched farm and commodity, or an unassigned flag.')
+        setSaving(false)
+        return
+      }
+
+      if (eligible.length > 0) {
+        const { error } = await supabase.from('farm_base_acres').upsert(eligible, { onConflict: 'farm_id,commodity_id' })
+        if (error) throw new Error(error.message)
+      }
+      if (unassignedByFarm.size > 0) {
+        const farmIds = Array.from(unassignedByFarm.keys())
+        // Replace any prior generic base for these farms so re-import is idempotent.
+        await supabase.from('farm_base_acres').delete().is('commodity_id', null).in('farm_id', farmIds)
+        const inserts = farmIds.map((fid) => ({ farm_id: fid, commodity_id: null, base_acres: unassignedByFarm.get(fid) ?? 0, plc_yield: 0, is_unassigned: true, source: 'document_import', updated_at: now }))
+        const { error } = await supabase.from('farm_base_acres').insert(inserts)
+        if (error) throw new Error(error.message)
+      }
+      if (electionUpserts.length > 0) {
+        const { error } = await supabase.from('arc_plc_elections').upsert(electionUpserts, { onConflict: 'farm_id,commodity_id,crop_year' })
+        if (error) throw new Error(error.message)
+      }
+
+      setBanner(`Saved ${eligible.length} assigned line${eligible.length === 1 ? '' : 's'}${unassignedByFarm.size > 0 ? ` and unassigned base for ${unassignedByFarm.size} farm${unassignedByFarm.size === 1 ? '' : 's'}` : ''}.`)
       setRows([]); setSource(null)
       onImported()
     } catch (e: any) {
@@ -198,8 +248,8 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
       </div>
       <p className="text-sm text-slate-500">
         Photograph or upload a Form 156EZ, Base &amp; Yield Notice, or Base Allocation Summary. Each farm is matched to
-        your records by FSA number; base acres, PLC yields, and any election are pulled in for review. Elections save to
-        the {cropYear} crop year.
+        your records by FSA number; base acres, PLC yields, and any election are pulled in for review. Unassigned/generic
+        base is flagged and excluded from payments. Elections save to the {cropYear} crop year.
       </p>
 
       <DocumentCapture onSource={onSource} busy={stage != null} stageLabel={stage} pdfLabel="Upload FSA PDF or Photo (AI)" />
@@ -226,31 +276,50 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
                 </div>
                 <table className="min-w-full text-xs">
                   <thead className="text-slate-500">
-                    <tr>{['', 'Commodity', 'Base acres', 'PLC yield', 'Election', ''].map((h) => <th key={h} className="text-left px-1 py-1">{h}</th>)}</tr>
+                    <tr>{['', 'Commodity', 'Base acres', 'PLC yield', 'Election', 'Unassigned', ''].map((h) => <th key={h} className="text-left px-1 py-1">{h}</th>)}</tr>
                   </thead>
                   <tbody>
                     {r.commodities.map((c, ci) => {
-                      const dup = isDup(r.farm_id, c.commodity_id)
+                      const dup = isDup(c, r.farm_id)
                       return (
-                        <tr key={ci} className="border-t border-slate-100">
+                        <tr key={ci} className={`border-t border-slate-100 ${c.is_unassigned ? 'text-slate-400' : ''}`}>
                           <td className="px-1 py-1"><input type="checkbox" checked={c.include} onChange={(e) => setCommodity(i, ci, { include: e.target.checked })} /></td>
                           <td className="px-1 py-1">
-                            <select value={c.commodity_id} onChange={(e) => setCommodity(i, ci, { commodity_id: e.target.value })} className={inputCls}>
-                              <option value="">— commodity —</option>
-                              {commodities.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                            </select>
-                            {!c.commodity_id && c.raw_name && <div className="text-amber-700">AI: “{c.raw_name}”</div>}
-                            {dup && <div className="text-slate-400">updates existing</div>}
+                            {c.is_unassigned ? (
+                              <span className="italic">Unassigned (generic)</span>
+                            ) : (
+                              <>
+                                <select
+                                  value={c.commodity_id || (c.createName ? NEW_COMMODITY : '')}
+                                  onChange={(e) => {
+                                    const v = e.target.value
+                                    if (v === NEW_COMMODITY) setCommodity(i, ci, { commodity_id: '', createName: c.raw_name?.trim() || 'New commodity' })
+                                    else setCommodity(i, ci, { commodity_id: v, createName: '' })
+                                  }}
+                                  className={inputCls}
+                                >
+                                  <option value="">— commodity —</option>
+                                  {commodities.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                                  {c.raw_name && <option value={NEW_COMMODITY}>➕ Add “{c.raw_name}” as new</option>}
+                                </select>
+                                {!c.commodity_id && !c.createName && c.raw_name && <div className="text-amber-700">AI: “{c.raw_name}”</div>}
+                                {c.createName && <div className="text-sky-700">new commodity — set its reference price after saving</div>}
+                                {dup && <div className="text-slate-400">updates existing</div>}
+                              </>
+                            )}
                           </td>
                           <td className="px-1 py-1"><input type="number" step="0.01" value={c.base_acres} onChange={(e) => setCommodity(i, ci, { base_acres: e.target.value })} className={`${inputCls} w-20`} /></td>
-                          <td className="px-1 py-1"><input type="number" step="0.1" value={c.plc_yield} onChange={(e) => setCommodity(i, ci, { plc_yield: e.target.value })} className={`${inputCls} w-20`} /></td>
+                          <td className="px-1 py-1"><input type="number" step="0.1" value={c.plc_yield} disabled={c.is_unassigned} onChange={(e) => setCommodity(i, ci, { plc_yield: e.target.value })} className={`${inputCls} w-20`} /></td>
                           <td className="px-1 py-1">
-                            <select value={c.election} onChange={(e) => setCommodity(i, ci, { election: e.target.value as '' | ArcPlcElectionType })} className={inputCls}>
+                            <select value={c.election} disabled={c.is_unassigned} onChange={(e) => setCommodity(i, ci, { election: e.target.value as '' | ArcPlcElectionType })} className={inputCls}>
                               <option value="">—</option>
                               <option value="PLC">PLC</option>
                               <option value="ARC_CO">ARC-CO</option>
                               <option value="ARC_IC">ARC-IC</option>
                             </select>
+                          </td>
+                          <td className="px-1 py-1 text-center">
+                            <input type="checkbox" checked={c.is_unassigned} onChange={(e) => setCommodity(i, ci, { is_unassigned: e.target.checked, election: e.target.checked ? '' : c.election })} />
                           </td>
                           <td className="px-1 py-1">
                             <button type="button" onClick={() => setCommodity(i, ci, { include: false })} className="text-red-600">✕</button>

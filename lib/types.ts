@@ -347,9 +347,12 @@ export type CoveredCommodity = {
 export type FarmBaseAcres = {
   id: string
   farm_id: string
-  commodity_id: string
+  // Null for generic/unassigned base that isn't tied to a commodity yet.
+  commodity_id: string | null
   base_acres: number
   plc_yield: number
+  // Unassigned (generic) base is retained on the farm but not ARC/PLC-eligible.
+  is_unassigned: boolean
   source: 'manual' | 'document_import'
   notes: string | null
   created_at: string

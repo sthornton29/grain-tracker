@@ -129,17 +129,21 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     return projectPayments({ cropYear, baseAcres, commodities, elections, priceData: effectivePriceData, payments })
   }, [cropYear, baseAcres, commodities, elections, effectivePriceData, payments])
 
-  // Commodities that have base acres on any farm — the dynamic columns.
-  const shownCommodities = useMemo(() => {
-    const ids = new Set(baseAcres.map((b) => b.commodity_id))
-    return commodities.filter((c) => ids.has(c.id))
-  }, [baseAcres, commodities])
+  // Only eligible (assigned) base drives the payment columns; unassigned base is
+  // excluded from this report entirely.
+  const eligibleBase = useMemo(() => baseAcres.filter((b) => !b.is_unassigned && b.commodity_id), [baseAcres])
 
-  // Farms that have any base acres.
+  // Commodities that have eligible base acres on any farm — the dynamic columns.
+  const shownCommodities = useMemo(() => {
+    const ids = new Set(eligibleBase.map((b) => b.commodity_id))
+    return commodities.filter((c) => ids.has(c.id))
+  }, [eligibleBase, commodities])
+
+  // Farms that have any eligible base acres.
   const shownFarms = useMemo(() => {
-    const ids = new Set(baseAcres.map((b) => b.farm_id))
+    const ids = new Set(eligibleBase.map((b) => b.farm_id))
     return farms.filter((f) => ids.has(f.id)).sort((a, b) => a.name.localeCompare(b.name))
-  }, [farms, baseAcres])
+  }, [farms, eligibleBase])
 
   // (farmId|commodityId) -> projected payment.
   const projByKey = useMemo(() => new Map(projected.map((p) => [`${p.farmId}|${p.commodityId}`, p])), [projected])

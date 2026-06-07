@@ -224,6 +224,7 @@ export type FsaCommodityExtraction = {
   base_acres: number | null
   plc_yield: number | null
   arc_plc_election: 'PLC' | 'ARC-CO' | 'ARC-IC' | null
+  is_unassigned: boolean | null
   new_base_acres: number | null
   total_base_acres: number | null
 }

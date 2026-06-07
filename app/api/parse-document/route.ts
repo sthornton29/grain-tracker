@@ -396,10 +396,11 @@ For each farm found in the document, extract:
 - state (state if shown)
 
 For each covered commodity on that farm, extract:
-- commodity_name (e.g., "Corn", "Soybeans", "Wheat", "Seed Cotton", "Grain Sorghum")
+- commodity_name (e.g., "Corn", "Soybeans", "Wheat", "Seed Cotton", "Grain Sorghum". Some farms may have base in less common covered commodities such as Oats, Barley, Peanuts, Crambe, Safflower, or Sesame — include those by name too. For generic base not tied to a commodity, use "Unassigned".)
 - base_acres (the number of base acres for this commodity on this farm)
 - plc_yield (the PLC payment yield in bushels per acre or pounds per acre)
 - arc_plc_election (if shown: "PLC", "ARC-CO", or "ARC-IC" — null if not on this document)
+- is_unassigned (true if these acres are labeled "unassigned", "unassigned generic", or "generic base" — i.e. base acres retained on the farm but NOT assigned to a covered commodity for payment. false for normal assigned base.)
 
 If the document is a Base Allocation Summary (the newer OBBBA format), also extract:
 - new_base_acres (any additional base acres being allocated)
@@ -418,6 +419,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
           "base_acres": number,
           "plc_yield": number,
           "arc_plc_election": "PLC or ARC-CO or ARC-IC or null",
+          "is_unassigned": true or false,
           "new_base_acres": number or null,
           "total_base_acres": number or null
         }

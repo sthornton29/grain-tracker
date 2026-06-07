@@ -231,6 +231,8 @@ export function projectPayments(args: {
   const commodityById = new Map(args.commodities.map((c) => [c.id, c]))
   const out: ProjectedPayment[] = []
   for (const b of args.baseAcres) {
+    // Unassigned (generic) base never generates a payment.
+    if (b.is_unassigned || !b.commodity_id) continue
     const commodity = commodityById.get(b.commodity_id)
     if (!commodity) continue
     const election = args.elections.find((e) => e.farm_id === b.farm_id && e.commodity_id === b.commodity_id && e.crop_year === args.cropYear)?.election ?? 'PLC'

@@ -104,11 +104,13 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
     if (base == null) return null
     return base * (1 + myaPct / 100)
   }
-  function arcRate(farmId: string, commodityId: string): number | null {
+  function arcRate(farmId: string, commodityId: string | null): number | null {
+    if (commodityId == null) return null
     const p = payments.find((x) => x.farm_id === farmId && x.commodity_id === commodityId && x.crop_year === cropYear)
     return p ? Number(p.payment_rate_per_unit) : null
   }
-  function electionFor(farmId: string, commodityId: string): ArcPlcElectionType {
+  function electionFor(farmId: string, commodityId: string | null): ArcPlcElectionType {
+    if (commodityId == null) return 'PLC'
     return elections.find((e) => e.farm_id === farmId && e.commodity_id === commodityId && e.crop_year === cropYear)?.election ?? 'PLC'
   }
 
@@ -124,11 +126,12 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
   const rows: Row[] = useMemo(() => {
     if (cropYear === '') return []
     return baseAcres
+      .filter((b) => !b.is_unassigned && b.commodity_id)
       .map((b) => {
-        const commodity = commodityById.get(b.commodity_id)
+        const commodity = commodityById.get(b.commodity_id!)
         if (!commodity) return null
         const mya = effMya(commodity)
-        const effRef = effectiveReferencePrice(commodity, priceFor(b.commodity_id))
+        const effRef = effectiveReferencePrice(commodity, priceFor(b.commodity_id!))
         const plcNet = mya != null
           ? computePlcPayment({ effectiveReferencePrice: effRef, myaPrice: mya, nationalLoanRate: Number(commodity.national_loan_rate), plcYield: Number(b.plc_yield), baseAcres: Number(b.base_acres) }).net
           : null
@@ -142,7 +145,8 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseAcres, commodityById, farmById, cropYear, priceData, payments, elections, liveMya, myaPct])
 
-  async function setElection(farmId: string, commodityId: string, election: ArcPlcElectionType) {
+  async function setElection(farmId: string, commodityId: string | null, election: ArcPlcElectionType) {
+    if (commodityId == null) return
     await supabase.from('arc_plc_elections').upsert({ farm_id: farmId, commodity_id: commodityId, crop_year: cropYear, election }, { onConflict: 'farm_id,commodity_id,crop_year' })
     refresh()
   }
