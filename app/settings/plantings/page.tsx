@@ -618,6 +618,7 @@ export default function PlantingsPage() {
             { key: 'planted_acres', type: 'number' },
             { key: 'irrigated_acres', type: 'number' },
             { key: 'planting_date', type: 'date' },
+            { key: 'variety', child: { table: 'field_planting_varieties', valueColumn: 'variety', parentKey: 'planting_id' } },
             { key: 'notes' },
           ],
         }}

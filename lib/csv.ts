@@ -69,6 +69,19 @@ export type ColumnSpec = {
      */
     scopeKey?: string
   }
+  /**
+   * Child relation: this column is NOT written to the main table. After the
+   * parent row is inserted, a non-empty value is written to a child table,
+   * linked by `parentKey` (e.g. a planting's variety → field_planting_varieties).
+   * Empty values create no child row.
+   */
+  child?: {
+    table: string
+    /** Column on the child table that holds this value (e.g. 'variety'). */
+    valueColumn: string
+    /** Column on the child table that points back to the parent (e.g. 'planting_id'). */
+    parentKey: string
+  }
 }
 
 export type ImportConfig = {
@@ -175,8 +188,10 @@ export async function runImport(
   const headerIndex = new Map<string, number>()
   headers.forEach((h, i) => headerIndex.set(h, i))
 
+  type ChildValue = { table: string; parentKey: string; valueColumn: string; value: unknown }
   const failed: ImportResult['failed'] = []
   const toInsert: AnyRow[] = []
+  const toInsertChildren: ChildValue[][] = []
   const toInsertKeys: string[] = []
   const toInsertCsvRow: number[] = []
   let skipped = 0
@@ -185,6 +200,7 @@ export async function runImport(
     const csvRow = csvRows[i]
     try {
       const payload: AnyRow = {}
+      const children: ChildValue[] = []
       for (const col of config.columns) {
         const csvHeader = mapping[col.key]
         const idx = csvHeader ? headerIndex.get(csvHeader) ?? -1 : -1
@@ -219,7 +235,13 @@ export async function runImport(
         } else {
           const v = coerceValue(raw, col)
           if (col.required && (v === null || v === '')) throw new Error(`${col.label ?? col.key} is required`)
-          payload[col.key] = v
+          if (col.child) {
+            if (v != null && String(v).trim() !== '') {
+              children.push({ table: col.child.table, parentKey: col.child.parentKey, valueColumn: col.child.valueColumn, value: v })
+            }
+          } else {
+            payload[col.key] = v
+          }
         }
       }
 
@@ -231,6 +253,7 @@ export async function runImport(
         }
       }
       toInsert.push(payload)
+      toInsertChildren.push(children)
       toInsertKeys.push(dedupKey)
       toInsertCsvRow.push(i)
     } catch (err: any) {
@@ -240,20 +263,43 @@ export async function runImport(
 
   let ok = 0
   if (toInsert.length > 0) {
+    // Each inserted parent's id, aligned with toInsert, so child rows can be
+    // linked back. Supabase preserves input order in the returned rows.
+    const insertedIds: Array<string | null> = new Array(toInsert.length).fill(null)
     // Insert in a single batch when possible.
-    const { error } = await supabase.from(config.tableName).insert(toInsert)
+    const { data: batchData, error } = await supabase.from(config.tableName).insert(toInsert).select('id')
     if (error) {
       // Fall back to per-row inserts so partial progress still saves.
       for (let j = 0; j < toInsert.length; j++) {
-        const { error: e2 } = await supabase.from(config.tableName).insert(toInsert[j])
-        if (e2) {
-          failed.push({ rowIndex: toInsertCsvRow[j], reason: e2.message })
+        const { data: oneData, error: e2 } = await supabase.from(config.tableName).insert(toInsert[j]).select('id').single()
+        if (e2 || !oneData) {
+          failed.push({ rowIndex: toInsertCsvRow[j], reason: e2?.message ?? 'Insert failed' })
         } else {
+          insertedIds[j] = (oneData as { id: string }).id
           ok++
         }
       }
     } else {
+      const ids = (batchData as Array<{ id: string }> | null) ?? []
+      for (let j = 0; j < toInsert.length; j++) insertedIds[j] = ids[j]?.id ?? null
       ok = toInsert.length
+    }
+
+    // Insert child rows (e.g. a planting's variety) for inserted parents.
+    const childRows = new Map<string, AnyRow[]>()
+    for (let j = 0; j < toInsert.length; j++) {
+      const pid = insertedIds[j]
+      if (!pid) continue
+      for (const ch of toInsertChildren[j]) {
+        const list = childRows.get(ch.table) ?? []
+        list.push({ [ch.parentKey]: pid, [ch.valueColumn]: ch.value })
+        childRows.set(ch.table, list)
+      }
+    }
+    for (const [table, rows] of childRows) {
+      if (rows.length === 0) continue
+      const { error: cErr } = await supabase.from(table).insert(rows)
+      if (cErr) failed.push({ rowIndex: -1, reason: `${table}: ${cErr.message}` })
     }
   }
   return { ok, skipped, failed }
