@@ -9,9 +9,8 @@ const links = [
   { href: '/inventory', label: 'Bin Inventory' },
   { href: '/contracts', label: 'Contracts' },
   { href: '/settlements', label: 'Settlements' },
-  { href: '/hedging', label: 'Hedging' },
   { href: '/yields', label: 'Yields' },
-  { href: '/revenue-projections', label: 'Revenue Projections' },
+  { href: '/hedging', label: 'Hedging' },
   { href: '/reports', label: 'Reports' },
   { href: '/settings', label: 'Settings' },
 ]
