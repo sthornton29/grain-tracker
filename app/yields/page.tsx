@@ -2,7 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { buildDoubleCropSoySet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
@@ -66,7 +66,6 @@ export default function YieldsPage() {
   const [farmId, setFarmId] = usePersistentState('yields:farmId', '')
   const [entityId, setEntityId] = usePersistentState('yields:entityId', '')
   const [countyId, setCountyId] = usePersistentState('yields:countyId', '')
-  const [cropYear, setCropYear] = usePersistentState<number | ''>('yields:cropYear', '')
   // yieldView intentionally does NOT persist: it defaults to total every visit
   // and is only flipped to breakdown when arriving from the crop-insurance
   // report to enter irrigated/dryland breakouts (see the ?breakout=1 effect).
@@ -172,19 +171,11 @@ export default function YieldsPage() {
   // rules). dryBuFor() is the bushel lookup; aggByKey also carries the load
   // dates the yield analysis needs.
   const aggByKey = useMemo(
-    () => fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear }),
-    [loads, splits, cropById, cropYear],
+    () => fieldCropAggregates(loads, splits, cropById),
+    [loads, splits, cropById],
   )
   const dryBuFor = (fieldId: string, cropId: string, year: number) =>
     aggByKey.get(`${fieldId}|${cropId}|${year}`)?.dryBu ?? 0
-
-  const cropYearOptions = useMemo(
-    () => cropYearOptionsFromPlantings(
-      plantings.map((p) => p.season_year),
-      cropYear === '' ? null : cropYear,
-    ),
-    [plantings, cropYear],
-  )
 
   const distinctYears = useMemo(() => {
     const s = new Set<number>([currentYear()])
@@ -478,7 +469,6 @@ export default function YieldsPage() {
   function fieldFiltersLabel(): string {
     const parts: string[] = []
     parts.push(`Season: ${year === '' ? 'all' : year}`)
-    parts.push(`Crop year: ${cropYear === '' ? 'all' : cropYear}`)
     if (cropId) parts.push(`Crop: ${cropById.get(cropId)?.name ?? '?'}`)
     if (farmId) parts.push(`Farm: ${farmById.get(farmId)?.name ?? '?'}`)
     if (entityId) parts.push(`Entity: ${entityById.get(entityId)?.name ?? '?'}`)
@@ -829,14 +819,10 @@ export default function YieldsPage() {
           this row is hidden when that tab is active (otherwise the user would
           see two filter rows and only the inner one would actually apply). */}
       {view !== 'landowner' && (
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 no-print">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2 no-print">
         <select value={year} onChange={(e) => setYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
           <option value="">All seasons</option>
           {distinctYears.map((y) => <option key={y} value={y}>{y}</option>)}
-        </select>
-        <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
-          <option value="">All crop years</option>
-          {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
         </select>
         <select value={cropId} onChange={(e) => setCropId(e.target.value)} className={inputCls}>
           <option value="">All crops</option>
