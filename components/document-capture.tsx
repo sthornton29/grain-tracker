@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { compressImage, ImageDecodeError, type CapturedImage } from '@/lib/image-capture'
+import { excelToPdf, isExcelFile } from '@/lib/excel-to-pdf'
 
 // The input source a parsing screen receives once the user has a document ready:
 // either a single PDF (the original upload path) or one or more compressed photos.
@@ -40,9 +41,10 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
 
   const [images, setImages] = useState<CapturedImage[]>([])
   const [compressing, setCompressing] = useState(false)
+  const [converting, setConverting] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  const disabled = busy || compressing
+  const disabled = busy || compressing || converting
 
   async function compressAndAdd(files: File[]) {
     if (files.length === 0) return
@@ -61,11 +63,23 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
     }
   }
 
-  // Desktop combined picker: a PDF hands off immediately; an image joins the tray.
+  // Desktop combined picker: a PDF (or an Excel file we convert to PDF) hands off
+  // immediately; an image joins the tray.
   function onFilePick(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     e.target.value = '' // reset so re-picking the same file fires onChange again
     if (!file) return
+    if (isExcelFile(file)) {
+      // Convert the spreadsheet to a PDF so it rides the same pipeline as PDFs.
+      setImages([])
+      setErr(null)
+      setConverting(true)
+      excelToPdf(file)
+        .then((pdf) => onSource({ kind: 'pdf', file: pdf }))
+        .catch(() => setErr("Couldn't read that Excel file. Try re-saving it as .xlsx, or export it to PDF or CSV."))
+        .finally(() => setConverting(false))
+      return
+    }
     if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
       setImages([])
       setErr(null)
@@ -108,15 +122,19 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
               Choose from Photos
             </button>
             <button type="button" onClick={() => fileRef.current?.click()} disabled={disabled} className={secondary}>
-              Upload PDF
+              {converting ? 'Converting…' : 'Upload File'}
             </button>
           </>
         ) : (
           <button type="button" onClick={() => fileRef.current?.click()} disabled={disabled} className={primary}>
-            {stageLabel ?? (compressing ? 'Adding…' : (pdfLabel ?? 'Upload PDF or Image'))}
+            {stageLabel ?? (converting ? 'Converting…' : compressing ? 'Adding…' : (pdfLabel ?? 'Upload PDF, image, or Excel'))}
           </button>
         )}
       </div>
+
+      {images.length === 0 && (
+        <p className="text-[11px] text-slate-400">Accepts PDF, photos, or Excel (.xlsx/.xls) — spreadsheets are converted automatically.</p>
+      )}
 
       {isCoarse && images.length === 0 && (
         <p className="text-xs text-slate-500">
@@ -173,7 +191,13 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
           is ignored on desktop. The library/file pickers omit it. */}
       <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={onPhotoPick} className="hidden" />
       <input ref={libraryRef} type="file" accept="image/*" multiple onChange={onPhotoPick} className="hidden" />
-      <input ref={fileRef} type="file" accept="application/pdf,image/*" onChange={onFilePick} className="hidden" />
+      <input
+        ref={fileRef}
+        type="file"
+        accept="application/pdf,image/*,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+        onChange={onFilePick}
+        className="hidden"
+      />
     </div>
   )
 }
