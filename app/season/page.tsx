@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { buildDoubleCropSoySet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
@@ -29,9 +29,8 @@ export default function SeasonSummaryPage() {
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
   const [loading, setLoading] = useState(true)
-  // Filters persist across visits (see usePersistentState).
+  // Filter persists across visits (see usePersistentState).
   const [year, setYear] = usePersistentState<number>('season:year', currentYear())
-  const [cropYear, setCropYear] = usePersistentState<number | ''>('season:cropYear', '')
 
   async function refresh() {
     setLoading(true)
@@ -60,13 +59,10 @@ export default function SeasonSummaryPage() {
   const yearPlantings = plantings.filter((p) => p.season_year === year)
 
   // Dry bushels + most-recent load date per field+crop+year (shared rules),
-  // scoped to the selected season year and optional crop year.
+  // scoped to the selected season year.
   const aggByKey = useMemo(
-    () => fieldCropAggregates(loads, splits, cropById, {
-      loadYear: year,
-      cropYear: cropYear === '' ? null : cropYear,
-    }),
-    [loads, splits, cropById, year, cropYear],
+    () => fieldCropAggregates(loads, splits, cropById, { loadYear: year }),
+    [loads, splits, cropById, year],
   )
   const dryBuFor = (fieldId: string, cropId: string, yr: number) =>
     aggByKey.get(`${fieldId}|${cropId}|${yr}`)?.dryBu ?? 0
@@ -87,14 +83,6 @@ export default function SeasonSummaryPage() {
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ), [plantings, aggByKey, year])
-
-  const cropYearOptions = useMemo(
-    () => cropYearOptionsFromPlantings(
-      plantings.map((p) => p.season_year),
-      cropYear === '' ? null : cropYear,
-    ),
-    [plantings, cropYear],
-  )
 
   type Agg = {
     cropName: string
@@ -167,13 +155,6 @@ export default function SeasonSummaryPage() {
           <select value={year} onChange={(e) => setYear(Number(e.target.value))} className={inputCls}>
             {distinctYears.map((y) => <option key={y} value={y}>{y}</option>)}
             {!distinctYears.includes(year) && <option value={year}>{year}</option>}
-          </select>
-        </label>
-        <label className="text-sm flex items-center gap-2">
-          Crop year
-          <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
-            <option value="">All</option>
-            {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
           </select>
         </label>
       </div>
