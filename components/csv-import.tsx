@@ -7,6 +7,7 @@ import {
   parseCsv,
   runImport,
   type ImportConfig,
+  type ImportMode,
   type ImportResult,
 } from '@/lib/csv'
 
@@ -42,7 +43,7 @@ export default function CsvImport({ config, onImported }: Props) {
   const [headers, setHeaders] = useState<string[]>([])
   const [rows, setRows] = useState<string[][]>([])
   const [mapping, setMapping] = useState<Record<string, string>>({})
-  const [skipDupes, setSkipDupes] = useState(true)
+  const [mode, setMode] = useState<ImportMode>('sync')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [result, setResult] = useState<ImportResult | null>(null)
@@ -79,9 +80,9 @@ export default function CsvImport({ config, onImported }: Props) {
   async function doImport() {
     setBusy(true); setErr(null)
     try {
-      const r = await runImport(supabase, config, rows, headers, mapping, { skipDuplicates: skipDupes })
+      const r = await runImport(supabase, config, rows, headers, mapping, { mode })
       setResult(r)
-      if (r.ok > 0) onImported?.()
+      if (r.added > 0 || r.updated > 0) onImported?.()
     } catch (e: any) {
       setErr(e?.message ?? 'Import failed')
     } finally {
@@ -192,9 +193,16 @@ export default function CsvImport({ config, onImported }: Props) {
               )}
 
               <div className="flex flex-wrap items-center gap-3">
-                <label className="text-sm flex items-center gap-2">
-                  <input type="checkbox" checked={skipDupes} onChange={(e) => setSkipDupes(e.target.checked)} />
-                  Skip duplicates (match by <code className="bg-slate-100 px-1 rounded">{uniqueKeys.join(' + ')}</code>)
+                <label className="text-sm flex items-center gap-2 flex-wrap">
+                  <span>When a row already exists (matched by <code className="bg-slate-100 px-1 rounded">{uniqueKeys.join(' + ')}</code>):</span>
+                  <select
+                    value={mode}
+                    onChange={(e) => setMode(e.target.value as ImportMode)}
+                    className="rounded-lg border border-slate-300 px-2 py-1"
+                  >
+                    <option value="sync">Update changed fields</option>
+                    <option value="add">Skip (leave it unchanged)</option>
+                  </select>
                 </label>
                 <button
                   type="button"
@@ -213,8 +221,10 @@ export default function CsvImport({ config, onImported }: Props) {
 
           {result && (
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm space-y-1">
-              <div><span className="font-semibold text-green-700">{result.ok}</span> imported</div>
-              {result.skipped > 0 && <div><span className="font-semibold text-slate-600">{result.skipped}</span> skipped as duplicates</div>}
+              <div><span className="font-semibold text-green-700">{result.added}</span> added</div>
+              {result.updated > 0 && <div><span className="font-semibold text-sky-700">{result.updated}</span> updated</div>}
+              {result.unchanged > 0 && <div><span className="font-semibold text-slate-600">{result.unchanged}</span> unchanged</div>}
+              {result.skipped > 0 && <div><span className="font-semibold text-slate-600">{result.skipped}</span> skipped</div>}
               {result.failed.length > 0 && (
                 <div>
                   <div><span className="font-semibold text-red-700">{result.failed.length}</span> failed</div>

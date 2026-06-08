@@ -94,10 +94,21 @@ export type ImportConfig = {
 }
 
 export type ImportResult = {
-  ok: number
+  /** Rows that didn't match an existing record and were inserted. */
+  added: number
+  /** Existing rows (matched by unique key) that had a changed value updated. */
+  updated: number
+  /** Existing rows that matched but had no provided value different from what's stored. */
+  unchanged: number
+  /** Rows skipped (existing rows in add-only mode, or a duplicate key within the file). */
   skipped: number
   failed: Array<{ rowIndex: number; reason: string }>
 }
+
+/** add  = insert new, leave existing untouched (skip them).
+ *  sync = insert new, and update existing rows where a provided value changed
+ *         (blank/missing incoming values never overwrite stored data). */
+export type ImportMode = 'add' | 'sync'
 
 // ---------- Runner ----------
 
@@ -164,9 +175,10 @@ export async function runImport(
   csvRows: string[][],
   headers: string[],
   mapping: Record<string, string>,
-  opts: { skipDuplicates: boolean }
+  opts: { mode: ImportMode }
 ): Promise<ImportResult> {
   const uniqueKeys = Array.isArray(config.uniqueKey) ? config.uniqueKey : [config.uniqueKey]
+  const mode = opts.mode
 
   // Pre-fetch FK lookup tables.
   const fkTables = new Map<string, AnyRow[]>()
@@ -177,13 +189,15 @@ export async function runImport(
     }
   }
 
-  // Pre-fetch existing rows in the target table for dedup.
-  const existingRes = await supabase.from(config.tableName).select(['id', ...uniqueKeys].join(','))
+  // Pre-fetch existing rows (id + unique keys + importable columns) so we can
+  // match by unique key and, in sync mode, detect which fields changed.
+  const mainKeys = config.columns.filter((c) => !c.child).map((c) => c.key)
+  const selectCols = Array.from(new Set(['id', ...uniqueKeys, ...mainKeys]))
+  const existingRes = await supabase.from(config.tableName).select(selectCols.join(','))
   if (existingRes.error) throw new Error(`Could not read ${config.tableName}: ${existingRes.error.message}`)
   const existing = ((existingRes.data as unknown) as AnyRow[]) || []
-  const existingKeySet = new Set<string>(
-    existing.map((r) => uniqueKeys.map((k) => normValue(r[k])).join('|'))
-  )
+  const existingByKey = new Map<string, AnyRow>()
+  for (const r of existing) existingByKey.set(uniqueKeys.map((k) => normValue(r[k])).join('|'), r)
 
   const headerIndex = new Map<string, number>()
   headers.forEach((h, i) => headerIndex.set(h, i))
@@ -192,19 +206,25 @@ export async function runImport(
   const failed: ImportResult['failed'] = []
   const toInsert: AnyRow[] = []
   const toInsertChildren: ChildValue[][] = []
-  const toInsertKeys: string[] = []
   const toInsertCsvRow: number[] = []
+  const toUpdate: Array<{ id: string; patch: AnyRow; rowIndex: number }> = []
+  const seenKeys = new Set<string>()
   let skipped = 0
+  let unchanged = 0
 
   for (let i = 0; i < csvRows.length; i++) {
     const csvRow = csvRows[i]
     try {
       const payload: AnyRow = {}
       const children: ChildValue[] = []
+      // Columns whose incoming cell actually had a value. In sync mode only
+      // these can update an existing row, so blanks never overwrite stored data.
+      const provided = new Set<string>()
       for (const col of config.columns) {
         const csvHeader = mapping[col.key]
         const idx = csvHeader ? headerIndex.get(csvHeader) ?? -1 : -1
         const raw = idx >= 0 ? (csvRow[idx] ?? '') : ''
+        const hasRaw = raw.trim() !== ''
         if (col.fk) {
           const value = raw.trim()
           if (!value) {
@@ -232,6 +252,7 @@ export async function runImport(
             throw new Error(`${col.label ?? col.key} "${value}" matches multiple rows`)
           }
           payload[col.key] = candidates[0].id
+          provided.add(col.key)
         } else {
           const v = coerceValue(raw, col)
           if (col.required && (v === null || v === '')) throw new Error(`${col.label ?? col.key} is required`)
@@ -241,27 +262,40 @@ export async function runImport(
             }
           } else {
             payload[col.key] = v
+            if (hasRaw) provided.add(col.key)
           }
         }
       }
 
       const dedupKey = uniqueKeys.map((k) => normValue(payload[k])).join('|')
-      if (opts.skipDuplicates) {
-        if (existingKeySet.has(dedupKey) || toInsertKeys.includes(dedupKey)) {
-          skipped++
-          continue
+
+      // The same unique key twice in one file: handle the first, skip the rest.
+      if (seenKeys.has(dedupKey)) { skipped++; continue }
+      seenKeys.add(dedupKey)
+
+      const existingRow = existingByKey.get(dedupKey)
+      if (existingRow) {
+        if (mode === 'add') { skipped++; continue }
+        // sync: patch only the provided columns whose value differs from stored.
+        const patch: AnyRow = {}
+        for (const key of provided) {
+          if (uniqueKeys.includes(key)) continue
+          if (normValue(payload[key]) !== normValue(existingRow[key])) patch[key] = payload[key]
         }
+        if (Object.keys(patch).length === 0) { unchanged++; continue }
+        toUpdate.push({ id: String(existingRow.id), patch, rowIndex: i })
+        continue
       }
+
       toInsert.push(payload)
       toInsertChildren.push(children)
-      toInsertKeys.push(dedupKey)
       toInsertCsvRow.push(i)
     } catch (err: any) {
       failed.push({ rowIndex: i, reason: err?.message ?? String(err) })
     }
   }
 
-  let ok = 0
+  let added = 0
   if (toInsert.length > 0) {
     // Each inserted parent's id, aligned with toInsert, so child rows can be
     // linked back. Supabase preserves input order in the returned rows.
@@ -276,13 +310,13 @@ export async function runImport(
           failed.push({ rowIndex: toInsertCsvRow[j], reason: e2?.message ?? 'Insert failed' })
         } else {
           insertedIds[j] = (oneData as { id: string }).id
-          ok++
+          added++
         }
       }
     } else {
       const ids = (batchData as Array<{ id: string }> | null) ?? []
       for (let j = 0; j < toInsert.length; j++) insertedIds[j] = ids[j]?.id ?? null
-      ok = toInsert.length
+      added = toInsert.length
     }
 
     // Insert child rows (e.g. a planting's variety) for inserted parents.
@@ -302,7 +336,16 @@ export async function runImport(
       if (cErr) failed.push({ rowIndex: -1, reason: `${table}: ${cErr.message}` })
     }
   }
-  return { ok, skipped, failed }
+
+  // ---- Updates (sync mode): patch only the changed columns of matched rows. ----
+  let updated = 0
+  for (const u of toUpdate) {
+    const { error } = await supabase.from(config.tableName).update(u.patch).eq('id', u.id)
+    if (error) failed.push({ rowIndex: u.rowIndex, reason: error.message })
+    else updated++
+  }
+
+  return { added, updated, unchanged, skipped, failed }
 }
 
 function normValue(v: unknown): string {

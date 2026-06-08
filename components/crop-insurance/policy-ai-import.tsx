@@ -34,7 +34,6 @@ type Row = {
   form: PolicyFormState
   raw_crop: string | null
   raw_county: string | null
-  exists: boolean
   include: boolean
 }
 
@@ -66,9 +65,11 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
   const [rows, setRows] = useState<Row[]>([])
   const [saving, setSaving] = useState(false)
 
-  const existingKeys = useMemo(
-    () => new Set(existingPolicies.map((p) =>
-      dedupKey(p.crop_id, p.county_id ?? '', String(p.crop_year), p.plan_type, String(p.coverage_level)))),
+  // Existing policies keyed by crop+county+year+plan+coverage, so a re-import
+  // updates the match instead of inserting a duplicate.
+  const existingByKey = useMemo(
+    () => new Map(existingPolicies.map((p) =>
+      [dedupKey(p.crop_id, p.county_id ?? '', String(p.crop_year), p.plan_type, String(p.coverage_level)), p] as const)),
     [existingPolicies],
   )
 
@@ -114,9 +115,25 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
     return { form, raw_crop: p.crop, raw_county: [p.county, p.state].filter(Boolean).join(', ') || null }
   }
 
-  function rowExists(form: PolicyFormState): boolean {
-    if (!form.crop_id || !form.crop_year) return false
-    return existingKeys.has(dedupKey(form.crop_id, form.county_id, form.crop_year, form.plan_type, form.coverage_level))
+  // Classify a row vs existing policies. Compares the text/number fields the
+  // form actually has (preserve-existing): blanks never count as a change.
+  function policyStatus(form: PolicyFormState): { kind: 'new' | 'update' | 'unchanged'; existing: CropInsurancePolicy | null } {
+    if (!form.crop_id || !form.crop_year) return { kind: 'new', existing: null }
+    const existing = existingByKey.get(dedupKey(form.crop_id, form.county_id, form.crop_year, form.plan_type, form.coverage_level)) ?? null
+    if (!existing) return { kind: 'new', existing: null }
+    const sameNum = (s: string, v: number | null) => s.trim() === '' || (Number.isFinite(Number(s)) && v != null && Math.abs(Number(s) - Number(v)) < 1e-9)
+    const sameStr = (s: string, v: string | null) => s.trim() === '' || s.trim().toLowerCase() === (v ?? '').trim().toLowerCase()
+    const unchanged =
+      sameNum(form.aph_yield, existing.aph_yield) &&
+      sameNum(form.projected_price, existing.projected_price) &&
+      sameNum(form.harvest_price, existing.harvest_price) &&
+      sameNum(form.insured_acres, existing.insured_acres) &&
+      sameNum(form.premium_per_acre, existing.premium_per_acre) &&
+      sameNum(form.total_premium, existing.total_premium) &&
+      sameNum(form.premium_subsidy_pct, existing.premium_subsidy_pct) &&
+      sameNum(form.volatility_factor, existing.volatility_factor) &&
+      sameStr(form.policy_number, existing.policy_number)
+    return { kind: unchanged ? 'unchanged' : 'update', existing }
   }
 
   async function onSource(src: DocumentSource) {
@@ -146,8 +163,7 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
       }
       const next: Row[] = extracted.map((p) => {
         const { form, raw_crop, raw_county } = extractionToForm(p)
-        const exists = rowExists(form)
-        return { form, raw_crop, raw_county, exists, include: !exists }
+        return { form, raw_crop, raw_county, include: policyStatus(form).kind !== 'unchanged' }
       })
       setRows(next)
       setBanner(`AI extracted ${next.length} polic${next.length === 1 ? 'y' : 'ies'}. Review and edit before saving.`)
@@ -160,11 +176,7 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
   }
 
   function setRowForm(i: number, patch: Partial<PolicyFormState>) {
-    setRows((rs) => rs.map((r, j) => {
-      if (i !== j) return r
-      const form = { ...r.form, ...patch }
-      return { ...r, form, exists: rowExists(form) }
-    }))
+    setRows((rs) => rs.map((r, j) => (i === j ? { ...r, form: { ...r.form, ...patch } } : r)))
   }
   function removeRow(i: number) {
     setRows((rs) => rs.filter((_, j) => j !== i))
@@ -173,31 +185,65 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
     setSource(null); setRows([]); setBanner(null); setErr(null)
   }
 
-  const toSave = rows.filter((r) => r.include && !r.exists && r.form.crop_id && r.form.crop_year)
+  const toSave = rows.filter((r) => r.include && r.form.crop_id && r.form.crop_year && policyStatus(r.form).kind !== 'unchanged')
 
   async function saveAll() {
     setErr(null)
     if (toSave.length === 0) {
-      setErr('No policies are ready to save. Each needs a matched crop and crop year, and must not already exist.')
+      setErr('Nothing to save — each row needs a matched crop and crop year, and must be new or changed.')
       return
     }
     setSaving(true)
     try {
+      let added = 0, updated = 0
       for (const r of toSave) {
+        const status = policyStatus(r.form)
         const { policy, sco, eco } = policyFormToPayloads(r.form, 'document_import')
-        const { data, error } = await supabase.from('crop_insurance_policies').insert(policy).select('id').single()
-        if (error || !data) throw new Error(error?.message ?? 'insert failed')
-        const policyId = (data as { id: string }).id
-        if (sco) {
-          const { error: e2 } = await supabase.from('crop_insurance_sco').insert({ ...sco, policy_id: policyId })
-          if (e2) throw new Error(e2.message)
-        }
-        if (eco) {
-          const { error: e3 } = await supabase.from('crop_insurance_eco').insert({ ...eco, policy_id: policyId })
-          if (e3) throw new Error(e3.message)
+        if (status.kind === 'update' && status.existing) {
+          // Preserve-existing: patch only the provided text/number fields; keep
+          // existing plan/coverage/unit/entity. Endorsements are added/refreshed
+          // when present but never removed.
+          const f = r.form
+          const patch: Record<string, unknown> = {}
+          const setNum = (k: string, s: string) => { if (s.trim() !== '' && Number.isFinite(Number(s))) patch[k] = Number(s) }
+          setNum('aph_yield', f.aph_yield)
+          setNum('projected_price', f.projected_price)
+          setNum('harvest_price', f.harvest_price)
+          setNum('insured_acres', f.insured_acres)
+          setNum('premium_per_acre', f.premium_per_acre)
+          setNum('total_premium', f.total_premium)
+          setNum('premium_subsidy_pct', f.premium_subsidy_pct)
+          setNum('volatility_factor', f.volatility_factor)
+          if (f.policy_number.trim() !== '') patch.policy_number = f.policy_number.trim()
+          if (Object.keys(patch).length > 0) {
+            const { error } = await supabase.from('crop_insurance_policies').update(patch).eq('id', status.existing.id)
+            if (error) throw new Error(error.message)
+          }
+          if (sco) {
+            const { error } = await supabase.from('crop_insurance_sco').upsert({ ...sco, policy_id: status.existing.id }, { onConflict: 'policy_id' })
+            if (error) throw new Error(error.message)
+          }
+          if (eco) {
+            const { error } = await supabase.from('crop_insurance_eco').upsert({ ...eco, policy_id: status.existing.id }, { onConflict: 'policy_id' })
+            if (error) throw new Error(error.message)
+          }
+          updated++
+        } else {
+          const { data, error } = await supabase.from('crop_insurance_policies').insert(policy).select('id').single()
+          if (error || !data) throw new Error(error?.message ?? 'insert failed')
+          const policyId = (data as { id: string }).id
+          if (sco) {
+            const { error: e2 } = await supabase.from('crop_insurance_sco').insert({ ...sco, policy_id: policyId })
+            if (e2) throw new Error(e2.message)
+          }
+          if (eco) {
+            const { error: e3 } = await supabase.from('crop_insurance_eco').insert({ ...eco, policy_id: policyId })
+            if (e3) throw new Error(e3.message)
+          }
+          added++
         }
       }
-      setBanner(`Saved ${toSave.length} polic${toSave.length === 1 ? 'y' : 'ies'}.`)
+      setBanner(`Saved — ${added} added, ${updated} updated.`)
       setRows([]); setSource(null)
       onImported()
     } catch (e: any) {
@@ -234,13 +280,19 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
             {rows.length === 0 && (
               <p className="text-sm text-slate-400">{stage ? 'Working…' : 'No policies extracted yet.'}</p>
             )}
-            {rows.map((r, i) => (
-              <div key={i} className={`rounded-lg border p-3 space-y-2 ${r.exists ? 'border-slate-200 opacity-70' : 'border-slate-300'}`}>
+            {rows.map((r, i) => {
+              const status = policyStatus(r.form)
+              const unchanged = status.kind === 'unchanged'
+              const planCov = `${PLAN_TYPE_SHORT[r.form.plan_type]} · ${Math.round(Number(r.form.coverage_level) * 100)}%`
+              return (
+              <div key={i} className={`rounded-lg border p-3 space-y-2 ${unchanged ? 'border-slate-200 opacity-70' : 'border-slate-300'}`}>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <input type="checkbox" checked={r.include} disabled={r.exists} onChange={(e) => setRows((rs) => rs.map((x, j) => (i === j ? { ...x, include: e.target.checked } : x)))} />
-                  {r.exists
-                    ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Already exists</span>
-                    : <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">{PLAN_TYPE_SHORT[r.form.plan_type]} · {Math.round(Number(r.form.coverage_level) * 100)}%</span>}
+                  <input type="checkbox" checked={r.include} disabled={unchanged} onChange={(e) => setRows((rs) => rs.map((x, j) => (i === j ? { ...x, include: e.target.checked } : x)))} />
+                  {unchanged
+                    ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Unchanged · {planCov}</span>
+                    : status.kind === 'update'
+                      ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">Update · {planCov}</span>
+                      : <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">New · {planCov}</span>}
                   <button type="button" onClick={() => removeRow(i)} className="ml-auto text-red-600 text-sm">✕ Remove</button>
                 </div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
@@ -311,7 +363,8 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
                 </div>
                 <PolicyLiveSummary value={r.form} />
               </div>
-            ))}
+              )
+            })}
           </div>
           <div className="xl:sticky xl:top-3 self-start h-[60vh] min-h-[320px]">
             <div className="text-xs text-slate-500 mb-1">Source document — cross-reference while reviewing</div>

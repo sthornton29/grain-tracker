@@ -30,7 +30,6 @@ type Row = {
   planting_date: string
   varieties: RowVariety[]
   notes: string
-  exists: boolean // a planting for this field+crop+year already exists
   include: boolean
 }
 
@@ -60,14 +59,27 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
   const [rows, setRows] = useState<Row[]>([])
   const [saving, setSaving] = useState(false)
 
-  // Existing field|crop|year keys, to flag duplicates we shouldn't re-insert.
-  const existingKeys = useMemo(
-    () => new Set(existingPlantings.map((p) => `${p.field_id}|${p.crop_id}|${p.season_year}`)),
+  // Existing plantings keyed by field|crop|year, so a re-import updates the match
+  // instead of inserting a duplicate.
+  const existingByKey = useMemo(
+    () => new Map(existingPlantings.map((p) => [`${p.field_id}|${p.crop_id}|${p.season_year}`, p])),
     [existingPlantings],
   )
 
-  function dupKey(r: Row) {
-    return `${r.field_id}|${r.crop_id}|${r.season_year}`
+  // Classify a row vs existing plantings. Only values the row actually has count
+  // toward "changed" (preserve-existing): a blank field is never a change.
+  function rowStatus(r: Row): { kind: 'new' | 'update' | 'unchanged'; existingId: string | null } {
+    if (!r.field_id || !r.crop_id || !r.season_year) return { kind: 'new', existingId: null }
+    const existing = existingByKey.get(`${r.field_id}|${r.crop_id}|${r.season_year}`)
+    if (!existing) return { kind: 'new', existingId: null }
+    const planted = num(r.planted_acres)
+    const irr = num(r.irrigated_acres)
+    const changed =
+      (planted != null && planted !== Number(existing.planted_acres)) ||
+      (irr != null && irr !== (Number(existing.irrigated_acres) || 0)) ||
+      (r.planting_date !== '' && r.planting_date !== (existing.planting_date ?? '')) ||
+      (r.notes.trim() !== '' && r.notes.trim() !== (existing.notes ?? ''))
+    return { kind: changed ? 'update' : 'unchanged', existingId: existing.id }
   }
 
   async function onSource(src: DocumentSource) {
@@ -91,7 +103,6 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
         const year = p.season_year != null && Number.isFinite(p.season_year) ? String(p.season_year) : String(defaultYear)
         const field_id = field?.id ?? ''
         const crop_id = crop?.id ?? ''
-        const exists = !!field_id && !!crop_id && existingKeys.has(`${field_id}|${crop_id}|${year}`)
         const varietiesRaw = Array.isArray(p.varieties) ? p.varieties : []
         const varieties: RowVariety[] = varietiesRaw
           .map((v) => ({
@@ -99,7 +110,7 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
             acres: numStr(v.acres),
           }))
           .filter((v) => v.variety !== '')
-        return {
+        const row: Row = {
           field_id,
           raw_field: p.field_name,
           crop_id,
@@ -110,9 +121,10 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
           planting_date: p.planting_date && /^\d{4}-\d{2}-\d{2}$/.test(p.planting_date) ? p.planting_date : '',
           varieties,
           notes: p.notes ?? '',
-          exists,
-          include: !exists,
+          include: true,
         }
+        // Default to NOT importing rows that exactly match an existing planting.
+        return { ...row, include: rowStatus(row).kind !== 'unchanged' }
       })
       setRows(next)
       setBanner(`AI extracted ${next.length} planting${next.length === 1 ? '' : 's'}. Review and edit before saving.`)
@@ -125,15 +137,7 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
   }
 
   function setRow(i: number, patch: Partial<Row>) {
-    setRows((rs) => rs.map((r, j) => {
-      if (i !== j) return r
-      const nextRow = { ...r, ...patch }
-      // Re-evaluate the duplicate flag whenever the dedup key changes.
-      if ('field_id' in patch || 'crop_id' in patch || 'season_year' in patch) {
-        nextRow.exists = !!nextRow.field_id && !!nextRow.crop_id && existingKeys.has(dupKey(nextRow))
-      }
-      return nextRow
-    }))
+    setRows((rs) => rs.map((r, j) => (i === j ? { ...r, ...patch } : r)))
   }
   function setRowVarieties(i: number, varieties: RowVariety[]) {
     setRows((rs) => rs.map((r, j) => (i === j ? { ...r, varieties } : r)))
@@ -163,60 +167,75 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
     setErr(null)
   }
 
-  const toSave = rows.filter((r) => r.include && rowReady(r) && !r.exists)
+  const toSave = rows.filter((r) => r.include && rowReady(r) && rowStatus(r).kind !== 'unchanged')
 
   async function saveAll() {
     setErr(null)
     if (toSave.length === 0) {
-      setErr('No plantings are ready to save. Each needs a matched field, crop, season year, and planted acres.')
+      setErr('Nothing to save. Each row needs a matched field, crop, season year, and planted acres — and must be new or changed.')
       return
     }
     setSaving(true)
-    const payloads = toSave.map((r) => {
-      const planted = num(r.planted_acres) ?? 0
-      const irr = num(r.irrigated_acres) ?? 0
-      return {
-        field_id: r.field_id,
-        crop_id: r.crop_id,
-        season_year: Number(r.season_year),
-        planted_acres: planted,
-        irrigated_acres: irr,
-        dryland_acres: Math.max(0, planted - irr),
-        planting_date: r.planting_date || null,
-        notes: r.notes.trim() || null,
+
+    const newRows = toSave.filter((r) => rowStatus(r).kind === 'new')
+    const updateRows = toSave.filter((r) => rowStatus(r).kind === 'update')
+
+    // Inserts: new plantings + their varieties.
+    let added = 0
+    if (newRows.length > 0) {
+      const payloads = newRows.map((r) => {
+        const planted = num(r.planted_acres) ?? 0
+        const irr = num(r.irrigated_acres) ?? 0
+        return {
+          field_id: r.field_id, crop_id: r.crop_id, season_year: Number(r.season_year),
+          planted_acres: planted, irrigated_acres: irr, dryland_acres: Math.max(0, planted - irr),
+          planting_date: r.planting_date || null, notes: r.notes.trim() || null,
+        }
+      })
+      const { data: inserted, error } = await supabase.from('field_plantings').insert(payloads).select('id')
+      if (error || !inserted) {
+        setSaving(false); setErr(`Could not save: ${error?.message ?? 'unknown error'}`); return
       }
-    })
-    const { data: inserted, error } = await supabase
-      .from('field_plantings')
-      .insert(payloads)
-      .select('id')
-    if (error || !inserted) {
-      setSaving(false)
-      setErr(`Could not save: ${error?.message ?? 'unknown error'}`)
-      return
-    }
-    // Map each inserted row back to its source by order — supabase insert
-    // preserves input order for the returned rows. Build variety inserts only
-    // for rows that have at least one named variety.
-    const varietyInserts = inserted.flatMap((row, i) => {
-      const src = toSave[i]
-      if (!src) return []
-      return src.varieties
-        .map((v) => ({ variety: v.variety.trim(), acres: num(v.acres) ?? 0 }))
-        .filter((v) => v.variety !== '')
-        .map((v) => ({ planting_id: row.id, variety: v.variety, acres: v.acres }))
-    })
-    if (varietyInserts.length > 0) {
-      const { error: vErr } = await supabase.from('field_planting_varieties').insert(varietyInserts)
-      if (vErr) {
-        setSaving(false)
-        setErr(`Plantings saved but varieties failed: ${vErr.message}`)
-        onImported()
-        return
+      added = inserted.length
+      // Order preserved: map each inserted id back to its source row's varieties.
+      const varietyInserts = inserted.flatMap((row, i) => {
+        const src = newRows[i]
+        if (!src) return []
+        return src.varieties
+          .map((v) => ({ variety: v.variety.trim(), acres: num(v.acres) ?? 0 }))
+          .filter((v) => v.variety !== '')
+          .map((v) => ({ planting_id: row.id, variety: v.variety, acres: v.acres }))
+      })
+      if (varietyInserts.length > 0) {
+        const { error: vErr } = await supabase.from('field_planting_varieties').insert(varietyInserts)
+        if (vErr) { setSaving(false); setErr(`Plantings saved but varieties failed: ${vErr.message}`); onImported(); return }
       }
     }
+
+    // Updates: patch only the provided, changed scalar fields of the matched
+    // planting (preserve-existing); varieties on existing plantings are untouched.
+    let updated = 0
+    for (const r of updateRows) {
+      const existing = existingByKey.get(`${r.field_id}|${r.crop_id}|${r.season_year}`)
+      if (!existing) continue
+      const planted = num(r.planted_acres)
+      const irrProvided = r.irrigated_acres.trim() !== ''
+      const irr = irrProvided ? (num(r.irrigated_acres) ?? 0) : (Number(existing.irrigated_acres) || 0)
+      const effPlanted = planted ?? Number(existing.planted_acres)
+      const patch: Record<string, unknown> = {}
+      if (planted != null) patch.planted_acres = planted
+      if (irrProvided) patch.irrigated_acres = irr
+      if (planted != null || irrProvided) patch.dryland_acres = Math.max(0, effPlanted - irr)
+      if (r.planting_date !== '') patch.planting_date = r.planting_date
+      if (r.notes.trim() !== '') patch.notes = r.notes.trim()
+      if (Object.keys(patch).length === 0) continue
+      const { error } = await supabase.from('field_plantings').update(patch).eq('id', existing.id)
+      if (error) { setSaving(false); setErr(`Added ${added}, updated ${updated}; failed on a row: ${error.message}`); onImported(); return }
+      updated++
+    }
+
     setSaving(false)
-    setBanner(`Saved ${payloads.length} planting${payloads.length === 1 ? '' : 's'}.`)
+    setBanner(`Saved — ${added} added, ${updated} updated.`)
     setRows([])
     setSource(null)
     onImported()
@@ -274,17 +293,21 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
                 )}
                 {rows.map((r, i) => {
                   const ready = rowReady(r)
+                  const status = rowStatus(r)
+                  const unchanged = status.kind === 'unchanged'
                   return (
-                    <tr key={i} className={`border-t border-slate-100 align-top ${r.exists ? 'opacity-60' : ''}`}>
+                    <tr key={i} className={`border-t border-slate-100 align-top ${unchanged ? 'opacity-60' : ''}`}>
                       <td className="px-2 py-1">
-                        <input type="checkbox" checked={r.include} disabled={r.exists} onChange={(e) => setRow(i, { include: e.target.checked })} />
+                        <input type="checkbox" checked={r.include} disabled={unchanged} onChange={(e) => setRow(i, { include: e.target.checked })} />
                       </td>
                       <td className="px-2 py-1 whitespace-nowrap">
-                        {r.exists
-                          ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Exists</span>
-                          : ready
-                            ? <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">Ready</span>
-                            : <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">Needs review</span>}
+                        {unchanged
+                          ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Unchanged</span>
+                          : !ready
+                            ? <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">Needs review</span>
+                            : status.kind === 'update'
+                              ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">Update</span>
+                              : <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">New</span>}
                       </td>
                       <td className="px-2 py-1" style={{ minWidth: 160 }}>
                         <select value={r.field_id} onChange={(e) => setRow(i, { field_id: e.target.value })} className={inputCls}>
