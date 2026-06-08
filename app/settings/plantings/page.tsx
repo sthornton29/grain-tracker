@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
 import PlantingsAiImport from '@/components/plantings-ai-import'
@@ -98,6 +98,7 @@ function FormFields({
   crops,
   fieldLabel,
   seasonYearOptions,
+  varietyOptionsByCrop,
 }: {
   value: Form
   onChange: (f: Form) => void
@@ -105,9 +106,15 @@ function FormFields({
   crops: Crop[]
   fieldLabel: (id: string) => string
   seasonYearOptions: number[]
+  varietyOptionsByCrop: Map<string, string[]>
 }) {
   const set = <K extends keyof Form>(k: K, v: Form[K]) => onChange({ ...value, [k]: v })
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
+  // Previously-used varieties for the selected crop, offered as a datalist so
+  // the user can pick one or type a brand-new variety. Unique id per form
+  // instance (add + edit forms can be on screen at once).
+  const datalistId = `${useId()}-varieties`
+  const varietyOptions = value.crop_id ? varietyOptionsByCrop.get(value.crop_id) ?? [] : []
 
   // Default irrigated_acres to min(field.irrigated_acres, planted_acres) when
   // the user picks a field or changes planted_acres — but only if the user
@@ -234,13 +241,22 @@ function FormFields({
       )}
 
       <div className="space-y-1">
-        <div className="text-xs text-slate-500">Varieties (optional)</div>
+        <div className="text-xs text-slate-500">
+          Varieties (optional)
+          {value.crop_id && varietyOptions.length > 0 && (
+            <span className="text-slate-400"> — pick a previous one or type a new</span>
+          )}
+        </div>
+        <datalist id={datalistId}>
+          {varietyOptions.map((name) => <option key={name} value={name} />)}
+        </datalist>
         {value.varieties.map((v, i) => (
           <div key={i} className="grid grid-cols-[1fr_7rem_auto] gap-2 items-center">
             <input
               value={v.variety}
               onChange={(e) => updateVariety(i, { variety: e.target.value })}
-              placeholder="Variety / hybrid"
+              placeholder={value.crop_id && varietyOptions.length > 0 ? 'Variety / hybrid — pick or type new' : 'Variety / hybrid'}
+              list={datalistId}
               className={INPUT_CLS}
             />
             <input
@@ -352,6 +368,22 @@ export default function PlantingsPage() {
     }
     return m
   }, [varieties])
+
+  // Distinct previously-used variety names per crop, for the variety datalist.
+  const varietyOptionsByCrop = useMemo(() => {
+    const plantingCrop = new Map(plantings.map((p) => [p.id, p.crop_id]))
+    const byCrop = new Map<string, Set<string>>()
+    for (const v of varieties) {
+      const cropId = plantingCrop.get(v.planting_id)
+      const name = v.variety?.trim()
+      if (!cropId || !name) continue
+      if (!byCrop.has(cropId)) byCrop.set(cropId, new Set())
+      byCrop.get(cropId)!.add(name)
+    }
+    const out = new Map<string, string[]>()
+    for (const [cropId, set] of byCrop) out.set(cropId, [...set].sort((a, b) => a.localeCompare(b)))
+    return out
+  }, [plantings, varieties])
 
   const distinctYears = useMemo(() => {
     const s = new Set<number>([currentYear()])
@@ -637,7 +669,7 @@ export default function PlantingsPage() {
 
       <form onSubmit={add} className="bg-white rounded-xl shadow p-4 space-y-3">
         <h2 className="font-semibold">Add planting</h2>
-        <FormFields value={form} onChange={setForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} />
+        <FormFields value={form} onChange={setForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} varietyOptionsByCrop={varietyOptionsByCrop} />
         <button
           disabled={formInvalid(form)}
           className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50"
@@ -697,7 +729,7 @@ export default function PlantingsPage() {
                 <tr key={p.id} className="border-t border-slate-100 align-top">
                   {isEditing ? (
                     <td colSpan={12} className="px-3 py-3">
-                      <FormFields value={editForm} onChange={setEditForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} />
+                      <FormFields value={editForm} onChange={setEditForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} varietyOptionsByCrop={varietyOptionsByCrop} />
                       <div className="flex gap-2 mt-2">
                         <button
                           onClick={() => save(p.id)}
