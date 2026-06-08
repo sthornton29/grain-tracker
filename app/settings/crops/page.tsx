@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import SimpleCrud from '@/components/simple-crud'
+import CropsEditor from '@/components/crops-editor'
 import CsvImport from '@/components/csv-import'
 
 export default function Page() {
@@ -16,11 +16,12 @@ export default function Page() {
             { key: 'name', required: true },
             { key: 'base_moisture_pct', type: 'number' },
             { key: 'base_lb_per_bushel', type: 'number' },
+            { key: 'harvest_category', enum: ['fall', 'spring'], default: 'fall' },
           ],
         }}
         onImported={() => setNonce((n) => n + 1)}
       />
-      <SimpleCrud key={nonce} title="Crops" table="crops" labelColumn="name" placeholder="Crop name" />
+      <CropsEditor key={nonce} />
     </div>
   )
 }

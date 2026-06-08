@@ -4,7 +4,7 @@ import { useEffect, useId, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
 import PlantingsAiImport from '@/components/plantings-ai-import'
-import { buildDoubleCropSoySet, cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { buildDoubleCropSet, cropYearOptionsFromPlantings } from '@/lib/plantings'
 import type { Crop, Farm, Field, FieldPlanting, FieldPlantingVariety } from '@/lib/types'
 
 type VarietyInput = { variety: string; acres: string }
@@ -352,9 +352,8 @@ export default function PlantingsPage() {
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
   const farmById  = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const cropById  = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
-  const soybeanCropId = useMemo(() => crops.find((c) => c.name === 'Soybean')?.id ?? null, [crops])
-  const doubleCropSoyIds = useMemo(
-    () => buildDoubleCropSoySet(plantings, cropById),
+  const doubleCropIds = useMemo(
+    () => buildDoubleCropSet(plantings, cropById),
     [plantings, cropById],
   )
 
@@ -553,44 +552,6 @@ export default function PlantingsPage() {
     refresh()
   }
 
-  async function addDoubleCropSoybeans(p: FieldPlanting) {
-    setErr(null)
-    if (!soybeanCropId) {
-      setErr('Soybean crop not found in the crops table.')
-      return
-    }
-    if (p.paired_planting_id) {
-      setErr('This planting already has a paired planting.')
-      return
-    }
-    setBusy(true)
-    const planted = Number(p.planted_acres)
-    const irr = Number(p.irrigated_acres) || 0
-    const { data: inserted, error: insErr } = await supabase
-      .from('field_plantings')
-      .insert({
-        field_id: p.field_id,
-        crop_id: soybeanCropId,
-        season_year: p.season_year,
-        planted_acres: planted,
-        irrigated_acres: irr,
-        dryland_acres: Math.max(0, planted - irr),
-        planting_date: null,
-        paired_planting_id: p.id,
-        notes: 'Double-crop pair',
-      })
-      .select('id')
-      .single()
-    if (insErr || !inserted) { setBusy(false); setErr(insErr?.message ?? 'Insert failed'); return }
-    const { error: updErr } = await supabase
-      .from('field_plantings')
-      .update({ paired_planting_id: inserted.id })
-      .eq('id', p.id)
-    setBusy(false)
-    if (updErr) { setErr(updErr.message); return }
-    refresh()
-  }
-
   function fieldLabel(id: string) {
     const f = fieldById.get(id)
     if (!f) return '—'
@@ -711,25 +672,23 @@ export default function PlantingsPage() {
         <table className="min-w-full text-sm">
           <thead className="bg-slate-100 text-slate-700">
             <tr>
-              {['Field', 'Crop', 'Varieties', 'Planted ac', 'Irrigated ac', 'Dryland ac', 'Planted', '', 'Notes', '', '', ''].map((h, i) => (
+              {['Field', 'Crop', 'Varieties', 'Planted ac', 'Irrigated ac', 'Dryland ac', 'Planted', '', 'Notes', '', ''].map((h, i) => (
                 <th key={i} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {visible.length === 0 && (
-              <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">No plantings for {year}.</td></tr>
+              <tr><td colSpan={11} className="px-3 py-6 text-center text-slate-400">No plantings for {year}.</td></tr>
             )}
             {visible.map((p) => {
               const isEditing = editingId === p.id
               const cropNm = cropById.get(p.crop_id)?.name ?? '—'
-              const showAddSoy = soybeanCropId
-                && (cropNm === 'Wheat' || cropNm === 'Canola')
-                && !p.paired_planting_id
+              const cropCat = cropById.get(p.crop_id)?.harvest_category
               return (
                 <tr key={p.id} className="border-t border-slate-100 align-top">
                   {isEditing ? (
-                    <td colSpan={12} className="px-3 py-3">
+                    <td colSpan={11} className="px-3 py-3">
                       <FormFields value={editForm} onChange={setEditForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} varietyOptionsByCrop={varietyOptionsByCrop} />
                       <div className="flex gap-2 mt-2">
                         <button
@@ -743,7 +702,10 @@ export default function PlantingsPage() {
                   ) : (
                     <>
                       <td className="px-3 py-2">{fieldLabel(p.field_id)}</td>
-                      <td className="px-3 py-2">{cropNm}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {cropNm}
+                        {cropCat && <span className="ml-1 text-[10px] uppercase tracking-wide text-slate-400">{cropCat}</span>}
+                      </td>
                       <td className="px-3 py-2 text-slate-600">{varietySummary(p.id)}</td>
                       <td className="px-3 py-2 text-right">{Number(p.planted_acres)}</td>
                       <td className="px-3 py-2 text-right">
@@ -754,23 +716,11 @@ export default function PlantingsPage() {
                       </td>
                       <td className="px-3 py-2">{p.planting_date ?? ''}</td>
                       <td className="px-3 py-2">
-                        {doubleCropSoyIds.has(p.id) && (
+                        {doubleCropIds.has(p.id) && (
                           <span className="text-xs bg-amber-100 text-amber-800 rounded px-2 py-0.5">double-crop</span>
                         )}
                       </td>
                       <td className="px-3 py-2 text-slate-500">{p.notes ?? ''}</td>
-                      <td className="px-3 py-2">
-                        {showAddSoy && (
-                          <button
-                            onClick={() => addDoubleCropSoybeans(p)}
-                            disabled={busy}
-                            className="text-amber-800 text-sm whitespace-nowrap"
-                            title="Create a paired Soybean planting on the same field"
-                          >
-                            + Soybeans
-                          </button>
-                        )}
-                      </td>
                       <td className="px-3 py-2">
                         <button
                           onClick={() => {

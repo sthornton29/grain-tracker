@@ -65,6 +65,9 @@ export type Crop = {
   name: string
   base_moisture_pct: number | null
   base_lb_per_bushel: number | null
+  // Harvest timing. Drives double-crop classification: a fall-harvest crop on a
+  // field that also has a spring-harvest crop that season is a double-crop.
+  harvest_category: 'fall' | 'spring'
 }
 
 export type BinInventoryAdjustment = {

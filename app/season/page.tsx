@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { buildDoubleCropSoySet } from '@/lib/plantings'
+import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
@@ -97,8 +97,8 @@ export default function SeasonSummaryPage() {
     harvestedAcres: number
   }
 
-  const doubleCropSoyIds = useMemo(
-    () => buildDoubleCropSoySet(plantings, cropById),
+  const doubleCropIds = useMemo(
+    () => buildDoubleCropSet(plantings, cropById),
     [plantings, cropById],
   )
 
@@ -118,7 +118,7 @@ export default function SeasonSummaryPage() {
       agg.totalAcres += acres
       agg.irrigatedAcres += Number(p.irrigated_acres) || 0
       agg.drylandAcres   += Number(p.dryland_acres)   || 0
-      if (doubleCropSoyIds.has(p.id)) agg.doubleCropAcres += acres
+      if (doubleCropIds.has(p.id)) agg.doubleCropAcres += acres
       else agg.fullSeasonAcres += acres
       // Production + yield count only harvested, non-in-progress fields.
       if (!excluded.has(p.id)) {
@@ -128,7 +128,7 @@ export default function SeasonSummaryPage() {
     }
     return [...m.values()].sort((a, b) => a.cropName.localeCompare(b.cropName))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [yearPlantings, cropById, aggByKey, yieldAnalysis, doubleCropSoyIds])
+  }, [yearPlantings, cropById, aggByKey, yieldAnalysis, doubleCropIds])
 
   const totals = byCrop.reduce(
     (acc, r) => {

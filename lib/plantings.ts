@@ -1,22 +1,23 @@
 import type { FieldPlanting } from '@/lib/types'
 
-// A Soybean planting is double-crop when the same field + season_year also
-// has a Wheat or Canola planting.
-// Returns a Set of planting ids that are double-crop soybeans.
-export function buildDoubleCropSoySet(
+// Double-crop classification by harvest category. For a field + season_year that
+// has any SPRING-harvest planting (e.g. wheat, canola), each FALL-harvest
+// planting (e.g. corn, soybeans) on that field is a double-crop. Returns the set
+// of those fall-harvest planting ids.
+export function buildDoubleCropSet(
   plantings: FieldPlanting[],
-  cropsById: Map<string, { name: string }>,
+  cropsById: Map<string, { harvest_category: 'fall' | 'spring' }>,
 ): Set<string> {
-  const hasPredecessor = new Set<string>()
+  const hasSpring = new Set<string>()
   for (const p of plantings) {
-    const n = cropsById.get(p.crop_id)?.name
-    if (n === 'Wheat' || n === 'Canola') hasPredecessor.add(`${p.field_id}|${p.season_year}`)
+    if (cropsById.get(p.crop_id)?.harvest_category === 'spring') {
+      hasSpring.add(`${p.field_id}|${p.season_year}`)
+    }
   }
   const result = new Set<string>()
   for (const p of plantings) {
-    const n = cropsById.get(p.crop_id)?.name
-    if (n !== 'Soybean') continue
-    if (hasPredecessor.has(`${p.field_id}|${p.season_year}`)) result.add(p.id)
+    if (cropsById.get(p.crop_id)?.harvest_category !== 'fall') continue
+    if (hasSpring.has(`${p.field_id}|${p.season_year}`)) result.add(p.id)
   }
   return result
 }

@@ -5,7 +5,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
 import FieldsAiImport from '@/components/fields-ai-import'
-import { buildDoubleCropSoySet } from '@/lib/plantings'
+import { buildDoubleCropSet } from '@/lib/plantings'
 import type { Crop, Farm, Field, FieldPlanting, County, EntityCounty } from '@/lib/types'
 
 function parseAcres(v: string): number | null {
@@ -169,8 +169,8 @@ export default function FieldsPage() {
     return c ? `${c.name}, ${c.state_code}` : ''
   }
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
-  const doubleCropSoyIds = useMemo(
-    () => buildDoubleCropSoySet(plantings, cropById),
+  const doubleCropIds = useMemo(
+    () => buildDoubleCropSet(plantings, cropById),
     [plantings, cropById],
   )
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
@@ -502,7 +502,7 @@ export default function FieldsPage() {
                                   <td className="py-1 text-right">{Number(p.planted_acres)}</td>
                                   <td className="py-1">{p.planting_date ?? ''}</td>
                                   <td className="py-1">
-                                    {doubleCropSoyIds.has(p.id) && (
+                                    {doubleCropIds.has(p.id) && (
                                       <span className="text-xs bg-amber-100 text-amber-800 rounded px-2 py-0.5">double-crop</span>
                                     )}
                                   </td>

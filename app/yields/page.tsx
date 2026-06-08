@@ -2,7 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { buildDoubleCropSoySet } from '@/lib/plantings'
+import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
@@ -152,8 +152,8 @@ export default function YieldsPage() {
   const farmById  = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const cropById  = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const entityById = useMemo(() => new Map(entities.map((e) => [e.id, e])), [entities])
-  const doubleCropSoyIds = useMemo(
-    () => buildDoubleCropSoySet(plantings, cropById),
+  const doubleCropIds = useMemo(
+    () => buildDoubleCropSet(plantings, cropById),
     [plantings, cropById],
   )
 
@@ -1149,7 +1149,7 @@ export default function YieldsPage() {
                         </td>
                       )}
                       <td className="px-3 py-2 whitespace-nowrap">
-                        {doubleCropSoyIds.has(p.id) && (
+                        {doubleCropIds.has(p.id) && (
                           <span className="text-xs bg-amber-100 text-amber-800 rounded px-2 py-0.5 mr-2">double-crop</span>
                         )}
                         {showAllocateButton && yieldView === 'breakdown' && !isBreakoutOpen && (
