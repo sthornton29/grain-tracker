@@ -3,7 +3,8 @@
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { findBestMatch } from '@/lib/fuzzy'
-import { PdfTooLargeError, parseDocument } from '@/lib/pdf-upload'
+import { PdfTooLargeError, parseDocument, type FieldExtraction } from '@/lib/pdf-upload'
+import { splitPdfIntoBatches } from '@/lib/pdf-split'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
 import type { Farm, Field } from '@/lib/types'
@@ -63,9 +64,23 @@ export default function FieldsAiImport({ farms, existingFields, onImported }: Pr
     setStage('Reading document…')
     try {
       await new Promise((r) => setTimeout(r, 200))
-      setStage('Extracting fields…')
-      const data = await parseDocument(src.kind === 'pdf' ? src.file : src.images, 'fields')
-      const extracted = Array.isArray(data.fields) ? data.fields : []
+      // A many-row spreadsheet/document becomes a multi-page PDF; one Anthropic
+      // call over all of it can time out (504). Split into small page-batches,
+      // parse each under the limit, and merge. Photos go in a single call.
+      const extracted: FieldExtraction[] = []
+      if (src.kind === 'pdf') {
+        let batches: File[] = [src.file]
+        try { batches = await splitPdfIntoBatches(src.file, 4) } catch { batches = [src.file] }
+        for (let i = 0; i < batches.length; i++) {
+          setStage(batches.length > 1 ? `Extracting fields (batch ${i + 1} of ${batches.length})…` : 'Extracting fields…')
+          const data = await parseDocument(batches[i], 'fields')
+          if (Array.isArray(data.fields)) extracted.push(...data.fields)
+        }
+      } else {
+        setStage('Extracting fields…')
+        const data = await parseDocument(src.images, 'fields')
+        if (Array.isArray(data.fields)) extracted.push(...data.fields)
+      }
       if (extracted.length === 0) {
         setErr('No fields found in this document. The scan may be too blurry or the format may not be readable.')
         return
@@ -90,7 +105,9 @@ export default function FieldsAiImport({ farms, existingFields, onImported }: Pr
       setBanner(`AI extracted ${next.length} field${next.length === 1 ? '' : 's'}. Review and edit before saving.`)
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) setErr(e.message)
-      else setErr(e?.message ? `Couldn't read this document: ${e.message}.` : "Couldn't read this document.")
+      else if (e?.message?.includes('504') || e?.message?.toLowerCase?.().includes('timeout')) {
+        setErr('That file took too long to read in one pass. Try fewer rows at a time — or, for a spreadsheet, use the CSV importer (faster and more accurate for tables).')
+      } else setErr(e?.message ? `Couldn't read this document: ${e.message}.` : "Couldn't read this document.")
     } finally {
       setStage(null)
     }

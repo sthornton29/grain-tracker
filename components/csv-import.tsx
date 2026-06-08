@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { isExcelFile } from '@/lib/excel-to-pdf'
 import {
   autoMapHeaders,
   parseCsv,
@@ -64,7 +65,17 @@ export default function CsvImport({ config, onImported }: Props) {
     setResult(null); setErr(null); setShowAllFailures(false)
     setFileName(file.name)
     try {
-      const text = await file.text()
+      // Excel: read the first sheet and convert it to CSV text so the rest of
+      // the structured-import flow (mapping, dedup, sync) works unchanged.
+      let text: string
+      if (isExcelFile(file)) {
+        const XLSX = await import('xlsx')
+        const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' })
+        const first = wb.Sheets[wb.SheetNames[0]]
+        text = first ? XLSX.utils.sheet_to_csv(first) : ''
+      } else {
+        text = await file.text()
+      }
       const parsed = parseCsv(text)
       if (parsed.headers.length === 0) {
         setErr('No header row found.'); setHeaders([]); setRows([]); return
@@ -103,21 +114,22 @@ export default function CsvImport({ config, onImported }: Props) {
         onClick={() => setOpen((v) => !v)}
         className="w-full text-left px-4 py-3 flex items-center gap-2 font-semibold"
       >
-        <span>Import CSV</span>
+        <span>Import CSV or Excel</span>
         <span className="text-slate-400 text-sm ml-auto">{open ? '▾' : '▸'}</span>
       </button>
 
       {open && (
         <div className="px-4 pb-4 space-y-4 border-t border-slate-100">
           <div className="pt-3">
-            <label className="text-sm font-semibold text-slate-700 block mb-1">CSV file</label>
+            <label className="text-sm font-semibold text-slate-700 block mb-1">CSV or Excel file</label>
             <input
               ref={fileRef}
               type="file"
-              accept=".csv,text/csv,text/plain"
+              accept=".csv,text/csv,text/plain,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
               onChange={onFile}
               className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-slate-700 file:text-white file:px-4 file:py-2"
             />
+            <p className="text-xs text-slate-500 mt-1">Excel uses the first sheet; the first row is the header.</p>
             {fileName && (
               <p className="text-xs text-slate-500 mt-1">
                 {fileName} · {rows.length} data row{rows.length === 1 ? '' : 's'}

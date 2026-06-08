@@ -3,7 +3,8 @@
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { findBestMatch } from '@/lib/fuzzy'
-import { PdfTooLargeError, parseDocument } from '@/lib/pdf-upload'
+import { PdfTooLargeError, parseDocument, type PlantingExtraction } from '@/lib/pdf-upload'
+import { splitPdfIntoBatches } from '@/lib/pdf-split'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
 import type { Crop, Field, FieldPlanting } from '@/lib/types'
@@ -90,9 +91,23 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
     setStage('Reading document…')
     try {
       await new Promise((r) => setTimeout(r, 200))
-      setStage('Extracting plantings…')
-      const data = await parseDocument(src.kind === 'pdf' ? src.file : src.images, 'plantings')
-      const extracted = Array.isArray(data.plantings) ? data.plantings : []
+      // A many-row spreadsheet/document becomes a multi-page PDF; one Anthropic
+      // call over all of it can time out (504). Split into small page-batches,
+      // parse each under the limit, and merge. Photos go in a single call.
+      const extracted: PlantingExtraction[] = []
+      if (src.kind === 'pdf') {
+        let batches: File[] = [src.file]
+        try { batches = await splitPdfIntoBatches(src.file, 4) } catch { batches = [src.file] }
+        for (let i = 0; i < batches.length; i++) {
+          setStage(batches.length > 1 ? `Extracting plantings (batch ${i + 1} of ${batches.length})…` : 'Extracting plantings…')
+          const data = await parseDocument(batches[i], 'plantings')
+          if (Array.isArray(data.plantings)) extracted.push(...data.plantings)
+        }
+      } else {
+        setStage('Extracting plantings…')
+        const data = await parseDocument(src.images, 'plantings')
+        if (Array.isArray(data.plantings)) extracted.push(...data.plantings)
+      }
       if (extracted.length === 0) {
         setErr('No plantings found in this document. The scan may be too blurry or the format may not be readable.')
         return
@@ -130,7 +145,9 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
       setBanner(`AI extracted ${next.length} planting${next.length === 1 ? '' : 's'}. Review and edit before saving.`)
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) setErr(e.message)
-      else setErr(e?.message ? `Couldn't read this document: ${e.message}.` : "Couldn't read this document.")
+      else if (e?.message?.includes('504') || e?.message?.toLowerCase?.().includes('timeout')) {
+        setErr('That file took too long to read in one pass. Try fewer rows at a time — or, for a spreadsheet, use the CSV importer above (faster and more accurate for tables).')
+      } else setErr(e?.message ? `Couldn't read this document: ${e.message}.` : "Couldn't read this document.")
     } finally {
       setStage(null)
     }
