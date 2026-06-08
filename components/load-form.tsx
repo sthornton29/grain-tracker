@@ -112,6 +112,10 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   const [busy, setBusy] = useState(false)
   const submittingRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
+  // Delivered-so-far (dry bushels) on the selected contract, for the fill
+  // progress widget. Excludes the load being edited (added back live below).
+  const [contractDelivered, setContractDelivered] = useState<{ dryBu: number; count: number } | null>(null)
+  const [contractProgressLoading, setContractProgressLoading] = useState(false)
 
   useEffect(() => {
     ;(async () => {
@@ -207,6 +211,49 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
             (!form.crop_id || c.crop_id === form.crop_id) &&
             c.crop_year === cropYearNum
         )
+
+  const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
+  const buyerName = (id: string | null) => (id ? buyers.find((b) => b.id === id)?.name ?? '' : '')
+  const selectedContract = contracts.find((c) => c.id === form.contract_id) ?? null
+
+  // Fetch the contract's delivered dry bushels whenever the selection changes.
+  useEffect(() => {
+    if (!form.contract_id) { setContractDelivered(null); return }
+    let cancelled = false
+    setContractProgressLoading(true)
+    ;(async () => {
+      let q = supabase
+        .from('loads')
+        .select('id, net_weight, moisture, crop_id, dry_bushels_override')
+        .eq('contract_id', form.contract_id)
+      if (mode === 'edit' && initial?.id) q = q.neq('id', initial.id)
+      const { data } = await q
+      if (cancelled) return
+      let dryBu = 0
+      let count = 0
+      for (const l of (data ?? []) as Array<{ net_weight: number | null; moisture: number | null; crop_id: string | null; dry_bushels_override: number | null }>) {
+        const crop = l.crop_id ? cropById.get(l.crop_id) : null
+        const { dryBushels } = computeBushels({
+          netWeightLb: l.net_weight, moisturePct: l.moisture,
+          baseMoisturePct: crop?.base_moisture_pct ?? null, baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
+          dryBushelsOverride: l.dry_bushels_override,
+        })
+        if (dryBushels) { dryBu += dryBushels; count++ }
+      }
+      setContractDelivered({ dryBu, count })
+      setContractProgressLoading(false)
+    })()
+    return () => { cancelled = true }
+  }, [form.contract_id, mode, initial?.id, supabase, cropById])
+
+  // Contract fill progress: delivered + this (unsaved/edited) load vs contracted.
+  const contractTotal = selectedContract ? Number(selectedContract.contracted_bushels) : 0
+  const deliveredBu = contractDelivered?.dryBu ?? 0
+  const thisLoadBu = dryBushels ?? 0
+  const projectedBu = deliveredBu + thisLoadBu
+  const remainingBu = contractTotal - projectedBu
+  const pctDelivered = contractTotal > 0 ? Math.min(100, (deliveredBu / contractTotal) * 100) : 0
+  const pctThisLoad = contractTotal > 0 ? Math.max(0, Math.min(100 - pctDelivered, (thisLoadBu / contractTotal) * 100)) : 0
 
   // Only show bins designated to the selected crop; if no crop yet, show all.
   const filteredBins = useMemo(() => {
@@ -739,11 +786,41 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                 </option>
                 {buyerContracts.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.contract_number}
+                    #{c.contract_number} · {buyerName(c.buyer_id)} · {Number(c.contracted_bushels).toLocaleString()} bu
                   </option>
                 ))}
               </select>
             </label>
+
+            {selectedContract && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+                <div className="flex justify-between items-baseline flex-wrap gap-x-4 text-sm">
+                  <span className="font-semibold text-slate-700">
+                    #{selectedContract.contract_number} · {buyerName(selectedContract.buyer_id)}
+                  </span>
+                  <span className="font-mono text-slate-600">{contractTotal.toLocaleString()} bu contracted</span>
+                </div>
+                <div className="h-3 w-full rounded-full bg-slate-200 overflow-hidden flex">
+                  <div className="bg-green-600 h-full" style={{ width: `${pctDelivered}%` }} title="Delivered" />
+                  {pctThisLoad > 0 && <div className="bg-green-300 h-full" style={{ width: `${pctThisLoad}%` }} title="This load" />}
+                </div>
+                <div className="flex justify-between flex-wrap gap-x-4 gap-y-1 text-xs">
+                  <span className="text-slate-600">
+                    Delivered <span className="font-mono font-semibold text-slate-800">{Math.round(deliveredBu).toLocaleString()}</span> bu
+                    {contractDelivered && <span className="text-slate-400"> · {contractDelivered.count} load{contractDelivered.count === 1 ? '' : 's'}</span>}
+                    {contractProgressLoading && <span className="text-slate-400"> · updating…</span>}
+                  </span>
+                  {thisLoadBu > 0 && (
+                    <span className="text-green-700">+{Math.round(thisLoadBu).toLocaleString()} bu this load → {Math.round(projectedBu).toLocaleString()} bu</span>
+                  )}
+                  <span className={remainingBu < 0 ? 'text-amber-700 font-semibold' : 'text-slate-600'}>
+                    {remainingBu >= 0
+                      ? <>Remaining <span className="font-mono font-semibold">{Math.round(remainingBu).toLocaleString()}</span> bu</>
+                      : <>Over by <span className="font-mono font-semibold">{Math.round(-remainingBu).toLocaleString()}</span> bu</>}
+                  </span>
+                </div>
+              </div>
+            )}
           </>
         )}
       </fieldset>
