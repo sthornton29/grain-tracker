@@ -324,7 +324,6 @@ export default function PlantingsPage() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editForm, setEditForm] = useState<Form>(empty(currentYear()))
   const [err, setErr] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
   const [q, setQ] = useState('')
   const [sortKey, setSortKey] = useState<'field' | 'crop' | 'acres'>('field')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
@@ -495,61 +494,6 @@ export default function PlantingsPage() {
     refresh()
   }
 
-  async function copyPriorYear() {
-    setErr(null)
-    const prior = year - 1
-    const source = plantings.filter((p) => p.season_year === prior)
-    if (source.length === 0) {
-      setErr(`No plantings found for ${prior}.`)
-      return
-    }
-    const existing = new Set(
-      plantings.filter((p) => p.season_year === year).map((p) => `${p.field_id}|${p.crop_id}`)
-    )
-    const toCopy = source.filter((p) => !existing.has(`${p.field_id}|${p.crop_id}`))
-    if (toCopy.length === 0) {
-      setErr(`All ${prior} plantings already have a ${year} counterpart.`)
-      return
-    }
-    if (!confirm(`Copy ${toCopy.length} planting(s) from ${prior} to ${year}?`)) return
-    setBusy(true)
-    // Insert plantings one-by-one so we can map each returned id back to its
-    // source for variety copying. The volume here is small (a single farm-year).
-    let lastErr: string | null = null
-    for (const src of toCopy) {
-      const planted = Number(src.planted_acres)
-      const irr = Number(src.irrigated_acres) || 0
-      const { data, error } = await supabase
-        .from('field_plantings')
-        .insert({
-          field_id: src.field_id,
-          crop_id: src.crop_id,
-          season_year: year,
-          planted_acres: planted,
-          irrigated_acres: irr,
-          dryland_acres: Math.max(0, planted - irr),
-          planting_date: null,
-          notes: null,
-        })
-        .select('id')
-        .single()
-      if (error || !data) { lastErr = error?.message ?? 'Insert failed'; break }
-      const srcVarieties = varietiesByPlanting.get(src.id) ?? []
-      if (srcVarieties.length > 0) {
-        const inserts = srcVarieties.map((v) => ({
-          planting_id: data.id,
-          variety: v.variety,
-          acres: Number(v.acres) || 0,
-        }))
-        const { error: vErr } = await supabase.from('field_planting_varieties').insert(inserts)
-        if (vErr) { lastErr = vErr.message; break }
-      }
-    }
-    setBusy(false)
-    if (lastErr) setErr(lastErr)
-    refresh()
-  }
-
   function fieldLabel(id: string) {
     const f = fieldById.get(id)
     if (!f) return '—'
@@ -609,6 +553,19 @@ export default function PlantingsPage() {
         onImported={refresh}
       />
 
+      <form onSubmit={add} className="bg-white rounded-xl shadow p-4 space-y-3">
+        <h2 className="font-semibold">Add planting</h2>
+        <FormFields value={form} onChange={setForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} varietyOptionsByCrop={varietyOptionsByCrop} />
+        <button
+          disabled={formInvalid(form)}
+          className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50"
+        >
+          Add
+        </button>
+      </form>
+
+      {err && <p className="text-sm text-red-600">{err}</p>}
+
       <div className="bg-white rounded-xl shadow p-4 space-y-3">
         <div className="flex flex-wrap gap-3 items-center">
           <label className="text-sm flex items-center gap-2">
@@ -633,7 +590,7 @@ export default function PlantingsPage() {
             </select>
           </label>
           <label className="text-sm flex items-center gap-2">
-            Harvest
+            Harvest Timing
             <select
               value={harvestFilter}
               onChange={(e) => setHarvestFilter(e.target.value as '' | 'fall' | 'spring')}
@@ -644,29 +601,8 @@ export default function PlantingsPage() {
               <option value="spring">Spring</option>
             </select>
           </label>
-          <button
-            onClick={copyPriorYear}
-            disabled={busy}
-            className="ml-auto rounded-lg bg-sky-700 text-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
-            title={`Copy plantings from ${year - 1} into ${year}`}
-          >
-            Copy from {year - 1}
-          </button>
         </div>
       </div>
-
-      <form onSubmit={add} className="bg-white rounded-xl shadow p-4 space-y-3">
-        <h2 className="font-semibold">Add planting</h2>
-        <FormFields value={form} onChange={setForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} varietyOptionsByCrop={varietyOptionsByCrop} />
-        <button
-          disabled={formInvalid(form)}
-          className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50"
-        >
-          Add
-        </button>
-      </form>
-
-      {err && <p className="text-sm text-red-600">{err}</p>}
 
       <div className="flex items-center gap-2 flex-wrap">
         <input
