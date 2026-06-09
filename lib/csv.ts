@@ -81,6 +81,13 @@ export type ColumnSpec = {
     valueColumn: string
     /** Column on the child table that points back to the parent (e.g. 'planting_id'). */
     parentKey: string
+    /** When set, the cell may list several values separated by any of these
+     *  characters (newlines always split too) — each becomes its own child row.
+     *  e.g. ",;" lets "P2089, DKC65-95" create two variety rows. */
+    splitOn?: string
+    /** When set, an inline "name:amount" (or "name=amount") puts the amount into
+     *  this child column — e.g. a variety's acres in "P2089:70". */
+    amountColumn?: string
   }
 }
 
@@ -91,6 +98,8 @@ export type ImportConfig = {
   uniqueKey: string | string[]
   /** Optional friendly label for the importer panel title. */
   title?: string
+  /** Optional note shown in the importer panel (e.g. how to format a column). */
+  note?: string
 }
 
 export type ImportResult = {
@@ -169,6 +178,32 @@ function coerceValue(raw: string, spec: ColumnSpec): unknown {
   }
 }
 
+// Parse a child-relation cell into one or more child rows. With splitOn the cell
+// is split into pieces (newlines always split too); with amountColumn an inline
+// "name:amount" / "name=amount" puts the amount into that column.
+function parseChildCell(raw: string, child: NonNullable<ColumnSpec['child']>): AnyRow[] {
+  const s = raw.trim()
+  if (s === '') return []
+  const pieces = child.splitOn
+    ? s.split(new RegExp(`[${child.splitOn}\\r\\n]+`)).map((p) => p.trim()).filter((p) => p !== '')
+    : [s]
+  const out: AnyRow[] = []
+  for (const piece of pieces) {
+    let name = piece
+    let amount: number | null = null
+    if (child.amountColumn) {
+      const m = piece.match(/^(.+?)\s*[:=]\s*(-?\d+(?:\.\d+)?)\s*$/)
+      if (m) { name = m[1].trim(); amount = Number(m[2]) }
+    }
+    name = name.trim()
+    if (name === '') continue
+    const row: AnyRow = { [child.valueColumn]: name }
+    if (child.amountColumn && amount != null && Number.isFinite(amount)) row[child.amountColumn] = amount
+    out.push(row)
+  }
+  return out
+}
+
 export async function runImport(
   supabase: SupabaseClient,
   config: ImportConfig,
@@ -202,7 +237,7 @@ export async function runImport(
   const headerIndex = new Map<string, number>()
   headers.forEach((h, i) => headerIndex.set(h, i))
 
-  type ChildValue = { table: string; parentKey: string; valueColumn: string; value: unknown }
+  type ChildValue = { table: string; parentKey: string; row: AnyRow }
   const failed: ImportResult['failed'] = []
   const toInsert: AnyRow[] = []
   const toInsertChildren: ChildValue[][] = []
@@ -257,8 +292,8 @@ export async function runImport(
           const v = coerceValue(raw, col)
           if (col.required && (v === null || v === '')) throw new Error(`${col.label ?? col.key} is required`)
           if (col.child) {
-            if (v != null && String(v).trim() !== '') {
-              children.push({ table: col.child.table, parentKey: col.child.parentKey, valueColumn: col.child.valueColumn, value: v })
+            for (const childRow of parseChildCell(raw, col.child)) {
+              children.push({ table: col.child.table, parentKey: col.child.parentKey, row: childRow })
             }
           } else {
             payload[col.key] = v
@@ -326,7 +361,7 @@ export async function runImport(
       if (!pid) continue
       for (const ch of toInsertChildren[j]) {
         const list = childRows.get(ch.table) ?? []
-        list.push({ [ch.parentKey]: pid, [ch.valueColumn]: ch.value })
+        list.push({ [ch.parentKey]: pid, ...ch.row })
         childRows.set(ch.table, list)
       }
     }

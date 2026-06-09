@@ -145,6 +145,7 @@ export default function CsvImport({ config, onImported }: Props) {
                 </span>
               ))}
             </p>
+            {config.note && <p className="text-xs text-slate-500 mt-1">{config.note}</p>}
             <button
               type="button"
               onClick={() => downloadTemplate(config)}

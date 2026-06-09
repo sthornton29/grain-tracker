@@ -579,9 +579,10 @@ export default function PlantingsPage() {
             { key: 'planted_acres', type: 'number' },
             { key: 'irrigated_acres', type: 'number' },
             { key: 'planting_date', type: 'date' },
-            { key: 'variety', child: { table: 'field_planting_varieties', valueColumn: 'variety', parentKey: 'planting_id' } },
+            { key: 'variety', child: { table: 'field_planting_varieties', valueColumn: 'variety', parentKey: 'planting_id', splitOn: ',;', amountColumn: 'acres' } },
             { key: 'notes' },
           ],
+          note: 'Variety: list several in one cell separated by ";" or "," and put each variety’s acres after its name, e.g. "P2089:70; DKC65-95:50".',
         }}
         onImported={refresh}
       />
