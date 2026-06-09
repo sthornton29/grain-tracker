@@ -35,16 +35,8 @@ export function parseCsv(text: string): ParsedCsv {
   }
   if (field !== '' || row.length > 0) { row.push(field); rows.push(row) }
 
-  // Skip leading comment lines (first cell starts with '#') so a downloaded
-  // template can carry human-readable instructions above the header row. Only
-  // lines *before* the header count as comments — once the header is found, '#'
-  // is ordinary data (field/truck names like "#5" are common), so nothing below
-  // the header is ever dropped.
-  let start = 0
-  while (start < rows.length && (rows[start][0] ?? '').trim().startsWith('#')) start++
-  const headers = (rows[start] ?? []).map((h) => h.trim())
+  const headers = (rows.shift() ?? []).map((h) => h.trim())
   const dataRows = rows
-    .slice(start + 1)
     .map((r) => r.map((v) => v.trim()))
     .filter((r) => r.some((v) => v !== ''))
   return { headers, rows: dataRows }
@@ -105,6 +97,20 @@ export type ColumnSpec = {
   }
 }
 
+/** Content for a styled, two-sheet Excel import template. */
+export type ImportTemplate = {
+  /** Title shown across the top of the Instructions sheet. */
+  title: string
+  /** Overview paragraphs explaining the import at a high level. */
+  overview?: string[]
+  /** Per-column guidance, keyed by ColumnSpec.key (shown in a Columns table). */
+  help?: Record<string, string>
+  /** Short tips/gotchas highlighted under the column table. */
+  tips?: string[]
+  /** Worked example rows, each aligned to the column order, shown for reference. */
+  examples?: string[][]
+}
+
 export type ImportConfig = {
   tableName: string
   columns: ColumnSpec[]
@@ -115,11 +121,11 @@ export type ImportConfig = {
   /** Optional note shown in the importer panel (e.g. how to format a column). */
   note?: string
   /**
-   * Optional instruction lines written as leading "# ..." comment rows at the
-   * top of the downloaded template. The parser skips leading comment lines, so
-   * these document the format inside the file itself without affecting import.
+   * Optional rich template content. When present, the importer offers a styled
+   * two-sheet Excel template (an Instructions sheet + a Data sheet) instead of a
+   * plain CSV header file. See downloadExcelTemplate in lib/import-template.
    */
-  templateInstructions?: string[]
+  template?: ImportTemplate
   /**
    * Optional post-processing: given a row's resolved values, return extra/derived
    * columns to write (e.g. dryland_acres = planted - irrigated). On a sync update

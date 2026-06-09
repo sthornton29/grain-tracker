@@ -524,16 +524,33 @@ export default function PlantingsPage() {
             { key: 'variety', child: { table: 'field_planting_varieties', valueColumn: 'variety', parentKey: 'planting_id', splitOn: ',;', amountColumn: 'acres' } },
             { key: 'notes' },
           ],
-          note: 'Total_Planted_Acres is the total acres of the crop in the field. Irrigated_Acres_Planted is how many of those are irrigated — leave it blank to count every planted acre as dryland. To record more than one variety in the same field, list them in the single variety cell separated by ";" or "," with each variety’s acres after a colon, e.g. "P2089:70; DKC65-95:50". The downloaded template includes these instructions and example rows.',
-          templateInstructions: [
-            'Field Plantings import — enter one row per field + crop + season (harvest) year below the header row.',
-            'Total_Planted_Acres: total acres of this crop planted in the field.',
-            'Irrigated_Acres_Planted: how many of those acres are irrigated. Leave BLANK if none are — a blank counts ALL planted acres as dryland.',
-            'variety: to record several varieties in the same field, list them in the one variety cell separated by ; or , and put each variety’s acres after a colon. Example: P2089:70; DKC65-95:50',
-            'Lines starting with # are instructions and are ignored on import — leave them or delete them.',
-            'Example (some irrigated): North 40,Corn,2026,120,80,2026-04-15,P2089:120,first planting',
-            'Example (all dryland, two varieties): South Bottom,Soybean,2026,90,,2026-05-01,AG38X8:50; P31A22:40,double-crop beans',
-          ],
+          note: 'Download the Excel template for a guided Instructions tab and a Data tab to fill in. In short: Total_Planted_Acres is the total acres of the crop in the field; leave Irrigated_Acres_Planted blank to count every planted acre as dryland; and to record more than one variety in the same field, list them in the single variety cell separated by ";" or "," with each variety’s acres after a colon, e.g. "P2089:70; DKC65-95:50".',
+          template: {
+            title: 'Field Plantings - Import Template',
+            overview: [
+              'Enter one row per field, per crop, per season on the Data tab. The season year is the harvest year (for example, wheat harvested in spring 2026 is season year 2026).',
+              'Field and crop names must match what is set up under Settings. When you are done, save the file and upload it on the Field Plantings page.',
+            ],
+            help: {
+              field_id: 'The field name or number, exactly as it appears under Settings > Fields (e.g. "North 40").',
+              crop_id: 'The crop name, e.g. Corn, Soybean, or Wheat. "Soybeans", "Beans", and "Soy" all map to Soybean.',
+              season_year: 'The harvest year as a 4-digit number, e.g. 2026.',
+              planted_acres: 'Total acres of this crop planted in the field.',
+              irrigated_acres: 'How many of the planted acres are irrigated. Leave blank if none are - a blank counts ALL planted acres as dryland.',
+              planting_date: 'Date planted, formatted YYYY-MM-DD. Optional.',
+              variety: 'Optional. To record several varieties in the same field, put them all in this one cell separated by ";" or ",", with each variety\'s acres after a colon. Example: P2089:70; DKC65-95:50',
+              notes: 'Anything else worth recording. Optional.',
+            },
+            tips: [
+              'A blank Irrigated_Acres_Planted means every planted acre is treated as dryland.',
+              'Multiple varieties in one field go in a single variety cell: P2089:70; DKC65-95:50',
+              'Rows are matched by field + crop + season year, so re-importing updates the matching row instead of creating a duplicate.',
+            ],
+            examples: [
+              ['North 40', 'Corn', '2026', '120', '80', '2026-04-15', 'P2089:120', 'first planting'],
+              ['South Bottom', 'Soybean', '2026', '90', '', '2026-05-01', 'AG38X8:50; P31A22:40', 'double-crop beans'],
+            ],
+          },
           // Dryland = planted − irrigated, so a blank irrigated field counts as all dryland.
           derive: (r) => {
             const planted = Number(r.planted_acres) || 0

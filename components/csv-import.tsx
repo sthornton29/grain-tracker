@@ -11,30 +11,22 @@ import {
   type ImportMode,
   type ImportResult,
 } from '@/lib/csv'
+import { downloadExcelTemplate } from '@/lib/import-template'
 
 type Props = {
   config: ImportConfig
   onImported?: () => void
 }
 
-// Quote a value as one CSV field so commas inside an instruction line don't
-// split it into extra columns (and Excel shows the whole line in one cell).
-function csvField(v: string) {
-  return `"${v.replace(/"/g, '""')}"`
-}
-
-// Emits a CSV template matching the import config's column labels, so a user
-// can fill in their data offline and import it back here. Any configured
-// instruction lines are written above the header as "# ..." comment rows (the
-// parser skips leading comment lines). Required columns get a "*" suffix in the
-// header to match the live hint.
+// Emits a CSV with just the header row matching the import config's column
+// labels, so a user can fill in their data offline and import it back here.
+// Required columns get a "*" suffix in the header to match the live hint.
 function downloadTemplate(config: ImportConfig) {
   const headers = config.columns.map((c) => {
     const base = c.label ?? c.key
     return c.required ? `${base}*` : base
   })
-  const commentRows = (config.templateInstructions ?? []).map((line) => csvField(`# ${line}`))
-  const csv = [...commentRows, headers.join(',')].join('\n') + '\n'
+  const csv = headers.join(',') + '\n'
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -74,14 +66,25 @@ export default function CsvImport({ config, onImported }: Props) {
     setResult(null); setErr(null); setShowAllFailures(false)
     setFileName(file.name)
     try {
-      // Excel: read the first sheet and convert it to CSV text so the rest of
-      // the structured-import flow (mapping, dedup, sync) works unchanged.
+      // Excel: convert a sheet to CSV text so the rest of the structured-import
+      // flow (mapping, dedup, sync) works unchanged. With our two-sheet template
+      // the data is on the "Data" tab, not the first ("Instructions") tab, so we
+      // pick the first sheet whose header row maps every required column and fall
+      // back to the first sheet otherwise.
       let text: string
       if (isExcelFile(file)) {
         const XLSX = await import('xlsx')
         const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' })
-        const first = wb.Sheets[wb.SheetNames[0]]
-        text = first ? XLSX.utils.sheet_to_csv(first) : ''
+        const required = config.columns.filter((c) => c.required).map((c) => c.key)
+        let chosen = wb.SheetNames[0]
+        for (const name of wb.SheetNames) {
+          const sheet = wb.Sheets[name]
+          if (!sheet) continue
+          const map = autoMapHeaders(parseCsv(XLSX.utils.sheet_to_csv(sheet)).headers, config.columns)
+          if (required.length > 0 && required.every((k) => map[k])) { chosen = name; break }
+        }
+        const sheet = wb.Sheets[chosen]
+        text = sheet ? XLSX.utils.sheet_to_csv(sheet) : ''
       } else {
         text = await file.text()
       }
@@ -138,7 +141,7 @@ export default function CsvImport({ config, onImported }: Props) {
               onChange={onFile}
               className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-slate-700 file:text-white file:px-4 file:py-2"
             />
-            <p className="text-xs text-slate-500 mt-1">Excel uses the first sheet; the first row is the header.</p>
+            <p className="text-xs text-slate-500 mt-1">For Excel, fill in the Data tab; the first row is the header.</p>
             {fileName && (
               <p className="text-xs text-slate-500 mt-1">
                 {fileName} · {rows.length} data row{rows.length === 1 ? '' : 's'}
@@ -157,10 +160,10 @@ export default function CsvImport({ config, onImported }: Props) {
             {config.note && <p className="text-xs text-slate-500 mt-1">{config.note}</p>}
             <button
               type="button"
-              onClick={() => downloadTemplate(config)}
+              onClick={() => (config.template ? downloadExcelTemplate(config) : downloadTemplate(config))}
               className="text-sm text-sky-700 underline mt-2"
             >
-              Download template CSV
+              {config.template ? 'Download Excel template' : 'Download template CSV'}
             </button>
           </div>
 
