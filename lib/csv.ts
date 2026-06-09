@@ -109,6 +109,13 @@ export type ImportTemplate = {
   tips?: string[]
   /** Worked example rows, each aligned to the column order, shown for reference. */
   examples?: string[][]
+  /**
+   * Rows to pre-fill on the Data sheet, each keyed by ColumnSpec.key (e.g. one
+   * row per existing field carrying its name and the current year). Columns not
+   * listed are left blank for the user to complete. Pair with
+   * ImportConfig.ignoreRowIfOnly so untouched pre-filled rows are ignored.
+   */
+  dataRows?: Array<Record<string, string>>
 }
 
 export type ImportConfig = {
@@ -126,6 +133,12 @@ export type ImportConfig = {
    * plain CSV header file. See downloadExcelTemplate in lib/import-template.
    */
   template?: ImportTemplate
+  /**
+   * Column keys that the template pre-fills (e.g. ['field_id', 'season_year']).
+   * A data row whose only non-empty cells are these columns is ignored on
+   * import, so untouched pre-filled rows don't create or change anything.
+   */
+  ignoreRowIfOnly?: string[]
   /**
    * Optional post-processing: given a row's resolved values, return extra/derived
    * columns to write (e.g. dryland_acres = planted - irrigated). On a sync update
@@ -280,8 +293,22 @@ export async function runImport(
   let skipped = 0
   let unchanged = 0
 
+  const ignoreOnly = config.ignoreRowIfOnly ?? []
   for (let i = 0; i < csvRows.length; i++) {
     const csvRow = csvRows[i]
+    // Ignore rows that carry only pre-filled seed values (e.g. a template row
+    // with just the field name + season year the user never completed). They
+    // shouldn't create or touch anything, and shouldn't be reported as errors.
+    if (ignoreOnly.length > 0) {
+      let hasExtra = false
+      for (const col of config.columns) {
+        if (ignoreOnly.includes(col.key)) continue
+        const csvHeader = mapping[col.key]
+        const idx = csvHeader ? headerIndex.get(csvHeader) ?? -1 : -1
+        if (idx >= 0 && (csvRow[idx] ?? '').trim() !== '') { hasExtra = true; break }
+      }
+      if (!hasExtra) continue
+    }
     try {
       const payload: AnyRow = {}
       const children: ChildValue[] = []

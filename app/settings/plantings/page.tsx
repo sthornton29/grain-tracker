@@ -550,7 +550,15 @@ export default function PlantingsPage() {
               ['North 40', 'Corn', '2026', '120', '80', '2026-04-15', 'P2089:120', 'first planting'],
               ['South Bottom', 'Soybean', '2026', '90', '', '2026-05-01', 'AG38X8:50; P31A22:40', 'double-crop beans'],
             ],
+            // Seed the Data tab with one row per existing field, defaulting the
+            // season year to the current year. Rows the user never completes are
+            // ignored on import (see ignoreRowIfOnly below).
+            dataRows: fields.map((f) => ({
+              field_id: f.name_or_number,
+              season_year: String(currentYear()),
+            })),
           },
+          ignoreRowIfOnly: ['field_id', 'season_year'],
           // Dryland = planted − irrigated, so a blank irrigated field counts as all dryland.
           derive: (r) => {
             const planted = Number(r.planted_acres) || 0

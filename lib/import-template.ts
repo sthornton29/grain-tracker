@@ -153,6 +153,11 @@ export async function downloadExcelTemplate(config: ImportConfig) {
     c.alignment = { vertical: 'middle' }
     data.getColumn(i + 1).width = Math.max(14, Math.min(30, label.length + 6))
   })
+  // Pre-filled seed rows (e.g. one per existing field with the current year).
+  // Aligned to column order by key; columns left blank are for the user to fill.
+  for (const row of tpl.dataRows ?? []) {
+    data.addRow(config.columns.map((c) => row[c.key] ?? ''))
+  }
   data.views = [{ state: 'frozen', ySplit: 1 }]
 
   const buf = await wb.xlsx.writeBuffer()
