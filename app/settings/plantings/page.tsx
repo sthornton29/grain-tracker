@@ -524,25 +524,27 @@ export default function PlantingsPage() {
             { key: 'variety', child: { table: 'field_planting_varieties', valueColumn: 'variety', parentKey: 'planting_id', splitOn: ',;', amountColumn: 'acres' } },
             { key: 'notes' },
           ],
-          note: 'Download the Excel template for a guided Instructions tab and a Data tab to fill in. In short: Total_Planted_Acres is the total acres of the crop in the field; leave Irrigated_Acres_Planted blank to count every planted acre as dryland; and to record more than one variety in the same field, list them in the single variety cell separated by ";" or "," with each variety’s acres after a colon, e.g. "P2089:70; DKC65-95:50".',
+          note: 'The Excel template comes pre-filled with a row for every field, the current season year, and each field\'s irrigated acres — just fill in the crop and Total_Planted_Acres for the fields you planted and leave the rest untouched (unfinished rows are ignored). Set Irrigated_Acres_Planted to 0 or blank for an all-dryland planting; and to record more than one variety in the same field, list them in the single variety cell separated by ";" or "," with each variety\'s acres after a colon, e.g. "P2089:70; DKC65-95:50". See the Instructions tab for full details.',
           template: {
             title: 'Field Plantings - Import Template',
             overview: [
-              'Enter one row per field, per crop, per season on the Data tab. The season year is the harvest year (for example, wheat harvested in spring 2026 is season year 2026).',
-              'Field and crop names must match what is set up under Settings. When you are done, save the file and upload it on the Field Plantings page.',
+              'The Data tab is already filled in with one row for every field you have set up, with the season year defaulted to the current year and the irrigated acres defaulted to each field\'s irrigated acres.',
+              'For every field you planted, enter the crop and Total_Planted_Acres (and adjust the other columns if needed). Leave the fields you did not plant untouched — rows you do not complete are ignored on import.',
+              'The season year is the harvest year (for example, wheat harvested in spring 2026 is season year 2026). When you are done, save the file and upload it on the Field Plantings page.',
             ],
             help: {
-              field_id: 'The field name or number, exactly as it appears under Settings > Fields (e.g. "North 40").',
-              crop_id: 'The crop name, e.g. Corn, Soybean, or Wheat. "Soybeans", "Beans", and "Soy" all map to Soybean.',
-              season_year: 'The harvest year as a 4-digit number, e.g. 2026.',
-              planted_acres: 'Total acres of this crop planted in the field.',
-              irrigated_acres: 'How many of the planted acres are irrigated. Leave blank if none are - a blank counts ALL planted acres as dryland.',
+              field_id: 'Pre-filled with each of your fields (matching Settings > Fields). Leave these as they are.',
+              crop_id: 'The crop you planted in this field, e.g. Corn, Soybean, or Wheat. "Soybeans", "Beans", and "Soy" all map to Soybean. Fill this in for every field you planted.',
+              season_year: 'The harvest year as a 4-digit number. Pre-filled with the current year; change it only for a different season.',
+              planted_acres: 'Total acres of this crop planted in the field. Fill this in for every field you planted.',
+              irrigated_acres: 'Pre-filled with the field\'s irrigated acres. Change it if this planting\'s irrigated acres differ, or set it to 0 (or blank) if this planting is all dryland.',
               planting_date: 'Date planted, formatted YYYY-MM-DD. Optional.',
               variety: 'Optional. To record several varieties in the same field, put them all in this one cell separated by ";" or ",", with each variety\'s acres after a colon. Example: P2089:70; DKC65-95:50',
               notes: 'Anything else worth recording. Optional.',
             },
             tips: [
-              'A blank Irrigated_Acres_Planted means every planted acre is treated as dryland.',
+              'The Data tab is pre-filled with your fields, the current year, and each field\'s irrigated acres — just complete the rows you planted and leave the rest. Rows you do not add a crop to are ignored.',
+              'Set Irrigated_Acres_Planted to 0 or blank for an all-dryland planting.',
               'Multiple varieties in one field go in a single variety cell: P2089:70; DKC65-95:50',
               'Rows are matched by field + crop + season year, so re-importing updates the matching row instead of creating a duplicate.',
             ],
@@ -551,14 +553,16 @@ export default function PlantingsPage() {
               ['South Bottom', 'Soybean', '2026', '90', '', '2026-05-01', 'AG38X8:50; P31A22:40', 'double-crop beans'],
             ],
             // Seed the Data tab with one row per existing field, defaulting the
-            // season year to the current year. Rows the user never completes are
-            // ignored on import (see ignoreRowIfOnly below).
+            // season year to the current year and irrigated acres to the field's
+            // irrigated acres. Rows the user never completes are ignored on
+            // import (see ignoreRowIfOnly below).
             dataRows: fields.map((f) => ({
               field_id: f.name_or_number,
               season_year: String(currentYear()),
+              irrigated_acres: Number(f.irrigated_acres) > 0 ? String(f.irrigated_acres) : '',
             })),
           },
-          ignoreRowIfOnly: ['field_id', 'season_year'],
+          ignoreRowIfOnly: ['field_id', 'season_year', 'irrigated_acres'],
           // Dryland = planted − irrigated, so a blank irrigated field counts as all dryland.
           derive: (r) => {
             const planted = Number(r.planted_acres) || 0
