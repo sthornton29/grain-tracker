@@ -301,6 +301,59 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     setForm((f) => ({ ...f, [key]: value }))
   }
 
+  // Changing a From/To *type* re-defaults the whole from/to combination from
+  // the last load that used it (for the selected crop) — the same idea as
+  // seeding a new load from the most recent one, but keyed to the combination
+  // the user just switched to. E.g. flipping a field→bin load over to
+  // bin→buyer pulls in the source bin + buyer (and contract) from the most
+  // recent bin→buyer load. Create-mode only: in edit mode the toggle just
+  // changes the type so we never clobber an existing record's selections.
+  async function applyTypeChange(next: { from_type?: FormState['from_type']; to_type?: FormState['to_type'] }) {
+    if (mode !== 'create') {
+      setForm((f) => ({ ...f, ...next }))
+      return
+    }
+    const fromType = next.from_type ?? form.from_type
+    const toType = next.to_type ?? form.to_type
+    // Reflect the toggle immediately; the lookup below fills in the details.
+    setForm((f) => ({ ...f, ...next }))
+
+    let q = supabase
+      .from('loads')
+      .select('from_field_id, from_bin_id, to_bin_id, to_buyer_id, contract_id')
+      .order('date', { ascending: false })
+      .order('time', { ascending: false })
+      .limit(1)
+    if (form.crop_id) q = q.eq('crop_id', form.crop_id)
+    if (fromType) q = q.eq('from_type', fromType)
+    if (toType) q = q.eq('to_type', toType)
+    const { data } = await q
+    const match = data?.[0] as {
+      from_field_id: string | null
+      from_bin_id: string | null
+      to_bin_id: string | null
+      to_buyer_id: string | null
+      contract_id: string | null
+    } | undefined
+    if (!match) return
+
+    // Contracts are crop-year specific; only carry the matched load's contract
+    // if it belongs to the year selected here (the match may be a prior year).
+    const yearNum = form.crop_year === '' ? null : Number(form.crop_year)
+    const contractOk =
+      !!match.contract_id &&
+      contracts.some((c) => c.id === match.contract_id && (yearNum == null || c.crop_year === yearNum))
+
+    setForm((f) => ({
+      ...f,
+      from_field_id: fromType === 'field' ? (match.from_field_id ?? '') : '',
+      from_bin_id: fromType === 'bin' ? (match.from_bin_id ?? '') : '',
+      to_bin_id: toType === 'bin' ? (match.to_bin_id ?? '') : '',
+      to_buyer_id: toType === 'buyer' ? (match.to_buyer_id ?? '') : '',
+      contract_id: toType === 'buyer' && contractOk ? (match.contract_id ?? '') : '',
+    }))
+  }
+
   // First time the user activates Split Load with no prior split rows, seed
   // two rows — prefilling row 1 with the currently selected field when there
   // is one (so conversion in edit mode doesn't drop the existing field).
@@ -570,7 +623,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
             <button
               key={t}
               type="button"
-              onClick={() => set('from_type', t)}
+              onClick={() => applyTypeChange({ from_type: t })}
               className={`flex-1 py-2 rounded-lg border ${
                 form.from_type === t ? 'bg-green-700 text-white border-green-700' : 'bg-white'
               }`}
@@ -745,7 +798,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
             <button
               key={t}
               type="button"
-              onClick={() => set('to_type', t)}
+              onClick={() => applyTypeChange({ to_type: t })}
               className={`flex-1 py-2 rounded-lg border ${
                 form.to_type === t ? 'bg-green-700 text-white border-green-700' : 'bg-white'
               }`}
