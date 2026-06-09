@@ -68,6 +68,12 @@ export type ColumnSpec = {
      * is scoped by the resolved buyer_id). Left blank for simple FK.
      */
     scopeKey?: string
+    /**
+     * Synonyms: lowercased incoming value → the canonical value to match on.
+     * e.g. { soybeans: 'Soybean', beans: 'Soybean' } so a CSV "Soybeans" maps to
+     * the "Soybean" crop.
+     */
+    aliases?: Record<string, string>
   }
   /**
    * Child relation: this column is NOT written to the main table. After the
@@ -100,6 +106,13 @@ export type ImportConfig = {
   title?: string
   /** Optional note shown in the importer panel (e.g. how to format a column). */
   note?: string
+  /**
+   * Optional post-processing: given a row's resolved values, return extra/derived
+   * columns to write (e.g. dryland_acres = planted - irrigated). On a sync update
+   * it receives the existing row overlaid with the changed values, so derived
+   * fields stay consistent with whatever was actually provided.
+   */
+  derive?: (row: Record<string, unknown>) => Record<string, unknown>
 }
 
 export type ImportResult = {
@@ -267,9 +280,10 @@ export async function runImport(
             payload[col.key] = null
             continue
           }
+          const matchVal = col.fk.aliases?.[value.toLowerCase()] ?? value
           const lookupRows = fkTables.get(col.fk.table) || []
           let candidates = lookupRows.filter(
-            (r) => String(r[col.fk!.matchColumn] ?? '').toLowerCase() === value.toLowerCase()
+            (r) => String(r[col.fk!.matchColumn] ?? '').toLowerCase() === matchVal.toLowerCase()
           )
           if (col.fk.scopeKey && candidates.length > 0) {
             const scopeVal = payload[col.fk.scopeKey]
@@ -302,6 +316,9 @@ export async function runImport(
         }
       }
 
+      // Derived columns (e.g. dryland = planted - irrigated) for the insert path.
+      if (config.derive) Object.assign(payload, config.derive(payload))
+
       const dedupKey = uniqueKeys.map((k) => normValue(payload[k])).join('|')
 
       // The same unique key twice in one file: handle the first, skip the rest.
@@ -318,6 +335,9 @@ export async function runImport(
           if (normValue(payload[key]) !== normValue(existingRow[key])) patch[key] = payload[key]
         }
         if (Object.keys(patch).length === 0) { unchanged++; continue }
+        // Recompute derived columns from the existing row overlaid with the
+        // changes, so e.g. dryland tracks a changed planted/irrigated.
+        if (config.derive) Object.assign(patch, config.derive({ ...existingRow, ...patch }))
         toUpdate.push({ id: String(existingRow.id), patch, rowIndex: i })
         continue
       }

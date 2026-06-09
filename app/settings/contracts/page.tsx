@@ -173,7 +173,7 @@ export default function ContractsSettingsPage() {
           columns: [
             { key: 'contract_number', required: true },
             { key: 'buyer_id', label: 'buyer', fk: { table: 'buyers', matchColumn: 'name' } },
-            { key: 'crop_id', label: 'crop', fk: { table: 'crops', matchColumn: 'name' } },
+            { key: 'crop_id', label: 'crop', fk: { table: 'crops', matchColumn: 'name', aliases: { soybeans: 'Soybean', beans: 'Soybean', soy: 'Soybean' } } },
             { key: 'entity_id', label: 'entity', fk: { table: 'entities', matchColumn: 'name' } },
             { key: 'crop_year', type: 'number' },
             { key: 'contracted_bushels', type: 'number' },

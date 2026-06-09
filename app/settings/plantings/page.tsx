@@ -574,15 +574,21 @@ export default function PlantingsPage() {
           uniqueKey: ['field_id', 'crop_id', 'season_year'],
           columns: [
             { key: 'field_id', label: 'field', required: true, fk: { table: 'fields', matchColumn: 'name_or_number' } },
-            { key: 'crop_id', label: 'crop', required: true, fk: { table: 'crops', matchColumn: 'name' } },
+            { key: 'crop_id', label: 'crop', required: true, fk: { table: 'crops', matchColumn: 'name', aliases: { soybeans: 'Soybean', beans: 'Soybean', soy: 'Soybean' } } },
             { key: 'season_year', type: 'number', required: true },
             { key: 'planted_acres', type: 'number' },
-            { key: 'irrigated_acres', type: 'number' },
+            { key: 'irrigated_acres', type: 'number', default: 0 },
             { key: 'planting_date', type: 'date' },
             { key: 'variety', child: { table: 'field_planting_varieties', valueColumn: 'variety', parentKey: 'planting_id', splitOn: ',;', amountColumn: 'acres' } },
             { key: 'notes' },
           ],
-          note: 'Variety: list several in one cell separated by ";" or "," and put each variety’s acres after its name, e.g. "P2089:70; DKC65-95:50".',
+          note: 'Variety: list several in one cell separated by ";" or "," and put each variety’s acres after its name, e.g. "P2089:70; DKC65-95:50". Leave Irrigated acres blank for all-dryland fields.',
+          // Dryland = planted − irrigated, so a blank irrigated field counts as all dryland.
+          derive: (r) => {
+            const planted = Number(r.planted_acres) || 0
+            const irr = Number(r.irrigated_acres) || 0
+            return { dryland_acres: Math.max(0, planted - irr) }
+          },
         }}
         onImported={refresh}
       />
