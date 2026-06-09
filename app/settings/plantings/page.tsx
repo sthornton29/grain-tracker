@@ -4,7 +4,7 @@ import { useEffect, useId, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
 import PlantingsAiImport from '@/components/plantings-ai-import'
-import { buildDoubleCropSet, cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import type { Crop, Farm, Field, FieldPlanting, FieldPlantingVariety } from '@/lib/types'
 
 type VarietyInput = { variety: string; acres: string }
@@ -319,6 +319,7 @@ export default function PlantingsPage() {
   const [varieties, setVarieties] = useState<FieldPlantingVariety[]>([])
   const [year, setYear] = useState<number>(currentYear())
   const [fieldFilter, setFieldFilter] = useState('')
+  const [harvestFilter, setHarvestFilter] = useState<'' | 'fall' | 'spring'>('')
   const [form, setForm] = useState<Form>(empty(currentYear()))
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editForm, setEditForm] = useState<Form>(empty(currentYear()))
@@ -352,10 +353,6 @@ export default function PlantingsPage() {
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
   const farmById  = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const cropById  = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
-  const doubleCropIds = useMemo(
-    () => buildDoubleCropSet(plantings, cropById),
-    [plantings, cropById],
-  )
 
   // Grouped varieties by planting id, in display/insert order.
   const varietiesByPlanting = useMemo(() => {
@@ -407,6 +404,7 @@ export default function PlantingsPage() {
     .filter((p) => {
       if (p.season_year !== year) return false
       if (fieldFilter && p.field_id !== fieldFilter) return false
+      if (harvestFilter && cropById.get(p.crop_id)?.harvest_category !== harvestFilter) return false
       if (q) {
         const hay = [
           fieldLabel(p.field_id), cropById.get(p.crop_id)?.name ?? '',
@@ -625,6 +623,18 @@ export default function PlantingsPage() {
               {fields.map((f) => <option key={f.id} value={f.id}>{fieldLabel(f.id)}</option>)}
             </select>
           </label>
+          <label className="text-sm flex items-center gap-2">
+            Harvest
+            <select
+              value={harvestFilter}
+              onChange={(e) => setHarvestFilter(e.target.value as '' | 'fall' | 'spring')}
+              className={inputCls}
+            >
+              <option value="">All</option>
+              <option value="fall">Fall</option>
+              <option value="spring">Spring</option>
+            </select>
+          </label>
           <button
             onClick={copyPriorYear}
             disabled={busy}
@@ -679,14 +689,14 @@ export default function PlantingsPage() {
         <table className="min-w-full text-sm">
           <thead className="bg-slate-100 text-slate-700">
             <tr>
-              {['Field', 'Crop', 'Varieties', 'Planted ac', 'Irrigated ac', 'Dryland ac', 'Planted', '', 'Notes', '', ''].map((h, i) => (
+              {['Field', 'Crop', 'Varieties', 'Planted ac', 'Irrigated ac', 'Dryland ac', 'Planted', 'Notes', '', ''].map((h, i) => (
                 <th key={i} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {visible.length === 0 && (
-              <tr><td colSpan={11} className="px-3 py-6 text-center text-slate-400">No plantings for {year}.</td></tr>
+              <tr><td colSpan={10} className="px-3 py-6 text-center text-slate-400">No plantings for {year}.</td></tr>
             )}
             {visible.map((p) => {
               const isEditing = editingId === p.id
@@ -695,7 +705,7 @@ export default function PlantingsPage() {
               return (
                 <tr key={p.id} className="border-t border-slate-100 align-top">
                   {isEditing ? (
-                    <td colSpan={11} className="px-3 py-3">
+                    <td colSpan={10} className="px-3 py-3">
                       <FormFields value={editForm} onChange={setEditForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} varietyOptionsByCrop={varietyOptionsByCrop} />
                       <div className="flex gap-2 mt-2">
                         <button
@@ -722,11 +732,6 @@ export default function PlantingsPage() {
                         {Number(p.dryland_acres) > 0 ? Number(p.dryland_acres) : '—'}
                       </td>
                       <td className="px-3 py-2">{p.planting_date ?? ''}</td>
-                      <td className="px-3 py-2">
-                        {doubleCropIds.has(p.id) && (
-                          <span className="text-xs bg-amber-100 text-amber-800 rounded px-2 py-0.5">double-crop</span>
-                        )}
-                      </td>
                       <td className="px-3 py-2 text-slate-500">{p.notes ?? ''}</td>
                       <td className="px-3 py-2">
                         <button
