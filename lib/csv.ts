@@ -35,8 +35,16 @@ export function parseCsv(text: string): ParsedCsv {
   }
   if (field !== '' || row.length > 0) { row.push(field); rows.push(row) }
 
-  const headers = (rows.shift() ?? []).map((h) => h.trim())
+  // Skip leading comment lines (first cell starts with '#') so a downloaded
+  // template can carry human-readable instructions above the header row. Only
+  // lines *before* the header count as comments — once the header is found, '#'
+  // is ordinary data (field/truck names like "#5" are common), so nothing below
+  // the header is ever dropped.
+  let start = 0
+  while (start < rows.length && (rows[start][0] ?? '').trim().startsWith('#')) start++
+  const headers = (rows[start] ?? []).map((h) => h.trim())
   const dataRows = rows
+    .slice(start + 1)
     .map((r) => r.map((v) => v.trim()))
     .filter((r) => r.some((v) => v !== ''))
   return { headers, rows: dataRows }
@@ -106,6 +114,12 @@ export type ImportConfig = {
   title?: string
   /** Optional note shown in the importer panel (e.g. how to format a column). */
   note?: string
+  /**
+   * Optional instruction lines written as leading "# ..." comment rows at the
+   * top of the downloaded template. The parser skips leading comment lines, so
+   * these document the format inside the file itself without affecting import.
+   */
+  templateInstructions?: string[]
   /**
    * Optional post-processing: given a row's resolved values, return extra/derived
    * columns to write (e.g. dryland_acres = planted - irrigated). On a sync update

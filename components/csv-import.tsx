@@ -17,15 +17,24 @@ type Props = {
   onImported?: () => void
 }
 
-// Emits a CSV with just the header row matching the import config's column
-// labels, so a user can fill in their data offline and import it back here.
-// Required columns get a "*" suffix in the header to match the live hint.
+// Quote a value as one CSV field so commas inside an instruction line don't
+// split it into extra columns (and Excel shows the whole line in one cell).
+function csvField(v: string) {
+  return `"${v.replace(/"/g, '""')}"`
+}
+
+// Emits a CSV template matching the import config's column labels, so a user
+// can fill in their data offline and import it back here. Any configured
+// instruction lines are written above the header as "# ..." comment rows (the
+// parser skips leading comment lines). Required columns get a "*" suffix in the
+// header to match the live hint.
 function downloadTemplate(config: ImportConfig) {
   const headers = config.columns.map((c) => {
     const base = c.label ?? c.key
     return c.required ? `${base}*` : base
   })
-  const csv = headers.join(',') + '\n'
+  const commentRows = (config.templateInstructions ?? []).map((line) => csvField(`# ${line}`))
+  const csv = [...commentRows, headers.join(',')].join('\n') + '\n'
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

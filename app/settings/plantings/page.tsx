@@ -574,13 +574,22 @@ export default function PlantingsPage() {
             { key: 'field_id', label: 'field', required: true, fk: { table: 'fields', matchColumn: 'name_or_number' } },
             { key: 'crop_id', label: 'crop', required: true, fk: { table: 'crops', matchColumn: 'name', aliases: { soybeans: 'Soybean', beans: 'Soybean', soy: 'Soybean' } } },
             { key: 'season_year', type: 'number', required: true },
-            { key: 'planted_acres', type: 'number' },
-            { key: 'irrigated_acres', type: 'number', default: 0 },
+            { key: 'planted_acres', label: 'Total_Planted_Acres', type: 'number' },
+            { key: 'irrigated_acres', label: 'Irrigated_Acres_Planted', type: 'number', default: 0 },
             { key: 'planting_date', type: 'date' },
             { key: 'variety', child: { table: 'field_planting_varieties', valueColumn: 'variety', parentKey: 'planting_id', splitOn: ',;', amountColumn: 'acres' } },
             { key: 'notes' },
           ],
-          note: 'Variety: list several in one cell separated by ";" or "," and put each variety’s acres after its name, e.g. "P2089:70; DKC65-95:50". Leave Irrigated acres blank for all-dryland fields.',
+          note: 'Total_Planted_Acres is the total acres of the crop in the field. Irrigated_Acres_Planted is how many of those are irrigated — leave it blank to count every planted acre as dryland. To record more than one variety in the same field, list them in the single variety cell separated by ";" or "," with each variety’s acres after a colon, e.g. "P2089:70; DKC65-95:50". The downloaded template includes these instructions and example rows.',
+          templateInstructions: [
+            'Field Plantings import — enter one row per field + crop + season (harvest) year below the header row.',
+            'Total_Planted_Acres: total acres of this crop planted in the field.',
+            'Irrigated_Acres_Planted: how many of those acres are irrigated. Leave BLANK if none are — a blank counts ALL planted acres as dryland.',
+            'variety: to record several varieties in the same field, list them in the one variety cell separated by ; or , and put each variety’s acres after a colon. Example: P2089:70; DKC65-95:50',
+            'Lines starting with # are instructions and are ignored on import — leave them or delete them.',
+            'Example (some irrigated): North 40,Corn,2026,120,80,2026-04-15,P2089:120,first planting',
+            'Example (all dryland, two varieties): South Bottom,Soybean,2026,90,,2026-05-01,AG38X8:50; P31A22:40,double-crop beans',
+          ],
           // Dryland = planted − irrigated, so a blank irrigated field counts as all dryland.
           derive: (r) => {
             const planted = Number(r.planted_acres) || 0
