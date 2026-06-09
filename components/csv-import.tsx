@@ -16,6 +16,10 @@ import { downloadExcelTemplate } from '@/lib/import-template'
 type Props = {
   config: ImportConfig
   onImported?: () => void
+  /** Expand the panel on first render (e.g. when it's the recommended path). */
+  defaultOpen?: boolean
+  /** Show a "Recommended" badge in the panel header. */
+  recommended?: boolean
 }
 
 // Emits a CSV with just the header row matching the import config's column
@@ -38,9 +42,9 @@ function downloadTemplate(config: ImportConfig) {
   URL.revokeObjectURL(url)
 }
 
-export default function CsvImport({ config, onImported }: Props) {
+export default function CsvImport({ config, onImported, defaultOpen, recommended }: Props) {
   const supabase = useMemo(() => createClient(), [])
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultOpen ?? false)
   const [fileName, setFileName] = useState<string | null>(null)
   const [headers, setHeaders] = useState<string[]>([])
   const [rows, setRows] = useState<string[][]>([])
@@ -126,7 +130,12 @@ export default function CsvImport({ config, onImported }: Props) {
         onClick={() => setOpen((v) => !v)}
         className="w-full text-left px-4 py-3 flex items-center gap-2 font-semibold"
       >
-        <span>Import CSV or Excel</span>
+        <span>{config.title ?? 'Import CSV or Excel'}</span>
+        {recommended && (
+          <span className="text-xs font-semibold rounded-full bg-green-100 text-green-800 px-2 py-0.5">
+            Recommended
+          </span>
+        )}
         <span className="text-slate-400 text-sm ml-auto">{open ? '▾' : '▸'}</span>
       </button>
 

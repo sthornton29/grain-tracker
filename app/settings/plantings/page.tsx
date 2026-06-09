@@ -511,8 +511,11 @@ export default function PlantingsPage() {
       </p>
 
       <CsvImport
+        defaultOpen
+        recommended
         config={{
           tableName: 'field_plantings',
+          title: 'Import from Excel',
           uniqueKey: ['field_id', 'crop_id', 'season_year'],
           columns: [
             { key: 'field_id', label: 'field', required: true, fk: { table: 'fields', matchColumn: 'name_or_number' } },
@@ -524,7 +527,7 @@ export default function PlantingsPage() {
             { key: 'variety', child: { table: 'field_planting_varieties', valueColumn: 'variety', parentKey: 'planting_id', splitOn: ',;', amountColumn: 'acres' } },
             { key: 'notes' },
           ],
-          note: 'The Excel template comes pre-filled with a row for every field, the current season year, and each field\'s irrigated acres — just fill in the crop and Total_Planted_Acres for the fields you planted and leave the rest untouched (unfinished rows are ignored). Set Irrigated_Acres_Planted to 0 or blank for an all-dryland planting; and to record more than one variety in the same field, list them in the single variety cell separated by ";" or "," with each variety\'s acres after a colon, e.g. "P2089:70; DKC65-95:50". See the Instructions tab for full details.',
+          note: 'Download the Excel template — it opens pre-filled with your fields and has an Instructions tab that walks through filling it in.',
           template: {
             title: 'Field Plantings - Import Template',
             overview: [
