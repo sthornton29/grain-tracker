@@ -6,7 +6,7 @@ import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, t
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, cropToCommodity } from '@/lib/contracts'
-import { fmtPrice, fmtPnl } from '@/lib/hedging'
+import { fmtPrice, fmtPnl, buildContractSymbol } from '@/lib/hedging'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { StackedBar } from '@/components/reports/report-kit'
 import ExportBar from '@/components/export-bar'
@@ -41,15 +41,40 @@ type PlantingRow = {
 const bu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
 const usd = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
 const usd0 = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`)
+const round2 = (n: number) => Math.round(n * 100) / 100
 
-// Sold / hedged / unpriced split for one crop, from existing row fields only
-// (no new calculations — just partitioning totalProduction). sold = contracted;
-// hedged = open futures hedge bushels not already counted as sold; unpriced = rest.
-function positionOf(r: MarketingRow) {
-  const sold = Math.max(0, r.contractedBu)
-  const hedged = Math.max(0, Math.min(r.openFuturesHedgedBu, r.totalProduction - sold))
-  const unpriced = Math.max(0, r.totalProduction - sold - hedged)
-  return { sold, hedged, unpriced }
+// The new-crop benchmark futures contract for a crop year, used by the what-if
+// "use today's price" button: Corn → DEC (ZCZ{yy}), Soybeans → NOV (ZSX{yy}),
+// Chicago Wheat → JUL (ZWN{yy}). null for crops with no traded future (e.g. Canola).
+const NEW_CROP_MONTH: Record<string, { abbr: string; num: number }> = {
+  Corn: { abbr: 'DEC', num: 12 },
+  Soybeans: { abbr: 'NOV', num: 11 },
+  'Chicago Wheat': { abbr: 'JUL', num: 7 },
+}
+function newCropContract(cropName: string, cropYear: number): { symbol: string; monthNum: number; year: number } | null {
+  const commodity = cropToCommodity(cropName)
+  if (!commodity) return null
+  const m = NEW_CROP_MONTH[commodity]
+  const symbol = buildContractSymbol(commodity, `${m.abbr} ${String(cropYear % 100).padStart(2, '0')}`)
+  return symbol ? { symbol, monthNum: m.num, year: cropYear } : null
+}
+
+// What-if scenario: re-value the unpriced bushels at the what-if price, keeping
+// actually-priced bushels at their real average. `pricedBu` = futures-priced
+// bushels in advanced mode (cash-contracted in simple mode); `whatIfPrice` is the
+// per-bushel price applied to the rest (futures + basis in advanced, a cash price
+// in simple). Profit follows the headline rule (price × yield − cost). Pure
+// display layer — substitutes inputs into the established methodology.
+function scenarioFor(row: MarketingRow, pricedBu: number, whatIfPrice: number) {
+  const prod = row.totalProduction
+  if (prod <= 0 || row.totalAvgPrice == null || row.yield == null) return null
+  const pb = Math.min(Math.max(0, pricedBu), prod)
+  const unpricedBu = prod - pb
+  const totalAvgPrice = (pb * row.totalAvgPrice + unpricedBu * whatIfPrice) / prod
+  const revenuePerAcre = round2(totalAvgPrice * row.yield)
+  const profitPerAcre = row.costPerAcre != null ? round2(revenuePerAcre - row.costPerAcre) : null
+  const totalProfit = profitPerAcre != null ? round2(profitPerAcre * row.acres) : null
+  return { totalAvgPrice, revenuePerAcre, profitPerAcre, totalProfit }
 }
 
 export default function MarketingPage() {
@@ -239,51 +264,72 @@ export default function MarketingPage() {
   }
 
   function buildPayload(): ExportPayload {
-    // Per-crop summary mirroring the cards (priced % is sold% in simple mode,
-    // futures-priced% in advanced; basis% only when advanced).
-    const summary: ExportPayload['sections'][number] = {
-      title: 'Marketing Summary by Crop',
-      columns: [
-        { label: 'Crop' }, { label: 'Acres', align: 'right' }, { label: 'Production', align: 'right' },
-        { label: 'Priced %', align: 'right' }, { label: 'Basis %', align: 'right' },
-        { label: 'Avg Price', align: 'right' }, { label: 'Profit/Ac', align: 'right' }, { label: 'Total Profit', align: 'right' },
-      ],
-      rows: rows.map((r) => {
-        const meta = cropMeta.get(r.cropId)
-        const adv = meta?.advanced ?? false
-        const pricedBu = adv ? r.futuresPricedBu : r.contractedBu
-        const pricedPct = r.totalProduction > 0 ? (pricedBu / r.totalProduction) * 100 : 0
-        const basisPct = adv && r.totalProduction > 0 ? ((meta?.basisPricedBu ?? 0) / r.totalProduction) * 100 : null
-        return [
-          r.cropName, Math.round(r.acres), Math.round(r.totalProduction),
-          `${Math.min(100, pricedPct).toFixed(0)}%`, basisPct != null ? `${Math.min(100, basisPct).toFixed(0)}%` : '—',
-          r.totalAvgPrice != null ? Number(r.totalAvgPrice.toFixed(4)) : '',
-          r.profitPerAcre != null ? Math.round(r.profitPerAcre) : '', r.totalProfit != null ? Math.round(r.totalProfit) : '',
-        ]
-      }),
-      rowMeta: rows.map(() => 'data' as const),
-    }
-    summary.rows.push(['Total', Math.round(combined.acres), '', '', '', '', '', combined.profit != null ? Math.round(combined.profit) : ''])
-    summary.rowMeta!.push('total')
+    // Mirror the cards: a combined-metrics section, then one section per crop with
+    // all the detail (production / sales / pricing buildup / profitability).
+    const sections: ExportPayload['sections'] = []
+    const KV: ExportPayload['sections'][number]['columns'] = [{ label: 'Item' }, { label: 'Value', align: 'right' }]
 
-    const detail: ExportPayload['sections'][number] = {
-      title: 'Detail by Crop',
-      columns: [
-        { label: 'Crop' }, { label: 'Acres', align: 'right' }, { label: 'Yield', align: 'right' },
-        { label: 'Total Prod', align: 'right' }, { label: 'Contracted', align: 'right' }, { label: 'Remaining', align: 'right' },
-        { label: 'Avg Futures', align: 'right' }, { label: 'Avg Basis', align: 'right' }, { label: 'Total Avg $', align: 'right' },
-        { label: 'Revenue/Ac', align: 'right' }, { label: 'Cost/Ac', align: 'right' }, { label: 'Profit/Ac', align: 'right' }, { label: 'Total Profit', align: 'right' },
+    sections.push({
+      title: 'Summary',
+      columns: KV,
+      rows: [
+        ['Total acres', Math.round(combined.acres)],
+        ['Total projected profit', combined.profit != null ? Math.round(combined.profit) : '—'],
       ],
-      rows: rows.map((r) => [
-        r.cropName, Math.round(r.acres), r.yield != null ? Number(r.yield.toFixed(1)) : '',
-        Math.round(r.totalProduction), Math.round(r.contractedBu), Math.round(r.remaining),
-        r.avgFutures != null ? Number(r.avgFutures.toFixed(4)) : '', Number(r.avgBasis.toFixed(4)),
-        r.totalAvgPrice != null ? Number(r.totalAvgPrice.toFixed(4)) : '',
-        r.revenuePerAcre != null ? Math.round(r.revenuePerAcre) : '', r.costPerAcre != null ? Math.round(r.costPerAcre) : '',
-        r.profitPerAcre != null ? Math.round(r.profitPerAcre) : '', r.totalProfit != null ? Math.round(r.totalProfit) : '',
-      ]),
+    })
+
+    for (const r of rows) {
+      const meta = cropMeta.get(r.cropId)
+      const adv = meta?.advanced ?? false
+      const seg = segByCrop.get(r.cropId)
+      const irrAc = seg ? seg.fullIrr + seg.dcIrr : 0
+      const dryAc = seg ? seg.fullDry + seg.dcDry : 0
+      const cropContracts = contracts.filter((c) => c.crop_id === r.cropId)
+      const byType = new Map<string, number>()
+      for (const c of cropContracts) {
+        const t = CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']
+        byType.set(t, (byType.get(t) ?? 0) + Number(c.contracted_bushels ?? 0))
+      }
+      const rows2: Array<Array<string | number | null>> = []
+      const meta2: ('data' | 'subhead' | 'total')[] = []
+      const sub = (t: string) => { rows2.push([t, '']); meta2.push('subhead') }
+      const kv = (k: string, v: string | number | null) => { rows2.push([k, v]); meta2.push('data') }
+
+      sub('Production')
+      kv('Planted acres', `${Math.round(r.acres)}${irrAc > 0 || dryAc > 0 ? ` (irr ${Math.round(irrAc)} / dry ${Math.round(dryAc)})` : ''}`)
+      kv('Yield', r.yield != null ? `${r.yield.toFixed(1)} bu/ac ${r.yieldLabel}` : '—')
+      kv('Total production', `${Math.round(r.totalProduction)} bu`)
+
+      sub('Sales')
+      kv('Contracted', `${Math.round(r.contractedBu)} bu`)
+      kv('Remaining', `${Math.round(r.remaining)} bu`)
+      for (const [t, b] of byType) kv(t, `${Math.round(b)} bu`)
+
+      sub('Pricing')
+      if (adv) {
+        if (r.physicalFuturesBu > 0) kv(`Physical futures (${Math.round(r.physicalFuturesBu)} bu)`, r.physicalFuturesAvg != null ? r.physicalFuturesAvg.toFixed(4) : '—')
+        if (r.openHedgeBu > 0) kv(`Open hedges (${Math.round(r.openHedgeBu)} bu)`, r.openHedgeAvg != null ? r.openHedgeAvg.toFixed(4) : '—')
+        kv(`Raw avg futures (${Math.round(r.futuresPricedBu)} bu)`, r.rawAvgFutures != null ? r.rawAvgFutures.toFixed(4) : 'N/A')
+        kv('Hedge P&L adj / bu', r.hedgeAdjPerBu.toFixed(4))
+        kv('Avg futures price', r.avgFutures != null ? r.avgFutures.toFixed(4) : 'N/A')
+        kv(`Basis${r.avgBasisAssumed ? ' (assumed)' : ''}`, r.avgBasis.toFixed(4))
+        kv('Total avg price', r.totalAvgPrice != null ? r.totalAvgPrice.toFixed(4) : '—')
+        if (r.hedgeRealizedPnl !== 0) kv('Realized hedge P&L (in revenue)', Math.round(r.hedgeRealizedPnl))
+      } else {
+        kv('Avg price', r.totalAvgPrice != null ? r.totalAvgPrice.toFixed(4) : '—')
+      }
+
+      sub('Profitability')
+      kv('Cost / acre', r.costPerAcre != null ? Math.round(r.costPerAcre) : '—')
+      kv('Cost / bu', r.costPerBu != null ? r.costPerBu.toFixed(4) : '—')
+      kv('Revenue / acre', r.revenuePerAcre != null ? Math.round(r.revenuePerAcre) : '—')
+      kv('Profit / acre', r.profitPerAcre != null ? Math.round(r.profitPerAcre) : '—')
+      kv('Total profit', r.totalProfit != null ? Math.round(r.totalProfit) : '—')
+
+      sections.push({ title: r.cropName, columns: KV, rows: rows2, rowMeta: meta2 })
     }
-    return { title: `Marketing — ${year ?? ''}`, filters: `Crop year: ${year ?? '—'}`, sections: [summary, detail] }
+
+    return { title: `Marketing — ${year ?? ''}`, filters: `Crop year: ${year ?? '—'}`, sections, singleSheet: true }
   }
 
   async function saveAssumption(cropId: string, patch: Partial<CropAssumption>) {
@@ -381,26 +427,31 @@ export default function MarketingPage() {
             </div>
           </div>
 
-          {/* Per-crop cards — the at-a-glance dashboard. Stacked on iPad portrait
-              (< lg), side by side on wider desktop screens. */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+          {/* Per-crop cards are the complete view — header at-a-glance layer plus
+              an expandable Details section (production / sales / pricing buildup /
+              profitability / what-if pricing). Stacked on iPad portrait. */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4 print-area">
             {rows.map((r) => (
               <CropCard
-                key={r.cropId}
+                key={`${r.cropId}-${year}`}
                 row={r}
                 advanced={cropMeta.get(r.cropId)?.advanced ?? false}
                 basisPricedBu={cropMeta.get(r.cropId)?.basisPricedBu ?? 0}
                 basisOpen={basisExpanded.includes(r.cropId)}
                 onToggleBasis={() => toggleBasis(r.cropId)}
+                detailsOpen={expanded.has(r.cropId)}
+                onToggleDetails={() => toggleRow(r.cropId)}
+                seg={segByCrop.get(r.cropId)}
+                contracts={contracts.filter((c) => c.crop_id === r.cropId)}
+                futures={futures.filter((f) => f.commodity === cropToCommodity(r.cropName))}
+                options={options.filter((o) => o.commodity === cropToCommodity(r.cropName))}
+                buyerName={buyerName}
+                currentFutures={currentFutures.get(r.cropId) ?? null}
+                cropYear={year}
+                onSaveBasis={(v) => saveAssumption(r.cropId, { assumed_basis: v })}
               />
             ))}
           </div>
-
-          {/* Detailed table — grouped headers + expandable per-crop buildup. */}
-          <DetailedTable
-            rows={rows} contracts={contracts} futures={futures} options={options}
-            cropMeta={cropMeta} expanded={expanded} onToggle={toggleRow} buyerName={buyerName}
-          />
         </>
       )}
 
@@ -421,20 +472,85 @@ export default function MarketingPage() {
 // complexity: simple (forwards only) shows Sold/Unsold; advanced shows a
 // Futures-priced bar with an expandable Basis bar.
 // ---------------------------------------------------------------------------
-function CropCard({ row, advanced, basisPricedBu, basisOpen, onToggleBasis }: {
+function CropCard({
+  row, advanced, basisPricedBu, basisOpen, onToggleBasis, detailsOpen, onToggleDetails,
+  seg, contracts, futures, options, buyerName, currentFutures, cropYear, onSaveBasis,
+}: {
   row: MarketingRow
   advanced: boolean
   basisPricedBu: number
   basisOpen: boolean
   onToggleBasis: () => void
+  detailsOpen: boolean
+  onToggleDetails: () => void
+  seg?: SegmentAcres
+  contracts: Contract[]
+  futures: FuturesPosition[]
+  options: OptionPosition[]
+  buyerName: (id: string | null) => string
+  currentFutures: number | null
+  cropYear: number | null
+  onSaveBasis: (v: number) => void
 }) {
   const prod = row.totalProduction
   const profitTone = row.totalProfit == null ? 'text-slate-400' : row.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'
+
+  // Contracted bushels by type, and irr/dry acre split (for the Details section).
+  const byType = new Map<string, number>()
+  for (const c of contracts) {
+    const t = CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']
+    byType.set(t, (byType.get(t) ?? 0) + Number(c.contracted_bushels ?? 0))
+  }
+  const irrAc = seg ? seg.fullIrr + seg.dcIrr : 0
+  const dryAc = seg ? seg.fullDry + seg.dcDry : 0
+  const basisUnpricedBu = Math.max(0, prod - basisPricedBu)
+
+  // --- What-if pricing (session-scoped futures; basis persists to assumptions) ---
+  const nc = cropYear != null ? newCropContract(row.cropName, cropYear) : null
+  const expired = nc != null ? (() => { const now = new Date(); return nc.year * 12 + nc.monthNum < now.getFullYear() * 12 + (now.getMonth() + 1) })() : false
+  const [wfFutures, setWfFutures] = useState('')
+  const [wfSymbol, setWfSymbol] = useState<string | null>(null)
+  const [wfStale, setWfStale] = useState(false)
+  const [wfNote, setWfNote] = useState<string | null>(null)
+  const [fetching, setFetching] = useState(false)
+  const [basisInput, setBasisInput] = useState(String(row.assumedBasis ?? 0))
+
+  const wfFut = wfFutures.trim() === '' || !Number.isFinite(Number(wfFutures)) ? null : Number(wfFutures)
+  const wfBasis = basisInput.trim() === '' || !Number.isFinite(Number(basisInput)) ? (row.assumedBasis ?? 0) : Number(basisInput)
+  // Priced bushels: futures-priced (advanced) vs cash-contracted (simple) — so a
+  // forwards-only crop's contracted bushels count as priced, not unpriced.
+  const scenarioPricedBu = advanced ? row.futuresPricedBu : row.contractedBu
+  const scenarioUnpricedBu = Math.max(0, prod - scenarioPricedBu)
+  const scenario = wfFut != null ? scenarioFor(row, scenarioPricedBu, advanced ? wfFut + wfBasis : wfFut) : null
+
+  async function useTodaysPrice() {
+    if (!nc || expired) return
+    setFetching(true); setWfNote(null)
+    try {
+      const res = await fetch('/api/market-prices', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ symbols: [nc.symbol] }),
+      })
+      const json = await res.json().catch(() => null)
+      const p = json?.prices?.[0]
+      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(nc.symbol); setWfStale(!!p.stale) }
+      else setWfNote('No price available — enter manually.')
+    } catch {
+      setWfNote('Could not fetch — enter manually.')
+    } finally { setFetching(false) }
+  }
+  function commitBasis() {
+    const v = basisInput.trim() === '' ? 0 : Number(basisInput)
+    if (Number.isFinite(v) && v !== (row.assumedBasis ?? 0)) onSaveBasis(v)
+  }
+
   return (
-    <div className="bg-white rounded-xl shadow p-5 space-y-4">
+    <div className="bg-white rounded-xl shadow p-5 space-y-4 avoid-break">
+      {/* Header — always-visible at-a-glance layer */}
       <div>
         <div className="font-bold text-lg leading-tight">{row.cropName}</div>
-        <div className="text-sm text-slate-500 tabular-nums">{bu(row.acres)} ac</div>
+        <div className="text-sm text-slate-500 tabular-nums">
+          {bu(row.acres)} ac · {row.yield != null ? `${row.yield.toFixed(1)} bu/ac ${row.yieldLabel}` : 'yield —'} · {bu(prod)} bu
+        </div>
       </div>
 
       {/* Marketing position — adaptive */}
@@ -443,7 +559,7 @@ function CropCard({ row, advanced, basisPricedBu, basisOpen, onToggleBasis }: {
       ) : (
         <div className="space-y-2">
           <PositionBlock title="Futures-priced" prod={prod} green={row.futuresPricedBu} greenLabel="Priced" grayLabel="Unpriced" />
-          <button type="button" onClick={onToggleBasis} className="text-xs text-sky-700 font-medium">
+          <button type="button" onClick={onToggleBasis} className="text-xs text-sky-700 font-medium no-print">
             {basisOpen ? '▾ Hide basis' : '▸ Show basis'}
           </button>
           {basisOpen && (
@@ -472,6 +588,104 @@ function CropCard({ row, advanced, basisPricedBu, basisOpen, onToggleBasis }: {
           <div className={`text-xl font-bold tabular-nums ${profitTone}`}>{row.totalProfit != null ? usd0(row.totalProfit) : '—'}</div>
         </div>
       </div>
+
+      {/* Details toggle */}
+      <button type="button" onClick={onToggleDetails} className="w-full text-left text-sm text-sky-700 font-medium border-t border-slate-100 pt-2">
+        {detailsOpen ? '▾ Hide details' : '▸ Details'}
+      </button>
+
+      {detailsOpen && (
+        <div className="space-y-3 text-sm">
+          <DetailSection title="Production">
+            <Row label="Planted acres" value={`${bu(row.acres)}${irrAc > 0 || dryAc > 0 ? ` (irr ${bu(irrAc)} / dry ${bu(dryAc)})` : ''}`} />
+            <Row label="Yield" value={row.yield != null ? `${row.yield.toFixed(1)} bu/ac ${row.yieldLabel}` : '—'} />
+            <Row label="Total production" value={`${bu(prod)} bu`} />
+          </DetailSection>
+
+          <DetailSection title="Sales">
+            <Row label="Contracted" value={`${bu(row.contractedBu)} bu`} />
+            <Row label="Remaining" value={`${bu(row.remaining)} bu`} tone={row.remaining < 0 ? 'text-red-700' : undefined} />
+            {[...byType].map(([t, b]) => <Row key={t} label={t} value={`${bu(b)} bu`} />)}
+            {byType.size === 0 && <div className="text-slate-400">No contracts.</div>}
+          </DetailSection>
+
+          <DetailSection title="Pricing">
+            {advanced ? (
+              <>
+                {row.physicalFuturesBu > 0 && <Row label={`Physical futures (${bu(row.physicalFuturesBu)} bu)`} value={row.physicalFuturesAvg != null ? fmtPrice(row.physicalFuturesAvg) : '—'} />}
+                {row.openHedgeBu > 0 && <Row label={`Open hedges (${bu(row.openHedgeBu)} bu)`} value={row.openHedgeAvg != null ? fmtPrice(row.openHedgeAvg) : '—'} />}
+                <Row label={`Raw avg futures (${bu(row.futuresPricedBu)} bu)`} value={row.rawAvgFutures != null ? fmtPrice(row.rawAvgFutures) : 'N/A'} />
+                <Row label="Hedge P&L adj / bu" value={`${row.hedgeAdjPerBu >= 0 ? '+' : ''}${fmtPrice(row.hedgeAdjPerBu)}`} tone={row.hedgeAdjPerBu > 0 ? 'text-green-700' : row.hedgeAdjPerBu < 0 ? 'text-red-700' : undefined} />
+                <Row label="= Avg futures price" value={row.avgFutures != null ? fmtPrice(row.avgFutures) : 'N/A'} />
+                <Row label={`+ Basis${row.avgBasisAssumed ? ' (assumed)' : ''}`} value={`${row.avgBasis >= 0 ? '+' : ''}${Number(row.avgBasis).toFixed(4)}`} tone={row.avgBasisAssumed ? 'text-amber-700' : undefined} />
+                <div className="border-t border-slate-200 pt-1"><Row label="= Total avg price" value={row.totalAvgPrice != null ? fmtPrice(row.totalAvgPrice) : '—'} tone="text-slate-900 font-semibold" /></div>
+                {row.hedgeRealizedPnl !== 0 && <Row label="Realized hedge P&L (in revenue)" value={fmtPnl(row.hedgeRealizedPnl)} tone={row.hedgeRealizedPnl > 0 ? 'text-green-700' : 'text-red-700'} />}
+              </>
+            ) : (
+              <Row label="Avg price" value={row.totalAvgPrice != null ? fmtPrice(row.totalAvgPrice) : '—'} tone="text-slate-900 font-semibold" />
+            )}
+          </DetailSection>
+
+          <DetailSection title="Profitability">
+            <Row label="Cost / acre" value={usd(row.costPerAcre)} />
+            <Row label="Cost / bu" value={row.costPerBu != null ? fmtPrice(row.costPerBu) : '—'} />
+            <Row label="Revenue / acre" value={usd(row.revenuePerAcre)} />
+            <Row label="Profit / acre" value={row.profitPerAcre != null ? usd(row.profitPerAcre) : row.revenuePerAcre != null ? 'set cost' : '—'} tone={profitTone} />
+            <Row label="Total profit" value={row.totalProfit != null ? usd(row.totalProfit) : '—'} tone={profitTone} />
+          </DetailSection>
+
+          {/* What-If pricing on unpriced bushels */}
+          <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 space-y-2 no-print">
+            <div className="font-semibold text-sky-900">What-If Pricing</div>
+            <div className="space-y-1">
+              <div className="text-xs text-slate-600">{advanced ? 'Unpriced futures bushels' : 'Unsold bushels'}: <span className="tabular-nums font-medium">{bu(scenarioUnpricedBu)}</span></div>
+              <div className="flex flex-wrap items-center gap-2">
+                <input type="number" step="0.01" inputMode="decimal" value={wfFutures} placeholder={advanced ? 'futures $/bu' : '$/bu'}
+                  onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }}
+                  className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
+                {nc
+                  ? (expired
+                    ? <span className="text-xs text-amber-700">Contract expired — enter price manually</span>
+                    : <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-sky-700 font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>)
+                  : <span className="text-xs text-slate-400">{advanced ? 'No futures contract' : 'Enter a price'}</span>}
+              </div>
+              {/* Show the futures symbol only in advanced mode (no hedging jargon on simple cards). */}
+              {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{advanced ? `${wfSymbol} · ` : 'Today · '}{fmtPrice(wfFut)}{wfStale ? ' (cached)' : ''}</div>}
+              {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
+            </div>
+            {advanced && (
+              <div className="space-y-1">
+                <div className="text-xs text-slate-600">Basis-unpriced bushels: <span className="tabular-nums font-medium">{bu(basisUnpricedBu)}</span></div>
+                <div className="flex items-center gap-2">
+                  <input type="number" step="0.01" inputMode="decimal" value={basisInput} placeholder="basis $/bu"
+                    onChange={(e) => setBasisInput(e.target.value)} onBlur={commitBasis}
+                    className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
+                  <span className="text-xs text-slate-400">saved to assumptions</span>
+                </div>
+              </div>
+            )}
+            {scenario ? (
+              <div className="border-t border-sky-200 pt-2 space-y-0.5">
+                <div className="text-xs uppercase tracking-wide text-sky-700 font-semibold">Scenario <span className="font-normal italic normal-case lowercase">(what-if)</span></div>
+                <Row label="Proj. total avg price" value={fmtPrice(scenario.totalAvgPrice)} tone="italic text-sky-900 font-semibold" />
+                <Row label="Proj. profit / acre" value={scenario.profitPerAcre != null ? usd0(scenario.profitPerAcre) : 'set cost'} tone={`italic ${scenario.profitPerAcre == null ? 'text-slate-400' : scenario.profitPerAcre >= 0 ? 'text-green-700' : 'text-red-700'}`} />
+                <Row label="Proj. total profit" value={scenario.totalProfit != null ? usd0(scenario.totalProfit) : '—'} tone={`italic ${scenario.totalProfit == null ? 'text-slate-400' : scenario.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'}`} />
+              </div>
+            ) : (
+              <div className="text-xs text-slate-400">Enter a futures price to model the unpriced bushels.</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="font-semibold text-slate-700 text-xs uppercase tracking-wide mb-1">{title}</div>
+      <dl className="space-y-0.5">{children}</dl>
     </div>
   )
 }
@@ -506,198 +720,11 @@ function PositionBlock({ title, prod, green, greenLabel, grayLabel }: {
   )
 }
 
-// React.Fragment wrapper that accepts a key (so we can emit two <tr>s per crop).
-function FragmentRow({ children }: { children: React.ReactNode }) {
-  return <>{children}</>
-}
-
-// Inline per-crop detail: price components, contracted breakdown by type,
-// hedge positions, and the unpriced split. Read-only summaries of existing data.
-function CropDetail({
-  row, advanced, contracts, futures, options, buyerName,
-}: {
-  row: MarketingRow
-  advanced: boolean
-  contracts: Contract[]
-  futures: FuturesPosition[]
-  options: OptionPosition[]
-  buyerName: (id: string | null) => string
-}) {
-  const pos = positionOf(row)
-  // Contracted bushels grouped by contract type.
-  const byType = new Map<string, number>()
-  for (const c of contracts) {
-    const t = CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']
-    byType.set(t, (byType.get(t) ?? 0) + Number(c.contracted_bushels))
-  }
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-sm">
-      {/* Price — full futures/basis buildup in advanced mode; just the average
-          (no hedging language) in simple mode. */}
-      <div>
-        <div className="font-semibold text-slate-700 mb-1">{advanced ? 'Price buildup' : 'Price'}</div>
-        <dl className="space-y-0.5">
-          {advanced ? (
-            <>
-              {row.physicalFuturesBu > 0 && (
-                <Row label={`Physical futures (${bu(row.physicalFuturesBu)} bu)`} value={row.physicalFuturesAvg != null ? fmtPrice(row.physicalFuturesAvg) : '—'} />
-              )}
-              {row.openHedgeBu > 0 && (
-                <Row label={`Open hedges (${bu(row.openHedgeBu)} bu)`} value={row.openHedgeAvg != null ? fmtPrice(row.openHedgeAvg) : '—'} />
-              )}
-              <Row label={`Raw avg futures (${bu(row.futuresPricedBu)} bu)`} value={row.rawAvgFutures != null ? fmtPrice(row.rawAvgFutures) : 'N/A'} />
-              <Row
-                label="Hedge P&L adj / bu"
-                value={`${row.hedgeAdjPerBu >= 0 ? '+' : ''}${fmtPrice(row.hedgeAdjPerBu)}`}
-                tone={row.hedgeAdjPerBu > 0 ? 'text-green-700' : row.hedgeAdjPerBu < 0 ? 'text-red-700' : undefined}
-              />
-              <Row label="= Avg futures price" value={row.avgFutures != null ? fmtPrice(row.avgFutures) : 'N/A'} />
-              <Row label={`+ Basis${row.avgBasisAssumed ? ' (assumed)' : ''}`} value={`${row.avgBasis >= 0 ? '+' : ''}${Number(row.avgBasis).toFixed(4)}`} tone={row.avgBasisAssumed ? 'text-amber-700' : undefined} />
-              <div className="border-t border-slate-200 mt-1 pt-1">
-                <Row label="= Total avg price" value={row.totalAvgPrice != null ? fmtPrice(row.totalAvgPrice) : '—'} tone="text-slate-900 font-semibold" />
-              </div>
-              {row.hedgeRealizedPnl !== 0 && (
-                <Row label="Realized hedge P&L (in revenue)" value={fmtPnl(row.hedgeRealizedPnl)} tone={row.hedgeRealizedPnl > 0 ? 'text-green-700' : 'text-red-700'} />
-              )}
-            </>
-          ) : (
-            <Row label="Avg price" value={row.totalAvgPrice != null ? fmtPrice(row.totalAvgPrice) : '—'} tone="text-slate-900 font-semibold" />
-          )}
-          <Row label="Cost / bu" value={row.costPerBu != null ? fmtPrice(row.costPerBu) : '—'} />
-        </dl>
-      </div>
-      {/* Position split */}
-      <div>
-        <div className="font-semibold text-slate-700 mb-1">Position</div>
-        <dl className="space-y-0.5">
-          <Row label={advanced ? 'Sold (contracted)' : 'Sold'} value={`${bu(pos.sold)} bu`} />
-          {advanced && <Row label="Hedged (open futures)" value={`${bu(pos.hedged)} bu`} />}
-          <Row label={advanced ? 'Unpriced' : 'Unsold'} value={`${bu(advanced ? pos.unpriced : Math.max(0, row.totalProduction - pos.sold))} bu`} tone="text-slate-600" />
-          <Row label="Bu remaining" value={bu(row.remaining)} tone={row.remaining < 0 ? 'text-red-700' : undefined} />
-        </dl>
-      </div>
-      {/* Contracts (+ hedges in advanced mode) */}
-      <div>
-        <div className="font-semibold text-slate-700 mb-1">{advanced ? 'Contracts & hedges' : 'Contracts'}</div>
-        {byType.size === 0 && (!advanced || (futures.length === 0 && options.length === 0)) ? (
-          <p className="text-slate-400">No contracts{advanced ? ' or hedges' : ''}.</p>
-        ) : (
-          <dl className="space-y-0.5">
-            {[...byType].map(([t, b]) => <Row key={t} label={t} value={`${bu(b)} bu`} />)}
-            {advanced && futures.length > 0 && <Row label={`Futures (${futures.length})`} value={`${futures.reduce((s, f) => s + (f.realized_pnl != null ? Number(f.realized_pnl) : 0), 0) !== 0 ? fmtPnl(futures.reduce((s, f) => s + (f.realized_pnl != null ? Number(f.realized_pnl) : 0), 0)) : 'open'}`} />}
-            {advanced && options.length > 0 && <Row label={`Options (${options.length})`} value="see Hedging" />}
-          </dl>
-        )}
-        {contracts.length > 0 && (
-          <div className="mt-2 text-xs text-slate-500">
-            {contracts.slice(0, 4).map((c) => (
-              <div key={c.id} className="truncate">#{c.contract_number} · {buyerName(c.buyer_id)} · {PRICING_STATUS_LABEL[c.pricing_status]}</div>
-            ))}
-            {contracts.length > 4 && <div>+{contracts.length - 4} more</div>}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
 function Row({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
     <div className="flex justify-between gap-3">
       <dt className="text-slate-500">{label}</dt>
       <dd className={`tabular-nums ${tone ?? 'text-slate-800'}`}>{value}</dd>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Detailed table — grouped spanning headers, frozen crop column, and expandable
-// per-crop rows showing the price-component buildup.
-// ---------------------------------------------------------------------------
-function DetailedTable({
-  rows, contracts, futures, options, cropMeta, expanded, onToggle, buyerName,
-}: {
-  rows: MarketingRow[]
-  contracts: Contract[]
-  futures: FuturesPosition[]
-  options: OptionPosition[]
-  cropMeta: Map<string, { advanced: boolean; basisPricedBu: number }>
-  expanded: Set<string>
-  onToggle: (id: string) => void
-  buyerName: (id: string | null) => string
-}) {
-  const frozen = 'sticky left-0 z-10'
-  const COLSPAN = 14 // chevron + 13 data columns
-  return (
-    <div className="bg-white rounded-xl shadow overflow-x-auto">
-      <table className="min-w-full text-sm border-collapse">
-        <thead className="text-slate-700">
-          <tr className="bg-slate-100">
-            <th rowSpan={2} className="w-6 px-2 py-2 bg-slate-100" />
-            <th rowSpan={2} className={`px-3 py-2 text-left align-bottom bg-slate-100 ${frozen}`}>Crop</th>
-            <th colSpan={3} className="px-3 py-1 text-center border-l border-slate-300">Production</th>
-            <th colSpan={2} className="px-3 py-1 text-center border-l border-slate-300">Sales</th>
-            <th colSpan={3} className="px-3 py-1 text-center border-l border-slate-300">Pricing</th>
-            <th colSpan={4} className="px-3 py-1 text-center border-l border-slate-300">Profitability</th>
-          </tr>
-          <tr className="bg-slate-50 text-xs text-slate-600">
-            <th className="px-3 py-1 text-right border-l border-slate-300">Acres</th>
-            <th className="px-3 py-1 text-right">Yield</th>
-            <th className="px-3 py-1 text-right">Total Prod</th>
-            <th className="px-3 py-1 text-right border-l border-slate-300">Contracted</th>
-            <th className="px-3 py-1 text-right">Remaining</th>
-            <th className="px-3 py-1 text-right border-l border-slate-300">Avg Futures</th>
-            <th className="px-3 py-1 text-right">Avg Basis</th>
-            <th className="px-3 py-1 text-right">Total Avg $</th>
-            <th className="px-3 py-1 text-right border-l border-slate-300">Revenue/Ac</th>
-            <th className="px-3 py-1 text-right">Cost/Ac</th>
-            <th className="px-3 py-1 text-right">Profit/Ac</th>
-            <th className="px-3 py-1 text-right">Total Profit</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => {
-            const isOpen = expanded.has(r.cropId)
-            const advanced = cropMeta.get(r.cropId)?.advanced ?? false
-            return (
-              <FragmentRow key={r.cropId}>
-                <tr className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer" onClick={() => onToggle(r.cropId)}>
-                  <td className="px-2 py-2 text-slate-400 text-center">{isOpen ? '▾' : '▸'}</td>
-                  <td className="px-3 py-2 font-semibold sticky left-0 bg-white z-10">{r.cropName}</td>
-                  <td className="px-3 py-2 text-right tabular-nums border-l border-slate-200">{bu(r.acres)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{r.yield != null ? r.yield.toFixed(1) : '—'} <span className="text-xs text-slate-400">{r.yield != null ? r.yieldLabel : ''}</span></td>
-                  <td className="px-3 py-2 text-right tabular-nums">{bu(r.totalProduction)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums border-l border-slate-200">{bu(r.contractedBu)}</td>
-                  <td className={`px-3 py-2 text-right tabular-nums ${r.remaining < 0 ? 'text-red-700 font-semibold' : ''}`}>{bu(r.remaining)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums border-l border-slate-200">{r.avgFutures != null ? fmtPrice(r.avgFutures) : '—'}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{r.avgBasis != null ? Number(r.avgBasis).toFixed(4) : 'N/A'}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{r.totalAvgPrice != null ? fmtPrice(r.totalAvgPrice) : r.avgFutures != null ? `${fmtPrice(r.avgFutures)}*` : r.avgCashPrice != null ? fmtPrice(r.avgCashPrice) : '—'}</td>
-                  <td className="px-3 py-2 text-right tabular-nums border-l border-slate-200" title={r.totalAvgPrice != null && r.yield != null ? `${fmtPrice(r.totalAvgPrice)} × ${r.yield.toFixed(1)} bu/ac` : undefined}>{usd(r.revenuePerAcre)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{usd(r.costPerAcre)}</td>
-                  <td className={`px-3 py-2 text-right tabular-nums ${r.profitPerAcre == null ? 'text-slate-400' : r.profitPerAcre >= 0 ? 'text-green-700' : 'text-red-700'}`}>{r.profitPerAcre != null ? usd(r.profitPerAcre) : r.revenuePerAcre != null ? 'set cost' : '—'}</td>
-                  <td className={`px-3 py-2 text-right tabular-nums font-semibold ${r.totalProfit == null ? 'text-slate-400' : r.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'}`}>{r.totalProfit != null ? usd(r.totalProfit) : '—'}</td>
-                </tr>
-                {isOpen && (
-                  <tr className="bg-slate-50/60">
-                    <td />
-                    <td colSpan={COLSPAN - 1} className="px-3 py-3">
-                      <CropDetail
-                        row={r}
-                        advanced={advanced}
-                        contracts={contracts.filter((c) => c.crop_id === r.cropId)}
-                        futures={futures.filter((f) => f.commodity === cropToCommodity(r.cropName))}
-                        options={options.filter((o) => o.commodity === cropToCommodity(r.cropName))}
-                        buyerName={buyerName}
-                      />
-                    </td>
-                  </tr>
-                )}
-              </FragmentRow>
-            )
-          })}
-        </tbody>
-      </table>
-      <p className="text-xs text-slate-500 px-3 py-2">Avg Futures includes physical contracts with a futures price plus short futures hedges, adjusted for closed-hedge and options realized P&amp;L. Revenue/Ac = Total Avg $ × yield; Profit/Ac = Revenue/Ac − Cost/Ac. * = futures only (no basis set yet). Expand a crop for the buildup.</p>
     </div>
   )
 }
