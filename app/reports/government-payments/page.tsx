@@ -8,13 +8,13 @@ import type { ExportPayload } from '@/lib/exports'
 
 export default function GovernmentPaymentsReportPage() {
   const [buildPayload, setBuildPayload] = useState<() => ExportPayload>(
-    () => () => ({ title: 'Government Payments', sections: [{ columns: [], rows: [] }] }),
+    () => () => ({ title: 'Government Payment Tracker', sections: [{ columns: [], rows: [] }] }),
   )
   const handlePayload = useCallback((fn: () => ExportPayload) => setBuildPayload(() => fn), [])
   return (
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap no-print">
-        <h1 className="text-2xl font-bold flex-1">Government Payments</h1>
+        <h1 className="text-2xl font-bold flex-1">Government Payment Tracker</h1>
         <ExportBar buildPayload={() => buildPayload()} />
       </div>
       <p className="text-sm text-slate-600 no-print max-w-3xl">

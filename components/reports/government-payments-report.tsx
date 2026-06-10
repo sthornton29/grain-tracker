@@ -244,7 +244,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     totalRow.push(Math.round(totals.arcPlc), Math.round(totals.other), Math.round(totals.grand))
     rows.push(totalRow)
     return {
-      title: 'Government Payments',
+      title: 'Government Payment Tracker',
       filters: `Crop year: ${cropYear || '—'}${entityId ? ` · Entity: ${entityById.get(entityId)?.name ?? ''}` : ''}`,
       sections: [{ title: 'Projected Payments by Farm', columns: cols, rows, rowMeta: [...farmRows.map(() => 'data' as const), 'total'] }],
     }
@@ -290,7 +290,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
           <SummaryCards cards={summaryCards} />
 
           <section className="bg-white rounded-xl shadow p-4 avoid-break overflow-x-auto">
-            <h2 className="font-bold text-lg mb-2">Government Payments — {cropYear}</h2>
+            <h2 className="font-bold text-lg mb-2">Government Payment Tracker — {cropYear}</h2>
             <table className="min-w-full text-sm border-collapse">
               <thead className={theadCls}>
                 <tr>
