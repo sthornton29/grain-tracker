@@ -6,6 +6,10 @@ import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { projectPayments, expectedArcPlcDate } from '@/lib/government-payments'
 import { computePolicy, type PolicyInputs, type ScoConfig, type EcoConfig } from '@/lib/crop-insurance'
+import {
+  SummaryCards, EmptyState, type SummaryCardData,
+  numCell, textCell, theadCls,
+} from '@/components/reports/report-kit'
 import type {
   Buyer, Contract, Crop, Entity, FieldPlanting, LoadSplit,
   CropAssumption, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate,
@@ -447,16 +451,25 @@ export default function CashFlowPage() {
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
 
+  const summaryCards: SummaryCardData[] = [
+    { label: 'Contract value', value: `$${fmt(summary.value)}` },
+    { label: 'Received', value: `$${fmt(summary.received)}`, tone: 'favorable' },
+    { label: 'Outstanding', value: `$${fmt(summary.outstanding)}`, tone: 'warning' },
+    { label: 'Remaining', value: `$${fmt(summary.remaining)}` },
+  ]
+
+  const safetyCards: SummaryCardData[] = [
+    { label: 'ARC/PLC', value: `$${fmt(safetyTotals.arcPlc)}` },
+    { label: 'Crop Insurance', value: `$${fmt(safetyTotals.insurance)}` },
+    { label: 'Other Govt', value: `$${fmt(safetyTotals.other)}` },
+    { label: 'Total Safety Net', value: `$${fmt(safetyTotals.total)}`, tone: 'favorable' },
+  ]
+
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Cash Flow Forecast</h1>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <SumCard label="Contract value" value={`$${fmt(summary.value)}`} />
-        <SumCard label="Received" value={`$${fmt(summary.received)}`} tone="green" />
-        <SumCard label="Outstanding" value={`$${fmt(summary.outstanding)}`} tone="amber" />
-        <SumCard label="Remaining" value={`$${fmt(summary.remaining)}`} tone="sky" />
-      </div>
+      <SummaryCards cards={summaryCards} />
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
@@ -492,12 +505,7 @@ export default function CashFlowPage() {
                 </select>
               </label>
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <SumCard label="ARC/PLC" value={`$${fmt(safetyTotals.arcPlc)}`} tone="sky" />
-              <SumCard label="Crop Insurance" value={`$${fmt(safetyTotals.insurance)}`} tone="sky" />
-              <SumCard label="Other Govt" value={`$${fmt(safetyTotals.other)}`} tone="sky" />
-              <SumCard label="Total Safety Net" value={`$${fmt(safetyTotals.total)}`} tone="green" />
-            </div>
+            <SummaryCards cards={safetyCards} />
             <p className="text-xs text-slate-500">
               <strong>Estimated</strong> — ARC/PLC lands in October of the year after the crop year, crop insurance
               proceeds in the selected month (default December), other payments on their entered date. Final amounts are
@@ -507,96 +515,97 @@ export default function CashFlowPage() {
 
           <div className="bg-white rounded-xl shadow overflow-hidden">
             <div className="px-4 py-2 border-b border-slate-100 font-semibold">Monthly forecast</div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead className="bg-slate-50 text-slate-600">
-                  <tr>
-                    {['Month', 'Received', 'Outstanding', 'Projected', 'ARC/PLC', 'Crop Insurance', 'Other Govt', 'Month total', 'Cumulative']
-                      .map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {monthlyRows.length === 0 && (
-                    <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">No forecast data.</td></tr>
-                  )}
-                  {monthlyRows.map((r) => (
-                    <tr key={r.key} className="border-t border-slate-100">
-                      <td className="px-3 py-2 font-semibold">{r.label}</td>
-                      <td className="px-3 py-2 text-right text-green-700 font-mono">${fmt(r.received)}</td>
-                      <td className="px-3 py-2 text-right text-amber-700 font-mono">${fmt(r.outstanding)}</td>
-                      <td className="px-3 py-2 text-right text-sky-700 font-mono">${fmt(r.projected)}</td>
-                      <td className="px-3 py-2 text-right text-indigo-700 font-mono">${fmt(r.arcPlc)}</td>
-                      <td className="px-3 py-2 text-right text-purple-700 font-mono">${fmt(r.insurance)}</td>
-                      <td className="px-3 py-2 text-right text-teal-700 font-mono">${fmt(r.other)}</td>
-                      <td className="px-3 py-2 text-right font-mono">${fmt(r.total)}</td>
-                      <td className="px-3 py-2 text-right font-mono font-semibold">${fmt(r.cumulative)}</td>
+            {monthlyRows.length === 0 ? (
+              <EmptyState
+                message="No forecast data."
+                hint="Cash flow projects from priced contracts and the safety-net programs above."
+                linkHref="/contracts"
+                linkLabel="Add contracts"
+              />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm border-collapse">
+                  <thead className={theadCls}>
+                    <tr>
+                      {['Month', 'Received', 'Outstanding', 'Projected', 'ARC/PLC', 'Crop Insurance', 'Other Govt', 'Month total', 'Cumulative']
+                        .map((h, i) => <th key={h} className={`${i === 0 ? 'text-left' : 'text-right'} px-3 py-2 whitespace-nowrap font-semibold`}>{h}</th>)}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {monthlyRows.map((r) => (
+                      <tr key={r.key} className="border-t border-slate-100">
+                        <td className={`${textCell} font-semibold`}>{r.label}</td>
+                        <td className={`${numCell} text-green-700`}>${fmt(r.received)}</td>
+                        <td className={`${numCell} text-amber-700`}>${fmt(r.outstanding)}</td>
+                        <td className={`${numCell} text-sky-700`}>${fmt(r.projected)}</td>
+                        <td className={`${numCell} text-indigo-700`}>${fmt(r.arcPlc)}</td>
+                        <td className={`${numCell} text-purple-700`}>${fmt(r.insurance)}</td>
+                        <td className={`${numCell} text-teal-700`}>${fmt(r.other)}</td>
+                        <td className={numCell}>${fmt(r.total)}</td>
+                        <td className={`${numCell} font-semibold`}>${fmt(r.cumulative)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
 
           <div className="bg-white rounded-xl shadow overflow-hidden">
             <div className="px-4 py-2 border-b border-slate-100 font-semibold">Contract detail</div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead className="bg-slate-50 text-slate-600">
-                  <tr>
-                    {['Contract #', 'Buyer', 'Crop', 'Year', 'Window', 'Price/bu', 'Contracted', 'Delivered', 'Remaining', 'Value', 'Received', 'Outstanding', 'Unearned']
-                      .map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleContracts.map((c) => {
-                    const agg = aggByContract.get(c.id)!
-                    const price = Number(c.price_per_bushel ?? 0)
-                    const value = Number(c.contracted_bushels) * price
-                    const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered)
-                    const unearned = remainingBu * price
-                    const outstanding = agg.deliveredUnpaid * price
-                    return (
-                      <tr key={c.id} className="border-t border-slate-100">
-                        <td className="px-3 py-2 font-semibold">{c.contract_number}</td>
-                        <td className="px-3 py-2">{buyerById.get(c.buyer_id ?? '')?.name ?? ''}</td>
-                        <td className="px-3 py-2">{cropById.get(c.crop_id ?? '')?.name ?? ''}</td>
-                        <td className="px-3 py-2">{c.crop_year ?? ''}</td>
-                        <td className="px-3 py-2 text-xs whitespace-nowrap">
-                          {(c.delivery_start_date || c.delivery_end_date)
-                            ? <>{c.delivery_start_date ?? '?'} → {c.delivery_end_date ?? '?'}</>
-                            : <span className="text-slate-400">—</span>}
-                        </td>
-                        <td className="px-3 py-2 text-right font-mono">{price ? price.toFixed(4) : ''}</td>
-                        <td className="px-3 py-2 text-right">{fmt(Number(c.contracted_bushels))}</td>
-                        <td className="px-3 py-2 text-right">{fmt(agg.delivered)}</td>
-                        <td className="px-3 py-2 text-right">{fmt(remainingBu)}</td>
-                        <td className="px-3 py-2 text-right font-mono">${fmt(value)}</td>
-                        <td className="px-3 py-2 text-right font-mono text-green-700">${fmt(agg.revenueReceived)}</td>
-                        <td className="px-3 py-2 text-right font-mono text-amber-700">${fmt(outstanding)}</td>
-                        <td className="px-3 py-2 text-right font-mono text-sky-700">${fmt(unearned)}</td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+            {visibleContracts.length === 0 ? (
+              <EmptyState
+                message="No contracts match these filters."
+                hint="Try widening the crop year, crop, buyer, or entity filters."
+                linkHref="/contracts"
+                linkLabel="Add contracts"
+              />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm border-collapse">
+                  <thead className={theadCls}>
+                    <tr>
+                      {['Contract #', 'Buyer', 'Crop', 'Year', 'Window', 'Price/bu', 'Contracted', 'Delivered', 'Remaining', 'Value', 'Received', 'Outstanding', 'Unearned']
+                        .map((h, i) => <th key={h} className={`${i >= 5 ? 'text-right' : 'text-left'} px-3 py-2 whitespace-nowrap font-semibold`}>{h}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleContracts.map((c) => {
+                      const agg = aggByContract.get(c.id)!
+                      const price = Number(c.price_per_bushel ?? 0)
+                      const value = Number(c.contracted_bushels) * price
+                      const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered)
+                      const unearned = remainingBu * price
+                      const outstanding = agg.deliveredUnpaid * price
+                      return (
+                        <tr key={c.id} className="border-t border-slate-100">
+                          <td className={`${textCell} font-semibold`}>{c.contract_number}</td>
+                          <td className={textCell}>{buyerById.get(c.buyer_id ?? '')?.name ?? ''}</td>
+                          <td className={textCell}>{cropById.get(c.crop_id ?? '')?.name ?? ''}</td>
+                          <td className={textCell}>{c.crop_year ?? ''}</td>
+                          <td className={`${textCell} text-xs whitespace-nowrap`}>
+                            {(c.delivery_start_date || c.delivery_end_date)
+                              ? <>{c.delivery_start_date ?? '?'} → {c.delivery_end_date ?? '?'}</>
+                              : <span className="text-slate-400">—</span>}
+                          </td>
+                          <td className={numCell}>{price ? price.toFixed(4) : ''}</td>
+                          <td className={numCell}>{fmt(Number(c.contracted_bushels))}</td>
+                          <td className={numCell}>{fmt(agg.delivered)}</td>
+                          <td className={numCell}>{fmt(remainingBu)}</td>
+                          <td className={numCell}>${fmt(value)}</td>
+                          <td className={`${numCell} text-green-700`}>${fmt(agg.revenueReceived)}</td>
+                          <td className={`${numCell} text-amber-700`}>${fmt(outstanding)}</td>
+                          <td className={`${numCell} text-sky-700`}>${fmt(unearned)}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </>
       )}
-    </div>
-  )
-}
-
-function SumCard({ label, value, tone = 'slate' }: { label: string; value: string; tone?: 'slate' | 'green' | 'amber' | 'sky' }) {
-  const color =
-    tone === 'green' ? 'text-green-700'
-    : tone === 'amber' ? 'text-amber-700'
-    : tone === 'sky' ? 'text-sky-700'
-    : 'text-slate-700'
-  return (
-    <div className="bg-white rounded-xl shadow p-4">
-      <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
-      <div className={`text-2xl font-bold mt-1 ${color}`}>{value}</div>
     </div>
   )
 }

@@ -15,6 +15,15 @@ import {
 } from '@/lib/hedging'
 import type { ExportPayload } from '@/lib/exports'
 import type { Entity, FuturesPosition, OptionPosition } from '@/lib/types'
+import {
+  SummaryCards,
+  EmptyState,
+  signedTone,
+  toneText,
+  theadCls,
+  grandTotalRowCls,
+  type SummaryCardData,
+} from '@/components/reports/report-kit'
 
 type Props = {
   onPayloadChange?: (build: () => ExportPayload) => void
@@ -242,6 +251,15 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
   const grandUnrealized = summary.reduce((s, r) => s + r.unrealized, 0)
   const grandRealized = summary.reduce((s, r) => s + r.realized, 0)
   const grandOptions = filteredOptions.reduce((s, o) => s + (optUnrealizedOf(o) ?? 0) + optNetRealizedOf(o), 0)
+  const grandCombined = grandUnrealized + grandRealized + grandOptions
+
+  // Headline cards from the already-computed grand totals (no new math).
+  const summaryCards: SummaryCardData[] = [
+    { label: 'Futures Unrealized', value: fmtPnl(grandUnrealized), tone: signedTone(grandUnrealized) },
+    { label: 'Futures Realized (net)', value: fmtPnl(grandRealized), tone: signedTone(grandRealized) },
+    { label: 'Options P&L (net)', value: fmtPnl(grandOptions), tone: signedTone(grandOptions) },
+    { label: 'Combined P&L', value: fmtPnl(grandCombined), tone: signedTone(grandCombined) },
+  ]
 
   return (
     <div className="space-y-4 print-area">
@@ -263,14 +281,21 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
       </div>
 
       {filtered.length === 0 && filteredOptions.length === 0 ? (
-        <p className="text-slate-400 text-center py-8">No positions match these filters.</p>
+        <EmptyState
+          message="No positions match these filters."
+          hint="Try widening the crop year, commodity, entity, or date filters — or record hedging positions."
+          linkHref="/hedging"
+          linkLabel="Go to Hedging"
+        />
       ) : (
         <div className="space-y-6">
+          <SummaryCards cards={summaryCards} />
+
           <section className="bg-white rounded-xl shadow p-4 avoid-break">
             <h2 className="font-bold text-lg mb-2">Summary by Crop Year</h2>
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
-                <thead className="text-slate-500">
+                <thead className={theadCls}>
                   <tr>{['Crop Year', 'Commodity', 'Futures', 'Bushels', 'Avg Price', 'Fut Unrealized', 'Fut Realized', 'Options P&L', 'Combined P&L'].map((h) => <th key={h} className="text-left pr-4 font-medium whitespace-nowrap">{h}</th>)}</tr>
                 </thead>
                 <tbody>
@@ -282,22 +307,22 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
                       <tr key={`${s.cropYear}-${s.commodity}`} className="border-t border-slate-100">
                         <td className="pr-4 py-1 font-semibold">{s.cropYear}</td>
                         <td className="pr-4 py-1">{s.commodity}</td>
-                        <td className="pr-4 py-1 text-right font-mono">{s.contracts}</td>
-                        <td className="pr-4 py-1 text-right font-mono">{s.bushels.toLocaleString()}</td>
-                        <td className="pr-4 py-1 text-right font-mono">{fmtPrice(avg)}</td>
-                        <td className={`pr-4 py-1 text-right font-mono ${s.unrealized >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(s.unrealized)}</td>
-                        <td className={`pr-4 py-1 text-right font-mono ${s.realized >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(s.realized)}</td>
-                        <td className={`pr-4 py-1 text-right font-mono ${opt >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(opt)}</td>
-                        <td className={`pr-4 py-1 text-right font-mono font-bold ${combined >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(combined)}</td>
+                        <td className="pr-4 py-1 text-right tabular-nums">{s.contracts}</td>
+                        <td className="pr-4 py-1 text-right tabular-nums">{s.bushels.toLocaleString()}</td>
+                        <td className="pr-4 py-1 text-right tabular-nums">{fmtPrice(avg)}</td>
+                        <td className={`pr-4 py-1 text-right tabular-nums ${toneText(signedTone(s.unrealized))}`}>{fmtPnl(s.unrealized)}</td>
+                        <td className={`pr-4 py-1 text-right tabular-nums ${toneText(signedTone(s.realized))}`}>{fmtPnl(s.realized)}</td>
+                        <td className={`pr-4 py-1 text-right tabular-nums ${toneText(signedTone(opt))}`}>{fmtPnl(opt)}</td>
+                        <td className={`pr-4 py-1 text-right tabular-nums font-bold ${toneText(signedTone(combined))}`}>{fmtPnl(combined)}</td>
                       </tr>
                     )
                   })}
-                  <tr className="border-t border-slate-200 bg-slate-50 font-semibold">
+                  <tr className={grandTotalRowCls}>
                     <td className="pr-4 py-1" colSpan={5}>Grand total</td>
-                    <td className={`pr-4 py-1 text-right font-mono ${grandUnrealized >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(grandUnrealized)}</td>
-                    <td className={`pr-4 py-1 text-right font-mono ${grandRealized >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(grandRealized)}</td>
-                    <td className={`pr-4 py-1 text-right font-mono ${grandOptions >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(grandOptions)}</td>
-                    <td className={`pr-4 py-1 text-right font-mono ${grandUnrealized + grandRealized + grandOptions >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(grandUnrealized + grandRealized + grandOptions)}</td>
+                    <td className={`pr-4 py-1 text-right tabular-nums ${toneText(signedTone(grandUnrealized))}`}>{fmtPnl(grandUnrealized)}</td>
+                    <td className={`pr-4 py-1 text-right tabular-nums ${toneText(signedTone(grandRealized))}`}>{fmtPnl(grandRealized)}</td>
+                    <td className={`pr-4 py-1 text-right tabular-nums ${toneText(signedTone(grandOptions))}`}>{fmtPnl(grandOptions)}</td>
+                    <td className={`pr-4 py-1 text-right tabular-nums ${toneText(signedTone(grandCombined))}`}>{fmtPnl(grandCombined)}</td>
                   </tr>
                 </tbody>
               </table>
@@ -308,7 +333,7 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
             <h2 className="font-bold text-lg mb-2">Positions</h2>
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
-                <thead className="text-slate-500">
+                <thead className={theadCls}>
                   <tr>{['Crop Yr', 'Commodity', 'Month', 'Symbol', 'Side', '#', 'Bushels', 'Trade Date', 'Trade $', 'Status', 'Close Date', 'Close $', 'Realized', 'Comm.', 'Net', 'Unrealized'].map((h) => <th key={h} className="text-left pr-3 font-medium whitespace-nowrap">{h}</th>)}</tr>
                 </thead>
                 <tbody>
@@ -322,17 +347,17 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
                         <td className="pr-3 py-1 whitespace-nowrap">{p.contract_month}</td>
                         <td className="pr-3 py-1 font-mono">{p.contract_symbol}</td>
                         <td className="pr-3 py-1 capitalize">{p.side}</td>
-                        <td className="pr-3 py-1 text-right">{p.num_contracts}</td>
-                        <td className="pr-3 py-1 text-right font-mono">{bushelsFor(p.num_contracts).toLocaleString()}</td>
+                        <td className="pr-3 py-1 text-right tabular-nums">{p.num_contracts}</td>
+                        <td className="pr-3 py-1 text-right tabular-nums">{bushelsFor(p.num_contracts).toLocaleString()}</td>
                         <td className="pr-3 py-1 whitespace-nowrap">{p.trade_date}</td>
-                        <td className="pr-3 py-1 text-right font-mono">{fmtPrice(p.trade_price)}</td>
+                        <td className="pr-3 py-1 text-right tabular-nums">{fmtPrice(p.trade_price)}</td>
                         <td className="pr-3 py-1 capitalize">{p.status}</td>
                         <td className="pr-3 py-1 whitespace-nowrap">{p.close_date ?? ''}</td>
-                        <td className="pr-3 py-1 text-right font-mono">{p.close_price != null ? fmtPrice(p.close_price) : ''}</td>
-                        <td className={`pr-3 py-1 text-right font-mono ${(p.realized_pnl ?? 0) >= 0 ? 'text-green-700' : 'text-red-700'}`}>{p.realized_pnl != null ? fmtPnl(p.realized_pnl) : ''}</td>
-                        <td className="pr-3 py-1 text-right font-mono">{p.commission ? fmtPnl(p.commission) : ''}</td>
-                        <td className={`pr-3 py-1 text-right font-mono ${net >= 0 ? 'text-green-700' : 'text-red-700'}`}>{p.status === 'closed' ? fmtPnl(net) : ''}</td>
-                        <td className={`pr-3 py-1 text-right font-mono ${u == null ? '' : u >= 0 ? 'text-green-700' : 'text-red-700'}`}>{u != null ? fmtPnl(u) : ''}</td>
+                        <td className="pr-3 py-1 text-right tabular-nums">{p.close_price != null ? fmtPrice(p.close_price) : ''}</td>
+                        <td className={`pr-3 py-1 text-right tabular-nums ${toneText(signedTone(p.realized_pnl))}`}>{p.realized_pnl != null ? fmtPnl(p.realized_pnl) : ''}</td>
+                        <td className="pr-3 py-1 text-right tabular-nums">{p.commission ? fmtPnl(p.commission) : ''}</td>
+                        <td className={`pr-3 py-1 text-right tabular-nums ${toneText(signedTone(net))}`}>{p.status === 'closed' ? fmtPnl(net) : ''}</td>
+                        <td className={`pr-3 py-1 text-right tabular-nums ${u == null ? '' : toneText(signedTone(u))}`}>{u != null ? fmtPnl(u) : ''}</td>
                       </tr>
                     )
                   })}

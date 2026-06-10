@@ -6,6 +6,7 @@ import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
+import { EmptyState, theadCls, subtotalRowCls } from '@/components/reports/report-kit'
 import type { ExportPayload } from '@/lib/exports'
 import type {
   Crop, Entity, Farm, Field, FieldPlanting, Landowner, LoadSplit,
@@ -303,7 +304,12 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
       {loading ? (
         <p className="text-slate-500">Loading…</p>
       ) : groups.length === 0 ? (
-        <p className="text-slate-400 text-center py-8">No plantings match these filters.</p>
+        <EmptyState
+          message="No plantings match these filters."
+          hint="Try widening the crop year, crop, entity, or landowner filters — or record yields for these fields."
+          linkHref="/yields"
+          linkLabel="Go to Yields"
+        />
       ) : (
         <div className="space-y-6">
           {groups.map((g) => (
@@ -320,7 +326,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
                     {f.fsaNumber && <span className="text-xs text-slate-500">FSA #{f.fsaNumber}</span>}
                   </div>
                   <table className="min-w-full text-sm">
-                    <thead className="text-slate-500">
+                    <thead className={theadCls}>
                       <tr>
                         <th className="text-left pr-4 font-medium">Crop</th>
                         <th className="text-right pr-4 font-medium">Acres</th>
@@ -332,9 +338,9 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
                       {[...f.byCrop.values()].map((t) => (
                         <tr key={t.cropName} className="border-t border-slate-100">
                           <td className="pr-4 py-1 font-medium">{t.cropName}</td>
-                          <td className="pr-4 py-1 text-right font-mono">{fmt(t.acres)}</td>
-                          <td className="pr-4 py-1 text-right font-mono">{fmt(t.dryBu)}</td>
-                          <td className="pr-4 py-1 text-right font-mono">{t.acres > 0 ? (t.dryBu / t.acres).toFixed(1) : '—'}</td>
+                          <td className="pr-4 py-1 text-right font-mono tabular-nums">{fmt(t.acres)}</td>
+                          <td className="pr-4 py-1 text-right font-mono tabular-nums">{fmt(t.dryBu)}</td>
+                          <td className="pr-4 py-1 text-right font-mono tabular-nums">{t.acres > 0 ? (t.dryBu / t.acres).toFixed(1) : '—'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -343,16 +349,16 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
               ))}
 
               {g.byCrop.size > 0 && (
-                <div className="px-4 py-3 bg-slate-50 border-t-2 border-slate-200">
+                <div className={`px-4 py-3 border-t-2 border-slate-200 ${subtotalRowCls}`}>
                   <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">{g.landownerName} totals</div>
                   <table className="min-w-full text-sm">
                     <tbody>
                       {[...g.byCrop.values()].map((t) => (
                         <tr key={`grand-${t.cropName}`}>
                           <td className="pr-4 py-1 font-semibold">{t.cropName}</td>
-                          <td className="pr-4 py-1 text-right font-mono">{fmt(t.acres)} ac</td>
-                          <td className="pr-4 py-1 text-right font-mono">{fmt(t.dryBu)} bu</td>
-                          <td className="pr-4 py-1 text-right font-mono font-semibold">{t.acres > 0 ? (t.dryBu / t.acres).toFixed(1) : '—'} bu/ac</td>
+                          <td className="pr-4 py-1 text-right font-mono tabular-nums">{fmt(t.acres)} ac</td>
+                          <td className="pr-4 py-1 text-right font-mono tabular-nums">{fmt(t.dryBu)} bu</td>
+                          <td className="pr-4 py-1 text-right font-mono tabular-nums font-semibold">{t.acres > 0 ? (t.dryBu / t.acres).toFixed(1) : '—'} bu/ac</td>
                         </tr>
                       ))}
                     </tbody>

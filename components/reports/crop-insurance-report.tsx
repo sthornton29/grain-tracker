@@ -20,6 +20,7 @@ import { createClient } from '@/lib/supabase/client'
 import { analyzeYields, fieldCropAggregates } from '@/lib/yields'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { EmptyState, theadCls, grandTotalRowCls } from '@/components/reports/report-kit'
 import type {
   County, Crop, Entity, Farm, Field, FieldPlanting, LoadSplit,
 } from '@/lib/types'
@@ -547,7 +548,11 @@ export default function CropInsuranceReport() {
       )}
 
       {cropYear !== '' && !isBlocked && detailSheets.length === 0 && (
-        <p className="text-slate-500 text-sm">No plantings with acres for {cropYear}.</p>
+        <EmptyState
+          message={`No plantings with acres for ${cropYear}.`}
+          linkHref="/settings/plantings"
+          linkLabel="Add field plantings"
+        />
       )}
 
       {cropYear !== '' && !isBlocked && detailSheets.length > 0 && (
@@ -646,8 +651,8 @@ function SummaryTable({
 }) {
   return (
     <table className="min-w-full text-sm border-collapse">
-      <thead>
-        <tr className="text-slate-700">
+      <thead className={theadCls}>
+        <tr>
           <th rowSpan={2} className="border border-slate-300 bg-slate-100 px-2 py-1 text-left align-bottom">
             County / Practice
           </th>
@@ -661,7 +666,7 @@ function SummaryTable({
             Yield/Acre (Bu. Or Lbs.)
           </th>
         </tr>
-        <tr className="text-slate-700">
+        <tr>
           {[...reportCrops, ...reportCrops, ...reportCrops].map((c, i) => (
             <th key={i} className="border border-slate-300 bg-slate-50 px-2 py-1 text-center">{c.name}</th>
           ))}
@@ -673,43 +678,43 @@ function SummaryTable({
             <td className="border border-slate-200 px-2 py-1 font-semibold">{row.sheetName}</td>
             {reportCrops.map((c) => {
               const v = row.byCrop.get(c.id)
-              return <td key={`a-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono">
+              return <td key={`a-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono tabular-nums">
                 {v && v.acres > 0 ? fmt(v.acres) : ''}
               </td>
             })}
             {reportCrops.map((c) => {
               const v = row.byCrop.get(c.id)
-              return <td key={`b-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono">
+              return <td key={`b-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono tabular-nums">
                 {v && v.bu > 0 ? fmt(v.bu) : ''}
               </td>
             })}
             {reportCrops.map((c) => {
               const v = row.byCrop.get(c.id)
               const yld = v && v.acres > 0 && v.bu > 0 ? v.bu / v.acres : null
-              return <td key={`y-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono">
+              return <td key={`y-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono tabular-nums">
                 {yld != null ? yld.toFixed(1) : ''}
               </td>
             })}
           </tr>
         ))}
-        <tr className="border-t-2 border-slate-400 bg-slate-50 font-bold">
+        <tr className={`border-t-2 border-slate-400 ${grandTotalRowCls}`}>
           <td className="border border-slate-300 px-2 py-1">Total</td>
           {reportCrops.map((c) => {
             const v = summaryTotals.get(c.id)
-            return <td key={`ta-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono">
+            return <td key={`ta-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono tabular-nums">
               {v && v.acres > 0 ? fmt(v.acres) : ''}
             </td>
           })}
           {reportCrops.map((c) => {
             const v = summaryTotals.get(c.id)
-            return <td key={`tb-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono">
+            return <td key={`tb-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono tabular-nums">
               {v && v.bu > 0 ? fmt(v.bu) : ''}
             </td>
           })}
           {reportCrops.map((c) => {
             const v = summaryTotals.get(c.id)
             const yld = v && v.acres > 0 && v.bu > 0 ? v.bu / v.acres : null
-            return <td key={`ty-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono">
+            return <td key={`ty-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono tabular-nums">
               {yld != null ? yld.toFixed(1) : ''}
             </td>
           })}
@@ -754,8 +759,8 @@ function DetailTable({ sheet, reportCrops }: { sheet: DetailSheet; reportCrops: 
 
   return (
     <table className="min-w-full text-sm border-collapse">
-      <thead>
-        <tr className="text-slate-700">
+      <thead className={theadCls}>
+        <tr>
           <th rowSpan={2} className="border border-slate-300 bg-slate-100 px-2 py-1 text-left align-bottom">Farm Name</th>
           <th rowSpan={2} className="border border-slate-300 bg-slate-100 px-2 py-1 text-left align-bottom">Farm #</th>
           <th colSpan={sheetCrops.length} className="border border-slate-300 bg-slate-100 px-2 py-1 text-center">
@@ -768,7 +773,7 @@ function DetailTable({ sheet, reportCrops }: { sheet: DetailSheet; reportCrops: 
             Yield/Acre (Bu. Or Lbs.)
           </th>
         </tr>
-        <tr className="text-slate-700">
+        <tr>
           {[...sheetCrops, ...sheetCrops, ...sheetCrops].map((c, i) => (
             <th key={i} className="border border-slate-300 bg-slate-50 px-2 py-1 text-center">{c.name}</th>
           ))}
@@ -781,43 +786,43 @@ function DetailTable({ sheet, reportCrops }: { sheet: DetailSheet; reportCrops: 
             <td className="border border-slate-200 px-2 py-1 font-mono text-xs">{farm.fsaNumber ?? ''}</td>
             {sheetCrops.map((c) => {
               const cell = farm.byCrop.get(c.id)
-              return <td key={`a-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono">
+              return <td key={`a-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono tabular-nums">
                 {cell && cell.acres > 0 ? fmt(cell.acres) : ''}
               </td>
             })}
             {sheetCrops.map((c) => {
               const cell = farm.byCrop.get(c.id)
-              return <td key={`b-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono">
+              return <td key={`b-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono tabular-nums">
                 {cell && cell.bu > 0 ? fmt(cell.bu) : ''}
               </td>
             })}
             {sheetCrops.map((c) => {
               const cell = farm.byCrop.get(c.id)
               const yld = cell && cell.acres > 0 && cell.bu > 0 ? cell.bu / cell.acres : null
-              return <td key={`y-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono">
+              return <td key={`y-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono tabular-nums">
                 {yld != null ? yld.toFixed(1) : ''}
               </td>
             })}
           </tr>
         ))}
-        <tr className="border-t-2 border-slate-400 bg-slate-50 font-bold">
+        <tr className={`border-t-2 border-slate-400 ${grandTotalRowCls}`}>
           <td colSpan={2} className="border border-slate-300 px-2 py-1">Total</td>
           {sheetCrops.map((c) => {
             const t = totalsByCrop.get(c.id)
-            return <td key={`ta-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono">
+            return <td key={`ta-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono tabular-nums">
               {t && t.acres > 0 ? fmt(t.acres) : ''}
             </td>
           })}
           {sheetCrops.map((c) => {
             const t = totalsByCrop.get(c.id)
-            return <td key={`tb-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono">
+            return <td key={`tb-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono tabular-nums">
               {t && t.bu > 0 ? fmt(t.bu) : ''}
             </td>
           })}
           {sheetCrops.map((c) => {
             const t = totalsByCrop.get(c.id)
             const yld = t && t.acres > 0 && t.bu > 0 ? t.bu / t.acres : null
-            return <td key={`ty-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono">
+            return <td key={`ty-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono tabular-nums">
               {yld != null ? yld.toFixed(1) : ''}
             </td>
           })}

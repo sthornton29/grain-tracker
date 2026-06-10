@@ -6,6 +6,15 @@ import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
+import {
+  SummaryCards,
+  EmptyState,
+  numCell,
+  textCell,
+  theadCls,
+  grandTotalRowCls,
+  type SummaryCardData,
+} from '@/components/reports/report-kit'
 import type { Crop, FieldPlanting, LoadSplit } from '@/lib/types'
 
 type LoadRow = {
@@ -146,6 +155,15 @@ export default function SeasonSummaryPage() {
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   const fmt = (n: number, d = 1) => n.toLocaleString(undefined, { maximumFractionDigits: d })
 
+  // Headline tiles from the values already computed above (same numbers as the
+  // table totals / crop count — no new calculations).
+  const summaryCards: SummaryCardData[] = [
+    { label: 'Crops planted', value: String(byCrop.length) },
+    { label: 'Total acres', value: fmt(totals.acres, 2) },
+    { label: 'Irrigated acres', value: fmt(totals.irrigated, 2) },
+    { label: 'Dryland acres', value: fmt(totals.dryland, 2) },
+  ]
+
   return (
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
@@ -165,66 +183,56 @@ export default function SeasonSummaryPage() {
         <>
           <AvgYieldHeader averages={yieldAnalysis.averages} cropName={(id) => cropById.get(id)?.name ?? '—'} />
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Stat label="Crops planted" value={String(byCrop.length)} />
-            <Stat label="Total acres" value={fmt(totals.acres, 2)} />
-            <Stat label="Irrigated acres" value={fmt(totals.irrigated, 2)} />
-            <Stat label="Dryland acres" value={fmt(totals.dryland, 2)} />
-          </div>
+          <SummaryCards cards={summaryCards} />
 
-          <div className="overflow-x-auto bg-white rounded-xl shadow">
-            <table className="min-w-full text-sm">
-              <thead className="bg-slate-100 text-slate-700">
-                <tr>
-                  {['Crop','Full-season ac','Double-crop ac','Total ac','Irrigated ac','Dryland ac','Dry bu','Yield (bu/ac)']
-                    .map((h, i) => <th key={i} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
-                </tr>
-              </thead>
-              <tbody>
-                {byCrop.length === 0 && (
-                  <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">No plantings recorded for {year}.</td></tr>
-                )}
-                {byCrop.map((r) => {
-                  const yld = r.harvestedAcres > 0 ? r.dryBu / r.harvestedAcres : null
-                  return (
-                    <tr key={r.cropName} className="border-t border-slate-100">
-                      <td className="px-3 py-2 font-semibold">{r.cropName}</td>
-                      <td className="px-3 py-2 text-right">{fmt(r.fullSeasonAcres, 2)}</td>
-                      <td className="px-3 py-2 text-right">{fmt(r.doubleCropAcres, 2)}</td>
-                      <td className="px-3 py-2 text-right">{fmt(r.totalAcres, 2)}</td>
-                      <td className="px-3 py-2 text-right">{r.irrigatedAcres > 0 ? fmt(r.irrigatedAcres, 2) : '—'}</td>
-                      <td className="px-3 py-2 text-right">{r.drylandAcres > 0 ? fmt(r.drylandAcres, 2) : '—'}</td>
-                      <td className="px-3 py-2 text-right">{fmt(r.dryBu, 2)}</td>
-                      <td className="px-3 py-2 text-right font-semibold">{yld != null ? yld.toFixed(1) : '—'}</td>
-                    </tr>
-                  )
-                })}
-                {byCrop.length > 0 && (
-                  <tr className="border-t-2 border-slate-300 bg-slate-50">
-                    <td className="px-3 py-2 font-bold">Total</td>
-                    <td className="px-3 py-2 text-right">{fmt(totals.fullSeason, 2)}</td>
-                    <td className="px-3 py-2 text-right">{fmt(totals.doubleCrop, 2)}</td>
-                    <td className="px-3 py-2 text-right">{fmt(totals.acres, 2)}</td>
-                    <td className="px-3 py-2 text-right">{fmt(totals.irrigated, 2)}</td>
-                    <td className="px-3 py-2 text-right">{fmt(totals.dryland, 2)}</td>
-                    <td className="px-3 py-2 text-right">{fmt(totals.dryBu, 2)}</td>
-                    <td className="px-3 py-2"></td>
+          {byCrop.length === 0 ? (
+            <EmptyState
+              message={`No plantings recorded for ${year}.`}
+              hint="Record plantings and enter loads to build the season summary."
+              linkHref="/loads"
+              linkLabel="Enter loads"
+            />
+          ) : (
+            <div className="overflow-x-auto bg-white rounded-xl shadow">
+              <table className="min-w-full text-sm">
+                <thead className={theadCls}>
+                  <tr>
+                    {['Crop','Full-season ac','Double-crop ac','Total ac','Irrigated ac','Dryland ac','Dry bu','Yield (bu/ac)']
+                      .map((h, i) => <th key={i} className={`${i === 0 ? 'text-left' : 'text-right'} px-3 py-2 whitespace-nowrap font-semibold`}>{h}</th>)}
                   </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {byCrop.map((r) => {
+                    const yld = r.harvestedAcres > 0 ? r.dryBu / r.harvestedAcres : null
+                    return (
+                      <tr key={r.cropName} className="border-t border-slate-100">
+                        <td className={`${textCell} font-semibold`}>{r.cropName}</td>
+                        <td className={numCell}>{fmt(r.fullSeasonAcres, 2)}</td>
+                        <td className={numCell}>{fmt(r.doubleCropAcres, 2)}</td>
+                        <td className={numCell}>{fmt(r.totalAcres, 2)}</td>
+                        <td className={numCell}>{r.irrigatedAcres > 0 ? fmt(r.irrigatedAcres, 2) : '—'}</td>
+                        <td className={numCell}>{r.drylandAcres > 0 ? fmt(r.drylandAcres, 2) : '—'}</td>
+                        <td className={numCell}>{fmt(r.dryBu, 2)}</td>
+                        <td className={`${numCell} font-semibold`}>{yld != null ? yld.toFixed(1) : '—'}</td>
+                      </tr>
+                    )
+                  })}
+                  <tr className={grandTotalRowCls}>
+                    <td className={textCell}>Total</td>
+                    <td className={numCell}>{fmt(totals.fullSeason, 2)}</td>
+                    <td className={numCell}>{fmt(totals.doubleCrop, 2)}</td>
+                    <td className={numCell}>{fmt(totals.acres, 2)}</td>
+                    <td className={numCell}>{fmt(totals.irrigated, 2)}</td>
+                    <td className={numCell}>{fmt(totals.dryland, 2)}</td>
+                    <td className={numCell}>{fmt(totals.dryBu, 2)}</td>
+                    <td className={numCell}></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       )}
-    </div>
-  )
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="bg-white rounded-xl shadow p-4">
-      <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
-      <div className="text-2xl font-bold mt-1">{value}</div>
     </div>
   )
 }

@@ -18,11 +18,13 @@ import type { ExportPayload } from '@/lib/exports'
 import type {
   Farm, Entity, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection, ArcPlcPriceData, ArcPlcPayment, ArcPlcElectionType,
 } from '@/lib/types'
+import {
+  EmptyState, fmtUsd, numCell, textCell, theadCls, toneText,
+} from '@/components/reports/report-kit'
 
 type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
 
-const usd = (n: number | null | undefined, d = 0) =>
-  n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`
+const usd = (n: number | null | undefined, d = 0) => fmtUsd(n, d)
 
 export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
   const supabase = useMemo(() => createClient(), [])
@@ -198,7 +200,12 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
 
       {cropYear === '' && <p className="text-amber-700 text-sm">Pick a crop year.</p>}
       {cropYear !== '' && rows.length === 0 && (
-        <p className="text-slate-500 text-sm">No base acres on file. <a href="/settings/government-payments" className="text-sky-700 underline">Add base acres →</a></p>
+        <EmptyState
+          message="No base acres on file"
+          hint="Add base acres to project ARC-CO and PLC payments."
+          linkHref="/settings/government-payments"
+          linkLabel="Set up base acres"
+        />
       )}
 
       {cropYear !== '' && rows.length > 0 && (
@@ -221,22 +228,22 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
           <section className="bg-white rounded-xl shadow p-4 avoid-break overflow-x-auto">
             <h2 className="font-bold text-lg mb-2">Decision Aid — {cropYear}</h2>
             <table className="min-w-full text-sm border-collapse">
-              <thead className="bg-slate-100 text-slate-700">
+              <thead className={theadCls}>
                 <tr>{['Farm', 'Commodity', 'Base Acres', 'PLC Yield', 'PLC Projected', 'ARC-CO Projected', 'Recommendation', 'Election', ''].map((h) => <th key={h} className="text-left px-2 py-1 whitespace-nowrap">{h}</th>)}</tr>
               </thead>
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.base.id} className="border-t border-slate-100">
-                    <td className="px-2 py-1 font-semibold">{r.farmName}</td>
-                    <td className="px-2 py-1">{r.commodity.name}</td>
-                    <td className="px-2 py-1 text-right font-mono">{Number(r.base.base_acres).toLocaleString()}</td>
-                    <td className="px-2 py-1 text-right font-mono">{Number(r.base.plc_yield)}</td>
-                    <td className={`px-2 py-1 text-right font-mono ${r.favors === 'PLC' ? 'bg-green-50 font-semibold' : ''}`}>{r.plcNet != null ? usd(r.plcNet) : 'needs MYA'}</td>
-                    <td className={`px-2 py-1 text-right font-mono ${r.favors === 'ARC' ? 'bg-green-50 font-semibold' : ''}`}>{r.arcNet != null ? usd(r.arcNet) : 'enter rate'}</td>
+                    <td className={`${textCell} font-semibold`}>{r.farmName}</td>
+                    <td className={textCell}>{r.commodity.name}</td>
+                    <td className={numCell}>{Number(r.base.base_acres).toLocaleString()}</td>
+                    <td className={numCell}>{Number(r.base.plc_yield)}</td>
+                    <td className={`${numCell} ${r.favors === 'PLC' ? `bg-green-50 font-semibold ${toneText('favorable')}` : ''}`}>{r.plcNet != null ? usd(r.plcNet) : <span className={toneText('warning')}>needs MYA</span>}</td>
+                    <td className={`${numCell} ${r.favors === 'ARC' ? `bg-green-50 font-semibold ${toneText('favorable')}` : ''}`}>{r.arcNet != null ? usd(r.arcNet) : <span className={toneText('warning')}>enter rate</span>}</td>
                     <td className="px-2 py-1 whitespace-nowrap">
                       {r.favors === 'PLC' ? <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">Favors PLC</span>
                         : r.favors === 'ARC' ? <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">Favors ARC-CO</span>
-                        : <span className="text-slate-400">—</span>}
+                        : <span className={toneText('muted')}>—</span>}
                     </td>
                     <td className="px-2 py-1"><span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{ELECTION_LABEL[r.election]}</span></td>
                     <td className="px-2 py-1 no-print whitespace-nowrap">

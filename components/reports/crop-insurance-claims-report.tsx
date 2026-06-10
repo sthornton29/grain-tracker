@@ -22,6 +22,10 @@ import {
   policyPremium,
 } from '@/lib/crop-insurance'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
+import {
+  SummaryCards, EmptyState, fmtUsd, signedTone, toneText,
+  theadCls, grandTotalRowCls, type SummaryCardData,
+} from '@/components/reports/report-kit'
 import type {
   Crop, County, Entity, CropAssumption, FieldPlanting,
   CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate, ProgramYearConfig,
@@ -327,6 +331,14 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     )
   }, [computed])
 
+  // Headline summary cards from the already-computed totals (no new math).
+  const summaryCards: SummaryCardData[] = useMemo(() => [
+    { label: 'Total Indemnity', value: fmtUsd(totals.totalIndemnity), tone: totals.totalIndemnity > 0 ? 'favorable' : 'muted' },
+    { label: 'Premium Paid', value: fmtUsd(totals.premium) },
+    { label: 'Net Ins. P&L', value: fmtUsd(totals.netPnl), tone: signedTone(totals.netPnl), sub: 'Total indemnity − premium paid' },
+    { label: 'Insured Acres', value: bu(totals.acres) },
+  ], [totals])
+
   // Net-P&L color: green well-positive, red well-negative, amber near breakeven.
   function pnlClass(net: number, premium: number): string {
     const tol = Math.max(50, premium * 0.05)
@@ -425,10 +437,11 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       )}
 
       {cropYear !== '' && yearPolicies.length === 0 && (
-        <p className="text-slate-500 text-sm">
-          No crop insurance policies for {cropYear}.{' '}
-          <a href="/settings/crop-insurance" className="text-sky-700 underline">Add policies →</a>
-        </p>
+        <EmptyState
+          message={`No crop insurance policies for ${cropYear}.`}
+          linkHref="/settings/crop-insurance"
+          linkLabel="Add policies"
+        />
       )}
 
       {cropYear !== '' && yearPolicies.length > 0 && (
@@ -437,6 +450,8 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
             <strong>Estimated</strong> — based on current yield assumptions and futures prices. Final amounts are
             determined by RMA after harvest.{priceNote ? ` ${priceNote}` : ''}
           </div>
+
+          <SummaryCards cards={summaryCards} />
 
           {/* What-If panel */}
           <WhatIfPanel
@@ -452,7 +467,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
           <section className="bg-white rounded-xl shadow p-4 avoid-break overflow-x-auto">
             <h2 className="font-bold text-lg mb-2">Estimated Indemnity by Policy — {cropYear}</h2>
             <table className="min-w-full text-sm border-collapse">
-              <thead className="bg-slate-100 text-slate-700">
+              <thead className={theadCls}>
                 <tr>
                   {['Crop', 'County', 'Plan', 'Cov', 'APH', 'Proj $', 'Harvest $', 'Assumed Yld', 'Acres',
                     'Rev. Guarantee', 'Exp. Revenue', 'Base Indemnity', 'SCO', 'ECO', 'Total Indemnity', 'Premium', 'Net Ins. P&L', ''].map((h) => (
@@ -469,45 +484,45 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                       <td className="px-2 py-1 whitespace-nowrap">{countyName(p.county_id)}</td>
                       <td className="px-2 py-1">{PLAN_TYPE_SHORT[p.plan_type]}</td>
                       <td className="px-2 py-1 text-right">{Math.round(Number(p.coverage_level) * 100)}%</td>
-                      <td className="px-2 py-1 text-right font-mono">{Number(p.aph_yield).toFixed(1)}</td>
-                      <td className="px-2 py-1 text-right font-mono">{fmtPrice(p.projected_price)}</td>
-                      <td className="px-2 py-1 text-right font-mono whitespace-nowrap">{harvestLabel(c.harvest)}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">{Number(p.aph_yield).toFixed(1)}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">{fmtPrice(p.projected_price)}</td>
+                      <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">{harvestLabel(c.harvest)}</td>
                       <td className="px-2 py-1 text-right">
                         <input
                           type="number" step="0.1"
                           value={yieldOverride.get(p.id) ?? ''}
                           placeholder={c.assumedYield.toFixed(1)}
                           onChange={(e) => setYieldOverride((m) => { const n = new Map(m); if (e.target.value === '') n.delete(p.id); else n.set(p.id, e.target.value); return n })}
-                          className="w-20 rounded border border-slate-300 px-1 py-0.5 text-right font-mono no-print"
+                          className="w-20 rounded border border-slate-300 px-1 py-0.5 text-right tabular-nums no-print"
                         />
-                        <span className="hidden print:inline font-mono">{c.assumedYield.toFixed(1)}</span>
+                        <span className="hidden print:inline tabular-nums">{c.assumedYield.toFixed(1)}</span>
                       </td>
-                      <td className="px-2 py-1 text-right font-mono">{bu(Number(p.insured_acres))}</td>
-                      <td className="px-2 py-1 text-right font-mono">{usd(c.comp.base.revenueGuarantee)}</td>
-                      <td className="px-2 py-1 text-right font-mono">{usd(c.comp.base.expectedRevenue)}</td>
-                      <td className="px-2 py-1 text-right font-mono">{usd(c.comp.base.indemnity)}</td>
-                      <td className="px-2 py-1 text-right font-mono">{c.comp.sco ? usd(c.comp.sco.indemnity) : 'N/A'}</td>
-                      <td className="px-2 py-1 text-right font-mono">{c.comp.eco ? usd(c.comp.eco.indemnity) : 'N/A'}</td>
-                      <td className="px-2 py-1 text-right font-mono font-semibold">{usd(c.comp.totalIndemnity)}</td>
-                      <td className="px-2 py-1 text-right font-mono">{usd(c.comp.premiumPaid)}</td>
-                      <td className={`px-2 py-1 text-right font-mono font-bold ${pnlClass(c.comp.netPnl, c.comp.premiumPaid)}`}>{usd(c.comp.netPnl)}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">{bu(Number(p.insured_acres))}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.base.revenueGuarantee)}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.base.expectedRevenue)}</td>
+                      <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(c.comp.base.indemnity))}`}>{usd(c.comp.base.indemnity)}</td>
+                      <td className={`px-2 py-1 text-right tabular-nums ${c.comp.sco ? toneText(signedTone(c.comp.sco.indemnity)) : toneText('muted')}`}>{c.comp.sco ? usd(c.comp.sco.indemnity) : 'N/A'}</td>
+                      <td className={`px-2 py-1 text-right tabular-nums ${c.comp.eco ? toneText(signedTone(c.comp.eco.indemnity)) : toneText('muted')}`}>{c.comp.eco ? usd(c.comp.eco.indemnity) : 'N/A'}</td>
+                      <td className={`px-2 py-1 text-right tabular-nums font-semibold ${toneText(signedTone(c.comp.totalIndemnity))}`}>{usd(c.comp.totalIndemnity)}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.premiumPaid)}</td>
+                      <td className={`px-2 py-1 text-right tabular-nums font-bold ${pnlClass(c.comp.netPnl, c.comp.premiumPaid)}`}>{usd(c.comp.netPnl)}</td>
                       <td className="px-2 py-1 no-print">
                         <button onClick={() => toggle(p.id)} className="text-sky-700 text-xs whitespace-nowrap">{expanded.has(p.id) ? 'Hide' : 'Detail'}</button>
                       </td>
                     </tr>
                   )
                 })}
-                <tr className="border-t-2 border-slate-400 bg-slate-50 font-bold">
+                <tr className={grandTotalRowCls}>
                   <td className="px-2 py-1" colSpan={8}>Total</td>
-                  <td className="px-2 py-1 text-right font-mono">{bu(totals.acres)}</td>
-                  <td className="px-2 py-1 text-right font-mono">{usd(totals.revenueGuarantee)}</td>
-                  <td className="px-2 py-1 text-right font-mono">{usd(totals.expectedRevenue)}</td>
-                  <td className="px-2 py-1 text-right font-mono">{usd(totals.baseIndemnity)}</td>
-                  <td className="px-2 py-1 text-right font-mono">{usd(totals.scoIndemnity)}</td>
-                  <td className="px-2 py-1 text-right font-mono">{usd(totals.ecoIndemnity)}</td>
-                  <td className="px-2 py-1 text-right font-mono">{usd(totals.totalIndemnity)}</td>
-                  <td className="px-2 py-1 text-right font-mono">{usd(totals.premium)}</td>
-                  <td className={`px-2 py-1 text-right font-mono ${pnlClass(totals.netPnl, totals.premium)}`}>{usd(totals.netPnl)}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{bu(totals.acres)}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{usd(totals.revenueGuarantee)}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{usd(totals.expectedRevenue)}</td>
+                  <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(totals.baseIndemnity))}`}>{usd(totals.baseIndemnity)}</td>
+                  <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(totals.scoIndemnity))}`}>{usd(totals.scoIndemnity)}</td>
+                  <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(totals.ecoIndemnity))}`}>{usd(totals.ecoIndemnity)}</td>
+                  <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(totals.totalIndemnity))}`}>{usd(totals.totalIndemnity)}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{usd(totals.premium)}</td>
+                  <td className={`px-2 py-1 text-right tabular-nums ${pnlClass(totals.netPnl, totals.premium)}`}>{usd(totals.netPnl)}</td>
                   <td className="no-print" />
                 </tr>
               </tbody>

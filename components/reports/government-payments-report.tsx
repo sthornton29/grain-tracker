@@ -16,6 +16,10 @@ import {
 } from '@/lib/government-payments'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import { fmtPrice } from '@/lib/hedging'
+import {
+  SummaryCards, EmptyState, theadCls, grandTotalRowCls, toneText,
+  type SummaryCardData,
+} from '@/components/reports/report-kit'
 import type { ExportPayload } from '@/lib/exports'
 import type {
   Farm, Entity, Crop, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection,
@@ -196,6 +200,13 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     return { byCommodity, arcPlc, other, grand: arcPlc + other }
   }, [farmRows, nonFarmOther])
 
+  // Headline summary straight from the already-computed totals (no new math).
+  const summaryCards: SummaryCardData[] = useMemo(() => [
+    { label: 'Total ARC/PLC', value: usd(totals.arcPlc), tone: 'favorable' },
+    { label: 'Other USDA', value: usd(totals.other) },
+    { label: 'Grand Total', value: usd(totals.grand), tone: 'favorable', sub: `${shownFarms.length} farm${shownFarms.length === 1 ? '' : 's'}` },
+  ], [totals, shownFarms])
+
   // Per-entity payment-limit status: sum ARC/PLC for that entity's farms + the
   // entity's other payments (farm-specific and not).
   const limitRows = useMemo(() => {
@@ -267,7 +278,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
       )}
 
       {cropYear !== '' && farmRows.length === 0 && (
-        <p className="text-slate-500 text-sm">No base acres on file. <a href="/settings/government-payments" className="text-sky-700 underline">Add base acres →</a></p>
+        <EmptyState message="No base acres on file." linkHref="/settings/government-payments" linkLabel="Add base acres" />
       )}
 
       {cropYear !== '' && farmRows.length > 0 && (
@@ -276,10 +287,12 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
             <strong>Projected</strong> — PLC from current MYA estimates, ARC-CO from your entered rates. FSA determines final payments after the marketing year.
           </div>
 
+          <SummaryCards cards={summaryCards} />
+
           <section className="bg-white rounded-xl shadow p-4 avoid-break overflow-x-auto">
             <h2 className="font-bold text-lg mb-2">Government Payments — {cropYear}</h2>
             <table className="min-w-full text-sm border-collapse">
-              <thead className="bg-slate-100 text-slate-700">
+              <thead className={theadCls}>
                 <tr>
                   <th className="text-left px-2 py-1">Farm</th><th className="text-left px-2 py-1">FSA #</th><th className="text-left px-2 py-1">Entity</th>
                   {shownCommodities.map((c) => <th key={c.id} className="text-right px-2 py-1 whitespace-nowrap">{c.name}</th>)}
@@ -297,26 +310,26 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
                     <td className="px-2 py-1">{entityById.get(r.farm.entity_id ?? '')?.name ?? '—'}</td>
                     {shownCommodities.map((c) => {
                       const p = r.byCommodity.get(c.id)
-                      if (!p) return <td key={c.id} className="px-2 py-1 text-right text-slate-300">—</td>
+                      if (!p) return <td key={c.id} className="px-2 py-1 text-right tabular-nums text-slate-300">—</td>
                       return (
-                        <td key={c.id} className={`px-2 py-1 text-right ${p.result.net > 0 ? '' : 'text-slate-400'}`}>
+                        <td key={c.id} className={`px-2 py-1 text-right tabular-nums ${p.result.net > 0 ? '' : 'text-slate-400'}`}>
                           <div className="font-mono">{usd(p.result.net)}</div>
                           <div className="text-[10px] text-slate-500">{Number(p.baseAcres).toLocaleString()} ac · {ELECTION_LABEL[p.election]}</div>
                         </td>
                       )
                     })}
-                    <td className="px-2 py-1 text-right font-mono font-semibold">{usd(r.arcPlcTotal)}</td>
-                    <td className="px-2 py-1 text-right font-mono">{usd(r.other)}</td>
-                    <td className="px-2 py-1 text-right font-mono font-bold">{usd(r.total)}</td>
+                    <td className="px-2 py-1 text-right font-mono font-semibold tabular-nums">{usd(r.arcPlcTotal)}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.other)}</td>
+                    <td className="px-2 py-1 text-right font-mono font-bold tabular-nums">{usd(r.total)}</td>
                     <td className="px-2 py-1 no-print"><button onClick={() => toggle(r.farm.id)} className="text-sky-700 text-xs">{expanded.has(r.farm.id) ? 'Hide' : 'Detail'}</button></td>
                   </tr>
                 ))}
-                <tr className="border-t-2 border-slate-400 bg-slate-50 font-bold">
+                <tr className={grandTotalRowCls}>
                   <td className="px-2 py-1" colSpan={3}>Total</td>
-                  {shownCommodities.map((c) => <td key={c.id} className="px-2 py-1 text-right font-mono">{usd(totals.byCommodity.get(c.id) ?? 0)}</td>)}
-                  <td className="px-2 py-1 text-right font-mono">{usd(totals.arcPlc)}</td>
-                  <td className="px-2 py-1 text-right font-mono">{usd(totals.other)}</td>
-                  <td className="px-2 py-1 text-right font-mono">{usd(totals.grand)}</td>
+                  {shownCommodities.map((c) => <td key={c.id} className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.byCommodity.get(c.id) ?? 0)}</td>)}
+                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.arcPlc)}</td>
+                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.other)}</td>
+                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.grand)}</td>
                   <td className="no-print" />
                 </tr>
               </tbody>
@@ -340,9 +353,9 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
                     {limitRows.map((l) => (
                       <tr key={l.entity.id} className="border-t border-slate-100">
                         <td className="px-3 py-2 font-semibold">{l.entity.name}</td>
-                        <td className="px-3 py-2 text-right font-mono">{usd(l.limit)} <span className="text-xs text-slate-400">({l.persons} × {usd(l.perPerson)})</span></td>
-                        <td className="px-3 py-2 text-right font-mono">{usd(l.projTotal)}</td>
-                        <td className={`px-3 py-2 text-right font-mono ${l.remaining < 0 ? 'text-red-700' : ''}`}>{usd(l.remaining)}</td>
+                        <td className="px-3 py-2 text-right font-mono tabular-nums">{usd(l.limit)} <span className="text-xs text-slate-400">({l.persons} × {usd(l.perPerson)})</span></td>
+                        <td className={`px-3 py-2 text-right font-mono tabular-nums ${toneText(l.pct > 1 ? 'unfavorable' : l.pct > 0.8 ? 'warning' : 'neutral')}`}>{usd(l.projTotal)}</td>
+                        <td className={`px-3 py-2 text-right font-mono tabular-nums ${l.remaining < 0 ? 'text-red-700' : ''}`}>{usd(l.remaining)}</td>
                         <td className="px-3 py-2">
                           {l.pct > 1 ? <span className="text-xs rounded-full bg-red-100 text-red-800 px-2 py-0.5">Exceeds limit</span>
                             : l.pct > 0.8 ? <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">Approaching limit</span>

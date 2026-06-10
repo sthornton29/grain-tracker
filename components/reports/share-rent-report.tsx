@@ -5,6 +5,11 @@ import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import {
+  EmptyState, SummaryCards, numCell, textCell, theadCls,
+  subtotalRowCls, grandTotalRowCls, toneText,
+  type SummaryCardData,
+} from '@/components/reports/report-kit'
 import type { ExportPayload } from '@/lib/exports'
 import type {
   Crop, Entity, Farm, Field, FieldPlanting, Landowner, LoadSplit,
@@ -360,27 +365,48 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
       </div>
 
       {cropYear === '' ? (
-        <p className="text-amber-700 text-sm">Pick a crop year to run the share rent report.</p>
+        <EmptyState
+          message="Pick a crop year to run the share rent report."
+          hint="Choose a crop year above to see bushels owed by landowner."
+          linkHref="/settings/farms"
+          linkLabel="Set up share-rent farms"
+        />
       ) : groups.length === 0 ? (
-        <p className="text-slate-400 text-center py-8">No share-rent farms have production in {cropYear}.</p>
+        <EmptyState
+          message={`No share-rent farms have production in ${cropYear}.`}
+          hint="Mark farms as share-rent with a landlord share percentage, or widen the filters above."
+          linkHref="/settings/farms"
+          linkLabel="Set up share-rent farms"
+        />
       ) : (
         <div className="space-y-6">
+          {/* Headline totals — bushels owed per crop across all landowners. */}
+          {summaryByCrop.length > 0 && (
+            <SummaryCards
+              cards={summaryByCrop.map((s): SummaryCardData => ({
+                label: `${s.cropName} owed`,
+                value: `${fmt(s.landlordBu)} bu`,
+                sub: `${cropYear} · all landowners`,
+              }))}
+            />
+          )}
+
           {/* Summary card */}
           {summaryByCrop.length > 0 && (
             <section className="bg-white rounded-xl shadow p-4 avoid-break">
               <h2 className="font-bold text-lg mb-2">Total Bushels Owed — {cropYear}</h2>
-              <table className="min-w-full text-sm">
-                <thead className="text-slate-500">
+              <table className="min-w-full text-sm border-collapse">
+                <thead className={theadCls}>
                   <tr>
-                    <th className="text-left pr-6 font-medium">Crop</th>
-                    <th className="text-right pr-6 font-medium">Bushels owed across all landowners</th>
+                    <th className={`${textCell} font-semibold`}>Crop</th>
+                    <th className={`${numCell} font-semibold`}>Bushels owed across all landowners</th>
                   </tr>
                 </thead>
                 <tbody>
                   {summaryByCrop.map((s) => (
                     <tr key={s.cropName} className="border-t border-slate-100">
-                      <td className="pr-6 py-1 font-semibold">{s.cropName}</td>
-                      <td className="pr-6 py-1 text-right font-mono">{fmt(s.landlordBu)}</td>
+                      <td className={`${textCell} font-semibold`}>{s.cropName}</td>
+                      <td className={`${numCell} tabular-nums`}>{fmt(s.landlordBu)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -408,32 +434,32 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
                   {f.crops.map((c) => (
                     <div key={c.cropId} className="mb-3">
                       <div className="text-sm font-semibold text-slate-700 mb-1">{c.cropName}</div>
-                      <table className="min-w-full text-sm">
-                        <thead className="text-slate-500">
+                      <table className="min-w-full text-sm border-collapse">
+                        <thead className={theadCls}>
                           <tr>
-                            <th className="text-left pr-4 font-medium">Field</th>
-                            <th className="text-right pr-4 font-medium">Acres</th>
-                            <th className="text-right pr-4 font-medium">Dry bu</th>
-                            <th className="text-right pr-4 font-medium">Yield (bu/ac)</th>
-                            <th className="text-right pr-4 font-medium">Landlord bu</th>
+                            <th className={`${textCell} font-semibold`}>Field</th>
+                            <th className={`${numCell} font-semibold`}>Acres</th>
+                            <th className={`${numCell} font-semibold`}>Dry bu</th>
+                            <th className={`${numCell} font-semibold`}>Yield (bu/ac)</th>
+                            <th className={`${numCell} font-semibold`}>Landlord bu</th>
                           </tr>
                         </thead>
                         <tbody>
                           {c.fields.map((r, ri) => (
                             <tr key={ri} className="border-t border-slate-100">
-                              <td className="pr-4 py-1">{r.fieldName}</td>
-                              <td className="pr-4 py-1 text-right font-mono">{fmt(r.acres)}</td>
-                              <td className="pr-4 py-1 text-right font-mono">{fmt(r.dryBu)}</td>
-                              <td className="pr-4 py-1 text-right font-mono">{r.yieldBuPerAc != null ? r.yieldBuPerAc.toFixed(1) : '—'}</td>
-                              <td className="pr-4 py-1 text-right font-mono">{fmt(r.landlordBu)}</td>
+                              <td className={textCell}>{r.fieldName}</td>
+                              <td className={`${numCell} tabular-nums`}>{fmt(r.acres)}</td>
+                              <td className={`${numCell} tabular-nums`}>{fmt(r.dryBu)}</td>
+                              <td className={`${numCell} tabular-nums`}>{r.yieldBuPerAc != null ? r.yieldBuPerAc.toFixed(1) : '—'}</td>
+                              <td className={`${numCell} tabular-nums`}>{fmt(r.landlordBu)}</td>
                             </tr>
                           ))}
-                          <tr className="border-t border-slate-200 bg-slate-50 text-slate-700 font-semibold">
-                            <td className="pr-4 py-1 italic">{c.cropName} subtotal</td>
-                            <td className="pr-4 py-1 text-right font-mono">{fmt(c.totals.acres)}</td>
-                            <td className="pr-4 py-1 text-right font-mono">{fmt(c.totals.dryBu)}</td>
-                            <td className="pr-4 py-1 text-right font-mono">{c.totals.acres > 0 ? (c.totals.dryBu / c.totals.acres).toFixed(1) : '—'}</td>
-                            <td className="pr-4 py-1 text-right font-mono">{fmt(c.totals.landlordBu)}</td>
+                          <tr className={`border-t border-slate-200 ${subtotalRowCls}`}>
+                            <td className={`${textCell} italic`}>{c.cropName} subtotal</td>
+                            <td className={`${numCell} tabular-nums`}>{fmt(c.totals.acres)}</td>
+                            <td className={`${numCell} tabular-nums`}>{fmt(c.totals.dryBu)}</td>
+                            <td className={`${numCell} tabular-nums`}>{c.totals.acres > 0 ? (c.totals.dryBu / c.totals.acres).toFixed(1) : '—'}</td>
+                            <td className={`${numCell} tabular-nums`}>{fmt(c.totals.landlordBu)}</td>
                           </tr>
                         </tbody>
                       </table>
@@ -443,16 +469,16 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
               ))}
 
               {g.byCrop.size > 0 && (
-                <div className="px-4 py-3 bg-slate-50 border-t-2 border-slate-200">
+                <div className={`px-4 py-3 ${grandTotalRowCls}`}>
                   <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">{g.landownerName} — Total Owed</div>
                   <table className="min-w-full text-sm">
                     <tbody>
                       {[...g.byCrop.values()].map((t) => (
                         <tr key={t.cropName}>
                           <td className="pr-4 py-1 font-semibold">{t.cropName}</td>
-                          <td className="pr-4 py-1 text-right font-mono">{fmt(t.acres)} ac</td>
-                          <td className="pr-4 py-1 text-right font-mono">{fmt(t.dryBu)} bu produced</td>
-                          <td className="pr-4 py-1 text-right font-mono font-bold text-amber-800">{fmt(t.landlordBu)} bu owed</td>
+                          <td className="pr-4 py-1 text-right tabular-nums">{fmt(t.acres)} ac</td>
+                          <td className="pr-4 py-1 text-right tabular-nums">{fmt(t.dryBu)} bu produced</td>
+                          <td className={`pr-4 py-1 text-right tabular-nums font-bold ${toneText('warning')}`}>{fmt(t.landlordBu)} bu owed</td>
                         </tr>
                       ))}
                     </tbody>
