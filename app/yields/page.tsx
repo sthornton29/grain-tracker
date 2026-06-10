@@ -233,14 +233,28 @@ export default function YieldsPage() {
   ), [plantings, aggByKey, fieldById, farmById, year, cropId, farmId, entityId, countyId, view, practiceFilter])
   const excludedFields = yieldAnalysis.excluded
   const includedPlantings = visible.filter((p) => !excludedFields.has(p.id))
-  // By-field row order: completed (counted) fields first, then in-progress,
-  // then unharvested. Stable, so original order holds within each group.
+  // Completion rank, now used only as a tiebreaker: completed (counted) before
+  // in-progress before unharvested.
   const fieldRank = (id: string) => {
     const reason = excludedFields.get(id)
     if (!reason) return 0
     return reason === 'in_progress' ? 1 : 2
   }
-  const fieldRows = [...visible].sort((a, b) => fieldRank(a.id) - fieldRank(b.id))
+  // By-field row order: most recently harvested first (by the latest load date
+  // for that field+crop), with not-yet-harvested fields last. Same-date ties
+  // fall back to completion rank, then stable original order.
+  const lastLoadOf = (p: FieldPlanting) =>
+    aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)?.lastLoadDate ?? null
+  const fieldRows = [...visible].sort((a, b) => {
+    const da = lastLoadOf(a)
+    const db = lastLoadOf(b)
+    if (da !== db) {
+      if (da == null) return 1
+      if (db == null) return -1
+      return db < da ? -1 : 1
+    }
+    return fieldRank(a.id) - fieldRank(b.id)
+  })
 
   // Toggle visibility: hide when nothing irrigated and no breakouts entered.
   // Once any season has an irrigated planting or an allocated breakout, the
