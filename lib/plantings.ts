@@ -1,10 +1,10 @@
-// Double-crop classification by harvest category. For a field + season_year that
-// has any SPRING-harvest planting (e.g. wheat, canola), each FALL-harvest
-// planting (e.g. corn, soybeans) on that field is a double-crop. Returns the set
-// of those fall-harvest planting ids.
+// Double-crop classification. A field + season_year that has any SPRING-harvest
+// planting (e.g. wheat, canola) is double-cropped; the *second* crop on that
+// field counts as a double-crop only when its crop is flagged double_crop in
+// settings (e.g. soybeans after wheat). Returns the set of those planting ids.
 export function buildDoubleCropSet(
   plantings: ReadonlyArray<{ id: string; field_id: string; season_year: number; crop_id: string }>,
-  cropsById: Map<string, { harvest_category: 'fall' | 'spring' }>,
+  cropsById: Map<string, { harvest_category: 'fall' | 'spring'; double_crop?: boolean }>,
 ): Set<string> {
   const hasSpring = new Set<string>()
   for (const p of plantings) {
@@ -14,7 +14,7 @@ export function buildDoubleCropSet(
   }
   const result = new Set<string>()
   for (const p of plantings) {
-    if (cropsById.get(p.crop_id)?.harvest_category !== 'fall') continue
+    if (!cropsById.get(p.crop_id)?.double_crop) continue
     if (hasSpring.has(`${p.field_id}|${p.season_year}`)) result.add(p.id)
   }
   return result

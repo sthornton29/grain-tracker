@@ -124,6 +124,20 @@ export default function MarketingPage() {
     [year, crops, plantings, contracts, futures, options, assumptions, production, expProdByCrop],
   )
 
+  // Actual average yield (dry bushels from loads ÷ planted acres) per crop, used
+  // to snap the estimate yield to actual when a crop is marked harvest-complete.
+  const actualByCrop = useMemo(() => {
+    const acres = new Map<string, number>()
+    for (const p of plantings) acres.set(p.crop_id, (acres.get(p.crop_id) ?? 0) + Number(p.planted_acres ?? 0))
+    const m = new Map<string, { production: number; yield: number | null }>()
+    for (const c of crops) {
+      const prod = production.get(c.id) ?? 0
+      const a = acres.get(c.id) ?? 0
+      m.set(c.id, { production: prod, yield: prod > 0 && a > 0 ? Math.round((prod / a) * 10) / 10 : null })
+    }
+    return m
+  }, [plantings, crops, production])
+
   const cropName = (id: string | null) => crops.find((c) => c.id === id)?.name ?? ''
   const buyerName = (id: string | null) => buyers.find((b) => b.id === id)?.name ?? ''
 
@@ -185,7 +199,7 @@ export default function MarketingPage() {
       ) : (
         <>
           {/* Assumptions */}
-          <AssumptionsEditor crops={plantedCrops} year={year} assumptions={assumptions} segByCrop={segByCrop} onSave={saveAssumption} />
+          <AssumptionsEditor crops={plantedCrops} year={year} assumptions={assumptions} segByCrop={segByCrop} actualByCrop={actualByCrop} onSave={saveAssumption} />
 
           {/* View toggle */}
           <div className="flex items-center gap-2">
@@ -344,7 +358,7 @@ function DetailedTable({ rows }: { rows: MarketingRow[] }) {
               <td className={`px-3 py-2 text-right font-mono ${r.remaining < 0 ? 'text-red-700 font-semibold' : ''}`}>{bu(r.remaining)}</td>
               <td className="px-3 py-2 text-right font-mono">{r.avgFutures != null ? fmtPrice(r.avgFutures) : '—'}</td>
               <td className="px-3 py-2 text-right font-mono">{r.avgBasis != null ? Number(r.avgBasis).toFixed(4) : 'N/A'}</td>
-              <td className="px-3 py-2 text-right font-mono">{r.totalAvgPrice != null ? fmtPrice(r.totalAvgPrice) : (r.avgFutures != null ? `${fmtPrice(r.avgFutures)}*` : '—')}</td>
+              <td className="px-3 py-2 text-right font-mono">{r.totalAvgPrice != null ? fmtPrice(r.totalAvgPrice) : r.avgFutures != null ? `${fmtPrice(r.avgFutures)}*` : r.avgCashPrice != null ? fmtPrice(r.avgCashPrice) : '—'}</td>
               <td className="px-3 py-2 text-right font-mono">{usd(r.costPerAcre)}</td>
               <td className="px-3 py-2 text-right font-mono">{r.costPerBu != null ? fmtPrice(r.costPerBu) : '—'}</td>
               <td className={`px-3 py-2 text-right font-mono ${r.profitPerAcre == null ? 'text-slate-400' : r.profitPerAcre >= 0 ? 'text-green-700' : 'text-red-700'}`}>{r.profitPerAcre != null ? usd(r.profitPerAcre) : 'Incomplete'}</td>
@@ -358,37 +372,47 @@ function DetailedTable({ rows }: { rows: MarketingRow[] }) {
   )
 }
 
-function AssumptionsEditor({ crops, year, assumptions, segByCrop, onSave }: {
+function AssumptionsEditor({ crops, year, assumptions, segByCrop, actualByCrop, onSave }: {
   crops: Crop[]; year: number; assumptions: CropAssumption[]
-  segByCrop: Map<string, SegmentAcres>; onSave: (cropId: string, patch: Partial<CropAssumption>) => void
+  segByCrop: Map<string, SegmentAcres>
+  actualByCrop: Map<string, { production: number; yield: number | null }>
+  onSave: (cropId: string, patch: Partial<CropAssumption>) => void
 }) {
   return (
     <div className="bg-white rounded-xl shadow p-4 space-y-3">
       <div>
         <h2 className="font-semibold">Assumptions — {year}</h2>
         <p className="text-xs text-slate-500">
-          Expected yield drives the production estimate until you mark harvest complete, then actual yield from loads is used.
+          Expected yield drives the production estimate until you mark harvest complete — then the actual average
+          yield from loads replaces it and is used going forward.
           Break out yields by irrigated/dryland (and full-season/double-crop for double-cropped acres) to refine the estimate —
           a blank breakout cell falls back to the overall yield. Enter cost/acre for profit calculations.
         </p>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        {crops.map((c) => (
-          <AssumptionRow
-            key={c.id}
-            crop={c}
-            assumption={assumptions.find((a) => a.crop_id === c.id && a.crop_year === year)}
-            seg={segByCrop.get(c.id)}
-            onSave={onSave}
-          />
-        ))}
+        {crops.map((c) => {
+          const a = assumptions.find((x) => x.crop_id === c.id && x.crop_year === year)
+          // Key on updated_at so the inputs re-seed from the DB after a save —
+          // e.g. when harvest-complete snaps the overall yield to actual.
+          return (
+            <AssumptionRow
+              key={`${c.id}:${a?.updated_at ?? 'new'}`}
+              crop={c}
+              assumption={a}
+              seg={segByCrop.get(c.id)}
+              actual={actualByCrop.get(c.id)}
+              onSave={onSave}
+            />
+          )
+        })}
       </div>
     </div>
   )
 }
 
-function AssumptionRow({ crop, assumption, seg, onSave }: {
+function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
   crop: Crop; assumption?: CropAssumption; seg?: SegmentAcres
+  actual?: { production: number; yield: number | null }
   onSave: (cropId: string, patch: Partial<CropAssumption>) => void
 }) {
   const s0 = (v: number | null | undefined) => (v != null ? String(v) : '')
@@ -429,7 +453,18 @@ function AssumptionRow({ crop, assumption, seg, onSave }: {
       <div className="flex items-center gap-3 flex-wrap">
         <span className="font-semibold flex-1">{crop.name}</span>
         <label className="text-sm flex items-center gap-1 text-slate-600">
-          <input type="checkbox" checked={assumption?.harvest_complete ?? false} onChange={(e) => onSave(crop.id, { harvest_complete: e.target.checked })} />
+          <input
+            type="checkbox"
+            checked={assumption?.harvest_complete ?? false}
+            onChange={(e) => {
+              const checked = e.target.checked
+              const patch: Partial<CropAssumption> = { harvest_complete: checked }
+              // On completing harvest, snap the overall estimate yield to the
+              // actual average yield from loads.
+              if (checked && actual?.yield != null) patch.expected_yield = actual.yield
+              onSave(crop.id, patch)
+            }}
+          />
           Harvest complete
         </label>
       </div>
@@ -455,7 +490,11 @@ function AssumptionRow({ crop, assumption, seg, onSave }: {
         </div>
       )}
       <div className="flex items-center gap-3">
-        <span className="text-sm text-slate-600">Expected production: <span className="font-mono font-semibold">{bu(prod)}</span> bu</span>
+        {assumption?.harvest_complete && actual && actual.production > 0 ? (
+          <span className="text-sm text-slate-600">Actual production: <span className="font-mono font-semibold">{bu(actual.production)}</span> bu</span>
+        ) : (
+          <span className="text-sm text-slate-600">Expected production: <span className="font-mono font-semibold">{bu(prod)}</span> bu</span>
+        )}
         <button onClick={save} className="ml-auto rounded-lg bg-green-700 text-white px-3 py-1 text-sm font-semibold">Save</button>
       </div>
     </div>

@@ -20,6 +20,7 @@ export default function CropsEditor() {
   const [rows, setRows] = useState<Crop[]>([])
   const [name, setName] = useState('')
   const [category, setCategory] = useState<HarvestCategory>('fall')
+  const [dc, setDc] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editingName, setEditingName] = useState('')
   const [err, setErr] = useState<string | null>(null)
@@ -35,9 +36,9 @@ export default function CropsEditor() {
     e.preventDefault()
     const n = name.trim()
     if (!n) return
-    const { error } = await supabase.from('crops').insert({ name: n, harvest_category: category })
+    const { error } = await supabase.from('crops').insert({ name: n, harvest_category: category, double_crop: dc })
     if (error) { setErr(error.message); return }
-    setName(''); setCategory('fall'); setErr(null); refresh()
+    setName(''); setCategory('fall'); setDc(false); setErr(null); refresh()
   }
 
   async function saveName(id: string) {
@@ -55,6 +56,12 @@ export default function CropsEditor() {
     if (error) { setErr(error.message); refresh() }
   }
 
+  async function setDoubleCrop(id: string, double_crop: boolean) {
+    setRows((rs) => rs.map((r) => (r.id === id ? { ...r, double_crop } : r)))
+    const { error } = await supabase.from('crops').update({ double_crop }).eq('id', id)
+    if (error) { setErr(error.message); refresh() }
+  }
+
   async function remove(id: string) {
     if (!confirm('Delete this crop?')) return
     const { error } = await supabase.from('crops').delete().eq('id', id)
@@ -68,11 +75,12 @@ export default function CropsEditor() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Crops</h1>
       <p className="text-sm text-slate-500">
-        Set each crop&apos;s harvest category. A <strong>fall</strong>-harvest crop on a field that also has a{' '}
-        <strong>spring</strong>-harvest crop that season is counted as double-crop acres.
+        Set each crop&apos;s harvest category and whether it&apos;s grown as a double-crop. A field that has a{' '}
+        <strong>spring</strong>-harvest crop that season is double-cropped; a crop marked{' '}
+        <strong>Double-crop</strong> on that field (e.g. soybeans after wheat) is counted as double-crop acres.
       </p>
 
-      <form onSubmit={add} className="flex gap-2 flex-wrap">
+      <form onSubmit={add} className="flex gap-2 flex-wrap items-center">
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -82,6 +90,10 @@ export default function CropsEditor() {
         <select value={category} onChange={(e) => setCategory(e.target.value as HarvestCategory)} className={selectCls}>
           {CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
         </select>
+        <label className="text-sm flex items-center gap-1 text-slate-600">
+          <input type="checkbox" checked={dc} onChange={(e) => setDc(e.target.checked)} />
+          Double-crop
+        </label>
         <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add</button>
       </form>
 
@@ -113,6 +125,15 @@ export default function CropsEditor() {
                 >
                   {CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
                 </select>
+                <label className="text-sm flex items-center gap-1 text-slate-600">
+                  <input
+                    type="checkbox"
+                    checked={r.double_crop}
+                    onChange={(e) => setDoubleCrop(r.id, e.target.checked)}
+                    aria-label={`${r.name} double-crop`}
+                  />
+                  Double-crop
+                </label>
                 <button
                   onClick={() => { setEditingId(r.id); setEditingName(r.name) }}
                   className="text-sky-700"
