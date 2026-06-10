@@ -163,6 +163,10 @@ export default function MarketingPage() {
       expected_yield_dc_dry: pick('expected_yield_dc_dry'),
       harvest_complete: has('harvest_complete') ? patch.harvest_complete : existing?.harvest_complete ?? false,
       cost_per_acre: pick('cost_per_acre'),
+      cost_per_acre_irr: pick('cost_per_acre_irr'),
+      cost_per_acre_dry: pick('cost_per_acre_dry'),
+      cost_per_acre_dc_irr: pick('cost_per_acre_dc_irr'),
+      cost_per_acre_dc_dry: pick('cost_per_acre_dc_dry'),
       notes: pick('notes'),
       updated_at: new Date().toISOString(),
     }
@@ -383,10 +387,10 @@ function AssumptionsEditor({ crops, year, assumptions, segByCrop, actualByCrop, 
       <div>
         <h2 className="font-semibold">Assumptions — {year}</h2>
         <p className="text-xs text-slate-500">
-          Expected yield drives the production estimate until you mark harvest complete — then the actual average
-          yield from loads replaces it and is used going forward.
-          Break out yields by irrigated/dryland (and full-season/double-crop for double-cropped acres) to refine the estimate —
-          a blank breakout cell falls back to the overall yield. Enter cost/acre for profit calculations.
+          Enter an overall yield and cost/acre, or break them out by irrigated/dryland (and full-season/double-crop
+          for double-cropped acres) — a blank breakout cell falls back to the overall. Once you break a column out,
+          the Overall row shows the acre-weighted average. On harvest complete, the actual average yield from loads
+          replaces the estimate and is used going forward.
         </p>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
@@ -416,38 +420,75 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
   onSave: (cropId: string, patch: Partial<CropAssumption>) => void
 }) {
   const s0 = (v: number | null | undefined) => (v != null ? String(v) : '')
-  const [overall, setOverall] = useState(s0(assumption?.expected_yield))
-  const [yIrr, setYIrr] = useState(s0(assumption?.expected_yield_irr))
-  const [yDry, setYDry] = useState(s0(assumption?.expected_yield_dry))
-  const [yDcIrr, setYDcIrr] = useState(s0(assumption?.expected_yield_dc_irr))
-  const [yDcDry, setYDcDry] = useState(s0(assumption?.expected_yield_dc_dry))
-  const [cost, setCost] = useState(s0(assumption?.cost_per_acre))
+  const a = assumption
+  const [oYield, setOYield] = useState(s0(a?.expected_yield))
+  const [yIrr, setYIrr] = useState(s0(a?.expected_yield_irr))
+  const [yDry, setYDry] = useState(s0(a?.expected_yield_dry))
+  const [yDcIrr, setYDcIrr] = useState(s0(a?.expected_yield_dc_irr))
+  const [yDcDry, setYDcDry] = useState(s0(a?.expected_yield_dc_dry))
+  const [oCost, setOCost] = useState(s0(a?.cost_per_acre))
+  const [cIrr, setCIrr] = useState(s0(a?.cost_per_acre_irr))
+  const [cDry, setCDry] = useState(s0(a?.cost_per_acre_dry))
+  const [cDcIrr, setCDcIrr] = useState(s0(a?.cost_per_acre_dc_irr))
+  const [cDcDry, setCDcDry] = useState(s0(a?.cost_per_acre_dc_dry))
 
   const toNum = (str: string) => (str.trim() === '' ? null : Number(str))
   const s = seg ?? { fullIrr: 0, fullDry: 0, dcIrr: 0, dcDry: 0 }
-  // Effective per-segment yield: the segment input, else the overall yield.
-  const eff = (str: string) => toNum(str) ?? toNum(overall) ?? 0
-  const prod = eff(yIrr) * s.fullIrr + eff(yDry) * s.fullDry + eff(yDcIrr) * s.dcIrr + eff(yDcDry) * s.dcDry
+  const totalAcres = s.fullIrr + s.fullDry + s.dcIrr + s.dcDry
+  // Only distinguish full-season vs double-crop when the crop actually has both.
+  const showType = s.fullIrr + s.fullDry > 0 && s.dcIrr + s.dcDry > 0
 
   const segs = [
-    { label: 'Full-season · Irrigated', acres: s.fullIrr, val: yIrr, set: setYIrr },
-    { label: 'Full-season · Dryland', acres: s.fullDry, val: yDry, set: setYDry },
-    { label: 'Double-crop · Irrigated', acres: s.dcIrr, val: yDcIrr, set: setYDcIrr },
-    { label: 'Double-crop · Dryland', acres: s.dcDry, val: yDcDry, set: setYDcDry },
+    { key: 'irr', acres: s.fullIrr, label: showType ? 'Full-season · Irrigated' : 'Irrigated', y: yIrr, setY: setYIrr, c: cIrr, setC: setCIrr },
+    { key: 'dry', acres: s.fullDry, label: showType ? 'Full-season · Dryland' : 'Dryland', y: yDry, setY: setYDry, c: cDry, setC: setCDry },
+    { key: 'dcIrr', acres: s.dcIrr, label: showType ? 'Double-crop · Irrigated' : 'Irrigated', y: yDcIrr, setY: setYDcIrr, c: cDcIrr, setC: setCDcIrr },
+    { key: 'dcDry', acres: s.dcDry, label: showType ? 'Double-crop · Dryland' : 'Dryland', y: yDcDry, setY: setYDcDry, c: cDcDry, setC: setCDcDry },
   ].filter((row) => row.acres > 0)
+
+  // Acre-weighted average over the segments that have a value entered.
+  const weighted = (get: (r: (typeof segs)[number]) => string): number | null => {
+    let num = 0, den = 0
+    for (const r of segs) { const v = toNum(get(r)); if (v != null) { num += v * r.acres; den += r.acres } }
+    return den > 0 ? num / den : null
+  }
+  const round1 = (n: number) => Math.round(n * 10) / 10
+  const round2 = (n: number) => Math.round(n * 100) / 100
+  const wYield = weighted((r) => r.y)
+  const wCost = weighted((r) => r.c)
+  // The overall value used (and saved): the weighted average once any segment is
+  // broken out, otherwise the value typed in the overall field.
+  const effYield = wYield != null ? round1(wYield) : toNum(oYield)
+  const effCost = wCost != null ? round2(wCost) : toNum(oCost)
+
+  // Expected production: each segment uses its own yield, else the overall.
+  const prod = segs.length > 0
+    ? segs.reduce((sum, r) => sum + (toNum(r.y) ?? effYield ?? 0) * r.acres, 0)
+    : (effYield ?? 0) * totalAcres
+
+  const harvestDone = !!(a?.harvest_complete && actual && actual.production > 0)
+  // What the overall yield field shows: actual avg after harvest, the weighted
+  // average once broken out, else the editable estimate.
+  const overallYieldText = harvestDone
+    ? (actual?.yield != null ? actual.yield.toFixed(1) : '—')
+    : wYield != null ? round1(wYield).toFixed(1) : null
 
   function save() {
     onSave(crop.id, {
-      expected_yield: toNum(overall),
+      expected_yield: effYield,
       expected_yield_irr: toNum(yIrr),
       expected_yield_dry: toNum(yDry),
       expected_yield_dc_irr: toNum(yDcIrr),
       expected_yield_dc_dry: toNum(yDcDry),
-      cost_per_acre: toNum(cost),
+      cost_per_acre: effCost,
+      cost_per_acre_irr: toNum(cIrr),
+      cost_per_acre_dry: toNum(cDry),
+      cost_per_acre_dc_irr: toNum(cDcIrr),
+      cost_per_acre_dc_dry: toNum(cDcDry),
     })
   }
 
-  const smallInput = 'rounded border border-slate-300 px-2 py-1 w-24'
+  const ic = 'rounded border border-slate-300 px-2 py-1 w-20 text-right'
+  const cell = 'px-1 py-1'
   return (
     <div className="border border-slate-200 rounded-lg p-3 space-y-2">
       <div className="flex items-center gap-3 flex-wrap">
@@ -455,12 +496,11 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
         <label className="text-sm flex items-center gap-1 text-slate-600">
           <input
             type="checkbox"
-            checked={assumption?.harvest_complete ?? false}
+            checked={a?.harvest_complete ?? false}
             onChange={(e) => {
               const checked = e.target.checked
               const patch: Partial<CropAssumption> = { harvest_complete: checked }
-              // On completing harvest, snap the overall estimate yield to the
-              // actual average yield from loads.
+              // On completing harvest, snap the overall estimate yield to actual.
               if (checked && actual?.yield != null) patch.expected_yield = actual.yield
               onSave(crop.id, patch)
             }}
@@ -468,30 +508,47 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
           Harvest complete
         </label>
       </div>
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="text-xs text-slate-600">Overall yield (bu/ac)
-          <input type="number" step="0.1" value={overall} onChange={(e) => setOverall(e.target.value)} className={`mt-0.5 block ${smallInput}`} />
-        </label>
-        <label className="text-xs text-slate-600">Cost / acre
-          <input type="number" step="0.01" value={cost} onChange={(e) => setCost(e.target.value)} className={`mt-0.5 block ${smallInput}`} />
-        </label>
-      </div>
-      {segs.length > 0 && (
-        <div className="space-y-1">
-          <div className="text-xs text-slate-500">Break out yield (optional — blank uses overall):</div>
-          {segs.map((row) => (
-            <div key={row.label} className="flex items-center gap-2 text-sm">
-              <span className="flex-1 text-slate-600">{row.label}</span>
-              <span className="w-20 text-right font-mono text-slate-500">{bu(row.acres)} ac</span>
-              <input type="number" step="0.1" value={row.val} placeholder={overall || ''} onChange={(e) => row.set(e.target.value)} className={smallInput} />
-              <span className="text-xs text-slate-400">bu/ac</span>
-            </div>
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-xs text-slate-500">
+            <th className={`${cell} text-left font-normal`}></th>
+            <th className={`${cell} text-right font-normal`}>Acres</th>
+            <th className={`${cell} text-right font-normal`}>Yield bu/ac</th>
+            <th className={`${cell} text-right font-normal`}>Cost/ac</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td className={`${cell} text-slate-600 font-medium`}>Overall</td>
+            <td className={`${cell} text-right font-mono text-slate-500`}>{bu(totalAcres)}</td>
+            <td className={`${cell} text-right`}>
+              {overallYieldText != null
+                ? <span className="font-mono">{overallYieldText}</span>
+                : <input type="number" step="0.1" value={oYield} onChange={(e) => setOYield(e.target.value)} className={ic} />}
+            </td>
+            <td className={`${cell} text-right`}>
+              {wCost != null
+                ? <span className="font-mono">{effCost != null ? usd(effCost) : '—'}</span>
+                : <input type="number" step="0.01" value={oCost} onChange={(e) => setOCost(e.target.value)} className={ic} />}
+            </td>
+          </tr>
+          {segs.map((r) => (
+            <tr key={r.key}>
+              <td className={`${cell} text-slate-600`}>{r.label}</td>
+              <td className={`${cell} text-right font-mono text-slate-500`}>{bu(r.acres)}</td>
+              <td className={`${cell} text-right`}>
+                <input type="number" step="0.1" value={r.y} placeholder={oYield || ''} onChange={(e) => r.setY(e.target.value)} className={ic} />
+              </td>
+              <td className={`${cell} text-right`}>
+                <input type="number" step="0.01" value={r.c} placeholder={oCost || ''} onChange={(e) => r.setC(e.target.value)} className={ic} />
+              </td>
+            </tr>
           ))}
-        </div>
-      )}
+        </tbody>
+      </table>
       <div className="flex items-center gap-3">
-        {assumption?.harvest_complete && actual && actual.production > 0 ? (
-          <span className="text-sm text-slate-600">Actual production: <span className="font-mono font-semibold">{bu(actual.production)}</span> bu</span>
+        {harvestDone ? (
+          <span className="text-sm text-slate-600">Actual production: <span className="font-mono font-semibold">{bu(actual!.production)}</span> bu</span>
         ) : (
           <span className="text-sm text-slate-600">Expected production: <span className="font-mono font-semibold">{bu(prod)}</span> bu</span>
         )}

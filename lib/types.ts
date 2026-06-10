@@ -155,7 +155,13 @@ export type CropAssumption = {
   expected_yield_dc_irr: number | null
   expected_yield_dc_dry: number | null
   harvest_complete: boolean
+  // Overall cost/acre (acre-weighted average when the breakout below is used).
   cost_per_acre: number | null
+  // Optional cost/acre breakout, mirroring the yield breakout.
+  cost_per_acre_irr: number | null
+  cost_per_acre_dry: number | null
+  cost_per_acre_dc_irr: number | null
+  cost_per_acre_dc_dry: number | null
   notes: string | null
   created_at: string
   updated_at: string
