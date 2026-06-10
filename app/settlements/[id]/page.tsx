@@ -2,7 +2,9 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
+import { relinkSettlementLines } from '@/lib/settlement-link'
 import SettlementPdfPanel from '@/components/settlement-pdf-panel'
+import LineMatchSelect, { type LoadOption } from './line-match-select'
 
 export const dynamic = 'force-dynamic'
 
@@ -58,24 +60,32 @@ function dryBu(l: LoadShape) {
 
 export default async function SettlementDetailPage({ params }: { params: { id: string } }) {
   const supabase = createClient()
-  const [sRes, linesRes] = await Promise.all([
-    supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_number, notes, source_pdf_url, buyer:buyers(name)').eq('id', params.id).single(),
-    supabase
-      .from('settlement_lines')
-      .select(`
-        id, ticket_number, load_id, net_bushels, gross_revenue, discounts, net_revenue, price_per_bushel, notes,
-        load:loads(
-          id, date, ticket_number, net_weight, moisture, dry_bushels_override, contract_id, to_buyer_id,
-          crop:crops(name, base_moisture_pct, base_lb_per_bushel),
-          contract:contracts(id, contract_number, delivery_start_date, delivery_end_date)
-        )
-      `)
-      .eq('settlement_id', params.id)
-      .order('ticket_number'),
-  ])
 
+  const sRes = await supabase
+    .from('settlements')
+    .select('id, buyer_id, settlement_date, settlement_number, notes, source_pdf_url, buyer:buyers(name)')
+    .eq('id', params.id)
+    .single()
   const settlement = sRes.data as unknown as Settlement | null
   if (!settlement) notFound()
+
+  // Persist unambiguous ticket→load matches before reading, so the DB matches
+  // what this screen shows — keeping the list's Unmatched count and every export
+  // consistent with the Review screen (no more view-time-only re-pairing).
+  await relinkSettlementLines(supabase, params.id)
+
+  const linesRes = await supabase
+    .from('settlement_lines')
+    .select(`
+      id, ticket_number, load_id, net_bushels, gross_revenue, discounts, net_revenue, price_per_bushel, notes,
+      load:loads(
+        id, date, ticket_number, net_weight, moisture, dry_bushels_override, contract_id, to_buyer_id,
+        crop:crops(name, base_moisture_pct, base_lb_per_bushel),
+        contract:contracts(id, contract_number, delivery_start_date, delivery_end_date)
+      )
+    `)
+    .eq('settlement_id', params.id)
+    .order('ticket_number')
 
   const lines = (linesRes.data as unknown as Line[]) ?? []
 
@@ -112,22 +122,37 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
     .eq('to_type', 'buyer')
   const allBuyerLoads = (buyerLoads as unknown as LoadShape[]) ?? []
 
-  // Re-resolve unmatched lines by ticket number at view time. A line's load_id FK
-  // is set when the PDF is uploaded; if the user later corrects a load's ticket
-  // number to match, we re-pair the line here without persisting back to the DB.
-  const buyerLoadByTicket = new Map<string, LoadShape>()
+  // After the relink above, a line's load_id is persisted for every unambiguous
+  // ticket match, so "matched" simply means the FK resolved to a load. Lines we
+  // couldn't auto-match split into two cases: a ticket that matches MORE than one
+  // buyer load (ambiguous — needs a manual pick) versus a ticket that matches
+  // none (no load recorded). Both get a manual-match dropdown.
+  const norm = (s: string | null | undefined) => (s ?? '').trim().toLowerCase()
+  const ticketCounts = new Map<string, number>()
   for (const l of allBuyerLoads) {
-    const t = (l.ticket_number ?? '').trim().toLowerCase()
-    if (t && !buyerLoadByTicket.has(t)) buyerLoadByTicket.set(t, l)
+    const t = norm(l.ticket_number)
+    if (t) ticketCounts.set(t, (ticketCounts.get(t) ?? 0) + 1)
   }
-  const resolvedLines: Line[] = lines.map((l) => {
-    if (l.load) return l
-    const t = (l.ticket_number ?? '').trim().toLowerCase()
-    const m = t ? buyerLoadByTicket.get(t) : undefined
-    return m ? { ...l, load: m } : l
+  const matched = lines.filter((l) => l.load)
+  const unresolved = lines.filter((l) => !l.load)
+  const ambiguous = unresolved.filter((l) => (ticketCounts.get(norm(l.ticket_number)) ?? 0) > 1)
+  const noMatch = unresolved.filter((l) => (ticketCounts.get(norm(l.ticket_number)) ?? 0) <= 1)
+  const unmatchedCount = ambiguous.length + noMatch.length
+
+  // Candidate loads for the manual-match dropdown.
+  const loadOption = (l: LoadShape): LoadOption => ({
+    id: l.id,
+    label: `${l.date} · ${l.ticket_number ? '#' + l.ticket_number : 'no ticket'} · ${l.crop?.name ?? ''} · ${fmt(dryBu(l))} bu`,
   })
-  const matched = resolvedLines.filter((l) => l.load)
-  const unmatched = resolvedLines.filter((l) => !l.load)
+  const allLoadOptions: LoadOption[] = [...allBuyerLoads]
+    .sort((a, b) => (a.date < b.date ? 1 : -1))
+    .map(loadOption)
+  // For an ambiguous line, offer the loads that share its ticket first.
+  const optionsForTicket = (ticket: string | null): LoadOption[] => {
+    const t = norm(ticket)
+    const same = allBuyerLoads.filter((l) => norm(l.ticket_number) === t)
+    return same.length ? same.map(loadOption) : allLoadOptions
+  }
 
   const missing = allBuyerLoads.filter((l) => {
     if (settledLoadIds.has(l.id)) return false
@@ -164,7 +189,7 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <StatCard label="Lines" value={String(lines.length)} />
         <StatCard label="Matched" value={String(matched.length)} tone="green" />
-        <StatCard label="Unmatched" value={String(unmatched.length)} tone={unmatched.length > 0 ? 'amber' : 'slate'} />
+        <StatCard label="Unmatched" value={String(unmatchedCount)} tone={unmatchedCount > 0 ? 'amber' : 'slate'} />
         <StatCard label="Net revenue" value={`$${fmt(totalNetRev)}`} />
       </div>
 
@@ -196,18 +221,27 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
         )}
       </Section>
 
-      <Section title="Unmatched settlement lines" subtitle="Buyer paid us, but the ticket number doesn't match any load we recorded.">
-        {unmatched.length === 0 ? <Empty>None — every paid ticket matched a load.</Empty> : (
-          <Table headers={['Ticket', 'Net bu', 'Gross $', 'Discounts', 'Net $', '$/bu', 'Notes']}>
-            {unmatched.map((l) => (
+      <Section title="Needs matching" subtitle="Buyer paid us, but we couldn't auto-match the ticket to a single load. Pick the right load and it saves immediately.">
+        {unmatchedCount === 0 ? <Empty>None — every paid ticket matched a load.</Empty> : (
+          <Table headers={['Ticket', 'Status', 'Net bu', 'Net $', '$/bu', 'Match to load']}>
+            {ambiguous.map((l) => (
               <tr key={l.id} className="border-t border-slate-100 bg-amber-50">
                 <td className="px-3 py-2 font-semibold">{l.ticket_number || <span className="text-slate-400">—</span>}</td>
+                <td className="px-3 py-2"><span className="rounded-full bg-amber-200 text-amber-900 px-2 py-0.5 text-xs font-semibold whitespace-nowrap">Ambiguous — needs manual match</span></td>
                 <td className="px-3 py-2 text-right font-mono">{fmt(l.net_bushels)}</td>
-                <td className="px-3 py-2 text-right font-mono">${fmt(l.gross_revenue)}</td>
-                <td className="px-3 py-2 text-right font-mono">${fmt(l.discounts)}</td>
                 <td className="px-3 py-2 text-right font-mono">${fmt(l.net_revenue)}</td>
                 <td className="px-3 py-2 text-right font-mono">{fmt(l.price_per_bushel, 4)}</td>
-                <td className="px-3 py-2 text-slate-500 text-sm">{l.notes}</td>
+                <td className="px-3 py-2"><LineMatchSelect settlementId={settlement.id} lineId={l.id} currentLoadId={l.load_id} options={optionsForTicket(l.ticket_number)} /></td>
+              </tr>
+            ))}
+            {noMatch.map((l) => (
+              <tr key={l.id} className="border-t border-slate-100 bg-red-50">
+                <td className="px-3 py-2 font-semibold">{l.ticket_number || <span className="text-slate-400">—</span>}</td>
+                <td className="px-3 py-2"><span className="rounded-full bg-slate-200 text-slate-700 px-2 py-0.5 text-xs font-semibold whitespace-nowrap">No match found</span></td>
+                <td className="px-3 py-2 text-right font-mono">{fmt(l.net_bushels)}</td>
+                <td className="px-3 py-2 text-right font-mono">${fmt(l.net_revenue)}</td>
+                <td className="px-3 py-2 text-right font-mono">{fmt(l.price_per_bushel, 4)}</td>
+                <td className="px-3 py-2"><LineMatchSelect settlementId={settlement.id} lineId={l.id} currentLoadId={l.load_id} options={allLoadOptions} /></td>
               </tr>
             ))}
           </Table>

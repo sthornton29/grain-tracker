@@ -19,7 +19,7 @@ type Row = {
   }>
 }
 
-const EMPTY_TICKETS: Set<string> = new Set()
+const EMPTY_COUNTS: Map<string, number> = new Map()
 
 export default async function SettlementsListPage() {
   const supabase = createClient()
@@ -30,10 +30,11 @@ export default async function SettlementsListPage() {
 
   const rows = (data as unknown as Row[]) ?? []
 
-  // Re-resolve unmatched lines by ticket number, mirroring the detail page
-  // (app/settlements/[id]/page.tsx). A line whose load_id FK is null still
-  // counts as matched if its ticket number matches a load we delivered to the
-  // same buyer, so the Unmatched count here agrees with the Review screen.
+  // Mirror the Review screen's matching rule so the Unmatched count agrees with
+  // it. A line counts as matched when its load_id FK is set (the Review screen
+  // persists every unambiguous match) OR its ticket maps to exactly one buyer
+  // load. Tickets matching more than one load (ambiguous) or none count as
+  // unmatched — exactly what the Review screen flags for manual resolution.
   const buyerIds = Array.from(new Set(rows.map((r) => r.buyer_id).filter((b): b is string => !!b)))
   const { data: buyerLoads } = buyerIds.length
     ? await supabase
@@ -42,14 +43,14 @@ export default async function SettlementsListPage() {
         .eq('to_type', 'buyer')
         .in('to_buyer_id', buyerIds)
     : { data: [] as { to_buyer_id: string | null; ticket_number: string | null }[] }
-  const ticketsByBuyer = new Map<string, Set<string>>()
+  const ticketCountsByBuyer = new Map<string, Map<string, number>>()
   for (const l of buyerLoads ?? []) {
     if (!l.to_buyer_id) continue
     const t = (l.ticket_number ?? '').trim().toLowerCase()
     if (!t) continue
-    let set = ticketsByBuyer.get(l.to_buyer_id)
-    if (!set) { set = new Set(); ticketsByBuyer.set(l.to_buyer_id, set) }
-    set.add(t)
+    let m = ticketCountsByBuyer.get(l.to_buyer_id)
+    if (!m) { m = new Map(); ticketCountsByBuyer.set(l.to_buyer_id, m) }
+    m.set(t, (m.get(t) ?? 0) + 1)
   }
 
   const fmt = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 2 })
@@ -75,11 +76,11 @@ export default async function SettlementsListPage() {
             )}
             {rows.map((r) => {
               const lines = r.settlement_lines ?? []
-              const buyerTickets = (r.buyer_id && ticketsByBuyer.get(r.buyer_id)) || EMPTY_TICKETS
+              const buyerCounts = (r.buyer_id && ticketCountsByBuyer.get(r.buyer_id)) || EMPTY_COUNTS
               const unmatched = lines.filter((l) => {
                 if (l.load_id) return false
                 const t = (l.ticket_number ?? '').trim().toLowerCase()
-                if (t && buyerTickets.has(t)) return false
+                if (t && buyerCounts.get(t) === 1) return false
                 return true
               }).length
               const netBu = lines.reduce((s, l) => s + Number(l.net_bushels ?? 0), 0)
