@@ -1,11 +1,9 @@
-import type { FieldPlanting } from '@/lib/types'
-
 // Double-crop classification by harvest category. For a field + season_year that
 // has any SPRING-harvest planting (e.g. wheat, canola), each FALL-harvest
 // planting (e.g. corn, soybeans) on that field is a double-crop. Returns the set
 // of those fall-harvest planting ids.
 export function buildDoubleCropSet(
-  plantings: FieldPlanting[],
+  plantings: ReadonlyArray<{ id: string; field_id: string; season_year: number; crop_id: string }>,
   cropsById: Map<string, { harvest_category: 'fall' | 'spring' }>,
 ): Set<string> {
   const hasSpring = new Set<string>()

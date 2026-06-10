@@ -37,6 +37,57 @@ function round(n: number, d = 6): number {
   return Math.round(n * f) / f
 }
 
+// Acres per crop split into full-season vs double-crop and irrigated vs dryland.
+export type SegmentAcres = { fullIrr: number; fullDry: number; dcIrr: number; dcDry: number }
+
+// Aggregate planting acres into the four breakout segments per crop. `doubleCropIds`
+// marks which plantings are double-crop (see buildDoubleCropSet).
+export function segmentAcresByCrop(
+  plantings: ReadonlyArray<{
+    id: string; crop_id: string; season_year: number
+    irrigated_acres: number | string | null; dryland_acres: number | string | null
+  }>,
+  cropYear: number,
+  doubleCropIds: Set<string>,
+): Map<string, SegmentAcres> {
+  const m = new Map<string, SegmentAcres>()
+  for (const p of plantings) {
+    if (p.season_year !== cropYear) continue
+    const irr = Number(p.irrigated_acres ?? 0) || 0
+    const dry = Number(p.dryland_acres ?? 0) || 0
+    const seg = m.get(p.crop_id) ?? { fullIrr: 0, fullDry: 0, dcIrr: 0, dcDry: 0 }
+    if (doubleCropIds.has(p.id)) { seg.dcIrr += irr; seg.dcDry += dry }
+    else { seg.fullIrr += irr; seg.fullDry += dry }
+    m.set(p.crop_id, seg)
+  }
+  return m
+}
+
+// Expected production (bushels) per crop from the broken-out yields: each segment
+// uses its own yield, falling back to the overall expected_yield where blank. A
+// crop with no yields set at all is omitted, so the dashboard can fall back to
+// actual loads.
+export function expectedProductionFromBreakout(
+  segByCrop: Map<string, SegmentAcres>,
+  assumptions: CropAssumption[],
+  cropYear: number,
+): Map<string, number> {
+  const out = new Map<string, number>()
+  const num = (v: number | null | undefined) => (v != null ? Number(v) : null)
+  for (const [cropId, seg] of segByCrop) {
+    const a = assumptions.find((x) => x.crop_id === cropId && x.crop_year === cropYear)
+    const blended = num(a?.expected_yield)
+    const yIrr = num(a?.expected_yield_irr) ?? blended
+    const yDry = num(a?.expected_yield_dry) ?? blended
+    const yDcIrr = num(a?.expected_yield_dc_irr) ?? blended
+    const yDcDry = num(a?.expected_yield_dc_dry) ?? blended
+    if (blended == null && yIrr == null && yDry == null && yDcIrr == null && yDcDry == null) continue
+    const prod = (yIrr ?? 0) * seg.fullIrr + (yDry ?? 0) * seg.fullDry + (yDcIrr ?? 0) * seg.dcIrr + (yDcDry ?? 0) * seg.dcDry
+    out.set(cropId, round(prod, 2))
+  }
+  return out
+}
+
 export function computeMarketing(args: {
   cropYear: number
   crops: Crop[]
@@ -46,8 +97,11 @@ export function computeMarketing(args: {
   options: OptionPosition[]
   assumptions: CropAssumption[]
   actualProductionByCrop: Map<string, number>
+  // Optional per-crop expected production (bushels) from the yield breakout.
+  // When present for a crop, it replaces expected_yield × acres for the estimate.
+  expectedProductionByCrop?: Map<string, number>
 }): MarketingRow[] {
-  const { cropYear, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop } = args
+  const { cropYear, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop, expectedProductionByCrop } = args
 
   const cropIdsWithPlantings = new Set(
     plantings.filter((p) => p.season_year === cropYear).map((p) => p.crop_id),
@@ -74,9 +128,17 @@ export function computeMarketing(args: {
       yieldVal = acres > 0 ? round(actualProd / acres, 2) : null
       yieldLabel = 'Actual'
     } else {
-      yieldVal = expected
-      yieldLabel = 'Est.'
-      totalProduction = yieldVal != null ? yieldVal * acres : (actualProd > 0 ? actualProd : 0)
+      const broken = expectedProductionByCrop?.get(crop.id)
+      if (broken != null) {
+        // Broken-out estimate: yield shown is the implied blend (production ÷ acres).
+        totalProduction = broken
+        yieldVal = acres > 0 ? round(broken / acres, 2) : null
+        yieldLabel = 'Est.'
+      } else {
+        yieldVal = expected
+        yieldLabel = 'Est.'
+        totalProduction = yieldVal != null ? yieldVal * acres : (actualProd > 0 ? actualProd : 0)
+      }
     }
 
     const cropContracts = contracts.filter((c) => c.crop_id === crop.id && c.crop_year === cropYear)

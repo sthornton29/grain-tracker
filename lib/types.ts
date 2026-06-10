@@ -144,6 +144,12 @@ export type CropAssumption = {
   crop_id: string
   crop_year: number
   expected_yield: number | null
+  // Optional production-expectation breakout (bu/ac). Each falls back to
+  // expected_yield when null. *_dc_* are the double-crop variants.
+  expected_yield_irr: number | null
+  expected_yield_dry: number | null
+  expected_yield_dc_irr: number | null
+  expected_yield_dc_dry: number | null
   harvest_complete: boolean
   cost_per_acre: number | null
   notes: string | null

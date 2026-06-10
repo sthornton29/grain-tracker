@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
-import { computeMarketing, type MarketingRow, type Planting } from '@/lib/marketing'
+import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
+import { buildDoubleCropSet } from '@/lib/plantings'
 import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL } from '@/lib/contracts'
 import { fmtPrice, fmtPnl } from '@/lib/hedging'
 import type { Buyer, Contract, Crop, CropAssumption, FuturesPosition, OptionPosition } from '@/lib/types'
@@ -15,6 +16,16 @@ type LoadRow = {
   net_weight: number | null
   moisture: number | null
   dry_bushels_override: number | null
+}
+
+type PlantingRow = {
+  id: string
+  field_id: string
+  crop_id: string
+  season_year: number
+  planted_acres: number | null
+  irrigated_acres: number | null
+  dryland_acres: number | null
 }
 
 const bu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
@@ -29,7 +40,7 @@ export default function MarketingPage() {
 
   const [crops, setCrops] = useState<Crop[]>([])
   const [buyers, setBuyers] = useState<Buyer[]>([])
-  const [plantings, setPlantings] = useState<Planting[]>([])
+  const [plantings, setPlantings] = useState<PlantingRow[]>([])
   const [contracts, setContracts] = useState<Contract[]>([])
   const [futures, setFutures] = useState<FuturesPosition[]>([])
   const [options, setOptions] = useState<OptionPosition[]>([])
@@ -60,7 +71,7 @@ export default function MarketingPage() {
     const [cr, by, pl, ct, fp, op, ca, ld] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
       supabase.from('buyers').select('*').order('name'),
-      supabase.from('field_plantings').select('crop_id, season_year, planted_acres').eq('season_year', cropYear),
+      supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres').eq('season_year', cropYear),
       supabase.from('contracts').select('*').eq('crop_year', cropYear),
       supabase.from('futures_positions').select('*').eq('crop_year', cropYear),
       supabase.from('options_positions').select('*').eq('crop_year', cropYear),
@@ -70,7 +81,7 @@ export default function MarketingPage() {
     const cropsList = (cr.data as Crop[]) ?? []
     setCrops(cropsList)
     setBuyers((by.data as Buyer[]) ?? [])
-    setPlantings((pl.data as Planting[]) ?? [])
+    setPlantings((pl.data as PlantingRow[]) ?? [])
     setContracts((ct.data as Contract[]) ?? [])
     setFutures((fp.data as FuturesPosition[]) ?? [])
     setOptions((op.data as OptionPosition[]) ?? [])
@@ -95,9 +106,22 @@ export default function MarketingPage() {
 
   useEffect(() => { if (year != null) load(year) }, [year, load])
 
+  // Acres per crop split into full-season/double-crop × irrigated/dryland, and
+  // the broken-out expected production used by the dashboard.
+  const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
+  const doubleCropIds = useMemo(() => buildDoubleCropSet(plantings, cropById), [plantings, cropById])
+  const segByCrop = useMemo<Map<string, SegmentAcres>>(
+    () => (year == null ? new Map() : segmentAcresByCrop(plantings, year, doubleCropIds)),
+    [plantings, year, doubleCropIds],
+  )
+  const expProdByCrop = useMemo(
+    () => (year == null ? new Map<string, number>() : expectedProductionFromBreakout(segByCrop, assumptions, year)),
+    [segByCrop, assumptions, year],
+  )
+
   const rows = useMemo(
-    () => (year == null ? [] : computeMarketing({ cropYear: year, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop: production })),
-    [year, crops, plantings, contracts, futures, options, assumptions, production],
+    () => (year == null ? [] : computeMarketing({ cropYear: year, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop })),
+    [year, crops, plantings, contracts, futures, options, assumptions, production, expProdByCrop],
   )
 
   const cropName = (id: string | null) => crops.find((c) => c.id === id)?.name ?? ''
@@ -110,13 +134,22 @@ export default function MarketingPage() {
   async function saveAssumption(cropId: string, patch: Partial<CropAssumption>) {
     if (year == null) return
     const existing = assumptions.find((a) => a.crop_id === cropId && a.crop_year === year)
+    // Use a field from `patch` when it's present (even if null, to clear it);
+    // otherwise keep the stored value. This lets a partial patch (e.g. just the
+    // harvest-complete checkbox) leave the other fields untouched.
+    const has = (k: keyof CropAssumption) => Object.prototype.hasOwnProperty.call(patch, k)
+    const pick = (k: keyof CropAssumption) => (has(k) ? patch[k] ?? null : existing?.[k] ?? null)
     const row = {
       crop_id: cropId,
       crop_year: year,
-      expected_yield: patch.expected_yield ?? existing?.expected_yield ?? null,
-      harvest_complete: patch.harvest_complete ?? existing?.harvest_complete ?? false,
-      cost_per_acre: patch.cost_per_acre ?? existing?.cost_per_acre ?? null,
-      notes: patch.notes ?? existing?.notes ?? null,
+      expected_yield: pick('expected_yield'),
+      expected_yield_irr: pick('expected_yield_irr'),
+      expected_yield_dry: pick('expected_yield_dry'),
+      expected_yield_dc_irr: pick('expected_yield_dc_irr'),
+      expected_yield_dc_dry: pick('expected_yield_dc_dry'),
+      harvest_complete: has('harvest_complete') ? patch.harvest_complete : existing?.harvest_complete ?? false,
+      cost_per_acre: pick('cost_per_acre'),
+      notes: pick('notes'),
       updated_at: new Date().toISOString(),
     }
     const { error } = await supabase.from('crop_assumptions').upsert(row, { onConflict: 'crop_id,crop_year' })
@@ -152,7 +185,7 @@ export default function MarketingPage() {
       ) : (
         <>
           {/* Assumptions */}
-          <AssumptionsEditor crops={plantedCrops} year={year} assumptions={assumptions} onSave={saveAssumption} />
+          <AssumptionsEditor crops={plantedCrops} year={year} assumptions={assumptions} segByCrop={segByCrop} onSave={saveAssumption} />
 
           {/* View toggle */}
           <div className="flex items-center gap-2">
@@ -325,44 +358,107 @@ function DetailedTable({ rows }: { rows: MarketingRow[] }) {
   )
 }
 
-function AssumptionsEditor({ crops, year, assumptions, onSave }: {
-  crops: Crop[]; year: number; assumptions: CropAssumption[]; onSave: (cropId: string, patch: Partial<CropAssumption>) => void
+function AssumptionsEditor({ crops, year, assumptions, segByCrop, onSave }: {
+  crops: Crop[]; year: number; assumptions: CropAssumption[]
+  segByCrop: Map<string, SegmentAcres>; onSave: (cropId: string, patch: Partial<CropAssumption>) => void
 }) {
   return (
-    <div className="bg-white rounded-xl shadow p-4">
-      <h2 className="font-semibold mb-2">Assumptions — {year}</h2>
-      <p className="text-xs text-slate-500 mb-2">Expected yield is used until you mark harvest complete, then actual yield from loads is used. Enter cost/acre for profit calculations.</p>
-      <div className="overflow-x-auto">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 text-slate-600"><tr>{['Crop', 'Expected Yield (bu/ac)', 'Harvest complete', 'Cost / Acre', ''].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
-          <tbody>
-            {crops.map((c) => <AssumptionRow key={c.id} crop={c} assumption={assumptions.find((a) => a.crop_id === c.id && a.crop_year === year)} onSave={onSave} />)}
-          </tbody>
-        </table>
+    <div className="bg-white rounded-xl shadow p-4 space-y-3">
+      <div>
+        <h2 className="font-semibold">Assumptions — {year}</h2>
+        <p className="text-xs text-slate-500">
+          Expected yield drives the production estimate until you mark harvest complete, then actual yield from loads is used.
+          Break out yields by irrigated/dryland (and full-season/double-crop for double-cropped acres) to refine the estimate —
+          a blank breakout cell falls back to the overall yield. Enter cost/acre for profit calculations.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {crops.map((c) => (
+          <AssumptionRow
+            key={c.id}
+            crop={c}
+            assumption={assumptions.find((a) => a.crop_id === c.id && a.crop_year === year)}
+            seg={segByCrop.get(c.id)}
+            onSave={onSave}
+          />
+        ))}
       </div>
     </div>
   )
 }
 
-function AssumptionRow({ crop, assumption, onSave }: { crop: Crop; assumption?: CropAssumption; onSave: (cropId: string, patch: Partial<CropAssumption>) => void }) {
-  const [yieldStr, setYieldStr] = useState(assumption?.expected_yield != null ? String(assumption.expected_yield) : '')
-  const [costStr, setCostStr] = useState(assumption?.cost_per_acre != null ? String(assumption.cost_per_acre) : '')
-  const inputCls = 'rounded border border-slate-300 px-2 py-1 w-32'
+function AssumptionRow({ crop, assumption, seg, onSave }: {
+  crop: Crop; assumption?: CropAssumption; seg?: SegmentAcres
+  onSave: (cropId: string, patch: Partial<CropAssumption>) => void
+}) {
+  const s0 = (v: number | null | undefined) => (v != null ? String(v) : '')
+  const [overall, setOverall] = useState(s0(assumption?.expected_yield))
+  const [yIrr, setYIrr] = useState(s0(assumption?.expected_yield_irr))
+  const [yDry, setYDry] = useState(s0(assumption?.expected_yield_dry))
+  const [yDcIrr, setYDcIrr] = useState(s0(assumption?.expected_yield_dc_irr))
+  const [yDcDry, setYDcDry] = useState(s0(assumption?.expected_yield_dc_dry))
+  const [cost, setCost] = useState(s0(assumption?.cost_per_acre))
+
+  const toNum = (str: string) => (str.trim() === '' ? null : Number(str))
+  const s = seg ?? { fullIrr: 0, fullDry: 0, dcIrr: 0, dcDry: 0 }
+  // Effective per-segment yield: the segment input, else the overall yield.
+  const eff = (str: string) => toNum(str) ?? toNum(overall) ?? 0
+  const prod = eff(yIrr) * s.fullIrr + eff(yDry) * s.fullDry + eff(yDcIrr) * s.dcIrr + eff(yDcDry) * s.dcDry
+
+  const segs = [
+    { label: 'Full-season · Irrigated', acres: s.fullIrr, val: yIrr, set: setYIrr },
+    { label: 'Full-season · Dryland', acres: s.fullDry, val: yDry, set: setYDry },
+    { label: 'Double-crop · Irrigated', acres: s.dcIrr, val: yDcIrr, set: setYDcIrr },
+    { label: 'Double-crop · Dryland', acres: s.dcDry, val: yDcDry, set: setYDcDry },
+  ].filter((row) => row.acres > 0)
+
+  function save() {
+    onSave(crop.id, {
+      expected_yield: toNum(overall),
+      expected_yield_irr: toNum(yIrr),
+      expected_yield_dry: toNum(yDry),
+      expected_yield_dc_irr: toNum(yDcIrr),
+      expected_yield_dc_dry: toNum(yDcDry),
+      cost_per_acre: toNum(cost),
+    })
+  }
+
+  const smallInput = 'rounded border border-slate-300 px-2 py-1 w-24'
   return (
-    <tr className="border-t border-slate-100">
-      <td className="px-3 py-2 font-semibold">{crop.name}</td>
-      <td className="px-3 py-2"><input type="number" step="0.1" value={yieldStr} onChange={(e) => setYieldStr(e.target.value)} className={inputCls} /></td>
-      <td className="px-3 py-2">
-        <input type="checkbox" checked={assumption?.harvest_complete ?? false} onChange={(e) => onSave(crop.id, { harvest_complete: e.target.checked })} />
-      </td>
-      <td className="px-3 py-2"><input type="number" step="0.01" value={costStr} onChange={(e) => setCostStr(e.target.value)} className={inputCls} /></td>
-      <td className="px-3 py-2">
-        <button
-          onClick={() => onSave(crop.id, { expected_yield: yieldStr === '' ? null : Number(yieldStr), cost_per_acre: costStr === '' ? null : Number(costStr) })}
-          className="rounded-lg bg-green-700 text-white px-3 py-1 text-sm font-semibold"
-        >Save</button>
-      </td>
-    </tr>
+    <div className="border border-slate-200 rounded-lg p-3 space-y-2">
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="font-semibold flex-1">{crop.name}</span>
+        <label className="text-sm flex items-center gap-1 text-slate-600">
+          <input type="checkbox" checked={assumption?.harvest_complete ?? false} onChange={(e) => onSave(crop.id, { harvest_complete: e.target.checked })} />
+          Harvest complete
+        </label>
+      </div>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="text-xs text-slate-600">Overall yield (bu/ac)
+          <input type="number" step="0.1" value={overall} onChange={(e) => setOverall(e.target.value)} className={`mt-0.5 block ${smallInput}`} />
+        </label>
+        <label className="text-xs text-slate-600">Cost / acre
+          <input type="number" step="0.01" value={cost} onChange={(e) => setCost(e.target.value)} className={`mt-0.5 block ${smallInput}`} />
+        </label>
+      </div>
+      {segs.length > 0 && (
+        <div className="space-y-1">
+          <div className="text-xs text-slate-500">Break out yield (optional — blank uses overall):</div>
+          {segs.map((row) => (
+            <div key={row.label} className="flex items-center gap-2 text-sm">
+              <span className="flex-1 text-slate-600">{row.label}</span>
+              <span className="w-20 text-right font-mono text-slate-500">{bu(row.acres)} ac</span>
+              <input type="number" step="0.1" value={row.val} placeholder={overall || ''} onChange={(e) => row.set(e.target.value)} className={smallInput} />
+              <span className="text-xs text-slate-400">bu/ac</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="flex items-center gap-3">
+        <span className="text-sm text-slate-600">Expected production: <span className="font-mono font-semibold">{bu(prod)}</span> bu</span>
+        <button onClick={save} className="ml-auto rounded-lg bg-green-700 text-white px-3 py-1 text-sm font-semibold">Save</button>
+      </div>
+    </div>
   )
 }
 
