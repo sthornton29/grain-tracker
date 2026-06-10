@@ -446,6 +446,20 @@ export type PaymentLimitConfig = {
   updated_at: string
 }
 
+// Per-crop-year program parameters that used to be hard-coded constants. Edited
+// under Settings → Government Payments; resolved (with most-recent-year
+// fallback) by lib/program-config.ts.
+export type ProgramYearConfig = {
+  id: string
+  crop_year: number
+  sco_trigger: number
+  per_person_payment_limit: number
+  sequestration_pct: number
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
 export type Load = {
   id: string
   date: string

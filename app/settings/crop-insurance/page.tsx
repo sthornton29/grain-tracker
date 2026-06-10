@@ -13,8 +13,10 @@ import {
 import PolicyAiImport from '@/components/crop-insurance/policy-ai-import'
 import { PLAN_TYPE_SHORT } from '@/lib/crop-insurance'
 import { fmtPrice } from '@/lib/hedging'
+import ProjectedPricesEditor from '@/components/crop-insurance/projected-prices-editor'
 import type {
   Crop, County, Entity, FieldPlanting, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco,
+  HarvestPriceEstimate, ProgramYearConfig,
 } from '@/lib/types'
 
 export default function CropInsuranceSettingsPage() {
@@ -26,6 +28,8 @@ export default function CropInsuranceSettingsPage() {
   const [policies, setPolicies] = useState<CropInsurancePolicy[]>([])
   const [scos, setScos] = useState<CropInsuranceSco[]>([])
   const [ecos, setEcos] = useState<CropInsuranceEco[]>([])
+  const [estimates, setEstimates] = useState<HarvestPriceEstimate[]>([])
+  const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
 
   const [form, setForm] = useState<PolicyFormState>(emptyPolicyForm)
   const [showAdd, setShowAdd] = useState(false)
@@ -35,7 +39,7 @@ export default function CropInsuranceSettingsPage() {
   const [entityFilter, setEntityFilter] = usePersistentState('crop-insurance-settings:entity', '')
 
   async function refresh() {
-    const [cr, co, en, pl, po, sc, ec] = await Promise.all([
+    const [cr, co, en, pl, po, sc, ec, hp, pc] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
       supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('entities').select('*').order('name'),
@@ -43,6 +47,8 @@ export default function CropInsuranceSettingsPage() {
       supabase.from('crop_insurance_policies').select('*').order('crop_year', { ascending: false }),
       supabase.from('crop_insurance_sco').select('*'),
       supabase.from('crop_insurance_eco').select('*'),
+      supabase.from('harvest_price_estimates').select('*'),
+      supabase.from('program_year_config').select('*').order('crop_year', { ascending: false }),
     ])
     setCrops((cr.data as Crop[]) || [])
     setCounties((co.data as County[]) || [])
@@ -51,6 +57,8 @@ export default function CropInsuranceSettingsPage() {
     setPolicies((po.data as CropInsurancePolicy[]) || [])
     setScos((sc.data as CropInsuranceSco[]) || [])
     setEcos((ec.data as CropInsuranceEco[]) || [])
+    setEstimates((hp.data as HarvestPriceEstimate[]) || [])
+    setProgramConfigs((pc.data as ProgramYearConfig[]) || [])
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
@@ -166,12 +174,16 @@ export default function CropInsuranceSettingsPage() {
 
       <EntityFilter entities={entities} value={entityFilter} onChange={setEntityFilter} />
 
+      <ProjectedPricesEditor crops={crops} estimates={estimates} onChange={refresh} />
+
       <PolicyAiImport
         crops={crops}
         counties={counties}
         existingPolicies={policies}
         defaultYear={cropYearOptions[0] ?? new Date().getFullYear()}
         defaultEntityId={entityFilter || form.entity_id}
+        projectedEstimates={estimates}
+        programConfigs={programConfigs}
         onImported={refresh}
       />
 
@@ -186,7 +198,7 @@ export default function CropInsuranceSettingsPage() {
         </button>
         {showAdd && (
           <form onSubmit={add} className="space-y-3">
-            <PolicyFields value={form} onChange={setForm} crops={crops} counties={counties} entities={entities} cropYearOptions={cropYearOptions} />
+            <PolicyFields value={form} onChange={setForm} crops={crops} counties={counties} entities={entities} cropYearOptions={cropYearOptions} projectedEstimates={estimates} programConfigs={programConfigs} />
             <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add Policy</button>
           </form>
         )}
@@ -204,7 +216,7 @@ export default function CropInsuranceSettingsPage() {
             <li key={p.id} className="px-4 py-3 space-y-2">
               {editingId === p.id ? (
                 <>
-                  <PolicyFields value={editForm} onChange={setEditForm} crops={crops} counties={counties} entities={entities} cropYearOptions={cropYearOptions} />
+                  <PolicyFields value={editForm} onChange={setEditForm} crops={crops} counties={counties} entities={entities} cropYearOptions={cropYearOptions} projectedEstimates={estimates} programConfigs={programConfigs} />
                   <div className="flex gap-3">
                     <button onClick={() => save(p.id)} className="text-green-700 font-semibold">Save</button>
                     <button onClick={() => setEditingId(null)} className="text-slate-500">Cancel</button>

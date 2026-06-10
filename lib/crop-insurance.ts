@@ -9,6 +9,8 @@
 
 import { buildContractSymbol, type Commodity } from '@/lib/hedging'
 import { cropToCommodity } from '@/lib/contracts'
+import { DEFAULT_SCO_TRIGGER } from '@/lib/program-config'
+import type { HarvestPriceEstimate } from '@/lib/types'
 
 export const PLAN_TYPES = ['RP', 'RP_HPE', 'YP'] as const
 export type PlanType = (typeof PLAN_TYPES)[number]
@@ -34,17 +36,7 @@ export const UNIT_STRUCTURE_LABEL: Record<UnitStructure, string> = {
   optional: 'Optional (by FSA farm number + section)',
 }
 
-// The 2026 SCO trigger; rises to 0.90 in 2027 per the spec.
-export const SCO_TRIGGER_2026 = 0.86
 export const ECO_TRIGGER_LEVELS = [0.9, 0.95] as const
-
-// 2026 RMA projected (spring) prices by traded commodity. Used to auto-fill the
-// policy form and as the running fallback when no harvest price exists yet.
-export const PROJECTED_PRICES_2026: Record<Commodity, number> = {
-  Corn: 4.62,
-  Soybeans: 11.09,
-  'Chicago Wheat': 6.19,
-}
 
 // The futures delivery month whose price discovery period sets each crop's
 // RMA harvest price (corn/soy in October, Chicago wheat in August/September).
@@ -61,12 +53,22 @@ function round6(n: number): number {
   return Math.round(n * 1e6) / 1e6
 }
 
-// The 2026 projected price for a crop, or null for crops we don't have a price
-// for (non-2026 years, or crops with no traded-futures mapping like Canola).
-export function projectedPriceFor(cropName: string | null | undefined, cropYear: number): number | null {
-  if (cropYear !== 2026) return null
-  const c = cropToCommodity(cropName)
-  return c ? PROJECTED_PRICES_2026[c] ?? null : null
+// The RMA projected (spring) price for a crop + crop year, read from the
+// harvest_price_estimates table (price_type = 'projected'). RMA announces these
+// each February; the operator enters/edits them under Settings → Crop Insurance.
+// Returns the most recently dated projected row for that crop/year, or null when
+// none is on file. Replaces the old hard-coded PROJECTED_PRICES_2026 map.
+export function projectedPriceFromEstimates(
+  estimates: readonly HarvestPriceEstimate[],
+  cropId: string,
+  cropYear: number,
+): number | null {
+  let best: HarvestPriceEstimate | null = null
+  for (const e of estimates) {
+    if (e.crop_id !== cropId || e.crop_year !== cropYear || e.price_type !== 'projected') continue
+    if (best == null || e.price_date > best.price_date) best = e
+  }
+  return best ? Number(best.price) : null
 }
 
 // The Barchart futures symbol whose current price estimates the harvest price,
@@ -318,6 +320,9 @@ export function computePolicy(args: {
   basePremium: number
   sco: ScoConfig | null
   eco: EcoConfig | null
+  // The SCO trigger for this crop year (from program_year_config). Only used as
+  // the ECO band's lower edge when there's no SCO endorsement to take it from.
+  scoTriggerDefault?: number
 }): PolicyComputation {
   const base = computeIndemnity(args.base)
 
@@ -343,7 +348,7 @@ export function computePolicy(args: {
       expectedCountyYield: args.eco.expectedCountyYield,
       countyYieldAssumptionPct: args.eco.countyYieldAssumptionPct,
       trigger: args.eco.ecoTriggerLevel,
-      lowerLevel: args.sco?.coverageTrigger ?? SCO_TRIGGER_2026,
+      lowerLevel: args.sco?.coverageTrigger ?? args.scoTriggerDefault ?? DEFAULT_SCO_TRIGGER,
     })
     ecoPremium = endorsementPremium(
       { total_premium: args.eco.totalPremium, premium_per_acre: args.eco.premiumPerAcre },

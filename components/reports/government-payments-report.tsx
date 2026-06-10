@@ -11,14 +11,15 @@ import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import EntityFilter from '@/components/entity-filter'
 import {
-  projectPayments, computeCommodityPayment, ELECTION_LABEL, paymentLimitTotal, PER_PERSON_LIMIT_2026,
+  projectPayments, computeCommodityPayment, ELECTION_LABEL, paymentLimitTotal,
   type ProjectedPayment,
 } from '@/lib/government-payments'
+import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import { fmtPrice } from '@/lib/hedging'
 import type { ExportPayload } from '@/lib/exports'
 import type {
   Farm, Entity, Crop, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection,
-  ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment, PaymentLimitConfig,
+  ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment, PaymentLimitConfig, ProgramYearConfig,
 } from '@/lib/types'
 
 type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
@@ -40,6 +41,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   const [payments, setPayments] = useState<ArcPlcPayment[]>([])
   const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
   const [limits, setLimits] = useState<PaymentLimitConfig[]>([])
+  const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
   const [liveMya, setLiveMya] = useState<Map<string, number>>(new Map())
   const [cropYear, setCropYear] = usePersistentState<number | ''>('gov-pay:cropYear', '')
   const [entityId, setEntityId] = usePersistentState('gov-pay:entity', '')
@@ -47,7 +49,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [fa, en, cr, pl, cc, ba, el, pd, pay, op, lim] = await Promise.all([
+      const [fa, en, cr, pl, cc, ba, el, pd, pay, op, lim, pc] = await Promise.all([
         supabase.from('farms').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('crops').select('*').order('name'),
@@ -59,6 +61,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
         supabase.from('arc_plc_payments').select('*'),
         supabase.from('other_government_payments').select('*'),
         supabase.from('payment_limit_config').select('*'),
+        supabase.from('program_year_config').select('*'),
       ])
       setFarms((fa.data as Farm[]) || [])
       setEntities((en.data as Entity[]) || [])
@@ -71,6 +74,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
       setPayments((pay.data as ArcPlcPayment[]) || [])
       setOtherPayments((op.data as OtherGovernmentPayment[]) || [])
       setLimits((lim.data as PaymentLimitConfig[]) || [])
+      setProgramConfigs((pc.data as ProgramYearConfig[]) || [])
       const yrs = (el.data as ArcPlcElection[] | null)?.map((e) => e.crop_year) ?? []
       if (yrs.length > 0) setCropYear((cy) => (cy === '' ? Math.max(...yrs) : cy))
       else setCropYear((cy) => (cy === '' ? new Date().getFullYear() : cy))
@@ -125,11 +129,19 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     return out
   }, [priceData, liveMya, cropYear])
 
+  // Resolve per-year program parameters (sequestration %, per-person limit),
+  // falling back to the most recent configured year when this one is missing.
+  const programCfg = useMemo(
+    () => resolveProgramYearConfig(cropYear === '' ? new Date().getFullYear() : cropYear, programConfigs),
+    [cropYear, programConfigs],
+  )
+  const programNotice = cropYear === '' ? null : programConfigNotice(programCfg)
+
   // Project all farm × commodity payments for the year.
   const projected: ProjectedPayment[] = useMemo(() => {
     if (cropYear === '') return []
-    return projectPayments({ cropYear, baseAcres, commodities, elections, priceData: effectivePriceData, payments })
-  }, [cropYear, baseAcres, commodities, elections, effectivePriceData, payments])
+    return projectPayments({ cropYear, baseAcres, commodities, elections, priceData: effectivePriceData, payments, sequestrationPct: programCfg.sequestrationPct })
+  }, [cropYear, baseAcres, commodities, elections, effectivePriceData, payments, programCfg])
 
   // Only eligible (assigned) base drives the payment columns; unassigned base is
   // excluded from this report entirely.
@@ -194,11 +206,11 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
       for (const o of yearOther) if (o.entity_id === e.id) projTotal += Number(o.amount)
       const cfg = limits.find((l) => l.entity_id === e.id && l.crop_year === cropYear)
       const persons = cfg?.eligible_persons ?? 1
-      const perPerson = cfg ? Number(cfg.per_person_limit) : PER_PERSON_LIMIT_2026
+      const perPerson = cfg ? Number(cfg.per_person_limit) : programCfg.perPersonPaymentLimit
       const limit = paymentLimitTotal(persons, perPerson)
       return { entity: e, persons, perPerson, limit, projTotal, remaining: limit - projTotal, pct: limit > 0 ? projTotal / limit : 0 }
     }).filter((r) => r.projTotal > 0 || limits.some((l) => l.entity_id === r.entity.id && l.crop_year === cropYear))
-  }, [entities, farms, farmRows, yearOther, limits, cropYear, entityId])
+  }, [entities, farms, farmRows, yearOther, limits, cropYear, entityId, programCfg])
 
   function toggle(id: string) { setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n }) }
 
@@ -247,6 +259,12 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
         </label>
         <EntityFilter entities={entities} value={entityId} onChange={setEntityId} />
       </div>
+
+      {programNotice && (
+        <div className="rounded-lg bg-yellow-50 border border-yellow-300 px-3 py-2 text-sm text-yellow-900">
+          {programNotice}
+        </div>
+      )}
 
       {cropYear !== '' && farmRows.length === 0 && (
         <p className="text-slate-500 text-sm">No base acres on file. <a href="/settings/government-payments" className="text-sky-700 underline">Add base acres →</a></p>

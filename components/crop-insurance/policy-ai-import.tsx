@@ -14,12 +14,13 @@ import { splitPdfIntoBatches } from '@/lib/pdf-split'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
 import {
-  PLAN_TYPES, PLAN_TYPE_SHORT, SCO_TRIGGER_2026, projectedPriceFor, type PlanType,
+  PLAN_TYPES, PLAN_TYPE_SHORT, projectedPriceFromEstimates, type PlanType,
 } from '@/lib/crop-insurance'
+import { DEFAULT_SCO_TRIGGER, resolveProgramYearConfig } from '@/lib/program-config'
 import {
   COVERAGE_LEVELS, emptyPolicyForm, policyFormToPayloads, type PolicyFormState, PolicyLiveSummary,
 } from '@/components/crop-insurance/policy-form'
-import type { Crop, County, CropInsurancePolicy } from '@/lib/types'
+import type { Crop, County, CropInsurancePolicy, HarvestPriceEstimate, ProgramYearConfig } from '@/lib/types'
 
 type Props = {
   crops: Crop[]
@@ -27,6 +28,9 @@ type Props = {
   existingPolicies: CropInsurancePolicy[]
   defaultYear: number
   defaultEntityId: string
+  // RMA projected prices and per-year program parameters (fetched by the page).
+  projectedEstimates?: HarvestPriceEstimate[]
+  programConfigs?: ProgramYearConfig[]
   onImported: () => void
 }
 
@@ -56,7 +60,7 @@ function dedupKey(crop_id: string, county_id: string, year: string, plan: string
   return `${crop_id}|${county_id}|${year}|${plan}|${Number(coverage).toFixed(2)}`
 }
 
-export default function PolicyAiImport({ crops, counties, existingPolicies, defaultYear, defaultEntityId, onImported }: Props) {
+export default function PolicyAiImport({ crops, counties, existingPolicies, defaultYear, defaultEntityId, projectedEstimates = [], programConfigs = [], onImported }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [source, setSource] = useState<DocumentSource | null>(null)
   const [stage, setStage] = useState<string | null>(null)
@@ -82,7 +86,10 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
     )
     const year = p.crop_year != null && Number.isFinite(p.crop_year) ? String(p.crop_year) : String(defaultYear)
     const plan: PlanType = p.plan_type && (PLAN_TYPES as readonly string[]).includes(p.plan_type) ? p.plan_type : 'RP'
-    const projected = p.projected_price ?? (crop ? projectedPriceFor(crop.name, Number(year)) : null)
+    const projected = p.projected_price ?? (crop ? projectedPriceFromEstimates(projectedEstimates, crop.id, Number(year)) : null)
+    const scoTriggerDefault = Number.isFinite(Number(year))
+      ? resolveProgramYearConfig(Number(year), programConfigs).scoTrigger
+      : DEFAULT_SCO_TRIGGER
     const sco = p.sco
     const eco = p.eco
     const form: PolicyFormState = {
@@ -102,7 +109,7 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
       total_premium: numStr(p.total_premium),
       premium_subsidy_pct: numStr(p.premium_subsidy_pct),
       sco_enabled: !!sco?.present,
-      sco_coverage_trigger: numStr(sco?.coverage_trigger) || String(SCO_TRIGGER_2026),
+      sco_coverage_trigger: numStr(sco?.coverage_trigger) || String(scoTriggerDefault),
       sco_expected_county_yield: numStr(sco?.expected_county_yield),
       sco_premium_per_acre: numStr(sco?.premium_per_acre),
       sco_total_premium: numStr(sco?.total_premium),

@@ -7,14 +7,19 @@ import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import EntityFilter from '@/components/entity-filter'
 import {
-  ELECTION_LABEL, COMMON_PROGRAMS, PER_PERSON_LIMIT_2026, effectiveReferencePrice,
+  ELECTION_LABEL, COMMON_PROGRAMS, effectiveReferencePrice,
   computeArcCoPayment, expectedArcPlcDate, paymentLimitTotal,
 } from '@/lib/government-payments'
+import {
+  DEFAULT_PER_PERSON_PAYMENT_LIMIT, DEFAULT_SCO_TRIGGER, DEFAULT_SEQUESTRATION_PCT,
+  resolveProgramYearConfig,
+} from '@/lib/program-config'
 import FsaBaseAcresImport from '@/components/government/fsa-base-acres-import'
 import SeedCottonCalculator from '@/components/government/seed-cotton-calculator'
 import type {
   Farm, Entity, Crop, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection,
   ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment, PaymentLimitConfig, ArcPlcElectionType,
+  ProgramYearConfig,
 } from '@/lib/types'
 
 const num = (s: string): number | null => {
@@ -38,6 +43,7 @@ export default function GovernmentPaymentsSettingsPage() {
   const [payments, setPayments] = useState<ArcPlcPayment[]>([])
   const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
   const [limits, setLimits] = useState<PaymentLimitConfig[]>([])
+  const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
   const [cropYear, setCropYear] = useState<number>(new Date().getFullYear())
   const [entityFilter, setEntityFilter] = usePersistentState('gov-pay-settings:entity', '')
   const [err, setErr] = useState<string | null>(null)
@@ -45,7 +51,7 @@ export default function GovernmentPaymentsSettingsPage() {
   const [open, setOpen] = useState<string>('base')
 
   async function refresh() {
-    const [fa, en, cr, pl, cc, ba, el, pd, pay, op, lim] = await Promise.all([
+    const [fa, en, cr, pl, cc, ba, el, pd, pay, op, lim, pc] = await Promise.all([
       supabase.from('farms').select('*').order('name'),
       supabase.from('entities').select('*').order('name'),
       supabase.from('crops').select('*').order('name'),
@@ -57,6 +63,7 @@ export default function GovernmentPaymentsSettingsPage() {
       supabase.from('arc_plc_payments').select('*'),
       supabase.from('other_government_payments').select('*').order('created_at', { ascending: false }),
       supabase.from('payment_limit_config').select('*'),
+      supabase.from('program_year_config').select('*').order('crop_year', { ascending: false }),
     ])
     setFarms((fa.data as Farm[]) || [])
     setEntities((en.data as Entity[]) || [])
@@ -69,6 +76,7 @@ export default function GovernmentPaymentsSettingsPage() {
     setPayments((pay.data as ArcPlcPayment[]) || [])
     setOtherPayments((op.data as OtherGovernmentPayment[]) || [])
     setLimits((lim.data as PaymentLimitConfig[]) || [])
+    setProgramConfigs((pc.data as ProgramYearConfig[]) || [])
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
@@ -78,6 +86,16 @@ export default function GovernmentPaymentsSettingsPage() {
   )
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const commodityById = useMemo(() => new Map(commodities.map((c) => [c.id, c])), [commodities])
+  // Resolved program parameters for the selected year (used to default the
+  // payment limit, with most-recent-year fallback).
+  const programParams = useMemo(() => resolveProgramYearConfig(cropYear, programConfigs), [cropYear, programConfigs])
+  // Years to list in the Program Parameters editor: every configured year plus
+  // the selected and current year, descending.
+  const programParamYears = useMemo(() => {
+    const set = new Set<number>(programConfigs.map((c) => c.crop_year))
+    set.add(cropYear); set.add(new Date().getFullYear())
+    return [...set].sort((a, b) => b - a)
+  }, [programConfigs, cropYear])
   const priceFor = (commodityId: string) => priceData.find((p) => p.commodity_id === commodityId && p.crop_year === cropYear) ?? null
   const electionFor = (farmId: string, commodityId: string | null): ArcPlcElectionType =>
     commodityId == null ? 'PLC' : elections.find((e) => e.farm_id === farmId && e.commodity_id === commodityId && e.crop_year === cropYear)?.election ?? 'PLC'
@@ -181,6 +199,14 @@ export default function GovernmentPaymentsSettingsPage() {
     )
     if (error) { setErr(error.message); return }
     refresh()
+  }
+  async function saveProgramConfig(year: number, patch: { sco_trigger: number; per_person_payment_limit: number; sequestration_pct: number }) {
+    const { error } = await supabase.from('program_year_config').upsert(
+      { crop_year: year, ...patch, updated_at: new Date().toISOString() },
+      { onConflict: 'crop_year' },
+    )
+    if (error) { setErr(error.message); return }
+    setErr(null); refresh()
   }
 
   // Entity scoping: base acres/elections are per farm, farms belong to entities.
@@ -363,14 +389,33 @@ export default function GovernmentPaymentsSettingsPage() {
 
       {/* Payment limits */}
       <Section title="Payment Limits" open={open === 'limit'} onToggle={() => setOpen(open === 'limit' ? '' : 'limit')}>
-        <p className="text-sm text-slate-500">Per-person limit defaults to {usd(PER_PERSON_LIMIT_2026)} (indexed from 2026). Total limit = eligible persons × per-person limit.</p>
+        <p className="text-sm text-slate-500">Per-person limit defaults to the configured Program Parameters value for {cropYear} ({usd(programParams.perPersonPaymentLimit)}). Total limit = eligible persons × per-person limit.</p>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-slate-600"><tr>{['Entity', 'Eligible Persons', 'Per-Person Limit', 'Total Limit', ''].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
             <tbody>
               {entityList.length === 0 && <tr><td colSpan={5} className="px-3 py-6 text-center text-slate-400">No entities.</td></tr>}
               {entityList.map((e) => (
-                <LimitRow key={e.id} entity={e} config={limits.find((l) => l.entity_id === e.id && l.crop_year === cropYear) ?? null} onSave={saveLimit} />
+                <LimitRow key={e.id} entity={e} config={limits.find((l) => l.entity_id === e.id && l.crop_year === cropYear) ?? null} defaultLimit={programParams.perPersonPaymentLimit} onSave={saveLimit} />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+
+      {/* Program parameters (per-year constants) */}
+      <Section title="Program Parameters" open={open === 'program'} onToggle={() => setOpen(open === 'program' ? '' : 'program')}>
+        <p className="text-sm text-slate-500">
+          Per-crop-year program values used across crop-insurance and ARC/PLC calculations: the SCO trigger
+          (0.86 for 2026, 0.90 from 2027), the per-person FSA payment limit, and the sequestration rate. A year
+          with no row falls back to the most recent configured year.
+        </p>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-50 text-slate-600"><tr>{['Crop Year', 'SCO Trigger', 'Per-Person Limit', 'Sequestration %', ''].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+            <tbody>
+              {programParamYears.map((y) => (
+                <ProgramParamsRow key={y} year={y} config={programConfigs.find((c) => c.crop_year === y) ?? null} onSave={saveProgramConfig} />
               ))}
             </tbody>
           </table>
@@ -532,10 +577,10 @@ function ConvertUnassignedRow({ row, farmName, commodities, onConvert, onDelete 
   )
 }
 
-function LimitRow({ entity, config, onSave }: { entity: Entity; config: PaymentLimitConfig | null; onSave: (e: string, persons: number, limit: number) => void }) {
+function LimitRow({ entity, config, defaultLimit, onSave }: { entity: Entity; config: PaymentLimitConfig | null; defaultLimit: number; onSave: (e: string, persons: number, limit: number) => void }) {
   const [persons, setPersons] = useState(String(config?.eligible_persons ?? 1))
-  const [limit, setLimit] = useState(String(config?.per_person_limit ?? PER_PERSON_LIMIT_2026))
-  useEffect(() => { setPersons(String(config?.eligible_persons ?? 1)); setLimit(String(config?.per_person_limit ?? PER_PERSON_LIMIT_2026)) }, [config])
+  const [limit, setLimit] = useState(String(config?.per_person_limit ?? defaultLimit))
+  useEffect(() => { setPersons(String(config?.eligible_persons ?? 1)); setLimit(String(config?.per_person_limit ?? defaultLimit)) }, [config, defaultLimit])
   const total = paymentLimitTotal(num(persons) ?? 0, num(limit) ?? 0)
   return (
     <tr className="border-t border-slate-100">
@@ -543,7 +588,43 @@ function LimitRow({ entity, config, onSave }: { entity: Entity; config: PaymentL
       <td className="px-3 py-2"><input type="number" step="1" value={persons} onChange={(e) => setPersons(e.target.value)} className="rounded border border-slate-300 px-2 py-1 w-20" /></td>
       <td className="px-3 py-2"><input type="number" step="1000" value={limit} onChange={(e) => setLimit(e.target.value)} className="rounded border border-slate-300 px-2 py-1 w-28" /></td>
       <td className="px-3 py-2 text-right font-mono font-semibold">{usd(total)}</td>
-      <td className="px-3 py-2"><button onClick={() => onSave(entity.id, num(persons) ?? 1, num(limit) ?? PER_PERSON_LIMIT_2026)} className="text-green-700 font-semibold">Save</button></td>
+      <td className="px-3 py-2"><button onClick={() => onSave(entity.id, num(persons) ?? 1, num(limit) ?? defaultLimit)} className="text-green-700 font-semibold">Save</button></td>
+    </tr>
+  )
+}
+
+// One editable row of the program_year_config table. Pre-fills with the built-in
+// defaults for a year that has no row yet, so saving creates it.
+function ProgramParamsRow({ year, config, onSave }: {
+  year: number
+  config: ProgramYearConfig | null
+  onSave: (year: number, patch: { sco_trigger: number; per_person_payment_limit: number; sequestration_pct: number }) => void
+}) {
+  const [sco, setSco] = useState(String(config?.sco_trigger ?? DEFAULT_SCO_TRIGGER))
+  const [limit, setLimit] = useState(String(config?.per_person_payment_limit ?? DEFAULT_PER_PERSON_PAYMENT_LIMIT))
+  const [seq, setSeq] = useState(String(config?.sequestration_pct ?? DEFAULT_SEQUESTRATION_PCT))
+  useEffect(() => {
+    setSco(String(config?.sco_trigger ?? DEFAULT_SCO_TRIGGER))
+    setLimit(String(config?.per_person_payment_limit ?? DEFAULT_PER_PERSON_PAYMENT_LIMIT))
+    setSeq(String(config?.sequestration_pct ?? DEFAULT_SEQUESTRATION_PCT))
+  }, [config])
+  const inputCls = 'rounded border border-slate-300 px-2 py-1 w-24'
+  return (
+    <tr className="border-t border-slate-100">
+      <td className="px-3 py-2 font-semibold">{year}{!config && <span className="ml-2 text-xs text-amber-700">not yet set</span>}</td>
+      <td className="px-3 py-2"><input type="number" step="0.01" value={sco} onChange={(e) => setSco(e.target.value)} className={inputCls} /></td>
+      <td className="px-3 py-2"><input type="number" step="1000" value={limit} onChange={(e) => setLimit(e.target.value)} className="rounded border border-slate-300 px-2 py-1 w-28" /></td>
+      <td className="px-3 py-2"><input type="number" step="0.001" value={seq} onChange={(e) => setSeq(e.target.value)} className={inputCls} /></td>
+      <td className="px-3 py-2">
+        <button
+          onClick={() => onSave(year, {
+            sco_trigger: num(sco) ?? DEFAULT_SCO_TRIGGER,
+            per_person_payment_limit: num(limit) ?? DEFAULT_PER_PERSON_PAYMENT_LIMIT,
+            sequestration_pct: num(seq) ?? DEFAULT_SEQUESTRATION_PCT,
+          })}
+          className="text-green-700 font-semibold"
+        >Save</button>
+      </td>
     </tr>
   )
 }

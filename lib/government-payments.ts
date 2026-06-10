@@ -5,16 +5,16 @@
 
 import { cropToCommodity } from '@/lib/contracts'
 import { buildContractSymbol, contractMonthOptions, type Commodity } from '@/lib/hedging'
+import { DEFAULT_SEQUESTRATION_PCT } from '@/lib/program-config'
 import type {
   ArcPlcElection, ArcPlcElectionType, ArcPlcPayment, ArcPlcPriceData, CoveredCommodity, FarmBaseAcres,
 } from '@/lib/types'
 
-// The 85% base-acre payment factor and the ~5.4% sequestration reduction both
-// apply to ARC and PLC gross payments.
+// The 85% base-acre payment factor applies to ARC and PLC gross payments. The
+// sequestration % and the per-person payment limit are per-crop-year values now;
+// they come from program_year_config (see lib/program-config.ts), and callers
+// pass the resolved sequestration % into the compute functions below.
 export const PAYMENT_FACTOR = 0.85
-export const SEQUESTRATION_PCT = 0.054
-// Per-person payment limit, indexed to inflation starting with the 2026 crop.
-export const PER_PERSON_LIMIT_2026 = 155000
 
 // Seed cotton weight shares (lint vs cottonseed) for the MYA conversion.
 export const LINT_SHARE = 0.43
@@ -95,7 +95,7 @@ export function computePlcPayment(args: {
   sequestrationPct?: number
 }): PaymentResult {
   const pf = args.paymentFactor ?? PAYMENT_FACTOR
-  const seq = args.sequestrationPct ?? SEQUESTRATION_PCT
+  const seq = args.sequestrationPct ?? DEFAULT_SEQUESTRATION_PCT
   const effectivePrice = Math.max(args.myaPrice, args.nationalLoanRate)
   const paymentRate = Math.max(0, args.effectiveReferencePrice - effectivePrice)
   const grossPerAcre = paymentRate * args.plcYield
@@ -119,7 +119,7 @@ export function computeArcCoPayment(args: {
   sequestrationPct?: number
 }): PaymentResult {
   const pf = args.paymentFactor ?? PAYMENT_FACTOR
-  const seq = args.sequestrationPct ?? SEQUESTRATION_PCT
+  const seq = args.sequestrationPct ?? DEFAULT_SEQUESTRATION_PCT
   const gross = args.projectedRatePerAcre * args.baseAcres
   const net = gross * pf * (1 - seq)
   return {
@@ -227,6 +227,9 @@ export function projectPayments(args: {
   elections: ArcPlcElection[]
   priceData: ArcPlcPriceData[]
   payments: ArcPlcPayment[]
+  // Per-year sequestration % (from program_year_config). Defaults to the
+  // built-in value when omitted.
+  sequestrationPct?: number
 }): ProjectedPayment[] {
   const commodityById = new Map(args.commodities.map((c) => [c.id, c]))
   const out: ProjectedPayment[] = []
@@ -241,6 +244,7 @@ export function projectPayments(args: {
     const arcRate = election !== 'PLC' && payRow ? Number(payRow.payment_rate_per_unit) : null
     const result = computeCommodityPayment({
       commodity, baseAcres: Number(b.base_acres), plcYield: Number(b.plc_yield), election, priceData: pd, arcRatePerAcre: arcRate,
+      sequestrationPct: args.sequestrationPct,
     })
     out.push({ farmId: b.farm_id, commodityId: b.commodity_id, election, baseAcres: Number(b.base_acres), plcYield: Number(b.plc_yield), arcRatePerAcre: arcRate, result })
   }

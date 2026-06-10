@@ -9,12 +9,14 @@
 import { useMemo } from 'react'
 import {
   PLAN_TYPES, PLAN_TYPE_LABEL, UNIT_STRUCTURES, UNIT_STRUCTURE_LABEL,
-  ECO_TRIGGER_LEVELS, SCO_TRIGGER_2026, guaranteePriceFor, projectedPriceFor,
+  ECO_TRIGGER_LEVELS, guaranteePriceFor, projectedPriceFromEstimates,
   endorsementPremium, type PlanType, type UnitStructure,
 } from '@/lib/crop-insurance'
+import { DEFAULT_SCO_TRIGGER, resolveProgramYearConfig } from '@/lib/program-config'
 import { fmtPrice } from '@/lib/hedging'
 import type {
   Crop, County, Entity, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco,
+  HarvestPriceEstimate, ProgramYearConfig,
 } from '@/lib/types'
 
 export type PolicyFormState = {
@@ -70,7 +72,7 @@ export const emptyPolicyForm: PolicyFormState = {
   premium_subsidy_pct: '',
   notes: '',
   sco_enabled: false,
-  sco_coverage_trigger: String(SCO_TRIGGER_2026),
+  sco_coverage_trigger: String(DEFAULT_SCO_TRIGGER),
   sco_expected_county_yield: '',
   sco_county_yield_assumption_pct: '0',
   sco_premium_per_acre: '',
@@ -110,7 +112,7 @@ export function policyToForm(p: CropInsurancePolicy, sco?: CropInsuranceSco | nu
     premium_subsidy_pct: numStr(p.premium_subsidy_pct),
     notes: p.notes ?? '',
     sco_enabled: !!sco,
-    sco_coverage_trigger: numStr(sco?.coverage_trigger) || String(SCO_TRIGGER_2026),
+    sco_coverage_trigger: numStr(sco?.coverage_trigger) || String(DEFAULT_SCO_TRIGGER),
     sco_expected_county_yield: numStr(sco?.expected_county_yield),
     sco_county_yield_assumption_pct: sco ? numStr(sco.county_yield_assumption_pct) || '0' : '0',
     sco_premium_per_acre: numStr(sco?.premium_per_acre),
@@ -162,7 +164,7 @@ export function policyFormToPayloads(form: PolicyFormState, source: 'manual' | '
   const scoPpa = num(form.sco_premium_per_acre)
   const sco = form.sco_enabled
     ? {
-        coverage_trigger: num(form.sco_coverage_trigger) ?? SCO_TRIGGER_2026,
+        coverage_trigger: num(form.sco_coverage_trigger) ?? DEFAULT_SCO_TRIGGER,
         expected_county_yield: num(form.sco_expected_county_yield) ?? 0,
         county_yield_assumption_pct: num(form.sco_county_yield_assumption_pct) ?? 0,
         premium_per_acre: scoPpa,
@@ -204,6 +206,7 @@ const spanCls = 'text-slate-500'
 
 export function PolicyFields({
   value, onChange, crops, counties, entities, cropYearOptions,
+  projectedEstimates = [], programConfigs = [],
 }: {
   value: PolicyFormState
   onChange: (next: PolicyFormState) => void
@@ -211,32 +214,45 @@ export function PolicyFields({
   counties: County[]
   entities: Entity[]
   cropYearOptions: number[]
+  // RMA projected prices (harvest_price_estimates, price_type 'projected') and
+  // per-year program parameters — both fetched by the page and used to auto-fill
+  // the projected price and the SCO trigger when the crop/year changes.
+  projectedEstimates?: HarvestPriceEstimate[]
+  programConfigs?: ProgramYearConfig[]
 }) {
   function set<K extends keyof PolicyFormState>(key: K, v: PolicyFormState[K]) {
     onChange({ ...value, [key]: v })
   }
 
+  // Resolved SCO trigger for a given crop year (from program_year_config).
+  function triggerForYear(yearStr: string): number {
+    const yr = Number(yearStr)
+    if (!Number.isFinite(yr)) return DEFAULT_SCO_TRIGGER
+    return resolveProgramYearConfig(yr, programConfigs).scoTrigger
+  }
+
   // When the crop or crop year changes, auto-fill the projected price from the
-  // known values if the field is still blank (the user can always override).
+  // DB estimates if the field is still blank, and keep the SCO trigger in sync
+  // with the year's program parameters unless the user has overridden it.
+  function applyAuto(next: PolicyFormState, cropId: string, yearStr: string): PolicyFormState {
+    const yr = Number(yearStr)
+    const auto = cropId && Number.isFinite(yr) ? projectedPriceFromEstimates(projectedEstimates, cropId, yr) : null
+    const prevTrig = triggerForYear(value.crop_year)
+    const cur = next.sco_coverage_trigger.trim()
+    // Treat the trigger as "still automatic" when it's blank or matches the
+    // prior year's resolved value; only then re-sync it to the new year.
+    const userOverrode = cur !== '' && num(cur) !== prevTrig
+    return {
+      ...next,
+      projected_price: next.projected_price.trim() === '' && auto != null ? String(auto) : next.projected_price,
+      sco_coverage_trigger: userOverrode ? next.sco_coverage_trigger : String(triggerForYear(yearStr)),
+    }
+  }
   function onCropChange(cropId: string) {
-    const crop = crops.find((c) => c.id === cropId)
-    const yr = Number(value.crop_year)
-    const auto = crop && Number.isFinite(yr) ? projectedPriceFor(crop.name, yr) : null
-    onChange({
-      ...value,
-      crop_id: cropId,
-      projected_price: value.projected_price.trim() === '' && auto != null ? String(auto) : value.projected_price,
-    })
+    onChange(applyAuto({ ...value, crop_id: cropId }, cropId, value.crop_year))
   }
   function onYearChange(yearStr: string) {
-    const crop = crops.find((c) => c.id === value.crop_id)
-    const yr = Number(yearStr)
-    const auto = crop && Number.isFinite(yr) ? projectedPriceFor(crop.name, yr) : null
-    onChange({
-      ...value,
-      crop_year: yearStr,
-      projected_price: value.projected_price.trim() === '' && auto != null ? String(auto) : value.projected_price,
-    })
+    onChange(applyAuto({ ...value, crop_year: yearStr }, value.crop_id, yearStr))
   }
 
   return (

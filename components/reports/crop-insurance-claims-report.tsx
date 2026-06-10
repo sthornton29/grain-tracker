@@ -21,9 +21,10 @@ import {
   PLAN_TYPE_SHORT, type PolicyInputs, type ScoConfig, type EcoConfig, type PolicyComputation,
   policyPremium,
 } from '@/lib/crop-insurance'
+import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import type {
   Crop, County, Entity, CropAssumption, FieldPlanting,
-  CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate,
+  CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate, ProgramYearConfig,
 } from '@/lib/types'
 
 type LoadRow = {
@@ -63,6 +64,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   const [scos, setScos] = useState<CropInsuranceSco[]>([])
   const [ecos, setEcos] = useState<CropInsuranceEco[]>([])
   const [priceEstimates, setPriceEstimates] = useState<HarvestPriceEstimate[]>([])
+  const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
   // Live Barchart estimate keyed by crop_id (from /api/harvest-price-estimate).
   const [liveEstimates, setLiveEstimates] = useState<Map<string, { price: number; label: string | null; stale: boolean; priceDate: string | null }>>(new Map())
   const [priceNote, setPriceNote] = useState<string | null>(null)
@@ -78,7 +80,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [cr, co, en, ca, pl, ld, po, sc, ec, hpe] = await Promise.all([
+      const [cr, co, en, ca, pl, ld, po, sc, ec, hpe, pgc] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('counties').select('*').order('state_code').order('name'),
         supabase.from('entities').select('*').order('name'),
@@ -89,6 +91,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         supabase.from('crop_insurance_sco').select('*'),
         supabase.from('crop_insurance_eco').select('*'),
         supabase.from('harvest_price_estimates').select('*').order('price_date', { ascending: false }),
+        supabase.from('program_year_config').select('*'),
       ])
       setCrops((cr.data as Crop[]) || [])
       setCounties((co.data as County[]) || [])
@@ -100,6 +103,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       setScos((sc.data as CropInsuranceSco[]) || [])
       setEcos((ec.data as CropInsuranceEco[]) || [])
       setPriceEstimates((hpe.data as HarvestPriceEstimate[]) || [])
+      setProgramConfigs((pgc.data as ProgramYearConfig[]) || [])
       const yrs = (po.data as CropInsurancePolicy[] | null)?.map((p) => p.crop_year) ?? []
       if (yrs.length > 0) setCropYear((cy) => (cy === '' ? Math.max(...yrs) : cy))
       setLoading(false)
@@ -290,14 +294,21 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     return { base, sco, eco, basePremium: policyPremium(p) }
   }
 
+  // Per-year program parameters (SCO trigger), with most-recent-year fallback.
+  const programCfg = useMemo(
+    () => resolveProgramYearConfig(cropYear === '' ? new Date().getFullYear() : cropYear, programConfigs),
+    [cropYear, programConfigs],
+  )
+  const programNotice = cropYear === '' ? null : programConfigNotice(programCfg)
+
   type Computed = { policy: CropInsurancePolicy; comp: PolicyComputation; harvest: HarvestInfo | undefined; assumedYield: number }
   const computed: Computed[] = useMemo(() => {
     return yearPolicies.map((p) => {
       const inp = buildInputs(p)
-      return { policy: p, comp: computePolicy(inp), harvest: harvestByCrop.get(p.crop_id), assumedYield: inp.base.actualYield }
+      return { policy: p, comp: computePolicy({ ...inp, scoTriggerDefault: programCfg.scoTrigger }), harvest: harvestByCrop.get(p.crop_id), assumedYield: inp.base.actualYield }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [yearPolicies, harvestByCrop, defaultYieldByCrop, yieldOverride, harvestOverride, globalYieldPct, scoByPolicy, ecoByPolicy])
+  }, [yearPolicies, harvestByCrop, defaultYieldByCrop, yieldOverride, harvestOverride, globalYieldPct, scoByPolicy, ecoByPolicy, programCfg])
 
   const totals = useMemo(() => {
     return computed.reduce(
@@ -406,6 +417,12 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       </div>
 
       {cropYear === '' && <p className="text-amber-700 text-sm">Pick a crop year to run the claims monitor.</p>}
+
+      {programNotice && (
+        <div className="rounded-lg bg-yellow-50 border border-yellow-300 px-3 py-2 text-sm text-yellow-900">
+          {programNotice}
+        </div>
+      )}
 
       {cropYear !== '' && yearPolicies.length === 0 && (
         <p className="text-slate-500 text-sm">
