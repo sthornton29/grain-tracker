@@ -33,7 +33,7 @@ function mrow(over: Partial<MarketingRow> & Pick<MarketingRow, 'cropId'>): Marke
     hedgeRealizedPnl: 0, hedgeAdjPerBu: 0, avgFutures: null,
     avgBasis: 0, avgBasisAssumed: true, assumedBasis: 0, totalAvgPrice: null,
     unpricedBu: 0, blendedRevenue: 0,
-    costPerAcre: null, costPerBu: null, profitPerAcre: null, totalProfit: null,
+    costPerAcre: null, costPerBu: null, revenuePerAcre: null, profitPerAcre: null, totalProfit: null,
     openFuturesHedgedBu: 0,
     ...over,
   }

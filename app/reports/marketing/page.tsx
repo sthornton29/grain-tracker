@@ -578,7 +578,7 @@ function DetailedTable({ rows }: { rows: MarketingRow[] }) {
             <th colSpan={3} className="px-3 py-1 text-center border-l border-slate-300">Production</th>
             <th colSpan={2} className="px-3 py-1 text-center border-l border-slate-300">Sales</th>
             <th colSpan={3} className="px-3 py-1 text-center border-l border-slate-300">Pricing</th>
-            <th colSpan={3} className="px-3 py-1 text-center border-l border-slate-300">Profitability</th>
+            <th colSpan={4} className="px-3 py-1 text-center border-l border-slate-300">Profitability</th>
           </tr>
           <tr className="bg-slate-50 text-xs text-slate-600">
             <th className="px-3 py-1 text-right border-l border-slate-300">Acres</th>
@@ -589,7 +589,8 @@ function DetailedTable({ rows }: { rows: MarketingRow[] }) {
             <th className="px-3 py-1 text-right border-l border-slate-300">Avg Futures</th>
             <th className="px-3 py-1 text-right">Avg Basis</th>
             <th className="px-3 py-1 text-right">Total Avg $</th>
-            <th className="px-3 py-1 text-right border-l border-slate-300">Cost/Ac</th>
+            <th className="px-3 py-1 text-right border-l border-slate-300">Revenue/Ac</th>
+            <th className="px-3 py-1 text-right">Cost/Ac</th>
             <th className="px-3 py-1 text-right">Profit/Ac</th>
             <th className="px-3 py-1 text-right">Total Profit</th>
           </tr>
@@ -606,14 +607,15 @@ function DetailedTable({ rows }: { rows: MarketingRow[] }) {
               <td className="px-3 py-2 text-right tabular-nums border-l border-slate-200">{r.avgFutures != null ? fmtPrice(r.avgFutures) : '—'}</td>
               <td className="px-3 py-2 text-right tabular-nums">{r.avgBasis != null ? Number(r.avgBasis).toFixed(4) : 'N/A'}</td>
               <td className="px-3 py-2 text-right tabular-nums">{r.totalAvgPrice != null ? fmtPrice(r.totalAvgPrice) : r.avgFutures != null ? `${fmtPrice(r.avgFutures)}*` : r.avgCashPrice != null ? fmtPrice(r.avgCashPrice) : '—'}</td>
-              <td className="px-3 py-2 text-right tabular-nums border-l border-slate-200">{usd(r.costPerAcre)}</td>
-              <td className={`px-3 py-2 text-right tabular-nums ${r.profitPerAcre == null ? 'text-slate-400' : r.profitPerAcre >= 0 ? 'text-green-700' : 'text-red-700'}`}>{r.profitPerAcre != null ? usd(r.profitPerAcre) : 'Incomplete'}</td>
+              <td className="px-3 py-2 text-right tabular-nums border-l border-slate-200" title={r.totalAvgPrice != null && r.yield != null ? `${fmtPrice(r.totalAvgPrice)} × ${r.yield.toFixed(1)} bu/ac` : undefined}>{usd(r.revenuePerAcre)}</td>
+              <td className="px-3 py-2 text-right tabular-nums">{usd(r.costPerAcre)}</td>
+              <td className={`px-3 py-2 text-right tabular-nums ${r.profitPerAcre == null ? 'text-slate-400' : r.profitPerAcre >= 0 ? 'text-green-700' : 'text-red-700'}`}>{r.profitPerAcre != null ? usd(r.profitPerAcre) : r.revenuePerAcre != null ? 'set cost' : '—'}</td>
               <td className={`px-3 py-2 text-right tabular-nums font-semibold ${r.totalProfit == null ? 'text-slate-400' : r.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'}`}>{r.totalProfit != null ? usd(r.totalProfit) : '—'}</td>
             </tr>
           ))}
         </tbody>
       </table>
-      <p className="text-xs text-slate-500 px-3 py-2">Avg Futures includes physical contracts with a futures price plus short futures hedges, adjusted for closed-hedge and options realized P&amp;L. * = futures only (no basis set yet).</p>
+      <p className="text-xs text-slate-500 px-3 py-2">Avg Futures includes physical contracts with a futures price plus short futures hedges, adjusted for closed-hedge and options realized P&amp;L. Revenue/Ac = Total Avg $ × yield; Profit/Ac = Revenue/Ac − Cost/Ac. * = futures only (no basis set yet).</p>
     </div>
   )
 }

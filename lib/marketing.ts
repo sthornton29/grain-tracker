@@ -41,11 +41,14 @@ export type MarketingRow = {
   // Total Average Price = avg_futures_price + avg_basis. Always computes for a
   // crop with production (cash / current-futures fallback when no futures avg).
   totalAvgPrice: number | null
-  // --- blended expected revenue (the profitability + Revenue Projections basis) ---
+  // --- blended expected revenue (the Revenue Projections basis) ---
   unpricedBu: number
   blendedRevenue: number
   costPerAcre: number | null
   costPerBu: number | null
+  // Per-acre profitability shown on the dashboard: revenue/acre = total avg
+  // price × yield; profit/acre = revenue/acre − cost/acre.
+  revenuePerAcre: number | null
   profitPerAcre: number | null
   totalProfit: number | null
   // for the unpriced-production section (= openHedgeBu)
@@ -267,9 +270,11 @@ export function computeMarketing(args: {
 
     const costPerAcre = assumption?.cost_per_acre != null ? Number(assumption.cost_per_acre) : null
     const costPerBu = costPerAcre != null && yieldVal != null && yieldVal > 0 ? round(costPerAcre / yieldVal, 4) : null
-    // Profit always computes once a cost is set — it's driven by blended revenue,
-    // which always values every bushel (via assumed basis / current futures).
-    const profitPerAcre = costPerAcre != null && acres > 0 ? round2(blendedRevenue / acres - costPerAcre) : null
+    // Revenue/acre = Total Average Price × yield (hand-verifiable from the two
+    // columns next to it). Both always compute via the assumed-basis fallback, so
+    // profit/acre = revenue/acre − cost/acre is never blocked once a cost is set.
+    const revenuePerAcre = totalAvgPrice != null && yieldVal != null ? round2(totalAvgPrice * yieldVal) : null
+    const profitPerAcre = revenuePerAcre != null && costPerAcre != null ? round2(revenuePerAcre - costPerAcre) : null
     const totalProfit = profitPerAcre != null ? round2(profitPerAcre * acres) : null
 
     rows.push({
@@ -277,7 +282,7 @@ export function computeMarketing(args: {
       contractedBu, remaining, avgCashPrice, excludedAwaitingBu,
       futuresPricedBu, physicalFuturesBu, physicalFuturesAvg, openHedgeBu, openHedgeAvg,
       rawAvgFutures, hedgeRealizedPnl, hedgeAdjPerBu, avgFutures, avgBasis, avgBasisAssumed, assumedBasis,
-      totalAvgPrice, unpricedBu, blendedRevenue, costPerAcre, costPerBu, profitPerAcre, totalProfit,
+      totalAvgPrice, unpricedBu, blendedRevenue, costPerAcre, costPerBu, revenuePerAcre, profitPerAcre, totalProfit,
       openFuturesHedgedBu: openHedgeBu,
     })
   }
