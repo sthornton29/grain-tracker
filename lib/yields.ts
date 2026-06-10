@@ -286,3 +286,45 @@ export function analyzeYields(
 
   return { excluded, autoExcluded, averages, progress }
 }
+
+// Crop ids whose harvest is COMPLETE for a crop year: the crop has at least one
+// planting and every planting is harvest-complete (analyzeYields not-excluded, or
+// the crop-level harvest_complete flag via cropCompleteKeys). The Marketing
+// dashboard and Revenue Projections use this to switch a crop from the yield
+// ESTIMATE to ACTUAL harvested production once it's fully in the bin — so a poor
+// harvest stops showing estimate-based revenue/profit. Pure.
+export function cropsWithCompleteHarvest(args: {
+  plantings: ReadonlyArray<{
+    id: string; field_id: string; crop_id: string; season_year: number
+    planted_acres: number | string | null; yield_include_override?: boolean | null
+  }>
+  aggByKey: Map<string, FieldCropAgg>
+  cropYear: number
+  cropCompleteKeys: ReadonlySet<string>
+  now?: Date
+}): Set<string> {
+  const { plantings, aggByKey, cropYear, cropCompleteKeys, now } = args
+  const yearPlantings = plantings.filter((p) => p.season_year === cropYear)
+  const analysis = analyzeYields(
+    yearPlantings.map((p) => {
+      const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
+      return {
+        id: p.id, cropId: p.crop_id, acres: Number(p.planted_acres ?? 0),
+        dryBu: agg?.dryBu ?? 0, lastLoadDate: agg?.lastLoadDate ?? null,
+        override: p.yield_include_override ?? null,
+      }
+    }),
+    IN_PROGRESS_THRESHOLD, now,
+  )
+  const byCrop = new Map<string, typeof yearPlantings>()
+  for (const p of yearPlantings) {
+    const arr = byCrop.get(p.crop_id)
+    if (arr) arr.push(p)
+    else byCrop.set(p.crop_id, [p])
+  }
+  const out = new Set<string>()
+  for (const [cropId, ps] of byCrop) {
+    if (ps.length > 0 && ps.every((p) => isHarvestComplete(p, analysis.excluded, cropCompleteKeys))) out.add(cropId)
+  }
+  return out
+}

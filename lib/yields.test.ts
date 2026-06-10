@@ -4,10 +4,12 @@ import {
   analyzeYields,
   harvestStatusOf,
   isHarvestComplete,
+  cropsWithCompleteHarvest,
   IN_PROGRESS_THRESHOLD,
   IN_PROGRESS_STALE_DAYS,
   type YieldInput,
   type ExclusionReason,
+  type FieldCropAgg,
 } from '@/lib/yields'
 
 // ---------------------------------------------------------------------------
@@ -504,5 +506,32 @@ describe('harvestStatusOf', () => {
     // ...but only for the matching crop+year.
     expect(harvestStatusOf(planting('c', 'beans', 2026), excl([['c', 'in_progress']]), cropDone)).toBe('in_progress')
     expect(harvestStatusOf(planting('d', 'corn', 2025), excl([['d', 'unharvested']]), cropDone)).toBe('unharvested')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// cropsWithCompleteHarvest — drives the marketing estimate→actual switch
+// ---------------------------------------------------------------------------
+describe('cropsWithCompleteHarvest', () => {
+  const NOW = new Date('2025-09-20T00:00:00')
+  const pl = (id: string, field_id: string, crop_id: string, acres: number) =>
+    ({ id, field_id, crop_id, season_year: 2026, planted_acres: acres })
+
+  it('a crop is complete only when EVERY field is harvested', () => {
+    const plantings = [pl('a', 'f1', 'corn', 100), pl('b', 'f2', 'corn', 100)]
+    const agg = new Map<string, FieldCropAgg>([
+      ['f1|corn|2026', { dryBu: 18000, lastLoadDate: '2025-09-10' }],
+      ['f2|corn|2026', { dryBu: 0, lastLoadDate: null }], // unharvested
+    ])
+    expect(cropsWithCompleteHarvest({ plantings, aggByKey: agg, cropYear: 2026, cropCompleteKeys: new Set(), now: NOW }).has('corn')).toBe(false)
+    // Both fields now harvested at similar yields (last loads stale → not in-progress).
+    agg.set('f2|corn|2026', { dryBu: 17000, lastLoadDate: '2025-09-12' })
+    expect(cropsWithCompleteHarvest({ plantings, aggByKey: agg, cropYear: 2026, cropCompleteKeys: new Set(), now: NOW }).has('corn')).toBe(true)
+  })
+
+  it('the crop-level harvest_complete flag forces complete even with an unharvested field', () => {
+    const plantings = [pl('a', 'f1', 'corn', 100), pl('b', 'f2', 'corn', 100)]
+    const agg = new Map<string, FieldCropAgg>([['f1|corn|2026', { dryBu: 18000, lastLoadDate: '2025-09-10' }]])
+    expect(cropsWithCompleteHarvest({ plantings, aggByKey: agg, cropYear: 2026, cropCompleteKeys: new Set(['corn|2026']), now: NOW }).has('corn')).toBe(true)
   })
 })

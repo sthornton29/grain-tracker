@@ -485,12 +485,16 @@ export default function YieldsPage() {
     return visible.filter((p) => (varietiesByPlanting.get(p.id) ?? []).length >= 2)
   }, [visible, varietiesByPlanting])
 
+  // Only harvest-complete fields "need allocation" — an unharvested or in-progress
+  // field has no final bushels to split yet, so it shouldn't be prompted/counted.
   const unallocatedCount = useMemo(() => {
     return multiVarietyPlantings.filter((p) => {
+      if (!fieldComplete(p)) return false
       const vs = varietiesByPlanting.get(p.id) ?? []
       return !vs.every((v) => v.bushels != null)
     }).length
-  }, [multiVarietyPlantings, varietiesByPlanting])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [multiVarietyPlantings, varietiesByPlanting, excludedFields, cropCompleteKeys])
 
   // Filter summary shared by the field and farm exports — mirrors the filter
   // strip that drives both tables.
@@ -960,9 +964,14 @@ export default function YieldsPage() {
                             }).join(', ')}
                           </td>
                           <td className="px-3 py-2 no-print whitespace-nowrap">
-                            {!allocated && (
+                            {!allocated && fieldComplete(p) && (
                               <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 mr-2">
                                 Needs allocation
+                              </span>
+                            )}
+                            {!allocated && !fieldComplete(p) && (
+                              <span className="text-xs rounded-full bg-slate-100 text-slate-500 px-2 py-0.5 mr-2">
+                                Still harvesting
                               </span>
                             )}
                             {!isOpen && (

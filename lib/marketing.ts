@@ -133,8 +133,12 @@ export function computeMarketing(args: {
   // completely-unpriced bushels in blended revenue. Falls back to the crop's raw
   // futures average when absent.
   currentFuturesByCrop?: Map<string, number>
+  // Crops whose harvest is complete by the field-level analysis (in addition to
+  // the crop-level harvest_complete flag). When complete, production uses ACTUAL
+  // harvested bushels instead of the yield estimate — see lib/yields.ts.
+  harvestCompleteCropIds?: Set<string>
 }): MarketingRow[] {
-  const { cropYear, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop, expectedProductionByCrop, currentFuturesByCrop } = args
+  const { cropYear, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop, expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds } = args
 
   const cropIdsWithPlantings = new Set(
     plantings.filter((p) => p.season_year === cropYear).map((p) => p.crop_id),
@@ -150,7 +154,9 @@ export function computeMarketing(args: {
 
     const assumption = assumptions.find((a) => a.crop_id === crop.id && a.crop_year === cropYear)
     const expected = assumption?.expected_yield != null ? Number(assumption.expected_yield) : null
-    const harvestComplete = assumption?.harvest_complete ?? false
+    // Harvest is complete when the crop is flagged OR every field is harvested by
+    // the yield analysis — then production reflects ACTUAL, not the estimate.
+    const harvestComplete = (assumption?.harvest_complete ?? false) || (harvestCompleteCropIds?.has(crop.id) ?? false)
     const actualProd = actualProductionByCrop.get(crop.id) ?? 0
 
     let yieldVal: number | null

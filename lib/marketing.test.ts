@@ -205,6 +205,25 @@ describe('computeMarketing — average futures price', () => {
     expect(r.blendedRevenue).toBeCloseTo(852500, 2)
   })
 
+  it('switches from the yield estimate to ACTUAL production once harvest is complete', () => {
+    // Estimate 180 × 1000 = 180,000; actual came in lower at 150,000.
+    const base = {
+      cropYear: 2026, crops: [crop('corn', 'Corn')], plantings: [planting('corn', 1000)],
+      contracts: [], futures: [], options: [],
+      assumptions: [assumption({ crop_id: 'corn', expected_yield: 180, cost_per_acre: 600 })],
+      actualProductionByCrop: new Map([['corn', 150000]]),
+      currentFuturesByCrop: new Map([['corn', 4.0]]),
+    }
+    const est = computeMarketing(base)[0]
+    expect(est.totalProduction).toBe(180000)        // estimate while not complete
+    expect(est.yieldLabel).toBe('Est.')
+
+    const done = computeMarketing({ ...base, harvestCompleteCropIds: new Set(['corn']) })[0]
+    expect(done.totalProduction).toBe(150000)        // actual once harvest complete
+    expect(done.yield).toBeCloseTo(150, 6)
+    expect(done.yieldLabel).toBe('Actual')
+  })
+
   it('actual weighted basis wins over assumed when a physical contract sets it', () => {
     // Two priced-basis contracts: 30,000 @ -0.20 and 10,000 @ -0.40 → weighted -0.25.
     const r = run({

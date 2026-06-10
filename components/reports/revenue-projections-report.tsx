@@ -9,8 +9,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { computeBushels } from '@/lib/shrink'
 import { computeMarketing, type Planting } from '@/lib/marketing'
+import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { cropToCommodity } from '@/lib/contracts'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
@@ -33,13 +33,18 @@ import type {
 } from '@/lib/types'
 
 type LoadRow = {
+  id: string
+  date: string
   crop_id: string | null
   crop_year: number | null
   from_type: string | null
+  from_field_id: string | null
   net_weight: number | null
   moisture: number | null
   dry_bushels_override: number | null
 }
+
+type SplitRow = { load_id: string; field_id: string; crop_id: string; dry_bushels: number | null }
 
 type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
 
@@ -57,6 +62,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   const [options, setOptions] = useState<OptionPosition[]>([])
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
+  const [splits, setSplits] = useState<SplitRow[]>([])
   const [policies, setPolicies] = useState<CropInsurancePolicy[]>([])
   const [scos, setScos] = useState<CropInsuranceSco[]>([])
   const [ecos, setEcos] = useState<CropInsuranceEco[]>([])
@@ -75,14 +81,14 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [cr, pl, ct, fp, op, ca, ld, po, sc, ec, hpe, cc, ba, el, apd, apay, ogp] = await Promise.all([
+      const [cr, pl, ct, fp, op, ca, ld, po, sc, ec, hpe, cc, ba, el, apd, apay, ogp, sp] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('field_plantings').select('*'),
         supabase.from('contracts').select('*'),
         supabase.from('futures_positions').select('*'),
         supabase.from('options_positions').select('*'),
         supabase.from('crop_assumptions').select('*'),
-        supabase.from('loads').select('crop_id, crop_year, from_type, net_weight, moisture, dry_bushels_override'),
+        supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
         supabase.from('crop_insurance_policies').select('*'),
         supabase.from('crop_insurance_sco').select('*'),
         supabase.from('crop_insurance_eco').select('*'),
@@ -93,6 +99,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
         supabase.from('arc_plc_price_data').select('*'),
         supabase.from('arc_plc_payments').select('*'),
         supabase.from('other_government_payments').select('*'),
+        supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels'),
       ])
       setCrops((cr.data as Crop[]) || [])
       setPlantings((pl.data as FieldPlanting[]) || [])
@@ -101,6 +108,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       setOptions((op.data as OptionPosition[]) || [])
       setAssumptions((ca.data as CropAssumption[]) || [])
       setLoads((ld.data as LoadRow[]) || [])
+      setSplits((sp.data as SplitRow[]) || [])
       setPolicies((po.data as CropInsurancePolicy[]) || [])
       setScos((sc.data as CropInsuranceSco[]) || [])
       setEcos((ec.data as CropInsuranceEco[]) || [])
@@ -154,22 +162,32 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     return () => { cancelled = true }
   }, [cropYear, policyCropIds, cropById])
 
+  // (field|crop|year) → dry bushels + last load date, splits-aware. Drives actual
+  // production (by crop) and the field-level harvest-completion check.
+  const aggByKey = useMemo(
+    () => fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear }),
+    [loads, splits, cropById, cropYear],
+  )
+
   // Actual production (dry bushels) by crop for the year.
   const productionByCrop = useMemo(() => {
     const prod = new Map<string, number>()
     if (cropYear === '') return prod
-    for (const l of loads) {
-      if (l.from_type !== 'field' || !l.crop_id || l.crop_year !== cropYear) continue
-      const crop = cropById.get(l.crop_id)
-      const { dryBushels } = computeBushels({
-        netWeightLb: l.net_weight, moisturePct: l.moisture,
-        baseMoisturePct: crop?.base_moisture_pct ?? null, baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
-        dryBushelsOverride: l.dry_bushels_override,
-      })
-      if (dryBushels) prod.set(l.crop_id, (prod.get(l.crop_id) ?? 0) + dryBushels)
+    for (const [key, agg] of aggByKey) {
+      const cropId = key.split('|')[1]
+      if (cropId) prod.set(cropId, (prod.get(cropId) ?? 0) + agg.dryBu)
     }
     return prod
-  }, [loads, cropYear, cropById])
+  }, [aggByKey, cropYear])
+
+  // Crops whose harvest is complete (field-level) → value production at ACTUAL,
+  // not the yield estimate, so a poor harvest stops showing estimate-based profit.
+  const harvestCompleteIds = useMemo(() => {
+    if (cropYear === '') return new Set<string>()
+    const cropCompleteKeys = new Set<string>()
+    for (const a of assumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
+    return cropsWithCompleteHarvest({ plantings, aggByKey, cropYear, cropCompleteKeys })
+  }, [plantings, aggByKey, cropYear, assumptions])
 
   // Current futures per crop (harvest-month estimate) to value unpriced bushels
   // in blended revenue — same source the Marketing dashboard uses.
@@ -194,8 +212,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       assumptions: assumptions.filter((a) => a.crop_year === cropYear),
       actualProductionByCrop: productionByCrop,
       currentFuturesByCrop,
+      harvestCompleteCropIds: harvestCompleteIds,
     })
-  }, [cropYear, crops, plantings, contracts, futures, options, assumptions, productionByCrop, currentFuturesByCrop])
+  }, [cropYear, crops, plantings, contracts, futures, options, assumptions, productionByCrop, currentFuturesByCrop, harvestCompleteIds])
 
   // Resolve a harvest price per crop: final → estimate → projected.
   function harvestPriceFor(cropId: string): { price: number; isFinal: boolean } {

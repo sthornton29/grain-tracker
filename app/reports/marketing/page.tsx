@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { computeBushels } from '@/lib/shrink'
 import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
+import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, cropToCommodity } from '@/lib/contracts'
 import { fmtPrice, fmtPnl } from '@/lib/hedging'
@@ -11,13 +11,18 @@ import { SummaryCards, StackedBar, type SummaryCardData } from '@/components/rep
 import type { Buyer, Contract, Crop, CropAssumption, FuturesPosition, OptionPosition } from '@/lib/types'
 
 type LoadRow = {
+  id: string
+  date: string
   crop_id: string | null
   crop_year: number | null
   from_type: string | null
+  from_field_id: string | null
   net_weight: number | null
   moisture: number | null
   dry_bushels_override: number | null
 }
+
+type SplitRow = { load_id: string; field_id: string; crop_id: string; dry_bushels: number | null }
 
 type PlantingRow = {
   id: string
@@ -27,6 +32,7 @@ type PlantingRow = {
   planted_acres: number | null
   irrigated_acres: number | null
   dryland_acres: number | null
+  yield_include_override: boolean | null
 }
 
 const bu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
@@ -58,6 +64,8 @@ export default function MarketingPage() {
   const [options, setOptions] = useState<OptionPosition[]>([])
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
   const [production, setProduction] = useState<Map<string, number>>(new Map())
+  // Crops whose harvest is complete (field-level) → use actual, not the estimate.
+  const [harvestCompleteIds, setHarvestCompleteIds] = useState<Set<string>>(new Set())
   // Current futures price per crop (Barchart) — values completely-unpriced bushels.
   const [currentFutures, setCurrentFutures] = useState<Map<string, number>>(new Map())
 
@@ -83,39 +91,43 @@ export default function MarketingPage() {
 
   const load = useCallback(async (cropYear: number) => {
     setLoading(true)
-    const [cr, by, pl, ct, fp, op, ca, ld] = await Promise.all([
+    const [cr, by, pl, ct, fp, op, ca, ld, sp] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
       supabase.from('buyers').select('*').order('name'),
-      supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres').eq('season_year', cropYear),
+      supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, yield_include_override').eq('season_year', cropYear),
       supabase.from('contracts').select('*').eq('crop_year', cropYear),
       supabase.from('futures_positions').select('*').eq('crop_year', cropYear),
       supabase.from('options_positions').select('*').eq('crop_year', cropYear),
       supabase.from('crop_assumptions').select('*').eq('crop_year', cropYear),
-      supabase.from('loads').select('crop_id, crop_year, from_type, net_weight, moisture, dry_bushels_override').eq('crop_year', cropYear),
+      supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override').eq('crop_year', cropYear),
+      supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels'),
     ])
     const cropsList = (cr.data as Crop[]) ?? []
+    const plantingList = (pl.data as PlantingRow[]) ?? []
+    const assumptionList = (ca.data as CropAssumption[]) ?? []
     setCrops(cropsList)
     setBuyers((by.data as Buyer[]) ?? [])
-    setPlantings((pl.data as PlantingRow[]) ?? [])
+    setPlantings(plantingList)
     setContracts((ct.data as Contract[]) ?? [])
     setFutures((fp.data as FuturesPosition[]) ?? [])
     setOptions((op.data as OptionPosition[]) ?? [])
-    setAssumptions((ca.data as CropAssumption[]) ?? [])
+    setAssumptions(assumptionList)
 
-    // Actual production: dry bushels of field-origin loads, by crop.
+    // (field|crop|year) → dry bushels + last load date, splits-aware. Drives both
+    // actual production (by crop) and the field-level harvest-completion check.
     const cropById = new Map(cropsList.map((c) => [c.id, c]))
+    const aggByKey = fieldCropAggregates((ld.data as LoadRow[]) ?? [], (sp.data as SplitRow[]) ?? [], cropById, { cropYear })
     const prod = new Map<string, number>()
-    for (const l of ((ld.data as LoadRow[]) ?? [])) {
-      if (l.from_type !== 'field' || !l.crop_id) continue
-      const crop = cropById.get(l.crop_id)
-      const { dryBushels } = computeBushels({
-        netWeightLb: l.net_weight, moisturePct: l.moisture,
-        baseMoisturePct: crop?.base_moisture_pct ?? null, baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
-        dryBushelsOverride: l.dry_bushels_override,
-      })
-      if (dryBushels) prod.set(l.crop_id, (prod.get(l.crop_id) ?? 0) + dryBushels)
+    for (const [key, agg] of aggByKey) {
+      const cropId = key.split('|')[1]
+      if (cropId) prod.set(cropId, (prod.get(cropId) ?? 0) + agg.dryBu)
     }
     setProduction(prod)
+
+    // Crops fully in the bin → use actual production instead of the estimate.
+    const cropCompleteKeys = new Set<string>()
+    for (const a of assumptionList) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
+    setHarvestCompleteIds(cropsWithCompleteHarvest({ plantings: plantingList, aggByKey, cropYear, cropCompleteKeys }))
     setLoading(false)
   }, [supabase])
 
@@ -160,8 +172,8 @@ export default function MarketingPage() {
   )
 
   const rows = useMemo(
-    () => (year == null ? [] : computeMarketing({ cropYear: year, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures })),
-    [year, crops, plantings, contracts, futures, options, assumptions, production, expProdByCrop, currentFutures],
+    () => (year == null ? [] : computeMarketing({ cropYear: year, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures, harvestCompleteCropIds: harvestCompleteIds })),
+    [year, crops, plantings, contracts, futures, options, assumptions, production, expProdByCrop, currentFutures, harvestCompleteIds],
   )
 
   // Actual average yield (dry bushels from loads ÷ planted acres) per crop, used
