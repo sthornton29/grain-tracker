@@ -8,13 +8,16 @@
 // loads + load_splits with optional per-planting irrigated/dryland breakouts.
 //
 // Mixed-practice plantings (both irrigated and dryland acres) without a
-// production breakout are gated: the user either fills in the breakout on the
-// Yields page or chooses to roll the production into dryland for this report.
+// production breakout are gated, but only once their harvest is complete —
+// an unharvested or still-in-progress field has no final production to split,
+// so it never blocks the report. Completion uses the same analyzeYields logic
+// as the Yields page. For a gated planting the user either fills in the
+// breakout on the Yields page or chooses to roll the production into dryland.
 
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { computeBushels } from '@/lib/shrink'
+import { analyzeYields, fieldCropAggregates } from '@/lib/yields'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import type {
@@ -149,37 +152,14 @@ export default function CropInsuranceReport() {
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const countyById = useMemo(() => new Map(counties.map((c) => [c.id, c])), [counties])
 
-  // (fieldId, cropId, year) → dryBu — same allocation as the Yields page.
-  const dryBuByKey = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const l of loads) {
-      if (l.from_type !== 'field' || !l.from_field_id || !l.crop_id) continue
-      if (cropYear !== '' && l.crop_year !== cropYear) continue
-      const crop = cropById.get(l.crop_id)
-      const { dryBushels } = computeBushels({
-        netWeightLb: l.net_weight,
-        moisturePct: l.moisture,
-        baseMoisturePct: crop?.base_moisture_pct ?? null,
-        baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
-        dryBushelsOverride: l.dry_bushels_override,
-      })
-      if (!dryBushels) continue
-      const yr = Number(l.date.slice(0, 4))
-      const key = `${l.from_field_id}|${l.crop_id}|${yr}`
-      map.set(key, (map.get(key) ?? 0) + dryBushels)
-    }
-    const loadById = new Map(loads.map((l) => [l.id, l]))
-    for (const s of splits) {
-      const parent = loadById.get(s.load_id)
-      if (!parent) continue
-      if (cropYear !== '' && parent.crop_year !== cropYear) continue
-      if (s.dry_bushels == null) continue
-      const yr = Number(parent.date.slice(0, 4))
-      const key = `${s.field_id}|${s.crop_id}|${yr}`
-      map.set(key, (map.get(key) ?? 0) + s.dry_bushels)
-    }
-    return map
-  }, [loads, splits, cropById, cropYear])
+  // (fieldId|cropId|year) → { dryBu, lastLoadDate } — same allocation as the
+  // Yields page. lastLoadDate feeds the harvest-completion check below.
+  const aggByKey = useMemo(
+    () => fieldCropAggregates(loads, splits, cropById, {
+      cropYear: cropYear === '' ? null : cropYear,
+    }),
+    [loads, splits, cropById, cropYear],
+  )
 
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings(
@@ -201,14 +181,39 @@ export default function CropInsuranceReport() {
     })
   }, [plantings, cropYear, entityId, fieldById, farmById])
 
-  // Mixed-practice plantings missing breakouts — these gate the report.
+  // Plantings whose harvest is complete — i.e. neither unharvested nor still
+  // in progress, by the same rule the Yields page uses. Only these can need a
+  // production breakout, since an unfinished field has no final bushels to split.
+  const completedPlantingIds = useMemo(() => {
+    const analysis = analyzeYields(
+      yearPlantings.map((p) => {
+        const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
+        return {
+          id: p.id,
+          cropId: p.crop_id,
+          acres: Number(p.planted_acres),
+          dryBu: agg?.dryBu ?? 0,
+          lastLoadDate: agg?.lastLoadDate ?? null,
+          override: p.yield_include_override,
+        }
+      }),
+    )
+    const done = new Set<string>()
+    for (const p of yearPlantings) {
+      if (!analysis.excluded.has(p.id)) done.add(p.id)
+    }
+    return done
+  }, [yearPlantings, aggByKey])
+
+  // Mixed-practice plantings missing breakouts — these gate the report, but
+  // only once harvest is complete (see completedPlantingIds).
   const mixedWithoutBreakout = useMemo(() => {
     return yearPlantings.filter((p) => {
       const irr = Number(p.irrigated_acres) || 0
       const dry = Number(p.dryland_acres) || 0
-      return irr > 0 && dry > 0 && !p.yield_breakout_entered
+      return irr > 0 && dry > 0 && !p.yield_breakout_entered && completedPlantingIds.has(p.id)
     })
-  }, [yearPlantings])
+  }, [yearPlantings, completedPlantingIds])
 
   const isBlocked = mixedWithoutBreakout.length > 0 && !acceptedAsDryland
 
@@ -227,7 +232,7 @@ export default function CropInsuranceReport() {
       const dry = Number(p.dryland_acres) || 0
       const isMixed = irr > 0 && dry > 0
       const hasBreakout = p.yield_breakout_entered === true
-      const totalBu = dryBuByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`) ?? 0
+      const totalBu = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)?.dryBu ?? 0
       let irrBu = 0
       let dryBu = 0
       if (isMixed && hasBreakout) {
@@ -259,7 +264,7 @@ export default function CropInsuranceReport() {
         fieldDisplayName: fld?.name_or_number ?? '—',
       }
     })
-  }, [yearPlantings, fieldById, farmById, countyById, dryBuByKey, cropYear, isBlocked])
+  }, [yearPlantings, fieldById, farmById, countyById, aggByKey, cropYear, isBlocked])
 
   // Crops that actually appear in the selected year — these drive the
   // dynamic column set. Sorted by name for stable display.
@@ -506,9 +511,10 @@ export default function CropInsuranceReport() {
             {mixedWithoutBreakout.length === 1 ? '' : 's'}
           </div>
           <p className="text-sm text-amber-900">
-            The following fields have both irrigated and dryland acres but no production
-            breakout. Either enter the breakout on the Yields page, or generate the report
-            with all production rolled into the dryland sheet.
+            The following harvested fields have both irrigated and dryland acres but no
+            production breakout. Either enter the breakout on the Yields page, or generate
+            the report with all production rolled into the dryland sheet. Fields still
+            being harvested won&apos;t appear here until their harvest is complete.
           </p>
           <ul className="text-sm text-amber-900 list-disc ml-6">
             {mixedWithoutBreakout.map((p) => {
