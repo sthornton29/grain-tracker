@@ -5,8 +5,9 @@ import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
 import { buildDoubleCropSet } from '@/lib/plantings'
-import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL } from '@/lib/contracts'
+import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, cropToCommodity } from '@/lib/contracts'
 import { fmtPrice, fmtPnl } from '@/lib/hedging'
+import { SummaryCards, StackedBar, type SummaryCardData } from '@/components/reports/report-kit'
 import type { Buyer, Contract, Crop, CropAssumption, FuturesPosition, OptionPosition } from '@/lib/types'
 
 type LoadRow = {
@@ -30,6 +31,17 @@ type PlantingRow = {
 
 const bu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
 const usd = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
+const usd0 = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`)
+
+// Sold / hedged / unpriced split for one crop, from existing row fields only
+// (no new calculations — just partitioning totalProduction). sold = contracted;
+// hedged = open futures hedge bushels not already counted as sold; unpriced = rest.
+function positionOf(r: MarketingRow) {
+  const sold = Math.max(0, r.contractedBu)
+  const hedged = Math.max(0, Math.min(r.openFuturesHedgedBu, r.totalProduction - sold))
+  const unpriced = Math.max(0, r.totalProduction - sold - hedged)
+  return { sold, hedged, unpriced }
+}
 
 export default function MarketingPage() {
   const supabase = useMemo(() => createClient(), [])
@@ -47,7 +59,8 @@ export default function MarketingPage() {
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
   const [production, setProduction] = useState<Map<string, number>>(new Map())
 
-  const [openSection, setOpenSection] = useState<'contracts' | 'hedges' | 'unpriced' | null>(null)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [assumptionsOpen, setAssumptionsOpen] = useState(false)
   const [banner, setBanner] = useState<string | null>(null)
 
   // Crop years that have any plantings, contracts, or futures positions.
@@ -145,6 +158,37 @@ export default function MarketingPage() {
   const plantedCropIds = useMemo(() => new Set(plantings.map((p) => p.crop_id)), [plantings])
   const plantedCrops = crops.filter((c) => plantedCropIds.has(c.id))
 
+  // Portfolio roll-ups for the summary cards — sums/ratios of existing row
+  // fields only (no per-crop calculation changes).
+  const totals = useMemo(() => {
+    let acres = 0, prod = 0, contracted = 0, profit = 0, profitKnown = false
+    let priceNum = 0, priceDen = 0
+    for (const r of rows) {
+      acres += r.acres
+      prod += r.totalProduction
+      contracted += r.contractedBu
+      if (r.totalProfit != null) { profit += r.totalProfit; profitKnown = true }
+      if (r.avgCashPrice != null && r.contractedBu > 0) { priceNum += r.avgCashPrice * r.contractedBu; priceDen += r.contractedBu }
+    }
+    return {
+      acres, prod, contracted,
+      pctSold: prod > 0 ? (contracted / prod) * 100 : 0,
+      avgPrice: priceDen > 0 ? priceNum / priceDen : null,
+      profit: profitKnown ? profit : null,
+    }
+  }, [rows])
+
+  // Crops planted this year whose effective yield assumption is still missing.
+  const incompleteCount = useMemo(() => rows.filter((r) => r.yield == null).length, [rows])
+
+  const summaryCards: SummaryCardData[] = useMemo(() => [
+    { label: 'Total acres', value: bu(totals.acres) },
+    { label: 'Total production', value: `${bu(totals.prod)} bu` },
+    { label: '% sold', value: `${totals.pctSold.toFixed(0)}%`, tone: totals.pctSold >= 50 ? 'favorable' : 'warning', sub: `${bu(totals.contracted)} bu contracted` },
+    { label: 'Wtd avg price', value: totals.avgPrice != null ? fmtPrice(totals.avgPrice) : '—', sub: 'contracted bu' },
+    { label: 'Projected profit', value: totals.profit != null ? usd0(totals.profit) : 'Incomplete', tone: totals.profit == null ? 'muted' : totals.profit >= 0 ? 'favorable' : 'unfavorable' },
+  ], [totals])
+
   async function saveAssumption(cropId: string, patch: Partial<CropAssumption>) {
     if (year == null) return
     const existing = assumptions.find((a) => a.crop_id === cropId && a.crop_year === year)
@@ -175,8 +219,13 @@ export default function MarketingPage() {
     load(year)
   }
 
+  function toggleRow(id: string) {
+    setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }
+
   return (
     <div className="space-y-4">
+      {/* Header: title + crop-year filter + Assumptions button */}
       <div className="flex items-end gap-3 flex-wrap">
         <h1 className="text-2xl font-bold flex-1">Marketing</h1>
         <label className="text-sm text-slate-700">
@@ -190,6 +239,20 @@ export default function MarketingPage() {
             {yearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </label>
+        {year != null && !loading && (
+          <button
+            type="button"
+            onClick={() => setAssumptionsOpen(true)}
+            className="relative rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold mb-px"
+          >
+            Assumptions
+            {incompleteCount > 0 && (
+              <span className="ml-2 rounded-full bg-amber-500 text-white text-xs px-1.5 py-0.5 leading-none">
+                {incompleteCount} missing
+              </span>
+            )}
+          </button>
+        )}
       </div>
 
       {banner && <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">{banner}</div>}
@@ -200,10 +263,15 @@ export default function MarketingPage() {
         </div>
       ) : loading ? (
         <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">Loading…</div>
+      ) : rows.length === 0 ? (
+        <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">No planted crops for {year}.</div>
       ) : (
         <>
-          {/* Assumptions */}
-          <AssumptionsEditor crops={plantedCrops} year={year} assumptions={assumptions} segByCrop={segByCrop} actualByCrop={actualByCrop} onSave={saveAssumption} />
+          {/* Summary cards — lead with the numbers. */}
+          <SummaryCards cards={summaryCards} />
+
+          {/* Marketing Position — at-a-glance protection per crop. */}
+          <MarketingPosition rows={rows} />
 
           {/* View toggle */}
           <div className="flex items-center gap-2">
@@ -215,128 +283,147 @@ export default function MarketingPage() {
             ))}
           </div>
 
-          {rows.length === 0 ? (
-            <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">No planted crops for {year}.</div>
-          ) : view === 'base' ? (
-            <BaseTable rows={rows} />
+          {view === 'base' ? (
+            <BaseTable
+              rows={rows} contracts={contracts} futures={futures} options={options}
+              expanded={expanded} onToggle={toggleRow} buyerName={buyerName}
+            />
           ) : (
             <DetailedTable rows={rows} />
           )}
-
-          {/* Detail sections */}
-          <CollapsibleSection title="Physical Contracts Detail" open={openSection === 'contracts'} onToggle={() => setOpenSection((s) => (s === 'contracts' ? null : 'contracts'))}>
-            {contracts.length === 0 ? <p className="text-sm text-slate-400">No contracts for {year}.</p> : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
-                  <thead className="bg-slate-50 text-slate-600"><tr>{['Crop', 'Type', 'Buyer', 'Month', 'Bushels', 'Futures', 'Basis', 'Cash', 'Delivery', 'Status'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
-                  <tbody>
-                    {contracts.map((c) => (
-                      <tr key={c.id} className="border-t border-slate-100">
-                        <td className="px-3 py-2">{cropName(c.crop_id)}</td>
-                        <td className="px-3 py-2"><span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']}</span></td>
-                        <td className="px-3 py-2">{buyerName(c.buyer_id)}</td>
-                        <td className="px-3 py-2 whitespace-nowrap">{c.contract_month ?? '—'}</td>
-                        <td className="px-3 py-2 text-right font-mono">{bu(Number(c.contracted_bushels))}</td>
-                        <td className="px-3 py-2 text-right font-mono">{c.futures_price != null ? fmtPrice(c.futures_price) : '—'}</td>
-                        <td className="px-3 py-2 text-right font-mono">{c.basis != null ? Number(c.basis).toFixed(4) : '—'}</td>
-                        <td className="px-3 py-2 text-right font-mono">{c.cash_price != null ? fmtPrice(c.cash_price) : '—'}</td>
-                        <td className="px-3 py-2 whitespace-nowrap text-xs">{(c.delivery_start_date || c.delivery_end_date) ? `${c.delivery_start_date ?? '?'} → ${c.delivery_end_date ?? '?'}` : '—'}</td>
-                        <td className="px-3 py-2 whitespace-nowrap text-xs">{PRICING_STATUS_LABEL[c.pricing_status]}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </CollapsibleSection>
-
-          <CollapsibleSection title="Hedge Positions Detail" open={openSection === 'hedges'} onToggle={() => setOpenSection((s) => (s === 'hedges' ? null : 'hedges'))}>
-            <div className="space-y-3">
-              <div>
-                <div className="text-sm font-semibold text-slate-700 mb-1">Futures ({futures.length})</div>
-                {futures.length === 0 ? <p className="text-sm text-slate-400">None.</p> : (
-                  <div className="overflow-x-auto"><table className="min-w-full text-sm">
-                    <thead className="bg-slate-50 text-slate-600"><tr>{['Commodity', 'Month', 'Side', '#', 'Trade $', 'Status', 'Realized'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
-                    <tbody>{futures.map((f) => (
-                      <tr key={f.id} className="border-t border-slate-100">
-                        <td className="px-3 py-2">{f.commodity}</td><td className="px-3 py-2">{f.contract_month}</td>
-                        <td className="px-3 py-2 capitalize">{f.side}</td><td className="px-3 py-2 text-right">{f.num_contracts}</td>
-                        <td className="px-3 py-2 text-right font-mono">{fmtPrice(f.trade_price)}</td><td className="px-3 py-2 capitalize">{f.status}</td>
-                        <td className="px-3 py-2 text-right font-mono">{f.realized_pnl != null ? fmtPnl(f.realized_pnl) : '—'}</td>
-                      </tr>
-                    ))}</tbody>
-                  </table></div>
-                )}
-              </div>
-              <div>
-                <div className="text-sm font-semibold text-slate-700 mb-1">Options ({options.length})</div>
-                {options.length === 0 ? <p className="text-sm text-slate-400">None.</p> : (
-                  <div className="overflow-x-auto"><table className="min-w-full text-sm">
-                    <thead className="bg-slate-50 text-slate-600"><tr>{['Commodity', 'Type', 'Side', 'Month', 'Strike', '#', 'Status', 'Realized'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
-                    <tbody>{options.map((o) => (
-                      <tr key={o.id} className="border-t border-slate-100">
-                        <td className="px-3 py-2">{o.commodity}</td><td className="px-3 py-2 capitalize">{o.option_type}</td>
-                        <td className="px-3 py-2 capitalize">{o.side}</td><td className="px-3 py-2">{o.underlying_contract_month}</td>
-                        <td className="px-3 py-2 text-right font-mono">{fmtPrice(o.strike_price)}</td><td className="px-3 py-2 text-right">{o.num_contracts}</td>
-                        <td className="px-3 py-2">{o.status}</td><td className="px-3 py-2 text-right font-mono">{o.realized_pnl != null ? fmtPnl(o.realized_pnl) : '—'}</td>
-                      </tr>
-                    ))}</tbody>
-                  </table></div>
-                )}
-              </div>
-            </div>
-          </CollapsibleSection>
-
-          <CollapsibleSection title="Unpriced Production" open={openSection === 'unpriced'} onToggle={() => setOpenSection((s) => (s === 'unpriced' ? null : 'unpriced'))}>
-            <p className="text-xs text-slate-500 mb-2">Bushels with zero price protection = Total Production − (Contracted + Open Futures Hedged).</p>
-            <div className="overflow-x-auto"><table className="min-w-full text-sm">
-              <thead className="bg-slate-50 text-slate-600"><tr>{['Crop', 'Total Production', 'Contracted', 'Open Futures Hedged', 'Completely Unpriced'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
-              <tbody>{rows.map((r) => {
-                const unpriced = r.totalProduction - (r.contractedBu + r.openFuturesHedgedBu)
-                return (
-                  <tr key={r.cropId} className="border-t border-slate-100">
-                    <td className="px-3 py-2">{r.cropName}</td>
-                    <td className="px-3 py-2 text-right font-mono">{bu(r.totalProduction)}</td>
-                    <td className="px-3 py-2 text-right font-mono">{bu(r.contractedBu)}</td>
-                    <td className="px-3 py-2 text-right font-mono">{bu(r.openFuturesHedgedBu)}</td>
-                    <td className={`px-3 py-2 text-right font-mono font-semibold ${unpriced > 0 ? 'text-amber-700' : 'text-green-700'}`}>{bu(unpriced)}</td>
-                  </tr>
-                )
-              })}</tbody>
-            </table></div>
-          </CollapsibleSection>
         </>
+      )}
+
+      {/* Assumptions slide-over */}
+      {assumptionsOpen && year != null && (
+        <AssumptionsPanel
+          crops={plantedCrops} year={year} assumptions={assumptions}
+          segByCrop={segByCrop} actualByCrop={actualByCrop}
+          onSave={saveAssumption} onClose={() => setAssumptionsOpen(false)}
+        />
       )}
     </div>
   )
 }
 
-function BaseTable({ rows }: { rows: MarketingRow[] }) {
+// ---------------------------------------------------------------------------
+// Marketing Position — horizontal stacked bar per crop (sold / hedged / unpriced)
+// ---------------------------------------------------------------------------
+function MarketingPosition({ rows }: { rows: MarketingRow[] }) {
+  const withProd = rows.filter((r) => r.totalProduction > 0)
+  if (withProd.length === 0) return null
+  return (
+    <div className="bg-white rounded-xl shadow p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold">Marketing Position</h2>
+        <div className="flex items-center gap-3 text-xs text-slate-500">
+          <Legend className="bg-green-600" label="Sold" />
+          <Legend className="bg-amber-400" label="Hedged" />
+          <Legend className="bg-slate-300" label="Unpriced" />
+        </div>
+      </div>
+      <div className="space-y-2">
+        {withProd.map((r) => {
+          const p = positionOf(r)
+          return (
+            <div key={r.cropId} className="flex items-center gap-3">
+              <div className="w-24 shrink-0 text-sm font-medium truncate">{r.cropName}</div>
+              <div className="flex-1">
+                <StackedBar segments={[
+                  { value: p.sold, className: 'bg-green-600', label: p.sold > 0 ? `${bu(p.sold)}` : undefined },
+                  { value: p.hedged, className: 'bg-amber-400', label: p.hedged > 0 ? `${bu(p.hedged)}` : undefined },
+                  { value: p.unpriced, className: 'bg-slate-300', label: p.unpriced > 0 ? `${bu(p.unpriced)}` : undefined },
+                ]} />
+              </div>
+              <div className="w-28 shrink-0 text-right text-xs text-slate-500 tabular-nums">{bu(r.totalProduction)} bu</div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function Legend({ className, label }: { className: string; label: string }) {
+  return <span className="inline-flex items-center gap-1"><span className={`inline-block w-3 h-3 rounded-sm ${className}`} />{label}</span>
+}
+
+// ---------------------------------------------------------------------------
+// Base table — one row per crop with a % sold progress bar, expandable to detail
+// ---------------------------------------------------------------------------
+function BaseTable({
+  rows, contracts, futures, options, expanded, onToggle, buyerName,
+}: {
+  rows: MarketingRow[]
+  contracts: Contract[]
+  futures: FuturesPosition[]
+  options: OptionPosition[]
+  expanded: Set<string>
+  onToggle: (id: string) => void
+  buyerName: (id: string | null) => string
+}) {
   const anyExcluded = rows.some((r) => r.excludedAwaitingBu > 0)
   const tot = rows.reduce((a, r) => ({ acres: a.acres + r.acres, prod: a.prod + r.totalProduction, contracted: a.contracted + r.contractedBu, remaining: a.remaining + r.remaining }), { acres: 0, prod: 0, contracted: 0, remaining: 0 })
+  const colCount = 8
   return (
     <div className="bg-white rounded-xl shadow overflow-x-auto">
       <table className="min-w-full text-sm">
-        <thead className="bg-slate-100 text-slate-700"><tr>{['Crop', 'Acres', 'Yield', 'Total Production', 'Contracted Bu', 'Bu Remaining', 'Avg Price'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+        <thead className="bg-slate-100 text-slate-700">
+          <tr>
+            <th className="w-6 px-2 py-2" />
+            {['Crop', 'Acres', 'Yield', 'Total Production', 'Contracted Bu', '% Sold', 'Avg Price'].map((h, i) => (
+              <th key={h} className={`px-3 py-2 whitespace-nowrap ${i === 0 ? 'text-left sticky left-0 bg-slate-100' : 'text-left'}`}>{h}</th>
+            ))}
+          </tr>
+        </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr key={r.cropId} className="border-t border-slate-100">
-              <td className="px-3 py-2 font-semibold">{r.cropName}</td>
-              <td className="px-3 py-2 text-right font-mono">{bu(r.acres)}</td>
-              <td className="px-3 py-2 text-right font-mono">{r.yield != null ? `${r.yield.toFixed(1)} ` : '—'}<span className="text-xs text-slate-400">{r.yield != null ? r.yieldLabel : ''}</span></td>
-              <td className="px-3 py-2 text-right font-mono">{bu(r.totalProduction)}</td>
-              <td className="px-3 py-2 text-right font-mono">{bu(r.contractedBu)}</td>
-              <td className={`px-3 py-2 text-right font-mono ${r.remaining < 0 ? 'text-red-700 font-semibold' : ''}`}>{bu(r.remaining)}</td>
-              <td className="px-3 py-2 text-right font-mono">{r.avgCashPrice != null ? fmtPrice(r.avgCashPrice) : '—'}{r.excludedAwaitingBu > 0 && <span className="text-amber-600">*</span>}</td>
-            </tr>
-          ))}
-          <tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold">
-            <td className="px-3 py-2">Total</td>
-            <td className="px-3 py-2 text-right font-mono">{bu(tot.acres)}</td>
+          {rows.map((r) => {
+            const isOpen = expanded.has(r.cropId)
+            const pctSold = r.totalProduction > 0 ? Math.min(100, (r.contractedBu / r.totalProduction) * 100) : 0
+            return (
+              <FragmentRow key={r.cropId}>
+                <tr className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer" onClick={() => onToggle(r.cropId)}>
+                  <td className="px-2 py-2 text-slate-400 text-center">{isOpen ? '▾' : '▸'}</td>
+                  <td className="px-3 py-2 font-semibold sticky left-0 bg-white">{r.cropName}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{bu(r.acres)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{r.yield != null ? `${r.yield.toFixed(1)} ` : '—'}<span className="text-xs text-slate-400">{r.yield != null ? r.yieldLabel : ''}</span></td>
+                  <td className="px-3 py-2 text-right tabular-nums">{bu(r.totalProduction)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{bu(r.contractedBu)}</td>
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-2 rounded-full bg-slate-100 overflow-hidden min-w-[60px]">
+                        <div className={`h-full ${pctSold >= 50 ? 'bg-green-600' : 'bg-amber-400'}`} style={{ width: `${pctSold}%` }} />
+                      </div>
+                      <span className="text-xs tabular-nums text-slate-600 w-9 text-right">{pctSold.toFixed(0)}%</span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">{r.avgCashPrice != null ? fmtPrice(r.avgCashPrice) : '—'}{r.excludedAwaitingBu > 0 && <span className="text-amber-600">*</span>}</td>
+                </tr>
+                {isOpen && (
+                  <tr className="bg-slate-50/60">
+                    <td />
+                    <td colSpan={colCount - 1} className="px-3 py-3">
+                      <CropDetail
+                        row={r}
+                        contracts={contracts.filter((c) => c.crop_id === r.cropId)}
+                        futures={futures.filter((f) => f.commodity === cropToCommodity(r.cropName))}
+                        options={options.filter((o) => o.commodity === cropToCommodity(r.cropName))}
+                        buyerName={buyerName}
+                      />
+                    </td>
+                  </tr>
+                )}
+              </FragmentRow>
+            )
+          })}
+          <tr className="border-t-2 border-slate-300 bg-slate-100 font-bold">
             <td />
-            <td className="px-3 py-2 text-right font-mono">{bu(tot.prod)}</td>
-            <td className="px-3 py-2 text-right font-mono">{bu(tot.contracted)}</td>
-            <td className={`px-3 py-2 text-right font-mono ${tot.remaining < 0 ? 'text-red-700' : ''}`}>{bu(tot.remaining)}</td>
+            <td className="px-3 py-2 sticky left-0 bg-slate-100">Total</td>
+            <td className="px-3 py-2 text-right tabular-nums">{bu(tot.acres)}</td>
+            <td />
+            <td className="px-3 py-2 text-right tabular-nums">{bu(tot.prod)}</td>
+            <td className="px-3 py-2 text-right tabular-nums">{bu(tot.contracted)}</td>
+            <td className="px-3 py-2 text-right tabular-nums text-slate-600">{tot.prod > 0 ? `${((tot.contracted / tot.prod) * 100).toFixed(0)}%` : '—'}</td>
             <td />
           </tr>
         </tbody>
@@ -346,27 +433,130 @@ function BaseTable({ rows }: { rows: MarketingRow[] }) {
   )
 }
 
+// React.Fragment wrapper that accepts a key (so we can emit two <tr>s per crop).
+function FragmentRow({ children }: { children: React.ReactNode }) {
+  return <>{children}</>
+}
+
+// Inline per-crop detail: price components, contracted breakdown by type,
+// hedge positions, and the unpriced split. Read-only summaries of existing data.
+function CropDetail({
+  row, contracts, futures, options, buyerName,
+}: {
+  row: MarketingRow
+  contracts: Contract[]
+  futures: FuturesPosition[]
+  options: OptionPosition[]
+  buyerName: (id: string | null) => string
+}) {
+  const pos = positionOf(row)
+  // Contracted bushels grouped by contract type.
+  const byType = new Map<string, number>()
+  for (const c of contracts) {
+    const t = CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']
+    byType.set(t, (byType.get(t) ?? 0) + Number(c.contracted_bushels))
+  }
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-sm">
+      {/* Price components */}
+      <div>
+        <div className="font-semibold text-slate-700 mb-1">Price components</div>
+        <dl className="space-y-0.5">
+          <Row label="Avg futures" value={row.avgFutures != null ? fmtPrice(row.avgFutures) : '—'} />
+          <Row label="Avg basis" value={row.avgBasis != null ? Number(row.avgBasis).toFixed(4) : 'N/A'} />
+          <Row label="Total avg price" value={row.totalAvgPrice != null ? fmtPrice(row.totalAvgPrice) : row.avgCashPrice != null ? fmtPrice(row.avgCashPrice) : '—'} />
+          <Row label="Cost / bu" value={row.costPerBu != null ? fmtPrice(row.costPerBu) : '—'} />
+        </dl>
+      </div>
+      {/* Position split */}
+      <div>
+        <div className="font-semibold text-slate-700 mb-1">Position</div>
+        <dl className="space-y-0.5">
+          <Row label="Sold (contracted)" value={`${bu(pos.sold)} bu`} />
+          <Row label="Hedged (open futures)" value={`${bu(pos.hedged)} bu`} />
+          <Row label="Unpriced" value={`${bu(pos.unpriced)} bu`} tone={pos.unpriced > 0 ? 'text-amber-700' : 'text-green-700'} />
+          <Row label="Bu remaining" value={bu(row.remaining)} tone={row.remaining < 0 ? 'text-red-700' : undefined} />
+        </dl>
+      </div>
+      {/* Contracts + hedges */}
+      <div>
+        <div className="font-semibold text-slate-700 mb-1">Contracts &amp; hedges</div>
+        {byType.size === 0 && futures.length === 0 && options.length === 0 ? (
+          <p className="text-slate-400">No contracts or hedges.</p>
+        ) : (
+          <dl className="space-y-0.5">
+            {[...byType].map(([t, b]) => <Row key={t} label={t} value={`${bu(b)} bu`} />)}
+            {futures.length > 0 && <Row label={`Futures (${futures.length})`} value={`${futures.reduce((s, f) => s + (f.realized_pnl != null ? Number(f.realized_pnl) : 0), 0) !== 0 ? fmtPnl(futures.reduce((s, f) => s + (f.realized_pnl != null ? Number(f.realized_pnl) : 0), 0)) : 'open'}`} />}
+            {options.length > 0 && <Row label={`Options (${options.length})`} value="see Hedging" />}
+          </dl>
+        )}
+        {contracts.length > 0 && (
+          <div className="mt-2 text-xs text-slate-500">
+            {contracts.slice(0, 4).map((c) => (
+              <div key={c.id} className="truncate">#{c.contract_number} · {buyerName(c.buyer_id)} · {PRICING_STATUS_LABEL[c.pricing_status]}</div>
+            ))}
+            {contracts.length > 4 && <div>+{contracts.length - 4} more</div>}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Row({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return (
+    <div className="flex justify-between gap-3">
+      <dt className="text-slate-500">{label}</dt>
+      <dd className={`tabular-nums ${tone ?? 'text-slate-800'}`}>{value}</dd>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Detailed table — grouped spanning headers + frozen crop column on overflow
+// ---------------------------------------------------------------------------
 function DetailedTable({ rows }: { rows: MarketingRow[] }) {
+  const frozen = 'sticky left-0 z-10'
   return (
     <div className="bg-white rounded-xl shadow overflow-x-auto">
-      <table className="min-w-full text-sm">
-        <thead className="bg-slate-100 text-slate-700"><tr>{['Crop', 'Acres', 'Yield', 'Total Prod', 'Contracted Bu', 'Bu Remaining', 'Avg Futures', 'Avg Basis', 'Total Avg Price', 'Cost/Acre', 'Cost/Bu', 'Profit/Acre', 'Total Profit'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+      <table className="min-w-full text-sm border-collapse">
+        <thead className="text-slate-700">
+          <tr className="bg-slate-100">
+            <th rowSpan={2} className={`px-3 py-2 text-left align-bottom bg-slate-100 ${frozen}`}>Crop</th>
+            <th colSpan={3} className="px-3 py-1 text-center border-l border-slate-300">Production</th>
+            <th colSpan={2} className="px-3 py-1 text-center border-l border-slate-300">Sales</th>
+            <th colSpan={3} className="px-3 py-1 text-center border-l border-slate-300">Pricing</th>
+            <th colSpan={3} className="px-3 py-1 text-center border-l border-slate-300">Profitability</th>
+          </tr>
+          <tr className="bg-slate-50 text-xs text-slate-600">
+            <th className="px-3 py-1 text-right border-l border-slate-300">Acres</th>
+            <th className="px-3 py-1 text-right">Yield</th>
+            <th className="px-3 py-1 text-right">Total Prod</th>
+            <th className="px-3 py-1 text-right border-l border-slate-300">Contracted</th>
+            <th className="px-3 py-1 text-right">Remaining</th>
+            <th className="px-3 py-1 text-right border-l border-slate-300">Avg Futures</th>
+            <th className="px-3 py-1 text-right">Avg Basis</th>
+            <th className="px-3 py-1 text-right">Total Avg $</th>
+            <th className="px-3 py-1 text-right border-l border-slate-300">Cost/Ac</th>
+            <th className="px-3 py-1 text-right">Profit/Ac</th>
+            <th className="px-3 py-1 text-right">Total Profit</th>
+          </tr>
+        </thead>
         <tbody>
           {rows.map((r) => (
             <tr key={r.cropId} className="border-t border-slate-100">
-              <td className="px-3 py-2 font-semibold">{r.cropName}</td>
-              <td className="px-3 py-2 text-right font-mono">{bu(r.acres)}</td>
-              <td className="px-3 py-2 text-right font-mono">{r.yield != null ? r.yield.toFixed(1) : '—'} <span className="text-xs text-slate-400">{r.yield != null ? r.yieldLabel : ''}</span></td>
-              <td className="px-3 py-2 text-right font-mono">{bu(r.totalProduction)}</td>
-              <td className="px-3 py-2 text-right font-mono">{bu(r.contractedBu)}</td>
-              <td className={`px-3 py-2 text-right font-mono ${r.remaining < 0 ? 'text-red-700 font-semibold' : ''}`}>{bu(r.remaining)}</td>
-              <td className="px-3 py-2 text-right font-mono">{r.avgFutures != null ? fmtPrice(r.avgFutures) : '—'}</td>
-              <td className="px-3 py-2 text-right font-mono">{r.avgBasis != null ? Number(r.avgBasis).toFixed(4) : 'N/A'}</td>
-              <td className="px-3 py-2 text-right font-mono">{r.totalAvgPrice != null ? fmtPrice(r.totalAvgPrice) : r.avgFutures != null ? `${fmtPrice(r.avgFutures)}*` : r.avgCashPrice != null ? fmtPrice(r.avgCashPrice) : '—'}</td>
-              <td className="px-3 py-2 text-right font-mono">{usd(r.costPerAcre)}</td>
-              <td className="px-3 py-2 text-right font-mono">{r.costPerBu != null ? fmtPrice(r.costPerBu) : '—'}</td>
-              <td className={`px-3 py-2 text-right font-mono ${r.profitPerAcre == null ? 'text-slate-400' : r.profitPerAcre >= 0 ? 'text-green-700' : 'text-red-700'}`}>{r.profitPerAcre != null ? usd(r.profitPerAcre) : 'Incomplete'}</td>
-              <td className={`px-3 py-2 text-right font-mono font-semibold ${r.totalProfit == null ? 'text-slate-400' : r.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'}`}>{r.totalProfit != null ? usd(r.totalProfit) : '—'}</td>
+              <td className="px-3 py-2 font-semibold sticky left-0 bg-white z-10">{r.cropName}</td>
+              <td className="px-3 py-2 text-right tabular-nums border-l border-slate-200">{bu(r.acres)}</td>
+              <td className="px-3 py-2 text-right tabular-nums">{r.yield != null ? r.yield.toFixed(1) : '—'} <span className="text-xs text-slate-400">{r.yield != null ? r.yieldLabel : ''}</span></td>
+              <td className="px-3 py-2 text-right tabular-nums">{bu(r.totalProduction)}</td>
+              <td className="px-3 py-2 text-right tabular-nums border-l border-slate-200">{bu(r.contractedBu)}</td>
+              <td className={`px-3 py-2 text-right tabular-nums ${r.remaining < 0 ? 'text-red-700 font-semibold' : ''}`}>{bu(r.remaining)}</td>
+              <td className="px-3 py-2 text-right tabular-nums border-l border-slate-200">{r.avgFutures != null ? fmtPrice(r.avgFutures) : '—'}</td>
+              <td className="px-3 py-2 text-right tabular-nums">{r.avgBasis != null ? Number(r.avgBasis).toFixed(4) : 'N/A'}</td>
+              <td className="px-3 py-2 text-right tabular-nums">{r.totalAvgPrice != null ? fmtPrice(r.totalAvgPrice) : r.avgFutures != null ? `${fmtPrice(r.avgFutures)}*` : r.avgCashPrice != null ? fmtPrice(r.avgCashPrice) : '—'}</td>
+              <td className="px-3 py-2 text-right tabular-nums border-l border-slate-200">{usd(r.costPerAcre)}</td>
+              <td className={`px-3 py-2 text-right tabular-nums ${r.profitPerAcre == null ? 'text-slate-400' : r.profitPerAcre >= 0 ? 'text-green-700' : 'text-red-700'}`}>{r.profitPerAcre != null ? usd(r.profitPerAcre) : 'Incomplete'}</td>
+              <td className={`px-3 py-2 text-right tabular-nums font-semibold ${r.totalProfit == null ? 'text-slate-400' : r.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'}`}>{r.totalProfit != null ? usd(r.totalProfit) : '—'}</td>
             </tr>
           ))}
         </tbody>
@@ -376,39 +566,65 @@ function DetailedTable({ rows }: { rows: MarketingRow[] }) {
   )
 }
 
-function AssumptionsEditor({ crops, year, assumptions, segByCrop, actualByCrop, onSave }: {
+// ---------------------------------------------------------------------------
+// Assumptions slide-over panel — collapsible per crop, live recalc, stays open
+// ---------------------------------------------------------------------------
+function AssumptionsPanel({ crops, year, assumptions, segByCrop, actualByCrop, onSave, onClose }: {
   crops: Crop[]; year: number; assumptions: CropAssumption[]
   segByCrop: Map<string, SegmentAcres>
   actualByCrop: Map<string, { production: number; yield: number | null }>
   onSave: (cropId: string, patch: Partial<CropAssumption>) => void
+  onClose: () => void
 }) {
+  const [openCrop, setOpenCrop] = useState<string | null>(crops[0]?.id ?? null)
   return (
-    <div className="bg-white rounded-xl shadow p-4 space-y-3">
-      <div>
-        <h2 className="font-semibold">Assumptions — {year}</h2>
-        <p className="text-xs text-slate-500">
-          Enter an overall yield and cost/acre, or break them out by irrigated/dryland (and full-season/double-crop
-          for double-cropped acres) — a blank breakout cell falls back to the overall. Once you break a column out,
-          the Overall row shows the acre-weighted average. On harvest complete, the actual average yield from loads
-          replaces the estimate and is used going forward.
-        </p>
-      </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        {crops.map((c) => {
-          const a = assumptions.find((x) => x.crop_id === c.id && x.crop_year === year)
-          // Key on updated_at so the inputs re-seed from the DB after a save —
-          // e.g. when harvest-complete snaps the overall yield to actual.
-          return (
-            <AssumptionRow
-              key={`${c.id}:${a?.updated_at ?? 'new'}`}
-              crop={c}
-              assumption={a}
-              seg={segByCrop.get(c.id)}
-              actual={actualByCrop.get(c.id)}
-              onSave={onSave}
-            />
-          )
-        })}
+    <div className="fixed inset-0 z-40 no-print">
+      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
+      <div className="absolute right-0 top-0 h-full w-full max-w-xl bg-slate-50 shadow-xl overflow-y-auto">
+        <div className="sticky top-0 bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3">
+          <div className="flex-1">
+            <h2 className="font-bold">Assumptions — {year}</h2>
+            <p className="text-xs text-slate-500">Changes save and recalculate the dashboard live; this panel stays open.</p>
+          </div>
+          <button onClick={onClose} className="rounded-lg bg-slate-700 text-white px-3 py-1.5 text-sm font-semibold">Done</button>
+        </div>
+        <div className="p-4 space-y-2">
+          <p className="text-xs text-slate-500">
+            Enter an overall yield and cost/acre, or break them out by irrigated/dryland (and full-season/double-crop) —
+            a blank breakout cell falls back to the overall. On harvest complete, the actual average yield from loads
+            replaces the estimate.
+          </p>
+          {crops.map((c) => {
+            const a = assumptions.find((x) => x.crop_id === c.id && x.crop_year === year)
+            const isOpen = openCrop === c.id
+            const actual = actualByCrop.get(c.id)
+            const effYield = (a?.harvest_complete && actual?.yield != null) ? actual.yield : a?.expected_yield ?? null
+            const missing = effYield == null
+            return (
+              <div key={c.id} className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setOpenCrop(isOpen ? null : c.id)}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-left"
+                >
+                  <span className="text-slate-400">{isOpen ? '▾' : '▸'}</span>
+                  <span className="font-semibold flex-1">{c.name}</span>
+                  {missing
+                    ? <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">needs yield</span>
+                    : <span className="text-xs text-slate-500 tabular-nums">{effYield?.toFixed(1)} bu/ac{a?.cost_per_acre != null ? ` · ${usd0(a.cost_per_acre)}/ac` : ''}{a?.harvest_complete ? ' · harvested' : ''}</span>}
+                </button>
+                {isOpen && (
+                  <div className="px-3 pb-3 border-t border-slate-100">
+                    <AssumptionRow
+                      key={`${c.id}:${a?.updated_at ?? 'new'}`}
+                      crop={c} assumption={a} seg={segByCrop.get(c.id)} actual={actual} onSave={onSave}
+                    />
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
     </div>
   )
@@ -490,24 +706,21 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
   const ic = 'rounded border border-slate-300 px-2 py-1 w-20 text-right'
   const cell = 'px-1 py-1'
   return (
-    <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-      <div className="flex items-center gap-3 flex-wrap">
-        <span className="font-semibold flex-1">{crop.name}</span>
-        <label className="text-sm flex items-center gap-1 text-slate-600">
-          <input
-            type="checkbox"
-            checked={a?.harvest_complete ?? false}
-            onChange={(e) => {
-              const checked = e.target.checked
-              const patch: Partial<CropAssumption> = { harvest_complete: checked }
-              // On completing harvest, snap the overall estimate yield to actual.
-              if (checked && actual?.yield != null) patch.expected_yield = actual.yield
-              onSave(crop.id, patch)
-            }}
-          />
-          Harvest complete
-        </label>
-      </div>
+    <div className="space-y-2 pt-2">
+      <label className="text-sm flex items-center gap-1 text-slate-600">
+        <input
+          type="checkbox"
+          checked={a?.harvest_complete ?? false}
+          onChange={(e) => {
+            const checked = e.target.checked
+            const patch: Partial<CropAssumption> = { harvest_complete: checked }
+            // On completing harvest, snap the overall estimate yield to actual.
+            if (checked && actual?.yield != null) patch.expected_yield = actual.yield
+            onSave(crop.id, patch)
+          }}
+        />
+        Harvest complete
+      </label>
       <table className="w-full text-sm">
         <thead>
           <tr className="text-xs text-slate-500">
@@ -554,18 +767,6 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
         )}
         <button onClick={save} className="ml-auto rounded-lg bg-green-700 text-white px-3 py-1 text-sm font-semibold">Save</button>
       </div>
-    </div>
-  )
-}
-
-function CollapsibleSection({ title, open, onToggle, children }: { title: string; open: boolean; onToggle: () => void; children: React.ReactNode }) {
-  return (
-    <div className="bg-white rounded-xl shadow overflow-hidden">
-      <button onClick={onToggle} className="w-full text-left px-4 py-3 font-semibold flex items-center justify-between">
-        <span>{title}</span>
-        <span className="text-slate-400">{open ? '▾' : '▸'}</span>
-      </button>
-      {open && <div className="px-4 pb-4">{children}</div>}
     </div>
   )
 }
