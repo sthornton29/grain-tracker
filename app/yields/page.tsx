@@ -4,12 +4,12 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
-import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
+import { fieldCropAggregates, analyzeYields, isHarvestComplete } from '@/lib/yields'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import ExportBar from '@/components/export-bar'
 import type { ExportColumn, ExportPayload } from '@/lib/exports'
-import type { Crop, Entity, Farm, Field, FieldPlanting, FieldPlantingVariety, County, LoadSplit } from '@/lib/types'
+import type { Crop, CropAssumption, Entity, Farm, Field, FieldPlanting, FieldPlantingVariety, County, LoadSplit } from '@/lib/types'
 
 type LoadRow = {
   id: string
@@ -53,6 +53,7 @@ export default function YieldsPage() {
   const [crops, setCrops] = useState<Crop[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [varieties, setVarieties] = useState<FieldPlantingVariety[]>([])
+  const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
   const [counties, setCounties] = useState<County[]>([])
@@ -108,7 +109,7 @@ export default function YieldsPage() {
 
   async function refresh() {
     setLoading(true)
-    const [en, fa, fi, cr, pl, lo, co, sp, vv] = await Promise.all([
+    const [en, fa, fi, cr, pl, lo, co, sp, vv, ca] = await Promise.all([
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
@@ -118,6 +119,7 @@ export default function YieldsPage() {
       supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('load_splits').select('*'),
       supabase.from('field_planting_varieties').select('*').order('variety'),
+      supabase.from('crop_assumptions').select('*'),
     ])
     setEntities((en.data as Entity[]) || [])
     setFarms((fa.data as Farm[]) || [])
@@ -128,6 +130,7 @@ export default function YieldsPage() {
     setSplits((sp.data as LoadSplit[]) || [])
     setCounties((co.data as County[]) || [])
     setVarieties((vv.data as FieldPlantingVariety[]) || [])
+    setAssumptions((ca.data as CropAssumption[]) || [])
     setLoading(false)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
@@ -233,6 +236,17 @@ export default function YieldsPage() {
   ), [plantings, aggByKey, fieldById, farmById, year, cropId, farmId, entityId, countyId, view, practiceFilter])
   const excludedFields = yieldAnalysis.excluded
   const includedPlantings = visible.filter((p) => !excludedFields.has(p.id))
+
+  // Crop+year combos the user has marked harvest-complete at the crop level
+  // (Marketing assumptions). These force every field of that crop to "complete".
+  const cropCompleteKeys = useMemo(() => {
+    const s = new Set<string>()
+    for (const a of assumptions) if (a.harvest_complete) s.add(`${a.crop_id}|${a.crop_year}`)
+    return s
+  }, [assumptions])
+  // Bushel allocation (irr/dry breakout, per-variety) is only offered once a
+  // field's harvest is complete — not while it's unharvested or in progress.
+  const fieldComplete = (p: FieldPlanting) => isHarvestComplete(p, excludedFields, cropCompleteKeys)
   // Completion rank, now used only as a tiebreaker: completed (counted) before
   // in-progress before unharvested.
   const fieldRank = (id: string) => {
@@ -952,11 +966,22 @@ export default function YieldsPage() {
                               </span>
                             )}
                             {!isOpen && (
-                              <button
-                                type="button"
-                                onClick={() => openVarAlloc(p)}
-                                className="text-sky-700 text-sm whitespace-nowrap"
-                              >{allocated ? 'Edit allocation' : 'Allocate bushels'}</button>
+                              // Only offer allocation once harvest is complete;
+                              // an existing allocation stays editable.
+                              (fieldComplete(p) || allocated) ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openVarAlloc(p)}
+                                  className="text-sky-700 text-sm whitespace-nowrap"
+                                >{allocated ? 'Edit allocation' : 'Allocate bushels'}</button>
+                              ) : (
+                                <span
+                                  title="Available after harvest is complete"
+                                  className="text-slate-400 text-sm whitespace-nowrap cursor-help"
+                                >
+                                  Allocate bushels
+                                </span>
+                              )
                             )}
                           </td>
                         </tr>
@@ -1167,13 +1192,25 @@ export default function YieldsPage() {
                           <span className="text-xs bg-amber-100 text-amber-800 rounded px-2 py-0.5 mr-2">double-crop</span>
                         )}
                         {showAllocateButton && yieldView === 'breakdown' && !isBreakoutOpen && (
-                          <button
-                            type="button"
-                            onClick={() => openBreakout(p)}
-                            className="text-sky-700 text-sm whitespace-nowrap no-print"
-                          >
-                            {p.yield_breakout_entered ? 'Edit breakout' : 'Allocate irr/dry'}
-                          </button>
+                          // Allocation is offered only once harvest is complete;
+                          // an existing breakout stays editable so saved data is
+                          // never stranded.
+                          (fieldComplete(p) || p.yield_breakout_entered) ? (
+                            <button
+                              type="button"
+                              onClick={() => openBreakout(p)}
+                              className="text-sky-700 text-sm whitespace-nowrap no-print"
+                            >
+                              {p.yield_breakout_entered ? 'Edit breakout' : 'Allocate irr/dry'}
+                            </button>
+                          ) : (
+                            <span
+                              title="Available after harvest is complete"
+                              className="text-slate-400 text-sm whitespace-nowrap no-print cursor-help"
+                            >
+                              Allocate irr/dry
+                            </span>
+                          )
                         )}
                       </td>
                     </tr>

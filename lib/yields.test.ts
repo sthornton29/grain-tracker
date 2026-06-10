@@ -2,9 +2,12 @@ import { describe, it, expect } from 'vitest'
 import {
   fieldCropAggregates,
   analyzeYields,
+  harvestStatusOf,
+  isHarvestComplete,
   IN_PROGRESS_THRESHOLD,
   IN_PROGRESS_STALE_DAYS,
   type YieldInput,
+  type ExclusionReason,
 } from '@/lib/yields'
 
 // ---------------------------------------------------------------------------
@@ -472,5 +475,34 @@ describe('analyzeYields — multiple crops handled independently', () => {
     expect(bp.completedAcres).toBe(100)
     expect(bp.remainingAcres).toBe(100)
     expect(bp.pctComplete).toBeCloseTo(50, 6)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// harvestStatusOf / isHarvestComplete — gates the bushel-allocation UI
+// ---------------------------------------------------------------------------
+describe('harvestStatusOf', () => {
+  const planting = (id: string, crop_id = 'corn', season_year = 2026) => ({ id, crop_id, season_year })
+  const excl = (pairs: Array<[string, ExclusionReason]>) => new Map<string, ExclusionReason>(pairs)
+  const NO_CROPS = new Set<string>()
+
+  it('returns complete when the planting is not excluded', () => {
+    expect(harvestStatusOf(planting('a'), excl([]), NO_CROPS)).toBe('complete')
+    expect(isHarvestComplete(planting('a'), excl([]), NO_CROPS)).toBe(true)
+  })
+
+  it('returns in_progress / unharvested mirroring the exclusion reason', () => {
+    expect(harvestStatusOf(planting('a'), excl([['a', 'in_progress']]), NO_CROPS)).toBe('in_progress')
+    expect(harvestStatusOf(planting('b'), excl([['b', 'unharvested']]), NO_CROPS)).toBe('unharvested')
+    expect(isHarvestComplete(planting('a'), excl([['a', 'in_progress']]), NO_CROPS)).toBe(false)
+  })
+
+  it('crop-level harvest_complete forces complete even when in-progress/unharvested', () => {
+    const cropDone = new Set(['corn|2026'])
+    expect(harvestStatusOf(planting('a'), excl([['a', 'in_progress']]), cropDone)).toBe('complete')
+    expect(harvestStatusOf(planting('b'), excl([['b', 'unharvested']]), cropDone)).toBe('complete')
+    // ...but only for the matching crop+year.
+    expect(harvestStatusOf(planting('c', 'beans', 2026), excl([['c', 'in_progress']]), cropDone)).toBe('in_progress')
+    expect(harvestStatusOf(planting('d', 'corn', 2025), excl([['d', 'unharvested']]), cropDone)).toBe('unharvested')
   })
 })

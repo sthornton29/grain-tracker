@@ -95,6 +95,34 @@ export function fieldCropAggregates(
 
 export type ExclusionReason = 'unharvested' | 'in_progress'
 
+export type HarvestStatus = 'complete' | 'in_progress' | 'unharvested'
+
+// Field-level harvest status, used to gate the bushel-allocation UI (the
+// irrigated/dryland breakout and per-variety allocation) so it only appears once
+// a field's harvest is done. A planting whose crop is flagged harvest_complete at
+// the crop level (cropCompleteKeys, keyed `${crop_id}|${season_year}`) is always
+// 'complete'; otherwise it's the analyzeYields classification — no exclusion
+// means complete. Pure: callers pass the analysis `excluded` map in.
+export function harvestStatusOf(
+  planting: { id: string; crop_id: string; season_year: number },
+  excluded: Map<string, ExclusionReason>,
+  cropCompleteKeys: ReadonlySet<string>,
+): HarvestStatus {
+  if (cropCompleteKeys.has(`${planting.crop_id}|${planting.season_year}`)) return 'complete'
+  const reason = excluded.get(planting.id)
+  if (reason === 'in_progress') return 'in_progress'
+  if (reason === 'unharvested') return 'unharvested'
+  return 'complete'
+}
+
+export function isHarvestComplete(
+  planting: { id: string; crop_id: string; season_year: number },
+  excluded: Map<string, ExclusionReason>,
+  cropCompleteKeys: ReadonlySet<string>,
+): boolean {
+  return harvestStatusOf(planting, excluded, cropCompleteKeys) === 'complete'
+}
+
 export type YieldInput = {
   /** Unique row id — a planting id in every current caller. */
   id: string

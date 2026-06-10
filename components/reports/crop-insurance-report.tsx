@@ -17,12 +17,12 @@
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { analyzeYields, fieldCropAggregates } from '@/lib/yields'
+import { analyzeYields, fieldCropAggregates, harvestStatusOf, type HarvestStatus } from '@/lib/yields'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { EmptyState, theadCls, grandTotalRowCls } from '@/components/reports/report-kit'
 import type {
-  County, Crop, Entity, Farm, Field, FieldPlanting, LoadSplit,
+  County, Crop, CropAssumption, Entity, Farm, Field, FieldPlanting, LoadSplit,
 } from '@/lib/types'
 
 type LoadRow = {
@@ -103,6 +103,7 @@ export default function CropInsuranceReport() {
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
+  const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
 
   // Filters persist across visits (see usePersistentState).
   const [cropYear, setCropYear] = usePersistentState<number | ''>('crop-insurance:cropYear', '')
@@ -117,7 +118,7 @@ export default function CropInsuranceReport() {
 
   useEffect(() => {
     ;(async () => {
-      const [cr, en, fa, fi, co, pl, lo, sp] = await Promise.all([
+      const [cr, en, fa, fi, co, pl, lo, sp, ca] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('*'),
@@ -126,6 +127,7 @@ export default function CropInsuranceReport() {
         supabase.from('field_plantings').select('*'),
         supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id'),
         supabase.from('load_splits').select('*'),
+        supabase.from('crop_assumptions').select('*'),
       ])
       setCrops((cr.data as Crop[]) || [])
       setEntities((en.data as Entity[]) || [])
@@ -135,6 +137,7 @@ export default function CropInsuranceReport() {
       setPlantings((pl.data as FieldPlanting[]) || [])
       setLoads((lo.data as LoadRow[]) || [])
       setSplits((sp.data as LoadSplit[]) || [])
+      setAssumptions((ca.data as CropAssumption[]) || [])
       // Default to the most recent crop year with plantings.
       const yrs = (pl.data as FieldPlanting[] | null)?.map((p) => p.season_year) ?? []
       if (yrs.length > 0) setCropYear(Math.max(...yrs))
@@ -182,10 +185,18 @@ export default function CropInsuranceReport() {
     })
   }, [plantings, cropYear, entityId, fieldById, farmById])
 
-  // Plantings whose harvest is complete — i.e. neither unharvested nor still
-  // in progress, by the same rule the Yields page uses. Only these can need a
-  // production breakout, since an unfinished field has no final bushels to split.
-  const completedPlantingIds = useMemo(() => {
+  // Crop+year combos flagged harvest-complete at the crop level (Marketing
+  // assumptions) — these force every field of that crop to "complete".
+  const cropCompleteKeys = useMemo(() => {
+    const s = new Set<string>()
+    for (const a of assumptions) if (a.harvest_complete) s.add(`${a.crop_id}|${a.crop_year}`)
+    return s
+  }, [assumptions])
+
+  // Field-level harvest status per planting, by the same rule the Yields page
+  // uses (analyzeYields + the crop-level harvest-complete override). Only
+  // complete fields can need (or block on) a production breakout.
+  const harvestStatusById = useMemo(() => {
     const analysis = analyzeYields(
       yearPlantings.map((p) => {
         const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
@@ -199,22 +210,25 @@ export default function CropInsuranceReport() {
         }
       }),
     )
-    const done = new Set<string>()
-    for (const p of yearPlantings) {
-      if (!analysis.excluded.has(p.id)) done.add(p.id)
-    }
-    return done
-  }, [yearPlantings, aggByKey])
+    const m = new Map<string, HarvestStatus>()
+    for (const p of yearPlantings) m.set(p.id, harvestStatusOf(p, analysis.excluded, cropCompleteKeys))
+    return m
+  }, [yearPlantings, aggByKey, cropCompleteKeys])
 
-  // Mixed-practice plantings missing breakouts — these gate the report, but
-  // only once harvest is complete (see completedPlantingIds).
-  const mixedWithoutBreakout = useMemo(() => {
-    return yearPlantings.filter((p) => {
-      const irr = Number(p.irrigated_acres) || 0
-      const dry = Number(p.dryland_acres) || 0
-      return irr > 0 && dry > 0 && !p.yield_breakout_entered && completedPlantingIds.has(p.id)
-    })
-  }, [yearPlantings, completedPlantingIds])
+  const isMixedNoBreakout = (p: FieldPlanting) =>
+    (Number(p.irrigated_acres) || 0) > 0 && (Number(p.dryland_acres) || 0) > 0 && !p.yield_breakout_entered
+
+  // Mixed-practice plantings missing breakouts whose harvest is complete — these
+  // gate the report. In-progress ones are excluded from the gate and surfaced
+  // separately (mixedStillHarvesting) so a mid-harvest field never blocks it.
+  const mixedWithoutBreakout = useMemo(
+    () => yearPlantings.filter((p) => isMixedNoBreakout(p) && harvestStatusById.get(p.id) === 'complete'),
+    [yearPlantings, harvestStatusById],
+  )
+  const mixedStillHarvesting = useMemo(
+    () => yearPlantings.filter((p) => isMixedNoBreakout(p) && harvestStatusById.get(p.id) === 'in_progress'),
+    [yearPlantings, harvestStatusById],
+  )
 
   const isBlocked = mixedWithoutBreakout.length > 0 && !acceptedAsDryland
 
@@ -544,6 +558,33 @@ export default function CropInsuranceReport() {
               Generate as dryland
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Still-harvesting mixed fields: excluded from the gate (and not blocking),
+          noted so the user knows why they aren't in the breakout prompt. */}
+      {cropYear !== '' && mixedStillHarvesting.length > 0 && (
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2 no-print">
+          <div className="font-semibold text-slate-700">
+            {mixedStillHarvesting.length} mixed-practice field{mixedStillHarvesting.length === 1 ? '' : 's'} still harvesting — excluded
+          </div>
+          <p className="text-sm text-slate-600">
+            These have both irrigated and dryland acres but harvest isn&apos;t complete, so they don&apos;t
+            need a breakout yet and won&apos;t block the report. Their production rolls into dryland for now;
+            enter the breakout on the Yields page once harvest finishes.
+          </p>
+          <ul className="text-sm text-slate-600 list-disc ml-6">
+            {mixedStillHarvesting.map((p) => {
+              const fld = fieldById.get(p.field_id)
+              const crop = cropById.get(p.crop_id)
+              return (
+                <li key={p.id}>
+                  {fld?.name_or_number ?? '—'} — {crop?.name ?? '—'} (
+                  {Number(p.irrigated_acres)} irr / {Number(p.dryland_acres)} dry ac)
+                </li>
+              )
+            })}
+          </ul>
         </div>
       )}
 
