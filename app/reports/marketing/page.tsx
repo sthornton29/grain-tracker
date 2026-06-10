@@ -58,6 +58,8 @@ export default function MarketingPage() {
   const [options, setOptions] = useState<OptionPosition[]>([])
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
   const [production, setProduction] = useState<Map<string, number>>(new Map())
+  // Current futures price per crop (Barchart) — values completely-unpriced bushels.
+  const [currentFutures, setCurrentFutures] = useState<Map<string, number>>(new Map())
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [assumptionsOpen, setAssumptionsOpen] = useState(false)
@@ -119,6 +121,31 @@ export default function MarketingPage() {
 
   useEffect(() => { if (year != null) load(year) }, [year, load])
 
+  // Refresh current futures (Barchart harvest-month estimate) for the planted
+  // crops, to value completely-unpriced bushels in blended revenue. Falls back to
+  // each crop's raw futures average when unavailable, so it never blocks numbers.
+  useEffect(() => {
+    if (year == null || crops.length === 0) { setCurrentFutures(new Map()); return }
+    const plantedIds = new Set(plantings.map((p) => p.crop_id))
+    const payload = crops.filter((c) => plantedIds.has(c.id)).map((c) => ({ crop_id: c.id, crop_name: c.name })).filter((c) => c.crop_name)
+    if (payload.length === 0) { setCurrentFutures(new Map()); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/harvest-price-estimate', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ crop_year: year, crops: payload }),
+        })
+        const json = await res.json().catch(() => null)
+        if (cancelled || !json) return
+        const m = new Map<string, number>()
+        for (const e of (json.estimates ?? []) as Array<{ crop_id: string; price: number | null }>) if (e.price != null) m.set(e.crop_id, Number(e.price))
+        setCurrentFutures(m)
+      } catch { /* fall back to raw futures average */ }
+    })()
+    return () => { cancelled = true }
+  }, [year, crops, plantings])
+
   // Acres per crop split into full-season/double-crop × irrigated/dryland, and
   // the broken-out expected production used by the dashboard.
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
@@ -133,8 +160,8 @@ export default function MarketingPage() {
   )
 
   const rows = useMemo(
-    () => (year == null ? [] : computeMarketing({ cropYear: year, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop })),
-    [year, crops, plantings, contracts, futures, options, assumptions, production, expProdByCrop],
+    () => (year == null ? [] : computeMarketing({ cropYear: year, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures })),
+    [year, crops, plantings, contracts, futures, options, assumptions, production, expProdByCrop, currentFutures],
   )
 
   // Actual average yield (dry bushels from loads ÷ planted acres) per crop, used
@@ -168,7 +195,8 @@ export default function MarketingPage() {
       prod += r.totalProduction
       contracted += r.contractedBu
       if (r.totalProfit != null) { profit += r.totalProfit; profitKnown = true }
-      if (r.avgCashPrice != null && r.contractedBu > 0) { priceNum += r.avgCashPrice * r.contractedBu; priceDen += r.contractedBu }
+      // Production-weighted Total Average Price (always computes via assumed basis).
+      if (r.totalAvgPrice != null && r.totalProduction > 0) { priceNum += r.totalAvgPrice * r.totalProduction; priceDen += r.totalProduction }
     }
     return {
       acres, prod, contracted,
@@ -185,8 +213,8 @@ export default function MarketingPage() {
     { label: 'Total acres', value: bu(totals.acres) },
     { label: 'Total production', value: `${bu(totals.prod)} bu` },
     { label: '% sold', value: `${totals.pctSold.toFixed(0)}%`, tone: totals.pctSold >= 50 ? 'favorable' : 'warning', sub: `${bu(totals.contracted)} bu contracted` },
-    { label: 'Wtd avg price', value: totals.avgPrice != null ? fmtPrice(totals.avgPrice) : '—', sub: 'contracted bu' },
-    { label: 'Projected profit', value: totals.profit != null ? usd0(totals.profit) : 'Incomplete', tone: totals.profit == null ? 'muted' : totals.profit >= 0 ? 'favorable' : 'unfavorable' },
+    { label: 'Wtd avg price', value: totals.avgPrice != null ? fmtPrice(totals.avgPrice) : '—', sub: 'futures + basis, per bu' },
+    { label: 'Projected profit', value: totals.profit != null ? usd0(totals.profit) : 'Set costs', tone: totals.profit == null ? 'muted' : totals.profit >= 0 ? 'favorable' : 'unfavorable' },
   ], [totals])
 
   async function saveAssumption(cropId: string, patch: Partial<CropAssumption>) {
@@ -206,6 +234,8 @@ export default function MarketingPage() {
       expected_yield_dc_irr: pick('expected_yield_dc_irr'),
       expected_yield_dc_dry: pick('expected_yield_dc_dry'),
       harvest_complete: has('harvest_complete') ? patch.harvest_complete : existing?.harvest_complete ?? false,
+      // assumed_basis is NOT NULL (default 0) — never write null.
+      assumed_basis: (has('assumed_basis') ? patch.assumed_basis : existing?.assumed_basis) ?? 0,
       cost_per_acre: pick('cost_per_acre'),
       cost_per_acre_irr: pick('cost_per_acre_irr'),
       cost_per_acre_dry: pick('cost_per_acre_dry'),
@@ -397,7 +427,7 @@ function BaseTable({
                       <span className="text-xs tabular-nums text-slate-600 w-9 text-right">{pctSold.toFixed(0)}%</span>
                     </div>
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums">{r.avgCashPrice != null ? fmtPrice(r.avgCashPrice) : '—'}{r.excludedAwaitingBu > 0 && <span className="text-amber-600">*</span>}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{r.totalAvgPrice != null ? fmtPrice(r.totalAvgPrice) : '—'}{r.avgBasisAssumed && <span className="text-amber-600" title="Basis assumed — no physical contract has set basis">*</span>}</td>
                 </tr>
                 {isOpen && (
                   <tr className="bg-slate-50/60">
@@ -428,7 +458,11 @@ function BaseTable({
           </tr>
         </tbody>
       </table>
-      {anyExcluded && <p className="text-xs text-amber-700 px-3 py-2">* Excludes bushels on contracts still awaiting pricing (HTA basis / basis futures not set).</p>}
+      <p className="text-xs text-slate-500 px-3 py-2">
+        Avg Price = futures + basis per bushel (P&amp;L-adjusted).{' '}
+        <span className="text-amber-600">*</span> basis is assumed (no physical contract has set basis).
+        {anyExcluded && ' Some contracts are still awaiting pricing.'} Expand a crop to verify the buildup.
+      </p>
     </div>
   )
 }
@@ -458,13 +492,31 @@ function CropDetail({
   }
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-sm">
-      {/* Price components */}
+      {/* Price buildup — hand-verifiable: futures-priced bushels by source →
+          raw avg → + hedge P&L adjustment → avg futures → + basis → total. */}
       <div>
-        <div className="font-semibold text-slate-700 mb-1">Price components</div>
+        <div className="font-semibold text-slate-700 mb-1">Price buildup</div>
         <dl className="space-y-0.5">
-          <Row label="Avg futures" value={row.avgFutures != null ? fmtPrice(row.avgFutures) : '—'} />
-          <Row label="Avg basis" value={row.avgBasis != null ? Number(row.avgBasis).toFixed(4) : 'N/A'} />
-          <Row label="Total avg price" value={row.totalAvgPrice != null ? fmtPrice(row.totalAvgPrice) : row.avgCashPrice != null ? fmtPrice(row.avgCashPrice) : '—'} />
+          {row.physicalFuturesBu > 0 && (
+            <Row label={`Physical futures (${bu(row.physicalFuturesBu)} bu)`} value={row.physicalFuturesAvg != null ? fmtPrice(row.physicalFuturesAvg) : '—'} />
+          )}
+          {row.openHedgeBu > 0 && (
+            <Row label={`Open hedges (${bu(row.openHedgeBu)} bu)`} value={row.openHedgeAvg != null ? fmtPrice(row.openHedgeAvg) : '—'} />
+          )}
+          <Row label={`Raw avg futures (${bu(row.futuresPricedBu)} bu)`} value={row.rawAvgFutures != null ? fmtPrice(row.rawAvgFutures) : 'N/A'} />
+          <Row
+            label="Hedge P&L adj / bu"
+            value={`${row.hedgeAdjPerBu >= 0 ? '+' : ''}${fmtPrice(row.hedgeAdjPerBu)}`}
+            tone={row.hedgeAdjPerBu > 0 ? 'text-green-700' : row.hedgeAdjPerBu < 0 ? 'text-red-700' : undefined}
+          />
+          <Row label="= Avg futures price" value={row.avgFutures != null ? fmtPrice(row.avgFutures) : 'N/A'} />
+          <Row label={`+ Basis${row.avgBasisAssumed ? ' (assumed)' : ''}`} value={`${row.avgBasis >= 0 ? '+' : ''}${Number(row.avgBasis).toFixed(4)}`} tone={row.avgBasisAssumed ? 'text-amber-700' : undefined} />
+          <div className="border-t border-slate-200 mt-1 pt-1">
+            <Row label="= Total avg price" value={row.totalAvgPrice != null ? fmtPrice(row.totalAvgPrice) : '—'} tone="text-slate-900 font-semibold" />
+          </div>
+          {row.hedgeRealizedPnl !== 0 && (
+            <Row label="Realized hedge P&L (in revenue)" value={fmtPnl(row.hedgeRealizedPnl)} tone={row.hedgeRealizedPnl > 0 ? 'text-green-700' : 'text-red-700'} />
+          )}
           <Row label="Cost / bu" value={row.costPerBu != null ? fmtPrice(row.costPerBu) : '—'} />
         </dl>
       </div>
@@ -647,6 +699,7 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
   const [cDry, setCDry] = useState(s0(a?.cost_per_acre_dry))
   const [cDcIrr, setCDcIrr] = useState(s0(a?.cost_per_acre_dc_irr))
   const [cDcDry, setCDcDry] = useState(s0(a?.cost_per_acre_dc_dry))
+  const [aBasis, setABasis] = useState(s0(a?.assumed_basis))
 
   const toNum = (str: string) => (str.trim() === '' ? null : Number(str))
   const s = seg ?? { fullIrr: 0, fullDry: 0, dcIrr: 0, dcDry: 0 }
@@ -700,6 +753,7 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
       cost_per_acre_dry: toNum(cDry),
       cost_per_acre_dc_irr: toNum(cDcIrr),
       cost_per_acre_dc_dry: toNum(cDcDry),
+      assumed_basis: toNum(aBasis) ?? 0,
     })
   }
 
@@ -720,6 +774,15 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
           }}
         />
         Harvest complete
+      </label>
+      <label className="text-sm flex flex-col gap-1 text-slate-600">
+        <span className="flex items-center gap-2">
+          Assumed basis ($/bu)
+          <input type="number" step="0.01" value={aBasis} onChange={(e) => setABasis(e.target.value)} className={`${ic} w-24`} />
+        </span>
+        <span className="text-xs text-slate-400">
+          Used when no physical contracts have established basis, and to value unpriced bushels.
+        </span>
       </label>
       <table className="w-full text-sm">
         <thead>

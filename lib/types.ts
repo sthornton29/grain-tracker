@@ -155,6 +155,10 @@ export type CropAssumption = {
   expected_yield_dc_irr: number | null
   expected_yield_dc_dry: number | null
   harvest_complete: boolean
+  // Assumed basis ($/bu) used to value bushels with no locked basis (open HTAs,
+  // open hedges, unpriced production) and as the average-basis fallback when no
+  // physical contract has set basis. Defaults to 0.
+  assumed_basis: number
   // Overall cost/acre (acre-weighted average when the breakout below is used).
   cost_per_acre: number | null
   // Optional cost/acre breakout, mirroring the yield breakout.

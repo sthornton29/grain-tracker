@@ -18,15 +18,37 @@ export type MarketingRow = {
   // base view
   avgCashPrice: number | null
   excludedAwaitingBu: number
-  // detailed view
+  // --- price buildup (detailed view + the inspectable breakdown) ---
+  // Bushels in the futures average: physical contracts with a futures price +
+  // OPEN short hedges. (Closed hedges never contribute a trade price.)
+  futuresPricedBu: number
+  physicalFuturesBu: number
+  physicalFuturesAvg: number | null
+  openHedgeBu: number
+  openHedgeAvg: number | null
+  // Weighted futures over futuresPricedBu, before the hedge P&L adjustment.
+  rawAvgFutures: number | null
+  // Realized P&L from CLOSED futures (net of commission) + CLOSED options, and
+  // that figure spread over total expected production.
+  hedgeRealizedPnl: number
+  hedgeAdjPerBu: number
+  // avg_futures_price = rawAvgFutures + hedgeAdjPerBu.
   avgFutures: number | null
-  avgBasis: number | null
+  // Always set: actual weighted basis, or the assumed basis when none is locked.
+  avgBasis: number
+  avgBasisAssumed: boolean
+  assumedBasis: number
+  // Total Average Price = avg_futures_price + avg_basis. Always computes for a
+  // crop with production (cash / current-futures fallback when no futures avg).
   totalAvgPrice: number | null
+  // --- blended expected revenue (the profitability + Revenue Projections basis) ---
+  unpricedBu: number
+  blendedRevenue: number
   costPerAcre: number | null
   costPerBu: number | null
   profitPerAcre: number | null
   totalProfit: number | null
-  // for the unpriced-production section
+  // for the unpriced-production section (= openHedgeBu)
   openFuturesHedgedBu: number
 }
 
@@ -88,6 +110,10 @@ export function expectedProductionFromBreakout(
   return out
 }
 
+function round2(n: number): number {
+  return Math.round(n * 100) / 100
+}
+
 export function computeMarketing(args: {
   cropYear: number
   crops: Crop[]
@@ -100,8 +126,12 @@ export function computeMarketing(args: {
   // Optional per-crop expected production (bushels) from the yield breakout.
   // When present for a crop, it replaces expected_yield × acres for the estimate.
   expectedProductionByCrop?: Map<string, number>
+  // Optional current futures price ($/bu) per crop (from Barchart) used to value
+  // completely-unpriced bushels in blended revenue. Falls back to the crop's raw
+  // futures average when absent.
+  currentFuturesByCrop?: Map<string, number>
 }): MarketingRow[] {
-  const { cropYear, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop, expectedProductionByCrop } = args
+  const { cropYear, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop, expectedProductionByCrop, currentFuturesByCrop } = args
 
   const cropIdsWithPlantings = new Set(
     plantings.filter((p) => p.season_year === cropYear).map((p) => p.crop_id),
@@ -141,6 +171,8 @@ export function computeMarketing(args: {
       }
     }
 
+    const assumedBasis = assumption?.assumed_basis != null ? Number(assumption.assumed_basis) : 0
+
     const cropContracts = contracts.filter((c) => c.crop_id === crop.id && c.crop_year === cropYear)
     const contractedBu = cropContracts.reduce((s, c) => s + Number(c.contracted_bushels ?? 0), 0)
     const remaining = totalProduction - contractedBu
@@ -154,42 +186,99 @@ export function computeMarketing(args: {
     }
     const avgCashPrice = cashBu > 0 ? round(cashW / cashBu) : null
 
-    // Detailed: futures-equivalent average across physical (with futures) + short
-    // futures hedges (open + closed), adjusted by closed-futures and options P&L.
     const commodity = cropToCommodity(crop.name)
     const cropFutures = commodity ? futures.filter((f) => f.commodity === commodity && f.crop_year === cropYear && f.side === 'short') : []
     const cropOptions = commodity ? options.filter((o) => o.commodity === commodity && o.crop_year === cropYear) : []
 
-    let fBu = 0, fW = 0
-    for (const c of cropContracts) if (c.futures_price != null) { const bu = Number(c.contracted_bushels ?? 0); fBu += bu; fW += Number(c.futures_price) * bu }
-    for (const f of cropFutures) { const bu = Number(f.num_contracts) * CONTRACT_SIZE_BU; fBu += bu; fW += Number(f.trade_price) * bu }
-    const rawAvgFutures = fBu > 0 ? fW / fBu : null
+    // (1) Average futures price — weighted over FUTURES-PRICED bushels only:
+    //     physical contracts with a futures price + OPEN short hedges. Closed
+    //     hedges do NOT contribute a trade price (their result is the P&L
+    //     adjustment below); flat-cash contracts (no futures_price) are excluded.
+    let physicalFuturesBu = 0, physW = 0
+    for (const c of cropContracts) {
+      if (c.futures_price != null) { const bu = Number(c.contracted_bushels ?? 0); physicalFuturesBu += bu; physW += Number(c.futures_price) * bu }
+    }
+    let openHedgeBu = 0, openW = 0
+    for (const f of cropFutures) {
+      if (f.status === 'open') { const bu = Number(f.num_contracts) * CONTRACT_SIZE_BU; openHedgeBu += bu; openW += Number(f.trade_price) * bu }
+    }
+    const futuresPricedBu = physicalFuturesBu + openHedgeBu
+    const physicalFuturesAvg = physicalFuturesBu > 0 ? round(physW / physicalFuturesBu) : null
+    const openHedgeAvg = openHedgeBu > 0 ? round(openW / openHedgeBu) : null
+    const rawAvgFutures = futuresPricedBu > 0 ? round((physW + openW) / futuresPricedBu) : null
 
-    const closedFuturesPnl = cropFutures.filter((f) => f.status === 'closed').reduce((s, f) => s + ((Number(f.realized_pnl ?? 0)) - Number(f.commission ?? 0)), 0)
-    const optionsPnl = cropOptions.filter((o) => o.status !== 'open').reduce((s, o) => s + Number(o.realized_pnl ?? 0), 0)
-    const adjPerBu = fBu > 0 ? (closedFuturesPnl + optionsPnl) / fBu : 0
-    const avgFutures = rawAvgFutures != null ? round(rawAvgFutures + adjPerBu) : null
+    // (2) Hedging P&L adjustment — realized results from LIFTED (closed) hedges,
+    //     spread over TOTAL expected production (the standard "hedge account
+    //     blended into the crop" treatment). Open options are excluded entirely.
+    const closedFuturesPnl = cropFutures
+      .filter((f) => f.status === 'closed')
+      .reduce((s, f) => s + (Number(f.realized_pnl ?? 0) - Number(f.commission ?? 0)), 0)
+    const closedOptionsPnl = cropOptions
+      .filter((o) => o.status !== 'open')
+      .reduce((s, o) => s + Number(o.realized_pnl ?? 0), 0)
+    const hedgeRealizedPnl = round2(closedFuturesPnl + closedOptionsPnl)
+    const hedgeAdjPerBu = totalProduction > 0 ? round(hedgeRealizedPnl / totalProduction) : 0
+    const avgFutures = rawAvgFutures != null ? round(rawAvgFutures + hedgeAdjPerBu) : null
 
+    // (3) Average basis — weighted over physical contracts that have basis set.
+    // (4) When none do, fall back to the assumed basis (labeled).
     let bBu = 0, bW = 0
     for (const c of cropContracts) if (c.basis != null) { const bu = Number(c.contracted_bushels ?? 0); bBu += bu; bW += Number(c.basis) * bu }
-    const avgBasis = bBu > 0 ? round(bW / bBu) : null
+    const avgBasisActual = bBu > 0 ? round(bW / bBu) : null
+    const avgBasisAssumed = avgBasisActual == null
+    const avgBasis = avgBasisActual != null ? avgBasisActual : round(assumedBasis)
 
-    const totalAvgPrice = avgFutures != null && avgBasis != null ? round(avgFutures + avgBasis) : null
+    const currentFutures = currentFuturesByCrop?.get(crop.id) ?? null
+
+    // (5) Total Average Price = avg_futures_price + avg_basis. Always computes for
+    //     a crop with production: cash fallback (flat-cash only), then current
+    //     futures + assumed basis (all unpriced), then assumed basis.
+    let totalAvgPrice: number | null
+    if (avgFutures != null) totalAvgPrice = round(avgFutures + avgBasis)
+    else if (avgCashPrice != null) totalAvgPrice = avgCashPrice
+    else if (currentFutures != null) totalAvgPrice = round(currentFutures + assumedBasis)
+    else totalAvgPrice = totalProduction > 0 ? round(assumedBasis) : null
+
+    // (6) Blended expected revenue — the profitability + Revenue Projections basis.
+    //     Each bushel bucket is valued at its own price (raw, no P&L), then the
+    //     realized hedge P&L is added ONCE so it isn't double-counted with #2.
+    let blendedRevenue = 0
+    for (const c of cropContracts) {
+      const bu = Number(c.contracted_bushels ?? 0)
+      if (c.futures_price != null) {
+        // Futures-component contract (forward-with-futures / HTA / priced basis):
+        // futures + its basis, using assumed basis where basis isn't set yet.
+        const basisForC = c.basis != null ? Number(c.basis) : assumedBasis
+        blendedRevenue += (Number(c.futures_price) + basisForC) * bu
+      } else if (c.cash_price != null) {
+        blendedRevenue += Number(c.cash_price) * bu // flat-cash forward
+      } else {
+        blendedRevenue += ((currentFutures ?? rawAvgFutures ?? 0) + assumedBasis) * bu
+      }
+    }
+    // Open-hedge bushels (hedged but not physically sold), capped at unsold acres.
+    const unsold = Math.max(0, totalProduction - contractedBu)
+    const hedgeCovered = Math.max(0, Math.min(openHedgeBu, unsold))
+    if (hedgeCovered > 0) blendedRevenue += hedgeCovered * ((openHedgeAvg ?? rawAvgFutures ?? currentFutures ?? 0) + assumedBasis)
+    // Completely-unpriced bushels at current futures (Barchart) + assumed basis.
+    const unpricedBu = Math.max(0, unsold - hedgeCovered)
+    if (unpricedBu > 0) blendedRevenue += unpricedBu * ((currentFutures ?? rawAvgFutures ?? 0) + assumedBasis)
+    blendedRevenue = round2(blendedRevenue + hedgeRealizedPnl)
 
     const costPerAcre = assumption?.cost_per_acre != null ? Number(assumption.cost_per_acre) : null
     const costPerBu = costPerAcre != null && yieldVal != null && yieldVal > 0 ? round(costPerAcre / yieldVal, 4) : null
-    // Use the full futures+basis price when available, else fall back to cash.
-    const profitPrice = totalAvgPrice ?? avgCashPrice
-    const profitPerAcre = profitPrice != null && yieldVal != null && costPerAcre != null ? round(yieldVal * profitPrice - costPerAcre, 2) : null
-    const totalProfit = profitPerAcre != null ? round(profitPerAcre * acres, 2) : null
-
-    const openFuturesHedgedBu = cropFutures.filter((f) => f.status === 'open').reduce((s, f) => s + Number(f.num_contracts) * CONTRACT_SIZE_BU, 0)
+    // Profit always computes once a cost is set — it's driven by blended revenue,
+    // which always values every bushel (via assumed basis / current futures).
+    const profitPerAcre = costPerAcre != null && acres > 0 ? round2(blendedRevenue / acres - costPerAcre) : null
+    const totalProfit = profitPerAcre != null ? round2(profitPerAcre * acres) : null
 
     rows.push({
       cropId: crop.id, cropName: crop.name, acres, yield: yieldVal, yieldLabel, totalProduction,
       contractedBu, remaining, avgCashPrice, excludedAwaitingBu,
-      avgFutures, avgBasis, totalAvgPrice, costPerAcre, costPerBu, profitPerAcre, totalProfit,
-      openFuturesHedgedBu,
+      futuresPricedBu, physicalFuturesBu, physicalFuturesAvg, openHedgeBu, openHedgeAvg,
+      rawAvgFutures, hedgeRealizedPnl, hedgeAdjPerBu, avgFutures, avgBasis, avgBasisAssumed, assumedBasis,
+      totalAvgPrice, unpricedBu, blendedRevenue, costPerAcre, costPerBu, profitPerAcre, totalProfit,
+      openFuturesHedgedBu: openHedgeBu,
     })
   }
   return rows.sort((a, b) => a.cropName.localeCompare(b.cropName))

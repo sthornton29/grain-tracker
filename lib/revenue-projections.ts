@@ -33,11 +33,12 @@ export type RevenueRow = {
   pricedRevenue: number
   uncontractedBu: number
   marketPrice: number | null
-  // The average price applied to total production, and where it came from. The
-  // futures+basis average already folds in realized futures/options P&L, so crop
-  // sales revenue is reported NET of that P&L.
+  // The effective average price applied to total production (blended revenue ÷
+  // production). Crop sales revenue is the marketing "blended expected revenue",
+  // which values each bushel bucket at its own price and folds in realized
+  // futures/options P&L exactly once.
   avgSalesPrice: number | null
-  salesPriceSource: 'futures+basis' | 'cash' | 'market' | null
+  salesPriceSource: 'blended' | null
   cropSalesRevenue: number
   // Insurance
   insuranceProceeds: number
@@ -109,15 +110,13 @@ export function computeRevenueProjections(args: {
       marketPriceByCrop.get(m.cropId) ??
       (pricedBu > 0 ? pricedRevenue / pricedBu : null)
 
-    // Crop sales revenue = the crop's average marketed price × total production.
-    // Prefer the futures+basis average (which already incorporates realized
-    // futures and options P&L), then the average cash price, then market. Because
-    // the futures average folds in hedge/option P&L, this figure is NET of
-    // futures/options P&L.
-    const avgSalesPrice = m.totalAvgPrice ?? m.avgCashPrice ?? marketPrice
-    const salesPriceSource: RevenueRow['salesPriceSource'] =
-      m.totalAvgPrice != null ? 'futures+basis' : m.avgCashPrice != null ? 'cash' : marketPrice != null ? 'market' : null
-    const cropSalesRevenue = avgSalesPrice != null ? round2(avgSalesPrice * m.totalProduction) : 0
+    // Crop sales revenue = the marketing "blended expected revenue": each bushel
+    // bucket (flat-cash, futures+basis, open-hedge, unpriced-at-market) valued at
+    // its own price, plus realized futures/options P&L counted ONCE. The single
+    // source of truth — identical to what the Marketing dashboard shows.
+    const cropSalesRevenue = round2(m.blendedRevenue)
+    const avgSalesPrice = m.totalProduction > 0 ? m.blendedRevenue / m.totalProduction : null
+    const salesPriceSource: RevenueRow['salesPriceSource'] = m.totalProduction > 0 ? 'blended' : null
 
     const ins = insuranceByCrop.get(m.cropId) ?? { netPnl: 0, totalIndemnity: 0, premium: 0 }
     const g = govtByCrop?.get(m.cropId) ?? { arcPlc: 0, cropSpecificOther: 0, allocatedOther: 0 }
