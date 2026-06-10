@@ -12,7 +12,7 @@ const categories = [
       { label: 'Yields by Farm', href: '/yields', external: true },
       { label: 'Yields by Landowner', href: '/reports/yields-by-landowner', external: false },
       { label: 'Crop Insurance Production', href: '/reports/crop-insurance', external: false },
-      { label: 'Season Summary', href: '/season', external: true },
+      { label: 'Season Summary', href: '/reports/season', external: false },
     ],
   },
   {
@@ -32,7 +32,7 @@ const categories = [
   {
     title: 'Financial Reports',
     reports: [
-      { label: 'Cash Flow Forecast', href: '/cash-flow', external: true },
+      { label: 'Cash Flow Forecast', href: '/reports/cash-flow', external: false },
       { label: 'Share Rent Report', href: '/reports/share-rent', external: false },
     ],
   },
@@ -44,7 +44,7 @@ const categories = [
       { label: 'ARC/PLC Decision Aid', href: '/reports/arc-plc-decision-aid', external: false },
       { label: 'Government Payments', href: '/reports/government-payments', external: false },
       { label: 'Revenue Projections', href: '/reports/revenue-projections', external: false },
-      { label: 'Marketing Dashboard', href: '/marketing', external: true },
+      { label: 'Marketing Dashboard', href: '/reports/marketing', external: false },
     ],
   },
   {

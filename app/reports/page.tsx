@@ -43,10 +43,10 @@ export default function ReportsLanding() {
           </p>
         </Link>
         <Link
-          href="/marketing"
+          href="/reports/marketing"
           className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
         >
-          <h2 className="font-bold mb-1">Marketing Dashboard <span className="text-slate-400 text-sm">↗</span></h2>
+          <h2 className="font-bold mb-1">Marketing Dashboard</h2>
           <p className="text-sm text-slate-600">
             Per-crop marketing position for a crop year — production, contracted vs. remaining bushels, average
             futures/basis/cash price, cost, and projected profit. Base and Detailed views, with assumptions and
@@ -115,20 +115,20 @@ export default function ReportsLanding() {
           </p>
         </Link>
         <Link
-          href="/cash-flow"
+          href="/reports/cash-flow"
           className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
         >
-          <h2 className="font-bold mb-1">Cash Flow Forecast <span className="text-slate-400 text-sm">↗</span></h2>
+          <h2 className="font-bold mb-1">Cash Flow Forecast</h2>
           <p className="text-sm text-slate-600">
             Monthly projected revenue from contracts and delivered grain — the same forecast view,
             filters, and exports as before.
           </p>
         </Link>
         <Link
-          href="/season"
+          href="/reports/season"
           className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
         >
-          <h2 className="font-bold mb-1">Season Summary <span className="text-slate-400 text-sm">↗</span></h2>
+          <h2 className="font-bold mb-1">Season Summary</h2>
           <p className="text-sm text-slate-600">
             Acres and yield by crop for a season, with the same views and exports as before.
           </p>
