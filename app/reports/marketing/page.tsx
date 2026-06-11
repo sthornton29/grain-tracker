@@ -105,7 +105,9 @@ function scenarioFor(row: MarketingRow, pricedBu: number, whatIfPrice: number) {
 export default function MarketingPage() {
   const supabase = useMemo(() => createClient(), [])
   const [yearOptions, setYearOptions] = useState<number[]>([])
-  const [year, setYear] = useState<number | null>(null)
+  // Crop year persists, so returning to the dashboard doesn't ask again — it
+  // reopens on the last year the user picked.
+  const [year, setYear] = usePersistentState<number | null>('marketing:cropYear', null)
   const [loading, setLoading] = useState(false)
 
   const [crops, setCrops] = useState<Crop[]>([])
@@ -493,9 +495,9 @@ export default function MarketingPage() {
 }
 
 // ---------------------------------------------------------------------------
-// Full-width crop section. The header row is the always-visible at-a-glance
-// layer — identity (left) | marketing position bars (center, full width) |
-// headline numbers (right) — and the chevron expands a responsive detail grid:
+// Full-width crop section. The header is the always-visible at-a-glance layer —
+// identity (left) + headline numbers (right), with the marketing position bars
+// full width beneath — and the chevron expands a responsive detail grid:
 // Production | Sales & Contracts | Pricing Buildup | Profitability & What-If.
 // Adapts to the crop's marketing complexity: simple (forwards only) shows
 // Sold/Unsold and hides all hedging and basis language.
@@ -576,20 +578,48 @@ function CropSection({
 
   return (
     <section className="bg-white rounded-xl shadow avoid-break">
-      {/* Header row — the always-visible at-a-glance layer. Identity | bars |
-          headline numbers on wide screens; stacks vertically below lg. */}
-      <div className="p-4 md:px-5 flex flex-col lg:flex-row lg:items-center gap-4 lg:gap-8">
-        {/* Identity */}
-        <div className="lg:w-52 lg:shrink-0">
-          <div className="font-bold text-xl leading-tight">{row.cropName}</div>
-          <div className="text-sm text-slate-500 tabular-nums mt-0.5">
-            {bu(row.acres)} ac · {row.yield != null ? `${row.yield.toFixed(1)} bu/ac ${row.yieldLabel}` : 'yield —'}
+      {/* Header — the always-visible at-a-glance layer. Top row: identity (left)
+          + headline numbers (right); the position bars run full width below so
+          they're never crunched between the two. */}
+      <div className="p-4 md:p-5 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-x-8 gap-y-3">
+          {/* Identity */}
+          <div>
+            <div className="font-bold text-xl leading-tight">{row.cropName}</div>
+            <div className="text-sm text-slate-500 tabular-nums mt-0.5">
+              {bu(row.acres)} ac · {row.yield != null ? `${row.yield.toFixed(1)} bu/ac ${row.yieldLabel}` : 'yield —'} · {bu(prod)} bu production
+            </div>
           </div>
-          <div className="text-sm text-slate-500 tabular-nums">{bu(prod)} bu production</div>
+
+          {/* Headline numbers — large, color-coded */}
+          <div className="flex items-center justify-between sm:justify-end gap-4 lg:gap-8 flex-wrap">
+            <div className="text-right">
+              <div className="text-[11px] text-slate-500 uppercase tracking-wide">{advanced ? 'Total avg price' : 'Avg price'}</div>
+              <div className="text-2xl font-bold tabular-nums leading-tight">{row.totalAvgPrice != null ? price2(row.totalAvgPrice) : '—'}</div>
+              {advanced && <BasisTag row={row} />}
+            </div>
+            <div className="text-right">
+              <div className="text-[11px] text-slate-500 uppercase tracking-wide">Profit / acre</div>
+              <div className={`text-2xl font-bold tabular-nums leading-tight ${profitTone}`}>
+                {row.profitPerAcre != null ? usd0(row.profitPerAcre) : row.revenuePerAcre != null ? 'set cost' : '—'}
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-[11px] text-slate-500 uppercase tracking-wide">Total profit</div>
+              <div className={`text-2xl font-bold tabular-nums leading-tight ${profitTone}`}>{row.totalProfit != null ? usd0(row.totalProfit) : '—'}</div>
+            </div>
+            <button
+              type="button" onClick={onToggleDetails} aria-expanded={detailsOpen}
+              className="no-print rounded-full w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              title={detailsOpen ? 'Hide details' : 'Show details'}
+            >
+              {detailsOpen ? '▾' : '▸'}
+            </button>
+          </div>
         </div>
 
-        {/* Marketing position — the bars get the full center width */}
-        <div className="min-w-0 flex-1">
+        {/* Marketing position — full-width bars below the metrics */}
+        <div className="min-w-0">
           {!advanced ? (
             <PositionBlock title="Sold" prod={prod} green={row.contractedBu} greenLabel="Sold" grayLabel="Unsold" />
           ) : (
@@ -605,32 +635,6 @@ function CropSection({
               )}
             </div>
           )}
-        </div>
-
-        {/* Headline numbers — large, color-coded */}
-        <div className="flex items-center justify-between lg:justify-end gap-4 lg:gap-8 flex-wrap lg:shrink-0">
-          <div className="text-right">
-            <div className="text-[11px] text-slate-500 uppercase tracking-wide">{advanced ? 'Total avg price' : 'Avg price'}</div>
-            <div className="text-2xl font-bold tabular-nums leading-tight">{row.totalAvgPrice != null ? price2(row.totalAvgPrice) : '—'}</div>
-            {advanced && <BasisTag row={row} />}
-          </div>
-          <div className="text-right">
-            <div className="text-[11px] text-slate-500 uppercase tracking-wide">Profit / acre</div>
-            <div className={`text-2xl font-bold tabular-nums leading-tight ${profitTone}`}>
-              {row.profitPerAcre != null ? usd0(row.profitPerAcre) : row.revenuePerAcre != null ? 'set cost' : '—'}
-            </div>
-          </div>
-          <div className="text-right">
-            <div className="text-[11px] text-slate-500 uppercase tracking-wide">Total profit</div>
-            <div className={`text-2xl font-bold tabular-nums leading-tight ${profitTone}`}>{row.totalProfit != null ? usd0(row.totalProfit) : '—'}</div>
-          </div>
-          <button
-            type="button" onClick={onToggleDetails} aria-expanded={detailsOpen}
-            className="no-print rounded-full w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100"
-            title={detailsOpen ? 'Hide details' : 'Show details'}
-          >
-            {detailsOpen ? '▾' : '▸'}
-          </button>
         </div>
       </div>
 

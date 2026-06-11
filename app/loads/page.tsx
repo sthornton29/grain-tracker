@@ -109,7 +109,7 @@ export default function LoadsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [splitsByLoad, setSplitsByLoad] = useState<Map<string, LoadSplit[]>>(new Map())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  type SortKey = 'date' | 'ticket' | 'truck' | 'crop' | 'net' | 'dry' | 'moisture'
+  type SortKey = 'date' | 'ticket' | 'truck' | 'crop' | 'net' | 'dry' | 'moisture' | 'testwt'
   const [sortKey, setSortKey] = useState<SortKey>('date')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
@@ -298,6 +298,7 @@ export default function LoadsPage() {
         case 'net': av = a.net_weight; bv = b.net_weight; break
         case 'dry': av = bushelsFor(a).dryBushels; bv = bushelsFor(b).dryBushels; break
         case 'moisture': av = a.moisture; bv = b.moisture; break
+        case 'testwt': av = a.test_weight; bv = b.test_weight; break
       }
       return cmp(av, bv) * dir
     })
@@ -506,14 +507,15 @@ export default function LoadsPage() {
               <th className="text-right px-3 py-2 whitespace-nowrap text-slate-500">Wet bu</th>
               <SortTh onClick={() => toggleSort('dry')}      active={sortKey === 'dry'}      dir={sortDir} align="right">Dry bu</SortTh>
               <SortTh onClick={() => toggleSort('moisture')} active={sortKey === 'moisture'} dir={sortDir} align="right">Moist</SortTh>
+              <SortTh onClick={() => toggleSort('testwt')}   active={sortKey === 'testwt'}   dir={sortDir} align="right">Test wt</SortTh>
               <th className="px-3 py-2"></th>
               <th className="px-3 py-2"></th>
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan={13} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
+            {loading && <tr><td colSpan={14} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
             {!loading && sorted.length === 0 && (
-              <tr><td colSpan={13} className="px-3 py-6 text-center text-slate-400">No loads found.</td></tr>
+              <tr><td colSpan={14} className="px-3 py-6 text-center text-slate-400">No loads found.</td></tr>
             )}
             {sorted.map((r) => {
               const { wetBushels, dryBushels } = bushelsFor(r)
@@ -556,13 +558,14 @@ export default function LoadsPage() {
                   <td className="px-3 py-2 text-right text-slate-500">{fmt(wetBushels)}</td>
                   <td className="px-3 py-2 text-right font-semibold">{fmt(dryBushels)}</td>
                   <td className="px-3 py-2 text-right">{r.moisture ?? ''}</td>
+                  <td className="px-3 py-2 text-right">{r.test_weight ?? ''}</td>
                   <td className="px-3 py-2"><Link href={`/loads/${r.id}/edit`} className="text-sky-700">Edit</Link></td>
                   <td className="px-3 py-2"><button onClick={() => onDelete(r.id)} className="text-red-600">Delete</button></td>
                 </tr>
                 {isSplit && isExpanded && (
                   <tr className="bg-slate-50 border-t border-slate-100">
                     <td></td>
-                    <td colSpan={12} className="px-3 py-2">
+                    <td colSpan={13} className="px-3 py-2">
                       <table className="text-xs">
                         <thead>
                           <tr className="text-slate-500">
