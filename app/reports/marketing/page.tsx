@@ -65,6 +65,18 @@ function newCropContract(cropName: string, cropYear: number): { symbol: string; 
 // per-bushel price applied to the rest (futures + basis in advanced, a cash price
 // in simple). Profit follows the headline rule (price × yield − cost). Pure
 // display layer — substitutes inputs into the established methodology.
+// Breakeven, consistent with the card's profit (Total Avg $ × yield − cost):
+//   price  = cost/acre ÷ yield        ($/bu needed at the expected yield)
+//   yield  = cost/acre ÷ total avg $   (bu/ac needed at the average price)
+// Both null until a cost is set.
+function breakevenOf(row: MarketingRow): { price: number | null; yieldPerAcre: number | null } {
+  const cost = row.costPerAcre
+  return {
+    price: cost != null && row.yield != null && row.yield > 0 ? cost / row.yield : null,
+    yieldPerAcre: cost != null && row.totalAvgPrice != null && row.totalAvgPrice > 0 ? cost / row.totalAvgPrice : null,
+  }
+}
+
 function scenarioFor(row: MarketingRow, pricedBu: number, whatIfPrice: number) {
   const prod = row.totalProduction
   if (prod <= 0 || row.totalAvgPrice == null || row.yield == null) return null
@@ -325,6 +337,9 @@ export default function MarketingPage() {
       kv('Revenue / acre', r.revenuePerAcre != null ? Math.round(r.revenuePerAcre) : '—')
       kv('Profit / acre', r.profitPerAcre != null ? Math.round(r.profitPerAcre) : '—')
       kv('Total profit', r.totalProfit != null ? Math.round(r.totalProfit) : '—')
+      const be = breakevenOf(r)
+      kv('Breakeven price', be.price != null ? be.price.toFixed(4) : '—')
+      kv('Breakeven yield', be.yieldPerAcre != null ? `${be.yieldPerAcre.toFixed(1)} bu/ac` : '—')
 
       sections.push({ title: r.cropName, columns: KV, rows: rows2, rowMeta: meta2 })
     }
@@ -388,11 +403,12 @@ export default function MarketingPage() {
           <button
             type="button"
             onClick={() => setAssumptionsOpen(true)}
-            className="relative rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold mb-px"
+            className={`relative inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold mb-px text-white shadow-sm ${incompleteCount > 0 ? 'bg-amber-500 hover:bg-amber-600' : 'bg-sky-700 hover:bg-sky-800'}`}
+            title="Edit yield, cost, and basis assumptions for each crop"
           >
-            Assumptions
+            <span aria-hidden>⚙</span> Edit Assumptions
             {incompleteCount > 0 && (
-              <span className="ml-2 rounded-full bg-amber-500 text-white text-xs px-1.5 py-0.5 leading-none">
+              <span className="rounded-full bg-white/25 text-white text-xs px-1.5 py-0.5 leading-none">
                 {incompleteCount} missing
               </span>
             )}
@@ -494,6 +510,7 @@ function CropCard({
 }) {
   const prod = row.totalProduction
   const profitTone = row.totalProfit == null ? 'text-slate-400' : row.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'
+  const be = breakevenOf(row)
 
   // Contracted bushels by type, and irr/dry acre split (for the Details section).
   const byType = new Map<string, number>()
@@ -586,6 +603,18 @@ function CropCard({
         <div>
           <div className="text-xs text-slate-500 uppercase tracking-wide">Total profit</div>
           <div className={`text-xl font-bold tabular-nums ${profitTone}`}>{row.totalProfit != null ? usd0(row.totalProfit) : '—'}</div>
+        </div>
+      </div>
+
+      {/* Breakeven — always visible on the base layer */}
+      <div className="grid grid-cols-2 gap-3 border-t border-slate-100 pt-3">
+        <div>
+          <div className="text-xs text-slate-500 uppercase tracking-wide">Breakeven price</div>
+          <div className="text-sm font-semibold tabular-nums text-slate-700">{be.price != null ? `${fmtPrice(be.price)}/bu` : '—'}</div>
+        </div>
+        <div>
+          <div className="text-xs text-slate-500 uppercase tracking-wide">Breakeven yield</div>
+          <div className="text-sm font-semibold tabular-nums text-slate-700">{be.yieldPerAcre != null ? `${be.yieldPerAcre.toFixed(1)} bu/ac` : '—'}</div>
         </div>
       </div>
 
