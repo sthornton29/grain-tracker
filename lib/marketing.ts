@@ -38,6 +38,20 @@ export type MarketingRow = {
   avgBasis: number
   avgBasisAssumed: boolean
   assumedBasis: number
+  // --- basis composition (drives the actual / assumed / blended labeling) ---
+  // Bushels on contracts with locked basis (the avgBasis weights) and their
+  // weighted average (equals avgBasis whenever any are locked).
+  basisLockedBu: number
+  basisLockedAvg: number | null
+  // Bushels whose basis component is valued at the ASSUMED basis in blended
+  // revenue: futures-priced contracts without basis (open HTAs) + open-hedge
+  // bushels + completely-unpriced bushels. Flat-cash bushels carry no basis
+  // component and count toward neither side.
+  basisAssumedBu: number
+  // 'actual'  = every bushel with a basis component has it contract-locked
+  // 'assumed' = no contract has basis locked (avgBasis IS the assumed basis)
+  // 'blended' = some locked, the rest valued at the assumed basis
+  basisState: 'actual' | 'assumed' | 'blended'
   // Total Average Price = avg_futures_price + avg_basis. Always computes for a
   // crop with production (cash / current-futures fallback when no futures avg).
   totalAvgPrice: number | null
@@ -274,6 +288,16 @@ export function computeMarketing(args: {
     if (unpricedBu > 0) blendedRevenue += unpricedBu * ((currentFutures ?? rawAvgFutures ?? 0) + assumedBasis)
     blendedRevenue = round2(blendedRevenue + hedgeRealizedPnl)
 
+    // (7) Basis composition — display only, no effect on the figures above. The
+    //     assumed side mirrors exactly the buckets blended revenue values at the
+    //     assumed basis: futures contracts without basis + open hedges + unpriced.
+    let htaNoBasisBu = 0
+    for (const c of cropContracts) if (c.futures_price != null && c.basis == null) htaNoBasisBu += Number(c.contracted_bushels ?? 0)
+    const basisLockedBu = bBu
+    const basisAssumedBu = round2(htaNoBasisBu + hedgeCovered + unpricedBu)
+    const basisState: MarketingRow['basisState'] =
+      basisLockedBu > 0 ? (basisAssumedBu > 0 ? 'blended' : 'actual') : 'assumed'
+
     const costPerAcre = assumption?.cost_per_acre != null ? Number(assumption.cost_per_acre) : null
     const costPerBu = costPerAcre != null && yieldVal != null && yieldVal > 0 ? round(costPerAcre / yieldVal, 4) : null
     // Revenue/acre = Total Average Price × yield (hand-verifiable from the two
@@ -288,6 +312,7 @@ export function computeMarketing(args: {
       contractedBu, remaining, avgCashPrice, excludedAwaitingBu,
       futuresPricedBu, physicalFuturesBu, physicalFuturesAvg, openHedgeBu, openHedgeAvg,
       rawAvgFutures, hedgeRealizedPnl, hedgeAdjPerBu, avgFutures, avgBasis, avgBasisAssumed, assumedBasis,
+      basisLockedBu, basisLockedAvg: avgBasisActual, basisAssumedBu, basisState,
       totalAvgPrice, unpricedBu, blendedRevenue, costPerAcre, costPerBu, revenuePerAcre, profitPerAcre, totalProfit,
       openFuturesHedgedBu: openHedgeBu,
     })

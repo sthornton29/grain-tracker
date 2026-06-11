@@ -224,6 +224,75 @@ describe('computeMarketing — average futures price', () => {
     expect(done.yieldLabel).toBe('Actual')
   })
 
+  it('basis composition: ACTUAL when every basis-component bushel is contract-locked', () => {
+    // 180,000 bu fully contracted with basis locked on all of it. No hedges, no
+    // unpriced bushels → nothing is valued at the assumed basis.
+    const r = run({
+      acres: 1000, expectedYield: 180, assumedBasis: -0.99, currentFutures: 4.0,
+      contracts: [contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 180000, futures_price: 4.5, basis: -0.25, cash_price: 4.25 })],
+    })
+    expect(r.basisState).toBe('actual')
+    expect(r.basisLockedBu).toBe(180000)
+    expect(r.basisLockedAvg).toBeCloseTo(-0.25, 6)
+    expect(r.basisAssumedBu).toBe(0)
+    expect(r.avgBasis).toBeCloseTo(-0.25, 6)       // unchanged by the new fields
+  })
+
+  it('basis composition: ASSUMED when no contract has basis locked', () => {
+    // HTA 60,000 (no basis) + open hedge 50,000 + unpriced 70,000 = all 180,000
+    // bushels valued at the assumed basis; none locked.
+    const r = run({
+      acres: 1000, expectedYield: 180, assumedBasis: -0.30, currentFutures: 4.20,
+      contracts: [contract({ crop_id: 'corn', contract_type: 'hta', contracted_bushels: 60000, futures_price: 4.6, pricing_status: 'awaiting_basis' })],
+      futures: [future({ commodity: 'Corn', num_contracts: 10, trade_price: 4.5, status: 'open' })],
+    })
+    expect(r.basisState).toBe('assumed')
+    expect(r.basisLockedBu).toBe(0)
+    expect(r.basisLockedAvg).toBeNull()
+    expect(r.basisAssumedBu).toBe(180000)          // 60,000 + 50,000 + 70,000
+    expect(r.avgBasisAssumed).toBe(true)           // legacy flag agrees
+  })
+
+  it('basis composition: BLENDED splits locked vs assumed-valued bushels; totals unchanged', () => {
+    // Locked: forward 45,000 @ basis -0.25. Assumed-valued: HTA 30,000 (no basis)
+    // + open hedge 50,000 (capped at unsold 105,000 → all covered) + unpriced
+    // 55,000 = 135,000. Flat-cash bushels would count toward neither side.
+    const r = run({
+      acres: 1000, expectedYield: 180, assumedBasis: -0.30, currentFutures: 4.20,
+      contracts: [
+        contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 45000, futures_price: 4.5, basis: -0.25, cash_price: 4.25 }),
+        contract({ crop_id: 'corn', contract_type: 'hta', contracted_bushels: 30000, futures_price: 4.6, pricing_status: 'awaiting_basis' }),
+      ],
+      futures: [future({ commodity: 'Corn', num_contracts: 10, trade_price: 4.5, status: 'open' })],
+    })
+    expect(r.basisState).toBe('blended')
+    expect(r.basisLockedBu).toBe(45000)
+    expect(r.basisLockedAvg).toBeCloseTo(-0.25, 6)
+    expect(r.basisAssumedBu).toBe(135000)          // 30,000 + 50,000 + 55,000
+    // The existing methodology is untouched: avgBasis is still the locked
+    // weighted average (applied in Total Avg Price), not a recomputed blend.
+    expect(r.avgBasis).toBeCloseTo(-0.25, 6)
+    expect(r.avgBasisAssumed).toBe(false)
+    // Blended revenue unchanged: 45,000@(4.50-0.25) + 30,000@(4.60-0.30)
+    // + 50,000@(4.50-0.30) + 55,000@(4.20-0.30) = 191,250+129,000+210,000+214,500.
+    expect(r.blendedRevenue).toBeCloseTo(744750, 2)
+  })
+
+  it('basis composition: flat-cash bushels carry no basis component', () => {
+    // Flat-cash 40,000 + locked-basis 40,000; unpriced 100,000. The flat-cash
+    // bushels appear on neither side of the basis split.
+    const r = run({
+      acres: 1000, expectedYield: 180, assumedBasis: -0.30, currentFutures: 4.10,
+      contracts: [
+        contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 40000, cash_price: 4.8 }),
+        contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 40000, futures_price: 4.5, basis: -0.2, cash_price: 4.3 }),
+      ],
+    })
+    expect(r.basisState).toBe('blended')
+    expect(r.basisLockedBu).toBe(40000)
+    expect(r.basisAssumedBu).toBe(100000)          // unpriced only — not the flat-cash 40,000
+  })
+
   it('actual weighted basis wins over assumed when a physical contract sets it', () => {
     // Two priced-basis contracts: 30,000 @ -0.20 and 10,000 @ -0.40 → weighted -0.25.
     const r = run({
