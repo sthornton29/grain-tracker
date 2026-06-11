@@ -6,7 +6,9 @@ import type { Crop, Contract, CropAssumption, FuturesPosition, OptionPosition } 
 // is hand-derived from the rules in lib/marketing.ts (comments show the arithmetic):
 //   raw avg futures = Σ(price×bu)/Σ(bu) over physical-with-futures + OPEN short hedges
 //   avg futures price = raw + (realized closed futures+options P&L ÷ TOTAL production)
-//   avg basis = weighted physical basis, else assumed basis
+//   avg basis = bushel-weighted blend over ALL basis-component bushels:
+//     locked contracts at their weighted basis + the rest (open HTAs, open
+//     hedges, unpriced) at the assumed basis; flat-cash bushels excluded
 //   total avg price = avg futures price + avg basis (always computes)
 //   blended revenue = Σ buckets at their own price + realized P&L once
 
@@ -139,8 +141,10 @@ describe('computeMarketing — average futures price', () => {
     // 24,900 ÷ 200,000 total production = 0.1245 (NOT ÷ 50,000 = 0.498)
     expect(r.hedgeAdjPerBu).toBeCloseTo(0.1245, 6)
     expect(r.avgFutures).toBeCloseTo(4.5245, 6)    // 4.40 + 0.1245
-    expect(r.avgBasis).toBeCloseTo(-0.25, 6)
-    expect(r.totalAvgPrice).toBeCloseTo(4.2745, 6)
+    // Basis blends: locked 50,000 @ -0.25 + unpriced 150,000 @ assumed 0
+    // → (-12,500 + 0)/200,000 = -0.0625
+    expect(r.avgBasis).toBeCloseTo(-0.0625, 6)
+    expect(r.totalAvgPrice).toBeCloseTo(4.462, 6)  // 4.5245 - 0.0625
     // Blended: forward 50,000 @ (4.40-0.25)=4.15 → 207,500;
     //          unpriced 150,000 @ (current 4.10 + 0)=4.10 → 615,000; + 24,900 P&L.
     expect(r.blendedRevenue).toBeCloseTo(847400, 2) // 207,500 + 615,000 + 24,900
@@ -157,9 +161,12 @@ describe('computeMarketing — average futures price', () => {
     })
     expect(r.physicalFuturesBu).toBe(40000)        // only B has a futures price
     expect(r.rawAvgFutures).toBeCloseTo(4.50, 6)
-    expect(r.avgBasis).toBeCloseTo(-0.20, 6)        // only B's basis; flat-cash excluded
+    // Basis blends over basis-component bushels only (flat-cash A excluded):
+    // locked 40,000 @ -0.20 + unpriced 100,000 @ assumed -0.30
+    // → (-8,000 - 30,000)/140,000 = -0.2714285714…
+    expect(r.avgBasis).toBeCloseTo(-0.271429, 5)
     expect(r.avgBasisAssumed).toBe(false)
-    expect(r.totalAvgPrice).toBeCloseTo(4.30, 6)    // 4.50 + (-0.20)
+    expect(r.totalAvgPrice).toBeCloseTo(4.228571, 5) // 4.50 - 0.271429
     // Blended: A 40,000 @ 4.80 = 192,000; B 40,000 @ (4.50-0.20)=4.30 = 172,000;
     //          unpriced 100,000 @ (4.10-0.30)=3.80 = 380,000. Total 744,000.
     expect(r.blendedRevenue).toBeCloseTo(744000, 2)
@@ -199,7 +206,8 @@ describe('computeMarketing — average futures price', () => {
     expect(r.hedgeRealizedPnl).toBeCloseTo(10000, 2) // closed option only
     expect(r.hedgeAdjPerBu).toBeCloseTo(0.05, 6)     // 10,000 ÷ 200,000
     expect(r.avgFutures).toBeCloseTo(4.55, 6)        // 4.50 + 0.05
-    expect(r.totalAvgPrice).toBeCloseTo(4.30, 6)     // 4.55 − 0.25
+    // Basis blends: locked 50,000 @ -0.25 + unpriced 150,000 @ assumed 0 = -0.0625
+    expect(r.totalAvgPrice).toBeCloseTo(4.4875, 6)   // 4.55 − 0.0625
     // Blended: forward 50,000 @ 4.25 = 212,500; unpriced 150,000 @ 4.20 = 630,000;
     //          + 10,000 option P&L. Total 852,500.
     expect(r.blendedRevenue).toBeCloseTo(852500, 2)
@@ -269,9 +277,9 @@ describe('computeMarketing — average futures price', () => {
     expect(r.basisLockedBu).toBe(45000)
     expect(r.basisLockedAvg).toBeCloseTo(-0.25, 6)
     expect(r.basisAssumedBu).toBe(135000)          // 30,000 + 50,000 + 55,000
-    // The existing methodology is untouched: avgBasis is still the locked
-    // weighted average (applied in Total Avg Price), not a recomputed blend.
-    expect(r.avgBasis).toBeCloseTo(-0.25, 6)
+    // Blended basis = bushel-weighted: (45,000×-0.25 + 135,000×-0.30)/180,000
+    // = (-11,250 - 40,500)/180,000 = -0.2875
+    expect(r.avgBasis).toBeCloseTo(-0.2875, 6)
     expect(r.avgBasisAssumed).toBe(false)
     // Blended revenue unchanged: 45,000@(4.50-0.25) + 30,000@(4.60-0.30)
     // + 50,000@(4.50-0.30) + 55,000@(4.20-0.30) = 191,250+129,000+210,000+214,500.
@@ -291,18 +299,37 @@ describe('computeMarketing — average futures price', () => {
     expect(r.basisState).toBe('blended')
     expect(r.basisLockedBu).toBe(40000)
     expect(r.basisAssumedBu).toBe(100000)          // unpriced only — not the flat-cash 40,000
+    // Blend over 140,000 basis-component bu: (40,000×-0.20 + 100,000×-0.30)/140,000
+    expect(r.avgBasis).toBeCloseTo(-0.271429, 5)
   })
 
-  it('actual weighted basis wins over assumed when a physical contract sets it', () => {
-    // Two priced-basis contracts: 30,000 @ -0.20 and 10,000 @ -0.40 → weighted -0.25.
+  it('blended basis sits between locked and assumed (the corn 0.30/0.50 case)', () => {
+    // Locked 60,000 bu @ +0.30; assumed +0.50 on the remaining 120,000 unpriced
+    // bu. The blend must NOT collapse to the locked 0.30:
+    // (60,000×0.30 + 120,000×0.50)/180,000 = (18,000 + 60,000)/180,000 = 0.4333…
     const r = run({
-      acres: 1000, expectedYield: 180, assumedBasis: -0.99, currentFutures: 4.0,
+      acres: 1000, expectedYield: 180, assumedBasis: 0.50, currentFutures: 4.20,
+      contracts: [contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 60000, futures_price: 4.5, basis: 0.30, cash_price: 4.8 })],
+    })
+    expect(r.basisState).toBe('blended')
+    expect(r.basisLockedAvg).toBeCloseTo(0.30, 6)
+    expect(r.avgBasis).toBeCloseTo(0.433333, 5)
+    expect(r.totalAvgPrice).toBeCloseTo(4.933333, 5) // 4.50 + 0.4333…
+  })
+
+  it('fully-locked basis ignores the assumed basis entirely', () => {
+    // Two priced-basis contracts: 30,000 @ -0.20 and 10,000 @ -0.40 → weighted -0.25.
+    // Production = the contracted 40,000 bu (1000 ac × 40), so nothing rides the
+    // assumed basis and the wild -0.99 assumption must not leak in.
+    const r = run({
+      acres: 1000, expectedYield: 40, assumedBasis: -0.99, currentFutures: 4.0,
       contracts: [
         contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 30000, futures_price: 4.5, basis: -0.2, cash_price: 4.3 }),
         contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 10000, futures_price: 4.5, basis: -0.4, cash_price: 4.1 }),
       ],
     })
     // (−0.20×30,000 + −0.40×10,000)/40,000 = (−6,000 − 4,000)/40,000 = −0.25
+    expect(r.basisState).toBe('actual')
     expect(r.avgBasis).toBeCloseTo(-0.25, 6)
     expect(r.avgBasisAssumed).toBe(false)
   })

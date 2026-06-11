@@ -34,13 +34,16 @@ export type MarketingRow = {
   hedgeAdjPerBu: number
   // avg_futures_price = rawAvgFutures + hedgeAdjPerBu.
   avgFutures: number | null
-  // Always set: actual weighted basis, or the assumed basis when none is locked.
+  // Always set: the bushel-weighted basis across all basis-component bushels —
+  // locked contracts at their weighted average and the rest (open HTAs, open
+  // hedges, unpriced) at the assumed basis. Falls back to the assumed basis
+  // alone when nothing is locked.
   avgBasis: number
   avgBasisAssumed: boolean
   assumedBasis: number
   // --- basis composition (drives the actual / assumed / blended labeling) ---
-  // Bushels on contracts with locked basis (the avgBasis weights) and their
-  // weighted average (equals avgBasis whenever any are locked).
+  // Bushels on contracts with locked basis and their weighted average (equals
+  // avgBasis only when the state is 'actual').
   basisLockedBu: number
   basisLockedAvg: number | null
   // Bushels whose basis component is valued at the ASSUMED basis in blended
@@ -243,13 +246,31 @@ export function computeMarketing(args: {
     const hedgeAdjPerBu = totalProduction > 0 ? round(hedgeRealizedPnl / totalProduction) : 0
     const avgFutures = rawAvgFutures != null ? round(rawAvgFutures + hedgeAdjPerBu) : null
 
-    // (3) Average basis — weighted over physical contracts that have basis set.
-    // (4) When none do, fall back to the assumed basis (labeled).
+    // Bushel buckets shared by the basis average and blended revenue: unsold
+    // production, the open hedges covering it, and the completely-unpriced rest.
+    const unsold = Math.max(0, totalProduction - contractedBu)
+    const hedgeCovered = Math.max(0, Math.min(openHedgeBu, unsold))
+    const unpricedBu = Math.max(0, unsold - hedgeCovered)
+
+    // (3) Average basis — bushel-weighted across ALL basis-component bushels:
+    //     contracts with locked basis at their weighted average, plus everything
+    //     valued at the assumed basis (futures contracts without basis, open
+    //     hedges, unpriced bushels). All locked → 'actual' (= the locked avg);
+    //     none locked → 'assumed' (= the assumed basis); a mix → 'blended'.
+    //     Flat-cash bushels carry no basis component and stay out of the blend.
     let bBu = 0, bW = 0
     for (const c of cropContracts) if (c.basis != null) { const bu = Number(c.contracted_bushels ?? 0); bBu += bu; bW += Number(c.basis) * bu }
-    const avgBasisActual = bBu > 0 ? round(bW / bBu) : null
-    const avgBasisAssumed = avgBasisActual == null
-    const avgBasis = avgBasisActual != null ? avgBasisActual : round(assumedBasis)
+    let htaNoBasisBu = 0
+    for (const c of cropContracts) if (c.futures_price != null && c.basis == null) htaNoBasisBu += Number(c.contracted_bushels ?? 0)
+    const basisLockedBu = bBu
+    const basisLockedAvg = bBu > 0 ? round(bW / bBu) : null
+    const basisAssumedBu = round2(htaNoBasisBu + hedgeCovered + unpricedBu)
+    const basisState: MarketingRow['basisState'] =
+      basisLockedBu > 0 ? (basisAssumedBu > 0 ? 'blended' : 'actual') : 'assumed'
+    const avgBasisAssumed = basisLockedBu === 0
+    const avgBasis = basisLockedBu > 0
+      ? round((bW + assumedBasis * basisAssumedBu) / (basisLockedBu + basisAssumedBu))
+      : round(assumedBasis)
 
     const currentFutures = currentFuturesByCrop?.get(crop.id) ?? null
 
@@ -280,23 +301,10 @@ export function computeMarketing(args: {
       }
     }
     // Open-hedge bushels (hedged but not physically sold), capped at unsold acres.
-    const unsold = Math.max(0, totalProduction - contractedBu)
-    const hedgeCovered = Math.max(0, Math.min(openHedgeBu, unsold))
     if (hedgeCovered > 0) blendedRevenue += hedgeCovered * ((openHedgeAvg ?? rawAvgFutures ?? currentFutures ?? 0) + assumedBasis)
     // Completely-unpriced bushels at current futures (Barchart) + assumed basis.
-    const unpricedBu = Math.max(0, unsold - hedgeCovered)
     if (unpricedBu > 0) blendedRevenue += unpricedBu * ((currentFutures ?? rawAvgFutures ?? 0) + assumedBasis)
     blendedRevenue = round2(blendedRevenue + hedgeRealizedPnl)
-
-    // (7) Basis composition — display only, no effect on the figures above. The
-    //     assumed side mirrors exactly the buckets blended revenue values at the
-    //     assumed basis: futures contracts without basis + open hedges + unpriced.
-    let htaNoBasisBu = 0
-    for (const c of cropContracts) if (c.futures_price != null && c.basis == null) htaNoBasisBu += Number(c.contracted_bushels ?? 0)
-    const basisLockedBu = bBu
-    const basisAssumedBu = round2(htaNoBasisBu + hedgeCovered + unpricedBu)
-    const basisState: MarketingRow['basisState'] =
-      basisLockedBu > 0 ? (basisAssumedBu > 0 ? 'blended' : 'actual') : 'assumed'
 
     const costPerAcre = assumption?.cost_per_acre != null ? Number(assumption.cost_per_acre) : null
     const costPerBu = costPerAcre != null && yieldVal != null && yieldVal > 0 ? round(costPerAcre / yieldVal, 4) : null
@@ -312,7 +320,7 @@ export function computeMarketing(args: {
       contractedBu, remaining, avgCashPrice, excludedAwaitingBu,
       futuresPricedBu, physicalFuturesBu, physicalFuturesAvg, openHedgeBu, openHedgeAvg,
       rawAvgFutures, hedgeRealizedPnl, hedgeAdjPerBu, avgFutures, avgBasis, avgBasisAssumed, assumedBasis,
-      basisLockedBu, basisLockedAvg: avgBasisActual, basisAssumedBu, basisState,
+      basisLockedBu, basisLockedAvg, basisAssumedBu, basisState,
       totalAvgPrice, unpricedBu, blendedRevenue, costPerAcre, costPerBu, revenuePerAcre, profitPerAcre, totalProfit,
       openFuturesHedgedBu: openHedgeBu,
     })
