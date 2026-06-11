@@ -582,17 +582,27 @@ function CropSection({
           + headline numbers (right); the position bars run full width below so
           they're never crunched between the two. */}
       <div className="p-4 md:p-5 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-x-8 gap-y-3">
-          {/* Identity */}
+        <div className="flex flex-wrap items-center gap-x-8 gap-y-3">
+          {/* Identity — acres and yield carry the same weight as the price metrics */}
           <div>
             <div className="font-bold text-xl leading-tight">{row.cropName}</div>
-            <div className="text-sm text-slate-500 tabular-nums mt-0.5">
-              {bu(row.acres)} ac · {row.yield != null ? `${row.yield.toFixed(1)} bu/ac ${row.yieldLabel}` : 'yield —'} · {bu(prod)} bu production
+            <div className="text-sm text-slate-500 tabular-nums mt-0.5">{bu(prod)} bu production</div>
+          </div>
+          <div>
+            <div className="text-[11px] text-slate-500 uppercase tracking-wide">Acres</div>
+            <div className="text-2xl font-bold tabular-nums leading-tight">{bu(row.acres)}</div>
+          </div>
+          <div>
+            <div className="text-[11px] text-slate-500 uppercase tracking-wide">Yield</div>
+            <div className="text-2xl font-bold tabular-nums leading-tight">
+              {row.yield != null
+                ? <>{row.yield.toFixed(1)} <span className="text-sm font-normal text-slate-500">bu/ac {row.yieldLabel}</span></>
+                : '—'}
             </div>
           </div>
 
           {/* Headline numbers — large, color-coded */}
-          <div className="flex items-center justify-between sm:justify-end gap-4 lg:gap-8 flex-wrap">
+          <div className="flex items-center justify-between sm:justify-end gap-4 lg:gap-8 flex-wrap ml-auto">
             <div className="text-right">
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">{advanced ? 'Total avg price' : 'Avg price'}</div>
               <div className="text-2xl font-bold tabular-nums leading-tight">{row.totalAvgPrice != null ? price2(row.totalAvgPrice) : '—'}</div>
@@ -608,13 +618,6 @@ function CropSection({
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">Total profit</div>
               <div className={`text-2xl font-bold tabular-nums leading-tight ${profitTone}`}>{row.totalProfit != null ? usd0(row.totalProfit) : '—'}</div>
             </div>
-            <button
-              type="button" onClick={onToggleDetails} aria-expanded={detailsOpen}
-              className="no-print rounded-full w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700 hover:bg-slate-100"
-              title={detailsOpen ? 'Hide details' : 'Show details'}
-            >
-              {detailsOpen ? '▾' : '▸'}
-            </button>
           </div>
         </div>
 
@@ -637,6 +640,16 @@ function CropSection({
           )}
         </div>
       </div>
+
+      {/* Details toggle — a full-width labeled bar, hard to miss */}
+      <button
+        type="button" onClick={onToggleDetails} aria-expanded={detailsOpen}
+        className="no-print w-full flex items-center justify-center gap-1.5 border-t border-slate-100 px-4 py-2 text-sm font-medium text-sky-700 hover:bg-sky-50 rounded-b-xl"
+      >
+        {detailsOpen
+          ? <>▾ Hide details</>
+          : <>▸ Show details <span className="font-normal text-slate-400">— contracts, pricing buildup &amp; what-if</span></>}
+      </button>
 
       {/* Expanded detail — side-by-side columns across the width; collapses to
           2-up, then 1-up on narrow screens. Never scrolls horizontally. */}
@@ -689,7 +702,7 @@ function CropSection({
             )}
           </DetailSection>
 
-          <div className="space-y-4">
+          <div className="space-y-4 min-w-0">
             <DetailSection title="Profitability">
               <Row label="Cost / acre" value={usd(row.costPerAcre)} />
               <Row label="Cost / bu" value={row.costPerBu != null ? price2(row.costPerBu) : '—'} />
@@ -700,21 +713,21 @@ function CropSection({
               <Row label="Breakeven yield" value={be.yieldPerAcre != null ? `${be.yieldPerAcre.toFixed(1)} bu/ac` : '—'} />
             </DetailSection>
 
-            {/* What-If pricing on unpriced bushels */}
-            <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 space-y-2 no-print">
+            {/* What-If pricing on unpriced bushels. Helper text sits on its own
+                line under each input so nothing spills out of the box in the
+                narrow 4-up column. */}
+            <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 space-y-2 no-print min-w-0">
               <div className="font-semibold text-sky-900">What-If Pricing</div>
               <div className="space-y-1">
                 <div className="text-xs text-slate-600">{advanced ? 'Unpriced futures bushels' : 'Unsold bushels'}: <span className="tabular-nums font-medium">{bu(scenarioUnpricedBu)}</span></div>
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <input type="number" step="0.01" inputMode="decimal" value={wfFutures} placeholder={advanced ? 'futures $/bu' : '$/bu'}
                     onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }}
                     className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
-                  {nc
-                    ? (expired
-                      ? <span className="text-xs text-amber-700">Contract expired — enter price manually</span>
-                      : <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-sky-700 font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>)
-                    : <span className="text-xs text-slate-400">{advanced ? 'No futures contract' : 'Enter a price'}</span>}
+                  {nc && !expired && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-sky-700 font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
+                  {!nc && <span className="text-xs text-slate-400">{advanced ? 'No futures contract' : 'Enter a price'}</span>}
                 </div>
+                {nc && expired && <div className="text-xs text-amber-700">Contract expired — enter price manually.</div>}
                 {/* Show the futures symbol only in advanced mode (no hedging jargon on simple sections). */}
                 {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{advanced ? `${wfSymbol} · ` : 'Today · '}{price2(wfFut)}{wfStale ? ' (cached)' : ''}</div>}
                 {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
@@ -722,12 +735,10 @@ function CropSection({
               {advanced && (
                 <div className="space-y-1">
                   <div className="text-xs text-slate-600">Bushels at assumed basis: <span className="tabular-nums font-medium">{bu(row.basisAssumedBu)}</span></div>
-                  <div className="flex items-center gap-2">
-                    <input id={basisInputId} type="number" step="0.01" inputMode="decimal" value={basisInput} placeholder="basis $/bu"
-                      onChange={(e) => setBasisInput(e.target.value)} onBlur={commitBasis}
-                      className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
-                    <span className="text-xs text-slate-400">assumed basis — saved to assumptions</span>
-                  </div>
+                  <input id={basisInputId} type="number" step="0.01" inputMode="decimal" value={basisInput} placeholder="basis $/bu"
+                    onChange={(e) => setBasisInput(e.target.value)} onBlur={commitBasis}
+                    className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
+                  <div className="text-xs text-slate-400">Assumed basis — saved to assumptions.</div>
                 </div>
               )}
               {scenario ? (
@@ -770,7 +781,7 @@ function BasisTag({ row }: { row: MarketingRow }) {
 
 function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div>
+    <div className="min-w-0">
       <div className="font-semibold text-slate-700 text-xs uppercase tracking-wide mb-1">{title}</div>
       <dl className="space-y-0.5">{children}</dl>
     </div>
