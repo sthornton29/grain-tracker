@@ -5,7 +5,7 @@
 > programs. **Not a SaaS product** — single-tenant, used on iPads in trucks by a
 > small team, so the UX favors fast capture and forgiving data entry.
 >
-> _Snapshot date: 2026-06-10. Schema at migration `031`._
+> _Snapshot date: 2026-06-11. Schema at migration `033`._
 
 ---
 
@@ -33,6 +33,7 @@
 | AI | **`@anthropic-ai/sdk ^0.95.2`** — Claude `claude-sonnet-4-6` for document extraction |
 | Market data | **Barchart OnDemand** REST (futures + options quotes) |
 | Exports / files | `exceljs`, `xlsx` (SheetJS), `jspdf` + `jspdf-autotable`, `pdf-lib`, `jszip` |
+| Testing / CI | **Vitest `^4.1.8`** — 280 unit tests over the pure `lib/` math (11 `lib/*.test.ts` files); ESLint (`.eslintrc.json`, `next/core-web-vitals`); **GitHub Actions CI** (`.github/workflows/ci.yml`: lint + test on every push/PR) |
 | Packaging | **npm** (`package-lock.json`); installable **PWA** (service worker `/sw.js`, `manifest.json`) |
 
 **Request flow:** `middleware.ts` → `lib/supabase/middleware.ts` refreshes the Supabase
@@ -44,8 +45,8 @@ signed in, plus `<PwaRegister>`.
 components. The only server-side API routes are for AI parsing and market-price fetching
 (see §5). Heavy report math lives in `lib/` (pure functions) and `components/reports/`.
 
-**No views in the database** — all reporting is computed in the app layer. **No automated
-tests** and no committed root ESLint config (relies on `next lint` defaults).
+**No views in the database** — all reporting is computed in the app layer. The money-critical
+pure logic in `lib/` is covered by Vitest unit tests (`npm run test`); UI components are not.
 
 ---
 
@@ -56,13 +57,18 @@ tests** and no committed root ESLint config (relies on `next lint` defaults).
 The global nav (`components/nav.tsx`, sticky green bar) exposes 9 top-level destinations:
 New Load, Loads, Bin Inventory, Contracts, Settlements, Yields, Hedging, Reports, Settings.
 The home page (`app/page.tsx`) is a tile launcher. There are **two layouts**: the root
-(auth + nav + PWA) and `app/reports/layout.tsx` (a left sidebar grouping reports into
-Production / Inventory / Contract & Sales / Financial / Risk Management / Operations).
-Some sidebar links are marked `external` and point back to standalone pages with a ↗ marker.
+(auth + nav + PWA) and `app/reports/layout.tsx` (a left sidebar). The Reports navigation —
+group order, item order, display names, routes, descriptions — has a **single source of truth**
+in `app/reports/reports-nav.ts`; both the sidebar and the landing-page cards render from it.
+Groups: **Main Reports / Crop Insurance / Production Reports / Government Payments /
+Operational Reports**. Items marked `external` point back to standalone pages with a ↗ marker.
 
 > Most report subpages are thin `'use client'` wrappers that render a heavy component from
-> `components/reports/*` and wire an `<ExportBar>` (Excel/PDF/Print). Detail pages handle
-> missing records with `notFound()`. There are **no** `loading.tsx`/`error.tsx`/`not-found.tsx` files.
+> `components/reports/*` and wire an `<ExportBar>` (Excel/PDF/Print). All reports share a
+> **design-system kit** (`components/reports/report-kit.tsx`): header/filter bar/summary
+> cards/tables/empty states, number formatters, and color-tone semantics (green favorable,
+> red unfavorable, amber warning). Detail pages handle missing records with `notFound()`.
+> There are **no** `loading.tsx`/`error.tsx`/`not-found.tsx` files.
 
 ### Core operational pages
 
@@ -82,8 +88,8 @@ Some sidebar links are marked `external` and point back to standalone pages with
 | `/contracts/[id]/edit` | `app/contracts/[id]/edit/page.tsx` | Edit a contract via shared `<ContractFields>`. |
 | `/settlements` | `app/settlements/page.tsx` | List of buyer settlement statements with line/unmatched counts, net bu/revenue, PDF link, Review link. |
 | `/settlements/new` | `app/settlements/new/page.tsx` | Create + reconcile a settlement. Three entry paths: **AI PDF/photo** (`parseDocument(…, 'settlement')`), CSV, or manual rows. Per-line ticket→load match status. |
-| `/settlements/[id]` | `app/settlements/[id]/page.tsx` | Review/reconcile: Matched loads (diff >1% flagged), Unmatched lines, Missing loads; `<SettlementPdfPanel>`. |
-| `/yields` | `app/yields/page.tsx` | Yield analysis — **By field / farm / variety / landowner**. Filters persist in localStorage. Practice filter + irrigated/dryland breakdown. Excludes unharvested/in-progress fields (per-field "Count anyway" override). Inline irr/dry and per-variety bushel allocation. Accepts `?breakout=1` deep-link. |
+| `/settlements/[id]` | `app/settlements/[id]/page.tsx` | Review/reconcile: Matched loads (diff >1% flagged), Unmatched lines, Missing loads; `<SettlementPdfPanel>`. **Persists** ticket→load matches on view (`relinkSettlementLines` server action; ambiguous tickets left for manual resolution) and offers a **manual match dropdown** per unmatched line (`line-match-select.tsx`). |
+| `/yields` | `app/yields/page.tsx` | Yield analysis — **By field / farm / variety / landowner**. Filters persist in localStorage. Practice filter + irrigated/dryland breakdown. Excludes unharvested/in-progress fields (per-field "Count anyway" override). Inline irr/dry and per-variety bushel allocation — **offered only once a field's harvest is complete** (`harvestStatusOf` in `lib/yields.ts`). Accepts `?breakout=1` deep-link. |
 | `/hedging` | `app/hedging/page.tsx` | Futures & options position tracking with live P&L. Open/closed tables, per-crop-year × commodity summary cards, new/edit/close dialogs, brokerage statement import. Live prices via `/api/market-prices` and `/api/options-prices`. |
 | `/revenue-projections` | `app/revenue-projections/page.tsx` | Legacy **redirect** → `/reports/revenue-projections`. |
 
@@ -103,35 +109,35 @@ Some sidebar links are marked `external` and point back to standalone pages with
 | `/settings/buyers` | Buyers + their delivery locations. |
 | `/settings/crops` | Crops (base moisture, lb/bu, harvest category, double-crop). |
 | `/settings/contracts` | Create/manage contracts (forward/HTA/basis) with **AI import**, CSV, shared `<ContractFields>`. |
-| `/settings/crop-insurance` | MPCI policies with SCO/ECO endorsements; entity filter; **AI import** (`<PolicyAiImport>`). |
-| `/settings/government-payments` | ARC/PLC base acres, elections, price data, payments, payment limits; FSA base-acres import; seed-cotton calculator. |
+| `/settings/crop-insurance` | MPCI policies with SCO/ECO endorsements; entity filter; **AI import** (`<PolicyAiImport>`); **RMA projected-prices editor** (`<ProjectedPricesEditor>` — per crop×year rows in `harvest_price_estimates`, replaces the old hard-coded 2026 map). |
+| `/settings/government-payments` | ARC/PLC base acres, elections, price data, payments, payment limits; FSA base-acres import; seed-cotton calculator; **per-year program parameters** (`program_year_config`: SCO trigger, per-person payment limit, sequestration %). |
 
 ### Reports (`/reports/*`)
 
 | Route | Report |
 | --- | --- |
-| `/reports` | Landing page (cards describing each report). |
-| `/reports/yields-by-landowner` | Per-landowner production grouped by farm/field (splits-aware). |
-| `/reports/share-rent` | Landlord-share production at each farm's configured share %. |
-| `/reports/crop-insurance` | **County × practice (irrigated/dryland) production report** for insurance agents. Mixed-practice plantings without a breakout are gated — **only once harvest is complete** (recent change; see `components/reports/crop-insurance-report.tsx`). |
-| `/reports/season` | Season summary — acres & yield by crop; excludes unharvested/in-progress. |
-| `/reports/cash-flow` | Monthly cash-flow forecast: received / outstanding / projected revenue + a **Total Safety Net** (projected ARC/PLC, crop-insurance indemnity, other USDA payments). |
-| `/reports/marketing` | Per-crop marketing dashboard: contracted vs remaining, avg prices, cost/bu, profit/acre, inline assumptions editor (irr/dry & full-season/double-crop breakouts, harvest-complete snap). |
-| `/reports/hedging-summary` | All futures positions (open + closed) with realized/unrealized P&L by crop year. |
-| `/reports/crop-insurance-claims` | Estimated indemnity monitor per policy (RP/RP-HPE/YP + SCO/ECO) with What-If sliders. |
-| `/reports/arc-plc-decision-aid` | Compare projected PLC vs ARC-CO per farm/commodity; test MYA price; set election. |
-| `/reports/government-payments` | Projected ARC/PLC + other USDA payments with per-entity payment-limit tracking. |
-| `/reports/revenue-projections` | One-page financial summary: all revenue sources + cost, profit, breakeven. |
-| `/reports/settlement-pdfs` | Crop-insurance audit bundle — zips every attached buyer settlement PDF for a crop & year. |
+| `/reports` | Landing page (cards rendered from `reports-nav.ts`). |
+| `/reports/yields-by-landowner` | **Yields by Landowner** — per-landowner production grouped by farm/field (splits-aware). |
+| `/reports/share-rent` | **Share Rent Report** — landlord-share production at each farm's configured share %. |
+| `/reports/crop-insurance` | **Crop Insurance Production Report** — county × practice (irrigated/dryland) production for insurance agents. Mixed-practice plantings without a breakout are gated — **only once harvest is complete** (`components/reports/crop-insurance-report.tsx`). |
+| `/reports/season` | **Season Summary** — acres & yield by crop; excludes unharvested/in-progress. |
+| `/reports/cash-flow` | **Cash Flow Forecast** — monthly received / outstanding / projected revenue + a **Total Safety Net** (projected ARC/PLC, crop-insurance indemnity, other USDA payments). |
+| `/reports/marketing` | **Marketing Dashboard** — one **card per crop**: production (actual once harvest complete, else assumption-derived), contracted-vs-remaining stacked bars showing avg futures/basis per bucket, Total Avg Price buildup (futures + basis, hedge P&L folded in, assumed basis when none locked), breakeven price & yield, revenue/profit per acre, **what-if pricing on unpriced bushels** (incl. "use today's price" via the new-crop benchmark contract), and a prominent Assumptions editor (yield/cost irr-dry & full-season/double-crop breakouts, assumed basis, harvest-complete snap). |
+| `/reports/hedging-summary` | **Hedging Summary** — all futures positions (open + closed) with realized/unrealized P&L by crop year. |
+| `/reports/crop-insurance-claims` | **Crop Insurance Claims Monitor** — estimated indemnity per policy (RP/RP-HPE/YP + SCO/ECO) with What-If sliders. |
+| `/reports/arc-plc-decision-aid` | **ARC/PLC Decision Aid** — compare projected PLC vs ARC-CO per farm/commodity; test MYA price; set election. |
+| `/reports/government-payments` | **Government Payment Tracker** — projected ARC/PLC + other USDA payments with per-entity payment-limit tracking. |
+| `/reports/revenue-projections` | **Revenue Projections** — one-page financial summary: all revenue sources + cost, profit, breakeven. Crop sales revenue = the Marketing engine's **blended expected revenue** (each bushel bucket at its own price; realized hedge P&L counted once). |
+| `/reports/settlement-pdfs` | **Bundled Settlement Statements (Production Audit)** — zips every attached buyer settlement PDF for a crop & year. |
 
 ---
 
 ## 3. Database schema
 
-**Supabase / PostgreSQL** with `pgcrypto` (`gen_random_uuid()`). Defined by **31 sequential,
-idempotent migrations** in `supabase/` (`schema.sql` = 001, then `002_*.sql` … `031_*.sql`).
+**Supabase / PostgreSQL** with `pgcrypto` (`gen_random_uuid()`). Defined by **33 sequential,
+idempotent migrations** in `supabase/` (`schema.sql` = 001, then `002_*.sql` … `033_*.sql`).
 Every table re-runs safely (`create table if not exists`, guarded `do $$…$$`), uses a `uuid`
-PK and `created_at`. ~35 tables, **no views**. Later migrations frequently `ALTER` earlier
+PK and `created_at`. ~36 tables, **no views**. Later migrations frequently `ALTER` earlier
 tables (esp. `contracts`, `farms`, `fields`, `field_plantings`, `crop_assumptions`).
 
 ### Migration history (feature areas)
@@ -159,6 +165,8 @@ tables (esp. `contracts`, `farms`, `fields`, `field_plantings`, `crop_assumption
 - `026` — generic/unassigned base acres. · `027` — Canola & Sesame commodities.
 - `028` — `crops.harvest_category` (fall/spring). · `029` — `crop_assumptions` yield breakout columns.
 - `030` — `crops.double_crop`. · `031` — `crop_assumptions` cost breakout columns.
+- `032` program config — `program_year_config` (per-year SCO trigger, payment limit, sequestration %; seeds 2026 + 2027).
+- `033` — `crop_assumptions.assumed_basis` (Marketing fallback basis).
 
 ### Tables (grouped) — purpose & key columns
 
@@ -176,7 +184,7 @@ tables (esp. `contracts`, `farms`, `fields`, `field_plantings`, `crop_assumption
 - **`crops`** — `name` (unique), `base_moisture_pct`, `base_lb_per_bushel`, `harvest_category` (fall/spring), `double_crop`.
 - **`field_plantings`** — field×crop×season. `field_id`, `crop_id`, `season_year`, `planted_acres`, `planting_date`, `paired_planting_id` (double-crop), `irrigated_acres`, **`dryland_acres` (trigger-derived)**, `irrigated_bushels`/`dryland_bushels`, **`yield_breakout_entered`**, **`yield_include_override`** (null=auto, true=force-include).
 - **`field_planting_varieties`** — `planting_id`→plantings, `variety`, `acres`, `bushels` (nullable, manual allocation).
-- **`crop_assumptions`** — per crop×year marketing inputs. unique `(crop_id, crop_year)`. `expected_yield`, **`harvest_complete`**, `cost_per_acre`, plus `*_irr`/`*_dry`/`*_dc_irr`/`*_dc_dry` yield (029) and cost (031) breakouts.
+- **`crop_assumptions`** — per crop×year marketing inputs. unique `(crop_id, crop_year)`. `expected_yield`, **`harvest_complete`**, `cost_per_acre`, **`assumed_basis`** (033, fallback basis for unlocked bushels), plus `*_irr`/`*_dry`/`*_dc_irr`/`*_dc_dry` yield (029) and cost (031) breakouts.
 
 **Storage & logistics**
 
@@ -220,10 +228,11 @@ tables (esp. `contracts`, `farms`, `fields`, `field_plantings`, `crop_assumption
 - **`arc_plc_payments`** — projected/actual payments; `payment_factor` (0.85), `sequestration_pct` (~0.054), `net_payment`, `payment_status`.
 - **`other_government_payments`** — manual non-ARC/PLC USDA payments.
 - **`payment_limit_config`** — per entity×year: `eligible_persons`, `per_person_limit` (default 155000).
+- **`program_year_config`** — per-crop-year program parameters (032): `sco_trigger` (0.86 in 2026, 0.90 in 2027), `per_person_payment_limit`, `sequestration_pct`, `notes`, `updated_at` (trigger). unique `crop_year`; seeded 2026 + 2027. Resolved via `lib/program-config.ts` (falls back to the most recent configured year with a UI notice).
 
 ### Triggers, generated columns, storage, RLS
 
-- **Triggers:** `loads_set_updated_at` (BEFORE UPDATE); `fields_set_dryland` and `field_plantings_set_dryland` keep `dryland_acres = greatest(0, total/planted − irrigated)` even on raw/CSV imports.
+- **Triggers:** `loads_set_updated_at` and `program_year_config_set_updated_at` (BEFORE UPDATE); `fields_set_dryland` and `field_plantings_set_dryland` keep `dryland_acres = greatest(0, total/planted − irrigated)` even on raw/CSV imports.
 - **Generated columns:** `settlement_lines.net_revenue` & `price_per_bushel`; `options_positions.premium_total`.
 - **Storage:** public bucket **`documents`** (load tickets, settlement scans, contract attachments, AI parse uploads).
 - **RLS:** enabled on every table with a single permissive policy `for all to authenticated using (true) with check (true)` — appropriate for a single-tenant internal app. Storage has authenticated CRUD policies scoped to `bucket_id = 'documents'`; the bucket is also public-read so the PDF viewer can load files without signed URLs.
@@ -235,13 +244,16 @@ tables (esp. `contracts`, `farms`, `fields`, `field_plantings`, `crop_assumption
 ### Cross-cutting capabilities
 
 - **Shrink math** (`lib/shrink.ts`) — net weight + moisture + crop base values → wet & dry bushels; honors `dry_bushels_override`; falls back to wet bushels when moisture is missing.
-- **Yield analysis** (`lib/yields.ts`) — aggregates dry bushels per field/crop/year, drops unharvested fields, flags the currently-combined field as "in progress" (yield >15% below the crop's other harvested fields **and** last load within 5 days), supports "count anyway" overrides, produces weighted averages and harvest-progress-by-acres.
+- **Yield analysis** (`lib/yields.ts`) — aggregates dry bushels per field/crop/year, drops unharvested fields, flags the currently-combined field as "in progress" (yield >15% below the crop's other harvested fields **and** last load within 5 days), supports "count anyway" overrides, produces weighted averages and harvest-progress-by-acres. `harvestStatusOf` / `isHarvestComplete` classify a planting (complete / in-progress / unharvested) to gate the bushel-allocation and variety-prompt UI; `cropsWithCompleteHarvest` feeds the Marketing dashboard's actual-vs-estimated switch.
 - **Double-crop classification** (`lib/plantings.ts`) — a `double_crop` crop on a field that also had a spring-harvest planting that season.
 - **Split loads** (`lib/load-splits.ts`) — allocate one load across multiple fields with per-split shrink; validates weights sum to parent net (±1 lb).
 - **CSV import engine** (`lib/csv.ts`) — config-driven importer with FK lookups/aliases, child relations, derived columns, `add` vs `sync` modes (sync only updates changed columns; blanks never overwrite), batch insert with per-row fallback. Styled Excel templates via `lib/import-template.ts`.
 - **Universal exports** (`lib/exports.ts`) — Excel/PDF/Print from a section/row model (used by `<ExportBar>`); heavy libs dynamically imported.
-- **Settlement linking** (`lib/settlement-link.ts`) — back-fills `settlement_lines.load_id` by ticket when a buyer load is saved; skips ambiguous tickets.
-- **Marketing / insurance / government engines** (`lib/marketing.ts`, `lib/crop-insurance.ts`, `lib/government-payments.ts`, `lib/revenue-projections.ts`) — pure math feeding the financial reports.
+- **Settlement linking** (`lib/settlement-link.ts`) — back-fills `settlement_lines.load_id` by ticket when a buyer load is saved (`relinkSettlementLinesForLoad`) **and** for a whole settlement when its Review screen opens (`relinkSettlementLines`), so the DB stays in sync with what the screen shows. Ambiguous tickets are always left unlinked for manual resolution.
+- **Marketing engine** (`lib/marketing.ts`) — per-crop position for a crop year: acres segmented full-season/double-crop × irr/dry, expected production from assumption breakouts (or **actual production once harvest is complete**), a Total Average Price buildup (weighted futures from physical contracts + open short hedges, realized futures/options P&L spread per bushel, weighted or **assumed** basis), and a **blended expected revenue** that values each bushel bucket (flat-cash, futures+basis, open-hedge, unpriced-at-market) at its own price — the single source of truth Revenue Projections reuses.
+- **Program-year config** (`lib/program-config.ts`) — resolves the SCO trigger, per-person payment limit, and sequestration % for a crop year from `program_year_config` rows, falling back to the most recent configured year (or built-in 2026 defaults) with a plain-English notice for the UI.
+- **Insurance / government / revenue engines** (`lib/crop-insurance.ts`, `lib/government-payments.ts`, `lib/revenue-projections.ts`) — pure math feeding the financial reports. Projected prices now come from `harvest_price_estimates` (`projectedPriceFromEstimates`) instead of a hard-coded map.
+- **Unit tests** — 280 Vitest tests in `lib/*.test.ts` (shrink, yields, csv, contracts, marketing, crop-insurance, government-payments, revenue-projections, hedging, load-splits, program-config) with hand-verified worked examples; run in CI on every push/PR.
 
 ### AI document parsing pipeline
 
@@ -325,11 +337,9 @@ Extracted rows are fuzzy-matched (`lib/fuzzy.ts`) to existing reference data and
 - **Options pricing is "future-ready," not finished** — `/api/options-prices` always degrades to manual entry today (see §5). Functional fallback, but the live path is unproven.
 - **Stale comment** in `lib/revenue-projections.ts:5` calls government payments "a placeholder until that section is built." That section **is** built and wired in (`projectPayments` → `revenue-projections-report.tsx`). Comment only; not a missing feature.
 - **SheetJS styling is non-functional** — `lib/crop-insurance-export.ts:96-99`: the Community build writes the style property but doesn't apply it; bold/title styling only survives a re-save. Cosmetic, documented trade-off.
-- **Settlement-line matching can read stale** — the Review screen re-pairs lines at view time but doesn't write back, so anything reading `load_id` directly (Unmatched count, exports) can mismatch until `relinkSettlementLinesForLoad` runs on load save. Ambiguous tickets are intentionally left unlinked for manual resolution.
 - **Split vs manual parent override** — `lib/load-splits.ts:38-43`: a manually-overridden parent `dry_bushels` is **not** redistributed back into splits (deliberate; surfaced to the user via a note).
-- **Year-coupled constants** — crop-insurance projected prices, SCO trigger (0.86 for 2026, 0.90 in 2027), and the per-person payment limit (`155000`) are hard-coded to **2026** (`lib/crop-insurance.ts`, `lib/government-payments.ts`). They return null / no-op outside 2026 and need yearly updates.
-- **No automated tests**, no committed root ESLint config (uses `next lint` defaults).
-- **Untracked working file** `grain_tracker_gtm_checklist.xlsx` exists in the repo root — not part of the app.
+- **Program parameters still need yearly data entry** — the SCO trigger, payment limit, sequestration %, and RMA projected prices are now **DB-configured** (`program_year_config`, `harvest_price_estimates`) rather than hard-coded, but someone must enter each new year's values in Settings (Government Payments / Crop Insurance). Missing years fall back to the most recent configured year with a visible notice — math keeps working but on last year's numbers.
+- **No UI/component tests** — Vitest covers the pure `lib/` math only; pages and components are untested.
 - **Redirects are intentional, not orphans** — `/revenue-projections` and the `/season`, `/marketing`, `/cash-flow` paths redirect to their `/reports/*` homes (`next.config.js`).
 
 ---
@@ -341,13 +351,14 @@ Extracted rows are fuzzy-matched (`lib/fuzzy.ts`) to existing reference data and
 ```bash
 npm install
 cp .env.local.example .env.local      # then fill in the values below
-# In the Supabase SQL editor, run supabase/schema.sql, then 002…031 in order
+# In the Supabase SQL editor, run supabase/schema.sql, then 002…033 in order
 # Create a Supabase Auth user (this app has no self-serve signup)
 npm run dev
 ```
 
-Scripts: `dev` (`next dev`), `build` (`next build`), `start` (`next start`), `lint` (`next lint`).
-Deploy target is Vercel; installs as a PWA via Safari "Add to Home Screen."
+Scripts: `dev` (`next dev`), `build` (`next build`), `start` (`next start`), `lint` (`next lint`),
+`test` (`vitest run`), `test:watch` (`vitest`). CI (`.github/workflows/ci.yml`) runs lint + tests
+on every push and PR. Deploy target is Vercel; installs as a PWA via Safari "Add to Home Screen."
 
 ### Environment variables (`.env.local.example`)
 
@@ -361,9 +372,9 @@ Deploy target is Vercel; installs as a PWA via Safari "Add to Home Screen."
 ### Where things live
 
 - **Pages/routes:** `app/**/page.tsx` (+ two `layout.tsx`). API routes: `app/api/**/route.ts`.
-- **Business logic:** `lib/*.ts` (pure functions — shrink, yields, contracts, hedging, marketing, crop-insurance, government-payments, revenue-projections, csv, exports, fuzzy, pdf-*).
+- **Business logic:** `lib/*.ts` (pure functions — shrink, yields, contracts, hedging, marketing, crop-insurance, government-payments, program-config, revenue-projections, csv, exports, fuzzy, pdf-*). Unit tests live alongside as `lib/*.test.ts`.
 - **Central types:** `lib/types.ts`.
-- **Components:** `components/*` (forms, AI-import widgets, dialogs, PDF/attachments) and `components/reports/*` (the heavy report bodies).
+- **Components:** `components/*` (forms, AI-import widgets, dialogs, PDF/attachments) and `components/reports/*` (the heavy report bodies + the shared `report-kit.tsx` design system).
 - **Schema:** `supabase/*.sql` (run in numeric order).
 
 ### Conventions / gotchas
@@ -396,7 +407,7 @@ Deploy target is Vercel; installs as a PWA via Safari "Add to Home Screen."
 - **Reference price / loan rate** — statutory PLC price floor and the national loan rate that floors the MYA.
 - **Payment factor / sequestration** — the 85% base-acre payment factor and ~5.4% federal sequestration cut on ARC/PLC.
 - **Forward / HTA / Basis contract** — forward locks flat cash; HTA locks futures (basis later); basis locks basis (futures later). `cash = futures + basis − fee`.
-- **Basis** — local cash minus futures (positive = "over", negative = "under").
+- **Basis** — local cash minus futures (positive = "over", negative = "under"). **Assumed basis** — the per-crop-year fallback (`crop_assumptions.assumed_basis`) used to value bushels whose basis isn't locked yet, so Total Average Price always computes.
 - **Hedging (long / short)** — offsetting futures/options; farmers typically short futures to lock a price.
 - **Realized / unrealized P&L** — closed-position profit/loss vs mark-to-market on open positions.
 - **Settlement / settlement line** — the buyer's payment document; lines match delivered loads by **ticket number** (gross − discounts = net).
