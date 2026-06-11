@@ -6,7 +6,7 @@ import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, t
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, cropToCommodity } from '@/lib/contracts'
-import { fmtPrice, fmtPnl, buildContractSymbol } from '@/lib/hedging'
+import { fmtPnl, buildContractSymbol } from '@/lib/hedging'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { StackedBar } from '@/components/reports/report-kit'
 import ExportBar from '@/components/export-bar'
@@ -42,6 +42,9 @@ const bu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0
 const usd = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
 const usd0 = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`)
 const round2 = (n: number) => Math.round(n * 100) / 100
+// Per-bushel price, always to 2 decimals on this dashboard (vs the app-wide
+// fmtPrice which keeps quarter-cent / 4-decimal precision for hedging).
+const price2 = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
 
 // The new-crop benchmark futures contract for a crop year, used by the what-if
 // "use today's price" button: Corn → DEC (ZCZ{yy}), Soybeans → NOV (ZSX{yy}),
@@ -319,26 +322,26 @@ export default function MarketingPage() {
 
       sub('Pricing')
       if (adv) {
-        if (r.physicalFuturesBu > 0) kv(`Physical futures (${Math.round(r.physicalFuturesBu)} bu)`, r.physicalFuturesAvg != null ? r.physicalFuturesAvg.toFixed(4) : '—')
-        if (r.openHedgeBu > 0) kv(`Open hedges (${Math.round(r.openHedgeBu)} bu)`, r.openHedgeAvg != null ? r.openHedgeAvg.toFixed(4) : '—')
-        kv(`Raw avg futures (${Math.round(r.futuresPricedBu)} bu)`, r.rawAvgFutures != null ? r.rawAvgFutures.toFixed(4) : 'N/A')
-        kv('Hedge P&L adj / bu', r.hedgeAdjPerBu.toFixed(4))
-        kv('Avg futures price', r.avgFutures != null ? r.avgFutures.toFixed(4) : 'N/A')
-        kv(`Basis${r.avgBasisAssumed ? ' (assumed)' : ''}`, r.avgBasis.toFixed(4))
-        kv('Total avg price', r.totalAvgPrice != null ? r.totalAvgPrice.toFixed(4) : '—')
+        if (r.physicalFuturesBu > 0) kv(`Physical futures (${Math.round(r.physicalFuturesBu)} bu)`, r.physicalFuturesAvg != null ? r.physicalFuturesAvg.toFixed(2) : '—')
+        if (r.openHedgeBu > 0) kv(`Open hedges (${Math.round(r.openHedgeBu)} bu)`, r.openHedgeAvg != null ? r.openHedgeAvg.toFixed(2) : '—')
+        kv(`Raw avg futures (${Math.round(r.futuresPricedBu)} bu)`, r.rawAvgFutures != null ? r.rawAvgFutures.toFixed(2) : 'N/A')
+        kv('Hedge P&L adj / bu', r.hedgeAdjPerBu.toFixed(2))
+        kv('Avg futures price', r.avgFutures != null ? r.avgFutures.toFixed(2) : 'N/A')
+        kv(`Basis${r.avgBasisAssumed ? ' (assumed)' : ''}`, r.avgBasis.toFixed(2))
+        kv('Total avg price', r.totalAvgPrice != null ? r.totalAvgPrice.toFixed(2) : '—')
         if (r.hedgeRealizedPnl !== 0) kv('Realized hedge P&L (in revenue)', Math.round(r.hedgeRealizedPnl))
       } else {
-        kv('Avg price', r.totalAvgPrice != null ? r.totalAvgPrice.toFixed(4) : '—')
+        kv('Avg price', r.totalAvgPrice != null ? r.totalAvgPrice.toFixed(2) : '—')
       }
 
       sub('Profitability')
       kv('Cost / acre', r.costPerAcre != null ? Math.round(r.costPerAcre) : '—')
-      kv('Cost / bu', r.costPerBu != null ? r.costPerBu.toFixed(4) : '—')
+      kv('Cost / bu', r.costPerBu != null ? r.costPerBu.toFixed(2) : '—')
       kv('Revenue / acre', r.revenuePerAcre != null ? Math.round(r.revenuePerAcre) : '—')
       kv('Profit / acre', r.profitPerAcre != null ? Math.round(r.profitPerAcre) : '—')
       kv('Total profit', r.totalProfit != null ? Math.round(r.totalProfit) : '—')
       const be = breakevenOf(r)
-      kv('Breakeven price', be.price != null ? be.price.toFixed(4) : '—')
+      kv('Breakeven price', be.price != null ? be.price.toFixed(2) : '—')
       kv('Breakeven yield', be.yieldPerAcre != null ? `${be.yieldPerAcre.toFixed(1)} bu/ac` : '—')
 
       sections.push({ title: r.cropName, columns: KV, rows: rows2, rowMeta: meta2 })
@@ -575,12 +578,14 @@ function CropCard({
         <PositionBlock title="Sold" prod={prod} green={row.contractedBu} greenLabel="Sold" grayLabel="Unsold" />
       ) : (
         <div className="space-y-2">
-          <PositionBlock title="Futures-priced" prod={prod} green={row.futuresPricedBu} greenLabel="Priced" grayLabel="Unpriced" />
+          <PositionBlock title="Futures-priced" prod={prod} green={row.futuresPricedBu} greenLabel="Priced" grayLabel="Unpriced"
+            avg={row.avgFutures != null ? `avg ${price2(row.avgFutures)}` : undefined} />
           <button type="button" onClick={onToggleBasis} className="text-xs text-sky-700 font-medium no-print">
             {basisOpen ? '▾ Hide basis' : '▸ Show basis'}
           </button>
           {basisOpen && (
-            <PositionBlock title="Basis-priced" prod={prod} green={basisPricedBu} greenLabel="Basis set" grayLabel="No basis" />
+            <PositionBlock title="Basis-priced" prod={prod} green={basisPricedBu} greenLabel="Basis set" grayLabel="No basis"
+              avg={`avg ${row.avgBasis >= 0 ? '+' : ''}${row.avgBasis.toFixed(2)}${row.avgBasisAssumed ? ' (assumed)' : ''}`} />
           )}
         </div>
       )}
@@ -589,7 +594,7 @@ function CropCard({
       <div className="flex items-baseline justify-between border-t border-slate-100 pt-3">
         <span className="text-xs text-slate-500 uppercase tracking-wide">{advanced ? 'Total avg price' : 'Avg price'}</span>
         <span className="text-lg font-semibold tabular-nums">
-          {row.totalAvgPrice != null ? fmtPrice(row.totalAvgPrice) : '—'}
+          {row.totalAvgPrice != null ? price2(row.totalAvgPrice) : '—'}
           {advanced && row.avgBasisAssumed && <span className="text-amber-600 text-xs font-normal"> (assumed)</span>}
         </span>
       </div>
@@ -610,7 +615,7 @@ function CropCard({
       <div className="grid grid-cols-2 gap-3 border-t border-slate-100 pt-3">
         <div>
           <div className="text-xs text-slate-500 uppercase tracking-wide">Breakeven price</div>
-          <div className="text-sm font-semibold tabular-nums text-slate-700">{be.price != null ? `${fmtPrice(be.price)}/bu` : '—'}</div>
+          <div className="text-sm font-semibold tabular-nums text-slate-700">{be.price != null ? `${price2(be.price)}/bu` : '—'}</div>
         </div>
         <div>
           <div className="text-xs text-slate-500 uppercase tracking-wide">Breakeven yield</div>
@@ -641,23 +646,23 @@ function CropCard({
           <DetailSection title="Pricing">
             {advanced ? (
               <>
-                {row.physicalFuturesBu > 0 && <Row label={`Physical futures (${bu(row.physicalFuturesBu)} bu)`} value={row.physicalFuturesAvg != null ? fmtPrice(row.physicalFuturesAvg) : '—'} />}
-                {row.openHedgeBu > 0 && <Row label={`Open hedges (${bu(row.openHedgeBu)} bu)`} value={row.openHedgeAvg != null ? fmtPrice(row.openHedgeAvg) : '—'} />}
-                <Row label={`Raw avg futures (${bu(row.futuresPricedBu)} bu)`} value={row.rawAvgFutures != null ? fmtPrice(row.rawAvgFutures) : 'N/A'} />
-                <Row label="Hedge P&L adj / bu" value={`${row.hedgeAdjPerBu >= 0 ? '+' : ''}${fmtPrice(row.hedgeAdjPerBu)}`} tone={row.hedgeAdjPerBu > 0 ? 'text-green-700' : row.hedgeAdjPerBu < 0 ? 'text-red-700' : undefined} />
-                <Row label="= Avg futures price" value={row.avgFutures != null ? fmtPrice(row.avgFutures) : 'N/A'} />
-                <Row label={`+ Basis${row.avgBasisAssumed ? ' (assumed)' : ''}`} value={`${row.avgBasis >= 0 ? '+' : ''}${Number(row.avgBasis).toFixed(4)}`} tone={row.avgBasisAssumed ? 'text-amber-700' : undefined} />
-                <div className="border-t border-slate-200 pt-1"><Row label="= Total avg price" value={row.totalAvgPrice != null ? fmtPrice(row.totalAvgPrice) : '—'} tone="text-slate-900 font-semibold" /></div>
+                {row.physicalFuturesBu > 0 && <Row label={`Physical futures (${bu(row.physicalFuturesBu)} bu)`} value={row.physicalFuturesAvg != null ? price2(row.physicalFuturesAvg) : '—'} />}
+                {row.openHedgeBu > 0 && <Row label={`Open hedges (${bu(row.openHedgeBu)} bu)`} value={row.openHedgeAvg != null ? price2(row.openHedgeAvg) : '—'} />}
+                <Row label={`Raw avg futures (${bu(row.futuresPricedBu)} bu)`} value={row.rawAvgFutures != null ? price2(row.rawAvgFutures) : 'N/A'} />
+                <Row label="Hedge P&L adj / bu" value={`${row.hedgeAdjPerBu >= 0 ? '+' : ''}${price2(row.hedgeAdjPerBu)}`} tone={row.hedgeAdjPerBu > 0 ? 'text-green-700' : row.hedgeAdjPerBu < 0 ? 'text-red-700' : undefined} />
+                <Row label="= Avg futures price" value={row.avgFutures != null ? price2(row.avgFutures) : 'N/A'} />
+                <Row label={`+ Basis${row.avgBasisAssumed ? ' (assumed)' : ''}`} value={`${row.avgBasis >= 0 ? '+' : ''}${Number(row.avgBasis).toFixed(2)}`} tone={row.avgBasisAssumed ? 'text-amber-700' : undefined} />
+                <div className="border-t border-slate-200 pt-1"><Row label="= Total avg price" value={row.totalAvgPrice != null ? price2(row.totalAvgPrice) : '—'} tone="text-slate-900 font-semibold" /></div>
                 {row.hedgeRealizedPnl !== 0 && <Row label="Realized hedge P&L (in revenue)" value={fmtPnl(row.hedgeRealizedPnl)} tone={row.hedgeRealizedPnl > 0 ? 'text-green-700' : 'text-red-700'} />}
               </>
             ) : (
-              <Row label="Avg price" value={row.totalAvgPrice != null ? fmtPrice(row.totalAvgPrice) : '—'} tone="text-slate-900 font-semibold" />
+              <Row label="Avg price" value={row.totalAvgPrice != null ? price2(row.totalAvgPrice) : '—'} tone="text-slate-900 font-semibold" />
             )}
           </DetailSection>
 
           <DetailSection title="Profitability">
             <Row label="Cost / acre" value={usd(row.costPerAcre)} />
-            <Row label="Cost / bu" value={row.costPerBu != null ? fmtPrice(row.costPerBu) : '—'} />
+            <Row label="Cost / bu" value={row.costPerBu != null ? price2(row.costPerBu) : '—'} />
             <Row label="Revenue / acre" value={usd(row.revenuePerAcre)} />
             <Row label="Profit / acre" value={row.profitPerAcre != null ? usd(row.profitPerAcre) : row.revenuePerAcre != null ? 'set cost' : '—'} tone={profitTone} />
             <Row label="Total profit" value={row.totalProfit != null ? usd(row.totalProfit) : '—'} tone={profitTone} />
@@ -679,7 +684,7 @@ function CropCard({
                   : <span className="text-xs text-slate-400">{advanced ? 'No futures contract' : 'Enter a price'}</span>}
               </div>
               {/* Show the futures symbol only in advanced mode (no hedging jargon on simple cards). */}
-              {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{advanced ? `${wfSymbol} · ` : 'Today · '}{fmtPrice(wfFut)}{wfStale ? ' (cached)' : ''}</div>}
+              {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{advanced ? `${wfSymbol} · ` : 'Today · '}{price2(wfFut)}{wfStale ? ' (cached)' : ''}</div>}
               {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
             </div>
             {advanced && (
@@ -696,7 +701,7 @@ function CropCard({
             {scenario ? (
               <div className="border-t border-sky-200 pt-2 space-y-0.5">
                 <div className="text-xs uppercase tracking-wide text-sky-700 font-semibold">Scenario <span className="font-normal italic normal-case lowercase">(what-if)</span></div>
-                <Row label="Proj. total avg price" value={fmtPrice(scenario.totalAvgPrice)} tone="italic text-sky-900 font-semibold" />
+                <Row label="Proj. total avg price" value={price2(scenario.totalAvgPrice)} tone="italic text-sky-900 font-semibold" />
                 <Row label="Proj. profit / acre" value={scenario.profitPerAcre != null ? usd0(scenario.profitPerAcre) : 'set cost'} tone={`italic ${scenario.profitPerAcre == null ? 'text-slate-400' : scenario.profitPerAcre >= 0 ? 'text-green-700' : 'text-red-700'}`} />
                 <Row label="Proj. total profit" value={scenario.totalProfit != null ? usd0(scenario.totalProfit) : '—'} tone={`italic ${scenario.totalProfit == null ? 'text-slate-400' : scenario.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'}`} />
               </div>
@@ -722,21 +727,26 @@ function DetailSection({ title, children }: { title: string; children: React.Rea
 // One position bar: green segment (priced) vs gray (unpriced), with the % as the
 // prominent number. Both green and gray are clamped to total production so two
 // bars on the same card share a denominator and read comparably.
-function PositionBlock({ title, prod, green, greenLabel, grayLabel }: {
+function PositionBlock({ title, prod, green, greenLabel, grayLabel, avg }: {
   title: string
   prod: number
   green: number
   greenLabel: string
   grayLabel: string
+  // Optional average price/basis to show alongside the bar (e.g. "avg $4.55").
+  avg?: string
 }) {
   const greenClamped = Math.max(0, Math.min(green, prod))
   const gray = Math.max(0, prod - greenClamped)
   const pct = prod > 0 ? Math.min(100, (green / prod) * 100) : 0
   return (
     <div>
-      <div className="flex items-baseline justify-between mb-1">
+      <div className="flex items-baseline justify-between mb-1 gap-2">
         <span className="text-xs text-slate-500">{title}</span>
-        <span className="text-base font-bold tabular-nums">{pct.toFixed(0)}%</span>
+        <span className="text-base font-bold tabular-nums">
+          {avg && <span className="text-xs font-normal text-slate-500 mr-2">{avg}</span>}
+          {pct.toFixed(0)}%
+        </span>
       </div>
       <StackedBar segments={[
         { value: greenClamped, className: 'bg-green-600', label: greenClamped > 0 ? bu(greenClamped) : undefined },
