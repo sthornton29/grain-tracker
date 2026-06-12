@@ -2,7 +2,6 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, analyzeYields, isHarvestComplete, type HarvestProgress } from '@/lib/yields'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
@@ -155,10 +154,6 @@ export default function YieldsPage() {
   const farmById  = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const cropById  = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const entityById = useMemo(() => new Map(entities.map((e) => [e.id, e])), [entities])
-  const doubleCropIds = useMemo(
-    () => buildDoubleCropSet(plantings, cropById),
-    [plantings, cropById],
-  )
 
   const varietiesByPlanting = useMemo(() => {
     const m = new Map<string, FieldPlantingVariety[]>()
@@ -801,7 +796,8 @@ export default function YieldsPage() {
   const visibleYieldCols = [showIrrigatedCol, showDrylandCol, showTotalCol].filter(Boolean).length
   const visibleAcresBreakoutCols = [showIrrigatedCol, showDrylandCol].filter(Boolean).length
   const fieldColCount = 2 /* Field/Crop */ + (showFieldYear ? 1 : 0) + 1 /* Acres */
-    + visibleAcresBreakoutCols + 1 /* Dry bu */ + visibleYieldCols + 1 /* actions */
+    + visibleAcresBreakoutCols + 1 /* Dry bu */ + visibleYieldCols
+    + (yieldView === 'breakdown' ? 1 : 0) /* allocate actions */
   // Farm: Farm/FSA#/Entity/Crop/Acres/Dry bu/Yield = 7 (+Year), plus 4 in
   // breakdown (Irr ac, Dry ac, Irrigated yield, Dryland yield).
   const farmColCount = 7 + (showFarmYear ? 1 : 0) + (farmShowBreakdown ? 4 : 0)
@@ -1114,7 +1110,7 @@ export default function YieldsPage() {
                 {showIrrigatedCol && <th className="text-right px-3 py-2 whitespace-nowrap">Irrigated yield</th>}
                 {showDrylandCol   && <th className="text-right px-3 py-2 whitespace-nowrap">Dryland yield</th>}
                 {showTotalCol     && <th className="text-right px-3 py-2 whitespace-nowrap">Yield (bu/ac)</th>}
-                <th className="text-left px-3 py-2 whitespace-nowrap"></th>
+                {yieldView === 'breakdown' && <th className="text-left px-3 py-2 whitespace-nowrap"></th>}
               </tr>
             </thead>
             <tbody>
@@ -1199,32 +1195,31 @@ export default function YieldsPage() {
                           {r.totalYield != null ? r.totalYield.toFixed(1) : '—'}
                         </td>
                       )}
-                      <td className="px-3 py-2 whitespace-nowrap">
-                        {doubleCropIds.has(p.id) && (
-                          <span className="text-xs bg-amber-100 text-amber-800 rounded px-2 py-0.5 mr-2">double-crop</span>
-                        )}
-                        {showAllocateButton && yieldView === 'breakdown' && !isBreakoutOpen && (
-                          // Allocation is offered only once harvest is complete;
-                          // an existing breakout stays editable so saved data is
-                          // never stranded.
-                          (fieldComplete(p) || p.yield_breakout_entered) ? (
-                            <button
-                              type="button"
-                              onClick={() => openBreakout(p)}
-                              className="text-sky-700 text-sm whitespace-nowrap no-print"
-                            >
-                              {p.yield_breakout_entered ? 'Edit breakout' : 'Allocate irr/dry'}
-                            </button>
-                          ) : (
-                            <span
-                              title="Available after harvest is complete"
-                              className="text-slate-400 text-sm whitespace-nowrap no-print cursor-help"
-                            >
-                              Allocate irr/dry
-                            </span>
-                          )
-                        )}
-                      </td>
+                      {yieldView === 'breakdown' && (
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          {showAllocateButton && !isBreakoutOpen && (
+                            // Allocation is offered only once harvest is complete;
+                            // an existing breakout stays editable so saved data is
+                            // never stranded.
+                            (fieldComplete(p) || p.yield_breakout_entered) ? (
+                              <button
+                                type="button"
+                                onClick={() => openBreakout(p)}
+                                className="text-sky-700 text-sm whitespace-nowrap no-print"
+                              >
+                                {p.yield_breakout_entered ? 'Edit breakout' : 'Allocate irr/dry'}
+                              </button>
+                            ) : (
+                              <span
+                                title="Available after harvest is complete"
+                                className="text-slate-400 text-sm whitespace-nowrap no-print cursor-help"
+                              >
+                                Allocate irr/dry
+                              </span>
+                            )
+                          )}
+                        </td>
+                      )}
                     </tr>
                     {isBreakoutOpen && (
                       <tr className="bg-sky-50 no-print">
