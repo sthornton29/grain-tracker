@@ -168,8 +168,8 @@ export type YieldAnalysis = {
   progress: Map<string, HarvestProgress>
 }
 
-// A field whose yield is more than this far below its crop's harvested average is
-// treated as still-being-harvested (in progress) when it's the latest field.
+// A field whose yield is more than this far below its crop's settled average is
+// treated as still-being-harvested (in progress) while its loads are recent.
 export const IN_PROGRESS_THRESHOLD = 0.15
 
 // ...but only while harvest is recent. Once the last load is older than this,
@@ -179,13 +179,17 @@ export const IN_PROGRESS_STALE_DAYS = 5
 
 // Per crop:
 //   * a row with no bushels is "unharvested" → excluded.
-//   * the field whose most recent load is the latest for that crop is the one
-//     currently being combined; if its yield is more than `threshold` below the
-//     weighted average of the crop's OTHER harvested fields AND its last load was
-//     within IN_PROGRESS_STALE_DAYS, it's "in_progress" → excluded (its partial
-//     bushels would understate the true yield). A field within `threshold` of the
-//     average, or whose last load is older than the stale window, counts as
-//     completed.
+//   * EVERY field whose last load is within IN_PROGRESS_STALE_DAYS is a
+//     potential in-progress candidate — harvest often jumps between fields (or
+//     runs two combines), so "the single most recent field" is not required.
+//     A candidate is "in_progress" → excluded when its yield is more than
+//     `threshold` below the baseline (its partial bushels would understate the
+//     true yield). The baseline is the weighted average of the crop's SETTLED
+//     fields (last load older than the window — clearly finished), so one
+//     partial field can't drag the bar down for another; when every harvested
+//     field is recent, it falls back to the other harvested fields. A field
+//     within `threshold` of the baseline, or whose last load is older than the
+//     stale window, counts as completed.
 // Averages are weighted (Σ dry bu / Σ acres) over the survivors.
 export function analyzeYields(
   rows: readonly YieldInput[],
@@ -212,35 +216,44 @@ export function analyzeYields(
       else autoExcluded.set(r.id, 'unharvested')
     }
 
-    if (harvested.length > 0) {
-      // The field currently being harvested = the one with the most recent load.
-      let candidate: YieldInput | null = null
-      for (const r of harvested) {
-        if (r.lastLoadDate == null) continue
-        if (candidate == null || r.lastLoadDate > (candidate.lastLoadDate as string)) candidate = r
+    // Only flag in-progress when there are other harvested fields to compare
+    // against — otherwise we have no baseline.
+    if (harvested.length >= 2) {
+      // Candidates = every field with a load inside the stale window. Harvest
+      // often jumps between fields (or runs two combines at once), so any
+      // recently-loaded field can still be mid-harvest — not just the newest.
+      const isRecent = (r: YieldInput) => {
+        if (!r.lastLoadDate) return false
+        const days = (now.getTime() - new Date(r.lastLoadDate).getTime()) / 86_400_000
+        return days <= IN_PROGRESS_STALE_DAYS
       }
-
-      // Only flag it as in-progress when there are other harvested fields to
-      // compare against — otherwise we have no baseline.
-      if (candidate && harvested.length >= 2) {
-        let bu = 0
-        let ac = 0
-        for (const r of harvested) {
-          if (r.id === candidate.id) continue
-          bu += r.dryBu
-          ac += r.acres
+      const recent = harvested.filter(isRecent)
+      // Baseline = the SETTLED fields (last load older than the window — they
+      // have clearly finished), so one partial field can't drag the bar down
+      // for another partial field.
+      let settledBu = 0
+      let settledAc = 0
+      for (const r of harvested) {
+        if (isRecent(r)) continue
+        settledBu += r.dryBu
+        settledAc += r.acres
+      }
+      for (const cand of recent) {
+        let bu = settledBu
+        let ac = settledAc
+        if (settledAc <= 0) {
+          // Harvest just started and every field is recent — fall back to the
+          // other harvested fields so there is still a comparison.
+          for (const r of harvested) {
+            if (r.id === cand.id) continue
+            bu += r.dryBu
+            ac += r.acres
+          }
         }
         const baseline = ac > 0 ? bu / ac : null
-        const candYield = candidate.acres > 0 ? candidate.dryBu / candidate.acres : null
+        const candYield = cand.acres > 0 ? cand.dryBu / cand.acres : null
         if (baseline != null && candYield != null && candYield < baseline * (1 - threshold)) {
-          // Low yield alone isn't enough — the harvest must still be active. If
-          // the last load was more than IN_PROGRESS_STALE_DAYS ago, treat the
-          // field as finished (completed) rather than in-progress.
-          const last = candidate.lastLoadDate ? new Date(candidate.lastLoadDate) : null
-          const days = last ? (now.getTime() - last.getTime()) / 86_400_000 : null
-          if (days != null && days <= IN_PROGRESS_STALE_DAYS) {
-            autoExcluded.set(candidate.id, 'in_progress')
-          }
+          autoExcluded.set(cand.id, 'in_progress')
         }
       }
     }

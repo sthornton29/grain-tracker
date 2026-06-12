@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
-import { fieldCropAggregates, analyzeYields, isHarvestComplete } from '@/lib/yields'
+import { fieldCropAggregates, analyzeYields, isHarvestComplete, type HarvestProgress } from '@/lib/yields'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import ExportBar from '@/components/export-bar'
@@ -236,6 +236,17 @@ export default function YieldsPage() {
   ), [plantings, aggByKey, fieldById, farmById, year, cropId, farmId, entityId, countyId, view, practiceFilter])
   const excludedFields = yieldAnalysis.excluded
   const includedPlantings = visible.filter((p) => !excludedFields.has(p.id))
+
+  // Summary cards only for crops with harvest activity — a crop with nothing
+  // done and nothing in progress (e.g. fall crops in June) is just a row of 0%
+  // cards, so it's dropped until its first loads come in.
+  const activeProgress = useMemo(() => {
+    const m = new Map<string, HarvestProgress>()
+    for (const [id, pr] of yieldAnalysis.progress) {
+      if (pr.completedAcres > 0 || pr.inProgressAcres > 0) m.set(id, pr)
+    }
+    return m
+  }, [yieldAnalysis])
 
   // Crop+year combos the user has marked harvest-complete at the crop level
   // (Marketing assumptions). These force every field of that crop to "complete".
@@ -478,23 +489,28 @@ export default function YieldsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [includedPlantings, varietiesByPlanting, aggByKey, cropById])
 
-  // Multi-variety plantings in the current filter. Surface all of them at the
-  // top of the variety view: unallocated ones need attention, allocated ones
-  // need to stay editable since the rollup table doesn't show per-planting.
+  // Multi-variety plantings in the current filter — but only once their field's
+  // harvest is COMPLETE. A still-harvesting field has no final bushels to
+  // allocate, so listing it is noise; it appears here when it finishes. An
+  // existing allocation always stays visible so saved data is never stranded.
   const multiVarietyPlantings = useMemo(() => {
-    return visible.filter((p) => (varietiesByPlanting.get(p.id) ?? []).length >= 2)
-  }, [visible, varietiesByPlanting])
+    return visible.filter((p) => {
+      const vs = varietiesByPlanting.get(p.id) ?? []
+      if (vs.length < 2) return false
+      const allocated = vs.every((v) => v.bushels != null)
+      return allocated || fieldComplete(p)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, varietiesByPlanting, excludedFields, cropCompleteKeys])
 
-  // Only harvest-complete fields "need allocation" — an unharvested or in-progress
-  // field has no final bushels to split yet, so it shouldn't be prompted/counted.
+  // Every listed-but-unallocated planting needs allocation (the list is already
+  // restricted to harvest-complete fields).
   const unallocatedCount = useMemo(() => {
     return multiVarietyPlantings.filter((p) => {
-      if (!fieldComplete(p)) return false
       const vs = varietiesByPlanting.get(p.id) ?? []
       return !vs.every((v) => v.bushels != null)
     }).length
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [multiVarietyPlantings, varietiesByPlanting, excludedFields, cropCompleteKeys])
+  }, [multiVarietyPlantings, varietiesByPlanting])
 
   // Filter summary shared by the field and farm exports — mirrors the filter
   // strip that drives both tables.
@@ -839,7 +855,7 @@ export default function YieldsPage() {
         <AvgYieldHeader
           averages={yieldAnalysis.averages}
           cropName={(id) => cropById.get(id)?.name ?? '—'}
-          progress={view === 'field' ? yieldAnalysis.progress : undefined}
+          progress={view === 'field' ? activeProgress : undefined}
           label={view === 'field' ? 'Yield & harvest progress by crop' : undefined}
         />
       )}
@@ -964,33 +980,20 @@ export default function YieldsPage() {
                             }).join(', ')}
                           </td>
                           <td className="px-3 py-2 no-print whitespace-nowrap">
-                            {!allocated && fieldComplete(p) && (
+                            {/* Every row here is harvest-complete (or already
+                                allocated) — still-harvesting fields are filtered
+                                out of this list entirely. */}
+                            {!allocated && (
                               <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 mr-2">
                                 Needs allocation
                               </span>
                             )}
-                            {!allocated && !fieldComplete(p) && (
-                              <span className="text-xs rounded-full bg-slate-100 text-slate-500 px-2 py-0.5 mr-2">
-                                Still harvesting
-                              </span>
-                            )}
                             {!isOpen && (
-                              // Only offer allocation once harvest is complete;
-                              // an existing allocation stays editable.
-                              (fieldComplete(p) || allocated) ? (
-                                <button
-                                  type="button"
-                                  onClick={() => openVarAlloc(p)}
-                                  className="text-sky-700 text-sm whitespace-nowrap"
-                                >{allocated ? 'Edit allocation' : 'Allocate bushels'}</button>
-                              ) : (
-                                <span
-                                  title="Available after harvest is complete"
-                                  className="text-slate-400 text-sm whitespace-nowrap cursor-help"
-                                >
-                                  Allocate bushels
-                                </span>
-                              )
+                              <button
+                                type="button"
+                                onClick={() => openVarAlloc(p)}
+                                className="text-sky-700 text-sm whitespace-nowrap"
+                              >{allocated ? 'Edit allocation' : 'Allocate bushels'}</button>
                             )}
                           </td>
                         </tr>

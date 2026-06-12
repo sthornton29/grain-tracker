@@ -307,13 +307,12 @@ describe('analyzeYields — in-progress detection', () => {
     expect(res.averages.get('corn')?.yield).toBeCloseTo(55000 / 300, 6)
   })
 
-  it('only the LATEST field is a candidate (an older low field is not flagged)', () => {
-    // Make the low field the OLDEST instead of the latest. Now the latest field
-    // (b, dated 2025-09-19) has a high yield, so nothing is flagged.
-    //   low:  50 bu/ac, dated 2025-09-05 (oldest, not the candidate)
-    //   a:   200 bu/ac, dated 2025-09-10
-    //   b:   180 bu/ac, dated 2025-09-19 (latest → candidate). baseline of a+low
-    //        = (20000+5000)/(200) = 125; cutoff 125*0.85 = 106.25; 180 >= → ok.
+  it('a SETTLED low field (load older than the window) is not flagged', () => {
+    // The low field finished two weeks ago — its low number is its real yield.
+    //   low:  50 bu/ac, dated 2025-09-05 (settled — outside the recent window)
+    //   a:   200 bu/ac, dated 2025-09-10 (settled)
+    //   b:   180 bu/ac, dated 2025-09-19 (recent → candidate). baseline = the
+    //        settled a+low = (20000+5000)/200 = 125; cutoff 106.25; 180 >= → ok.
     const rows = [
       row({ id: 'low', acres: 100, dryBu: 5000, lastLoadDate: '2025-09-05' }),
       row({ id: 'a', acres: 100, dryBu: 20000, lastLoadDate: '2025-09-10' }),
@@ -324,6 +323,58 @@ describe('analyzeYields — in-progress detection', () => {
     expect(res.excluded.size).toBe(0)
     // Average over all = (5000+20000+18000)/300 = 43000/300 = 143.333...
     expect(res.averages.get('corn')?.yield).toBeCloseTo(43000 / 300, 6)
+  })
+
+  it('a recently-loaded low field is flagged even when ANOTHER field has a newer load (the Parker case)', () => {
+    // Harvest jumped from parker to other before parker was finished. Under the
+    // old single-candidate rule parker would silently flip to completed; now any
+    // recent field is checked against the settled baseline.
+    //   a:      200 bu/ac, 2025-09-08 (settled)
+    //   b:      180 bu/ac, 2025-09-09 (settled)        → baseline 190, cutoff 161.5
+    //   parker:  50 bu/ac, 2025-09-17 (recent, low)    → in_progress
+    //   other:  185 bu/ac, 2025-09-19 (recent, newest) → fine, counts
+    const rows = [
+      row({ id: 'a', acres: 100, dryBu: 20000, lastLoadDate: '2025-09-08' }),
+      row({ id: 'b', acres: 100, dryBu: 18000, lastLoadDate: '2025-09-09' }),
+      row({ id: 'parker', acres: 100, dryBu: 5000, lastLoadDate: '2025-09-17' }),
+      row({ id: 'other', acres: 100, dryBu: 18500, lastLoadDate: '2025-09-19' }),
+    ]
+    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
+    expect(res.excluded.get('parker')).toBe('in_progress')
+    expect(res.excluded.has('other')).toBe(false)
+    // Average over a+b+other = (20000+18000+18500)/300 = 188.333…
+    expect(res.averages.get('corn')?.yield).toBeCloseTo(56500 / 300, 6)
+    expect(res.progress.get('corn')?.inProgressAcres).toBe(100)
+  })
+
+  it('two simultaneously-harvested low fields are BOTH flagged, judged against the settled baseline', () => {
+    // Two combines running: c and d both partial and low. The baseline comes
+    // from the settled a+b (190) — one partial field can't drag the bar down
+    // and shelter the other.
+    const rows = [
+      ...base, // a+b settled at 190
+      row({ id: 'c', acres: 100, dryBu: 6000, lastLoadDate: '2025-09-18' }), // 60 bu/ac
+      row({ id: 'd', acres: 100, dryBu: 5000, lastLoadDate: '2025-09-19' }), // 50 bu/ac
+    ]
+    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
+    expect(res.excluded.get('c')).toBe('in_progress')
+    expect(res.excluded.get('d')).toBe('in_progress')
+    expect(res.averages.get('corn')?.yield).toBeCloseTo(190, 6)
+    expect(res.progress.get('corn')?.inProgressAcres).toBe(200)
+  })
+
+  it('when EVERY harvested field is recent, the baseline falls back to the other fields', () => {
+    // Harvest just started: no settled fields yet. b is judged against a
+    // (baseline 200, cutoff 170 → 50 flagged); a is judged against b
+    // (baseline 50, cutoff 42.5 → 200 fine).
+    const rows = [
+      row({ id: 'a', acres: 100, dryBu: 20000, lastLoadDate: '2025-09-19' }),
+      row({ id: 'b', acres: 100, dryBu: 5000, lastLoadDate: '2025-09-18' }),
+    ]
+    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
+    expect(res.excluded.get('b')).toBe('in_progress')
+    expect(res.excluded.has('a')).toBe(false)
+    expect(res.averages.get('corn')?.yield).toBeCloseTo(200, 6)
   })
 })
 
@@ -436,10 +487,9 @@ describe('analyzeYields — weighted average over survivors', () => {
     // Different acreages so a simple mean of yields would differ from the
     // acre-weighted mean. a: 50 ac @ 200 (10000 bu). b: 150 ac @ 100 (15000 bu).
     // Weighted = 25000 / 200 = 125 (a naive average of 200 & 100 would be 150).
-    // Both dated recently and within threshold of each other's baselines so
-    // neither is flagged: candidate is b (latest). baseline = a only = 200,
-    // cutoff 170; b yield 100 < 170 → b WOULD flag if recent. Keep b's load old
-    // so it is not flagged, isolating the average math.
+    // Both loads are weeks old (settled), so neither is an in-progress
+    // candidate — isolating the average math. (b at 100 vs a's 200 WOULD flag
+    // if its load were recent.)
     const rows = [
       row({ id: 'a', acres: 50, dryBu: 10000, lastLoadDate: '2025-09-01' }),
       row({ id: 'b', acres: 150, dryBu: 15000, lastLoadDate: '2025-09-02' }), // 18 days old → not in-progress
