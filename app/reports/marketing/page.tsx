@@ -315,6 +315,10 @@ export default function MarketingPage() {
       const meta2: ('data' | 'subhead' | 'total')[] = []
       const sub = (t: string) => { rows2.push([t, '']); meta2.push('subhead') }
       const kv = (k: string, v: string | number | null) => { rows2.push([k, v]); meta2.push('data') }
+      const tot = (k: string, v: string | number | null) => { rows2.push([k, v]); meta2.push('total') }
+      // The standing headline figures lean on assumed pricing whenever some
+      // production isn't fully locked — carry that qualifier into the export.
+      const qual = r.lockedPriceBu + 0.5 < r.totalProduction ? ' (incl. assumed pricing)' : ''
 
       sub('Production')
       kv('Planted acres', `${Math.round(r.acres)}${irrAc > 0 || dryAc > 0 ? ` (irr ${Math.round(irrAc)} / dry ${Math.round(dryAc)})` : ''}`)
@@ -326,24 +330,27 @@ export default function MarketingPage() {
       kv('Remaining', `${Math.round(r.remaining)} bu`)
       for (const [t, b] of byType) kv(t, `${Math.round(b)} bu`)
 
-      sub('Pricing')
       if (adv) {
-        if (r.physicalFuturesBu > 0) kv(`Physical futures (${Math.round(r.physicalFuturesBu)} bu)`, r.physicalFuturesAvg != null ? r.physicalFuturesAvg.toFixed(2) : '—')
-        if (r.openHedgeBu > 0) kv(`Open hedges (${Math.round(r.openHedgeBu)} bu)`, r.openHedgeAvg != null ? r.openHedgeAvg.toFixed(2) : '—')
-        kv(`Raw avg futures (${Math.round(r.futuresPricedBu)} bu)`, r.rawAvgFutures != null ? r.rawAvgFutures.toFixed(2) : 'N/A')
-        kv('Hedge P&L adj / bu', r.hedgeAdjPerBu.toFixed(2))
-        kv('Avg futures price', r.avgFutures != null ? r.avgFutures.toFixed(2) : 'N/A')
-        // The basis figure never appears without its (actual/assumed/blended)
-        // qualifier; when both sides exist, show the composition too.
-        if (r.basisLockedBu > 0 && r.basisAssumedBu > 0) {
-          kv(`Basis — locked (${Math.round(r.basisLockedBu)} bu)`, r.basisLockedAvg != null ? r.basisLockedAvg.toFixed(2) : '—')
-          kv(`Basis — assumed (${Math.round(r.basisAssumedBu)} bu)`, r.assumedBasis.toFixed(2))
+        // Block 1 — Average Futures Price Buildup (line-item ledger).
+        sub('Avg Futures Price Buildup')
+        if (r.futuresSources.length > 0) {
+          for (const s of r.futuresSources) kv(s.label, `${Math.round(s.bushels)} bu @ ${s.avgPrice.toFixed(2)}`)
+          kv(`Weighted avg futures (${Math.round(r.futuresPricedBu)} bu)`, r.rawAvgFutures != null ? r.rawAvgFutures.toFixed(2) : 'N/A')
+          if (r.hedgeRealizedPnl !== 0) kv('Realized hedge P&L / bu', `${r.hedgeAdjPerBu >= 0 ? '+' : ''}${r.hedgeAdjPerBu.toFixed(2)}`)
+          tot('= Average futures price', r.avgFutures != null ? r.avgFutures.toFixed(2) : 'N/A')
+        } else {
+          kv('Futures', 'No futures positions — flat cash')
         }
-        kv(`Basis (${basisStateLabel(r)})`, r.avgBasis.toFixed(2))
-        kv('Total avg price', r.totalAvgPrice != null ? r.totalAvgPrice.toFixed(2) : '—')
+        // Block 2 — Basis Buildup (with actual/assumed/blended state).
+        sub('Basis Buildup')
+        if (r.basisLockedBu > 0) kv(`Locked basis (${Math.round(r.basisLockedBu)} bu)`, r.basisLockedAvg != null ? r.basisLockedAvg.toFixed(2) : '—')
+        if (r.basisAssumedBu > 0) kv(`Assumed basis (${Math.round(r.basisAssumedBu)} bu)`, r.assumedBasis.toFixed(2))
+        tot(`= Basis (${r.basisState})`, r.avgBasis.toFixed(2))
+        tot(`Total avg price${qual}`, r.totalAvgPrice != null ? r.totalAvgPrice.toFixed(2) : '—')
         if (r.hedgeRealizedPnl !== 0) kv('Realized hedge P&L (in revenue)', Math.round(r.hedgeRealizedPnl))
       } else {
-        kv('Avg price', r.totalAvgPrice != null ? r.totalAvgPrice.toFixed(2) : '—')
+        sub('Pricing')
+        tot(`Avg price${qual}`, r.totalAvgPrice != null ? r.totalAvgPrice.toFixed(2) : '—')
       }
 
       sub('Profitability')
@@ -351,7 +358,7 @@ export default function MarketingPage() {
       kv('Cost / bu', r.costPerBu != null ? r.costPerBu.toFixed(2) : '—')
       kv('Revenue / acre', r.revenuePerAcre != null ? Math.round(r.revenuePerAcre) : '—')
       kv('Profit / acre', r.profitPerAcre != null ? Math.round(r.profitPerAcre) : '—')
-      kv('Total profit', r.totalProfit != null ? Math.round(r.totalProfit) : '—')
+      tot('Total profit', r.totalProfit != null ? Math.round(r.totalProfit) : '—')
       const be = breakevenOf(r)
       kv('Breakeven price', be.price != null ? be.price.toFixed(2) : '—')
       kv('Breakeven yield', be.yieldPerAcre != null ? `${be.yieldPerAcre.toFixed(1)} bu/ac` : '—')
@@ -473,7 +480,6 @@ export default function MarketingPage() {
               onToggleBasis={() => toggleBasis(r.cropId)}
               detailsOpen={expanded.includes(r.cropId)}
               onToggleDetails={() => toggleRow(r.cropId)}
-              contracts={contracts.filter((c) => c.crop_id === r.cropId)}
               cropYear={year}
               onSaveBasis={(v) => saveAssumption(r.cropId, { assumed_basis: v })}
             />
@@ -495,15 +501,16 @@ export default function MarketingPage() {
 
 // ---------------------------------------------------------------------------
 // Full-width crop section. The header is the always-visible at-a-glance layer —
-// identity (left) + headline numbers (right), with the marketing position bars
-// full width beneath — and the chevron expands a responsive detail grid:
-// Production | Sales & Contracts | Pricing Buildup | Profitability & What-If.
+// identity (left) + headline numbers (right, which reflect any active what-if and
+// carry an assumption marker), with the marketing position bars full width beneath
+// — and the chevron expands a responsive detail grid:
+// Avg Futures Price Buildup | Basis Buildup | What-If | Profitability.
 // Adapts to the crop's marketing complexity: simple (forwards only) shows
 // Sold/Unsold and hides all hedging and basis language.
 // ---------------------------------------------------------------------------
 function CropSection({
   row, advanced, basisOpen, onToggleBasis, detailsOpen, onToggleDetails,
-  contracts, cropYear, onSaveBasis,
+  cropYear, onSaveBasis,
 }: {
   row: MarketingRow
   advanced: boolean
@@ -511,20 +518,12 @@ function CropSection({
   onToggleBasis: () => void
   detailsOpen: boolean
   onToggleDetails: () => void
-  contracts: Contract[]
   cropYear: number | null
   onSaveBasis: (v: number) => void
 }) {
   const prod = row.totalProduction
   const profitTone = row.totalProfit == null ? 'text-slate-400' : row.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'
   const be = breakevenOf(row)
-
-  // Contracted bushels by type (for the Sales & Contracts detail column).
-  const byType = new Map<string, number>()
-  for (const c of contracts) {
-    const t = CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']
-    byType.set(t, (byType.get(t) ?? 0) + Number(c.contracted_bushels ?? 0))
-  }
 
   // --- What-if pricing (session-scoped futures; basis persists to assumptions) ---
   const nc = cropYear != null ? newCropContract(row.cropName, cropYear) : null
@@ -543,6 +542,28 @@ function CropSection({
   const scenarioPricedBu = advanced ? row.futuresPricedBu : row.contractedBu
   const scenarioUnpricedBu = Math.max(0, prod - scenarioPricedBu)
   const scenario = wfFut != null ? scenarioFor(row, scenarioPricedBu, advanced ? wfFut + wfBasis : wfFut) : null
+
+  // --- Headline stats reflect the active what-if scenario; otherwise the saved
+  //     (standing-assumption) figures. A marker tells the user which one they see. ---
+  const whatIfActive = scenario != null
+  const headlineAvg = scenario ? scenario.totalAvgPrice : row.totalAvgPrice
+  const headlineRevenueAc = scenario ? scenario.revenuePerAcre : row.revenuePerAcre
+  const headlineProfitAc = scenario ? scenario.profitPerAcre : row.profitPerAcre
+  const headlineTotalProfit = scenario ? scenario.totalProfit : row.totalProfit
+  const headlineProfitTone = headlineTotalProfit == null ? 'text-slate-400' : headlineTotalProfit >= 0 ? 'text-green-700' : 'text-red-700'
+  // The saved figures already lean on the assumed basis (and market price on
+  // completely-unpriced bushels) whenever some production isn't fully locked.
+  const standingAssumption = row.lockedPriceBu + 0.5 < prod
+  const includesAssumptions = whatIfActive || standingAssumption
+  const assumptionBu = Math.max(0, prod - row.lockedPriceBu)
+  const markerTitle = whatIfActive
+    ? `What-if: ${bu(scenarioUnpricedBu)} unpriced ${advanced ? 'futures ' : ''}bushels modeled at ${price2(wfFut)}${advanced ? ` + ${basis2(wfBasis)} basis` : ''}. Actual locked price on the rest; resets on reload.`
+    : advanced
+      ? `Includes assumed pricing on ${bu(assumptionBu)} unpriced bushels (${bu(row.futuresAssumedBu)} at market futures, ${bu(row.basisAssumedBu)} at assumed basis). Actual locked price on the remaining ${bu(row.lockedPriceBu)} bu.`
+      : `Includes assumed pricing on ${bu(assumptionBu)} unsold bushels (valued at the average cash price). Locked price on the ${bu(row.lockedPriceBu)} bu already contracted.`
+  // A small superscript on each affected number, matching the legend badge color.
+  const markSup = includesAssumptions ? <sup className={whatIfActive ? 'text-sky-600' : 'text-amber-600'}> *</sup> : null
+  const numItalic = whatIfActive ? 'italic ' : ''
 
   async function useTodaysPrice() {
     if (!nc || expired) return
@@ -563,8 +584,8 @@ function CropSection({
     const v = basisInput.trim() === '' ? 0 : Number(basisInput)
     if (Number.isFinite(v) && v !== (row.assumedBasis ?? 0)) onSaveBasis(v)
   }
-  // The pencil next to "Assumed (… bu)" in the Pricing Buildup column jumps to
-  // the canonical assumed-basis input in the What-If block (same expanded grid).
+  // The pencil next to "Assumed basis" in the Basis Buildup block jumps to the
+  // canonical assumed-basis input in the What-If block (same expanded grid).
   const basisInputId = `assumed-basis-${row.cropId}`
   function focusBasisInput() {
     const el = document.getElementById(basisInputId) as HTMLInputElement | null
@@ -597,25 +618,35 @@ function CropSection({
             </div>
           </div>
 
-          {/* Headline numbers — large, color-coded */}
+          {/* Headline numbers — large, color-coded. Reflect the active what-if
+              scenario (italic + sky) and carry the assumption marker. */}
           <div className="flex items-center justify-between sm:justify-end gap-4 lg:gap-8 flex-wrap ml-auto">
             <div className="text-right">
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">{advanced ? 'Total avg price' : 'Avg price'}</div>
-              <div className="text-2xl font-bold tabular-nums leading-tight">{row.totalAvgPrice != null ? price2(row.totalAvgPrice) : '—'}</div>
-              {advanced && <BasisTag row={row} />}
+              <div className={`text-2xl font-bold tabular-nums leading-tight ${whatIfActive ? 'italic text-sky-900' : ''}`}>{headlineAvg != null ? price2(headlineAvg) : '—'}{markSup}</div>
+              {advanced && !whatIfActive && <BasisTag row={row} />}
             </div>
             <div className="text-right">
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">Profit / acre</div>
-              <div className={`text-2xl font-bold tabular-nums leading-tight ${profitTone}`}>
-                {row.profitPerAcre != null ? usd0(row.profitPerAcre) : row.revenuePerAcre != null ? 'set cost' : '—'}
+              <div className={`text-2xl font-bold tabular-nums leading-tight ${numItalic}${headlineProfitTone}`}>
+                {headlineProfitAc != null ? usd0(headlineProfitAc) : headlineRevenueAc != null ? 'set cost' : '—'}{markSup}
               </div>
             </div>
             <div className="text-right">
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">Total profit</div>
-              <div className={`text-2xl font-bold tabular-nums leading-tight ${profitTone}`}>{row.totalProfit != null ? usd0(row.totalProfit) : '—'}</div>
+              <div className={`text-2xl font-bold tabular-nums leading-tight ${numItalic}${headlineProfitTone}`}>{headlineTotalProfit != null ? usd0(headlineTotalProfit) : '—'}{markSup}</div>
             </div>
           </div>
         </div>
+
+        {/* Assumption legend — unmistakable that the headline includes assumptions.
+            Standing assumed basis (amber, baseline) vs an active what-if futures
+            overlay (sky, provisional). Hidden entirely when fully priced. */}
+        {includesAssumptions && (
+          <div className="flex justify-end -mt-1">
+            <AssumptionBadge whatIf={whatIfActive} title={markerTitle} />
+          </div>
+        )}
 
         {/* Marketing position — full-width bars below the metrics */}
         <div className="min-w-0">
@@ -644,105 +675,121 @@ function CropSection({
       >
         {detailsOpen
           ? <>▾ Hide details</>
-          : <>▸ Show details <span className="font-normal text-slate-400">— contracts, pricing buildup &amp; what-if</span></>}
+          : <>▸ Show details <span className="font-normal text-slate-400">— futures &amp; basis buildup, what-if &amp; profitability</span></>}
       </button>
 
       {/* Expanded detail — side-by-side columns across the width; collapses to
           2-up, then 1-up on narrow screens. Never scrolls horizontally. */}
       {detailsOpen && (
-        <div className="border-t border-slate-100 p-4 md:p-5 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-x-8 gap-y-5 text-sm">
-          <DetailSection title="Sales & Contracts">
-            <Row label="Contracted" value={`${bu(row.contractedBu)} bu`} />
-            <Row label="Remaining" value={`${bu(row.remaining)} bu`} tone={row.remaining < 0 ? 'text-red-700' : undefined} />
-            {[...byType].map(([t, b]) => <Row key={t} label={t} value={`${bu(b)} bu`} />)}
-            {byType.size === 0 && <div className="text-slate-400">No contracts.</div>}
-          </DetailSection>
-
-          <DetailSection title="Pricing Buildup">
+        <div className={`border-t border-slate-100 p-4 md:p-5 grid grid-cols-1 sm:grid-cols-2 ${advanced ? 'xl:grid-cols-4' : 'xl:grid-cols-3'} gap-x-8 gap-y-5 text-sm`}>
+          {/* Block 1 — Average Futures Price Buildup (a line-item ledger). */}
+          <DetailSection title={advanced ? 'Avg Futures Price Buildup' : 'Pricing'}>
             {advanced ? (
-              <>
-                {row.physicalFuturesBu > 0 && <Row label={`Physical futures (${bu(row.physicalFuturesBu)} bu)`} value={row.physicalFuturesAvg != null ? price2(row.physicalFuturesAvg) : '—'} />}
-                {row.openHedgeBu > 0 && <Row label={`Open hedges (${bu(row.openHedgeBu)} bu)`} value={row.openHedgeAvg != null ? price2(row.openHedgeAvg) : '—'} />}
-                <Row label={`Raw avg futures (${bu(row.futuresPricedBu)} bu)`} value={row.rawAvgFutures != null ? price2(row.rawAvgFutures) : 'N/A'} />
-                <Row label="Hedge P&L adj / bu" value={`${row.hedgeAdjPerBu >= 0 ? '+' : ''}${price2(row.hedgeAdjPerBu)}`} tone={row.hedgeAdjPerBu > 0 ? 'text-green-700' : row.hedgeAdjPerBu < 0 ? 'text-red-700' : undefined} />
-                <Row label="= Avg futures price" value={row.avgFutures != null ? price2(row.avgFutures) : 'N/A'} />
-                {/* Basis mini-breakdown: locked vs assumed-valued bushels, then
-                    the resulting figure used in Total Avg Price. */}
-                <div className="rounded-md bg-slate-50 border border-slate-200 px-2 py-1.5 space-y-0.5 my-1">
-                  <div className="text-[11px] uppercase tracking-wide text-slate-500">Basis</div>
-                  {row.basisLockedBu > 0 && <Row label={`Locked (${bu(row.basisLockedBu)} bu)`} value={basis2(row.basisLockedAvg)} />}
-                  {row.basisAssumedBu > 0 && (
-                    <div className="flex justify-between gap-3">
-                      <dt className="text-slate-500">
-                        Assumed ({bu(row.basisAssumedBu)} bu)
-                        <button type="button" onClick={focusBasisInput} className="no-print ml-1.5 text-sky-700 hover:text-sky-900" title="Edit the assumed basis (in What-If Pricing)" aria-label="Edit the assumed basis">✎</button>
-                      </dt>
-                      <dd className="tabular-nums text-amber-700">{basis2(row.assumedBasis)}</dd>
+              row.futuresSources.length > 0 ? (
+                <>
+                  {row.futuresSources.map((s, i) => (
+                    <Row key={i} label={s.label} value={`${bu(s.bushels)} bu @ ${price2(s.avgPrice)}`} />
+                  ))}
+                  {row.hedgeRealizedPnl !== 0 ? (
+                    <>
+                      <div className="border-t border-slate-200 pt-0.5">
+                        <Row label={`Weighted avg futures (${bu(row.futuresPricedBu)} bu)`} value={row.rawAvgFutures != null ? price2(row.rawAvgFutures) : 'N/A'} tone="text-slate-600" />
+                      </div>
+                      <Row label="Realized hedge P&L" value={`${row.hedgeAdjPerBu >= 0 ? '+' : ''}${price2(row.hedgeAdjPerBu)}/bu`} tone={row.hedgeAdjPerBu > 0 ? 'text-green-700' : row.hedgeAdjPerBu < 0 ? 'text-red-700' : undefined} />
+                      <div className="text-[11px] text-slate-400 leading-snug">{fmtPnl(row.hedgeRealizedPnl)} spread across {bu(prod)} bu total production</div>
+                      <div className="border-t border-slate-300 pt-1">
+                        <Row label="= Average futures price" value={row.avgFutures != null ? price2(row.avgFutures) : 'N/A'} tone="text-slate-900 font-bold" />
+                      </div>
+                    </>
+                  ) : (
+                    <div className="border-t border-slate-300 pt-1">
+                      <Row label="= Average futures price" value={row.avgFutures != null ? price2(row.avgFutures) : 'N/A'} tone="text-slate-900 font-bold" />
                     </div>
                   )}
-                  <div className="border-t border-slate-200 pt-0.5">
-                    <Row label={`= Basis (${basisStateLabel(row)})`} value={basis2(row.avgBasis)} tone={row.basisState === 'assumed' ? 'text-amber-700 font-medium' : 'text-slate-800 font-medium'} />
-                  </div>
-                </div>
-                <div className="border-t border-slate-200 pt-1"><Row label="= Total avg price" value={row.totalAvgPrice != null ? price2(row.totalAvgPrice) : '—'} tone="text-slate-900 font-semibold" /></div>
-                {row.hedgeRealizedPnl !== 0 && <Row label="Realized hedge P&L (in revenue)" value={fmtPnl(row.hedgeRealizedPnl)} tone={row.hedgeRealizedPnl > 0 ? 'text-green-700' : 'text-red-700'} />}
-              </>
+                </>
+              ) : (
+                <div className="text-slate-400">No futures positions — priced via flat cash contracts.</div>
+              )
             ) : (
-              <Row label="Avg price" value={row.totalAvgPrice != null ? price2(row.totalAvgPrice) : '—'} tone="text-slate-900 font-semibold" />
+              <Row label="Avg cash price" value={row.totalAvgPrice != null ? price2(row.totalAvgPrice) : '—'} tone="text-slate-900 font-semibold" />
             )}
           </DetailSection>
 
-          <div className="space-y-4 min-w-0">
-            <DetailSection title="Profitability">
-              <Row label="Cost / acre" value={usd(row.costPerAcre)} />
-              <Row label="Cost / bu" value={row.costPerBu != null ? price2(row.costPerBu) : '—'} />
-              <Row label="Revenue / acre" value={usd(row.revenuePerAcre)} />
-              <Row label="Profit / acre" value={row.profitPerAcre != null ? usd(row.profitPerAcre) : row.revenuePerAcre != null ? 'set cost' : '—'} tone={profitTone} />
-              <Row label="Total profit" value={row.totalProfit != null ? usd(row.totalProfit) : '—'} tone={profitTone} />
-              <Row label="Breakeven price" value={be.price != null ? `${price2(be.price)}/bu` : '—'} />
-              <Row label="Breakeven yield" value={be.yieldPerAcre != null ? `${be.yieldPerAcre.toFixed(1)} bu/ac` : '—'} />
-            </DetailSection>
-
-            {/* What-If pricing on unpriced bushels. Helper text sits on its own
-                line under each input so nothing spills out of the box in the
-                narrow 4-up column. */}
-            <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 space-y-2 no-print min-w-0">
-              <div className="font-semibold text-sky-900">What-If Pricing</div>
-              <div className="space-y-1">
-                <div className="text-xs text-slate-600">{advanced ? 'Unpriced futures bushels' : 'Unsold bushels'}: <span className="tabular-nums font-medium">{bu(scenarioUnpricedBu)}</span></div>
-                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <input type="number" step="0.01" inputMode="decimal" value={wfFutures} placeholder={advanced ? 'futures $/bu' : '$/bu'}
-                    onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }}
-                    className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
-                  {nc && !expired && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-sky-700 font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
-                  {!nc && <span className="text-xs text-slate-400">{advanced ? 'No futures contract' : 'Enter a price'}</span>}
+          {/* Block 2 — Basis Buildup (advanced only), with the state front-and-center. */}
+          {advanced && (
+            <DetailSection title="Basis Buildup">
+              {row.basisLockedBu > 0 && <Row label="Locked basis" value={`${bu(row.basisLockedBu)} bu @ ${basis2(row.basisLockedAvg)}`} />}
+              {row.basisAssumedBu > 0 && (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-slate-500">
+                    Assumed basis
+                    <button type="button" onClick={focusBasisInput} className="no-print ml-1.5 text-sky-700 hover:text-sky-900" title="Edit the assumed basis (in What-If)" aria-label="Edit the assumed basis">✎</button>
+                  </dt>
+                  <dd className="tabular-nums text-amber-700">{bu(row.basisAssumedBu)} bu @ {basis2(row.assumedBasis)}</dd>
                 </div>
-                {nc && expired && <div className="text-xs text-amber-700">Contract expired — enter price manually.</div>}
-                {/* Show the futures symbol only in advanced mode (no hedging jargon on simple sections). */}
-                {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{advanced ? `${wfSymbol} · ` : 'Today · '}{price2(wfFut)}{wfStale ? ' (cached)' : ''}</div>}
-                {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
+              )}
+              <div className="border-t border-slate-300 pt-1 flex justify-between gap-3 items-baseline">
+                <dt className="font-bold text-slate-900">= Basis</dt>
+                <dd className="text-right whitespace-nowrap">
+                  <span className={`tabular-nums font-bold ${row.basisState === 'actual' ? 'text-slate-900' : 'text-amber-700'}`}>{basis2(row.avgBasis)}</span>
+                  <span className={`ml-1.5 text-[11px] uppercase tracking-wide font-semibold ${row.basisState === 'actual' ? 'text-slate-500' : 'text-amber-600'}`}>{row.basisState}</span>
+                </dd>
               </div>
-              {advanced && (
-                <div className="space-y-1">
-                  <div className="text-xs text-slate-600">Bushels at assumed basis: <span className="tabular-nums font-medium">{bu(row.basisAssumedBu)}</span></div>
-                  <input id={basisInputId} type="number" step="0.01" inputMode="decimal" value={basisInput} placeholder="basis $/bu"
-                    onChange={(e) => setBasisInput(e.target.value)} onBlur={commitBasis}
-                    className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
-                  <div className="text-xs text-slate-400">Assumed basis — saves automatically; values every bushel without locked basis.</div>
-                </div>
-              )}
-              {scenario ? (
-                <div className="border-t border-sky-200 pt-2 space-y-0.5">
-                  <div className="text-xs uppercase tracking-wide text-sky-700 font-semibold">Scenario <span className="font-normal italic normal-case lowercase">(what-if)</span></div>
-                  <Row label="Proj. total avg price" value={price2(scenario.totalAvgPrice)} tone="italic text-sky-900 font-semibold" />
-                  <Row label="Proj. profit / acre" value={scenario.profitPerAcre != null ? usd0(scenario.profitPerAcre) : 'set cost'} tone={`italic ${scenario.profitPerAcre == null ? 'text-slate-400' : scenario.profitPerAcre >= 0 ? 'text-green-700' : 'text-red-700'}`} />
-                  <Row label="Proj. total profit" value={scenario.totalProfit != null ? usd0(scenario.totalProfit) : '—'} tone={`italic ${scenario.totalProfit == null ? 'text-slate-400' : scenario.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'}`} />
-                </div>
-              ) : (
-                <div className="text-xs text-slate-400">Enter a futures price to model the unpriced bushels.</div>
-              )}
+            </DetailSection>
+          )}
+
+          {/* Block 3 — What-If on Unpriced Bushels. Session-scoped futures price +
+              the relocated assumed-basis input (persists to crop_assumptions). The
+              headline stats above update to match while a scenario is active. */}
+          <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 space-y-2 no-print min-w-0">
+            <div className="font-semibold text-sky-900">What-If on Unpriced Bushels</div>
+            <div className="space-y-1">
+              <div className="text-xs text-slate-600">{advanced ? 'Unpriced futures bushels' : 'Unsold bushels'}: <span className="tabular-nums font-medium">{bu(scenarioUnpricedBu)}</span></div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <input type="number" step="0.01" inputMode="decimal" value={wfFutures} placeholder={advanced ? 'futures $/bu' : '$/bu'}
+                  onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }}
+                  className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
+                {nc && !expired && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-sky-700 font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
+                {!nc && <span className="text-xs text-slate-400">{advanced ? 'No futures contract' : 'Enter a price'}</span>}
+              </div>
+              {nc && expired && <div className="text-xs text-amber-700">Contract expired — enter price manually.</div>}
+              {/* Show the futures symbol only in advanced mode (no hedging jargon on simple sections). */}
+              {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{advanced ? `${wfSymbol} · ` : 'Today · '}{price2(wfFut)}{wfStale ? ' (cached)' : ''}</div>}
+              {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
             </div>
+            {advanced && (
+              <div className="space-y-1">
+                <div className="text-xs text-slate-600">Bushels at assumed basis: <span className="tabular-nums font-medium">{bu(row.basisAssumedBu)}</span></div>
+                <input id={basisInputId} type="number" step="0.01" inputMode="decimal" value={basisInput} placeholder="basis $/bu"
+                  onChange={(e) => setBasisInput(e.target.value)} onBlur={commitBasis}
+                  className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
+                <div className="text-xs text-slate-400">Assumed basis — saves automatically; values every bushel without locked basis.</div>
+              </div>
+            )}
+            {scenario ? (
+              <div className="border-t border-sky-200 pt-2 space-y-0.5">
+                <div className="text-xs uppercase tracking-wide text-sky-700 font-semibold">Scenario <span className="font-normal italic normal-case lowercase">(reflected in the headline)</span></div>
+                <Row label="Proj. total avg price" value={price2(scenario.totalAvgPrice)} tone="italic text-sky-900 font-semibold" />
+                <Row label="Proj. profit / acre" value={scenario.profitPerAcre != null ? usd0(scenario.profitPerAcre) : 'set cost'} tone={`italic ${scenario.profitPerAcre == null ? 'text-slate-400' : scenario.profitPerAcre >= 0 ? 'text-green-700' : 'text-red-700'}`} />
+                <Row label="Proj. total profit" value={scenario.totalProfit != null ? usd0(scenario.totalProfit) : '—'} tone={`italic ${scenario.totalProfit == null ? 'text-slate-400' : scenario.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'}`} />
+              </div>
+            ) : (
+              <div className="text-xs text-slate-400">Enter a {advanced ? 'futures ' : ''}price to model the unpriced bushels — the headline updates to match.</div>
+            )}
           </div>
+
+          {/* Block 4 — Profitability. */}
+          <DetailSection title="Profitability">
+            <Row label="Cost / acre" value={usd(row.costPerAcre)} />
+            <Row label="Cost / bu" value={row.costPerBu != null ? price2(row.costPerBu) : '—'} />
+            <Row label="Revenue / acre" value={usd(row.revenuePerAcre)} />
+            <Row label="Profit / acre" value={row.profitPerAcre != null ? usd(row.profitPerAcre) : row.revenuePerAcre != null ? 'set cost' : '—'} tone={profitTone} />
+            <div className="border-t border-slate-300 pt-1">
+              <Row label="= Total profit" value={row.totalProfit != null ? usd(row.totalProfit) : '—'} tone={`font-bold ${profitTone}`} />
+            </div>
+            <Row label="Breakeven price" value={be.price != null ? `${price2(be.price)}/bu` : '—'} />
+            <Row label="Breakeven yield" value={be.yieldPerAcre != null ? `${be.yieldPerAcre.toFixed(1)} bu/ac` : '—'} />
+          </DetailSection>
         </div>
       )}
     </section>
@@ -752,7 +799,7 @@ function CropSection({
 // The basis qualifier under Total Avg Price — a basis figure never appears
 // without its (actual / assumed / blended) state. Assumed gets a dashed
 // underline; blended shows the locked/assumed composition on hover or tap
-// (and, in full, in the Pricing Buildup column).
+// (and, in full, in the Basis Buildup block).
 function BasisTag({ row }: { row: MarketingRow }) {
   if (row.basisState === 'assumed') {
     return (
@@ -766,6 +813,22 @@ function BasisTag({ row }: { row: MarketingRow }) {
     <div className="text-xs text-slate-500 mt-0.5" title={blended ? basisCompositionTitle(row) : undefined}>
       Basis: <span className={`tabular-nums${blended ? ' underline decoration-dotted decoration-slate-400 underline-offset-2 cursor-help' : ''}`}>{basis2(row.avgBasis)}</span> ({basisStateLabel(row)})
     </div>
+  )
+}
+
+// Headline assumption marker. The standing tier (amber) flags that the saved
+// numbers lean on the assumed basis / market price for unpriced bushels; the
+// what-if tier (sky) flags an active, session-only futures overlay. The full
+// "X unpriced (Y futures, Z basis)" explanation lives in the title tooltip.
+function AssumptionBadge({ whatIf, title }: { whatIf: boolean; title: string }) {
+  return whatIf ? (
+    <span title={title} className="inline-flex items-center gap-1 rounded-full bg-sky-100 text-sky-800 text-[11px] font-semibold px-2 py-0.5 cursor-help">
+      what-if&nbsp;<span aria-hidden>✱</span>
+    </span>
+  ) : (
+    <span title={title} className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-800 text-[11px] font-medium px-2 py-0.5 cursor-help">
+      <span aria-hidden>✷</span>&nbsp;includes assumptions
+    </span>
   )
 }
 

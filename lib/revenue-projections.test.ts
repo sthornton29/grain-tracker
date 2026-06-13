@@ -37,6 +37,7 @@ function mrow(over: Partial<MarketingRow> & Pick<MarketingRow, 'cropId'>): Marke
     unpricedBu: 0, blendedRevenue: 0,
     costPerAcre: null, costPerBu: null, revenuePerAcre: null, profitPerAcre: null, totalProfit: null,
     openFuturesHedgedBu: 0,
+    futuresSources: [], lockedPriceBu: 0, futuresAssumedBu: 0,
     ...over,
   }
 }

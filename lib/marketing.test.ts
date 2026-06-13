@@ -334,3 +334,85 @@ describe('computeMarketing — average futures price', () => {
     expect(r.avgBasisAssumed).toBe(false)
   })
 })
+
+describe('computeMarketing — buildup line items', () => {
+  it('futuresSources lists each priced source and foots to the futures subtotal', () => {
+    // HTA 60,000 @ 4.60 + open short 50,000 @ 4.50 (DEC 26). 180,000 bu.
+    const r = run({
+      acres: 1000, expectedYield: 180, assumedBasis: -0.30, currentFutures: 4.20,
+      contracts: [contract({ crop_id: 'corn', contract_type: 'hta', contracted_bushels: 60000, futures_price: 4.6, pricing_status: 'awaiting_basis' })],
+      futures: [future({ commodity: 'Corn', num_contracts: 10, trade_price: 4.5, status: 'open' })],
+    })
+    expect(r.futuresSources).toEqual([
+      { label: 'HTA contracts', bushels: 60000, avgPrice: 4.6 },
+      { label: 'Open hedges (DEC 26)', bushels: 50000, avgPrice: 4.5 },
+    ])
+    // Foots: Σ bushels = futuresPricedBu, bushel-weighted avg = rawAvgFutures.
+    const sumBu = r.futuresSources.reduce((s, x) => s + x.bushels, 0)
+    const wAvg = r.futuresSources.reduce((s, x) => s + x.avgPrice * x.bushels, 0) / sumBu
+    expect(sumBu).toBe(r.futuresPricedBu)
+    expect(wAvg).toBeCloseTo(r.rawAvgFutures!, 6)
+  })
+
+  it('futuresSources groups physical contracts by type with a weighted price', () => {
+    // Two forward-with-futures (4.40, 4.60) → one weighted 4.50 line; an HTA its own.
+    const r = run({
+      acres: 1000, expectedYield: 200, assumedBasis: 0, currentFutures: 4.10,
+      contracts: [
+        contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 30000, futures_price: 4.4, basis: -0.2, cash_price: 4.2 }),
+        contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 30000, futures_price: 4.6, basis: -0.2, cash_price: 4.4 }),
+        contract({ crop_id: 'corn', contract_type: 'hta', contracted_bushels: 40000, futures_price: 4.7, pricing_status: 'awaiting_basis' }),
+      ],
+    })
+    expect(r.futuresSources).toEqual([
+      { label: 'Forward contracts', bushels: 60000, avgPrice: 4.5 },
+      { label: 'HTA contracts', bushels: 40000, avgPrice: 4.7 },
+    ])
+    expect(r.futuresPricedBu).toBe(100000)
+  })
+
+  it('futuresSources is empty for a flat-cash-only operation', () => {
+    const r = run({
+      acres: 1000, expectedYield: 180, assumedBasis: 0, currentFutures: 4.10,
+      contracts: [contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 40000, cash_price: 4.8 })],
+    })
+    expect(r.futuresSources).toEqual([])
+    expect(r.futuresPricedBu).toBe(0)
+  })
+
+  it('lockedPriceBu counts fully-priced cash + futures-and-basis-locked bushels only', () => {
+    // 180,000 bu. Flat-cash 40,000 + forward-with-both 50,000 are locked; an HTA
+    // 30,000 (basis unset) is NOT; 60,000 unpriced.
+    const r = run({
+      acres: 1000, expectedYield: 180, assumedBasis: -0.30, currentFutures: 4.10,
+      contracts: [
+        contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 40000, cash_price: 4.8, pricing_status: 'fully_priced' }),
+        contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 50000, futures_price: 4.5, basis: -0.2, cash_price: 4.3, pricing_status: 'fully_priced' }),
+        contract({ crop_id: 'corn', contract_type: 'hta', contracted_bushels: 30000, futures_price: 4.6, pricing_status: 'awaiting_basis' }),
+      ],
+    })
+    expect(r.lockedPriceBu).toBe(90000)                     // 40,000 + 50,000 (HTA excluded)
+    expect(r.lockedPriceBu).toBeLessThan(r.totalProduction) // → "includes assumptions"
+  })
+
+  it('lockedPriceBu equals production when every bushel is fully priced (no marker)', () => {
+    const r = run({
+      acres: 1000, expectedYield: 180, assumedBasis: -0.99, currentFutures: 4.0,
+      contracts: [contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 180000, futures_price: 4.5, basis: -0.25, cash_price: 4.25, pricing_status: 'fully_priced' })],
+    })
+    expect(r.lockedPriceBu).toBe(180000)
+    expect(r.lockedPriceBu).toBe(r.totalProduction)
+    expect(r.basisState).toBe('actual')
+  })
+
+  it('futuresAssumedBu is the production without a locked/hedged futures price', () => {
+    // 180,000 bu; futures-priced 110,000 (HTA 60k + hedge 50k) → 70,000 assumed.
+    const r = run({
+      acres: 1000, expectedYield: 180, assumedBasis: -0.30, currentFutures: 4.20,
+      contracts: [contract({ crop_id: 'corn', contract_type: 'hta', contracted_bushels: 60000, futures_price: 4.6, pricing_status: 'awaiting_basis' })],
+      futures: [future({ commodity: 'Corn', num_contracts: 10, trade_price: 4.5, status: 'open' })],
+    })
+    expect(r.futuresPricedBu).toBe(110000)
+    expect(r.futuresAssumedBu).toBe(70000)                  // 180,000 − 110,000
+  })
+})

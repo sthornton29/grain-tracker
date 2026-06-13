@@ -2,7 +2,7 @@
 // (futures + options) into a per-crop marketing position for a crop year.
 // Pure: callers pass already-fetched rows and an actual-production map.
 
-import { cropToCommodity } from '@/lib/contracts'
+import { cropToCommodity, CONTRACT_TYPE_LABEL } from '@/lib/contracts'
 import { CONTRACT_SIZE_BU } from '@/lib/hedging'
 import type { Contract, Crop, CropAssumption, FuturesPosition, OptionPosition } from '@/lib/types'
 
@@ -70,7 +70,24 @@ export type MarketingRow = {
   totalProfit: number | null
   // for the unpriced-production section (= openHedgeBu)
   openFuturesHedgedBu: number
+  // --- buildup line items (display ledgers; the totals above are unchanged) ---
+  // Each futures-priced source with its bushels and weighted price: physical
+  // contracts grouped by contract type, then open short hedges grouped by
+  // contract month. Σ bushels = futuresPricedBu; bushel-weighted avg = rawAvgFutures,
+  // so the dashboard's futures ledger foots to the subtotal.
+  futuresSources: FuturesSource[]
+  // Production bushels whose total price is fully locked (no assumption): fully-
+  // priced flat-cash contracts + contracts with BOTH futures and basis locked.
+  // lockedPriceBu === totalProduction ⟺ the headline price is fully actual.
+  lockedPriceBu: number
+  // Production bushels with no locked/hedged futures price (valued at market or a
+  // what-if price) = max(0, totalProduction − futuresPricedBu). With basisAssumedBu
+  // it explains the "includes assumptions" marker (Y futures / Z basis).
+  futuresAssumedBu: number
 }
+
+// One line item in the average-futures-price buildup ledger.
+export type FuturesSource = { label: string; bushels: number; avgPrice: number }
 
 export type Planting = { crop_id: string; season_year: number; planted_acres: number | string | null }
 
@@ -203,6 +220,17 @@ export function computeMarketing(args: {
     const contractedBu = cropContracts.reduce((s, c) => s + Number(c.contracted_bushels ?? 0), 0)
     const remaining = totalProduction - contractedBu
 
+    // Bushels whose total price is fully locked (no assumption): fully-priced
+    // flat-cash contracts + contracts with BOTH futures and basis set. Drives the
+    // dashboard's "includes assumptions" marker (locked === production ⟹ actual).
+    let lockedPriceBu = 0
+    for (const c of cropContracts) {
+      const bu = Number(c.contracted_bushels ?? 0)
+      if (c.cash_price != null && c.pricing_status === 'fully_priced') lockedPriceBu += bu
+      else if (c.futures_price != null && c.basis != null) lockedPriceBu += bu
+    }
+    lockedPriceBu = Math.min(round2(lockedPriceBu), round2(totalProduction))
+
     // Base: weighted avg cash on fully-priced contracts; track excluded bushels.
     let cashBu = 0, cashW = 0, excludedAwaitingBu = 0
     for (const c of cropContracts) {
@@ -232,6 +260,38 @@ export function computeMarketing(args: {
     const physicalFuturesAvg = physicalFuturesBu > 0 ? round(physW / physicalFuturesBu) : null
     const openHedgeAvg = openHedgeBu > 0 ? round(openW / openHedgeBu) : null
     const rawAvgFutures = futuresPricedBu > 0 ? round((physW + openW) / futuresPricedBu) : null
+
+    // Line items behind rawAvgFutures, for the futures-price buildup ledger:
+    // physical contracts carrying a futures price (grouped by contract type),
+    // then open short hedges (grouped by contract month). Σ bushels = futuresPricedBu
+    // and the bushel-weighted average = rawAvgFutures, so the ledger foots.
+    const futuresSources: FuturesSource[] = []
+    const physByType = new Map<string, { bu: number; w: number }>()
+    for (const c of cropContracts) {
+      if (c.futures_price == null) continue
+      const key = c.contract_type ?? 'forward'
+      const bu = Number(c.contracted_bushels ?? 0)
+      const g = physByType.get(key) ?? { bu: 0, w: 0 }
+      g.bu += bu; g.w += Number(c.futures_price) * bu
+      physByType.set(key, g)
+    }
+    for (const key of ['forward', 'hta', 'basis'] as const) {
+      const g = physByType.get(key)
+      if (g && g.bu > 0) futuresSources.push({ label: `${CONTRACT_TYPE_LABEL[key]} contracts`, bushels: round2(g.bu), avgPrice: round(g.w / g.bu) })
+    }
+    const hedgeByMonth = new Map<string, { bu: number; w: number }>()
+    for (const f of cropFutures) {
+      if (f.status !== 'open') continue
+      const month = f.contract_month ?? f.contract_symbol ?? 'hedge'
+      const bu = Number(f.num_contracts) * CONTRACT_SIZE_BU
+      const g = hedgeByMonth.get(month) ?? { bu: 0, w: 0 }
+      g.bu += bu; g.w += Number(f.trade_price) * bu
+      hedgeByMonth.set(month, g)
+    }
+    for (const [month, g] of hedgeByMonth) {
+      if (g.bu > 0) futuresSources.push({ label: `Open hedges (${month})`, bushels: round2(g.bu), avgPrice: round(g.w / g.bu) })
+    }
+    const futuresAssumedBu = round2(Math.max(0, totalProduction - futuresPricedBu))
 
     // (2) Hedging P&L adjustment — realized results from LIFTED (closed) hedges,
     //     spread over TOTAL expected production (the standard "hedge account
@@ -323,6 +383,7 @@ export function computeMarketing(args: {
       basisLockedBu, basisLockedAvg, basisAssumedBu, basisState,
       totalAvgPrice, unpricedBu, blendedRevenue, costPerAcre, costPerBu, revenuePerAcre, profitPerAcre, totalProfit,
       openFuturesHedgedBu: openHedgeBu,
+      futuresSources, lockedPriceBu, futuresAssumedBu,
     })
   }
   return rows.sort((a, b) => a.cropName.localeCompare(b.cropName))
