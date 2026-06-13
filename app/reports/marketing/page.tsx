@@ -565,6 +565,13 @@ function CropSection({
   // A small superscript on each affected number, matching the legend badge color.
   const markSup = includesAssumptions ? <sup className={whatIfActive ? 'text-sky-600' : 'text-amber-600'}> *</sup> : null
   const numItalic = whatIfActive ? 'italic ' : ''
+  // Avg futures across ALL production once a what-if price is entered: priced
+  // bushels at their actual avg futures, the unpriced rest at the what-if price.
+  // This is exactly the futures component of the what-if headline (the basis
+  // blend is the other half), so the buildup reconciles with the headline.
+  const blendedFutures = wfFut != null && prod > 0 && row.avgFutures != null
+    ? (row.futuresPricedBu * row.avgFutures + scenarioUnpricedBu * wfFut) / prod
+    : null
 
   async function useTodaysPrice() {
     if (!nc || expired) return
@@ -711,6 +718,14 @@ function CropSection({
                         <Row label="= Average futures price" value={row.avgFutures != null ? price2(row.avgFutures) : 'N/A'} tone="text-slate-900 font-bold" />
                       </div>
                     )}
+                    {/* What-if futures price on the unpriced bushels folds into the
+                        buildup, then re-foots to an avg across all production. */}
+                    {wfFut != null && scenarioUnpricedBu > 0 && (
+                      <div className="border-t border-sky-200 pt-1 mt-1 space-y-0.5">
+                        <Row label={`What-if · unpriced (${bu(scenarioUnpricedBu)} bu)`} value={price2(wfFut)} tone="italic text-sky-700" />
+                        {blendedFutures != null && <Row label="= Avg futures incl. what-if" value={price2(blendedFutures)} tone="italic text-sky-900 font-bold" />}
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div className="text-slate-400">No futures positions — priced via flat cash contracts.</div>
@@ -759,9 +774,9 @@ function CropSection({
 
           {/* What-If on Unpriced Bushels — full-width, horizontal. Session-scoped
               futures price + the relocated assumed-basis input (persists to
-              crop_assumptions); the headline stats update to match while a scenario
-              is active. Each input keeps its own explanation right beside it, and
-              the live scenario sits to the right. */}
+              crop_assumptions). The headline stats reflect the scenario directly
+              (and the what-if price folds into the futures buildup above), so there's
+              no separate projection panel. Each input keeps its explanation beside it. */}
           <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 sm:p-4 no-print text-sm">
             <div className="font-semibold text-sky-900 mb-3">What-If on Unpriced Bushels</div>
             <div className="flex flex-col lg:flex-row lg:items-start gap-x-8 gap-y-4">
@@ -779,6 +794,8 @@ function CropSection({
                 {/* Show the futures symbol only in advanced mode (no hedging jargon on simple sections). */}
                 {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{advanced ? `${wfSymbol} · ` : 'Today · '}{price2(wfFut)}{wfStale ? ' (cached)' : ''}</div>}
                 {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
+                {/* Instructions for entering futures, right under the input. */}
+                {!scenario && <div className="text-xs text-slate-400">Enter a {advanced ? 'futures ' : ''}price to model the unpriced bushels — the headline updates to match.</div>}
               </div>
               {/* Assumed basis — input + its explanation, kept together. */}
               {advanced && (
@@ -790,19 +807,6 @@ function CropSection({
                   <div className="text-xs text-slate-400">Assumed basis — saves automatically; values every bushel without locked basis.</div>
                 </div>
               )}
-              {/* Live scenario — to the right on wide screens, below when stacked. */}
-              <div className="lg:flex-1 lg:border-l lg:border-sky-200 lg:pl-8">
-                {scenario ? (
-                  <div className="space-y-0.5">
-                    <div className="text-xs uppercase tracking-wide text-sky-700 font-semibold">Scenario <span className="font-normal italic normal-case lowercase">(reflected in the headline)</span></div>
-                    <Row label="Proj. total avg price" value={price2(scenario.totalAvgPrice)} tone="italic text-sky-900 font-semibold" />
-                    <Row label="Proj. profit / acre" value={scenario.profitPerAcre != null ? usd0(scenario.profitPerAcre) : 'set cost'} tone={`italic ${scenario.profitPerAcre == null ? 'text-slate-400' : scenario.profitPerAcre >= 0 ? 'text-green-700' : 'text-red-700'}`} />
-                    <Row label="Proj. total profit" value={scenario.totalProfit != null ? usd0(scenario.totalProfit) : '—'} tone={`italic ${scenario.totalProfit == null ? 'text-slate-400' : scenario.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'}`} />
-                  </div>
-                ) : (
-                  <div className="text-xs text-slate-400">Enter a {advanced ? 'futures ' : ''}price to model the unpriced bushels — the headline updates to match.</div>
-                )}
-              </div>
             </div>
           </div>
         </div>
