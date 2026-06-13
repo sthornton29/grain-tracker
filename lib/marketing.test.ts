@@ -25,7 +25,7 @@ function assumption(over: Partial<CropAssumption> & Pick<CropAssumption, 'crop_i
     id: `a-${over.crop_id}`, crop_year: 2026,
     expected_yield: null, expected_yield_irr: null, expected_yield_dry: null,
     expected_yield_dc_irr: null, expected_yield_dc_dry: null, harvest_complete: false,
-    assumed_basis: 0, cost_per_acre: null, cost_per_acre_irr: null, cost_per_acre_dry: null,
+    assumed_basis: 0, assumed_futures: null, cost_per_acre: null, cost_per_acre_irr: null, cost_per_acre_dry: null,
     cost_per_acre_dc_irr: null, cost_per_acre_dc_dry: null, notes: null,
     created_at: '', updated_at: '', ...over,
   }
@@ -63,7 +63,7 @@ function option(over: Partial<OptionPosition> & Pick<OptionPosition, 'commodity'
 function run(args: {
   cropId?: string; cropName?: string; acres: number; expectedYield: number
   contracts?: Contract[]; futures?: FuturesPosition[]; options?: OptionPosition[]
-  assumedBasis?: number; costPerAcre?: number; currentFutures?: number
+  assumedBasis?: number; assumedFutures?: number; costPerAcre?: number; currentFutures?: number
 }) {
   const cropId = args.cropId ?? 'corn'
   const cropName = args.cropName ?? 'Corn'
@@ -74,7 +74,7 @@ function run(args: {
     contracts: args.contracts ?? [],
     futures: args.futures ?? [],
     options: args.options ?? [],
-    assumptions: [assumption({ crop_id: cropId, expected_yield: args.expectedYield, assumed_basis: args.assumedBasis ?? 0, cost_per_acre: args.costPerAcre ?? null })],
+    assumptions: [assumption({ crop_id: cropId, expected_yield: args.expectedYield, assumed_basis: args.assumedBasis ?? 0, assumed_futures: args.assumedFutures ?? null, cost_per_acre: args.costPerAcre ?? null })],
     actualProductionByCrop: new Map(),
     currentFuturesByCrop: args.currentFutures != null ? new Map([[cropId, args.currentFutures]]) : undefined,
   })
@@ -414,5 +414,37 @@ describe('computeMarketing — buildup line items', () => {
     })
     expect(r.futuresPricedBu).toBe(110000)
     expect(r.futuresAssumedBu).toBe(70000)                  // 180,000 − 110,000
+  })
+})
+
+describe('computeMarketing — assumed futures (the persisted What-If)', () => {
+  it('overrides the market estimate for completely-unpriced bushels', () => {
+    // Fully unpriced corn, 180,000 bu. Assumed futures 4.60 beats the Barchart
+    // estimate 4.20; with assumed basis -0.30 the total avg price is 4.30.
+    const r = run({
+      acres: 1000, expectedYield: 180, assumedBasis: -0.30, assumedFutures: 4.60, currentFutures: 4.20, costPerAcre: 600,
+    })
+    expect(r.assumedFutures).toBe(4.60)
+    expect(r.totalAvgPrice).toBeCloseTo(4.30, 6)            // 4.60 + (-0.30), not 4.20
+    expect(r.blendedRevenue).toBeCloseTo(774000, 2)         // 180,000 @ 4.30
+    expect(r.revenuePerAcre).toBeCloseTo(774, 2)            // 4.30 × 180
+    expect(r.profitPerAcre).toBeCloseTo(174, 2)             // 774 − 600
+  })
+
+  it('falls back to the market estimate when no assumed futures is set', () => {
+    const r = run({ acres: 1000, expectedYield: 180, assumedBasis: -0.30, currentFutures: 4.20 })
+    expect(r.assumedFutures).toBeNull()
+    expect(r.totalAvgPrice).toBeCloseTo(3.90, 6)            // 4.20 − 0.30 — unchanged behavior
+  })
+
+  it('values only the unpriced bushels — locked contracts keep their own price', () => {
+    // 180,000 bu. Flat-cash 80,000 @ 4.80 (locked). 100,000 unpriced at the
+    // assumed futures 4.50 + assumed basis -0.20 = 4.30.
+    const r = run({
+      acres: 1000, expectedYield: 180, assumedBasis: -0.20, assumedFutures: 4.50, currentFutures: 4.10,
+      contracts: [contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 80000, cash_price: 4.8 })],
+    })
+    // Blended: 80,000 @ 4.80 = 384,000; 100,000 @ (4.50-0.20)=4.30 = 430,000.
+    expect(r.blendedRevenue).toBeCloseTo(814000, 2)
   })
 })

@@ -159,6 +159,10 @@ export type CropAssumption = {
   // open hedges, unpriced production) and as the average-basis fallback when no
   // physical contract has set basis. Defaults to 0.
   assumed_basis: number
+  // Assumed futures price ($/bu) for the crop's completely-unpriced bushels — the
+  // futures half of the What-If, persisted like assumed_basis. null = none set
+  // (fall back to the auto-fetched harvest-price estimate).
+  assumed_futures: number | null
   // Overall cost/acre (acre-weighted average when the breakout below is used).
   cost_per_acre: number | null
   // Optional cost/acre breakout, mirroring the yield breakout.

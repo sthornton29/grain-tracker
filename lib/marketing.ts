@@ -41,6 +41,9 @@ export type MarketingRow = {
   avgBasis: number
   avgBasisAssumed: boolean
   assumedBasis: number
+  // The standing assumed futures price ($/bu) for unpriced bushels (null = none
+  // set → the harvest-price estimate is used). Persisted per crop × year.
+  assumedFutures: number | null
   // --- basis composition (drives the actual / assumed / blended labeling) ---
   // Bushels on contracts with locked basis and their weighted average (equals
   // avgBasis only when the state is 'actual').
@@ -332,15 +335,20 @@ export function computeMarketing(args: {
       ? round((bW + assumedBasis * basisAssumedBu) / (basisLockedBu + basisAssumedBu))
       : round(assumedBasis)
 
+    const assumedFutures = assumption?.assumed_futures != null ? Number(assumption.assumed_futures) : null
     const currentFutures = currentFuturesByCrop?.get(crop.id) ?? null
+    // The price for completely-unpriced bushels: the user's assumed futures when
+    // set (a standing What-If assumption), otherwise the auto-fetched harvest-price
+    // estimate (Barchart).
+    const marketFutures = assumedFutures ?? currentFutures
 
     // (5) Total Average Price = avg_futures_price + avg_basis. Always computes for
-    //     a crop with production: cash fallback (flat-cash only), then current
+    //     a crop with production: cash fallback (flat-cash only), then assumed/market
     //     futures + assumed basis (all unpriced), then assumed basis.
     let totalAvgPrice: number | null
     if (avgFutures != null) totalAvgPrice = round(avgFutures + avgBasis)
     else if (avgCashPrice != null) totalAvgPrice = avgCashPrice
-    else if (currentFutures != null) totalAvgPrice = round(currentFutures + assumedBasis)
+    else if (marketFutures != null) totalAvgPrice = round(marketFutures + assumedBasis)
     else totalAvgPrice = totalProduction > 0 ? round(assumedBasis) : null
 
     // (6) Blended expected revenue — the profitability + Revenue Projections basis.
@@ -357,13 +365,13 @@ export function computeMarketing(args: {
       } else if (c.cash_price != null) {
         blendedRevenue += Number(c.cash_price) * bu // flat-cash forward
       } else {
-        blendedRevenue += ((currentFutures ?? rawAvgFutures ?? 0) + assumedBasis) * bu
+        blendedRevenue += ((marketFutures ?? rawAvgFutures ?? 0) + assumedBasis) * bu
       }
     }
     // Open-hedge bushels (hedged but not physically sold), capped at unsold acres.
-    if (hedgeCovered > 0) blendedRevenue += hedgeCovered * ((openHedgeAvg ?? rawAvgFutures ?? currentFutures ?? 0) + assumedBasis)
-    // Completely-unpriced bushels at current futures (Barchart) + assumed basis.
-    if (unpricedBu > 0) blendedRevenue += unpricedBu * ((currentFutures ?? rawAvgFutures ?? 0) + assumedBasis)
+    if (hedgeCovered > 0) blendedRevenue += hedgeCovered * ((openHedgeAvg ?? rawAvgFutures ?? marketFutures ?? 0) + assumedBasis)
+    // Completely-unpriced bushels at the assumed/market futures + assumed basis.
+    if (unpricedBu > 0) blendedRevenue += unpricedBu * ((marketFutures ?? rawAvgFutures ?? 0) + assumedBasis)
     blendedRevenue = round2(blendedRevenue + hedgeRealizedPnl)
 
     const costPerAcre = assumption?.cost_per_acre != null ? Number(assumption.cost_per_acre) : null
@@ -379,7 +387,7 @@ export function computeMarketing(args: {
       cropId: crop.id, cropName: crop.name, acres, yield: yieldVal, yieldLabel, totalProduction,
       contractedBu, remaining, avgCashPrice, excludedAwaitingBu,
       futuresPricedBu, physicalFuturesBu, physicalFuturesAvg, openHedgeBu, openHedgeAvg,
-      rawAvgFutures, hedgeRealizedPnl, hedgeAdjPerBu, avgFutures, avgBasis, avgBasisAssumed, assumedBasis,
+      rawAvgFutures, hedgeRealizedPnl, hedgeAdjPerBu, avgFutures, avgBasis, avgBasisAssumed, assumedBasis, assumedFutures,
       basisLockedBu, basisLockedAvg, basisAssumedBu, basisState,
       totalAvgPrice, unpricedBu, blendedRevenue, costPerAcre, costPerBu, revenuePerAcre, profitPerAcre, totalProfit,
       openFuturesHedgedBu: openHedgeBu,

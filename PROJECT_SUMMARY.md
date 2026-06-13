@@ -5,7 +5,7 @@
 > programs. **Not a SaaS product** — single-tenant, used on iPads in trucks by a
 > small team, so the UX favors fast capture and forgiving data entry.
 >
-> _Snapshot date: 2026-06-13. Schema at migration `033`._
+> _Snapshot date: 2026-06-13. Schema at migration `034`._
 
 ---
 
@@ -33,7 +33,7 @@
 | AI | **`@anthropic-ai/sdk ^0.95.2`** — Claude `claude-sonnet-4-6` for document extraction |
 | Market data | **Barchart OnDemand** REST (futures + options quotes) |
 | Exports / files | `exceljs`, `xlsx` (SheetJS), `jspdf` + `jspdf-autotable`, `pdf-lib`, `jszip` |
-| Testing / CI | **Vitest `^4.1.8`** — 294 unit tests over the pure `lib/` math (11 `lib/*.test.ts` files); ESLint (`.eslintrc.json`, `next/core-web-vitals`); **GitHub Actions CI** (`.github/workflows/ci.yml`: lint + test on every push/PR) |
+| Testing / CI | **Vitest `^4.1.8`** — 302 unit tests over the pure `lib/` math (11 `lib/*.test.ts` files); ESLint (`.eslintrc.json`, `next/core-web-vitals`); **GitHub Actions CI** (`.github/workflows/ci.yml`: lint + test on every push/PR) |
 | Packaging | **npm** (`package-lock.json`); installable **PWA** (service worker `/sw.js`, `manifest.json`) |
 
 **Request flow:** `middleware.ts` → `lib/supabase/middleware.ts` refreshes the Supabase
@@ -122,7 +122,7 @@ Operational Reports**. Items marked `external` point back to standalone pages wi
 | `/reports/crop-insurance` | **Crop Insurance Production Report** — county × practice (irrigated/dryland) production for insurance agents. Mixed-practice plantings without a breakout are gated — **only once harvest is complete** (`components/reports/crop-insurance-report.tsx`). |
 | `/reports/season` | **Season Summary** — acres & yield by crop; excludes unharvested/in-progress. |
 | `/reports/cash-flow` | **Cash Flow Forecast** — monthly received / outstanding / projected revenue + a **Total Safety Net** (projected ARC/PLC, crop-insurance indemnity, other USDA payments). |
-| `/reports/marketing` | **Marketing Dashboard** — one **full-width section per crop**, stacked vertically: header = crop identity (name + total production) alongside large **Acres**, **Yield**, **Total/Avg Price** (with a basis qualifier), **Profit/acre** and **Total Profit** stats, with the **marketing position bars running full width *beneath* the metrics** (Sold, or Futures-priced + an expandable Basis bar showing avg futures/basis); a chevron (persisted per crop) expands a responsive **4-column detail grid** that reads like a financial statement: **Avg Futures Price Buildup** (per-source ledger → weighted-avg subtotal → realized hedge P&L/bu → bold avg-futures total) \| **Basis Buildup** (locked vs assumed bushels → blended total with actual/assumed/blended state) \| **What-If on Unpriced Bushels** \| **Profitability** (simple flat-cash crops collapse to a 3-column Pricing/What-If/Profitability grid). The **headline stats reflect an active what-if scenario** and carry an unmistakable **assumption marker** — amber "includes assumptions" when the saved numbers lean on the assumed basis/market price for unpriced bushels, sky "what-if" for a session-only futures overlay, nothing when fully locked (tooltip breaks down X unpriced = Y futures + Z basis). Production is actual once harvest complete, else assumption-derived; **what-if pricing on unpriced bushels** (incl. "use today's price" via the new-crop benchmark contract); the **assumed basis is set only in the What-If block** (persists to `crop_assumptions.assumed_basis`; the Assumptions editor holds just yield/cost irr-dry & full-season/double-crop breakouts + the harvest-complete snap). |
+| `/reports/marketing` | **Marketing Dashboard** — one **full-width section per crop**, stacked vertically: header = crop identity (name + total production) alongside large **Acres**, **Yield**, **Total/Avg Price** (with a basis qualifier), **Profit/acre** and **Total Profit** stats, with the **marketing position bars running full width *beneath* the metrics** (Sold, or Futures-priced + an expandable Basis bar). A chevron (persisted per crop) expands a detail view that reads like a financial statement: a responsive grid of **Avg Futures Price Buildup** (per-source ledger → weighted-avg subtotal → realized hedge P&L/bu → bold avg-futures total, then the assumed price on the unpriced bushels re-footed to an avg across all production) \| **Basis Buildup** (locked vs assumed bushels → blended total with actual/assumed/blended state) \| **Profitability** — 3-up (advanced) / 2-up (simple) — above a **full-width horizontal What-If** row. **Assumed futures and assumed basis are standing per-crop assumptions** (persist to `crop_assumptions.assumed_futures`/`assumed_basis`, survive leaving the page, save on blur, wiped by a per-crop **Clear assumptions** button); they value the crop's unpriced bushels, the headline **Total/Avg Price · Profit/acre · Total Profit reflect them**, and an amber **"includes assumptions"** marker shows whenever any production isn't fully locked (nothing when fully locked; tooltip breaks down X unpriced = Y futures + Z basis). Production is actual once harvest complete, else assumption-derived; the futures input offers **"use today's price"** (new-crop benchmark contract); the Assumptions editor holds just yield/cost irr-dry & full-season/double-crop breakouts + the harvest-complete snap. |
 | `/reports/hedging-summary` | **Hedging Summary** — all futures positions (open + closed) with realized/unrealized P&L by crop year. |
 | `/reports/crop-insurance-claims` | **Crop Insurance Claims Monitor** — estimated indemnity per policy (RP/RP-HPE/YP + SCO/ECO) with What-If sliders. |
 | `/reports/arc-plc-decision-aid` | **ARC/PLC Decision Aid** — compare projected PLC vs ARC-CO per farm/commodity; test MYA price; set election. |
@@ -134,8 +134,8 @@ Operational Reports**. Items marked `external` point back to standalone pages wi
 
 ## 3. Database schema
 
-**Supabase / PostgreSQL** with `pgcrypto` (`gen_random_uuid()`). Defined by **33 sequential,
-idempotent migrations** in `supabase/` (`schema.sql` = 001, then `002_*.sql` … `033_*.sql`).
+**Supabase / PostgreSQL** with `pgcrypto` (`gen_random_uuid()`). Defined by **34 sequential,
+idempotent migrations** in `supabase/` (`schema.sql` = 001, then `002_*.sql` … `034_*.sql`).
 Every table re-runs safely (`create table if not exists`, guarded `do $$…$$`), uses a `uuid`
 PK and `created_at`. ~36 tables, **no views**. Later migrations frequently `ALTER` earlier
 tables (esp. `contracts`, `farms`, `fields`, `field_plantings`, `crop_assumptions`).
@@ -167,6 +167,7 @@ tables (esp. `contracts`, `farms`, `fields`, `field_plantings`, `crop_assumption
 - `030` — `crops.double_crop`. · `031` — `crop_assumptions` cost breakout columns.
 - `032` program config — `program_year_config` (per-year SCO trigger, payment limit, sequestration %; seeds 2026 + 2027).
 - `033` — `crop_assumptions.assumed_basis` (Marketing fallback basis).
+- `034` — `crop_assumptions.assumed_futures` (Marketing assumed/what-if futures price; nullable).
 
 ### Tables (grouped) — purpose & key columns
 
@@ -184,7 +185,7 @@ tables (esp. `contracts`, `farms`, `fields`, `field_plantings`, `crop_assumption
 - **`crops`** — `name` (unique), `base_moisture_pct`, `base_lb_per_bushel`, `harvest_category` (fall/spring), `double_crop`.
 - **`field_plantings`** — field×crop×season. `field_id`, `crop_id`, `season_year`, `planted_acres`, `planting_date`, `paired_planting_id` (double-crop), `irrigated_acres`, **`dryland_acres` (trigger-derived)**, `irrigated_bushels`/`dryland_bushels`, **`yield_breakout_entered`**, **`yield_include_override`** (null=auto, true=force-include).
 - **`field_planting_varieties`** — `planting_id`→plantings, `variety`, `acres`, `bushels` (nullable, manual allocation).
-- **`crop_assumptions`** — per crop×year marketing inputs. unique `(crop_id, crop_year)`. `expected_yield`, **`harvest_complete`**, `cost_per_acre`, **`assumed_basis`** (033, fallback basis for unlocked bushels), plus `*_irr`/`*_dry`/`*_dc_irr`/`*_dc_dry` yield (029) and cost (031) breakouts.
+- **`crop_assumptions`** — per crop×year marketing inputs. unique `(crop_id, crop_year)`. `expected_yield`, **`harvest_complete`**, `cost_per_acre`, **`assumed_basis`** (033, fallback basis for unlocked bushels), **`assumed_futures`** (034, assumed futures price for unpriced bushels; nullable), plus `*_irr`/`*_dry`/`*_dc_irr`/`*_dc_dry` yield (029) and cost (031) breakouts.
 
 **Storage & logistics**
 
@@ -250,7 +251,7 @@ tables (esp. `contracts`, `farms`, `fields`, `field_plantings`, `crop_assumption
 - **CSV import engine** (`lib/csv.ts`) — config-driven importer with FK lookups/aliases, child relations, derived columns, `add` vs `sync` modes (sync only updates changed columns; blanks never overwrite), batch insert with per-row fallback. Styled Excel templates via `lib/import-template.ts`.
 - **Universal exports** (`lib/exports.ts`) — Excel/PDF/Print from a section/row model (used by `<ExportBar>`); heavy libs dynamically imported.
 - **Settlement linking** (`lib/settlement-link.ts`) — back-fills `settlement_lines.load_id` by ticket when a buyer load is saved (`relinkSettlementLinesForLoad`) **and** for a whole settlement when its Review screen opens (`relinkSettlementLines`), so the DB stays in sync with what the screen shows. Ambiguous tickets are always left unlinked for manual resolution.
-- **Marketing engine** (`lib/marketing.ts`) — per-crop position for a crop year: acres segmented full-season/double-crop × irr/dry, expected production from assumption breakouts (or **actual production once harvest is complete**), a Total Average Price buildup (weighted futures from physical contracts + open short hedges, realized futures/options P&L spread per bushel, and a **bushel-weighted basis blend** — locked contracts at their weighted basis, the rest at the assumed basis), and a **blended expected revenue** that values each bushel bucket (flat-cash, futures+basis, open-hedge, unpriced-at-market) at its own price — the single source of truth Revenue Projections reuses. Exposes the **basis composition** (`basisLockedBu`/`basisLockedAvg`/`basisAssumedBu`/`basisState`) behind the dashboard's actual/assumed/blended labeling.
+- **Marketing engine** (`lib/marketing.ts`) — per-crop position for a crop year: acres segmented full-season/double-crop × irr/dry, expected production from assumption breakouts (or **actual production once harvest is complete**), a Total Average Price buildup (weighted futures from physical contracts + open short hedges, realized futures/options P&L spread per bushel, and a **bushel-weighted basis blend** — locked contracts at their weighted basis, the rest at the assumed basis), and a **blended expected revenue** that values each bushel bucket (flat-cash, futures+basis, open-hedge, and completely-unpriced at the **assumed futures price** when set else the harvest-price estimate, + assumed basis) at its own price — the single source of truth Revenue Projections reuses. Exposes the **basis composition** (`basisLockedBu`/`basisLockedAvg`/`basisAssumedBu`/`basisState`) behind the dashboard's actual/assumed/blended labeling.
 - **Program-year config** (`lib/program-config.ts`) — resolves the SCO trigger, per-person payment limit, and sequestration % for a crop year from `program_year_config` rows, falling back to the most recent configured year (or built-in 2026 defaults) with a plain-English notice for the UI.
 - **Insurance / government / revenue engines** (`lib/crop-insurance.ts`, `lib/government-payments.ts`, `lib/revenue-projections.ts`) — pure math feeding the financial reports. Projected prices now come from `harvest_price_estimates` (`projectedPriceFromEstimates`) instead of a hard-coded map.
 - **Unit tests** — 294 Vitest tests in `lib/*.test.ts` (shrink, yields, csv, contracts, marketing, crop-insurance, government-payments, revenue-projections, hedging, load-splits, program-config) with hand-verified worked examples; run in CI on every push/PR.
@@ -407,7 +408,7 @@ on every push and PR. Deploy target is Vercel; installs as a PWA via Safari "Add
 - **Reference price / loan rate** — statutory PLC price floor and the national loan rate that floors the MYA.
 - **Payment factor / sequestration** — the 85% base-acre payment factor and ~5.4% federal sequestration cut on ARC/PLC.
 - **Forward / HTA / Basis contract** — forward locks flat cash; HTA locks futures (basis later); basis locks basis (futures later). `cash = futures + basis − fee`.
-- **Basis** — local cash minus futures (positive = "over", negative = "under"). **Assumed basis** — the per-crop-year fallback (`crop_assumptions.assumed_basis`) used to value bushels whose basis isn't locked yet, so Total Average Price always computes.
+- **Basis** — local cash minus futures (positive = "over", negative = "under"). **Assumed basis / assumed futures** — per-crop-year standing assumptions (`crop_assumptions.assumed_basis` / `assumed_futures`) used to value the crop's unlocked / unpriced bushels, so Total Average Price always computes; both are edited in the dashboard's What-If block and cleared together via "Clear assumptions".
 - **Hedging (long / short)** — offsetting futures/options; farmers typically short futures to lock a price.
 - **Realized / unrealized P&L** — closed-position profit/loss vs mark-to-market on open positions.
 - **Settlement / settlement line** — the buyer's payment document; lines match delivered loads by **ticket number** (gross − discounts = net).

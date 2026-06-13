@@ -31,7 +31,7 @@ function mrow(over: Partial<MarketingRow> & Pick<MarketingRow, 'cropId'>): Marke
     futuresPricedBu: 0, physicalFuturesBu: 0, physicalFuturesAvg: null,
     openHedgeBu: 0, openHedgeAvg: null, rawAvgFutures: null,
     hedgeRealizedPnl: 0, hedgeAdjPerBu: 0, avgFutures: null,
-    avgBasis: 0, avgBasisAssumed: true, assumedBasis: 0,
+    avgBasis: 0, avgBasisAssumed: true, assumedBasis: 0, assumedFutures: null,
     basisLockedBu: 0, basisLockedAvg: null, basisAssumedBu: 0, basisState: 'assumed',
     totalAvgPrice: null,
     unpricedBu: 0, blendedRevenue: 0,

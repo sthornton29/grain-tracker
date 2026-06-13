@@ -388,6 +388,8 @@ export default function MarketingPage() {
       harvest_complete: has('harvest_complete') ? patch.harvest_complete : existing?.harvest_complete ?? false,
       // assumed_basis is NOT NULL (default 0) — never write null.
       assumed_basis: (has('assumed_basis') ? patch.assumed_basis : existing?.assumed_basis) ?? 0,
+      // assumed_futures is nullable (null = fall back to the harvest-price estimate).
+      assumed_futures: has('assumed_futures') ? patch.assumed_futures ?? null : existing?.assumed_futures ?? null,
       cost_per_acre: pick('cost_per_acre'),
       cost_per_acre_irr: pick('cost_per_acre_irr'),
       cost_per_acre_dry: pick('cost_per_acre_dry'),
@@ -482,6 +484,8 @@ export default function MarketingPage() {
               onToggleDetails={() => toggleRow(r.cropId)}
               cropYear={year}
               onSaveBasis={(v) => saveAssumption(r.cropId, { assumed_basis: v })}
+              onSaveFutures={(v) => saveAssumption(r.cropId, { assumed_futures: v })}
+              onClearAssumptions={() => saveAssumption(r.cropId, { assumed_futures: null, assumed_basis: 0 })}
             />
           ))}
         </div>
@@ -511,7 +515,7 @@ export default function MarketingPage() {
 // ---------------------------------------------------------------------------
 function CropSection({
   row, advanced, basisOpen, onToggleBasis, detailsOpen, onToggleDetails,
-  cropYear, onSaveBasis,
+  cropYear, onSaveBasis, onSaveFutures, onClearAssumptions,
 }: {
   row: MarketingRow
   advanced: boolean
@@ -521,20 +525,24 @@ function CropSection({
   onToggleDetails: () => void
   cropYear: number | null
   onSaveBasis: (v: number) => void
+  onSaveFutures: (v: number | null) => void
+  onClearAssumptions: () => void
 }) {
   const prod = row.totalProduction
   const profitTone = row.totalProfit == null ? 'text-slate-400' : row.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'
   const be = breakevenOf(row)
 
-  // --- What-if pricing (session-scoped futures; basis persists to assumptions) ---
+  // --- What-if pricing. Both the futures price and the basis are STANDING
+  //     assumptions persisted to crop_assumptions, so they survive leaving the
+  //     page and are wiped by "Clear assumptions". Inputs save on blur. ---
   const nc = cropYear != null ? newCropContract(row.cropName, cropYear) : null
   const expired = nc != null ? (() => { const now = new Date(); return nc.year * 12 + nc.monthNum < now.getFullYear() * 12 + (now.getMonth() + 1) })() : false
-  const [wfFutures, setWfFutures] = useState('')
+  const [wfFutures, setWfFutures] = useState(row.assumedFutures != null ? String(row.assumedFutures) : '')
   const [wfSymbol, setWfSymbol] = useState<string | null>(null)
   const [wfStale, setWfStale] = useState(false)
   const [wfNote, setWfNote] = useState<string | null>(null)
   const [fetching, setFetching] = useState(false)
-  const [basisInput, setBasisInput] = useState(String(row.assumedBasis ?? 0))
+  const [basisInput, setBasisInput] = useState(row.assumedBasis ? String(row.assumedBasis) : '')
 
   const wfFut = wfFutures.trim() === '' || !Number.isFinite(Number(wfFutures)) ? null : Number(wfFutures)
   const wfBasis = basisInput.trim() === '' || !Number.isFinite(Number(basisInput)) ? (row.assumedBasis ?? 0) : Number(basisInput)
@@ -544,31 +552,26 @@ function CropSection({
   const scenarioUnpricedBu = Math.max(0, prod - scenarioPricedBu)
   const scenario = wfFut != null ? scenarioFor(row, scenarioPricedBu, advanced ? wfFut + wfBasis : wfFut) : null
 
-  // --- Headline stats reflect the active what-if scenario; otherwise the saved
-  //     (standing-assumption) figures. A marker tells the user which one they see. ---
-  const whatIfActive = scenario != null
+  // --- Headline stats reflect any assumed futures the user has entered (the
+  //     scenario re-values the unpriced bushels); otherwise the saved figures. ---
   const headlineAvg = scenario ? scenario.totalAvgPrice : row.totalAvgPrice
   const headlineRevenueAc = scenario ? scenario.revenuePerAcre : row.revenuePerAcre
   const headlineProfitAc = scenario ? scenario.profitPerAcre : row.profitPerAcre
   const headlineTotalProfit = scenario ? scenario.totalProfit : row.totalProfit
   const headlineProfitTone = headlineTotalProfit == null ? 'text-slate-400' : headlineTotalProfit >= 0 ? 'text-green-700' : 'text-red-700'
-  // The saved figures already lean on the assumed basis (and market price on
-  // completely-unpriced bushels) whenever some production isn't fully locked.
-  const standingAssumption = row.lockedPriceBu + 0.5 < prod
-  const includesAssumptions = whatIfActive || standingAssumption
+  // "Includes assumptions" whenever some production isn't fully locked — the
+  // unpriced bushels are valued with the assumed futures and/or assumed basis.
+  // A single amber tier, the same whether the assumption is basis or futures.
+  const includesAssumptions = row.lockedPriceBu + 0.5 < prod
   const assumptionBu = Math.max(0, prod - row.lockedPriceBu)
-  const markerTitle = whatIfActive
-    ? `What-if: ${bu(scenarioUnpricedBu)} unpriced ${advanced ? 'futures ' : ''}bushels modeled at ${price2(wfFut)}${advanced ? ` + ${basis2(wfBasis)} basis` : ''}. Actual locked price on the rest; resets on reload.`
-    : advanced
-      ? `Includes assumed pricing on ${bu(assumptionBu)} unpriced bushels (${bu(row.futuresAssumedBu)} at market futures, ${bu(row.basisAssumedBu)} at assumed basis). Actual locked price on the remaining ${bu(row.lockedPriceBu)} bu.`
-      : `Includes assumed pricing on ${bu(assumptionBu)} unsold bushels (valued at the average cash price). Locked price on the ${bu(row.lockedPriceBu)} bu already contracted.`
-  // A small superscript on each affected number, matching the legend badge color.
-  const markSup = includesAssumptions ? <sup className={whatIfActive ? 'text-sky-600' : 'text-amber-600'}> *</sup> : null
-  const numItalic = whatIfActive ? 'italic ' : ''
-  // Avg futures across ALL production once a what-if price is entered: priced
-  // bushels at their actual avg futures, the unpriced rest at the what-if price.
-  // This is exactly the futures component of the what-if headline (the basis
-  // blend is the other half), so the buildup reconciles with the headline.
+  const markerTitle = advanced
+    ? `Includes assumed pricing on ${bu(assumptionBu)} unpriced bushels (${bu(row.futuresAssumedBu)} futures, ${bu(row.basisAssumedBu)} basis). Actual locked price on the remaining ${bu(row.lockedPriceBu)} bu.`
+    : `Includes assumed pricing on ${bu(assumptionBu)} unsold bushels (valued at the average cash price). Locked price on the ${bu(row.lockedPriceBu)} bu already contracted.`
+  const markSup = includesAssumptions ? <sup className="text-amber-600"> *</sup> : null
+  // Avg futures across ALL production once an assumed futures price is entered:
+  // priced bushels at their actual avg futures, the unpriced rest at the assumed
+  // price. This is exactly the futures component of the headline (the basis blend
+  // is the other half), so the buildup reconciles with the headline.
   const blendedFutures = wfFut != null && prod > 0 && row.avgFutures != null
     ? (row.futuresPricedBu * row.avgFutures + scenarioUnpricedBu * wfFut) / prod
     : null
@@ -582,7 +585,7 @@ function CropSection({
       })
       const json = await res.json().catch(() => null)
       const p = json?.prices?.[0]
-      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(nc.symbol); setWfStale(!!p.stale) }
+      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(nc.symbol); setWfStale(!!p.stale); onSaveFutures(Number(p.price)) }
       else setWfNote('No price available — enter manually.')
     } catch {
       setWfNote('Could not fetch — enter manually.')
@@ -591,6 +594,20 @@ function CropSection({
   function commitBasis() {
     const v = basisInput.trim() === '' ? 0 : Number(basisInput)
     if (Number.isFinite(v) && v !== (row.assumedBasis ?? 0)) onSaveBasis(v)
+  }
+  // Persist the assumed futures on blur (empty clears it back to null).
+  function commitFutures() {
+    const t = wfFutures.trim()
+    if (t === '') { if (row.assumedFutures != null) onSaveFutures(null); return }
+    const v = Number(t)
+    if (Number.isFinite(v) && v !== (row.assumedFutures ?? null)) onSaveFutures(v)
+  }
+  // Wipe both assumptions for this crop and reset the inputs to match.
+  const hasAssumptions = row.assumedFutures != null || (row.assumedBasis ?? 0) !== 0
+  function clearAssumptions() {
+    setWfFutures(''); setWfSymbol(null); setWfStale(false); setWfNote(null)
+    setBasisInput('')
+    onClearAssumptions()
   }
   // The pencil next to "Assumed basis" in the Basis Buildup block jumps to the
   // canonical assumed-basis input in the What-If block (same expanded grid).
@@ -626,33 +643,32 @@ function CropSection({
             </div>
           </div>
 
-          {/* Headline numbers — large, color-coded. Reflect the active what-if
-              scenario (italic + sky) and carry the assumption marker. */}
+          {/* Headline numbers — large, color-coded. Reflect any assumed futures /
+              basis the user has entered, and carry the assumption marker. */}
           <div className="flex items-center justify-between sm:justify-end gap-4 lg:gap-8 flex-wrap ml-auto">
             <div className="text-right">
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">{advanced ? 'Total avg price' : 'Avg price'}</div>
-              <div className={`text-2xl font-bold tabular-nums leading-tight ${whatIfActive ? 'italic text-sky-900' : ''}`}>{headlineAvg != null ? price2(headlineAvg) : '—'}{markSup}</div>
-              {advanced && !whatIfActive && <BasisTag row={row} />}
+              <div className="text-2xl font-bold tabular-nums leading-tight">{headlineAvg != null ? price2(headlineAvg) : '—'}{markSup}</div>
+              {advanced && <BasisTag row={row} />}
             </div>
             <div className="text-right">
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">Profit / acre</div>
-              <div className={`text-2xl font-bold tabular-nums leading-tight ${numItalic}${headlineProfitTone}`}>
+              <div className={`text-2xl font-bold tabular-nums leading-tight ${headlineProfitTone}`}>
                 {headlineProfitAc != null ? usd0(headlineProfitAc) : headlineRevenueAc != null ? 'set cost' : '—'}{markSup}
               </div>
             </div>
             <div className="text-right">
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">Total profit</div>
-              <div className={`text-2xl font-bold tabular-nums leading-tight ${numItalic}${headlineProfitTone}`}>{headlineTotalProfit != null ? usd0(headlineTotalProfit) : '—'}{markSup}</div>
+              <div className={`text-2xl font-bold tabular-nums leading-tight ${headlineProfitTone}`}>{headlineTotalProfit != null ? usd0(headlineTotalProfit) : '—'}{markSup}</div>
             </div>
           </div>
         </div>
 
-        {/* Assumption legend — unmistakable that the headline includes assumptions.
-            Standing assumed basis (amber, baseline) vs an active what-if futures
-            overlay (sky, provisional). Hidden entirely when fully priced. */}
+        {/* Assumption legend — unmistakable that the headline leans on assumed
+            pricing for the unpriced bushels. Hidden entirely when fully priced. */}
         {includesAssumptions && (
           <div className="flex justify-end -mt-1">
-            <AssumptionBadge whatIf={whatIfActive} title={markerTitle} />
+            <AssumptionBadge title={markerTitle} />
           </div>
         )}
 
@@ -718,12 +734,12 @@ function CropSection({
                         <Row label="= Average futures price" value={row.avgFutures != null ? price2(row.avgFutures) : 'N/A'} tone="text-slate-900 font-bold" />
                       </div>
                     )}
-                    {/* What-if futures price on the unpriced bushels folds into the
+                    {/* Assumed futures price on the unpriced bushels folds into the
                         buildup, then re-foots to an avg across all production. */}
                     {wfFut != null && scenarioUnpricedBu > 0 && (
-                      <div className="border-t border-sky-200 pt-1 mt-1 space-y-0.5">
-                        <Row label={`What-if · unpriced (${bu(scenarioUnpricedBu)} bu)`} value={price2(wfFut)} tone="italic text-sky-700" />
-                        {blendedFutures != null && <Row label="= Avg futures incl. what-if" value={price2(blendedFutures)} tone="italic text-sky-900 font-bold" />}
+                      <div className="border-t border-amber-200 pt-1 mt-1 space-y-0.5">
+                        <Row label={`Assumed · unpriced (${bu(scenarioUnpricedBu)} bu)`} value={price2(wfFut)} tone="text-amber-700" />
+                        {blendedFutures != null && <Row label="= Avg futures incl. assumed" value={price2(blendedFutures)} tone="text-slate-900 font-bold" />}
                       </div>
                     )}
                   </>
@@ -772,20 +788,27 @@ function CropSection({
             </DetailSection>
           </div>
 
-          {/* What-If on Unpriced Bushels — full-width, horizontal. Session-scoped
-              futures price + the relocated assumed-basis input (persists to
-              crop_assumptions). The headline stats reflect the scenario directly
-              (and the what-if price folds into the futures buildup above), so there's
-              no separate projection panel. Each input keeps its explanation beside it. */}
+          {/* What-If on Unpriced Bushels — full-width, horizontal. The assumed
+              futures price and assumed basis are STANDING assumptions: they persist
+              to crop_assumptions (survive leaving the page), save on blur, and feed
+              the headline + futures buildup above. "Clear assumptions" wipes both.
+              Each input keeps its explanation beside it. */}
           <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 sm:p-4 no-print text-sm">
-            <div className="font-semibold text-sky-900 mb-3">What-If on Unpriced Bushels</div>
+            <div className="flex items-baseline gap-3 mb-3">
+              <div className="font-semibold text-sky-900">What-If on Unpriced Bushels</div>
+              {hasAssumptions && (
+                <button type="button" onClick={clearAssumptions} className="ml-auto text-xs text-slate-500 hover:text-red-600 font-medium">
+                  Clear assumptions
+                </button>
+              )}
+            </div>
             <div className="flex flex-col lg:flex-row lg:items-start gap-x-8 gap-y-4">
-              {/* Unpriced futures — input + its explanation, kept together. */}
+              {/* Assumed futures — input + its explanation, kept together. */}
               <div className="space-y-1 lg:max-w-xs">
                 <div className="text-xs text-slate-600">{advanced ? 'Unpriced futures bushels' : 'Unsold bushels'}: <span className="tabular-nums font-medium">{bu(scenarioUnpricedBu)}</span></div>
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <input type="number" step="0.01" inputMode="decimal" value={wfFutures} placeholder={advanced ? 'futures $/bu' : '$/bu'}
-                    onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }}
+                    onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }} onBlur={commitFutures}
                     className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
                   {nc && !expired && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-sky-700 font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
                   {!nc && <span className="text-xs text-slate-400">{advanced ? 'No futures contract' : 'Enter a price'}</span>}
@@ -794,8 +817,8 @@ function CropSection({
                 {/* Show the futures symbol only in advanced mode (no hedging jargon on simple sections). */}
                 {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{advanced ? `${wfSymbol} · ` : 'Today · '}{price2(wfFut)}{wfStale ? ' (cached)' : ''}</div>}
                 {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
-                {/* Instructions for entering futures, right under the input. */}
-                {!scenario && <div className="text-xs text-slate-400">Enter a {advanced ? 'futures ' : ''}price to model the unpriced bushels — the headline updates to match.</div>}
+                {/* Explanation under the futures input. */}
+                <div className="text-xs text-slate-400">Assumed {advanced ? 'futures ' : ''}price — saves automatically; values the unpriced bushels until cleared.</div>
               </div>
               {/* Assumed basis — input + its explanation, kept together. */}
               {advanced && (
@@ -835,16 +858,11 @@ function BasisTag({ row }: { row: MarketingRow }) {
   )
 }
 
-// Headline assumption marker. The standing tier (amber) flags that the saved
-// numbers lean on the assumed basis / market price for unpriced bushels; the
-// what-if tier (sky) flags an active, session-only futures overlay. The full
-// "X unpriced (Y futures, Z basis)" explanation lives in the title tooltip.
-function AssumptionBadge({ whatIf, title }: { whatIf: boolean; title: string }) {
-  return whatIf ? (
-    <span title={title} className="inline-flex items-center gap-1 rounded-full bg-sky-100 text-sky-800 text-[11px] font-semibold px-2 py-0.5 cursor-help">
-      what-if&nbsp;<span aria-hidden>✱</span>
-    </span>
-  ) : (
+// Headline assumption marker (amber). Flags that the numbers lean on assumed
+// pricing — the assumed futures and/or assumed basis on the unpriced bushels.
+// The full "X unpriced (Y futures, Z basis)" explanation lives in the tooltip.
+function AssumptionBadge({ title }: { title: string }) {
+  return (
     <span title={title} className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-800 text-[11px] font-medium px-2 py-0.5 cursor-help">
       <span aria-hidden>✷</span>&nbsp;includes assumptions
     </span>
