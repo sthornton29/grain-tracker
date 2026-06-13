@@ -559,7 +559,11 @@ export default function LoadsPage() {
                   <td className="px-3 py-2 text-right font-semibold">{fmt(dryBushels)}</td>
                   <td className="px-3 py-2 text-right">{r.moisture ?? ''}</td>
                   <td className="px-3 py-2 text-right">{r.test_weight ?? ''}</td>
-                  <td className="px-3 py-2"><Link href={`/loads/${r.id}/edit`} className="text-sky-700">Edit</Link></td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <Link href={`/loads/${r.id}`} className="text-sky-700">View</Link>
+                    <span className="text-slate-300 mx-1">·</span>
+                    <Link href={`/loads/${r.id}/edit`} className="text-sky-700">Edit</Link>
+                  </td>
                   <td className="px-3 py-2"><button onClick={() => onDelete(r.id)} className="text-red-600">Delete</button></td>
                 </tr>
                 {isSplit && isExpanded && (

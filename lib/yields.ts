@@ -341,3 +341,92 @@ export function cropsWithCompleteHarvest(args: {
   }
   return out
 }
+
+// ---------------------------------------------------------------------------
+// Group-level yield rollup — powers Yields by Entity (and is generic enough for
+// any grouping). Rolls plantings up by group × crop × season, mirroring the
+// by-farm rollup in the Yields page: each planting contributes its total dry
+// bushels and planted acres, plus a determinable irrigated/dryland split —
+// pure-irrigated and pure-dryland plantings, and mixed plantings that have an
+// entered breakout. A mixed planting with NO breakout adds to the totals but to
+// neither side (it shows "—" in the breakdown columns, exactly like by-field).
+// Callers pass plantings already filtered to the harvest-included set (so
+// unharvested / in-progress fields are dropped upstream by analyzeYields). Pure.
+// ---------------------------------------------------------------------------
+export type GroupYieldPlanting = {
+  groupId: string
+  groupName: string
+  cropId: string
+  cropName: string
+  seasonYear: number
+  acres: number
+  dryBu: number
+  irrigatedAcres: number
+  drylandAcres: number
+  yieldBreakoutEntered: boolean
+  irrigatedBushels: number | null
+  drylandBushels: number | null
+}
+
+export type GroupYieldAgg = {
+  groupId: string
+  groupName: string
+  cropId: string
+  cropName: string
+  seasonYear: number
+  acres: number
+  dryBu: number
+  irrAc: number
+  dryAc: number
+  irrBu: number
+  dryBuLand: number
+  /** Weighted yields (Σ dryBu / Σ acres) over the group's plantings; null when
+   *  a side has no determinable acres. */
+  yield: number | null
+  irrigatedYield: number | null
+  drylandYield: number | null
+}
+
+export function groupYieldAggregates(plantings: readonly GroupYieldPlanting[]): GroupYieldAgg[] {
+  const m = new Map<string, GroupYieldAgg>()
+  for (const p of plantings) {
+    const irrAcP = Number(p.irrigatedAcres) || 0
+    const dryAcP = Number(p.drylandAcres) || 0
+    // Per-side determinable contribution, identical to the by-farm rollup:
+    //   pure-irrigated → all dry bu to the irrigated side
+    //   pure-dryland   → all dry bu to the dryland side (also the 0/0 case)
+    //   mixed          → only the entered breakout splits the bushels
+    const practice = irrAcP > 0 && dryAcP > 0 ? 'mixed' : irrAcP > 0 ? 'pure-irr' : 'pure-dry'
+    let irrBu = 0, irrAc = 0, dryBuLand = 0, dryAc = 0
+    if (practice === 'pure-irr') { irrBu = p.dryBu; irrAc = irrAcP }
+    else if (practice === 'pure-dry') { dryBuLand = p.dryBu; dryAc = dryAcP }
+    else if (p.yieldBreakoutEntered) {
+      if (p.irrigatedBushels != null) { irrBu = Number(p.irrigatedBushels); irrAc = irrAcP }
+      if (p.drylandBushels != null) { dryBuLand = Number(p.drylandBushels); dryAc = dryAcP }
+    }
+    const key = `${p.groupId}|${p.cropId}|${p.seasonYear}`
+    const ex = m.get(key)
+    if (ex) {
+      ex.acres += p.acres; ex.dryBu += p.dryBu
+      ex.irrAc += irrAc; ex.dryAc += dryAc; ex.irrBu += irrBu; ex.dryBuLand += dryBuLand
+    } else {
+      m.set(key, {
+        groupId: p.groupId, groupName: p.groupName,
+        cropId: p.cropId, cropName: p.cropName, seasonYear: p.seasonYear,
+        acres: p.acres, dryBu: p.dryBu, irrAc, dryAc, irrBu, dryBuLand,
+        yield: null, irrigatedYield: null, drylandYield: null,
+      })
+    }
+  }
+  for (const r of m.values()) {
+    r.yield = r.acres > 0 ? r.dryBu / r.acres : null
+    r.irrigatedYield = r.irrAc > 0 ? r.irrBu / r.irrAc : null
+    r.drylandYield = r.dryAc > 0 ? r.dryBuLand / r.dryAc : null
+  }
+  return [...m.values()].sort((a, b) => {
+    if (b.seasonYear !== a.seasonYear) return b.seasonYear - a.seasonYear
+    const gn = a.groupName.localeCompare(b.groupName)
+    if (gn !== 0) return gn
+    return a.cropName.localeCompare(b.cropName)
+  })
+}

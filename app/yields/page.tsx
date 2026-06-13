@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
-import { fieldCropAggregates, analyzeYields, isHarvestComplete, type HarvestProgress } from '@/lib/yields'
+import { fieldCropAggregates, analyzeYields, isHarvestComplete, groupYieldAggregates, type HarvestProgress, type GroupYieldAgg, type GroupYieldPlanting } from '@/lib/yields'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import ExportBar from '@/components/export-bar'
@@ -22,7 +22,7 @@ type LoadRow = {
   from_field_id: string | null
 }
 
-type ViewMode = 'field' | 'farm' | 'variety' | 'landowner'
+type ViewMode = 'field' | 'farm' | 'entity' | 'variety' | 'landowner'
 type YieldView = 'total' | 'breakdown'
 type PracticeFilter = 'all' | 'irrigated' | 'dryland'
 
@@ -423,6 +423,91 @@ export default function YieldsPage() {
     }
   }
 
+  // --- By Entity: roll the harvest-included plantings up to entity × crop ×
+  //     season, across every farm that belongs to the entity. Same exclusion and
+  //     irrigated/dryland breakdown rules as By Farm (shared groupYieldAggregates).
+  const entityShowBreakdown = farmShowBreakdown
+  const byEntity = useMemo<GroupYieldAgg[]>(() => {
+    const inputs: GroupYieldPlanting[] = includedPlantings.map((p) => {
+      const fld = fieldById.get(p.field_id)
+      const farm = fld?.farm_id ? farmById.get(fld.farm_id) : null
+      const ent = farm?.entity_id ? entityById.get(farm.entity_id) : null
+      return {
+        groupId: ent?.id ?? '∅',
+        groupName: ent?.name ?? '— No entity —',
+        cropId: p.crop_id,
+        cropName: cropById.get(p.crop_id)?.name ?? '—',
+        seasonYear: p.season_year,
+        acres: Number(p.planted_acres),
+        dryBu: dryBuFor(p.field_id, p.crop_id, p.season_year),
+        irrigatedAcres: Number(p.irrigated_acres) || 0,
+        drylandAcres: Number(p.dryland_acres) || 0,
+        yieldBreakoutEntered: p.yield_breakout_entered,
+        irrigatedBushels: p.irrigated_bushels,
+        drylandBushels: p.dryland_bushels,
+      }
+    })
+    return groupYieldAggregates(inputs)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [includedPlantings, fieldById, farmById, entityById, cropById, aggByKey])
+
+  // Group the per-entity×crop rows under each entity for the grouped display, and
+  // only show entities that actually have production this period (drop empty
+  // groupings — same spirit as the other tabs).
+  type EntityGroup = { groupId: string; groupName: string; rows: GroupYieldAgg[]; acres: number; dryBu: number }
+  const entityGroups = useMemo<EntityGroup[]>(() => {
+    const m = new Map<string, EntityGroup>()
+    for (const r of byEntity) {
+      const g = m.get(r.groupId) ?? { groupId: r.groupId, groupName: r.groupName, rows: [], acres: 0, dryBu: 0 }
+      g.rows.push(r); g.acres += r.acres; g.dryBu += r.dryBu
+      m.set(r.groupId, g)
+    }
+    return [...m.values()].filter((g) => g.dryBu > 0).sort((a, b) => {
+      if (a.groupId === '∅') return 1
+      if (b.groupId === '∅') return -1
+      return a.groupName.localeCompare(b.groupName)
+    })
+  }, [byEntity])
+  // Hide the per-row Year column when every entity row is the same season.
+  const showEntityYear = new Set(byEntity.map((r) => r.seasonYear)).size > 1
+
+  function buildEntityPayload(): ExportPayload {
+    const columns: ExportColumn[] = [{ label: 'Crop' }]
+    if (showEntityYear) columns.push({ label: 'Year' })
+    columns.push({ label: 'Acres', align: 'right' })
+    if (entityShowBreakdown) columns.push({ label: 'Irr ac', align: 'right' }, { label: 'Dry ac', align: 'right' })
+    columns.push({ label: 'Dry bu', align: 'right' })
+    if (entityShowBreakdown) columns.push({ label: 'Irrigated yield', align: 'right' }, { label: 'Dryland yield', align: 'right' })
+    columns.push({ label: 'Yield (bu/ac)', align: 'right' })
+
+    const sections = entityGroups.map((g) => {
+      const rows: Array<Array<string | number | null>> = []
+      const rowMeta: ('data' | 'subhead' | 'total')[] = []
+      for (const r of g.rows) {
+        const cells: (string | number)[] = [r.cropName]
+        if (showEntityYear) cells.push(r.seasonYear)
+        cells.push(r.acres.toFixed(2))
+        if (entityShowBreakdown) cells.push(r.irrAc > 0 ? r.irrAc.toFixed(2) : '', r.dryAc > 0 ? r.dryAc.toFixed(2) : '')
+        cells.push(r.dryBu.toFixed(2))
+        if (entityShowBreakdown) cells.push(r.irrigatedYield != null ? r.irrigatedYield.toFixed(1) : '', r.drylandYield != null ? r.drylandYield.toFixed(1) : '')
+        cells.push(r.yield != null ? r.yield.toFixed(1) : '')
+        rows.push(cells); rowMeta.push('data')
+      }
+      if (g.rows.length > 1) {
+        const cells: (string | number)[] = [`${g.groupName} total`]
+        if (showEntityYear) cells.push('')
+        cells.push(g.acres.toFixed(2))
+        if (entityShowBreakdown) cells.push('', '')
+        cells.push(g.dryBu.toFixed(2))
+        if (entityShowBreakdown) cells.push('', '')
+        cells.push('')
+        rows.push(cells); rowMeta.push('total')
+      }
+      return { title: `${g.groupName} — ${g.rows.length} crop${g.rows.length === 1 ? '' : 's'}`, columns, rows, rowMeta }
+    })
+    return { title: 'Yields by Entity', filters: fieldFiltersLabel(), singleSheet: true, sections }
+  }
+
   type VarietyAgg = {
     cropName: string
     variety: string
@@ -812,6 +897,7 @@ export default function YieldsPage() {
           Yields {
             view === 'field'   ? 'by Field' :
             view === 'farm'    ? 'by Farm' :
+            view === 'entity'  ? 'by Entity' :
             view === 'variety' ? 'by Variety' :
             'by Landowner'
           }
@@ -821,6 +907,7 @@ export default function YieldsPage() {
           <select value={view} onChange={(e) => setView(e.target.value as ViewMode)} className={inputCls}>
             <option value="field">By field</option>
             <option value="farm">By farm</option>
+            <option value="entity">By entity</option>
             <option value="variety">By variety</option>
             <option value="landowner">By landowner</option>
           </select>
@@ -831,9 +918,11 @@ export default function YieldsPage() {
               ? landownerBuild()
               : view === 'farm'
                 ? buildFarmPayload()
-                : view === 'variety'
-                  ? buildVarietyPayload()
-                  : buildFieldPayload()
+                : view === 'entity'
+                  ? buildEntityPayload()
+                  : view === 'variety'
+                    ? buildVarietyPayload()
+                    : buildFieldPayload()
           }
         />
       </div>
@@ -843,7 +932,9 @@ export default function YieldsPage() {
             ? 'Dry bushels harvested ÷ planted acres, matched to plantings by field + crop + load year.'
             : view === 'farm'
               ? 'Plantings rolled up to farm × crop × season. Dry bushels divided by planted acres.'
-              : 'Bushels rolled up by crop × variety × season. Single-variety plantings are attributed automatically; multi-variety plantings only count once you allocate bushels to each variety.'}
+              : view === 'entity'
+                ? 'Plantings rolled up to entity × crop × season, across every farm that belongs to the entity. Dry bushels divided by planted acres.'
+                : 'Bushels rolled up by crop × variety × season. Single-variety plantings are attributed automatically; multi-variety plantings only count once you allocate bushels to each variety.'}
         </p>
       )}
 
@@ -1284,6 +1375,70 @@ export default function YieldsPage() {
             </tbody>
           </table>
         </div>
+      ) : view === 'entity' ? (
+        loading ? (
+          <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">Loading…</div>
+        ) : entityGroups.length === 0 ? (
+          <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">No entities with production match these filters.</div>
+        ) : (
+          <div className="space-y-6">
+            {entityGroups.map((g) => (
+              <section key={g.groupId} className="bg-white rounded-xl shadow overflow-hidden avoid-break">
+                <header className="bg-slate-100 px-4 py-2 flex items-baseline gap-2 flex-wrap">
+                  <h2 className="font-bold text-lg">{g.groupName}</h2>
+                  <span className="text-xs text-slate-500">{g.rows.length} crop{g.rows.length === 1 ? '' : 's'}</span>
+                </header>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-slate-50 text-slate-700">
+                      <tr>
+                        <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
+                        {showEntityYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
+                        <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
+                        {entityShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Irr ac</th>}
+                        {entityShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Dry ac</th>}
+                        <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
+                        {entityShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Irrigated yield</th>}
+                        {entityShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Dryland yield</th>}
+                        <th className="text-right px-3 py-2 whitespace-nowrap">Yield (bu/ac)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {g.rows.map((r, i) => (
+                        <tr key={i} className="border-t border-slate-100">
+                          <td className="px-3 py-2 font-medium">{r.cropName}</td>
+                          {showEntityYear && <td className="px-3 py-2">{r.seasonYear}</td>}
+                          <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
+                          {entityShowBreakdown && <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>}
+                          {entityShowBreakdown && <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>}
+                          <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
+                          {entityShowBreakdown && <td className="px-3 py-2 text-right font-semibold">{r.irrigatedYield != null ? r.irrigatedYield.toFixed(1) : '—'}</td>}
+                          {entityShowBreakdown && <td className="px-3 py-2 text-right font-semibold">{r.drylandYield != null ? r.drylandYield.toFixed(1) : '—'}</td>}
+                          <td className="px-3 py-2 text-right font-semibold">{r.yield != null ? r.yield.toFixed(1) : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    {g.rows.length > 1 && (
+                      <tfoot>
+                        <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
+                          <td className="px-3 py-2">{g.groupName} total</td>
+                          {showEntityYear && <td></td>}
+                          <td className="px-3 py-2 text-right">{fmtNum(g.acres)}</td>
+                          {entityShowBreakdown && <td></td>}
+                          {entityShowBreakdown && <td></td>}
+                          <td className="px-3 py-2 text-right">{fmtNum(g.dryBu)}</td>
+                          {entityShowBreakdown && <td></td>}
+                          {entityShowBreakdown && <td></td>}
+                          <td className="px-3 py-2 text-right text-slate-400">—</td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
+              </section>
+            ))}
+          </div>
+        )
       ) : (
         <div className="overflow-x-auto bg-white rounded-xl shadow">
           <table className="min-w-full text-sm">

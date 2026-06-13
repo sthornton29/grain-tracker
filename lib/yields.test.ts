@@ -5,11 +5,13 @@ import {
   harvestStatusOf,
   isHarvestComplete,
   cropsWithCompleteHarvest,
+  groupYieldAggregates,
   IN_PROGRESS_THRESHOLD,
   IN_PROGRESS_STALE_DAYS,
   type YieldInput,
   type ExclusionReason,
   type FieldCropAgg,
+  type GroupYieldPlanting,
 } from '@/lib/yields'
 
 // ---------------------------------------------------------------------------
@@ -583,5 +585,87 @@ describe('cropsWithCompleteHarvest', () => {
     const plantings = [pl('a', 'f1', 'corn', 100), pl('b', 'f2', 'corn', 100)]
     const agg = new Map<string, FieldCropAgg>([['f1|corn|2026', { dryBu: 18000, lastLoadDate: '2025-09-10' }]])
     expect(cropsWithCompleteHarvest({ plantings, aggByKey: agg, cropYear: 2026, cropCompleteKeys: new Set(['corn|2026']), now: NOW }).has('corn')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// groupYieldAggregates — the by-entity (group) rollup
+// ---------------------------------------------------------------------------
+function gp(over: Partial<GroupYieldPlanting> & Pick<GroupYieldPlanting, 'groupId' | 'cropId'>): GroupYieldPlanting {
+  return {
+    groupName: over.groupName ?? over.groupId,
+    cropName: over.cropName ?? over.cropId,
+    seasonYear: 2026,
+    acres: 0,
+    dryBu: 0,
+    irrigatedAcres: 0,
+    drylandAcres: 0,
+    yieldBreakoutEntered: false,
+    irrigatedBushels: null,
+    drylandBushels: null,
+    ...over,
+  }
+}
+
+describe('groupYieldAggregates', () => {
+  it('rolls plantings up by group × crop × season with an acre-weighted yield', () => {
+    // Acme/corn: 50 ac @ 200 (10000 bu) + 150 ac @ 100 (15000 bu). Weighted =
+    // 25000/200 = 125 (a naive mean of 200 & 100 would be 150).
+    const rows = groupYieldAggregates([
+      gp({ groupId: 'E1', groupName: 'Acme', cropId: 'corn', cropName: 'Corn', acres: 50, dryBu: 10000, drylandAcres: 50 }),
+      gp({ groupId: 'E1', groupName: 'Acme', cropId: 'corn', cropName: 'Corn', acres: 150, dryBu: 15000, drylandAcres: 150 }),
+    ])
+    expect(rows).toHaveLength(1)
+    expect(rows[0].acres).toBe(200)
+    expect(rows[0].dryBu).toBe(25000)
+    expect(rows[0].yield).toBeCloseTo(125, 6)
+  })
+
+  it('routes pure-irrigated and pure-dryland bushels to their own sides', () => {
+    const rows = groupYieldAggregates([
+      gp({ groupId: 'E1', cropId: 'corn', acres: 100, dryBu: 18000, irrigatedAcres: 100, drylandAcres: 0 }),
+      gp({ groupId: 'E1', cropId: 'corn', acres: 100, dryBu: 12000, irrigatedAcres: 0, drylandAcres: 100 }),
+    ])
+    const r = rows[0]
+    expect(r.acres).toBe(200)
+    expect(r.dryBu).toBe(30000)
+    expect(r.irrAc).toBe(100); expect(r.irrBu).toBe(18000); expect(r.irrigatedYield).toBeCloseTo(180, 6)
+    expect(r.dryAc).toBe(100); expect(r.dryBuLand).toBe(12000); expect(r.drylandYield).toBeCloseTo(120, 6)
+    expect(r.yield).toBeCloseTo(150, 6)
+  })
+
+  it('splits a mixed planting only when a breakout is entered; otherwise totals only', () => {
+    // Mixed w/ breakout (60 irr / 40 dry ac, 15000 / 5000 bu) → irr 250, dry 125.
+    // A second mixed planting with NO breakout adds to totals but neither side.
+    const rows = groupYieldAggregates([
+      gp({ groupId: 'E1', cropId: 'corn', acres: 100, dryBu: 20000, irrigatedAcres: 60, drylandAcres: 40,
+           yieldBreakoutEntered: true, irrigatedBushels: 15000, drylandBushels: 5000 }),
+      gp({ groupId: 'E1', cropId: 'corn', acres: 100, dryBu: 10000, irrigatedAcres: 50, drylandAcres: 50 }),
+    ])
+    const r = rows[0]
+    expect(r.acres).toBe(200)
+    expect(r.dryBu).toBe(30000)
+    expect(r.irrAc).toBe(60); expect(r.irrBu).toBe(15000); expect(r.irrigatedYield).toBeCloseTo(250, 6)
+    expect(r.dryAc).toBe(40); expect(r.dryBuLand).toBe(5000); expect(r.drylandYield).toBeCloseTo(125, 6)
+    expect(r.yield).toBeCloseTo(150, 6) // total uses ALL acres/bushels
+  })
+
+  it('keeps groups, crops, and seasons separate and sorts by year, group, crop', () => {
+    const rows = groupYieldAggregates([
+      gp({ groupId: 'E2', groupName: 'Zeta', cropId: 'beans', cropName: 'Beans', seasonYear: 2026, acres: 100, dryBu: 6000, drylandAcres: 100 }),
+      gp({ groupId: 'E1', groupName: 'Acme', cropId: 'corn', cropName: 'Corn', seasonYear: 2026, acres: 100, dryBu: 18000, drylandAcres: 100 }),
+      gp({ groupId: 'E1', groupName: 'Acme', cropId: 'corn', cropName: 'Corn', seasonYear: 2025, acres: 100, dryBu: 20000, drylandAcres: 100 }),
+    ])
+    expect(rows).toHaveLength(3)
+    // 2026 before 2025; within 2026, Acme before Zeta.
+    expect([rows[0].groupName, rows[0].cropName, rows[0].seasonYear]).toEqual(['Acme', 'Corn', 2026])
+    expect([rows[1].groupName, rows[1].seasonYear]).toEqual(['Zeta', 2026])
+    expect([rows[2].groupName, rows[2].seasonYear]).toEqual(['Acme', 2025])
+    expect(rows[0].yield).toBeCloseTo(180, 6)
+    expect(rows[1].yield).toBeCloseTo(60, 6)
+  })
+
+  it('returns an empty array for no plantings', () => {
+    expect(groupYieldAggregates([])).toEqual([])
   })
 })
