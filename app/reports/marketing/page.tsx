@@ -345,7 +345,7 @@ export default function MarketingPage() {
         sub('Basis Buildup')
         if (r.basisLockedBu > 0) kv(`Locked basis (${Math.round(r.basisLockedBu)} bu)`, r.basisLockedAvg != null ? r.basisLockedAvg.toFixed(2) : '—')
         if (r.basisAssumedBu > 0) kv(`Assumed basis (${Math.round(r.basisAssumedBu)} bu)`, r.assumedBasis.toFixed(2))
-        tot(`= Basis (${r.basisState})`, r.avgBasis.toFixed(2))
+        tot(r.basisState === 'blended' ? '= Basis' : `= Basis (${r.basisState})`, r.avgBasis.toFixed(2))
         tot(`Total avg price${qual}`, r.totalAvgPrice != null ? r.totalAvgPrice.toFixed(2) : '—')
         if (r.hedgeRealizedPnl !== 0) kv('Realized hedge P&L (in revenue)', Math.round(r.hedgeRealizedPnl))
       } else {
@@ -769,7 +769,7 @@ function CropSection({
                   <dt className="font-bold text-slate-900">= Basis</dt>
                   <dd className="text-right whitespace-nowrap">
                     <span className={`tabular-nums font-bold ${row.basisState === 'actual' ? 'text-slate-900' : 'text-amber-700'}`}>{basis2(row.avgBasis)}</span>
-                    <span className={`ml-1.5 text-[11px] uppercase tracking-wide font-semibold ${row.basisState === 'actual' ? 'text-slate-500' : 'text-amber-600'}`}>{row.basisState}</span>
+                    {row.basisState !== 'blended' && <span className={`ml-1.5 text-[11px] uppercase tracking-wide font-semibold ${row.basisState === 'actual' ? 'text-slate-500' : 'text-amber-600'}`}>{row.basisState}</span>}
                   </dd>
                 </div>
               </DetailSection>
@@ -875,7 +875,7 @@ function BasisTag({ row }: { row: MarketingRow }) {
   const blended = row.basisState === 'blended'
   return (
     <div className="text-xs text-slate-500 mt-0.5" title={blended ? basisCompositionTitle(row) : undefined}>
-      Basis: <span className={`tabular-nums${blended ? ' underline decoration-dotted decoration-slate-400 underline-offset-2 cursor-help' : ''}`}>{basis2(row.avgBasis)}</span> ({basisStateLabel(row)})
+      Basis: <span className={`tabular-nums${blended ? ' underline decoration-dotted decoration-slate-400 underline-offset-2 cursor-help' : ''}`}>{basis2(row.avgBasis)}</span>{blended ? '' : ` (${basisStateLabel(row)})`}
     </div>
   )
 }
