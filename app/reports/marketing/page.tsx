@@ -649,6 +649,7 @@ function CropSection({
             <div className="text-right">
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">{advanced ? 'Total avg price' : 'Avg price'}</div>
               <div className="text-2xl font-bold tabular-nums leading-tight">{headlineAvg != null ? price2(headlineAvg) : '—'}{markSup}</div>
+              {advanced && <FuturesTag row={row} />}
               {advanced && <BasisTag row={row} />}
             </div>
             <div className="text-right">
@@ -836,6 +837,27 @@ function CropSection({
       )}
     </section>
   )
+}
+
+// The futures half of Total Avg Price, shown under it the same way as basis: the
+// realized average futures over priced bushels (slate), or — when the crop is
+// entirely unpriced — the assumed futures the user entered (amber, dashed).
+function FuturesTag({ row }: { row: MarketingRow }) {
+  if (row.avgFutures != null) {
+    return (
+      <div className="text-xs text-slate-500 mt-0.5">
+        Futures: <span className="tabular-nums">{price2(row.avgFutures)}</span>
+      </div>
+    )
+  }
+  if (row.assumedFutures != null) {
+    return (
+      <div className="text-xs text-amber-700 mt-0.5">
+        Futures: <span className="tabular-nums underline decoration-dashed decoration-amber-400 underline-offset-2">{price2(row.assumedFutures)}</span> (assumed)
+      </div>
+    )
+  }
+  return null
 }
 
 // The basis qualifier under Total Avg Price — a basis figure never appears
