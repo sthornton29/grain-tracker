@@ -436,7 +436,7 @@ export default function MarketingPage() {
             type="button"
             onClick={() => setAssumptionsOpen(true)}
             className={`relative inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold mb-px text-white shadow-sm ${incompleteCount > 0 ? 'bg-amber-500 hover:bg-amber-600' : 'bg-sky-700 hover:bg-sky-800'}`}
-            title="Edit yield, cost, and basis assumptions for each crop"
+            title="Edit yield and cost assumptions for each crop"
           >
             <span aria-hidden>⚙</span> Edit Assumptions
             {incompleteCount > 0 && (
@@ -473,7 +473,6 @@ export default function MarketingPage() {
               onToggleBasis={() => toggleBasis(r.cropId)}
               detailsOpen={expanded.includes(r.cropId)}
               onToggleDetails={() => toggleRow(r.cropId)}
-              seg={segByCrop.get(r.cropId)}
               contracts={contracts.filter((c) => c.crop_id === r.cropId)}
               cropYear={year}
               onSaveBasis={(v) => saveAssumption(r.cropId, { assumed_basis: v })}
@@ -504,7 +503,7 @@ export default function MarketingPage() {
 // ---------------------------------------------------------------------------
 function CropSection({
   row, advanced, basisOpen, onToggleBasis, detailsOpen, onToggleDetails,
-  seg, contracts, cropYear, onSaveBasis,
+  contracts, cropYear, onSaveBasis,
 }: {
   row: MarketingRow
   advanced: boolean
@@ -512,7 +511,6 @@ function CropSection({
   onToggleBasis: () => void
   detailsOpen: boolean
   onToggleDetails: () => void
-  seg?: SegmentAcres
   contracts: Contract[]
   cropYear: number | null
   onSaveBasis: (v: number) => void
@@ -521,14 +519,12 @@ function CropSection({
   const profitTone = row.totalProfit == null ? 'text-slate-400' : row.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'
   const be = breakevenOf(row)
 
-  // Contracted bushels by type, and irr/dry acre split (for the detail grid).
+  // Contracted bushels by type (for the Sales & Contracts detail column).
   const byType = new Map<string, number>()
   for (const c of contracts) {
     const t = CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']
     byType.set(t, (byType.get(t) ?? 0) + Number(c.contracted_bushels ?? 0))
   }
-  const irrAc = seg ? seg.fullIrr + seg.dcIrr : 0
-  const dryAc = seg ? seg.fullDry + seg.dcDry : 0
 
   // --- What-if pricing (session-scoped futures; basis persists to assumptions) ---
   const nc = cropYear != null ? newCropContract(row.cropName, cropYear) : null
@@ -654,13 +650,7 @@ function CropSection({
       {/* Expanded detail — side-by-side columns across the width; collapses to
           2-up, then 1-up on narrow screens. Never scrolls horizontally. */}
       {detailsOpen && (
-        <div className="border-t border-slate-100 p-4 md:p-5 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-x-8 gap-y-5 text-sm">
-          <DetailSection title="Production">
-            <Row label="Planted acres" value={`${bu(row.acres)}${irrAc > 0 || dryAc > 0 ? ` (irr ${bu(irrAc)} / dry ${bu(dryAc)})` : ''}`} />
-            <Row label="Yield" value={row.yield != null ? `${row.yield.toFixed(1)} bu/ac ${row.yieldLabel}` : '—'} />
-            <Row label="Total production" value={`${bu(prod)} bu`} />
-          </DetailSection>
-
+        <div className="border-t border-slate-100 p-4 md:p-5 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-x-8 gap-y-5 text-sm">
           <DetailSection title="Sales & Contracts">
             <Row label="Contracted" value={`${bu(row.contractedBu)} bu`} />
             <Row label="Remaining" value={`${bu(row.remaining)} bu`} tone={row.remaining < 0 ? 'text-red-700' : undefined} />
@@ -738,7 +728,7 @@ function CropSection({
                   <input id={basisInputId} type="number" step="0.01" inputMode="decimal" value={basisInput} placeholder="basis $/bu"
                     onChange={(e) => setBasisInput(e.target.value)} onBlur={commitBasis}
                     className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
-                  <div className="text-xs text-slate-400">Assumed basis — saved to assumptions.</div>
+                  <div className="text-xs text-slate-400">Assumed basis — saves automatically; values every bushel without locked basis.</div>
                 </div>
               )}
               {scenario ? (
@@ -913,7 +903,6 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
   const [cDry, setCDry] = useState(s0(a?.cost_per_acre_dry))
   const [cDcIrr, setCDcIrr] = useState(s0(a?.cost_per_acre_dc_irr))
   const [cDcDry, setCDcDry] = useState(s0(a?.cost_per_acre_dc_dry))
-  const [aBasis, setABasis] = useState(s0(a?.assumed_basis))
 
   const toNum = (str: string) => (str.trim() === '' ? null : Number(str))
   const s = seg ?? { fullIrr: 0, fullDry: 0, dcIrr: 0, dcDry: 0 }
@@ -967,7 +956,8 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
       cost_per_acre_dry: toNum(cDry),
       cost_per_acre_dc_irr: toNum(cDcIrr),
       cost_per_acre_dc_dry: toNum(cDcDry),
-      assumed_basis: toNum(aBasis) ?? 0,
+      // assumed_basis is deliberately untouched here — it's edited on the crop
+      // section's What-If block, not in this panel (saveAssumption preserves it).
     })
   }
 
@@ -988,15 +978,6 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
           }}
         />
         Harvest complete
-      </label>
-      <label className="text-sm flex flex-col gap-1 text-slate-600">
-        <span className="flex items-center gap-2">
-          Assumed basis ($/bu)
-          <input type="number" step="0.01" value={aBasis} onChange={(e) => setABasis(e.target.value)} className={`${ic} w-24`} />
-        </span>
-        <span className="text-xs text-slate-400">
-          Used when no physical contracts have established basis, and to value unpriced bushels.
-        </span>
       </label>
       <table className="w-full text-sm">
         <thead>
