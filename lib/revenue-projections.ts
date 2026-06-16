@@ -130,14 +130,15 @@ export function computeRevenueProjections(args: {
     const profit = costPerAcre != null ? round2(totalRevenue - totalCost) : null
     const profitPerAcre = profit != null && m.acres > 0 ? round2(profit / m.acres) : null
 
-    // Breakeven: dollars of crop sales still needed to cover cost after insurance
-    // and government payments, converted to a per-bushel price or a per-acre yield.
-    const needFromSales = costPerAcre != null ? Math.max(0, totalCost - ins.netPnl - govtPayments) : null
-    const breakevenPrice = needFromSales != null && m.totalProduction > 0 ? round2(needFromSales / m.totalProduction) : null
-    const breakevenYield =
-      needFromSales != null && marketPrice != null && marketPrice > 0 && m.acres > 0
-        ? round2(needFromSales / (marketPrice * m.acres))
-        : null
+    // Breakeven — the standard, sales-only marketing breakeven, identical to the
+    // Marketing dashboard (lib/marketing breakevenOf) so the two pages agree:
+    //   price = cost/acre ÷ expected yield     ($/bu to cover cost at this yield)
+    //   yield = cost/acre ÷ average price       (bu/ac to cover cost at this price)
+    // The insurance + government safety net is reflected in Total Revenue / Profit
+    // above; folding it into breakeven (and using marketPrice instead of the
+    // crop's average price) is what previously made this diverge from the dashboard.
+    const breakevenPrice = costPerAcre != null && m.yield != null && m.yield > 0 ? round2(costPerAcre / m.yield) : null
+    const breakevenYield = costPerAcre != null && m.totalAvgPrice != null && m.totalAvgPrice > 0 ? round2(costPerAcre / m.totalAvgPrice) : null
 
     return {
       cropId: m.cropId,

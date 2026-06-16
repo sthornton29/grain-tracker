@@ -537,8 +537,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
               </tbody>
             </table>
             <p className="text-xs text-slate-500 mt-2">
-              Breakeven price = sales $ needed to cover cost after insurance ÷ total production. Breakeven yield = that
-              same figure ÷ (market price × acres). Both hold the other variable fixed.
+              Breakeven price = cost/acre ÷ expected yield. Breakeven yield = cost/acre ÷ the crop&apos;s average price —
+              the same sales-only breakeven the Marketing dashboard shows. (The insurance and government safety net is
+              reflected in Total Revenue, not folded into breakeven.) Each holds the other variable fixed.
             </p>
           </section>
 
