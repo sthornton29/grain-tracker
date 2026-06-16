@@ -2,7 +2,7 @@
 // (futures + options) into a per-crop marketing position for a crop year.
 // Pure: callers pass already-fetched rows and an actual-production map.
 
-import { cropToCommodity, CONTRACT_TYPE_LABEL } from '@/lib/contracts'
+import { cropToCommodity, CONTRACT_TYPE_LABEL, effectiveContractType } from '@/lib/contracts'
 import { CONTRACT_SIZE_BU } from '@/lib/hedging'
 import type { Contract, Crop, CropAssumption, FuturesPosition, OptionPosition } from '@/lib/types'
 
@@ -282,7 +282,7 @@ export function computeMarketing(args: {
     const physByType = new Map<string, { bu: number; w: number }>()
     for (const c of cropContracts) {
       if (c.futures_price == null) continue
-      const key = c.contract_type ?? 'forward'
+      const key = effectiveContractType({ contract_type: c.contract_type, futures_price: c.futures_price, basis: c.basis })
       const bu = Number(c.contracted_bushels ?? 0)
       const g = physByType.get(key) ?? { bu: 0, w: 0 }
       g.bu += bu; g.w += Number(c.futures_price) * bu

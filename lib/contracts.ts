@@ -58,6 +58,20 @@ export function pricingStatusFor(
   return 'fully_priced' // forward
 }
 
+// A contract priced on BOTH futures and basis is a standard forward (fully priced)
+// — even if it was first entered as an HTA (basis added later) or a basis contract
+// (futures added later). Use this everywhere the type is shown/grouped/filtered so
+// such a contract reads as "Forward" without needing a data migration. The save
+// path also promotes the stored contract_type (see contractFormToPayload).
+export function effectiveContractType(c: {
+  contract_type: ContractType | null
+  futures_price: number | null
+  basis: number | null
+}): ContractType {
+  if (c.futures_price != null && c.basis != null) return 'forward'
+  return c.contract_type ?? 'forward'
+}
+
 export const CONTRACT_TYPE_LABEL: Record<ContractType, string> = {
   forward: 'Forward',
   hta: 'HTA',

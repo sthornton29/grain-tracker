@@ -4,7 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import ContractFlagIcon, { type ContractFlag } from '@/components/contract-flag'
-import { CONTRACT_TYPE_LABEL, type ContractType, type PricingStatus } from '@/lib/contracts'
+import { CONTRACT_TYPE_LABEL, effectiveContractType, type ContractType, type PricingStatus } from '@/lib/contracts'
 import { parseContractMonth } from '@/lib/hedging'
 
 export const dynamic = 'force-dynamic'
@@ -272,7 +272,7 @@ export default async function ContractsPage({
     // Contracts with no entity_id are excluded under an entity filter so loads
     // delivered against a different entity's contract can't smuggle this one in.
     if (entityId && c.entity_id !== entityId) return false
-    if (typeFilter && c.contract_type !== typeFilter) return false
+    if (typeFilter && effectiveContractType(c) !== typeFilter) return false
     if (pricingFilter && c.pricing_status !== pricingFilter) return false
     const flag = flagFor(c)
     if (hideCompleted && flag === 'complete') return false
@@ -321,9 +321,12 @@ export default async function ContractsPage({
 
   // First-notice-day warning: HTAs awaiting basis / basis contracts awaiting
   // futures whose contract month's first notice day is within 30 days (or past).
-  // Computed over all contracts so a filter can't hide a looming deadline.
+  // Computed over all contracts so a filter can't hide a looming deadline — but
+  // skip completed contracts (marked complete or fully delivered): there's nothing
+  // left to price on a finished contract, so the deadline no longer applies.
   const fndWarnings = allContracts
     .filter((c) => c.pricing_status === 'awaiting_basis' || c.pricing_status === 'awaiting_futures')
+    .filter((c) => flagFor(c) !== 'complete')
     .map((c) => ({ c, days: daysUntilFirstNotice(c.contract_month) }))
     .filter((x): x is { c: ContractRow; days: number } => x.days != null && x.days <= 30)
     .sort((a, b) => a.days - b.days)
@@ -415,7 +418,7 @@ export default async function ContractsPage({
             {fndWarnings.map(({ c, days }) => (
               <li key={c.id}>
                 <Link href={`/contracts/${c.id}`} className="underline font-semibold">#{c.contract_number}</Link>
-                {' '}({CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']} {c.contract_month}) — needs{' '}
+                {' '}({CONTRACT_TYPE_LABEL[effectiveContractType(c)]} {c.contract_month}) — needs{' '}
                 {c.pricing_status === 'awaiting_basis' ? 'basis' : 'futures'} set ·{' '}
                 first notice {days < 0 ? `${-days}d ago` : days === 0 ? 'today' : `in ${days}d`}
               </li>
@@ -449,9 +452,10 @@ export default async function ContractsPage({
               const contractPrice = c.price_per_bushel != null ? Number(c.price_per_bushel) : null
               const contractRevenue = contractPrice != null ? contractPrice * Number(c.contracted_bushels) : null
 
-              const endIn = daysUntil(c.delivery_end_date)
-              const endWarning = endIn != null && endIn >= 0 && endIn <= 14
               const flag = flagFor(c)
+              const endIn = daysUntil(c.delivery_end_date)
+              // Don't flag a closing delivery window on a finished contract.
+              const endWarning = flag !== 'complete' && endIn != null && endIn >= 0 && endIn <= 14
 
               return (
                 <tr key={c.id} className="border-t border-slate-100">
@@ -469,7 +473,7 @@ export default async function ContractsPage({
                   <td className="px-3 py-2">{c.buyer?.name ?? ''}</td>
                   <td className="px-3 py-2">{c.crop?.name ?? ''}</td>
                   <td className="px-3 py-2">
-                    <span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']}</span>
+                    <span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{CONTRACT_TYPE_LABEL[effectiveContractType(c)]}</span>
                   </td>
                   <td className="px-3 py-2">{c.crop_year ?? ''}</td>
                   <td className="px-3 py-2">
