@@ -144,14 +144,16 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     [plantings, policies, cropYear],
   )
 
-  // Crops with a policy this year — refresh their harvest-price estimates.
-  const policyCropIds = useMemo(
-    () => Array.from(new Set(policies.filter((p) => p.crop_year === cropYear).map((p) => p.crop_id))),
-    [policies, cropYear],
+  // Live harvest-month futures estimate for EVERY planted crop — the exact same
+  // request the Marketing dashboard makes, so the price used to value unpriced
+  // bushels is identical on both pages (not just for crops that carry a policy).
+  const livePriceCropIds = useMemo(
+    () => Array.from(new Set(plantings.filter((p) => p.season_year === cropYear).map((p) => p.crop_id))),
+    [plantings, cropYear],
   )
   useEffect(() => {
-    if (cropYear === '' || policyCropIds.length === 0) { setLiveEstimates(new Map()); return }
-    const payload = policyCropIds.map((id) => ({ crop_id: id, crop_name: cropById.get(id)?.name ?? '' })).filter((c) => c.crop_name)
+    if (cropYear === '' || livePriceCropIds.length === 0) { setLiveEstimates(new Map()); return }
+    const payload = livePriceCropIds.map((id) => ({ crop_id: id, crop_name: cropById.get(id)?.name ?? '' })).filter((c) => c.crop_name)
     let cancelled = false
     ;(async () => {
       try {
@@ -169,7 +171,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       } catch { /* keep cached/projected */ }
     })()
     return () => { cancelled = true }
-  }, [cropYear, policyCropIds, cropById])
+  }, [cropYear, livePriceCropIds, cropById])
 
   // (field|crop|year) → dry bushels + last load date, splits-aware. Drives actual
   // production (by crop) and the field-level harvest-completion check.
@@ -198,16 +200,19 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     return cropsWithCompleteHarvest({ plantings, aggByKey, cropYear, cropCompleteKeys })
   }, [plantings, aggByKey, cropYear, assumptions])
 
-  // Current futures per crop (harvest-month estimate) to value unpriced bushels
-  // in blended revenue — same source the Marketing dashboard uses.
+  // Current futures per crop to value unpriced bushels in blended revenue — the
+  // live harvest-month estimate, the EXACT source the Marketing dashboard uses
+  // (the dashboard's `currentFutures` is this same map), so the two pages value
+  // unpriced bushels identically. The richer harvestPriceFor (final → live →
+  // stored → projected) still backs the market-price and insurance figures below,
+  // where the final/stored fallback belongs.
   const currentFuturesByCrop = useMemo(() => {
     const m = new Map<string, number>()
     if (cropYear === '') return m
     const ids = new Set(plantings.filter((p) => p.season_year === cropYear).map((p) => p.crop_id))
-    for (const id of ids) { const h = harvestPriceFor(id); if (h.price > 0) m.set(id, h.price) }
+    for (const id of ids) { const p = liveEstimates.get(id); if (p != null && p > 0) m.set(id, p) }
     return m
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plantings, cropYear, liveEstimates, priceEstimates, policies])
+  }, [plantings, cropYear, liveEstimates])
 
   const marketingRows = useMemo(() => {
     if (cropYear === '') return []

@@ -3,7 +3,7 @@ import { notFound } from 'next/navigation'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
-import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, type ContractType, type PricingStatus } from '@/lib/contracts'
+import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, effectiveContractType, type ContractType, type PricingStatus } from '@/lib/contracts'
 import ContractActions from './contract-actions'
 import ContractAttachments from '@/components/contract-attachments'
 
@@ -183,7 +183,7 @@ export default async function ContractDetailPage({ params }: { params: { id: str
     ['Crop', contract.crop?.name ?? '—'],
     ['Crop year', contract.crop_year ?? '—'],
     ['Contract month', contract.contract_month ?? '—'],
-    ['Contract type', CONTRACT_TYPE_LABEL[contract.contract_type ?? 'forward']],
+    ['Contract type', CONTRACT_TYPE_LABEL[effectiveContractType(contract)]],
     ['Pricing status', PRICING_STATUS_LABEL[contract.pricing_status]],
     ['Entity', contract.entity?.name ?? '—'],
     ['Contracted bushels', fmt(Number(contract.contracted_bushels))],

@@ -8,6 +8,7 @@ import {
   futuresFromCashBasis,
   basisFromCashFutures,
   pricingStatusFor,
+  effectiveContractType,
   contractMonthOptionsForCrop,
   type ContractType,
 } from '@/lib/contracts'
@@ -59,7 +60,9 @@ export function contractToForm(c: Contract): ContractFormState {
     delivery_start_date: c.delivery_start_date ?? '',
     delivery_end_date: c.delivery_end_date ?? '',
     notes: c.notes ?? '',
-    contract_type: c.contract_type ?? 'forward',
+    // A contract with both legs reads as a forward (see effectiveContractType), so
+    // the editor opens with all three price legs visible instead of locking one.
+    contract_type: effectiveContractType(c),
     contract_month: c.contract_month ?? '',
     futures_price: s(c.futures_price),
     basis: s(c.basis),
@@ -76,7 +79,11 @@ export function contractFormToPayload(f: ContractFormState) {
   const futures = parsePrice(f.futures_price)
   const basis = parsePrice(f.basis)
   const fee = parsePrice(f.service_fee) ?? 0
-  const pricing_status = pricingStatusFor(f.contract_type, { futures, basis })
+  // A contract with BOTH a futures price and a basis is a standard forward (fully
+  // priced), even if it started as an HTA (basis added later) or a basis contract
+  // (futures added later). Promote the stored type so it reads correctly everywhere.
+  const contract_type: ContractType = futures != null && basis != null ? 'forward' : f.contract_type
+  const pricing_status = pricingStatusFor(contract_type, { futures, basis })
   // Cash is known only when fully priced; otherwise it's pending.
   const cash = pricing_status === 'fully_priced'
     ? (parsePrice(f.cash_price) ?? (futures != null && basis != null ? cashFromFuturesBasis(futures, basis, fee) : null))
@@ -93,7 +100,7 @@ export function contractFormToPayload(f: ContractFormState) {
     delivery_start_date: f.delivery_start_date || null,
     delivery_end_date: f.delivery_end_date || null,
     notes: f.notes || null,
-    contract_type: f.contract_type,
+    contract_type,
     contract_month: f.contract_month || null,
     futures_price: futures,
     basis,

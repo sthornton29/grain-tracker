@@ -6,6 +6,7 @@ import {
   futuresFromCashBasis,
   basisFromCashFutures,
   pricingStatusFor,
+  effectiveContractType,
   CONTRACT_TYPE_LABEL,
   PRICING_STATUS_LABEL,
 } from '@/lib/contracts'
@@ -133,6 +134,42 @@ describe('pricingStatusFor', () => {
 
   it('basis treats futures 0 as set (not null) → fully_priced', () => {
     expect(pricingStatusFor('basis', { futures: 0, basis: -0.25 })).toBe('fully_priced')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// effectiveContractType: a contract priced on BOTH futures and basis is a
+// standard forward, regardless of how it was first entered (HTA → basis added,
+// or basis → futures added). Otherwise the stored type stands.
+// ---------------------------------------------------------------------------
+
+describe('effectiveContractType', () => {
+  it('basis contract + futures added → forward (the Woodall case)', () => {
+    expect(effectiveContractType({ contract_type: 'basis', futures_price: 4.6, basis: -0.25 })).toBe('forward')
+  })
+
+  it('HTA + basis added → forward', () => {
+    expect(effectiveContractType({ contract_type: 'hta', futures_price: 4.5, basis: -0.3 })).toBe('forward')
+  })
+
+  it('HTA still awaiting basis (futures only) stays HTA', () => {
+    expect(effectiveContractType({ contract_type: 'hta', futures_price: 4.5, basis: null })).toBe('hta')
+  })
+
+  it('basis still awaiting futures (basis only) stays basis', () => {
+    expect(effectiveContractType({ contract_type: 'basis', futures_price: null, basis: -0.25 })).toBe('basis')
+  })
+
+  it('flat-cash forward (neither leg) stays forward', () => {
+    expect(effectiveContractType({ contract_type: 'forward', futures_price: null, basis: null })).toBe('forward')
+  })
+
+  it('both legs at zero still count as set → forward', () => {
+    expect(effectiveContractType({ contract_type: 'basis', futures_price: 0, basis: 0 })).toBe('forward')
+  })
+
+  it('null stored type with both legs → forward', () => {
+    expect(effectiveContractType({ contract_type: null, futures_price: 4.5, basis: -0.2 })).toBe('forward')
   })
 })
 
