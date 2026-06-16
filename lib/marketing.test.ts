@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeMarketing, type Planting } from '@/lib/marketing'
+import { computeMarketing, breakevenAvgPrice, type Planting } from '@/lib/marketing'
 import type { Crop, Contract, CropAssumption, FuturesPosition, OptionPosition } from '@/lib/types'
 
 // Worked examples for the standard marketing methodology. Every expected number
@@ -446,6 +446,21 @@ describe('computeMarketing — assumed futures (the persisted What-If)', () => {
     })
     // Blended: 80,000 @ 4.80 = 384,000; 100,000 @ (4.50-0.20)=4.30 = 430,000.
     expect(r.blendedRevenue).toBeCloseTo(814000, 2)
+  })
+})
+
+describe('breakevenAvgPrice — the price breakeven yield divides into', () => {
+  it('uses the plain total avg price when no assumed futures is set', () => {
+    expect(breakevenAvgPrice({ assumedFutures: null, totalProduction: 100000, blendedRevenue: 530000, totalAvgPrice: 5.3 })).toBe(5.3)
+  })
+
+  it('uses the effective price (revenue ÷ production = the large headline price) once an assumed futures blends in', () => {
+    // assumed futures set → 506,000 / 100,000 = 5.06, NOT the futures+basis total 5.30.
+    expect(breakevenAvgPrice({ assumedFutures: 4.8, totalProduction: 100000, blendedRevenue: 506000, totalAvgPrice: 5.3 })).toBeCloseTo(5.06, 6)
+  })
+
+  it('falls back to the total avg price when production is zero', () => {
+    expect(breakevenAvgPrice({ assumedFutures: 4.8, totalProduction: 0, blendedRevenue: 0, totalAvgPrice: 5.3 })).toBe(5.3)
   })
 })
 

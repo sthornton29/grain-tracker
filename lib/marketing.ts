@@ -439,6 +439,20 @@ export type MarketingTotals = {
   hasCost: boolean
 }
 
+// The "total average price" used for breakeven yield (cost/acre ÷ this): the
+// EFFECTIVE price over ALL production (blended revenue ÷ production) once an
+// assumed futures price blends into the unpriced bushels — i.e. the large
+// headline "Total avg price" — otherwise the plain futures+basis total avg price.
+// Shared by the Marketing dashboard (export), and Revenue Projections, so their
+// breakeven yields divide cost by the same price.
+export function breakevenAvgPrice(
+  row: Pick<MarketingRow, 'assumedFutures' | 'totalProduction' | 'blendedRevenue' | 'totalAvgPrice'>,
+): number | null {
+  return row.assumedFutures != null && row.totalProduction > 0
+    ? row.blendedRevenue / row.totalProduction
+    : row.totalAvgPrice
+}
+
 export function aggregateMarketing(rows: readonly MarketingRow[]): MarketingTotals {
   let acres = 0, totalProduction = 0, blendedRevenue = 0, totalCost = 0, hasCost = false
   for (const r of rows) {

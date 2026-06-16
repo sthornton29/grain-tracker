@@ -212,6 +212,21 @@ describe('computeRevenueProjections — edge cases', () => {
     expect(r.breakevenPrice).toBeCloseTo(5.1, 2)     // 969 / 190
   })
 
+  it('breakeven yield divides by the effective (headline) price when an assumed futures is set', () => {
+    // With an assumed futures the large "Total avg price" is the effective price,
+    // revenue ÷ production = 506,000 / 100,000 = 5.06 — NOT the futures+basis total
+    // (5.30). Breakeven yield = 969 / 5.06 = 191.5, not 969 / 5.30 = 182.8.
+    const m = mrow({
+      cropId: 'corn', acres: 500, yield: 200, totalProduction: 100000,
+      blendedRevenue: 506000, totalAvgPrice: 5.3, assumedFutures: 4.8, costPerAcre: 969,
+    })
+    const { rows } = computeRevenueProjections({
+      marketingRows: [m], contracts: [], cropYear: CY,
+      marketPriceByCrop: new Map(), insuranceByCrop: new Map(),
+    })
+    expect(rows[0].breakevenYield).toBeCloseTo(191.5, 1)   // 969 / 5.06, not 969 / 5.30
+  })
+
   it('no cost → profit null and breakeven null', () => {
     const m = mrow({ cropId: 'corn', acres: 100, totalProduction: 10000, blendedRevenue: 40000 })
     const { rows } = computeRevenueProjections({

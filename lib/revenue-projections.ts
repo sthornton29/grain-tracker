@@ -7,7 +7,7 @@
 // passes them in, so the page can recompute live as any source changes.
 
 import type { Contract } from '@/lib/types'
-import { aggregateMarketing, type MarketingRow } from '@/lib/marketing'
+import { aggregateMarketing, breakevenAvgPrice, type MarketingRow } from '@/lib/marketing'
 
 export type InsuranceProceeds = {
   netPnl: number
@@ -128,14 +128,16 @@ export function computeRevenueProjections(args: {
     const profitPerAcre = profit != null && m.acres > 0 ? profit / m.acres : null
 
     // Breakeven — the standard, sales-only marketing breakeven, identical to the
-    // Marketing dashboard (lib/marketing breakevenOf) so the two pages agree:
-    //   price = cost/acre ÷ expected yield     ($/bu to cover cost at this yield)
-    //   yield = cost/acre ÷ average price       (bu/ac to cover cost at this price)
-    // The insurance + government safety net is reflected in Total Revenue / Profit
-    // above; folding it into breakeven (and using marketPrice instead of the
-    // crop's average price) is what previously made this diverge from the dashboard.
+    // Marketing dashboard so the two pages agree:
+    //   price = cost/acre ÷ expected yield        ($/bu to cover cost at this yield)
+    //   yield = cost/acre ÷ breakeven avg price    (bu/ac to cover cost at that price)
+    // The yield divides by the large "Total avg price" (breakevenAvgPrice — the
+    // effective price over all production once assumptions blend in), the same
+    // figure the dashboard headline shows. The insurance + government safety net is
+    // reflected in Total Revenue / Profit above, not folded into breakeven.
+    const beAvg = breakevenAvgPrice(m)
     const breakevenPrice = costPerAcre != null && m.yield != null && m.yield > 0 ? costPerAcre / m.yield : null
-    const breakevenYield = costPerAcre != null && m.totalAvgPrice != null && m.totalAvgPrice > 0 ? costPerAcre / m.totalAvgPrice : null
+    const breakevenYield = costPerAcre != null && beAvg != null && beAvg > 0 ? costPerAcre / beAvg : null
 
     return {
       cropId: m.cropId,
