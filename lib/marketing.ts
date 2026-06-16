@@ -364,9 +364,16 @@ export function computeMarketing(args: {
     // (6) Blended expected revenue — the profitability + Revenue Projections basis.
     //     Each bushel bucket is valued at its own price (raw, no P&L), then the
     //     realized hedge P&L is added ONCE so it isn't double-counted with #2.
+    //     Contracts can exceed this crop's expected production (over-contracting —
+    //     e.g. sold on a higher expected yield); revenue can't be booked for grain
+    //     you won't grow, so value at most `totalProduction` bushels of contracts,
+    //     scaling each proportionally when over-sold. A no-op when contracted <=
+    //     production (unsold/hedge/unpriced are already clamped to >= 0 above), so
+    //     revenue/acre stays = Total Avg Price x yield.
+    const contractFill = contractedBu > totalProduction && contractedBu > 0 ? totalProduction / contractedBu : 1
     let blendedRevenue = 0
     for (const c of cropContracts) {
-      const bu = Number(c.contracted_bushels ?? 0)
+      const bu = Number(c.contracted_bushels ?? 0) * contractFill
       if (c.futures_price != null) {
         // Futures-component contract (forward-with-futures / HTA / priced basis):
         // futures + its basis, using assumed basis where basis isn't set yet.
