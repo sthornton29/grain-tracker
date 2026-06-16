@@ -64,10 +64,20 @@ export type MarketingRow = {
   // --- blended expected revenue (the Revenue Projections basis) ---
   unpricedBu: number
   blendedRevenue: number
+  // The all-in futures $/bu the completely-unpriced bushels (`unpricedBu`) are
+  // valued at inside blendedRevenue (assumed futures when set, else the market
+  // estimate; raw futures avg / 0 as last resorts). Lets the dashboard's What-If
+  // re-price exactly those bushels as a delta on blendedRevenue and stay
+  // consistent with it.
+  unpricedFuturesPrice: number
   costPerAcre: number | null
   costPerBu: number | null
-  // Per-acre profitability shown on the dashboard: revenue/acre = total avg
-  // price × yield; profit/acre = revenue/acre − cost/acre.
+  // Per-acre profitability — derived from blendedRevenue so the dashboard and
+  // Revenue Projections agree to the cent: revenue/acre = blendedRevenue ÷ acres;
+  // profit/acre = revenue/acre − cost/acre; totalProfit = blendedRevenue − total
+  // cost. (Total Avg Price is the separate price-buildup reference, shown but no
+  // longer the revenue driver — it overstates in mixed-pricing cases because it
+  // extends the priced average over unpriced bushels.)
   revenuePerAcre: number | null
   profitPerAcre: number | null
   totalProfit: number | null
@@ -376,12 +386,17 @@ export function computeMarketing(args: {
 
     const costPerAcre = assumption?.cost_per_acre != null ? Number(assumption.cost_per_acre) : null
     const costPerBu = costPerAcre != null && yieldVal != null && yieldVal > 0 ? round(costPerAcre / yieldVal, 4) : null
-    // Revenue/acre = Total Average Price × yield (hand-verifiable from the two
-    // columns next to it). Both always compute via the assumed-basis fallback, so
-    // profit/acre = revenue/acre − cost/acre is never blocked once a cost is set.
-    const revenuePerAcre = totalAvgPrice != null && yieldVal != null ? round2(totalAvgPrice * yieldVal) : null
+    // The futures price the completely-unpriced bushels are valued at in blended
+    // revenue (see the unpricedBu term above) — exposed so the dashboard What-If
+    // can re-price them as a delta on blendedRevenue.
+    const unpricedFuturesPrice = round(marketFutures ?? rawAvgFutures ?? 0)
+    // Revenue / profit come straight off blendedRevenue — the single source of
+    // truth Revenue Projections also uses — so the two reports reconcile exactly
+    // (their only difference is RevProj's insurance + government payments).
+    const totalCost = costPerAcre != null ? round2(costPerAcre * acres) : null
+    const revenuePerAcre = acres > 0 ? round2(blendedRevenue / acres) : null
     const profitPerAcre = revenuePerAcre != null && costPerAcre != null ? round2(revenuePerAcre - costPerAcre) : null
-    const totalProfit = profitPerAcre != null ? round2(profitPerAcre * acres) : null
+    const totalProfit = totalCost != null ? round2(blendedRevenue - totalCost) : null
 
     rows.push({
       cropId: crop.id, cropName: crop.name, acres, yield: yieldVal, yieldLabel, totalProduction,
@@ -389,7 +404,7 @@ export function computeMarketing(args: {
       futuresPricedBu, physicalFuturesBu, physicalFuturesAvg, openHedgeBu, openHedgeAvg,
       rawAvgFutures, hedgeRealizedPnl, hedgeAdjPerBu, avgFutures, avgBasis, avgBasisAssumed, assumedBasis, assumedFutures,
       basisLockedBu, basisLockedAvg, basisAssumedBu, basisState,
-      totalAvgPrice, unpricedBu, blendedRevenue, costPerAcre, costPerBu, revenuePerAcre, profitPerAcre, totalProfit,
+      totalAvgPrice, unpricedBu, blendedRevenue, unpricedFuturesPrice, costPerAcre, costPerBu, revenuePerAcre, profitPerAcre, totalProfit,
       openFuturesHedgedBu: openHedgeBu,
       futuresSources, lockedPriceBu, futuresAssumedBu,
     })

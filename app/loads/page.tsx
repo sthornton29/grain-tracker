@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
@@ -90,6 +91,7 @@ function csvEscape(v: unknown) {
 
 export default function LoadsPage() {
   const supabase = useMemo(() => createClient(), [])
+  const router = useRouter()
   const [rows, setRows] = useState<Row[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
   const [farms, setFarms] = useState<Farm[]>([])
@@ -351,13 +353,6 @@ export default function LoadsPage() {
     return paidTickets.has(t) ? 'paid' : 'unpaid'
   }
 
-  async function onDelete(id: string) {
-    if (!confirm('Delete this load? This cannot be undone.')) return
-    const { error } = await supabase.from('loads').delete().eq('id', id)
-    if (error) { alert(error.message); return }
-    refresh()
-  }
-
   function downloadCsv(rowsToExport: Row[], filenameSuffix = '') {
     const headers = [
       'date','time','ticket','truck','crop','from','to','contract',
@@ -486,6 +481,8 @@ export default function LoadsPage() {
         </div>
       )}
 
+      <p className="text-sm text-slate-500">Click any load to view details, edit, or delete.</p>
+
       <div className="overflow-x-auto bg-white rounded-xl shadow">
         <table className="min-w-full text-sm">
           <thead className="bg-slate-100 text-slate-700 cursor-default">
@@ -508,14 +505,12 @@ export default function LoadsPage() {
               <SortTh onClick={() => toggleSort('dry')}      active={sortKey === 'dry'}      dir={sortDir} align="right">Dry bu</SortTh>
               <SortTh onClick={() => toggleSort('moisture')} active={sortKey === 'moisture'} dir={sortDir} align="right">Moist</SortTh>
               <SortTh onClick={() => toggleSort('testwt')}   active={sortKey === 'testwt'}   dir={sortDir} align="right">Test wt</SortTh>
-              <th className="px-3 py-2"></th>
-              <th className="px-3 py-2"></th>
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan={14} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
+            {loading && <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
             {!loading && sorted.length === 0 && (
-              <tr><td colSpan={14} className="px-3 py-6 text-center text-slate-400">No loads found.</td></tr>
+              <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">No loads found.</td></tr>
             )}
             {sorted.map((r) => {
               const { wetBushels, dryBushels } = bushelsFor(r)
@@ -525,8 +520,13 @@ export default function LoadsPage() {
               const isExpanded = expanded.has(r.id)
               return (
                 <Fragment key={r.id}>
-                <tr className={`border-t border-slate-100 ${selected.has(r.id) ? 'bg-sky-50' : ''}`}>
-                  <td className="px-3 py-2"><input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleRow(r.id)} /></td>
+                <tr
+                  onClick={() => router.push(`/loads/${r.id}`)}
+                  className={`border-t border-slate-100 cursor-pointer hover:bg-slate-50 ${selected.has(r.id) ? 'bg-sky-50 hover:bg-sky-100' : ''}`}
+                >
+                  <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                    <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleRow(r.id)} />
+                  </td>
                   <td className="px-3 py-2 whitespace-nowrap">{r.date}{r.time ? ` ${r.time.slice(0,5)}` : ''}</td>
                   <td className="px-3 py-2">{r.ticket_number}</td>
                   <td className="px-3 py-2">{r.truck?.name_or_number}</td>
@@ -536,7 +536,7 @@ export default function LoadsPage() {
                     {isSplit && (
                       <button
                         type="button"
-                        onClick={() => toggleExpanded(r.id)}
+                        onClick={(e) => { e.stopPropagation(); toggleExpanded(r.id) }}
                         className="ml-2 inline-flex items-center gap-1 text-xs bg-sky-100 text-sky-800 rounded px-2 py-0.5 hover:bg-sky-200"
                         title="Show split breakdown"
                       >
@@ -559,17 +559,11 @@ export default function LoadsPage() {
                   <td className="px-3 py-2 text-right font-semibold">{fmt(dryBushels)}</td>
                   <td className="px-3 py-2 text-right">{r.moisture ?? ''}</td>
                   <td className="px-3 py-2 text-right">{r.test_weight ?? ''}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">
-                    <Link href={`/loads/${r.id}`} className="text-sky-700">View</Link>
-                    <span className="text-slate-300 mx-1">·</span>
-                    <Link href={`/loads/${r.id}/edit`} className="text-sky-700">Edit</Link>
-                  </td>
-                  <td className="px-3 py-2"><button onClick={() => onDelete(r.id)} className="text-red-600">Delete</button></td>
                 </tr>
                 {isSplit && isExpanded && (
                   <tr className="bg-slate-50 border-t border-slate-100">
                     <td></td>
-                    <td colSpan={13} className="px-3 py-2">
+                    <td colSpan={11} className="px-3 py-2">
                       <table className="text-xs">
                         <thead>
                           <tr className="text-slate-500">

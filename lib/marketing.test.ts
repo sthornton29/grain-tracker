@@ -100,10 +100,10 @@ describe('computeMarketing — average futures price', () => {
     // Blended: hedge-covered 50,000 @ (4.50-0.30)=4.20 → 210,000;
     //          unpriced 130,000 @ (current 4.20-0.30)=3.90 → 507,000. Total 717,000.
     expect(r.blendedRevenue).toBeCloseTo(717000, 2)
-    // Revenue/Ac = Total Avg $ × yield = 4.20 × 180 = 756; Profit/Ac = 756 − 600.
-    expect(r.revenuePerAcre).toBeCloseTo(756, 2)
-    expect(r.profitPerAcre).toBeCloseTo(156, 2)
-    expect(r.totalProfit).toBeCloseTo(156000, 2)  // 156 × 1000 ac
+    // Revenue/Ac = blended revenue ÷ acres = 717,000 / 1000 = 717; Profit/Ac = 717 − 600.
+    expect(r.revenuePerAcre).toBeCloseTo(717, 2)
+    expect(r.profitPerAcre).toBeCloseTo(117, 2)
+    expect(r.totalProfit).toBeCloseTo(117000, 2)  // 717,000 − 600,000
   })
 
   it('physical HTA + open short: weighted raw avg over both', () => {
@@ -185,11 +185,11 @@ describe('computeMarketing — average futures price', () => {
     // Blended: HTA 20,000 @ (11.00-0.50)=10.50 → 210,000;
     //          unpriced 10,000 @ (10.80-0.50)=10.30 → 103,000. Total 313,000.
     expect(r.blendedRevenue).toBeCloseTo(313000, 2)
-    // Revenue/Ac = Total Avg $ × yield = 10.50 × 60 = 630; Profit/Ac = 630 − 500.
-    expect(r.revenuePerAcre).toBeCloseTo(630, 2)
+    // Revenue/Ac = blended revenue ÷ acres = 313,000 / 500 = 626; Profit/Ac = 626 − 500.
+    expect(r.revenuePerAcre).toBeCloseTo(626, 2)
     expect(r.profitPerAcre).not.toBeNull()          // computes — the soybean fix
-    expect(r.profitPerAcre).toBeCloseTo(130, 2)
-    expect(r.totalProfit).toBeCloseTo(65000, 2)     // 130 × 500 ac
+    expect(r.profitPerAcre).toBeCloseTo(126, 2)
+    expect(r.totalProfit).toBeCloseTo(63000, 2)     // 313,000 − 250,000
   })
 
   it('options realized P&L blends in; open options are excluded', () => {
@@ -427,7 +427,7 @@ describe('computeMarketing — assumed futures (the persisted What-If)', () => {
     expect(r.assumedFutures).toBe(4.60)
     expect(r.totalAvgPrice).toBeCloseTo(4.30, 6)            // 4.60 + (-0.30), not 4.20
     expect(r.blendedRevenue).toBeCloseTo(774000, 2)         // 180,000 @ 4.30
-    expect(r.revenuePerAcre).toBeCloseTo(774, 2)            // 4.30 × 180
+    expect(r.revenuePerAcre).toBeCloseTo(774, 2)            // 774,000 ÷ 1000 ac
     expect(r.profitPerAcre).toBeCloseTo(174, 2)             // 774 − 600
   })
 

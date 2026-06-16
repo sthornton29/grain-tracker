@@ -3,6 +3,8 @@
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Modal } from './position-form'
+import ClosePositionDialog from './close-position-dialog'
+import CloseOptionDialog from './close-option-dialog'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
 import {
@@ -113,9 +115,14 @@ type Props = {
   existingOptions: OptionPosition[]
   onClose: () => void
   onImported: (summary: { inserted: number; closed: number }) => void
+  // Called after a position is closed via the "possibly closed" step, so the
+  // parent reloads — the refreshed existingPositions then drop out of the
+  // possibly-closed list automatically. Distinct from onImported (which also
+  // closes this modal); this keeps the import open so the user can keep reviewing.
+  onChanged?: () => void
 }
 
-export default function StatementImport({ entities, existingPositions, existingOptions, onClose, onImported }: Props) {
+export default function StatementImport({ entities, existingPositions, existingOptions, onClose, onImported, onChanged }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [source, setSource] = useState<DocumentSource | null>(null)
   const [stage, setStage] = useState<string | null>(null)
@@ -129,6 +136,11 @@ export default function StatementImport({ entities, existingPositions, existingO
   const [importEntityId, setImportEntityId] = useState('')
   const [bulkCropYear, setBulkCropYear] = useState('')
   const [saving, setSaving] = useState(false)
+  // Possibly-closed step: positions the user has dismissed ("Keep open"), and the
+  // position currently being closed through the real close workflow.
+  const [keptOpenIds, setKeptOpenIds] = useState<Set<string>>(new Set())
+  const [closingFut, setClosingFut] = useState<FuturesPosition | null>(null)
+  const [closingOpt, setClosingOpt] = useState<OptionPosition | null>(null)
 
   function buildOpenRow(p: NonNullable<BrokerageStatementExtraction['open_positions']>[number]): OpenRow | null {
     const commodity = normalizeCommodity(p.commodity)
@@ -343,6 +355,67 @@ export default function StatementImport({ entities, existingPositions, existingO
   const closedToImport = closedRows.filter((r) => r.include && !r.matchedOpenId && !r.alreadyImported)
   const newOpenOptions = openOptionRows.filter((r) => r.include && !r.existing)
   const newClosedOptions = closedOptionRows.filter((r) => r.include && !r.alreadyImported)
+
+  // --- Possibly-closed detection (a distinct second review step) -------------
+  // Positions we still hold OPEN in the app that do NOT appear among the
+  // statement's open positions have likely been closed. We compare conservatively
+  // on commodity + contract month (ignoring the AI-unreliable side) built from the
+  // RAW parsed positions (not the validated rows), and scope to the account entity
+  // selected above, so we never flag a position held in another account. Anything
+  // the statement explicitly closes (a matched closed trade) is already handled by
+  // the import flow above and excluded here. Nothing is auto-closed — the user
+  // confirms each through the real close workflow or keeps it open.
+  const importEntity = importEntityId || null
+  const statementOpenKeys = useMemo(() => {
+    const s = new Set<string>()
+    for (const p of extraction?.open_positions ?? []) {
+      const c = normalizeCommodity(p.commodity)
+      if (c && p.contract_month) s.add(`${c}|${up(p.contract_month)}`)
+    }
+    return s
+  }, [extraction])
+  const statementOptionKeys = useMemo(() => {
+    const s = new Set<string>()
+    for (const o of extraction?.open_options ?? []) {
+      const c = normalizeCommodity(o.commodity)
+      const t = normalizeOptionType(o.option_type)
+      if (c && t && o.underlying_contract_month && o.strike_price != null) {
+        s.add(`${c}|${t}|${up(o.underlying_contract_month)}|${o.strike_price.toFixed(4)}`)
+      }
+    }
+    return s
+  }, [extraction])
+  const matchedCloseIds = useMemo(
+    () => new Set(closedRows.filter((r) => r.matchedOpenId).map((r) => r.matchedOpenId!)),
+    [closedRows],
+  )
+  const possiblyClosedFutures = useMemo(
+    () =>
+      extraction == null ? [] : existingPositions.filter(
+        (p) =>
+          p.status === 'open' &&
+          (p.entity_id ?? null) === importEntity &&
+          !keptOpenIds.has(p.id) &&
+          !matchedCloseIds.has(p.id) &&
+          !statementOpenKeys.has(`${p.commodity}|${up(p.contract_month)}`),
+      ),
+    [extraction, existingPositions, importEntity, keptOpenIds, matchedCloseIds, statementOpenKeys],
+  )
+  const possiblyClosedOptions = useMemo(
+    () =>
+      extraction == null ? [] : existingOptions.filter(
+        (o) =>
+          o.status === 'open' &&
+          (o.entity_id ?? null) === importEntity &&
+          !keptOpenIds.has(o.id) &&
+          !statementOptionKeys.has(`${o.commodity}|${o.option_type}|${up(o.underlying_contract_month)}|${o.strike_price.toFixed(4)}`),
+      ),
+    [extraction, existingOptions, importEntity, keptOpenIds, statementOptionKeys],
+  )
+  const possiblyClosedCount = possiblyClosedFutures.length + possiblyClosedOptions.length
+  function keepOpen(id: string) {
+    setKeptOpenIds((s) => { const next = new Set(s); next.add(id); return next })
+  }
 
   async function save() {
     setErr(null)
@@ -736,6 +809,66 @@ export default function StatementImport({ entities, existingPositions, existingO
             )}
           </div>
 
+          {/* Step 2 — positions we hold open that the statement no longer lists.
+              Deliberately separated from the import above so the two review steps
+              read as distinct: (a) new positions to add, (b) existing positions
+              that may need closing. Nothing here changes unless the user acts. */}
+          {possiblyClosedCount > 0 && (
+            <div className="rounded-lg border-2 border-amber-300 bg-amber-50 p-3 space-y-3">
+              <div>
+                <div className="font-semibold text-amber-900">
+                  Possibly closed — {possiblyClosedCount} open position{possiblyClosedCount === 1 ? '' : 's'} in your records didn’t appear on this statement
+                </div>
+                <p className="text-xs text-amber-800 mt-0.5">
+                  A position you hold open that isn’t on the latest statement has likely been closed. This is a separate step
+                  from the new positions above. Choose <b>Close this position</b> to record it through the normal close
+                  workflow (you enter the actual close price &amp; date — nothing is auto-closed), or <b>Keep open</b> if it’s
+                  on a different account or this statement was partial. Comparison is scoped to the account entity selected
+                  above{importEntity ? '' : ' (none — comparing positions with no entity)'}.
+                </p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-amber-100 text-amber-900">
+                    <tr>{['Type', 'Commodity', 'Contract', 'Side', '#', 'Entry', 'Crop Yr', ''].map((h) => <th key={h} className="text-left px-2 py-1.5 whitespace-nowrap">{h}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {possiblyClosedFutures.map((p) => (
+                      <tr key={p.id} className="border-t border-amber-200">
+                        <td className="px-2 py-1.5">Futures</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">{p.commodity}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">{p.contract_month}</td>
+                        <td className="px-2 py-1.5 capitalize">{p.side}</td>
+                        <td className="px-2 py-1.5 text-right">{p.num_contracts}</td>
+                        <td className="px-2 py-1.5 font-mono whitespace-nowrap">{fmtPrice(p.trade_price)}</td>
+                        <td className="px-2 py-1.5">{p.crop_year}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap text-right">
+                          <button type="button" onClick={() => setClosingFut(p)} className="rounded-lg bg-sky-700 text-white px-2.5 py-1 text-xs font-semibold mr-2">Close this position</button>
+                          <button type="button" onClick={() => keepOpen(p.id)} className="rounded-lg bg-white border border-slate-300 px-2.5 py-1 text-xs">Keep open</button>
+                        </td>
+                      </tr>
+                    ))}
+                    {possiblyClosedOptions.map((o) => (
+                      <tr key={o.id} className="border-t border-amber-200">
+                        <td className="px-2 py-1.5">Option</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">{o.commodity}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">{o.underlying_contract_month} {fmtPrice(o.strike_price)} {o.option_type}</td>
+                        <td className="px-2 py-1.5 capitalize">{o.side}</td>
+                        <td className="px-2 py-1.5 text-right">{o.num_contracts}</td>
+                        <td className="px-2 py-1.5 font-mono whitespace-nowrap">{fmtCents(o.premium_cents)}</td>
+                        <td className="px-2 py-1.5">{o.crop_year}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap text-right">
+                          <button type="button" onClick={() => setClosingOpt(o)} className="rounded-lg bg-sky-700 text-white px-2.5 py-1 text-xs font-semibold mr-2">Close this position</button>
+                          <button type="button" onClick={() => keepOpen(o.id)} className="rounded-lg bg-white border border-slate-300 px-2.5 py-1 text-xs">Keep open</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {err && <p className="text-sm text-red-600">{err}</p>}
 
           <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3">
@@ -748,6 +881,24 @@ export default function StatementImport({ entities, existingPositions, existingO
             <button type="button" onClick={onClose} className="rounded-xl bg-white border border-slate-300 px-4 py-2.5 text-sm">Cancel</button>
           </div>
         </div>
+      )}
+
+      {/* The real close workflow, pre-filled with the flagged position. On save we
+          ask the parent to reload; the refreshed positions then drop out of the
+          possibly-closed list above (the closed one is no longer 'open'). */}
+      {closingFut && (
+        <ClosePositionDialog
+          position={closingFut}
+          onClose={() => setClosingFut(null)}
+          onSaved={() => { setClosingFut(null); onChanged?.() }}
+        />
+      )}
+      {closingOpt && (
+        <CloseOptionDialog
+          position={closingOpt}
+          onClose={() => setClosingOpt(null)}
+          onSaved={() => { setClosingOpt(null); onChanged?.() }}
+        />
       )}
     </Modal>
   )
