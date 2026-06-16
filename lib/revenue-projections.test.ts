@@ -16,9 +16,10 @@ import type { Contract } from '@/lib/types'
 //   totalRevenue     = round2(cropSalesRevenue + ins.netPnl + govtPayments)
 //   totalCost        = round2(costPerAcre * acres)  (0 if costPerAcre null)
 //   profit           = round2(totalRevenue - totalCost)  (null if costPerAcre null)
-//   needFromSales    = max(0, totalCost - ins.netPnl - govtPayments)  (null if no cost)
-//   breakevenPrice   = round2(needFromSales / totalProduction)  (null if prod<=0)
-//   breakevenYield   = round2(needFromSales / (marketPrice * acres))  (null if mkt<=0)
+//   breakevenPrice   = round2(costPerAcre / yield)         (null if no cost/yield)
+//   breakevenYield   = round2(costPerAcre / totalAvgPrice) (null if no cost/avg price)
+//     -- the sales-only marketing breakeven, identical to the Marketing dashboard;
+//        the insurance/government safety net is NOT folded in.
 //
 // Totals: profit = anyCost ? round2(totalRevenue - totalCost) : totalRevenue;
 //   costPerAcre = (acres>0 && anyCost) ? round2(totalCost/acres) : null.
@@ -65,8 +66,8 @@ describe('computeRevenueProjections — single crop revenue rollup', () => {
     // insurance netPnl 25,000; govt 12,000+3,000+1,500 = 16,500.
     // totalRevenue = 810,000 + 25,000 + 16,500 = 851,500.
     // cost 600/ac → 600,000; profit = 251,500; profit/ac = 251.50.
-    // needFromSales = max(0, 600,000 − 25,000 − 16,500) = 558,500.
-    // breakevenPrice = 558,500/180,000 = 3.10; breakevenYield = 558,500/(4.20×1000) = 132.98.
+    // Breakeven is sales-only (cost ÷ price / yield), independent of the safety net:
+    // breakevenPrice = 600/180 = 3.33; breakevenYield = 600/4.50 = 133.33.
     const m = mrow({
       cropId: 'corn', cropName: 'Corn', acres: 1000, yield: 180, yieldLabel: 'Actual',
       totalProduction: 180000, blendedRevenue: 810000, totalAvgPrice: 4.5, costPerAcre: 600,
@@ -88,8 +89,8 @@ describe('computeRevenueProjections — single crop revenue rollup', () => {
     expect(r.profit).toBeCloseTo(251500, 2)
     expect(r.profitPerAcre).toBeCloseTo(251.5, 2)
     expect(r.marketPrice).toBeCloseTo(4.2, 2)
-    expect(r.breakevenPrice).toBeCloseTo(3.1, 2)
-    expect(r.breakevenYield).toBeCloseTo(132.98, 2)
+    expect(r.breakevenPrice).toBeCloseTo(3.33, 2)   // 600 / 180
+    expect(r.breakevenYield).toBeCloseTo(133.33, 2) // 600 / 4.50
 
     expect(totals.cropSalesRevenue).toBeCloseTo(810000, 2)
     expect(totals.totalRevenue).toBeCloseTo(851500, 2)
@@ -178,12 +179,12 @@ describe('computeRevenueProjections — edge cases', () => {
     expect(totals.profitPerAcre).toBeNull()
   })
 
-  it('insurance loss reduces revenue and raises the breakeven need', () => {
-    // 100 ac, 10,000 bu, blended 40,000. insurance netPnl −5,000.
-    // totalRevenue = 35,000; cost 500/ac → 50,000; profit = −15,000.
-    // needFromSales = max(0, 50,000 −(−5,000) − 0) = 55,000.
-    // breakevenPrice = 55,000/10,000 = 5.50; breakevenYield = 55,000/(4.00×100) = 137.50.
-    const m = mrow({ cropId: 'corn', acres: 100, totalProduction: 10000, blendedRevenue: 40000, costPerAcre: 500 })
+  it('insurance loss reduces revenue; breakeven stays the sales-only cost ÷ price', () => {
+    // 100 ac, 10,000 bu (yield 100), avg price 4.00, cost 500/ac. insurance −5,000.
+    // totalRevenue = 40,000 − 5,000 = 35,000; profit = 35,000 − 50,000 = −15,000.
+    // Breakeven is NOT moved by the insurance loss (sales-only, like the dashboard):
+    // price = 500/100 = 5.00; yield = 500/4.00 = 125.0.
+    const m = mrow({ cropId: 'corn', acres: 100, yield: 100, totalProduction: 10000, totalAvgPrice: 4.0, blendedRevenue: 40000, costPerAcre: 500 })
     const { rows } = computeRevenueProjections({
       marketingRows: [m], contracts: [], cropYear: CY,
       marketPriceByCrop: new Map([['corn', 4.0]]), insuranceByCrop: new Map([['corn', ins(-5000, 0, 5000)]]),
@@ -191,8 +192,24 @@ describe('computeRevenueProjections — edge cases', () => {
     const r = rows[0]
     expect(r.totalRevenue).toBeCloseTo(35000, 2)
     expect(r.profit).toBeCloseTo(-15000, 2)
-    expect(r.breakevenPrice).toBeCloseTo(5.5, 2)
-    expect(r.breakevenYield).toBeCloseTo(137.5, 2)
+    expect(r.breakevenPrice).toBeCloseTo(5.0, 2)
+    expect(r.breakevenYield).toBeCloseTo(125.0, 2)
+  })
+
+  it('breakeven yield = cost ÷ average price, matching the Marketing dashboard (corn 969/5.06)', () => {
+    // The reported case: cost 969/ac, average price 5.06 -> breakeven yield 191.5,
+    // independent of the safety net and the market price -- the same figure the
+    // Marketing dashboard shows (cost / Total Avg Price).
+    const m = mrow({ cropId: 'corn', acres: 1000, yield: 190, totalProduction: 190000, totalAvgPrice: 5.06, blendedRevenue: 961400, costPerAcre: 969 })
+    const { rows } = computeRevenueProjections({
+      marketingRows: [m], contracts: [], cropYear: CY,
+      marketPriceByCrop: new Map([['corn', 4.5]]),               // a different "market" price must NOT change breakeven
+      insuranceByCrop: new Map([['corn', ins(30000)]]),          // safety net present...
+      govtByCrop: new Map([['corn', govt(20000)]]),              // ...but excluded from breakeven
+    })
+    const r = rows[0]
+    expect(r.breakevenYield).toBeCloseTo(191.5, 2)   // 969 / 5.06
+    expect(r.breakevenPrice).toBeCloseTo(5.1, 2)     // 969 / 190
   })
 
   it('no cost → profit null and breakeven null', () => {
