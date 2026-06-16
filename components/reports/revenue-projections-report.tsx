@@ -9,10 +9,10 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { computeMarketing, type Planting } from '@/lib/marketing'
+import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, type Planting } from '@/lib/marketing'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { cropToCommodity } from '@/lib/contracts'
-import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fmtPrice } from '@/lib/hedging'
 import {
@@ -130,6 +130,15 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
 
+  // Broken-out expected production (irr/dry × full/double-crop), computed exactly
+  // like the Marketing dashboard so computeMarketing yields identical per-crop
+  // production — and therefore identical blended revenue — on both pages.
+  const doubleCropIds = useMemo(() => buildDoubleCropSet(plantings, cropById), [plantings, cropById])
+  const expProdByCrop = useMemo(() => {
+    if (cropYear === '') return new Map<string, number>()
+    return expectedProductionFromBreakout(segmentAcresByCrop(plantings, cropYear, doubleCropIds), assumptions, cropYear)
+  }, [plantings, cropYear, doubleCropIds, assumptions])
+
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings([...plantings.map((p) => p.season_year), ...policies.map((p) => p.crop_year)], cropYear === '' ? null : cropYear),
     [plantings, policies, cropYear],
@@ -211,10 +220,11 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       options: options.filter((o) => o.crop_year === cropYear),
       assumptions: assumptions.filter((a) => a.crop_year === cropYear),
       actualProductionByCrop: productionByCrop,
+      expectedProductionByCrop: expProdByCrop,
       currentFuturesByCrop,
       harvestCompleteCropIds: harvestCompleteIds,
     })
-  }, [cropYear, crops, plantings, contracts, futures, options, assumptions, productionByCrop, currentFuturesByCrop, harvestCompleteIds])
+  }, [cropYear, crops, plantings, contracts, futures, options, assumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds])
 
   // Resolve a harvest price per crop: final → estimate → projected.
   function harvestPriceFor(cropId: string): { price: number; isFinal: boolean } {
@@ -434,15 +444,29 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
 
       {cropYear !== '' && rows.length > 0 && (
         <>
-          <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print">
-            <strong>Projection</strong> — crop sales use each crop&apos;s blended expected revenue (every bushel valued at
-            its own price, with realized futures/options P&amp;L counted once) from the same engine as the Marketing
-            dashboard. Its <strong>saved</strong> assumptions (assumed basis &amp; assumed futures) flow through here, so
-            the only difference between this page&apos;s profit and the dashboard&apos;s is the insurance proceeds and
-            government payments added below. The dashboard&apos;s un-saved live What-If preview is session-only and does
-            <strong> not</strong> carry over. Insurance proceeds and harvest prices are estimates until RMA finalizes
-            them after harvest.
-          </div>
+          {/* How this is calculated — every methodology note consolidated in one
+              place, collapsed by default so it never clutters the numbers. */}
+          <details className="bg-white rounded-xl shadow text-sm no-print">
+            <summary className="cursor-pointer select-none px-4 py-3 font-semibold text-slate-700">How this is calculated</summary>
+            <div className="border-t border-slate-100 px-4 py-3 space-y-2 text-slate-600">
+              <p><strong className="text-slate-700">Crop sales revenue</strong> — the same blended expected revenue as the
+                Marketing Dashboard: every bushel valued at its own price (flat-cash at cash, futures-priced at futures +
+                basis, open hedges &amp; unpriced bushels at the relevant futures + assumed basis), with realized
+                futures/options P&amp;L counted once. The per-crop and total figures match the dashboard.</p>
+              <p><strong className="text-slate-700">Insurance + government payments</strong> — added here on top of crop
+                sales (insurance = indemnity − premium; government = ARC/PLC + other USDA, allocated by planted acres).
+                These are the <strong>only</strong> reason this page&apos;s profit differs from the Marketing Dashboard —
+                with no insurance or government payments for a crop, the two profits match to the cent.</p>
+              <p><strong className="text-slate-700">Assumptions</strong> — only your <strong>saved</strong> marketing
+                assumptions (assumed basis &amp; assumed futures) flow through. The dashboard&apos;s un-saved live What-If
+                preview is session-only and is not included here.</p>
+              <p><strong className="text-slate-700">Breakeven</strong> — sales-only: price = cost/acre ÷ yield, yield =
+                cost/acre ÷ average price. The insurance/government safety net is in Total Revenue, not folded into
+                breakeven.</p>
+              <p className="text-slate-400">Insurance proceeds and harvest prices are estimates until RMA finalizes them
+                after harvest.</p>
+            </div>
+          </details>
 
           <SummaryCards cards={(() => {
             const cards: SummaryCardData[] = [
@@ -460,7 +484,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
             <table className="min-w-full text-sm border-collapse">
               <thead className={theadCls}>
                 <tr>
-                  {['Crop', 'Acres', 'Yield', 'Total Production', 'Crop Sales Revenue *', 'Insurance Proceeds', 'Govt Payments', 'Total Revenue', 'Revenue/Acre'].map((h) => (
+                  {['Crop', 'Acres', 'Yield', 'Total Production', 'Crop Sales Revenue', 'Insurance Proceeds', 'Govt Payments', 'Total Revenue', 'Revenue/Acre'].map((h) => (
                     <th key={h} className="text-left px-2 py-1 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -472,7 +496,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{bu(r.acres)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{r.yield != null ? `${r.yield.toFixed(1)}` : '—'} <span className="text-xs text-slate-400">{r.yield != null ? r.yieldLabel : ''}</span></td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{bu(r.totalProduction)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums" title={r.avgSalesPrice != null ? `Blended expected revenue — bushels priced bucket-by-bucket + realized hedge P&L counted once. Effective ${fmtPrice(r.avgSalesPrice)}/bu over ${bu(r.totalProduction)} bu.` : 'No production'}>{usd(r.cropSalesRevenue)}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums" title={r.avgSalesPrice != null ? `Effective ${fmtPrice(r.avgSalesPrice)}/bu over ${bu(r.totalProduction)} bu` : 'No production'}>{usd(r.cropSalesRevenue)}</td>
                     <td className={`px-2 py-1 text-right font-mono tabular-nums ${toneText(signedTone(r.insuranceProceeds))}`}>{usd(r.insuranceProceeds)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums" title={`ARC/PLC: ${usd(r.govtArcPlc)} | Conservation/Other (allocated): ${usd(r.govtAllocatedOther)} | Crop-specific other: ${usd(r.govtCropSpecificOther)}`}>{usd(r.govtPayments)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold">{usd(r.totalRevenue)}</td>
@@ -492,13 +516,6 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                 </tr>
               </tbody>
             </table>
-            <p className="text-xs text-slate-500 mt-2">
-              <strong>*</strong> Crop Sales Revenue = the Marketing dashboard&apos;s <strong>blended expected revenue</strong>:
-              each bushel bucket valued at its own price (flat-cash at cash, futures-priced at futures + basis, open hedges
-              and unpriced bushels at the relevant futures + assumed basis), plus realized futures &amp; options P&amp;L
-              counted <strong>once</strong>. Government Payments = ARC/PLC and other USDA payments allocated by planted acres
-              (hover a cell for the breakdown). Insurance Proceeds = total indemnity − premium.
-            </p>
           </section>
 
           {/* Cost / profit / breakeven */}
@@ -536,11 +553,6 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                 </tr>
               </tbody>
             </table>
-            <p className="text-xs text-slate-500 mt-2">
-              Breakeven price = cost/acre ÷ expected yield. Breakeven yield = cost/acre ÷ the crop&apos;s average price —
-              the same sales-only breakeven the Marketing dashboard shows. (The insurance and government safety net is
-              reflected in Total Revenue, not folded into breakeven.) Each holds the other variable fixed.
-            </p>
           </section>
 
           {/* Harvest price reference */}

@@ -389,7 +389,10 @@ export function computeMarketing(args: {
     if (hedgeCovered > 0) blendedRevenue += hedgeCovered * ((openHedgeAvg ?? rawAvgFutures ?? marketFutures ?? 0) + assumedBasis)
     // Completely-unpriced bushels at the assumed/market futures + assumed basis.
     if (unpricedBu > 0) blendedRevenue += unpricedBu * ((marketFutures ?? rawAvgFutures ?? 0) + assumedBasis)
-    blendedRevenue = round2(blendedRevenue + hedgeRealizedPnl)
+    // FULL PRECISION — never rounded here. The UI rounds at display, and
+    // aggregateMarketing() sums these full-precision values so the dashboard and
+    // Revenue Projections totals can't drift apart from stage-rounding.
+    blendedRevenue = blendedRevenue + hedgeRealizedPnl
 
     const costPerAcre = assumption?.cost_per_acre != null ? Number(assumption.cost_per_acre) : null
     const costPerBu = costPerAcre != null && yieldVal != null && yieldVal > 0 ? round(costPerAcre / yieldVal, 4) : null
@@ -399,11 +402,12 @@ export function computeMarketing(args: {
     const unpricedFuturesPrice = round(marketFutures ?? rawAvgFutures ?? 0)
     // Revenue / profit come straight off blendedRevenue — the single source of
     // truth Revenue Projections also uses — so the two reports reconcile exactly
-    // (their only difference is RevProj's insurance + government payments).
-    const totalCost = costPerAcre != null ? round2(costPerAcre * acres) : null
-    const revenuePerAcre = acres > 0 ? round2(blendedRevenue / acres) : null
-    const profitPerAcre = revenuePerAcre != null && costPerAcre != null ? round2(revenuePerAcre - costPerAcre) : null
-    const totalProfit = totalCost != null ? round2(blendedRevenue - totalCost) : null
+    // (their only difference is RevProj's insurance + government payments). Kept at
+    // FULL PRECISION (rounded only at display); nothing rounded is fed downstream.
+    const totalCost = costPerAcre != null ? costPerAcre * acres : null
+    const revenuePerAcre = acres > 0 ? blendedRevenue / acres : null
+    const profitPerAcre = revenuePerAcre != null && costPerAcre != null ? revenuePerAcre - costPerAcre : null
+    const totalProfit = totalCost != null ? blendedRevenue - totalCost : null
 
     rows.push({
       cropId: crop.id, cropName: crop.name, acres, yield: yieldVal, yieldLabel, totalProduction,
@@ -417,4 +421,31 @@ export function computeMarketing(args: {
     })
   }
   return rows.sort((a, b) => a.cropName.localeCompare(b.cropName))
+}
+
+// Grand totals across computeMarketing() rows — the SINGLE shared rollup both the
+// Marketing dashboard and Revenue Projections consume, so neither page sums on its
+// own. Everything is summed at FULL precision (no per-crop rounding fed in); the
+// pages round only at display. `totalProfit` = blendedRevenue − totalCost is the
+// dashboard's combined projected profit; Revenue Projections adds insurance +
+// government payments on top of this exact number.
+export type MarketingTotals = {
+  acres: number
+  totalProduction: number
+  blendedRevenue: number
+  totalCost: number
+  /** blendedRevenue − totalCost; null when NO crop has a cost set. */
+  totalProfit: number | null
+  hasCost: boolean
+}
+
+export function aggregateMarketing(rows: readonly MarketingRow[]): MarketingTotals {
+  let acres = 0, totalProduction = 0, blendedRevenue = 0, totalCost = 0, hasCost = false
+  for (const r of rows) {
+    acres += r.acres
+    totalProduction += r.totalProduction
+    blendedRevenue += r.blendedRevenue
+    if (r.costPerAcre != null) { totalCost += r.costPerAcre * r.acres; hasCost = true }
+  }
+  return { acres, totalProduction, blendedRevenue, totalCost, totalProfit: hasCost ? blendedRevenue - totalCost : null, hasCost }
 }

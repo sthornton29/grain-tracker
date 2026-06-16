@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeMarketing, type Planting } from '@/lib/marketing'
+import { computeMarketing, aggregateMarketing, type Planting } from '@/lib/marketing'
 import { computeRevenueProjections, type InsuranceProceeds, type GovtProceeds } from '@/lib/revenue-projections'
 import type { Crop, Contract, CropAssumption } from '@/lib/types'
 
@@ -143,5 +143,68 @@ describe('Revenue Projections ↔ Marketing dashboard reconciliation', () => {
     })
     expect(rows[0].cropSalesRevenue).toBeCloseTo(864000, 2)                 // identical to marketing
     expect(rows[0].profit! - marketingRows[0].totalProfit!).toBeCloseTo(10000, 2)  // only insurance differs
+  })
+
+  it('shared aggregation reconciles with messy prices/yields — incl. a zero-safety-net crop that matches exactly', () => {
+    // Three crops with deliberately un-round acres/yields/prices/costs, so any
+    // stage-rounding bug (summing rounded per-crop values, rounding cost*acres
+    // separately, etc.) would throw the identity off. The dashboard total comes
+    // from aggregateMarketing(); Revenue Projections layers insurance + govt on the
+    // SAME aggregate. Wheat carries no insurance or government payments, so its two
+    // profits must be bit-for-bit identical.
+    const crops = [crop('corn', 'Corn'), crop('soy', 'Soybean'), crop('wheat', 'Wheat')]
+    const plantings: Planting[] = [
+      { crop_id: 'corn', season_year: CY, planted_acres: 327.4 },
+      { crop_id: 'soy', season_year: CY, planted_acres: 210.85 },
+      { crop_id: 'wheat', season_year: CY, planted_acres: 96.5 },
+    ]
+    const assumptions: CropAssumption[] = [
+      assumption({ crop_id: 'corn', expected_yield: 188.6, assumed_basis: -0.225, cost_per_acre: 612.47 }),
+      assumption({ crop_id: 'soy', expected_yield: 57.3, assumed_basis: -0.41, cost_per_acre: 503.19 }),
+      assumption({ crop_id: 'wheat', expected_yield: 71.2, assumed_basis: -0.15, cost_per_acre: 288.4 }),
+    ]
+    const currentFuturesByCrop = new Map([['corn', 4.835], ['soy', 11.27], ['wheat', 6.42]])
+
+    const marketingRows = computeMarketing({
+      cropYear: CY, crops, plantings, contracts: [], futures: [], options: [],
+      assumptions, actualProductionByCrop: new Map(), currentFuturesByCrop,
+    })
+    const dash = aggregateMarketing(marketingRows)   // the dashboard's combined projected profit
+
+    const insuranceByCrop = new Map<string, InsuranceProceeds>([
+      ['corn', ins(18234.55, 31000.4, 12765.85)],
+      ['soy', ins(-2240.18, 0, 2240.18)],
+      // wheat: none
+    ])
+    const govtByCrop = new Map<string, GovtProceeds>([
+      ['corn', govt(7211.33, 1450.2, 980.1)],
+      ['soy', govt(4120.55)],
+      // wheat: none
+    ])
+
+    const { rows, totals } = computeRevenueProjections({
+      marketingRows, contracts: [], cropYear: CY,
+      marketPriceByCrop: new Map(), insuranceByCrop, govtByCrop,
+    })
+
+    // Per-crop identity: RevProj profit − dashboard per-crop profit === ins + govt.
+    for (const r of rows) {
+      const mr = marketingRows.find((m) => m.cropId === r.cropId)!
+      const insNet = insuranceByCrop.get(r.cropId)?.netPnl ?? 0
+      const g = govtByCrop.get(r.cropId)
+      const govtTotal = g ? g.arcPlc + g.cropSpecificOther + g.allocatedOther : 0
+      expect(r.profit! - mr.totalProfit!).toBeCloseTo(insNet + govtTotal, 6)
+    }
+
+    // The zero-safety-net crop must match EXACTLY (no insurance, no government).
+    const wheatRow = rows.find((r) => r.cropId === 'wheat')!
+    const wheatMr = marketingRows.find((m) => m.cropId === 'wheat')!
+    expect(wheatRow.cropSalesRevenue).toBe(wheatMr.blendedRevenue)
+    expect(wheatRow.profit).toBe(wheatMr.totalProfit)
+
+    // Grand total: RevProj total profit − dashboard total profit === Σ(ins + govt).
+    const insTotal = [...insuranceByCrop.values()].reduce((s, i) => s + i.netPnl, 0)
+    const govtTotal = [...govtByCrop.values()].reduce((s, g) => s + g.arcPlc + g.cropSpecificOther + g.allocatedOther, 0)
+    expect(totals.profit - dash.totalProfit!).toBeCloseTo(insTotal + govtTotal, 6)
   })
 })

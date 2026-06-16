@@ -7,7 +7,7 @@
 // passes them in, so the page can recompute live as any source changes.
 
 import type { Contract } from '@/lib/types'
-import type { MarketingRow } from '@/lib/marketing'
+import { aggregateMarketing, type MarketingRow } from '@/lib/marketing'
 
 export type InsuranceProceeds = {
   netPnl: number
@@ -76,10 +76,6 @@ export type RevenueTotals = {
   profitPerAcre: number | null
 }
 
-function round2(n: number): number {
-  return Math.round(n * 100) / 100
-}
-
 export function computeRevenueProjections(args: {
   marketingRows: MarketingRow[]
   contracts: Contract[]
@@ -113,22 +109,23 @@ export function computeRevenueProjections(args: {
     // Crop sales revenue = the marketing "blended expected revenue": each bushel
     // bucket (flat-cash, futures+basis, open-hedge, unpriced-at-market) valued at
     // its own price, plus realized futures/options P&L counted ONCE. The single
-    // source of truth — identical to what the Marketing dashboard shows.
-    const cropSalesRevenue = round2(m.blendedRevenue)
+    // source of truth — identical to what the Marketing dashboard shows. Kept at
+    // FULL precision (the UI rounds at display); nothing rounded is summed below.
+    const cropSalesRevenue = m.blendedRevenue
     const avgSalesPrice = m.totalProduction > 0 ? m.blendedRevenue / m.totalProduction : null
     const salesPriceSource: RevenueRow['salesPriceSource'] = m.totalProduction > 0 ? 'blended' : null
 
     const ins = insuranceByCrop.get(m.cropId) ?? { netPnl: 0, totalIndemnity: 0, premium: 0 }
     const g = govtByCrop?.get(m.cropId) ?? { arcPlc: 0, cropSpecificOther: 0, allocatedOther: 0 }
-    const govtPayments = round2(g.arcPlc + g.cropSpecificOther + g.allocatedOther)
+    const govtPayments = g.arcPlc + g.cropSpecificOther + g.allocatedOther
 
-    const totalRevenue = round2(cropSalesRevenue + ins.netPnl + govtPayments)
-    const revenuePerAcre = m.acres > 0 ? round2(totalRevenue / m.acres) : null
+    const totalRevenue = cropSalesRevenue + ins.netPnl + govtPayments
+    const revenuePerAcre = m.acres > 0 ? totalRevenue / m.acres : null
 
     const costPerAcre = m.costPerAcre
-    const totalCost = costPerAcre != null ? round2(costPerAcre * m.acres) : 0
-    const profit = costPerAcre != null ? round2(totalRevenue - totalCost) : null
-    const profitPerAcre = profit != null && m.acres > 0 ? round2(profit / m.acres) : null
+    const totalCost = costPerAcre != null ? costPerAcre * m.acres : 0
+    const profit = costPerAcre != null ? totalRevenue - totalCost : null
+    const profitPerAcre = profit != null && m.acres > 0 ? profit / m.acres : null
 
     // Breakeven — the standard, sales-only marketing breakeven, identical to the
     // Marketing dashboard (lib/marketing breakevenOf) so the two pages agree:
@@ -137,8 +134,8 @@ export function computeRevenueProjections(args: {
     // The insurance + government safety net is reflected in Total Revenue / Profit
     // above; folding it into breakeven (and using marketPrice instead of the
     // crop's average price) is what previously made this diverge from the dashboard.
-    const breakevenPrice = costPerAcre != null && m.yield != null && m.yield > 0 ? round2(costPerAcre / m.yield) : null
-    const breakevenYield = costPerAcre != null && m.totalAvgPrice != null && m.totalAvgPrice > 0 ? round2(costPerAcre / m.totalAvgPrice) : null
+    const breakevenPrice = costPerAcre != null && m.yield != null && m.yield > 0 ? costPerAcre / m.yield : null
+    const breakevenYield = costPerAcre != null && m.totalAvgPrice != null && m.totalAvgPrice > 0 ? costPerAcre / m.totalAvgPrice : null
 
     return {
       cropId: m.cropId,
@@ -148,19 +145,19 @@ export function computeRevenueProjections(args: {
       yieldLabel: m.yieldLabel,
       totalProduction: m.totalProduction,
       pricedBu,
-      pricedRevenue: round2(pricedRevenue),
+      pricedRevenue,
       uncontractedBu,
-      marketPrice: marketPrice != null ? round2(marketPrice) : null,
-      avgSalesPrice: avgSalesPrice != null ? Math.round(avgSalesPrice * 1e4) / 1e4 : null,
+      marketPrice,
+      avgSalesPrice,
       salesPriceSource,
       cropSalesRevenue,
-      insuranceProceeds: round2(ins.netPnl),
-      insuranceIndemnity: round2(ins.totalIndemnity),
-      insurancePremium: round2(ins.premium),
+      insuranceProceeds: ins.netPnl,
+      insuranceIndemnity: ins.totalIndemnity,
+      insurancePremium: ins.premium,
       govtPayments,
-      govtArcPlc: round2(g.arcPlc),
-      govtCropSpecificOther: round2(g.cropSpecificOther),
-      govtAllocatedOther: round2(g.allocatedOther),
+      govtArcPlc: g.arcPlc,
+      govtCropSpecificOther: g.cropSpecificOther,
+      govtAllocatedOther: g.allocatedOther,
       totalRevenue,
       revenuePerAcre,
       costPerAcre,
@@ -172,28 +169,32 @@ export function computeRevenueProjections(args: {
     }
   })
 
-  const acres = rows.reduce((s, r) => s + r.acres, 0)
-  const totalProduction = rows.reduce((s, r) => s + r.totalProduction, 0)
-  const cropSalesRevenue = round2(rows.reduce((s, r) => s + r.cropSalesRevenue, 0))
-  const insuranceProceeds = round2(rows.reduce((s, r) => s + r.insuranceProceeds, 0))
-  const govtPayments = round2(rows.reduce((s, r) => s + r.govtPayments, 0))
-  const totalRevenue = round2(rows.reduce((s, r) => s + r.totalRevenue, 0))
-  const totalCost = round2(rows.reduce((s, r) => s + r.totalCost, 0))
-  const anyCost = rows.some((r) => r.costPerAcre != null)
-  const profit = round2(totalRevenue - totalCost)
+  // Totals come from the SHARED aggregator (full-precision sum of per-crop blended
+  // revenue + cost) — the SAME function the Marketing dashboard rolls up with — so
+  // the two pages' crop-sales total and projected profit are structurally identical.
+  // Revenue Projections then layers insurance + government payments on top; nothing
+  // is re-summed independently here, and rounding happens only at display.
+  const agg = aggregateMarketing(marketingRows)
+  const insuranceProceeds = rows.reduce((s, r) => s + r.insuranceProceeds, 0)
+  const govtPayments = rows.reduce((s, r) => s + r.govtPayments, 0)
+  const cropSalesRevenue = agg.blendedRevenue
+  const totalCost = agg.totalCost
+  const totalRevenue = cropSalesRevenue + insuranceProceeds + govtPayments
+  const anyCost = agg.hasCost
+  const profit = anyCost ? totalRevenue - totalCost : totalRevenue
 
   const totals: RevenueTotals = {
-    acres,
-    totalProduction,
+    acres: agg.acres,
+    totalProduction: agg.totalProduction,
     cropSalesRevenue,
     insuranceProceeds,
     govtPayments,
     totalRevenue,
-    revenuePerAcre: acres > 0 ? round2(totalRevenue / acres) : null,
+    revenuePerAcre: agg.acres > 0 ? totalRevenue / agg.acres : null,
     totalCost,
-    costPerAcre: acres > 0 && anyCost ? round2(totalCost / acres) : null,
-    profit: anyCost ? profit : totalRevenue,
-    profitPerAcre: acres > 0 ? round2((anyCost ? profit : totalRevenue) / acres) : null,
+    costPerAcre: agg.acres > 0 && anyCost ? totalCost / agg.acres : null,
+    profit,
+    profitPerAcre: agg.acres > 0 ? profit / agg.acres : null,
   }
 
   return { rows, totals }
