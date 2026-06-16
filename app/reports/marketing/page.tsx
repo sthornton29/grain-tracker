@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
+import { computeMarketing, aggregateMarketing, segmentAcresByCrop, expectedProductionFromBreakout, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, cropToCommodity } from '@/lib/contracts'
@@ -265,13 +265,11 @@ export default function MarketingPage() {
 
   // The only meaningful combined metrics across mixed crops: total acres and
   // total projected profit (mixing corn/soy/wheat production or price is not).
+  // Rolled up by the SHARED aggregateMarketing() — the exact same full-precision
+  // sum Revenue Projections uses — so the two pages' projected profit can't drift.
   const combined = useMemo(() => {
-    let acres = 0, profit = 0, profitKnown = false
-    for (const r of rows) {
-      acres += r.acres
-      if (r.totalProfit != null) { profit += r.totalProfit; profitKnown = true }
-    }
-    return { acres, profit: profitKnown ? profit : null }
+    const agg = aggregateMarketing(rows)
+    return { acres: agg.acres, profit: agg.totalProfit }
   }, [rows])
 
   // Crops planted this year whose effective yield assumption is still missing.
