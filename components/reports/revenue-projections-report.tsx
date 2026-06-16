@@ -14,7 +14,6 @@ import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { cropToCommodity } from '@/lib/contracts'
 import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
-import { fmtPrice } from '@/lib/hedging'
 import {
   computePolicy, harvestContractLabel, policyPremium,
   type PolicyInputs, type ScoConfig, type EcoConfig,
@@ -51,6 +50,10 @@ type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
 const usd = (n: number | null | undefined, d = 0) =>
   n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`
 const bu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
+// $/bu prices on this page show exactly two decimals (not the app-wide fmtPrice's
+// up-to-four), so all price columns read consistently.
+const price2 = (n: number | null | undefined) =>
+  n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
 export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   const supabase = useMemo(() => createClient(), [])
@@ -502,7 +505,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{bu(r.acres)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{r.yield != null ? `${r.yield.toFixed(1)}` : '—'} <span className="text-xs text-slate-400">{r.yield != null ? r.yieldLabel : ''}</span></td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{bu(r.totalProduction)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums" title={r.avgSalesPrice != null ? `Effective ${fmtPrice(r.avgSalesPrice)}/bu over ${bu(r.totalProduction)} bu` : 'No production'}>{usd(r.cropSalesRevenue)}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums" title={r.avgSalesPrice != null ? `Effective ${price2(r.avgSalesPrice)}/bu over ${bu(r.totalProduction)} bu` : 'No production'}>{usd(r.cropSalesRevenue)}</td>
                     <td className={`px-2 py-1 text-right font-mono tabular-nums ${toneText(signedTone(r.insuranceProceeds))}`}>{usd(r.insuranceProceeds)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums" title={`ARC/PLC: ${usd(r.govtArcPlc)} | Conservation/Other (allocated): ${usd(r.govtAllocatedOther)} | Crop-specific other: ${usd(r.govtCropSpecificOther)}`}>{usd(r.govtPayments)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold">{usd(r.totalRevenue)}</td>
@@ -544,8 +547,8 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.totalRevenue)}</td>
                     <td className={`px-2 py-1 text-right font-mono tabular-nums font-semibold ${r.profit == null ? toneText('muted') : toneText(signedTone(r.profit))}`}>{r.profit != null ? usd(r.profit) : 'no cost'}</td>
                     <td className={`px-2 py-1 text-right font-mono tabular-nums ${r.profitPerAcre == null ? toneText('muted') : toneText(signedTone(r.profitPerAcre))}`}>{usd(r.profitPerAcre)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold" title="The Marketing dashboard's Total Avg Price — breakeven yield = cost/acre ÷ this">{r.totalAvgPrice != null ? fmtPrice(r.totalAvgPrice) : '—'}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{r.breakevenPrice != null ? fmtPrice(r.breakevenPrice) : '—'}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold" title="The Marketing dashboard's Total Avg Price — breakeven yield = cost/acre ÷ this">{price2(r.totalAvgPrice)}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums">{price2(r.breakevenPrice)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{r.breakevenYield != null ? `${r.breakevenYield.toFixed(1)} bu/ac` : '—'}</td>
                   </tr>
                 ))}
@@ -567,7 +570,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
             Uncontracted bushels valued at: {rows.map((r) => {
               const lbl = harvestLabelFor(r.cropId)
               const mp = r.marketPrice
-              return mp != null ? `${r.cropName} ${fmtPrice(mp)}${lbl ? ` (${lbl} + basis)` : ''}` : null
+              return mp != null ? `${r.cropName} ${price2(mp)}${lbl ? ` (${lbl} + basis)` : ''}` : null
             }).filter(Boolean).join(' · ') || '—'}
           </p>
         </>
