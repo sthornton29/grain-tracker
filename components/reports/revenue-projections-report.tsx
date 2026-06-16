@@ -397,18 +397,19 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       columns: [
         { label: 'Crop' }, { label: 'Cost/Acre', align: 'right' }, { label: 'Total Cost', align: 'right' },
         { label: 'Total Revenue', align: 'right' }, { label: 'Profit', align: 'right' }, { label: 'Profit/Acre', align: 'right' },
-        { label: 'Breakeven Price', align: 'right' }, { label: 'Breakeven Yield', align: 'right' },
+        { label: 'Total Avg Price', align: 'right' }, { label: 'Breakeven Price', align: 'right' }, { label: 'Breakeven Yield', align: 'right' },
       ],
       rows: rows.map((r) => [
         r.cropName, r.costPerAcre != null ? Math.round(r.costPerAcre) : '', Math.round(r.totalCost),
         Math.round(r.totalRevenue), r.profit != null ? Math.round(r.profit) : '', r.profitPerAcre != null ? Math.round(r.profitPerAcre) : '',
+        r.totalAvgPrice != null ? Number(r.totalAvgPrice.toFixed(2)) : '',
         r.breakevenPrice != null ? Number(r.breakevenPrice.toFixed(2)) : '', r.breakevenYield != null ? Number(r.breakevenYield.toFixed(1)) : '',
       ]),
       rowMeta: rows.map(() => 'data' as const),
     }
     profitSection.rows.push([
       'Total', totals.costPerAcre != null ? Math.round(totals.costPerAcre) : '', Math.round(totals.totalCost),
-      Math.round(totals.totalRevenue), Math.round(totals.profit), totals.profitPerAcre != null ? Math.round(totals.profitPerAcre) : '', '', '',
+      Math.round(totals.totalRevenue), Math.round(totals.profit), totals.profitPerAcre != null ? Math.round(totals.profitPerAcre) : '', '', '', '',
     ])
     profitSection.rowMeta!.push('total')
 
@@ -462,9 +463,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                 sales (insurance = indemnity − premium; government = ARC/PLC + other USDA, allocated by planted acres).
                 These are the <strong>only</strong> reason this page&apos;s profit differs from the Marketing Dashboard —
                 with no insurance or government payments for a crop, the two profits match to the cent.</p>
-              <p><strong className="text-slate-700">Assumptions</strong> — only your <strong>saved</strong> marketing
-                assumptions (assumed basis &amp; assumed futures) flow through. The dashboard&apos;s un-saved live What-If
-                preview is session-only and is not included here.</p>
+              <p><strong className="text-slate-700">Assumptions</strong> — the Marketing Dashboard&apos;s What-If pricing
+                (assumed basis &amp; assumed futures) is a <strong>standing assumption saved to the crop</strong>, so it
+                flows straight through here and values the unpriced bushels exactly the same way the dashboard does.</p>
               <p><strong className="text-slate-700">Breakeven</strong> — sales-only: price = cost/acre ÷ yield, yield =
                 cost/acre ÷ average price. The insurance/government safety net is in Total Revenue, not folded into
                 breakeven.</p>
@@ -529,7 +530,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
             <table className="min-w-full text-sm border-collapse">
               <thead className={theadCls}>
                 <tr>
-                  {['Crop', 'Cost/Acre', 'Total Cost', 'Total Revenue', 'Profit', 'Profit/Acre', 'Breakeven Price', 'Breakeven Yield'].map((h) => (
+                  {['Crop', 'Cost/Acre', 'Total Cost', 'Total Revenue', 'Profit', 'Profit/Acre', 'Total Avg Price', 'Breakeven Price', 'Breakeven Yield'].map((h) => (
                     <th key={h} className="text-left px-2 py-1 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -543,6 +544,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.totalRevenue)}</td>
                     <td className={`px-2 py-1 text-right font-mono tabular-nums font-semibold ${r.profit == null ? toneText('muted') : toneText(signedTone(r.profit))}`}>{r.profit != null ? usd(r.profit) : 'no cost'}</td>
                     <td className={`px-2 py-1 text-right font-mono tabular-nums ${r.profitPerAcre == null ? toneText('muted') : toneText(signedTone(r.profitPerAcre))}`}>{usd(r.profitPerAcre)}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold" title="The Marketing dashboard's Total Avg Price — breakeven yield = cost/acre ÷ this">{r.totalAvgPrice != null ? fmtPrice(r.totalAvgPrice) : '—'}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{r.breakevenPrice != null ? fmtPrice(r.breakevenPrice) : '—'}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{r.breakevenYield != null ? `${r.breakevenYield.toFixed(1)} bu/ac` : '—'}</td>
                   </tr>
@@ -554,7 +556,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                   <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.totalRevenue)}</td>
                   <td className={`px-2 py-1 text-right font-mono tabular-nums ${toneText(signedTone(totals.profit))}`}>{usd(totals.profit)}</td>
                   <td className={`px-2 py-1 text-right font-mono tabular-nums ${toneText(signedTone(totals.profitPerAcre))}`}>{usd(totals.profitPerAcre)}</td>
-                  <td /><td />
+                  <td /><td /><td />
                 </tr>
               </tbody>
             </table>
