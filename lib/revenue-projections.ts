@@ -56,6 +56,10 @@ export type RevenueRow = {
   totalCost: number
   profit: number | null
   profitPerAcre: number | null
+  // The Marketing dashboard's large headline "Total Avg Price" (breakevenAvgPrice):
+  // the effective revenue ÷ production price once assumptions blend in, else the
+  // futures+basis total. This is exactly the price breakeven yield divides into.
+  totalAvgPrice: number | null
   // Breakeven (holding the other variable fixed; ignores insurance's own
   // yield-dependence, so it's a guide rather than an exact solve).
   breakevenPrice: number | null
@@ -166,6 +170,7 @@ export function computeRevenueProjections(args: {
       totalCost,
       profit,
       profitPerAcre,
+      totalAvgPrice: beAvg,
       breakevenPrice,
       breakevenYield,
     }

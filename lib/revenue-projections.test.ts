@@ -89,6 +89,7 @@ describe('computeRevenueProjections — single crop revenue rollup', () => {
     expect(r.profit).toBeCloseTo(251500, 2)
     expect(r.profitPerAcre).toBeCloseTo(251.5, 2)
     expect(r.marketPrice).toBeCloseTo(4.2, 2)
+    expect(r.totalAvgPrice).toBeCloseTo(4.5, 6)     // no assumed futures → the total avg price
     expect(r.breakevenPrice).toBeCloseTo(3.33, 2)   // 600 / 180
     expect(r.breakevenYield).toBeCloseTo(133.33, 2) // 600 / 4.50
 
@@ -224,6 +225,7 @@ describe('computeRevenueProjections — edge cases', () => {
       marketingRows: [m], contracts: [], cropYear: CY,
       marketPriceByCrop: new Map(), insuranceByCrop: new Map(),
     })
+    expect(rows[0].totalAvgPrice).toBeCloseTo(5.06, 6)     // the large headline price = 506,000 / 100,000
     expect(rows[0].breakevenYield).toBeCloseTo(191.5, 1)   // 969 / 5.06, not 969 / 5.30
   })
 
