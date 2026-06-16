@@ -72,13 +72,7 @@ function newCropContract(cropName: string, cropYear: number): { symbol: string; 
   return symbol ? { symbol, monthNum: m.num, year: cropYear } : null
 }
 
-// What-if scenario: re-value the unpriced bushels at the what-if price, keeping
-// actually-priced bushels at their real average. `pricedBu` = futures-priced
-// bushels in advanced mode (cash-contracted in simple mode); `whatIfPrice` is the
-// per-bushel price applied to the rest (futures + basis in advanced, a cash price
-// in simple). Profit follows the headline rule (price × yield − cost). Pure
-// display layer — substitutes inputs into the established methodology.
-// Breakeven, consistent with the card's profit (Total Avg $ × yield − cost):
+// Breakeven (a guide, holding the other variable fixed):
 //   price  = cost/acre ÷ yield        ($/bu needed at the expected yield)
 //   yield  = cost/acre ÷ total avg $   (bu/ac needed at the average price)
 // Both null until a cost is set.
@@ -90,15 +84,34 @@ function breakevenOf(row: MarketingRow): { price: number | null; yieldPerAcre: n
   }
 }
 
-function scenarioFor(row: MarketingRow, pricedBu: number, whatIfPrice: number) {
+// What-If scenario: re-price the crop's unpriced bushels at the typed futures
+// (and, in advanced mode, the typed basis) as an exact DELTA on blendedRevenue —
+// the same single source of truth the headline and Revenue Projections use. So a
+// typed value previews the very number that persisting it as the standing
+// assumption would produce (no jump on blur), and the headline stays reconciled
+// with Revenue Projections. `wfFut` is the futures $/bu (a flat cash $/bu in
+// simple mode); `wfBasis` the assumed basis. Pure.
+function scenarioFor(row: MarketingRow, wfFut: number | null, wfBasis: number, advanced: boolean) {
   const prod = row.totalProduction
-  if (prod <= 0 || row.totalAvgPrice == null || row.yield == null) return null
-  const pb = Math.min(Math.max(0, pricedBu), prod)
-  const unpricedBu = prod - pb
-  const totalAvgPrice = (pb * row.totalAvgPrice + unpricedBu * whatIfPrice) / prod
-  const revenuePerAcre = round2(totalAvgPrice * row.yield)
-  const profitPerAcre = row.costPerAcre != null ? round2(revenuePerAcre - row.costPerAcre) : null
-  const totalProfit = profitPerAcre != null ? round2(profitPerAcre * row.acres) : null
+  if (prod <= 0 || row.acres <= 0 || wfFut == null) return null
+  let blended: number
+  if (advanced) {
+    // Futures delta hits the completely-unpriced bushels; the basis delta hits
+    // every assumed-basis bushel (open HTAs + open hedges + unpriced) — exactly
+    // what computeMarketing does when those values are saved.
+    const dFut = wfFut - row.unpricedFuturesPrice
+    const dBasis = wfBasis - row.assumedBasis
+    blended = round2(row.blendedRevenue + dFut * row.unpricedBu + dBasis * row.basisAssumedBu)
+  } else {
+    // Simple: a flat cash price replaces (futures + assumed basis) on the unsold
+    // (completely-unpriced) bushels.
+    const dCash = wfFut - (row.unpricedFuturesPrice + row.assumedBasis)
+    blended = round2(row.blendedRevenue + dCash * row.unpricedBu)
+  }
+  const revenuePerAcre = round2(blended / row.acres)
+  const profitPerAcre = row.costPerAcre != null ? round2(blended / row.acres - row.costPerAcre) : null
+  const totalProfit = row.costPerAcre != null ? round2(blended - row.costPerAcre * row.acres) : null
+  const totalAvgPrice = round2(blended / prod)
   return { totalAvgPrice, revenuePerAcre, profitPerAcre, totalProfit }
 }
 
@@ -550,7 +563,7 @@ function CropSection({
   // forwards-only crop's contracted bushels count as priced, not unpriced.
   const scenarioPricedBu = advanced ? row.futuresPricedBu : row.contractedBu
   const scenarioUnpricedBu = Math.max(0, prod - scenarioPricedBu)
-  const scenario = wfFut != null ? scenarioFor(row, scenarioPricedBu, advanced ? wfFut + wfBasis : wfFut) : null
+  const scenario = wfFut != null ? scenarioFor(row, wfFut, wfBasis, advanced) : null
 
   // --- Headline stats reflect any assumed futures the user has entered (the
   //     scenario re-values the unpriced bushels); otherwise the saved figures. ---

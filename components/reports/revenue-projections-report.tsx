@@ -436,8 +436,12 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
         <>
           <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print">
             <strong>Projection</strong> — crop sales use each crop&apos;s blended expected revenue (every bushel valued at
-            its own price, with realized futures/options P&amp;L counted once); insurance proceeds and harvest prices are
-            estimates until RMA finalizes them after harvest.
+            its own price, with realized futures/options P&amp;L counted once) from the same engine as the Marketing
+            dashboard. Its <strong>saved</strong> assumptions (assumed basis &amp; assumed futures) flow through here, so
+            the only difference between this page&apos;s profit and the dashboard&apos;s is the insurance proceeds and
+            government payments added below. The dashboard&apos;s un-saved live What-If preview is session-only and does
+            <strong> not</strong> carry over. Insurance proceeds and harvest prices are estimates until RMA finalizes
+            them after harvest.
           </div>
 
           <SummaryCards cards={(() => {

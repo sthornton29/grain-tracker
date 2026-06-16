@@ -666,6 +666,7 @@ export default function HedgingPage() {
           existingPositions={positions}
           existingOptions={options}
           onClose={() => setShowImport(false)}
+          onChanged={loadAll}
           onImported={(s) => { setBanner(`Imported ${s.inserted} item${s.inserted === 1 ? '' : 's'}${s.closed ? ` and closed ${s.closed} matched` : ''}.`); afterMutation() }}
         />
       )}

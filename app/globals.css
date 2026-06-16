@@ -14,15 +14,46 @@ input, select, textarea, button {
   font-size: 16px;
 }
 
+/* ---------------------------------------------------------------------------
+   Print — one shared stylesheet for every report and every printable detail
+   page (load detail, contract detail). The Print button (and "Save as PDF")
+   produce a clean document that mirrors the screen.
+
+   History: an earlier rule `body:has(.print-area) > :not(.print-area)` tried to
+   isolate the report by hiding <body>'s direct children — but the printable
+   region sits several levels down (body > main > … > .print-area), so the rule
+   hid <main> and printed a BLANK PAGE. We don't isolate by ancestry anymore:
+   the app chrome is hidden explicitly (nav, sidebar, .no-print, form controls)
+   and the report body flows in normal document order, so native pagination —
+   page breaks, repeated table headers — just works.
+   --------------------------------------------------------------------------- */
 @media print {
-  html, body { background: white; }
-  nav, header[role="banner"], .no-print { display: none !important; }
-  main { max-width: none !important; padding: 0 !important; }
-  /* When a printable area is marked, hide everything else on the page. */
-  body:has(.print-area) > :not(.print-area) { display: none !important; }
-  .print-area { width: 100% !important; max-width: none !important; }
-  /* Table rows shouldn't split across pages mid-row. */
-  tr, .avoid-break { break-inside: avoid; page-break-inside: avoid; }
+  html, body { background: #fff !important; }
+
+  /* Keep the color semantics (green favorable / red unfavorable / amber warning)
+     instead of letting the browser drop them with "background graphics off". */
+  * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+
+  /* App chrome: top nav, the reports sidebar, and anything explicitly marked. */
+  nav, header[role="banner"], aside, .no-print { display: none !important; }
+
+  /* Interactive controls are chrome, not content — filters, toggles, page
+     buttons, the ExportBar. Their state is already baked into the rendered
+     numbers, so hide them everywhere we print. */
+  button, input, select, textarea { display: none !important; }
+
+  /* Full-width: drop the centered max-width and on-screen padding. */
+  main { max-width: none !important; margin: 0 !important; padding: 0 !important; }
+
+  /* Don't split a card, section, summary tile, or table row across a page; and
+     repeat <thead>/<tfoot> on every printed page of a long table. */
+  .avoid-break, tr, thead, tfoot, section, .rounded-xl.shadow, .rounded-xl.bg-white {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
   thead { display: table-header-group; }
   tfoot { display: table-footer-group; }
+
+  /* Flatten shadows that just waste ink. */
+  .shadow, .shadow-sm, .shadow-md, .shadow-lg { box-shadow: none !important; }
 }

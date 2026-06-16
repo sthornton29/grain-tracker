@@ -5,6 +5,7 @@ import { computeBushels } from '@/lib/shrink'
 import { CONTRACT_TYPE_LABEL } from '@/lib/contracts'
 import LoadAttachments from '@/components/load-attachments'
 import LoadPdfBar from './load-pdf-bar'
+import DeleteLoadButton from './delete-load-button'
 import type { ExportPayload, ExportSection } from '@/lib/exports'
 
 export const dynamic = 'force-dynamic'
@@ -271,6 +272,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
         <div className="flex gap-2 flex-wrap no-print">
           <Link href="/loads" className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Back</Link>
           <Link href={`/loads/${load.id}/edit`} className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold text-sky-700">Edit</Link>
+          <DeleteLoadButton loadId={load.id} />
           <LoadPdfBar payload={payload} />
         </div>
       </div>

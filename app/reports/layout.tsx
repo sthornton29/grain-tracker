@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { REPORT_GROUPS } from './reports-nav'
+import PrintHeader from '@/components/reports/print-header'
 
 export default function ReportsLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -25,7 +26,7 @@ export default function ReportsLayout({ children }: { children: React.ReactNode 
           </div>
         ))}
       </aside>
-      <main className="min-w-0">{children}</main>
+      <main className="min-w-0"><PrintHeader />{children}</main>
     </div>
   )
 }

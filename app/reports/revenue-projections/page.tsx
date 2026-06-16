@@ -12,7 +12,7 @@ export default function RevenueProjectionsReportPage() {
   const handlePayload = useCallback((fn: () => ExportPayload) => setBuildPayload(() => fn), [])
   return (
     <div className="space-y-4">
-      <div className="flex items-end gap-3 flex-wrap no-print">
+      <div className="flex items-end gap-3 flex-wrap">
         <h1 className="text-2xl font-bold flex-1">Revenue Projections</h1>
         <ExportBar buildPayload={() => buildPayload()} />
       </div>

@@ -338,16 +338,31 @@ export default function NewSettlementPage() {
           <button type="button" onClick={downloadTemplate} className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2">
             Download CSV template
           </button>
-          <label className="text-sm rounded-lg bg-slate-700 text-white px-3 py-2 cursor-pointer">
-            Upload CSV
-            <input type="file" accept=".csv,text/csv,text/plain" onChange={onFile} className="hidden" />
-          </label>
+        </div>
+
+        {/* Three ways to add lines, presented as one evenly-aligned set: AI from a
+            PDF/photo, a CSV upload, or manual entry. `items-start` keeps every
+            control's top edge on the same line even though the AI capture carries
+            helper text beneath its button; matched `px-3 py-2 text-sm` heights and
+            a shared gap keep them consistently sized and spaced. */}
+        <div className="flex flex-wrap items-start gap-2">
           <DocumentCapture
             onSource={onSource}
             busy={aiStage != null}
             stageLabel={aiStage}
             pdfLabel="Settlement PDF or Photo (AI)"
           />
+          <label className="text-sm rounded-lg bg-slate-700 text-white px-3 py-2 cursor-pointer">
+            Upload CSV
+            <input type="file" accept=".csv,text/csv,text/plain" onChange={onFile} className="hidden" />
+          </label>
+          <button
+            type="button"
+            onClick={() => setRows((rs) => [...rs, emptyRow()])}
+            className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2"
+          >
+            + Add row manually
+          </button>
           {source && !aiStage && (
             <button
               type="button"
@@ -357,13 +372,6 @@ export default function NewSettlementPage() {
               Discard &amp; Start Over
             </button>
           )}
-          <button
-            type="button"
-            onClick={() => setRows((rs) => [...rs, emptyRow()])}
-            className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2"
-          >
-            + Add row
-          </button>
         </div>
 
         {aiBanner && (
