@@ -448,3 +448,40 @@ describe('computeMarketing — assumed futures (the persisted What-If)', () => {
     expect(r.blendedRevenue).toBeCloseTo(814000, 2)
   })
 })
+
+describe('computeMarketing — over-contracting cannot inflate revenue', () => {
+  it('caps contracted bushels at production (the canola revenue/acre bug)', () => {
+    // 100 ac × 60 = 6,000 bu expected, but 7,000 bu sold on cash forwards @ 11.00
+    // (sold on a higher expected yield). You can't book revenue for grain you
+    // won't grow, so revenue/acre is production-based: 60 × 11.00 = 660 — NOT
+    // 7,000/100 × 11.00 = 770. The over-sold position itself still shows (7,000).
+    const r = run({
+      cropId: 'canola', cropName: 'Canola', acres: 100, expectedYield: 60,
+      assumedBasis: 0, costPerAcre: 400,
+      contracts: [contract({ crop_id: 'canola', contract_type: 'forward', contracted_bushels: 7000, cash_price: 11.0 })],
+    })
+    expect(r.totalProduction).toBe(6000)
+    expect(r.contractedBu).toBe(7000)              // position is unchanged (over-sold)
+    expect(r.totalAvgPrice).toBeCloseTo(11.0, 6)   // avg cash price
+    expect(r.blendedRevenue).toBeCloseTo(66000, 2) // 6,000 bu × 11.00, not 7,000 × 11.00
+    expect(r.revenuePerAcre).toBeCloseTo(660, 2)   // 66,000 / 100 ac = Total Avg $ × yield
+    expect(r.profitPerAcre).toBeCloseTo(260, 2)    // 660 − 400
+    expect(r.totalProfit).toBeCloseTo(26000, 2)    // 66,000 − 40,000
+  })
+
+  it('mixed prices: over-contracted bushels scale proportionally, preserving the weighted price', () => {
+    // 100 ac × 50 = 5,000 bu. Sold 6,000 bu: 3,000 @ 11.00 + 3,000 @ 12.00
+    // (weighted 11.50). Production-based revenue = 5,000 × 11.50 = 57,500.
+    const r = run({
+      cropId: 'canola', cropName: 'Canola', acres: 100, expectedYield: 50, assumedBasis: 0,
+      contracts: [
+        contract({ crop_id: 'canola', contract_type: 'forward', contracted_bushels: 3000, cash_price: 11.0 }),
+        contract({ crop_id: 'canola', contract_type: 'forward', contracted_bushels: 3000, cash_price: 12.0 }),
+      ],
+    })
+    expect(r.totalProduction).toBe(5000)
+    expect(r.totalAvgPrice).toBeCloseTo(11.5, 6)
+    expect(r.blendedRevenue).toBeCloseTo(57500, 2)  // 5,000 × 11.50, not 6,000 × 11.50 = 69,000
+    expect(r.revenuePerAcre).toBeCloseTo(575, 2)
+  })
+})
