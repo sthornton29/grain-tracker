@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { computeMarketing, aggregateMarketing, segmentAcresByCrop, expectedProductionFromBreakout, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
+import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, cropToCommodity } from '@/lib/contracts'
@@ -73,14 +73,17 @@ function newCropContract(cropName: string, cropYear: number): { symbol: string; 
 }
 
 // Breakeven (a guide, holding the other variable fixed):
-//   price  = cost/acre ÷ yield        ($/bu needed at the expected yield)
-//   yield  = cost/acre ÷ total avg $   (bu/ac needed at the average price)
-// Both null until a cost is set.
+//   price  = cost/acre ÷ yield                  ($/bu needed at the expected yield)
+//   yield  = cost/acre ÷ breakeven avg price     (bu/ac needed at that price)
+// The yield divides by the large headline "Total avg price" (breakevenAvgPrice),
+// not the plain futures+basis total, so it matches what the card shows. Both null
+// until a cost is set.
 function breakevenOf(row: MarketingRow): { price: number | null; yieldPerAcre: number | null } {
   const cost = row.costPerAcre
+  const avg = breakevenAvgPrice(row)
   return {
     price: cost != null && row.yield != null && row.yield > 0 ? cost / row.yield : null,
-    yieldPerAcre: cost != null && row.totalAvgPrice != null && row.totalAvgPrice > 0 ? cost / row.totalAvgPrice : null,
+    yieldPerAcre: cost != null && avg != null && avg > 0 ? cost / avg : null,
   }
 }
 
@@ -570,6 +573,11 @@ function CropSection({
   const headlineProfitAc = scenario ? scenario.profitPerAcre : row.profitPerAcre
   const headlineTotalProfit = scenario ? scenario.totalProfit : row.totalProfit
   const headlineProfitTone = headlineTotalProfit == null ? 'text-slate-400' : headlineTotalProfit >= 0 ? 'text-green-700' : 'text-red-700'
+  // Breakeven yield = cost/acre ÷ the SAME large "Total avg price" shown in the
+  // headline (the effective price over all production, reflecting any assumptions),
+  // not the futures+basis buildup price — so cost ÷ that price stays consistent
+  // with what the card displays.
+  const beYieldPerAcre = row.costPerAcre != null && headlineAvg != null && headlineAvg > 0 ? row.costPerAcre / headlineAvg : null
   // "Includes assumptions" whenever some production isn't fully locked — the
   // unpriced bushels are valued with the assumed futures and/or assumed basis.
   // A single amber tier, the same whether the assumption is basis or futures.
@@ -796,7 +804,7 @@ function CropSection({
                 <Row label="= Total profit" value={row.totalProfit != null ? usd(row.totalProfit) : '—'} tone={`font-bold ${profitTone}`} />
               </div>
               <Row label="Breakeven price" value={be.price != null ? `${price2(be.price)}/bu` : '—'} />
-              <Row label="Breakeven yield" value={be.yieldPerAcre != null ? `${be.yieldPerAcre.toFixed(1)} bu/ac` : '—'} />
+              <Row label="Breakeven yield" value={beYieldPerAcre != null ? `${beYieldPerAcre.toFixed(1)} bu/ac` : '—'} />
             </DetailSection>
           </div>
 
