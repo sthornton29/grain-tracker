@@ -14,7 +14,8 @@ import { splitPdfIntoBatches } from '@/lib/pdf-split'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
 import {
-  PLAN_TYPES, PLAN_TYPE_SHORT, projectedPriceFromEstimates, type PlanType,
+  PLAN_TYPES, PLAN_TYPE_SHORT, PRACTICES, PRACTICE_LABEL, projectedPriceFromEstimates,
+  type PlanType, type Practice,
 } from '@/lib/crop-insurance'
 import { DEFAULT_SCO_TRIGGER, resolveProgramYearConfig } from '@/lib/program-config'
 import {
@@ -56,8 +57,10 @@ function snapCoverage(n: number | null | undefined): string {
   return best
 }
 
-function dedupKey(crop_id: string, county_id: string, year: string, plan: string, coverage: string): string {
-  return `${crop_id}|${county_id}|${year}|${plan}|${Number(coverage).toFixed(2)}`
+// Identity for dedup: crop + county + crop_year + practice + plan_type (a policy
+// is uniquely identified by these; coverage can change without being a new row).
+function dedupKey(crop_id: string, county_id: string, year: string, plan: string, practice: string): string {
+  return `${crop_id}|${county_id}|${year}|${plan}|${practice}`
 }
 
 export default function PolicyAiImport({ crops, counties, existingPolicies, defaultYear, defaultEntityId, projectedEstimates = [], programConfigs = [], onImported }: Props) {
@@ -73,7 +76,7 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
   // updates the match instead of inserting a duplicate.
   const existingByKey = useMemo(
     () => new Map(existingPolicies.map((p) =>
-      [dedupKey(p.crop_id, p.county_id ?? '', String(p.crop_year), p.plan_type, String(p.coverage_level)), p] as const)),
+      [dedupKey(p.crop_id, p.county_id ?? '', String(p.crop_year), p.plan_type, p.practice ?? 'non_irrigated'), p] as const)),
     [existingPolicies],
   )
 
@@ -100,6 +103,7 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
       county_id: county?.id ?? '',
       policy_number: p.policy_number ?? '',
       plan_type: plan,
+      practice: p.practice === 'irrigated' ? 'irrigated' : 'non_irrigated',
       coverage_level: snapCoverage(p.coverage_level),
       unit_structure: p.unit_structure && ['enterprise', 'basic', 'optional'].includes(p.unit_structure) ? p.unit_structure : 'enterprise',
       aph_yield: numStr(p.aph_yield),
@@ -126,7 +130,7 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
   // form actually has (preserve-existing): blanks never count as a change.
   function policyStatus(form: PolicyFormState): { kind: 'new' | 'update' | 'unchanged'; existing: CropInsurancePolicy | null } {
     if (!form.crop_id || !form.crop_year) return { kind: 'new', existing: null }
-    const existing = existingByKey.get(dedupKey(form.crop_id, form.county_id, form.crop_year, form.plan_type, form.coverage_level)) ?? null
+    const existing = existingByKey.get(dedupKey(form.crop_id, form.county_id, form.crop_year, form.plan_type, form.practice)) ?? null
     if (!existing) return { kind: 'new', existing: null }
     const sameNum = (s: string, v: number | null) => s.trim() === '' || (Number.isFinite(Number(s)) && v != null && Math.abs(Number(s) - Number(v)) < 1e-9)
     const sameStr = (s: string, v: string | null) => s.trim() === '' || s.trim().toLowerCase() === (v ?? '').trim().toLowerCase()
@@ -290,7 +294,7 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
             {rows.map((r, i) => {
               const status = policyStatus(r.form)
               const unchanged = status.kind === 'unchanged'
-              const planCov = `${PLAN_TYPE_SHORT[r.form.plan_type]} · ${Math.round(Number(r.form.coverage_level) * 100)}%`
+              const planCov = `${PLAN_TYPE_SHORT[r.form.plan_type]} · ${PRACTICE_LABEL[r.form.practice]} · ${Math.round(Number(r.form.coverage_level) * 100)}%`
               return (
               <div key={i} className={`rounded-lg border p-3 space-y-2 ${unchanged ? 'border-slate-200 opacity-70' : 'border-slate-300'}`}>
                 <div className="flex items-center gap-2 flex-wrap">
@@ -327,6 +331,12 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
                     <span className="text-slate-500">Plan</span>
                     <select value={r.form.plan_type} onChange={(e) => setRowForm(i, { plan_type: e.target.value as PlanType })} className={inputCls}>
                       {PLAN_TYPES.map((t) => <option key={t} value={t}>{PLAN_TYPE_SHORT[t]}</option>)}
+                    </select>
+                  </label>
+                  <label className="text-xs flex flex-col gap-1">
+                    <span className="text-slate-500">Practice</span>
+                    <select value={r.form.practice} onChange={(e) => setRowForm(i, { practice: e.target.value as Practice })} className={inputCls}>
+                      {PRACTICES.map((pr) => <option key={pr} value={pr}>{PRACTICE_LABEL[pr]}</option>)}
                     </select>
                   </label>
                   <label className="text-xs flex flex-col gap-1">

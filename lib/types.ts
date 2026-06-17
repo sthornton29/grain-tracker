@@ -309,6 +309,9 @@ export type CropInsurancePolicy = {
   county_id: string | null
   policy_number: string | null
   plan_type: 'RP' | 'RP_HPE' | 'YP'
+  // Irrigated vs dryland. The same crop in a county/year can carry one policy of
+  // each practice, with its own APH, coverage, insured acres, and premium.
+  practice: 'irrigated' | 'non_irrigated'
   coverage_level: number
   unit_structure: 'enterprise' | 'basic' | 'optional'
   aph_yield: number
