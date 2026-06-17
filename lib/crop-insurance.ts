@@ -38,6 +38,19 @@ export const UNIT_STRUCTURE_LABEL: Record<UnitStructure, string> = {
 
 export const ECO_TRIGGER_LEVELS = [0.9, 0.95] as const
 
+// Irrigated vs dryland practice. Stored on the policy; SCO/ECO inherit it from
+// the parent. 'non_irrigated' is the default (dryland), matching fields/plantings.
+export const PRACTICES = ['irrigated', 'non_irrigated'] as const
+export type Practice = (typeof PRACTICES)[number]
+export const PRACTICE_LABEL: Record<Practice, string> = {
+  irrigated: 'Irrigated',
+  non_irrigated: 'Dryland',
+}
+export const PRACTICE_SHORT: Record<Practice, string> = {
+  irrigated: 'Irr',
+  non_irrigated: 'Dry',
+}
+
 // The futures delivery month whose price discovery period sets each crop's
 // RMA harvest price (corn/soy in October, Chicago wheat in August/September).
 const HARVEST_MONTH_ABBR: Record<Commodity, string> = {
@@ -365,6 +378,123 @@ export function computePolicy(args: {
     totalIndemnity,
     premiumPaid,
     netPnl: round2(totalIndemnity - premiumPaid),
+  }
+}
+
+// ---------- Acreage coverage check (reconcile insured vs planted) ----------
+//
+// Verifies that every planted acre is covered by a policy at the correct
+// practice, and that insured acres line up with planted acres. Pure: the UI
+// pulls planted acres from field_plantings (by county/practice) and insured
+// acres from the policies, and passes them in.
+
+export type CoverageStatus =
+  | 'matched'             // insured ≈ planted (within tolerance)
+  | 'under_insured'       // insured < planted beyond tolerance (uncovered acres)
+  | 'over_reported'       // insured > planted beyond tolerance (review)
+  | 'no_policy'           // planted acres with no matching policy (uninsured)
+  | 'insured_not_planted' // a policy exists but no plantings (reverse gap)
+
+export type CoveragePlantingInput = { cropId: string; countyId: string | null; practice: Practice; plantedAcres: number }
+export type CoveragePolicyInput = { cropId: string; countyId: string | null; practice: Practice; insuredAcres: number }
+
+export type CoverageRow = {
+  cropId: string
+  countyId: string | null
+  practice: Practice
+  plantedAcres: number
+  insuredAcres: number
+  policyCount: number
+  variance: number // insuredAcres − plantedAcres
+  tolerance: number
+  status: CoverageStatus
+}
+
+export type CoverageSummary = {
+  totalPlanted: number
+  totalInsured: number
+  // Planted acres carrying no policy + the shortfall on under-insured rows.
+  uninsuredAcres: number
+  flaggedCount: number // rows not 'matched'
+}
+
+// Trivial-rounding tolerance: the greater of 0.5 acres or 1% of planted acres.
+export function acreageTolerance(plantedAcres: number): number {
+  return Math.max(0.5, plantedAcres * 0.01)
+}
+
+const covKey = (cropId: string, countyId: string | null, practice: Practice) => `${cropId}|${countyId ?? ''}|${practice}`
+
+export function reconcileAcreage(args: {
+  plantings: readonly CoveragePlantingInput[]
+  policies: readonly CoveragePolicyInput[]
+}): { rows: CoverageRow[]; insuredNotPlanted: CoverageRow[]; summary: CoverageSummary } {
+  // Aggregate planted acres per crop × county × practice.
+  const planted = new Map<string, CoveragePlantingInput>()
+  for (const p of args.plantings) {
+    if (!(p.plantedAcres > 0)) continue
+    const k = covKey(p.cropId, p.countyId, p.practice)
+    const cur = planted.get(k)
+    if (cur) cur.plantedAcres += p.plantedAcres
+    else planted.set(k, { ...p })
+  }
+  // Aggregate insured acres + policy count per crop × county × practice (sums
+  // across multiple optional-unit policies for the same combination).
+  const insured = new Map<string, { input: CoveragePolicyInput; insuredAcres: number; count: number }>()
+  for (const p of args.policies) {
+    const k = covKey(p.cropId, p.countyId, p.practice)
+    const cur = insured.get(k)
+    if (cur) { cur.insuredAcres += p.insuredAcres; cur.count++ }
+    else insured.set(k, { input: { ...p }, insuredAcres: p.insuredAcres, count: 1 })
+  }
+
+  const rows: CoverageRow[] = []
+  for (const [k, pl] of planted) {
+    const ins = insured.get(k)
+    const insuredAcres = ins?.insuredAcres ?? 0
+    const policyCount = ins?.count ?? 0
+    const tol = acreageTolerance(pl.plantedAcres)
+    let status: CoverageStatus
+    if (policyCount === 0) status = 'no_policy'
+    else if (insuredAcres < pl.plantedAcres - tol) status = 'under_insured'
+    else if (insuredAcres > pl.plantedAcres + tol) status = 'over_reported'
+    else status = 'matched'
+    rows.push({
+      cropId: pl.cropId, countyId: pl.countyId, practice: pl.practice,
+      plantedAcres: round2(pl.plantedAcres), insuredAcres: round2(insuredAcres), policyCount,
+      variance: round2(insuredAcres - pl.plantedAcres), tolerance: round2(tol), status,
+    })
+  }
+
+  // Reverse gap: insured combinations with no plantings this year.
+  const insuredNotPlanted: CoverageRow[] = []
+  for (const [k, ins] of insured) {
+    if (planted.has(k)) continue
+    insuredNotPlanted.push({
+      cropId: ins.input.cropId, countyId: ins.input.countyId, practice: ins.input.practice,
+      plantedAcres: 0, insuredAcres: round2(ins.insuredAcres), policyCount: ins.count,
+      variance: round2(ins.insuredAcres), tolerance: 0, status: 'insured_not_planted',
+    })
+  }
+
+  let totalPlanted = 0, totalInsured = 0, uninsuredAcres = 0, flaggedCount = 0
+  for (const r of rows) {
+    totalPlanted += r.plantedAcres
+    totalInsured += r.insuredAcres
+    if (r.status === 'no_policy') uninsuredAcres += r.plantedAcres
+    else if (r.status === 'under_insured') uninsuredAcres += r.plantedAcres - r.insuredAcres
+    if (r.status !== 'matched') flaggedCount++
+  }
+
+  return {
+    rows,
+    insuredNotPlanted,
+    summary: {
+      totalPlanted: round2(totalPlanted),
+      totalInsured: round2(totalInsured),
+      uninsuredAcres: round2(uninsuredAcres),
+      flaggedCount,
+    },
   }
 }
 

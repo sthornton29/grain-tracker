@@ -9,8 +9,8 @@
 import { useMemo } from 'react'
 import {
   PLAN_TYPES, PLAN_TYPE_LABEL, UNIT_STRUCTURES, UNIT_STRUCTURE_LABEL,
-  ECO_TRIGGER_LEVELS, guaranteePriceFor, projectedPriceFromEstimates,
-  endorsementPremium, type PlanType, type UnitStructure,
+  PRACTICES, PRACTICE_LABEL, ECO_TRIGGER_LEVELS, guaranteePriceFor, projectedPriceFromEstimates,
+  endorsementPremium, type PlanType, type UnitStructure, type Practice,
 } from '@/lib/crop-insurance'
 import { DEFAULT_SCO_TRIGGER, resolveProgramYearConfig } from '@/lib/program-config'
 import { fmtPrice } from '@/lib/hedging'
@@ -26,6 +26,7 @@ export type PolicyFormState = {
   county_id: string
   policy_number: string
   plan_type: PlanType
+  practice: Practice
   coverage_level: string // decimal, e.g. '0.80'
   unit_structure: UnitStructure
   aph_yield: string
@@ -60,6 +61,7 @@ export const emptyPolicyForm: PolicyFormState = {
   county_id: '',
   policy_number: '',
   plan_type: 'RP',
+  practice: 'non_irrigated',
   coverage_level: '0.80',
   unit_structure: 'enterprise',
   aph_yield: '',
@@ -100,6 +102,7 @@ export function policyToForm(p: CropInsurancePolicy, sco?: CropInsuranceSco | nu
     county_id: p.county_id ?? '',
     policy_number: p.policy_number ?? '',
     plan_type: p.plan_type,
+    practice: p.practice ?? 'non_irrigated',
     coverage_level: numStr(p.coverage_level) || '0.80',
     unit_structure: p.unit_structure,
     aph_yield: numStr(p.aph_yield),
@@ -146,6 +149,7 @@ export function policyFormToPayloads(form: PolicyFormState, source: 'manual' | '
     county_id: form.county_id || null,
     policy_number: form.policy_number.trim() || null,
     plan_type: form.plan_type,
+    practice: form.practice,
     coverage_level: num(form.coverage_level) ?? 0.8,
     unit_structure: form.unit_structure,
     aph_yield: num(form.aph_yield) ?? 0,
@@ -300,6 +304,12 @@ export function PolicyFields({
           <span className={spanCls}>Plan type *</span>
           <select value={value.plan_type} onChange={(e) => set('plan_type', e.target.value as PlanType)} className={inputCls}>
             {PLAN_TYPES.map((t) => <option key={t} value={t}>{PLAN_TYPE_LABEL[t]}</option>)}
+          </select>
+        </label>
+        <label className={labelCls}>
+          <span className={spanCls}>Practice *</span>
+          <select value={value.practice} onChange={(e) => set('practice', e.target.value as Practice)} className={inputCls}>
+            {PRACTICES.map((pr) => <option key={pr} value={pr}>{PRACTICE_LABEL[pr]}</option>)}
           </select>
         </label>
         <label className={labelCls}>

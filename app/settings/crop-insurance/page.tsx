@@ -11,7 +11,8 @@ import {
   type PolicyFormState,
 } from '@/components/crop-insurance/policy-form'
 import PolicyAiImport from '@/components/crop-insurance/policy-ai-import'
-import { PLAN_TYPE_SHORT } from '@/lib/crop-insurance'
+import CoverageCheck from '@/components/crop-insurance/coverage-check'
+import { PLAN_TYPE_SHORT, PRACTICE_LABEL } from '@/lib/crop-insurance'
 import { fmtPrice } from '@/lib/hedging'
 import ProjectedPricesEditor from '@/components/crop-insurance/projected-prices-editor'
 import type {
@@ -172,7 +173,22 @@ export default function CropInsuranceSettingsPage() {
         summary and let AI fill them in. These feed the Crop Insurance Claims Monitor and the Revenue Projections report.
       </p>
 
+      <p className="text-xs text-amber-700 max-w-3xl">
+        Policies now track <strong>practice</strong> (Irrigated / Dryland). Existing and imported policies default to
+        <strong> Dryland</strong> — review and switch any irrigated policies to <strong>Irrigated</strong> so the
+        Coverage Check and per-practice indemnity line up.
+      </p>
+
       <EntityFilter entities={entities} value={entityFilter} onChange={setEntityFilter} />
+
+      <CoverageCheck
+        crops={crops}
+        counties={counties}
+        plantings={plantings}
+        policies={policies}
+        cropYearOptions={cropYearOptions}
+        defaultYear={cropYearOptions[0] ?? new Date().getFullYear()}
+      />
 
       <ProjectedPricesEditor crops={crops} estimates={estimates} onChange={refresh} />
 
@@ -228,6 +244,7 @@ export default function CropInsuranceSettingsPage() {
                     <div className="font-semibold flex items-center gap-2 flex-wrap">
                       {cropName(p.crop_id)} · {countyName(p.county_id)}
                       <span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{PLAN_TYPE_SHORT[p.plan_type]} {Math.round(Number(p.coverage_level) * 100)}%</span>
+                      <span className="text-xs rounded-full bg-slate-100 text-slate-600 px-2 py-0.5">{PRACTICE_LABEL[p.practice ?? 'non_irrigated']}</span>
                       <span className="text-xs text-slate-500">{p.crop_year} crop</span>
                       {entities.length > 1 && p.entity_id && <span className="text-xs text-slate-500">· {entityName(p.entity_id)}</span>}
                       {sco && <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">SCO</span>}

@@ -202,6 +202,9 @@ export type CropInsurancePolicyExtraction = {
   state: string | null
   crop_year: number | null
   plan_type: 'RP' | 'RP_HPE' | 'YP' | null
+  // Practice for this line ('irrigated' / 'non_irrigated'); null when the
+  // document doesn't distinguish (a single combined line for the crop/county).
+  practice: 'irrigated' | 'non_irrigated' | null
   coverage_level: number | null
   unit_structure: 'enterprise' | 'basic' | 'optional' | null
   aph_yield: number | null

@@ -6,6 +6,8 @@ import {
   estimatedCountyYield,
   computePolicy,
   projectedPriceFromEstimates,
+  reconcileAcreage,
+  acreageTolerance,
   type PolicyInputs,
   type BandInputs,
 } from '@/lib/crop-insurance'
@@ -385,5 +387,124 @@ describe('projectedPriceFromEstimates', () => {
     const rows = [est({ id: 'soy', crop_id: 'soybeans', price: 11.0 })]
     expect(projectedPriceFromEstimates(rows, 'corn', 2026)).toBeNull()
     expect(projectedPriceFromEstimates([], 'corn', 2026)).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Per-practice indemnity: a crop's irrigated and dryland policies compute
+// INDEPENDENTLY from their own APH / coverage / insured acres / actual yield.
+// ---------------------------------------------------------------------------
+describe('per-practice indemnity (irrigated vs dryland compute independently)', () => {
+  it('RP — each practice from its own APH/coverage/acres/yield; the crop subtotal is their sum', () => {
+    // Irrigated: APH 220, 80% cov, 100 ac, actual 180. proj 4.62, harvest 4.00.
+    //   g.price = max(4.62, 4.00) = 4.62
+    //   rev guarantee = 220 × 0.80 × 4.62 × 100 = 81,312
+    //   expected rev  = 180 × 4.00 × 100        = 72,000
+    //   indemnity     = max(0, 81,312 − 72,000) =  9,312
+    const irr = computeIndemnity({ planType: 'RP', coverageLevel: 0.80, aphYield: 220, projectedPrice: 4.62, harvestPrice: 4.0, insuredAcres: 100, actualYield: 180 })
+    expect(irr.revenueGuarantee).toBeCloseTo(81312, 2)
+    expect(irr.expectedRevenue).toBeCloseTo(72000, 2)
+    expect(irr.indemnity).toBeCloseTo(9312, 2)
+    // Dryland: APH 150, 75% cov, 200 ac, actual 120.
+    //   rev guarantee = 150 × 0.75 × 4.62 × 200 = 103,950
+    //   expected rev  = 120 × 4.00 × 200         =  96,000
+    //   indemnity     = max(0, 103,950 − 96,000) =   7,950
+    const dry = computeIndemnity({ planType: 'RP', coverageLevel: 0.75, aphYield: 150, projectedPrice: 4.62, harvestPrice: 4.0, insuredAcres: 200, actualYield: 120 })
+    expect(dry.revenueGuarantee).toBeCloseTo(103950, 2)
+    expect(dry.expectedRevenue).toBeCloseTo(96000, 2)
+    expect(dry.indemnity).toBeCloseTo(7950, 2)
+    // Crop subtotal = irrigated + dryland.
+    expect(irr.indemnity + dry.indemnity).toBeCloseTo(17262, 2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// acreageTolerance + reconcileAcreage — the Coverage Check.
+// Tolerance = max(0.5 acres, 1% of planted).
+// ---------------------------------------------------------------------------
+describe('acreageTolerance', () => {
+  it('is the greater of 0.5 acres or 1% of planted', () => {
+    expect(acreageTolerance(30)).toBeCloseTo(0.5, 6)   // 1% of 30 = 0.30 < 0.5
+    expect(acreageTolerance(200)).toBeCloseTo(2.0, 6)  // 1% of 200 = 2.0 > 0.5
+    expect(acreageTolerance(50)).toBeCloseTo(0.5, 6)   // 1% of 50 = 0.5 (tie)
+  })
+})
+
+describe('reconcileAcreage', () => {
+  it('classifies matched / under-insured / over-reported / no-policy + the reverse gap', () => {
+    const { rows, insuredNotPlanted, summary } = reconcileAcreage({
+      plantings: [
+        { cropId: 'corn', countyId: 'A', practice: 'irrigated',     plantedAcres: 100 }, // matched   (insured 100, tol 1.0)
+        { cropId: 'corn', countyId: 'A', practice: 'non_irrigated', plantedAcres: 200 }, // under     (insured 150, tol 2.0)
+        { cropId: 'corn', countyId: 'B', practice: 'irrigated',     plantedAcres: 80 },  // no policy
+        { cropId: 'soy',  countyId: 'A', practice: 'non_irrigated', plantedAcres: 100 }, // over      (insured 130, tol 1.0)
+      ],
+      policies: [
+        { cropId: 'corn',  countyId: 'A', practice: 'irrigated',     insuredAcres: 100 },
+        { cropId: 'corn',  countyId: 'A', practice: 'non_irrigated', insuredAcres: 150 },
+        { cropId: 'soy',   countyId: 'A', practice: 'non_irrigated', insuredAcres: 130 },
+        { cropId: 'wheat', countyId: 'A', practice: 'irrigated',     insuredAcres: 40 },  // reverse gap (no plantings)
+      ],
+    })
+    const find = (crop: string, county: string, pr: string) =>
+      rows.find((r) => r.cropId === crop && r.countyId === county && r.practice === pr)!
+    expect(find('corn', 'A', 'irrigated').status).toBe('matched')
+    const under = find('corn', 'A', 'non_irrigated')
+    expect(under.status).toBe('under_insured')
+    expect(under.variance).toBeCloseTo(-50, 2)
+    expect(find('corn', 'B', 'irrigated').status).toBe('no_policy')
+    const over = find('soy', 'A', 'non_irrigated')
+    expect(over.status).toBe('over_reported')
+    expect(over.variance).toBeCloseTo(30, 2)
+    // Reverse gap: a policy with no plantings.
+    expect(insuredNotPlanted).toHaveLength(1)
+    expect(insuredNotPlanted[0]).toMatchObject({ cropId: 'wheat', practice: 'irrigated', insuredAcres: 40, status: 'insured_not_planted' })
+    // Summary: planted 100+200+80+100 = 480; insured 100+150+0+130 = 380;
+    // uninsured = 50 (under) + 80 (no policy) = 130; flagged = under + no_policy + over = 3.
+    expect(summary.totalPlanted).toBeCloseTo(480, 2)
+    expect(summary.totalInsured).toBeCloseTo(380, 2)
+    expect(summary.uninsuredAcres).toBeCloseTo(130, 2)
+    expect(summary.flaggedCount).toBe(3)
+  })
+
+  it('stays Matched within tolerance and flips just past it', () => {
+    const within = reconcileAcreage({
+      plantings: [{ cropId: 'c', countyId: 'A', practice: 'irrigated', plantedAcres: 100 }],
+      policies: [{ cropId: 'c', countyId: 'A', practice: 'irrigated', insuredAcres: 100.8 }], // +0.8 ≤ tol 1.0
+    })
+    expect(within.rows[0].status).toBe('matched')
+    const past = reconcileAcreage({
+      plantings: [{ cropId: 'c', countyId: 'A', practice: 'irrigated', plantedAcres: 100 }],
+      policies: [{ cropId: 'c', countyId: 'A', practice: 'irrigated', insuredAcres: 101.5 }], // +1.5 > tol 1.0
+    })
+    expect(past.rows[0].status).toBe('over_reported')
+  })
+
+  it('sums multiple optional-unit policies for the same crop/county/practice', () => {
+    const { rows } = reconcileAcreage({
+      plantings: [{ cropId: 'corn', countyId: 'A', practice: 'non_irrigated', plantedAcres: 150 }],
+      policies: [
+        { cropId: 'corn', countyId: 'A', practice: 'non_irrigated', insuredAcres: 60 },
+        { cropId: 'corn', countyId: 'A', practice: 'non_irrigated', insuredAcres: 90 },
+      ],
+    })
+    expect(rows[0].insuredAcres).toBeCloseTo(150, 2) // 60 + 90
+    expect(rows[0].policyCount).toBe(2)
+    expect(rows[0].status).toBe('matched')
+  })
+
+  it('keeps irrigated and dryland of the same crop/county as separate rows', () => {
+    const { rows } = reconcileAcreage({
+      plantings: [
+        { cropId: 'corn', countyId: 'A', practice: 'irrigated', plantedAcres: 120 },
+        { cropId: 'corn', countyId: 'A', practice: 'non_irrigated', plantedAcres: 80 },
+      ],
+      policies: [
+        { cropId: 'corn', countyId: 'A', practice: 'irrigated', insuredAcres: 120 },
+        { cropId: 'corn', countyId: 'A', practice: 'non_irrigated', insuredAcres: 80 },
+      ],
+    })
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => r.status === 'matched')).toBe(true)
   })
 })

@@ -322,19 +322,22 @@ Respond ONLY in JSON with no other text, no markdown backticks:
 
 const CROP_INSURANCE_POLICY_PROMPT = `This is a crop insurance policy summary, premium billing statement, or coverage confirmation document. Extract all policy information from it.
 
-For each crop/county combination found in the document, extract:
+Crop insurance summaries and schedules of insurance list a SEPARATE line item per PRACTICE: the same crop in a county often appears TWICE — once irrigated, once non-irrigated (dryland) — each with its OWN APH yield, insured acres, coverage level, and premium. Emit ONE policy object per crop × county × practice line you find. If a crop/county shows only one practice, emit just that one.
+
+For each crop × county × practice line found in the document, extract:
 - crop (e.g., "Corn", "Soybeans", "Wheat")
 - county (the county name)
 - state (the state)
 - crop_year (the crop year)
 - plan_type ("RP" for Revenue Protection, "RP_HPE" for Revenue Protection with Harvest Price Exclusion, "YP" for Yield Protection)
+- practice ("irrigated" or "non_irrigated"). Practice indicators: "IRR" / "Irrigated" / "IR" = irrigated; "NIRR" / "Non-Irrigated" / "NFAC" / "Dryland" / "Non-Irr" / "DRY" = non_irrigated. If a line clearly shows a practice, set it; if the document does not distinguish practice for this crop/county, use null.
 - coverage_level (as a decimal, e.g., 0.80 for 80%)
 - unit_structure ("enterprise", "basic", or "optional")
-- aph_yield (the APH or approved yield in bushels per acre)
-- projected_price (the spring/projected price per bushel)
-- insured_acres (total insured acres)
-- premium_per_acre (the producer-paid premium per acre, after subsidy)
-- total_premium (total producer premium for this crop/county)
+- aph_yield (the APH or approved yield in bushels per acre — PER PRACTICE, the value on this line)
+- projected_price (the spring/projected price per bushel — shared across practices for the crop)
+- insured_acres (insured acres for THIS practice line)
+- premium_per_acre (the producer-paid premium per acre for this line, after subsidy)
+- total_premium (total producer premium for this crop/county/practice line)
 - premium_subsidy_pct (the federal subsidy percentage if shown)
 - policy_number (if shown)
 
@@ -361,6 +364,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
       "state": "string",
       "crop_year": number,
       "plan_type": "RP or RP_HPE or YP",
+      "practice": "irrigated or non_irrigated or null",
       "coverage_level": number,
       "unit_structure": "enterprise or basic or optional",
       "aph_yield": number,
