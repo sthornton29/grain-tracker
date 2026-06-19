@@ -5,7 +5,7 @@
 > programs. **Not a SaaS product** — single-tenant, used on iPads in trucks by a
 > small team, so the UX favors fast capture and forgiving data entry.
 >
-> _Snapshot date: 2026-06-16. Schema at migration `035`._
+> _Snapshot date: 2026-06-19. Schema at migration `035`._
 
 ---
 
@@ -98,7 +98,7 @@ Operational Reports**. Items marked `external` point back to standalone pages wi
 | `/settlements/new` | `app/settlements/new/page.tsx` | Create + reconcile a settlement. The three entry paths present as one evenly-aligned set (`items-start`): **AI PDF/photo** (`parseDocument(…, 'settlement')`), CSV upload, or manual rows. Per-line ticket→load match status. |
 | `/settlements/[id]` | `app/settlements/[id]/page.tsx` | Review/reconcile: Matched loads (diff >1% flagged), Unmatched lines, Missing loads; `<SettlementPdfPanel>`. **Persists** ticket→load matches on view (`relinkSettlementLines` server action; ambiguous tickets left for manual resolution) and offers a **manual match dropdown** per unmatched line (`line-match-select.tsx`). |
 | `/yields` | `app/yields/page.tsx` | Yield analysis — **By field / farm / entity / variety / landowner**. Filters persist in localStorage. Practice filter + irrigated/dryland breakdown. Excludes unharvested/in-progress fields (per-field "Count anyway" override). Inline irr/dry and per-variety bushel allocation — **offered only once a field's harvest is complete** (`harvestStatusOf` in `lib/yields.ts`). Accepts `?breakout=1` deep-link. |
-| `/hedging` | `app/hedging/page.tsx` | Futures & options position tracking with live P&L. Open/closed tables, per-crop-year × commodity summary cards, new/edit/close dialogs, brokerage statement import (`<StatementImport>`). Statement import has a **distinct second step** that flags app-open positions absent from the statement as *possibly closed* (commodity+month match, scoped to the account entity) → **Close this position** (the real close workflow, no auto-close) or **Keep open**. Live prices via `/api/market-prices` and `/api/options-prices`. |
+| `/hedging` | `app/hedging/page.tsx` | Futures & options position tracking with live P&L. Open/closed tables, per-crop-year × commodity summary cards, new/edit/close dialogs, brokerage statement import (`<StatementImport>`). Closed trades import as **per-lot offset groups**: each opening lot becomes its own closed position with realized P&L **computed in code** (`expandClosedGroup`, `(open−close)×contracts×size`), never the statement's group GROSS PROFIT/LOSS total — matched lots anchor to the DB entry price/size, each group's lot-sum reconciles to the statement total (`reconcileClosedGroup`, >$1 flagged on the review screen). Statement import also has a **distinct second step** that flags app-open positions absent from the statement as *possibly closed* (commodity+month match, scoped to the account entity) → **Close this position** (the real close workflow, no auto-close) or **Keep open**. Live prices via `/api/market-prices` and `/api/options-prices`. |
 | `/revenue-projections` | `app/revenue-projections/page.tsx` | Legacy **redirect** → `/reports/revenue-projections`. |
 
 ### Settings pages (`/settings/*`)
