@@ -56,6 +56,15 @@ function monthLabel(key: string): string {
   return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
 }
 
+// A contract is "complete" when explicitly marked complete or fully delivered
+// (mirrors the contracts list). A completed contract books NO further projected
+// revenue even if bushels remain — once it's closed out, no more grain will ship
+// against it, so we stop assuming future income from those undelivered bushels.
+function isContractComplete(completedAt: string | null, contractedBu: number, delivered: number): boolean {
+  if (completedAt != null) return true
+  return contractedBu > 0 && delivered >= contractedBu
+}
+
 export default function CashFlowPage() {
   const supabase = useMemo(() => createClient(), [])
   const [contracts, setContracts] = useState<Contract[]>([])
@@ -304,9 +313,11 @@ export default function CashFlowPage() {
       const outstandingAmt = agg.deliveredUnpaid * price
       if (outstandingAmt > 0) ensure(thisMonth).outstanding += outstandingAmt
 
-      // projected (not yet delivered) — spread across remaining months in delivery window
+      // projected (not yet delivered) — spread across remaining months in delivery
+      // window. Completed contracts project nothing, even with bushels remaining.
       const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered)
-      if (remainingBu > 0 && price > 0) {
+      const complete = isContractComplete(c.completed_at, Number(c.contracted_bushels), agg.delivered)
+      if (!complete && remainingBu > 0 && price > 0) {
         const totalProjected = remainingBu * price
         const months: string[] = []
         let cursor = startOfMonth(today)
@@ -444,7 +455,8 @@ export default function CashFlowPage() {
       received += agg.revenueReceived
       outstanding += agg.deliveredUnpaid * price
       const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered)
-      remaining += remainingBu * price
+      const complete = isContractComplete(c.completed_at, Number(c.contracted_bushels), agg.delivered)
+      remaining += complete ? 0 : remainingBu * price
     }
     return { value, received, outstanding, remaining }
   }, [visibleContracts, aggByContract])
@@ -515,6 +527,11 @@ export default function CashFlowPage() {
 
           <div className="bg-white rounded-xl shadow overflow-hidden">
             <div className="px-4 py-2 border-b border-slate-100 font-semibold">Monthly forecast</div>
+            <p className="px-4 py-2 text-xs text-slate-500 leading-relaxed border-b border-slate-100">
+              <span className="font-semibold text-green-700">Received</span> — cash already collected on settled loads, in the settlement&rsquo;s month.{' '}
+              <span className="font-semibold text-amber-700">Outstanding</span> — grain you&rsquo;ve <em>delivered but not yet been paid for</em>, valued at the contract price and shown in the current month as money still owed to you.{' '}
+              <span className="font-semibold text-sky-700">Projected</span> — contracted bushels <em>not yet delivered</em>, valued at the contract price and spread across the remaining delivery window (future income you still expect). Completed contracts add nothing to Projected.
+            </p>
             {monthlyRows.length === 0 ? (
               <EmptyState
                 message="No forecast data."
@@ -575,11 +592,17 @@ export default function CashFlowPage() {
                       const price = Number(c.price_per_bushel ?? 0)
                       const value = Number(c.contracted_bushels) * price
                       const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered)
-                      const unearned = remainingBu * price
+                      const complete = isContractComplete(c.completed_at, Number(c.contracted_bushels), agg.delivered)
+                      // Completed contracts earn nothing more — no unearned revenue
+                      // booked, matching the Projected column above.
+                      const unearned = complete ? 0 : remainingBu * price
                       const outstanding = agg.deliveredUnpaid * price
                       return (
                         <tr key={c.id} className="border-t border-slate-100">
-                          <td className={`${textCell} font-semibold`}>{c.contract_number}</td>
+                          <td className={`${textCell} font-semibold whitespace-nowrap`}>
+                            {c.contract_number}
+                            {complete && <span className="ml-1.5 rounded-full bg-slate-100 text-slate-500 text-[10px] font-medium px-1.5 py-0.5 align-middle">complete</span>}
+                          </td>
                           <td className={textCell}>{buyerById.get(c.buyer_id ?? '')?.name ?? ''}</td>
                           <td className={textCell}>{cropById.get(c.crop_id ?? '')?.name ?? ''}</td>
                           <td className={textCell}>{c.crop_year ?? ''}</td>
