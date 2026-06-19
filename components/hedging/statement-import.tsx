@@ -12,12 +12,15 @@ import {
   PdfTooLargeError,
   parseDocument,
   type BrokerageStatementExtraction,
+  type BrokerageClosedGroup,
 } from '@/lib/pdf-upload'
 import {
   buildContractSymbol,
   normalizeCommodity,
   normalizeOptionType,
   optionPremiumTotal,
+  expandClosedGroup,
+  reconcileClosedGroup,
   fmtPrice,
   fmtPnl,
   fmtCents,
@@ -63,20 +66,31 @@ type OpenRow = {
   include: boolean
   existing: boolean
 }
-type ClosedRow = {
-  commodity: Commodity
-  contract_month: string
-  side: Side
-  num_contracts: number
+// One opening lot inside a closed offset group. Realized P&L is NOT stored here
+// — it's computed per lot from the group's side/close price via expandClosedGroup
+// (so flipping the group side instantly re-derives every lot). open_price and
+// num_contracts come from the matched DB position when fromDb is true (Part C:
+// anchor the math to verified entry prices), otherwise from the statement.
+type ClosedLotRow = {
   open_trade_date: string
-  close_trade_date: string
   open_price: number
-  close_price: number
-  realized_pnl: number
-  matchedOpenId: string | null
+  num_contracts: number
+  matchedOpenId: string | null // the open DB position this lot closes, if any
+  fromDb: boolean // open_price/num_contracts taken from the matched DB record
   alreadyImported: boolean
   crop_year: string
   include: boolean
+}
+type ClosedGroupRow = {
+  commodity: Commodity
+  contract_month: string
+  side: Side
+  close_trade_date: string
+  close_price: number
+  // The statement's printed GROSS PROFIT/LOSS for the whole group — used ONLY to
+  // reconcile against the sum of per-lot realized P&L, never written to a lot.
+  statement_reported_total: number | null
+  lots: ClosedLotRow[]
 }
 type OptionOpenRow = {
   commodity: Commodity
@@ -129,7 +143,7 @@ export default function StatementImport({ entities, existingPositions, existingO
   const [err, setErr] = useState<string | null>(null)
   const [extraction, setExtraction] = useState<BrokerageStatementExtraction | null>(null)
   const [openRows, setOpenRows] = useState<OpenRow[]>([])
-  const [closedRows, setClosedRows] = useState<ClosedRow[]>([])
+  const [closedGroups, setClosedGroups] = useState<ClosedGroupRow[]>([])
   const [openOptionRows, setOpenOptionRows] = useState<OptionOpenRow[]>([])
   const [closedOptionRows, setClosedOptionRows] = useState<OptionClosedRow[]>([])
   const [tab, setTab] = useState<'open' | 'closed' | 'options' | 'summary'>('open')
@@ -174,56 +188,109 @@ export default function StatementImport({ entities, existingPositions, existingO
     }
   }
 
-  function buildClosedRow(t: NonNullable<BrokerageStatementExtraction['closed_trades']>[number]): ClosedRow | null {
-    const commodity = normalizeCommodity(t.commodity)
-    if (
-      !commodity || !t.contract_month || t.side == null || t.num_contracts == null ||
-      t.open_price == null || t.close_price == null || !t.open_trade_date || !t.close_trade_date
-    ) {
-      return null
-    }
-    // Already imported as a closed position? (Statements keep listing recent
-    // closed trades, so a periodic re-upload would otherwise duplicate them.)
-    // Matched on the full closed-trade fingerprint, ignoring side.
-    const alreadyImported = existingPositions.some(
-      (ex) =>
-        ex.status === 'closed' &&
-        ex.commodity === commodity &&
-        up(ex.contract_month) === up(t.contract_month!) &&
-        ex.trade_date === t.open_trade_date &&
-        priceEq(ex.trade_price, t.open_price!) &&
-        ex.close_date === t.close_trade_date &&
-        ex.close_price != null &&
-        priceEq(ex.close_price, t.close_price!),
-    )
-    // Otherwise, does it close an open position we already hold? (Side omitted
-    // from the key for the same reason as open dedup; we keep the stored
-    // position's own side when closing it.)
-    const match = alreadyImported
-      ? undefined
-      : existingPositions.find(
+  // Build the reviewable closed offset groups from the extraction. We prefer the
+  // new closed_groups shape; if a statement comes back in the legacy per-line
+  // closed_trades shape, we wrap each trade as a one-lot group (its reported
+  // realized P&L becomes the group's reconciliation total) so the rest of the
+  // flow is identical. Realized P&L is NEVER read from the statement — it's
+  // computed per lot at render/save time (expandClosedGroup).
+  function buildClosedGroups(data: BrokerageStatementExtraction): ClosedGroupRow[] {
+    const raw: BrokerageClosedGroup[] = data.closed_groups?.length
+      ? data.closed_groups
+      : (data.closed_trades ?? []).map((t) => ({
+          commodity: t.commodity,
+          contract_month: t.contract_month,
+          side: t.side,
+          close_date: t.close_trade_date,
+          close_price: t.close_price,
+          lots: [{ open_date: t.open_trade_date, open_price: t.open_price, contracts: t.num_contracts }],
+          statement_reported_total: t.realized_pnl ?? null,
+        }))
+
+    // Track which open DB positions a lot has already claimed so two lots can't
+    // both match (and "close") the same stored position.
+    const usedOpenIds = new Set<string>()
+    const out: ClosedGroupRow[] = []
+
+    for (const g of raw) {
+      const commodity = normalizeCommodity(g.commodity)
+      if (!commodity || !g.contract_month || g.side == null || g.close_price == null || !g.close_date) continue
+      const month = up(g.contract_month)
+      const lots: ClosedLotRow[] = []
+
+      for (const lot of g.lots ?? []) {
+        if (lot.open_price == null || lot.contracts == null || !lot.open_date) continue
+
+        // Already imported as a closed position? (Statements keep listing recent
+        // closed trades, so a re-upload would otherwise duplicate them.) Matched
+        // on the full per-lot closed fingerprint, ignoring side.
+        const alreadyImported = existingPositions.some(
           (ex) =>
-            ex.status === 'open' &&
+            ex.status === 'closed' &&
             ex.commodity === commodity &&
-            up(ex.contract_month) === up(t.contract_month!) &&
-            ex.trade_date === t.open_trade_date &&
-            priceEq(ex.trade_price, t.open_price!),
+            up(ex.contract_month) === month &&
+            ex.trade_date === lot.open_date &&
+            priceEq(ex.trade_price, lot.open_price!) &&
+            ex.close_date === g.close_date &&
+            ex.close_price != null &&
+            priceEq(ex.close_price, g.close_price!),
         )
-    return {
-      commodity,
-      contract_month: up(t.contract_month),
-      side: t.side,
-      num_contracts: t.num_contracts,
-      open_trade_date: t.open_trade_date,
-      close_trade_date: t.close_trade_date,
-      open_price: t.open_price,
-      close_price: t.close_price,
-      realized_pnl: t.realized_pnl ?? 0,
-      matchedOpenId: match?.id ?? null,
-      alreadyImported,
-      crop_year: match?.crop_year != null ? String(match.crop_year) : '',
-      include: !alreadyImported,
+
+        // Otherwise, does this lot close an OPEN position we already hold? Match
+        // on commodity + month + open date (side and price omitted: the AI can
+        // mis-read both, and we'd rather anchor to the DB's verified entry). If
+        // several open lots share that date, prefer the one whose price matches.
+        let matchedOpenId: string | null = null
+        let fromDb = false
+        let open_price = lot.open_price
+        let num_contracts = lot.contracts
+        let crop_year = ''
+        if (!alreadyImported) {
+          const candidates = existingPositions.filter(
+            (ex) =>
+              ex.status === 'open' &&
+              ex.commodity === commodity &&
+              up(ex.contract_month) === month &&
+              ex.trade_date === lot.open_date &&
+              !usedOpenIds.has(ex.id),
+          )
+          const match = candidates.find((c) => priceEq(c.trade_price, lot.open_price!)) ?? candidates[0]
+          if (match) {
+            matchedOpenId = match.id
+            fromDb = true
+            // Part C: anchor the math to the verified DB entry price & size; take
+            // only the close price/date from the statement.
+            open_price = match.trade_price
+            num_contracts = match.num_contracts
+            crop_year = match.crop_year != null ? String(match.crop_year) : ''
+            usedOpenIds.add(match.id)
+          }
+        }
+
+        lots.push({
+          open_trade_date: lot.open_date,
+          open_price,
+          num_contracts,
+          matchedOpenId,
+          fromDb,
+          alreadyImported,
+          crop_year,
+          include: !alreadyImported,
+        })
+      }
+
+      if (lots.length === 0) continue
+      out.push({
+        commodity,
+        contract_month: month,
+        side: g.side,
+        close_trade_date: g.close_date,
+        close_price: g.close_price,
+        statement_reported_total: g.statement_reported_total ?? null,
+        lots,
+      })
     }
+    return out
   }
 
   // Options dedup uses a strong fingerprint (commodity + type + month + strike +
@@ -309,11 +376,11 @@ export default function StatementImport({ entities, existingPositions, existingO
       const data = await parseDocument(src.kind === 'pdf' ? src.file : src.images, 'brokerage_statement')
       setExtraction(data)
       const open = (data.open_positions ?? []).map(buildOpenRow).filter((r): r is OpenRow => r !== null)
-      const closed = (data.closed_trades ?? []).map(buildClosedRow).filter((r): r is ClosedRow => r !== null)
+      const closed = buildClosedGroups(data)
       const openOpts = (data.open_options ?? []).map(buildOpenOptionRow).filter((r): r is OptionOpenRow => r !== null)
       const closedOpts = (data.closed_options ?? []).map(buildClosedOptionRow).filter((r): r is OptionClosedRow => r !== null)
       setOpenRows(open)
-      setClosedRows(closed)
+      setClosedGroups(closed)
       setOpenOptionRows(openOpts)
       setClosedOptionRows(closedOpts)
       setTab(open.length > 0 ? 'open' : closed.length > 0 ? 'closed' : openOpts.length + closedOpts.length > 0 ? 'options' : 'summary')
@@ -329,8 +396,15 @@ export default function StatementImport({ entities, existingPositions, existingO
   function setOpen(i: number, patch: Partial<OpenRow>) {
     setOpenRows((rs) => rs.map((r, j) => (i === j ? { ...r, ...patch } : r)))
   }
-  function setClosed(i: number, patch: Partial<ClosedRow>) {
-    setClosedRows((rs) => rs.map((r, j) => (i === j ? { ...r, ...patch } : r)))
+  // Edit a single lot inside a group (include / crop year).
+  function setClosedLot(gi: number, li: number, patch: Partial<ClosedLotRow>) {
+    setClosedGroups((gs) =>
+      gs.map((g, j) => (j === gi ? { ...g, lots: g.lots.map((l, k) => (k === li ? { ...l, ...patch } : l)) } : g)),
+    )
+  }
+  // Side lives at the group level — flipping it re-derives every lot's realized.
+  function setClosedGroupSide(gi: number, side: Side) {
+    setClosedGroups((gs) => gs.map((g, j) => (j === gi ? { ...g, side } : g)))
   }
   function setOpenOption(i: number, patch: Partial<OptionOpenRow>) {
     setOpenOptionRows((rs) => rs.map((r, j) => (i === j ? { ...r, ...patch } : r)))
@@ -341,18 +415,66 @@ export default function StatementImport({ entities, existingPositions, existingO
   function applyBulkCropYear() {
     if (!bulkCropYear) return
     setOpenRows((rs) => rs.map((r) => (r.existing ? r : { ...r, crop_year: bulkCropYear })))
-    setClosedRows((rs) => rs.map((r) => (r.matchedOpenId || r.alreadyImported ? r : { ...r, crop_year: bulkCropYear })))
+    setClosedGroups((gs) =>
+      gs.map((g) => ({
+        ...g,
+        // Matched (fromDb) lots already carry the DB position's crop year, and
+        // already-imported lots aren't being saved — leave both alone.
+        lots: g.lots.map((l) => (l.fromDb || l.alreadyImported ? l : { ...l, crop_year: bulkCropYear })),
+      })),
+    )
     setOpenOptionRows((rs) => rs.map((r) => (r.existing ? r : { ...r, crop_year: bulkCropYear })))
     setClosedOptionRows((rs) => rs.map((r) => (r.alreadyImported ? r : { ...r, crop_year: bulkCropYear })))
   }
   function applyBulkSide(side: Side) {
     setOpenRows((rs) => rs.map((r) => ({ ...r, side })))
-    setClosedRows((rs) => rs.map((r) => ({ ...r, side })))
+    setClosedGroups((gs) => gs.map((g) => ({ ...g, side })))
   }
 
+  // Per-lot realized P&L (computed, never from the statement) + per-group
+  // reconciliation against the statement's printed total. Recomputes whenever a
+  // group's side/lots change. We flatten to convenient working lists below.
+  const closedComputed = useMemo(
+    () =>
+      closedGroups.map((g) => {
+        const expanded = expandClosedGroup({
+          commodity: g.commodity,
+          contract_month: g.contract_month,
+          side: g.side,
+          close_date: g.close_trade_date,
+          close_price: g.close_price,
+          lots: g.lots.map((l) => ({ open_date: l.open_trade_date, open_price: l.open_price, contracts: l.num_contracts })),
+        })
+        const lots = g.lots.map((l, i) => ({ ...l, realized_pnl: expanded[i].realized_pnl }))
+        const recon = reconcileClosedGroup(expanded, g.statement_reported_total)
+        return { group: g, lots, recon }
+      }),
+    [closedGroups],
+  )
+  type ComputedLot = (typeof closedComputed)[number]['lots'][number] & {
+    commodity: Commodity
+    contract_month: string
+    side: Side
+    close_trade_date: string
+    close_price: number
+  }
+  const allClosedLots: ComputedLot[] = closedComputed.flatMap(({ group, lots }) =>
+    lots.map((l) => ({
+      ...l,
+      commodity: group.commodity,
+      contract_month: group.contract_month,
+      side: group.side,
+      close_trade_date: group.close_trade_date,
+      close_price: group.close_price,
+    })),
+  )
+  const closedLotCount = allClosedLots.length
+
   const newOpen = openRows.filter((r) => r.include && !r.existing)
-  const closesMatched = closedRows.filter((r) => r.include && r.matchedOpenId && !r.alreadyImported)
-  const closedToImport = closedRows.filter((r) => r.include && !r.matchedOpenId && !r.alreadyImported)
+  const closesMatched = allClosedLots.filter((r) => r.include && r.matchedOpenId && !r.alreadyImported)
+  const closedToImport = allClosedLots.filter((r) => r.include && !r.matchedOpenId && !r.alreadyImported)
+  const totalClosedRealized = [...closesMatched, ...closedToImport].reduce((s, r) => s + r.realized_pnl, 0)
+  const anyClosedMismatch = closedComputed.some(({ recon }) => recon.hasReportedTotal && !recon.matches)
   const newOpenOptions = openOptionRows.filter((r) => r.include && !r.existing)
   const newClosedOptions = closedOptionRows.filter((r) => r.include && !r.alreadyImported)
 
@@ -386,8 +508,11 @@ export default function StatementImport({ entities, existingPositions, existingO
     return s
   }, [extraction])
   const matchedCloseIds = useMemo(
-    () => new Set(closedRows.filter((r) => r.matchedOpenId).map((r) => r.matchedOpenId!)),
-    [closedRows],
+    () =>
+      new Set(
+        closedGroups.flatMap((g) => g.lots.map((l) => l.matchedOpenId).filter((id): id is string => id != null)),
+      ),
+    [closedGroups],
   )
   const possiblyClosedFutures = useMemo(
     () =>
@@ -542,7 +667,7 @@ export default function StatementImport({ entities, existingPositions, existingO
       {!extraction && (
         <div className="space-y-3">
           <p className="text-sm text-slate-600">
-            Upload a daily statement PDF (R.J. O’Brien or similar), or photograph the pages with your camera. The AI extracts open positions and closed trades for
+            Upload a daily statement PDF (StoneX/FCStone, R.J. O’Brien, or similar), or photograph the pages with your camera. The AI extracts open positions and closed trades for
             Corn, Soybeans, and Wheat — cotton and other commodities are ignored. You’ll review and assign crop years before anything is saved.
             Positions and closed trades you’ve already imported are detected and skipped, so you can upload each new statement without creating duplicates.
           </p>
@@ -588,7 +713,7 @@ export default function StatementImport({ entities, existingPositions, existingO
               </div>
             </label>
             <div className="flex-1" />
-            <button type="button" onClick={() => { setExtraction(null); setSource(null); setOpenRows([]); setClosedRows([]); setOpenOptionRows([]); setClosedOptionRows([]) }} className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2">
+            <button type="button" onClick={() => { setExtraction(null); setSource(null); setOpenRows([]); setClosedGroups([]); setOpenOptionRows([]); setClosedOptionRows([]) }} className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2">
               Start over
             </button>
           </div>
@@ -603,7 +728,7 @@ export default function StatementImport({ entities, existingPositions, existingO
             <div className="min-w-0">
               <div className="flex gap-1 border-b border-slate-200 mb-3">
                 <button className={tabCls(tab === 'open')} onClick={() => setTab('open')}>Open Positions ({openRows.length})</button>
-                <button className={tabCls(tab === 'closed')} onClick={() => setTab('closed')}>Closed Trades ({closedRows.length})</button>
+                <button className={tabCls(tab === 'closed')} onClick={() => setTab('closed')}>Closed Trades ({closedLotCount})</button>
                 <button className={tabCls(tab === 'options')} onClick={() => setTab('options')}>Options ({openOptionRows.length + closedOptionRows.length})</button>
                 <button className={tabCls(tab === 'summary')} onClick={() => setTab('summary')}>Account Summary</button>
               </div>
@@ -654,49 +779,90 @@ export default function StatementImport({ entities, existingPositions, existingO
               )}
 
               {tab === 'closed' && (
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-sm">
-                    <thead className="bg-slate-100 text-slate-700">
-                      <tr>{['', 'Match', 'Commodity', 'Month', 'Side', '#', 'Open', 'Close', 'Open $', 'Close $', 'Realized', 'Crop Yr *'].map((h, idx) => <th key={h} className={`text-left px-2 py-2 whitespace-nowrap ${idx === 2 ? STICKY_HEAD_1 : idx === 3 ? STICKY_HEAD_2 : ''}`}>{h}</th>)}</tr>
-                    </thead>
-                    <tbody>
-                      {closedRows.length === 0 && <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">No closed trades found.</td></tr>}
-                      {closedRows.map((r, i) => (
-                        <tr key={i} className={`border-t border-slate-100 align-top ${r.alreadyImported ? 'opacity-60' : ''}`}>
-                          <td className="px-2 py-1"><input type="checkbox" checked={r.include} disabled={r.alreadyImported} onChange={(e) => setClosed(i, { include: e.target.checked })} /></td>
-                          <td className="px-2 py-1 whitespace-nowrap">
-                            {r.alreadyImported
-                              ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Already imported</span>
-                              : r.matchedOpenId
-                              ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">Closes open position</span>
-                              : <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">Import as closed</span>}
-                          </td>
-                          <td className={`px-2 py-1 whitespace-nowrap ${STICKY_CELL_1}`}>{r.commodity}</td>
-                          <td className={`px-2 py-1 whitespace-nowrap ${STICKY_CELL_2}`}>{r.contract_month}</td>
-                          <td className="px-2 py-1" style={{ minWidth: 92 }}>
-                            <select value={r.side} onChange={(e) => setClosed(i, { side: e.target.value as Side })} className={cellInput}>
-                              <option value="short">Short</option>
-                              <option value="long">Long</option>
-                            </select>
-                          </td>
-                          <td className="px-2 py-1 text-right">{r.num_contracts}</td>
-                          <td className="px-2 py-1 whitespace-nowrap">{r.open_trade_date}</td>
-                          <td className="px-2 py-1 whitespace-nowrap">{r.close_trade_date}</td>
-                          <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(r.open_price)}</td>
-                          <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(r.close_price)}</td>
-                          <td className={`px-2 py-1 font-mono whitespace-nowrap ${r.realized_pnl >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(r.realized_pnl)}</td>
-                          <td className={`px-2 py-1 ${!r.matchedOpenId && !r.alreadyImported && r.include && !r.crop_year ? 'bg-amber-50' : ''}`} style={{ minWidth: 90 }}>
-                            {r.matchedOpenId ? <span className="text-slate-400 text-xs">existing</span> : r.alreadyImported ? <span className="text-slate-400 text-xs">—</span> : (
-                              <select value={r.crop_year} onChange={(e) => setClosed(i, { crop_year: e.target.value })} className={cellInput}>
-                                <option value="">— pick —</option>
-                                {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
-                              </select>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="space-y-4">
+                  <p className="text-xs text-slate-500">
+                    Each offset group lists one row per opening lot with its <b>own</b> open price and an
+                    individually-computed realized P&amp;L — the statement’s single GROSS PROFIT/LOSS line is the group total
+                    and is used only to reconcile the subtotal below, never copied onto a lot.
+                  </p>
+                  {closedComputed.length === 0 && (
+                    <div className="px-3 py-6 text-center text-slate-400 border border-slate-100 rounded-lg">No closed trades found.</div>
+                  )}
+                  {closedComputed.map(({ group: g, lots, recon }, gi) => (
+                    <div key={gi} className="rounded-lg border border-slate-200 overflow-hidden">
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-slate-50 px-3 py-2 border-b border-slate-200">
+                        <span className="font-semibold text-slate-800">{g.commodity}</span>
+                        <span className="font-mono text-slate-700">{g.contract_month}</span>
+                        <span className="font-mono text-xs text-slate-500">{buildContractSymbol(g.commodity, g.contract_month)}</span>
+                        <span className="text-slate-300">·</span>
+                        <label className="text-xs text-slate-600 flex items-center gap-1">
+                          Side
+                          <select value={g.side} onChange={(e) => setClosedGroupSide(gi, e.target.value as Side)} className="rounded border border-slate-300 px-1.5 py-0.5 text-sm bg-white">
+                            <option value="short">Short</option>
+                            <option value="long">Long</option>
+                          </select>
+                        </label>
+                        <span className="text-slate-300">·</span>
+                        <span className="text-xs text-slate-600">Closed {g.close_trade_date} @ <span className="font-mono">{fmtPrice(g.close_price)}</span></span>
+                        <span className="text-xs text-slate-500">· {lots.length} lot{lots.length === 1 ? '' : 's'}</span>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full text-sm">
+                          <thead className="bg-slate-100 text-slate-700">
+                            <tr>{['', 'Match', '#', 'Open date', 'Open $', 'Close $', 'Realized', 'Crop Yr *'].map((h) => <th key={h} className="text-left px-2 py-1.5 whitespace-nowrap">{h}</th>)}</tr>
+                          </thead>
+                          <tbody>
+                            {lots.map((l, li) => (
+                              <tr key={li} className={`border-t border-slate-100 align-top ${l.alreadyImported ? 'opacity-60' : ''}`}>
+                                <td className="px-2 py-1"><input type="checkbox" checked={l.include} disabled={l.alreadyImported} onChange={(e) => setClosedLot(gi, li, { include: e.target.checked })} /></td>
+                                <td className="px-2 py-1 whitespace-nowrap">
+                                  {l.alreadyImported
+                                    ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Already imported</span>
+                                    : l.matchedOpenId
+                                    ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">Closes open position</span>
+                                    : <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">Import as closed</span>}
+                                </td>
+                                <td className="px-2 py-1 text-right">{l.num_contracts}</td>
+                                <td className="px-2 py-1 whitespace-nowrap">{l.open_trade_date}</td>
+                                <td className="px-2 py-1 font-mono whitespace-nowrap">
+                                  {fmtPrice(l.open_price)}
+                                  {l.fromDb && <span className="ml-1 text-[10px] font-sans text-sky-600" title="Anchored to your recorded entry price">DB</span>}
+                                </td>
+                                <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(g.close_price)}</td>
+                                <td className={`px-2 py-1 font-mono whitespace-nowrap ${l.realized_pnl >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(l.realized_pnl)}</td>
+                                <td className={`px-2 py-1 ${!l.matchedOpenId && !l.alreadyImported && l.include && !l.crop_year ? 'bg-amber-50' : ''}`} style={{ minWidth: 90 }}>
+                                  {l.fromDb ? <span className="text-slate-400 text-xs">existing</span> : l.alreadyImported ? <span className="text-slate-400 text-xs">—</span> : (
+                                    <select value={l.crop_year} onChange={(e) => setClosedLot(gi, li, { crop_year: e.target.value })} className={cellInput}>
+                                      <option value="">— pick —</option>
+                                      {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
+                                    </select>
+                                  )}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot>
+                            <tr className="border-t-2 border-slate-200 bg-slate-50">
+                              <td colSpan={6} className="px-2 py-1.5 text-right font-semibold text-slate-700">Group subtotal</td>
+                              <td className={`px-2 py-1.5 font-mono font-semibold whitespace-nowrap ${recon.computedTotal >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(recon.computedTotal)}</td>
+                              <td />
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                      {recon.hasReportedTotal && (
+                        recon.matches ? (
+                          <div className="px-3 py-1.5 text-xs text-green-700 bg-green-50 border-t border-green-100">
+                            ✓ Ties to the statement total ({fmtPnl(recon.reportedTotal!)}).
+                          </div>
+                        ) : (
+                          <div className="px-3 py-2 text-sm text-red-800 bg-red-50 border-t border-red-200">
+                            ⚠ <b>Computed realized P&amp;L ({fmtPnl(recon.computedTotal)}) doesn’t match the statement total ({fmtPnl(recon.reportedTotal!)})</b> — review the per-lot breakdown above before saving.
+                          </div>
+                        )
+                      )}
+                    </div>
+                  ))}
                 </div>
               )}
 
@@ -873,7 +1039,19 @@ export default function StatementImport({ entities, existingPositions, existingO
 
           <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3">
             <div className="text-sm text-slate-600 flex-1">
-              Will import <b>{newOpen.length}</b> new open · close <b>{closesMatched.length}</b> matched · import <b>{closedToImport.length}</b> closed · <b>{newOpenOptions.length + newClosedOptions.length}</b> options
+              <div>
+                Will import <b>{newOpen.length}</b> new open · close <b>{closesMatched.length}</b> matched · import <b>{closedToImport.length}</b> closed · <b>{newOpenOptions.length + newClosedOptions.length}</b> options
+              </div>
+              {(closesMatched.length > 0 || closedToImport.length > 0) && (
+                <div className="text-xs text-slate-500 mt-0.5">
+                  Total realized P&amp;L on closes:{' '}
+                  <b className={totalClosedRealized >= 0 ? 'text-green-700' : 'text-red-700'}>{fmtPnl(totalClosedRealized)}</b>
+                  {' '}(computed per lot)
+                </div>
+              )}
+              {anyClosedMismatch && (
+                <div className="text-xs text-red-700 mt-0.5">⚠ A closed group’s computed total doesn’t match the statement — see the Closed Trades tab.</div>
+              )}
             </div>
             <button type="button" onClick={save} disabled={saving} className="rounded-xl bg-green-700 text-white font-semibold py-2.5 px-5 disabled:opacity-60">
               {saving ? 'Saving…' : 'Save Import'}

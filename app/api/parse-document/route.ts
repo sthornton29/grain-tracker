@@ -86,11 +86,11 @@ Respond ONLY in JSON with no other text, no markdown backticks. Use this exact f
   ]
 }`
 
-const BROKERAGE_PROMPT = `This is a daily brokerage statement from a commodity futures broker (likely R.J. O'Brien). Extract all positions and trades from the document.
+const BROKERAGE_PROMPT = `This is a daily brokerage statement from a commodity futures broker (such as StoneX / FCStone, R.J. O'Brien, or a similar FCM). These statements share a common layout regardless of which broker issued them. Extract all positions and trades from the document.
 
-The statement has up to three sections:
+The statement has up to three sections, identified by their headings rather than the broker name:
 1. CONFIRMATION - today's new trades
-2. PURCHASE & SALE - closed positions with realized profit/loss
+2. PURCHASE & SALE - closed/offset positions, each offset group ending in a single GROSS PROFIT/LOSS total
 3. OPEN POSITIONS - currently held positions
 
 CRITICAL RULES FOR DETERMINING LONG VS SHORT:
@@ -105,7 +105,7 @@ CRITICAL RULES FOR DETERMINING LONG VS SHORT:
 
 3. FARMER CONTEXT: This is a farmer's hedging account. Farmers almost always SHORT (sell) futures to lock in prices for crops they are growing. If ambiguous, default to SHORT, but still apply rule #2 above.
 
-4. For the PURCHASE & SALE section (closed trades): if the SELL column has the quantity on the opening trade date (first line) and the BUY column has the quantity on the closing date (second line), the position was originally SHORT (sold first, bought back to close). If BUY is first and SELL is second, it was LONG.
+4. For the PURCHASE & SALE section: each offset group's opening lots and closing transaction sit in the BUY and SELL columns. If the OPENING lots are in the SELL column (sold first) and closed by a BUY, the group was SHORT. If the opening lots are in the BUY column (bought first) and closed by a SELL, it was LONG.
 
 For each OPEN POSITION, extract:
 - trade_date (format YYYY-MM-DD — the statement may show dates as M/DD/Y like "3/09/6" meaning 2026-03-09)
@@ -117,17 +117,18 @@ For each OPEN POSITION, extract:
 - trade_price (as a decimal number — convert fractional prices: "4.93 1/4" = 4.9325, "11.43 1/2" = 11.435, "6.16 1/2" = 6.165)
 - unrealized_pnl (the DEBIT(DR)/CREDIT amount — negative if DR, positive if credit)
 
-For each PURCHASE & SALE (closed trade), extract:
-- open_trade_date (format YYYY-MM-DD)
-- close_trade_date (format YYYY-MM-DD)
-- side ("long" or "short" — determine using CRITICAL RULE #4 above: sold first then bought back = short; bought first then sold = long)
-- num_contracts (the number of contracts)
-- contract_description (e.g., "JUL 26 CORN")
-- commodity (parsed from description)
-- contract_month (e.g., "JUL 26")
-- open_price (decimal, converted from fractional)
-- close_price (decimal, converted from fractional)
-- realized_pnl (the GROSS PROFIT/LOSS amount — negative if DR)
+PURCHASE & SALE — CLOSED OFFSET GROUPS (read this carefully):
+
+The Purchase & Sale section lists, for each offset, one or more OPENING lots (often at different prices and on different dates) and one or more CLOSING transactions, followed by a SINGLE "GROSS PROFIT/LOSS FROM TRADES" line. That GROSS PROFIT/LOSS line is the TOTAL for the WHOLE offset group — it is NOT a per-lot value and must NOT be split across or attached to individual lots. When several opening lots are offset by one closing transaction, the SAME closing price applies to every lot in that group.
+
+Extract ONLY the raw facts for each offset group — do NOT compute, split, or guess any profit/loss yourself. Emit one object per offset group:
+- commodity ("Corn", "Soybeans", or "Chicago Wheat" — ignore COTTON and any others)
+- contract_month (e.g., "DEC 26")
+- side ("short" if the opening lots are in the SELL column and closed by a BUY; "long" if bought first and sold to close — see CRITICAL RULE #4)
+- close_date (the closing transaction date, format YYYY-MM-DD)
+- close_price (the closing price as a decimal — convert fractional, e.g., "4.42 3/4" = 4.4275)
+- lots (an array with ONE entry per opening lot in this group, each: { open_date (YYYY-MM-DD), open_price (decimal, fractional converted), contracts (the number of contracts in THIS lot only) }). Capture each lot's OWN contract count — three lots of ten contracts each are 10, 10, 10, never 30 and never the group's grand total.
+- statement_reported_total (the group's printed GROSS PROFIT/LOSS total, as a decimal — negative if DR/loss). This is for reconciliation ONLY.
 
 ALSO extract any OPTIONS positions from the statement. Options appear in the OPEN POSITIONS section and may look like:
 - "DEC 26 CORN 480 PUT" (a put option on DEC 26 Corn with strike price 480, meaning $4.80/bu)
@@ -174,17 +175,17 @@ Respond ONLY in JSON with no other text, no markdown backticks:
       "unrealized_pnl": number
     }
   ],
-  "closed_trades": [
+  "closed_groups": [
     {
-      "open_trade_date": "YYYY-MM-DD",
-      "close_trade_date": "YYYY-MM-DD",
-      "side": "long or short",
-      "num_contracts": number,
       "commodity": "Corn or Soybeans or Chicago Wheat",
-      "contract_month": "string like JUL 26",
-      "open_price": number,
+      "contract_month": "string like DEC 26",
+      "side": "long or short",
+      "close_date": "YYYY-MM-DD",
       "close_price": number,
-      "realized_pnl": number
+      "lots": [
+        { "open_date": "YYYY-MM-DD", "open_price": number, "contracts": number }
+      ],
+      "statement_reported_total": number
     }
   ],
   "open_options": [
