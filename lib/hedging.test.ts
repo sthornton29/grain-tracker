@@ -17,6 +17,8 @@ import {
   contractMonthSortKey,
   normalizeOptionType,
   normalizeCommodity,
+  expandClosedGroup,
+  reconcileClosedGroup,
   CONTRACT_SIZE_BU,
 } from '@/lib/hedging'
 
@@ -204,6 +206,160 @@ describe('realizedPnl - closed futures (gross & net)', () => {
     const r = realizedPnl({ side: 'short', tradePrice: 4.5, closePrice: 4.4325, numContracts: 2 })
     expect(r.gross).toBeCloseTo(675, 2)
     expect(r.net).toBeCloseTo(675, 2)
+  })
+})
+
+// ---------- Closed offset groups: per-lot realized P&L ----------
+// This is the failing-case regression suite. The statement prints ONE gross
+// profit/loss per offset group; we must compute realized P&L PER LOT from each
+// lot's own open price and the shared close price — never copy the group total
+// onto a lot (which multiplied the gain). All values hand-derived:
+//   short lot realized = (open - close) * contracts * 5000
+//   long  lot realized = (close - open) * contracts * 5000
+describe('expandClosedGroup - per-lot realized P&L', () => {
+  it('three short DEC 26 corn lots closed at 4.4275 (the failing case)', () => {
+    // close 4.4275, each lot 10 contracts, size 5000:
+    //   lot1 open 4.9325 -> (4.9325-4.4275)=0.5050 * 10 * 5000 = 25,250
+    //   lot2 open 4.8650 -> (4.8650-4.4275)=0.4375 * 10 * 5000 = 21,875
+    //   lot3 open 4.9225 -> (4.9225-4.4275)=0.4950 * 10 * 5000 = 24,750
+    //   sum = 71,875  (NOT 3 * 71,875 = 215,625)
+    const lots = expandClosedGroup({
+      commodity: 'Corn',
+      contract_month: 'DEC 26',
+      side: 'short',
+      close_date: '2026-06-18',
+      close_price: 4.4275,
+      lots: [
+        { open_date: '2026-03-09', open_price: 4.9325, contracts: 10 },
+        { open_date: '2026-03-11', open_price: 4.865, contracts: 10 },
+        { open_date: '2026-04-28', open_price: 4.9225, contracts: 10 },
+      ],
+    })
+    expect(lots).toHaveLength(3)
+    expect(lots[0].realized_pnl).toBeCloseTo(25250, 2)
+    expect(lots[1].realized_pnl).toBeCloseTo(21875, 2)
+    expect(lots[2].realized_pnl).toBeCloseTo(24750, 2)
+
+    const sum = lots.reduce((s, l) => s + l.realized_pnl, 0)
+    // Sum equals the statement total...
+    expect(sum).toBeCloseTo(71875, 2)
+    // ...and explicitly is NOT the bug's multiplied figure.
+    expect(sum).not.toBeCloseTo(215625, 2)
+    // No single lot carries the whole group total either.
+    for (const l of lots) expect(l.realized_pnl).not.toBeCloseTo(71875, 2)
+
+    // Each expanded lot carries its OWN open price/contracts + the shared close.
+    expect(lots.map((l) => l.open_price)).toEqual([4.9325, 4.865, 4.9225])
+    expect(lots.every((l) => l.close_price === 4.4275 && l.contracts === 10)).toBe(true)
+  })
+
+  it('single-lot single-close (short)', () => {
+    // SHORT 1 lot, 5 contracts, open 4.80 -> close 4.50:
+    //   (4.80-4.50)=0.30 * 5 * 5000 = 7,500
+    const lots = expandClosedGroup({
+      commodity: 'Corn',
+      contract_month: 'JUL 26',
+      side: 'short',
+      close_date: '2026-06-10',
+      close_price: 4.5,
+      lots: [{ open_date: '2026-02-01', open_price: 4.8, contracts: 5 }],
+    })
+    expect(lots).toHaveLength(1)
+    expect(lots[0].realized_pnl).toBeCloseTo(7500, 2)
+  })
+
+  it('partial close: close fewer contracts than the open lot holds', () => {
+    // The open lot holds 20 contracts but only 8 are closed on this statement,
+    // so the group lists contracts = 8 for the closing transaction:
+    //   SHORT (4.50-4.40)=0.10 * 8 * 5000 = 4,000
+    // (The realized math uses the CLOSED count, not the full holding.)
+    const lots = expandClosedGroup({
+      commodity: 'Corn',
+      contract_month: 'DEC 26',
+      side: 'short',
+      close_date: '2026-06-18',
+      close_price: 4.4,
+      lots: [{ open_date: '2026-03-01', open_price: 4.5, contracts: 8 }],
+    })
+    expect(lots).toHaveLength(1)
+    expect(lots[0].contracts).toBe(8)
+    expect(lots[0].realized_pnl).toBeCloseTo(4000, 2)
+  })
+
+  it('long-side close uses (close - open)', () => {
+    // LONG 5 contracts, open 11.00 -> close 11.40:
+    //   (11.40-11.00)=0.40 * 5 * 5000 = 10,000
+    const lots = expandClosedGroup({
+      commodity: 'Soybeans',
+      contract_month: 'NOV 26',
+      side: 'long',
+      close_date: '2026-09-15',
+      close_price: 11.4,
+      lots: [{ open_date: '2026-04-10', open_price: 11.0, contracts: 5 }],
+    })
+    expect(lots).toHaveLength(1)
+    expect(lots[0].realized_pnl).toBeCloseTo(10000, 2)
+  })
+
+  it('honors an explicit contract size', () => {
+    // SHORT 2 contracts, open 4.50 -> close 4.40, size 1000:
+    //   0.10 * 2 * 1000 = 200
+    const lots = expandClosedGroup({
+      commodity: 'Corn',
+      contract_month: 'DEC 26',
+      side: 'short',
+      close_date: '2026-06-18',
+      close_price: 4.4,
+      lots: [{ open_date: '2026-03-01', open_price: 4.5, contracts: 2 }],
+      contractSizeBu: 1000,
+    })
+    expect(lots[0].realized_pnl).toBeCloseTo(200, 2)
+  })
+})
+
+// ---------- Reconcile computed total vs the statement's printed total ----------
+describe('reconcileClosedGroup', () => {
+  it('the three-lot corn group ties to its statement_reported_total', () => {
+    const lots = expandClosedGroup({
+      commodity: 'Corn',
+      contract_month: 'DEC 26',
+      side: 'short',
+      close_date: '2026-06-18',
+      close_price: 4.4275,
+      lots: [
+        { open_date: '2026-03-09', open_price: 4.9325, contracts: 10 },
+        { open_date: '2026-03-11', open_price: 4.865, contracts: 10 },
+        { open_date: '2026-04-28', open_price: 4.9225, contracts: 10 },
+      ],
+    })
+    const recon = reconcileClosedGroup(lots, 71875)
+    expect(recon.computedTotal).toBeCloseTo(71875, 2)
+    expect(recon.reportedTotal).toBe(71875)
+    expect(recon.hasReportedTotal).toBe(true)
+    expect(recon.diff).toBeCloseTo(0, 2)
+    expect(recon.matches).toBe(true)
+  })
+
+  it('flags a mismatch beyond the $1 tolerance', () => {
+    // computed 7,500 vs reported 7,000 -> diff 500, mismatch.
+    const recon = reconcileClosedGroup([{ realized_pnl: 7500 }], 7000)
+    expect(recon.diff).toBeCloseTo(500, 2)
+    expect(recon.matches).toBe(false)
+  })
+
+  it('treats sub-$1 rounding noise as a match', () => {
+    // computed 71,875 vs reported 71,874.40 -> diff 0.60 (<= 1) -> matches.
+    const recon = reconcileClosedGroup([{ realized_pnl: 71875 }], 71874.4)
+    expect(recon.matches).toBe(true)
+  })
+
+  it('no reported total -> nothing to compare, matches with hasReportedTotal=false', () => {
+    const recon = reconcileClosedGroup([{ realized_pnl: 1234 }], null)
+    expect(recon.computedTotal).toBeCloseTo(1234, 2)
+    expect(recon.reportedTotal).toBeNull()
+    expect(recon.hasReportedTotal).toBe(false)
+    expect(recon.diff).toBeNull()
+    expect(recon.matches).toBe(true)
   })
 })
 

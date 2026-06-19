@@ -77,6 +77,9 @@ export type BrokerageOpenPosition = {
   unrealized_pnl: number | null
 }
 
+// Legacy per-line closed trade (one row per trade with a per-line realized P&L).
+// Superseded by BrokerageClosedGroup, but still accepted as a fallback when an
+// older/odd statement comes back in this shape — see buildClosedGroups.
 export type BrokerageClosedTrade = {
   open_trade_date: string | null
   close_trade_date: string | null
@@ -87,6 +90,27 @@ export type BrokerageClosedTrade = {
   open_price: number | null
   close_price: number | null
   realized_pnl: number | null
+}
+
+// One opening lot within a closed offset group.
+export type BrokerageClosedGroupLot = {
+  open_date: string | null
+  open_price: number | null
+  contracts: number | null
+}
+
+// A Purchase & Sale offset group: one or more opening lots closed by a single
+// closing transaction (shared close_date/close_price). statement_reported_total
+// is the group's printed GROSS PROFIT/LOSS — kept ONLY for reconciliation, never
+// written to any position's realized P&L (computed per lot in code instead).
+export type BrokerageClosedGroup = {
+  commodity: string | null
+  contract_month: string | null
+  side: 'long' | 'short' | null
+  close_date: string | null
+  close_price: number | null
+  lots: BrokerageClosedGroupLot[]
+  statement_reported_total: number | null
 }
 
 export type BrokerageOpenOption = {
@@ -118,7 +142,11 @@ export type BrokerageClosedOption = {
 export type BrokerageStatementExtraction = {
   statement_date: string | null
   open_positions: BrokerageOpenPosition[]
-  closed_trades: BrokerageClosedTrade[]
+  // Closed trades now arrive grouped: one entry per offset group with per-lot
+  // opening facts. closed_trades is the legacy shape, still accepted as a
+  // fallback (see buildClosedGroups in the statement-import component).
+  closed_groups?: BrokerageClosedGroup[]
+  closed_trades?: BrokerageClosedTrade[]
   open_options?: BrokerageOpenOption[]
   closed_options?: BrokerageClosedOption[]
   account_summary: {

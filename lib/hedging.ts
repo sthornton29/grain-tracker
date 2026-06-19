@@ -178,6 +178,97 @@ export function realizedPnl(args: {
   return { gross: Math.round(gross * 100) / 100, net: Math.round(net * 100) / 100 }
 }
 
+// ---------- Closed offset groups (Purchase & Sale) ----------
+//
+// A brokerage statement closes one or more OPENING lots against a single
+// closing transaction and prints ONE "GROSS PROFIT/LOSS" total for the whole
+// offset group. That printed total is a GROUP total — it must NEVER be attached
+// to an individual lot, or the gain gets multiplied when several lots close
+// together (three corn lots that net $71,875 would each show $71,875 → a bogus
+// $215,625). Instead we compute realized P&L PER LOT from the lot's own open
+// price and the shared close price, and consult the statement's printed total
+// only as a reconciliation check (see reconcileClosedGroup).
+
+export type ClosedGroupLot = {
+  open_date: string
+  open_price: number
+  contracts: number
+}
+
+export type ClosedGroup = {
+  commodity: Commodity
+  contract_month: string
+  side: Side
+  close_date: string
+  close_price: number
+  lots: ClosedGroupLot[]
+  contractSizeBu?: number
+}
+
+export type ExpandedClosedLot = {
+  commodity: Commodity
+  contract_month: string
+  side: Side
+  open_date: string
+  open_price: number
+  close_date: string
+  close_price: number
+  contracts: number
+  realized_pnl: number // GROSS, computed for THIS lot only
+}
+
+// Expand a closed offset group into one closed position per opening lot, each
+// carrying its own open price/contracts, the shared close price/date, and its
+// individually-computed realized P&L:
+//   short: (open - close) * contracts * size
+//   long:  (close - open) * contracts * size
+// The statement's reported group total is deliberately NOT consulted here.
+export function expandClosedGroup(group: ClosedGroup): ExpandedClosedLot[] {
+  const size = group.contractSizeBu ?? CONTRACT_SIZE_BU
+  return group.lots.map((lot) => ({
+    commodity: group.commodity,
+    contract_month: group.contract_month,
+    side: group.side,
+    open_date: lot.open_date,
+    open_price: lot.open_price,
+    close_date: group.close_date,
+    close_price: group.close_price,
+    contracts: lot.contracts,
+    realized_pnl: realizedPnl({
+      side: group.side,
+      tradePrice: lot.open_price,
+      closePrice: group.close_price,
+      numContracts: lot.contracts,
+      contractSizeBu: size,
+    }).gross,
+  }))
+}
+
+export type GroupReconciliation = {
+  computedTotal: number // sum of the per-lot realized P&L
+  reportedTotal: number | null // the statement's GROSS PROFIT/LOSS for the group
+  hasReportedTotal: boolean
+  diff: number | null // computedTotal - reportedTotal (null when nothing to compare)
+  matches: boolean // |diff| <= tolerance, or true when there's no reported total
+}
+
+// Reconcile the sum of per-lot realized P&L against the statement's reported
+// group total. A difference beyond `tolerance` dollars should be surfaced to
+// the user before saving; the normal case ties out and is just confirmed. When
+// the statement has no reported total there's nothing to check, so it "matches".
+export function reconcileClosedGroup(
+  lots: Array<{ realized_pnl: number }>,
+  reportedTotal: number | null | undefined,
+  tolerance = 1,
+): GroupReconciliation {
+  const computedTotal = Math.round(lots.reduce((s, l) => s + l.realized_pnl, 0) * 100) / 100
+  if (reportedTotal == null) {
+    return { computedTotal, reportedTotal: null, hasReportedTotal: false, diff: null, matches: true }
+  }
+  const diff = Math.round((computedTotal - reportedTotal) * 100) / 100
+  return { computedTotal, reportedTotal, hasReportedTotal: true, diff, matches: Math.abs(diff) <= tolerance }
+}
+
 // ---------- Options ----------
 
 export type OptionType = 'call' | 'put'
