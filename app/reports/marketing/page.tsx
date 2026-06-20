@@ -10,7 +10,7 @@ import { fmtPnl, buildContractSymbol } from '@/lib/hedging'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { StackedBar } from '@/components/reports/report-kit'
 import ExportBar from '@/components/export-bar'
-import type { ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportPayload } from '@/lib/exports'
 import type { Contract, Crop, CropAssumption, FuturesPosition, OptionPosition } from '@/lib/types'
 
 type LoadRow = {
@@ -305,12 +305,20 @@ export default function MarketingPage() {
     const sections: ExportPayload['sections'] = []
     const KV: ExportPayload['sections'][number]['columns'] = [{ label: 'Item' }, { label: 'Value', align: 'right' }]
 
+    // Value cells are free-form (number + unit), so numbers are formatted through
+    // the shared formatter for consistent commas / $ / decimals.
+    const ac = (n: number) => formatNumber(n, 'acres')
+    const buf = (n: number) => formatNumber(n, 'bu')
+    const usd = (n: number) => formatNumber(n, 'usd0')
+    const price = (n: number) => formatNumber(n, 'price')
+    const yld = (n: number) => formatNumber(n, 'yield')
+
     sections.push({
       title: 'Summary',
       columns: KV,
       rows: [
-        ['Total acres', Math.round(combined.acres)],
-        ['Total projected profit', combined.profit != null ? Math.round(combined.profit) : '—'],
+        ['Total acres', ac(combined.acres)],
+        ['Total projected profit', combined.profit != null ? usd(combined.profit) : '—'],
       ],
     })
 
@@ -335,47 +343,47 @@ export default function MarketingPage() {
       const qual = r.lockedPriceBu + 0.5 < r.totalProduction ? ' (incl. assumed pricing)' : ''
 
       sub('Production')
-      kv('Planted acres', `${Math.round(r.acres)}${irrAc > 0 || dryAc > 0 ? ` (irr ${Math.round(irrAc)} / dry ${Math.round(dryAc)})` : ''}`)
-      kv('Yield', r.yield != null ? `${r.yield.toFixed(1)} bu/ac ${r.yieldLabel}` : '—')
-      kv('Total production', `${Math.round(r.totalProduction)} bu`)
+      kv('Planted acres', `${ac(r.acres)}${irrAc > 0 || dryAc > 0 ? ` (irr ${ac(irrAc)} / dry ${ac(dryAc)})` : ''}`)
+      kv('Yield', r.yield != null ? `${yld(r.yield)} bu/ac ${r.yieldLabel}` : '—')
+      kv('Total production', `${buf(r.totalProduction)} bu`)
 
       sub('Sales')
-      kv('Contracted', `${Math.round(r.contractedBu)} bu`)
-      kv('Remaining', `${Math.round(r.remaining)} bu`)
-      for (const [t, b] of byType) kv(t, `${Math.round(b)} bu`)
+      kv('Contracted', `${buf(r.contractedBu)} bu`)
+      kv('Remaining', `${buf(r.remaining)} bu`)
+      for (const [t, b] of byType) kv(t, `${buf(b)} bu`)
 
       if (adv) {
         // Block 1 — Average Futures Price Buildup (line-item ledger).
         sub('Avg Futures Price Buildup')
         if (r.futuresSources.length > 0) {
-          for (const s of r.futuresSources) kv(s.label, `${Math.round(s.bushels)} bu @ ${s.avgPrice.toFixed(2)}`)
-          kv(`Weighted avg futures (${Math.round(r.futuresPricedBu)} bu)`, r.rawAvgFutures != null ? r.rawAvgFutures.toFixed(2) : 'N/A')
-          if (r.hedgeRealizedPnl !== 0) kv('Realized hedge P&L / bu', `${r.hedgeAdjPerBu >= 0 ? '+' : ''}${r.hedgeAdjPerBu.toFixed(2)}`)
-          tot('= Average futures price', r.avgFutures != null ? r.avgFutures.toFixed(2) : 'N/A')
+          for (const s of r.futuresSources) kv(s.label, `${buf(s.bushels)} bu @ ${price(s.avgPrice)}`)
+          kv(`Weighted avg futures (${buf(r.futuresPricedBu)} bu)`, r.rawAvgFutures != null ? price(r.rawAvgFutures) : 'N/A')
+          if (r.hedgeRealizedPnl !== 0) kv('Realized hedge P&L / bu', price(r.hedgeAdjPerBu))
+          tot('= Average futures price', r.avgFutures != null ? price(r.avgFutures) : 'N/A')
         } else {
           kv('Futures', 'No futures positions — flat cash')
         }
         // Block 2 — Basis Buildup (with actual/assumed/blended state).
         sub('Basis Buildup')
-        if (r.basisLockedBu > 0) kv(`Locked basis (${Math.round(r.basisLockedBu)} bu)`, r.basisLockedAvg != null ? r.basisLockedAvg.toFixed(2) : '—')
-        if (r.basisAssumedBu > 0) kv(`Assumed basis (${Math.round(r.basisAssumedBu)} bu)`, r.assumedBasis.toFixed(2))
-        tot(r.basisState === 'blended' ? '= Basis' : `= Basis (${r.basisState})`, r.avgBasis.toFixed(2))
-        tot(`Total avg price${qual}`, r.totalAvgPrice != null ? r.totalAvgPrice.toFixed(2) : '—')
-        if (r.hedgeRealizedPnl !== 0) kv('Realized hedge P&L (in revenue)', Math.round(r.hedgeRealizedPnl))
+        if (r.basisLockedBu > 0) kv(`Locked basis (${buf(r.basisLockedBu)} bu)`, r.basisLockedAvg != null ? price(r.basisLockedAvg) : '—')
+        if (r.basisAssumedBu > 0) kv(`Assumed basis (${buf(r.basisAssumedBu)} bu)`, price(r.assumedBasis))
+        tot(r.basisState === 'blended' ? '= Basis' : `= Basis (${r.basisState})`, price(r.avgBasis))
+        tot(`Total avg price${qual}`, r.totalAvgPrice != null ? price(r.totalAvgPrice) : '—')
+        if (r.hedgeRealizedPnl !== 0) kv('Realized hedge P&L (in revenue)', usd(r.hedgeRealizedPnl))
       } else {
         sub('Pricing')
-        tot(`Avg price${qual}`, r.totalAvgPrice != null ? r.totalAvgPrice.toFixed(2) : '—')
+        tot(`Avg price${qual}`, r.totalAvgPrice != null ? price(r.totalAvgPrice) : '—')
       }
 
       sub('Profitability')
-      kv('Cost / acre', r.costPerAcre != null ? Math.round(r.costPerAcre) : '—')
-      kv('Cost / bu', r.costPerBu != null ? r.costPerBu.toFixed(2) : '—')
-      kv('Revenue / acre', r.revenuePerAcre != null ? Math.round(r.revenuePerAcre) : '—')
-      kv('Profit / acre', r.profitPerAcre != null ? Math.round(r.profitPerAcre) : '—')
-      tot('Total profit', r.totalProfit != null ? Math.round(r.totalProfit) : '—')
+      kv('Cost / acre', r.costPerAcre != null ? usd(r.costPerAcre) : '—')
+      kv('Cost / bu', r.costPerBu != null ? price(r.costPerBu) : '—')
+      kv('Revenue / acre', r.revenuePerAcre != null ? usd(r.revenuePerAcre) : '—')
+      kv('Profit / acre', r.profitPerAcre != null ? usd(r.profitPerAcre) : '—')
+      tot('Total profit', r.totalProfit != null ? usd(r.totalProfit) : '—')
       const be = breakevenOf(r)
-      kv('Breakeven price', be.price != null ? be.price.toFixed(2) : '—')
-      kv('Breakeven yield', be.yieldPerAcre != null ? `${be.yieldPerAcre.toFixed(1)} bu/ac` : '—')
+      kv('Breakeven price', be.price != null ? price(be.price) : '—')
+      kv('Breakeven yield', be.yieldPerAcre != null ? `${yld(be.yieldPerAcre)} bu/ac` : '—')
 
       sections.push({ title: r.cropName, columns: KV, rows: rows2, rowMeta: meta2 })
     }
