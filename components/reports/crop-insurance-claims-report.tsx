@@ -10,6 +10,7 @@
 // and watch indemnities move in real time — the most valuable mid-season lever.
 
 import { Fragment, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
@@ -475,6 +476,12 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
             {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
         </label>
+        <Link
+          href="/settings/crop-insurance#coverage-check"
+          className="ml-auto self-end rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+        >
+          Coverage Check: insured vs planted acres →
+        </Link>
       </div>
 
       {cropYear === '' && <p className="text-amber-700 text-sm">Pick a crop year to run the claims monitor.</p>}

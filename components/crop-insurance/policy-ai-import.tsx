@@ -6,7 +6,7 @@
 // user review and edit each row before saving. Mirrors the plantings/contract
 // AI import patterns already in the app.
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { findBestMatch } from '@/lib/fuzzy'
 import { PdfTooLargeError, parseDocument, type CropInsurancePolicyExtraction } from '@/lib/pdf-upload'
@@ -14,7 +14,7 @@ import { splitPdfIntoBatches } from '@/lib/pdf-split'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
 import {
-  PLAN_TYPES, PLAN_TYPE_SHORT, PRACTICES, PRACTICE_LABEL, projectedPriceFromEstimates,
+  PLAN_TYPES, PLAN_TYPE_SHORT, PRACTICES, PRACTICE_LABEL, projectedPriceFromEstimates, resolveUploadEntityId,
   type PlanType, type Practice,
 } from '@/lib/crop-insurance'
 import { DEFAULT_SCO_TRIGGER, resolveProgramYearConfig } from '@/lib/program-config'
@@ -93,6 +93,17 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
     setImportEntityId(id)
     setRows((rs) => rs.map((r) => ({ ...r, form: { ...r.form, entity_id: id } })))
   }
+
+  // Entities load asynchronously on the page, so the useState seed above can be
+  // stale (empty entities → ''). Once they arrive, auto-assign the resolved
+  // entity (a single-entity op's only entity, or a provided default) when the
+  // user hasn't chosen one — and stamp it onto any already-extracted rows so the
+  // dedup key and the insert both carry it. Never overrides a user's selection.
+  useEffect(() => {
+    const resolved = resolveUploadEntityId({ entities, chosen: importEntityId, fallback: defaultEntityId })
+    if (resolved && resolved !== importEntityId) applyImportEntity(resolved)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entities, defaultEntityId, importEntityId])
 
   function extractionToForm(p: CropInsurancePolicyExtraction): { form: PolicyFormState; raw_crop: string | null; raw_county: string | null } {
     const crop = findBestMatch(p.crop, crops, (c) => c.name)
@@ -258,7 +269,12 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
           }
           updated++
         } else {
-          const { data, error } = await supabase.from('crop_insurance_policies').insert(policy).select('id').single()
+          // The whole upload belongs to one insured entity — write it onto every
+          // new policy authoritatively (rows are kept in sync, so this matches
+          // the dedup key used above and can't create a cross-entity duplicate).
+          const { data, error } = await supabase.from('crop_insurance_policies')
+            .insert({ ...policy, entity_id: importEntityId || null })
+            .select('id').single()
           if (error || !data) throw new Error(error?.message ?? 'insert failed')
           const policyId = (data as { id: string }).id
           if (sco) {

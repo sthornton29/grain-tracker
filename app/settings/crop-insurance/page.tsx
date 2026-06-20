@@ -181,16 +181,18 @@ export default function CropInsuranceSettingsPage() {
 
       <EntityFilter entities={entities} value={entityFilter} onChange={setEntityFilter} />
 
-      <CoverageCheck
-        crops={crops}
-        counties={counties}
-        entities={entities}
-        plantings={plantings}
-        policies={policies}
-        cropYearOptions={cropYearOptions}
-        defaultYear={cropYearOptions[0] ?? new Date().getFullYear()}
-        onChanged={refresh}
-      />
+      <div id="coverage-check" className="scroll-mt-4">
+        <CoverageCheck
+          crops={crops}
+          counties={counties}
+          entities={entities}
+          plantings={plantings}
+          policies={policies}
+          cropYearOptions={cropYearOptions}
+          defaultYear={cropYearOptions[0] ?? new Date().getFullYear()}
+          onChanged={refresh}
+        />
+      </div>
 
       <ProjectedPricesEditor crops={crops} estimates={estimates} onChange={refresh} />
 
@@ -249,7 +251,7 @@ export default function CropInsuranceSettingsPage() {
                       <span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{PLAN_TYPE_SHORT[p.plan_type]} {Math.round(Number(p.coverage_level) * 100)}%</span>
                       <span className="text-xs rounded-full bg-slate-100 text-slate-600 px-2 py-0.5">{PRACTICE_LABEL[p.practice ?? 'non_irrigated']}</span>
                       <span className="text-xs text-slate-500">{p.crop_year} crop</span>
-                      {entities.length > 1 && p.entity_id && <span className="text-xs text-slate-500">· {entityName(p.entity_id)}</span>}
+                      {p.entity_id && <span className="text-xs text-slate-500">· {entityName(p.entity_id)}</span>}
                       {sco && <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">SCO</span>}
                       {eco && <span className="text-xs rounded-full bg-indigo-100 text-indigo-800 px-2 py-0.5">ECO</span>}
                       {p.source === 'document_import' && <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">imported</span>}
