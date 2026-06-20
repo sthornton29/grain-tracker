@@ -5,7 +5,7 @@
 > programs. **Not a SaaS product** — single-tenant, used on iPads in trucks by a
 > small team, so the UX favors fast capture and forgiving data entry.
 >
-> _Snapshot date: 2026-06-20. Schema at migration `035`._
+> _Snapshot date: 2026-06-20. Schema at migration `036`._
 
 ---
 
@@ -33,7 +33,7 @@
 | AI | **`@anthropic-ai/sdk ^0.95.2`** — Claude `claude-sonnet-4-6` for document extraction |
 | Market data | **Barchart OnDemand** REST (futures + options quotes) |
 | Exports / files | `exceljs`, `xlsx` (SheetJS), `jspdf` + `jspdf-autotable`, `pdf-lib`, `jszip` |
-| Testing / CI | **Vitest `^4.1.8`** — 334 unit tests over the pure `lib/` math (12 `lib/*.test.ts` files); ESLint (`.eslintrc.json`, `next/core-web-vitals`); **GitHub Actions CI** (`.github/workflows/ci.yml`: lint + test on every push/PR) |
+| Testing / CI | **Vitest `^4.1.8`** — 339 unit tests over the pure `lib/` math (12 `lib/*.test.ts` files); ESLint (`.eslintrc.json`, `next/core-web-vitals`); **GitHub Actions CI** (`.github/workflows/ci.yml`: lint + test on every push/PR) |
 | Packaging | **npm** (`package-lock.json`); installable **PWA** (service worker `/sw.js`, `manifest.json`) |
 
 **Request flow:** `middleware.ts` → `lib/supabase/middleware.ts` refreshes the Supabase
@@ -117,7 +117,7 @@ Operational Reports**. Items marked `external` point back to standalone pages wi
 | `/settings/buyers` | Buyers + their delivery locations. |
 | `/settings/crops` | Crops (base moisture, lb/bu, harvest category, double-crop). |
 | `/settings/contracts` | Create/manage contracts (forward/HTA/basis) with **AI import**, CSV, shared `<ContractFields>`. |
-| `/settings/crop-insurance` | MPCI policies with SCO/ECO endorsements + an **irrigated/dryland practice** selector (the same crop/county/year can carry one of each); entity filter; **AI import** (`<PolicyAiImport>`, captures practice per line, dedupe on crop+county+year+practice+plan); **RMA projected-prices editor** (`<ProjectedPricesEditor>` — per crop×year rows in `harvest_price_estimates`); and a **Coverage Check** (`<CoverageCheck>`) reconciling insured vs planted acres by crop·county·practice. |
+| `/settings/crop-insurance` | MPCI policies with SCO/ECO endorsements + an **irrigated/dryland practice** selector (the same crop/county/year can carry one of each); entity filter; **per-entity assignment** (a policy is carried by one entity — multi-entity ops must pick on upload/manual entry, single-entity auto-assigns); **AI import** (`<PolicyAiImport>`, captures practice per line, requires/auto-assigns the insured entity for the whole upload, dedupe on **entity**+crop+county+year+practice+plan); **RMA projected-prices editor** (`<ProjectedPricesEditor>` — per crop×year rows in `harvest_price_estimates`); and a **Coverage Check** (`<CoverageCheck>`) reconciling insured vs planted acres by entity·crop·county·practice, with an inline **"covers all planted acres" attestation** (🟢 *Covered*) that suppresses the acre-mismatch flag for a combination (never the "no policy" flag). |
 | `/settings/government-payments` | ARC/PLC base acres, elections, price data, payments, payment limits; FSA base-acres import; seed-cotton calculator; **per-year program parameters** (`program_year_config`: SCO trigger, per-person payment limit, sequestration %). |
 
 ### Reports (`/reports/*`)
@@ -142,14 +142,16 @@ Operational Reports**. Items marked `external` point back to standalone pages wi
 
 ## 3. Database schema
 
-**Supabase / PostgreSQL** with `pgcrypto` (`gen_random_uuid()`). Defined by **35 sequential,
-idempotent migrations** in `supabase/` (`schema.sql` = 001, then `002_*.sql` … `035_*.sql`).
+**Supabase / PostgreSQL** with `pgcrypto` (`gen_random_uuid()`). Defined by **36 sequential,
+idempotent migrations** in `supabase/` (`schema.sql` = 001, then `002_*.sql` … `036_*.sql`).
 Every table re-runs safely (`create table if not exists`, guarded `do $$…$$`), uses a `uuid`
 PK and `created_at`. ~36 tables, **no views**. Later migrations frequently `ALTER` earlier
 tables (esp. `contracts`, `farms`, `fields`, `field_plantings`, `crop_assumptions`,
 `crop_insurance_policies`). `035` adds the irrigated/dryland **practice** column to
 `crop_insurance_policies` (default `non_irrigated`); a policy is now keyed by entity ×
-crop × county × crop_year × practice (+ plan_type), SCO/ECO inherit it.
+crop × county × crop_year × practice (+ plan_type), SCO/ECO inherit it. `036` adds
+`covers_all_planted_acres` (default false) + `coverage_note` to `crop_insurance_policies` — the
+Coverage Check attestation that suppresses acre-mismatch flags for a combination.
 
 ### Migration history (feature areas)
 
@@ -179,6 +181,8 @@ crop × county × crop_year × practice (+ plan_type), SCO/ECO inherit it.
 - `032` program config — `program_year_config` (per-year SCO trigger, payment limit, sequestration %; seeds 2026 + 2027).
 - `033` — `crop_assumptions.assumed_basis` (Marketing fallback basis).
 - `034` — `crop_assumptions.assumed_futures` (Marketing assumed/what-if futures price; nullable).
+- `035` crop-insurance practice — `crop_insurance_policies.practice` (irrigated/non_irrigated, default dryland).
+- `036` — `crop_insurance_policies.covers_all_planted_acres` (default false) + `coverage_note` (Coverage Check attestation).
 
 ### Tables (grouped) — purpose & key columns
 
@@ -227,7 +231,7 @@ crop × county × crop_year × practice (+ plan_type), SCO/ECO inherit it.
 
 **Crop insurance**
 
-- **`crop_insurance_policies`** — one per crop×county×year. `plan_type` (RP/RP_HPE/YP), `coverage_level` (0.5–0.85), `unit_structure`, `aph_yield`, `projected_price`/`harvest_price`, `volatility_factor`, `insured_acres`, premium fields, `source`.
+- **`crop_insurance_policies`** — one per entity×crop×county×year×practice. `entity_id` (the insured entity), `plan_type` (RP/RP_HPE/YP), `practice`, `coverage_level` (0.5–0.85), `unit_structure`, `aph_yield`, `projected_price`/`harvest_price`, `volatility_factor`, `insured_acres`, premium fields, **`covers_all_planted_acres`** + **`coverage_note`** (036 attestation — all planted acres covered, suppresses the Coverage Check acre-mismatch flag), `source`.
 - **`crop_insurance_sco`** / **`crop_insurance_eco`** — 1:1 endorsements on a policy (unique `policy_id`); trigger levels, expected county yield, premiums.
 - **`harvest_price_estimates`** — discovery cache. `crop_id`, `crop_year`, `price_type` (projected/harvest_final/harvest_estimate), `price`. unique `(crop_id, crop_year, price_type, price_date)`.
 
@@ -264,8 +268,8 @@ crop × county × crop_year × practice (+ plan_type), SCO/ECO inherit it.
 - **Settlement linking** (`lib/settlement-link.ts`) — back-fills `settlement_lines.load_id` by ticket when a buyer load is saved (`relinkSettlementLinesForLoad`) **and** for a whole settlement when its Review screen opens (`relinkSettlementLines`), so the DB stays in sync with what the screen shows. Ambiguous tickets are always left unlinked for manual resolution.
 - **Marketing engine** (`lib/marketing.ts`) — per-crop position for a crop year: acres segmented full-season/double-crop × irr/dry, expected production from assumption breakouts (or **actual production once harvest is complete**), a Total Average Price buildup (weighted futures from physical contracts + open short hedges, realized futures/options P&L spread per bushel, and a **bushel-weighted basis blend** — locked contracts at their weighted basis, the rest at the assumed basis), and a **blended expected revenue** that values each bushel bucket (flat-cash, futures+basis, open-hedge, and completely-unpriced at the **assumed futures price** when set else the harvest-price estimate, + assumed basis) at its own price. Blended revenue is the **single source of truth** for `revenuePerAcre`/`profitPerAcre`/`totalProfit` (so the dashboard and Revenue Projections agree) and is **capped at `totalProduction`** — contracts beyond expected production (over-contracting, e.g. canola sold on a higher yield) scale down so revenue can't be booked for grain you won't grow. Exposes the **basis composition** (`basisLockedBu`/`basisLockedAvg`/`basisAssumedBu`/`basisState`) and `unpricedFuturesPrice` (lets the dashboard's live what-if re-price the unpriced bushels as an exact delta on blended revenue). Money is kept **full-precision** (rounded only at display); grand totals roll up through one shared **`aggregateMarketing(rows)`** that both the dashboard and Revenue Projections consume, so neither page sums on its own. **`breakevenAvgPrice(row)`** returns the large headline Total Avg Price (effective revenue ÷ production once an assumed futures blends in, else the futures+basis total) — the price breakeven yield divides into. `effectiveContractType` (`lib/contracts.ts`) reads a both-legs contract as a Forward for the futures buildup grouping.
 - **Program-year config** (`lib/program-config.ts`) — resolves the SCO trigger, per-person payment limit, and sequestration % for a crop year from `program_year_config` rows, falling back to the most recent configured year (or built-in 2026 defaults) with a plain-English notice for the UI.
-- **Insurance / government / revenue engines** (`lib/crop-insurance.ts`, `lib/government-payments.ts`, `lib/revenue-projections.ts`) — pure math feeding the financial reports. `lib/crop-insurance.ts` computes per-policy RP/RP-HPE/YP + SCO/ECO indemnity (now per **practice**, each from its own APH/coverage/acres/yield) and exposes **`reconcileAcreage`** — the Coverage Check that reconciles insured vs planted acres per crop·county·practice (status no-policy / under-insured / over-reported / matched, `max(0.5 ac, 1%)` tolerance). Projected prices now come from `harvest_price_estimates` (`projectedPriceFromEstimates`) instead of a hard-coded map. `computeRevenueProjections` rolls totals up through the marketing engine's shared **`aggregateMarketing`** (so crop-sales + projected profit are structurally identical to the dashboard), layers insurance proceeds + government payments on top, and divides breakeven by **`breakevenAvgPrice`** (the headline Total Avg Price). Both pages value unpriced bushels with the **same live harvest-price estimate fetched for every planted crop** (`/api/harvest-price-estimate`).
-- **Unit tests** — 334 Vitest tests across 12 `lib/*.test.ts` files (shrink, yields, csv, contracts, marketing, crop-insurance, government-payments, revenue-projections, **revenue-marketing-reconciliation**, hedging, load-splits, program-config) with hand-verified worked examples; run in CI on every push/PR. The hedging file includes the closed-offset-group regression (three corn lots closed together net $71,875 per lot, **not** 3× that). The reconciliation file asserts the identity *Revenue Projections profit − Marketing total profit = insurance + government* per crop (incl. a zero-safety-net crop that matches to the cent).
+- **Insurance / government / revenue engines** (`lib/crop-insurance.ts`, `lib/government-payments.ts`, `lib/revenue-projections.ts`) — pure math feeding the financial reports. `lib/crop-insurance.ts` computes per-policy RP/RP-HPE/YP + SCO/ECO indemnity (now per **practice**, each from its own APH/coverage/acres/yield) and exposes **`reconcileAcreage`** — the Coverage Check that reconciles insured vs planted acres per **entity**·crop·county·practice (status no-policy / under-insured / over-reported / matched / **covered**, `max(0.5 ac, 1%)` tolerance). A combination whose policies carry the **`coversAllPlanted`** attestation is reported `covered` and excluded from uninsured/flagged totals (the acre variance stays visible, just unflagged); the `no_policy` flag is never suppressed. Projected prices now come from `harvest_price_estimates` (`projectedPriceFromEstimates`) instead of a hard-coded map. `computeRevenueProjections` rolls totals up through the marketing engine's shared **`aggregateMarketing`** (so crop-sales + projected profit are structurally identical to the dashboard), layers insurance proceeds + government payments on top, and divides breakeven by **`breakevenAvgPrice`** (the headline Total Avg Price). Both pages value unpriced bushels with the **same live harvest-price estimate fetched for every planted crop** (`/api/harvest-price-estimate`).
+- **Unit tests** — 339 Vitest tests across 12 `lib/*.test.ts` files (shrink, yields, csv, contracts, marketing, crop-insurance, government-payments, revenue-projections, **revenue-marketing-reconciliation**, hedging, load-splits, program-config) with hand-verified worked examples; run in CI on every push/PR. The hedging file includes the closed-offset-group regression (three corn lots closed together net $71,875 per lot, **not** 3× that); the crop-insurance file covers the Coverage Check `covers-all-planted` attestation (covered ≠ under-insured, excluded from uninsured totals, never suppresses `no_policy`). The reconciliation file asserts the identity *Revenue Projections profit − Marketing total profit = insurance + government* per crop (incl. a zero-safety-net crop that matches to the cent).
 
 ### AI document parsing pipeline
 
@@ -290,7 +294,7 @@ Extracted rows are fuzzy-matched (`lib/fuzzy.ts`) to existing reference data and
 | `settlement` | `/settlements/new` | Buyer settlement: buyer, date, line items (ticket #, net bushels, gross revenue, discounts). |
 | `fields` | `<FieldsAiImport>` | Per field: `field_name`, `farm_name`, `total_acres`, `irrigated_acres` (dryland derived). |
 | `plantings` | `<PlantingsAiImport>` | Per planting: field, crop, season_year, planted/irrigated acres, planting date, `varieties[]`, notes. Classifies New/Update/Unchanged. |
-| `crop_insurance_policy` | `<PolicyAiImport>` | Per crop × county × **practice** line: plan type, **practice** (irrigated/non_irrigated), coverage level, unit structure, APH yield, projected price, insured acres, premiums, policy #, plus nested **SCO** and **ECO** objects. |
+| `crop_insurance_policy` | `<PolicyAiImport>` | Per crop × county × **practice** line: plan type, **practice** (irrigated/non_irrigated), coverage level, unit structure, APH yield, projected price, insured acres, premiums, policy #, plus nested **SCO** and **ECO** objects. The review screen assigns the whole upload to **one insured entity** (auto for single-entity ops, required for multi); dedupe keys on entity+crop+county+year+practice+plan. |
 | `contract` | `/settings/contracts` | Contract #, buyer, crop, type (forward/hta/basis), month, crop year, bushels, futures/basis/cash/service fee, delivery window, notes. |
 | `fsa_base_acres` | `<FsaBaseAcresImport>` | FSA 156EZ: per farm (FSA #, county, state) and per commodity (base acres, PLC yield, election, unassigned, OBBBA new/total base). |
 | `brokerage_statement` | `<StatementImport>` (hedging) | Broker-neutral futures/options statement (StoneX/FCStone, RJO, …): long/short, open positions, **closed offset groups** (one or more opening lots + a single close), options, account summary. Closed trades arrive as `closed_groups[]` carrying per-lot opening facts plus the statement's `statement_reported_total` (reconciliation only); **realized P&L is computed per lot in code** (`expandClosedGroup`), never copied from the statement total — matched lots anchor to the DB entry price/size, and each group reconciles against its printed total (`reconcileClosedGroup`). After review, a **second step** flags app-open positions missing from the statement as *possibly closed* → Close (real workflow) / Keep open. |

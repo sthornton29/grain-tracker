@@ -101,7 +101,7 @@ export default function CropInsuranceSettingsPage() {
 
   async function add(e: React.FormEvent) {
     e.preventDefault()
-    const v = validatePolicyForm(form)
+    const v = validatePolicyForm(form, entities.length > 1)
     if (v) { setErr(v); return }
     setErr(null)
     const { policy, sco, eco } = policyFormToPayloads(form, 'manual')
@@ -116,7 +116,7 @@ export default function CropInsuranceSettingsPage() {
   }
 
   async function save(id: string) {
-    const v = validatePolicyForm(editForm)
+    const v = validatePolicyForm(editForm, entities.length > 1)
     if (v) { setErr(v); return }
     setErr(null)
     const { policy, sco, eco } = policyFormToPayloads(editForm, 'manual')
@@ -184,10 +184,12 @@ export default function CropInsuranceSettingsPage() {
       <CoverageCheck
         crops={crops}
         counties={counties}
+        entities={entities}
         plantings={plantings}
         policies={policies}
         cropYearOptions={cropYearOptions}
         defaultYear={cropYearOptions[0] ?? new Date().getFullYear()}
+        onChanged={refresh}
       />
 
       <ProjectedPricesEditor crops={crops} estimates={estimates} onChange={refresh} />
@@ -195,6 +197,7 @@ export default function CropInsuranceSettingsPage() {
       <PolicyAiImport
         crops={crops}
         counties={counties}
+        entities={entities}
         existingPolicies={policies}
         defaultYear={cropYearOptions[0] ?? new Date().getFullYear()}
         defaultEntityId={entityFilter || form.entity_id}

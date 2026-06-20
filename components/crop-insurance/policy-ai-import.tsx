@@ -21,11 +21,12 @@ import { DEFAULT_SCO_TRIGGER, resolveProgramYearConfig } from '@/lib/program-con
 import {
   COVERAGE_LEVELS, emptyPolicyForm, policyFormToPayloads, type PolicyFormState, PolicyLiveSummary,
 } from '@/components/crop-insurance/policy-form'
-import type { Crop, County, CropInsurancePolicy, HarvestPriceEstimate, ProgramYearConfig } from '@/lib/types'
+import type { Crop, County, Entity, CropInsurancePolicy, HarvestPriceEstimate, ProgramYearConfig } from '@/lib/types'
 
 type Props = {
   crops: Crop[]
   counties: County[]
+  entities: Entity[]
   existingPolicies: CropInsurancePolicy[]
   defaultYear: number
   defaultEntityId: string
@@ -57,13 +58,15 @@ function snapCoverage(n: number | null | undefined): string {
   return best
 }
 
-// Identity for dedup: crop + county + crop_year + practice + plan_type (a policy
-// is uniquely identified by these; coverage can change without being a new row).
-function dedupKey(crop_id: string, county_id: string, year: string, plan: string, practice: string): string {
-  return `${crop_id}|${county_id}|${year}|${plan}|${practice}`
+// Identity for dedup: entity + crop + county + crop_year + practice + plan_type
+// (a policy is uniquely identified by these; coverage can change without being a
+// new row). Entity is included so the same crop/county/practice for two
+// different entities are separate policies, not duplicates.
+function dedupKey(entity_id: string, crop_id: string, county_id: string, year: string, plan: string, practice: string): string {
+  return `${entity_id}|${crop_id}|${county_id}|${year}|${plan}|${practice}`
 }
 
-export default function PolicyAiImport({ crops, counties, existingPolicies, defaultYear, defaultEntityId, projectedEstimates = [], programConfigs = [], onImported }: Props) {
+export default function PolicyAiImport({ crops, counties, entities, existingPolicies, defaultYear, defaultEntityId, projectedEstimates = [], programConfigs = [], onImported }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [source, setSource] = useState<DocumentSource | null>(null)
   const [stage, setStage] = useState<string | null>(null)
@@ -71,14 +74,25 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
   const [banner, setBanner] = useState<string | null>(null)
   const [rows, setRows] = useState<Row[]>([])
   const [saving, setSaving] = useState(false)
+  // The insured entity for this upload — one crop-insurance document belongs to
+  // one entity, applied to every extracted policy. Single-entity ops auto-assign.
+  const [importEntityId, setImportEntityId] = useState(
+    defaultEntityId || (entities.length === 1 ? entities[0].id : ''),
+  )
 
-  // Existing policies keyed by crop+county+year+plan+coverage, so a re-import
-  // updates the match instead of inserting a duplicate.
+  // Existing policies keyed by entity+crop+county+year+plan+practice, so a
+  // re-import updates the match instead of inserting a duplicate.
   const existingByKey = useMemo(
     () => new Map(existingPolicies.map((p) =>
-      [dedupKey(p.crop_id, p.county_id ?? '', String(p.crop_year), p.plan_type, p.practice ?? 'non_irrigated'), p] as const)),
+      [dedupKey(p.entity_id ?? '', p.crop_id, p.county_id ?? '', String(p.crop_year), p.plan_type, p.practice ?? 'non_irrigated'), p] as const)),
     [existingPolicies],
   )
+
+  // Apply a chosen entity to every reviewed row (the whole upload is one entity).
+  function applyImportEntity(id: string) {
+    setImportEntityId(id)
+    setRows((rs) => rs.map((r) => ({ ...r, form: { ...r.form, entity_id: id } })))
+  }
 
   function extractionToForm(p: CropInsurancePolicyExtraction): { form: PolicyFormState; raw_crop: string | null; raw_county: string | null } {
     const crop = findBestMatch(p.crop, crops, (c) => c.name)
@@ -97,7 +111,7 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
     const eco = p.eco
     const form: PolicyFormState = {
       ...emptyPolicyForm,
-      entity_id: defaultEntityId,
+      entity_id: importEntityId,
       crop_id: crop?.id ?? '',
       crop_year: year,
       county_id: county?.id ?? '',
@@ -130,7 +144,7 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
   // form actually has (preserve-existing): blanks never count as a change.
   function policyStatus(form: PolicyFormState): { kind: 'new' | 'update' | 'unchanged'; existing: CropInsurancePolicy | null } {
     if (!form.crop_id || !form.crop_year) return { kind: 'new', existing: null }
-    const existing = existingByKey.get(dedupKey(form.crop_id, form.county_id, form.crop_year, form.plan_type, form.practice)) ?? null
+    const existing = existingByKey.get(dedupKey(form.entity_id, form.crop_id, form.county_id, form.crop_year, form.plan_type, form.practice)) ?? null
     if (!existing) return { kind: 'new', existing: null }
     const sameNum = (s: string, v: number | null) => s.trim() === '' || (Number.isFinite(Number(s)) && v != null && Math.abs(Number(s) - Number(v)) < 1e-9)
     const sameStr = (s: string, v: string | null) => s.trim() === '' || s.trim().toLowerCase() === (v ?? '').trim().toLowerCase()
@@ -200,6 +214,10 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
 
   async function saveAll() {
     setErr(null)
+    if (entities.length > 1 && !importEntityId) {
+      setErr('Select the entity these policies belong to before saving.')
+      return
+    }
     if (toSave.length === 0) {
       setErr('Nothing to save — each row needs a matched crop and crop year, and must be new or changed.')
       return
@@ -288,6 +306,23 @@ export default function PolicyAiImport({ crops, counties, existingPolicies, defa
       {(source || rows.length > 0) && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           <div className="space-y-3">
+            {/* Insured entity for this upload — applied to every extracted policy.
+                Multi-entity ops must pick (save is blocked until then); single-
+                entity ops are auto-assigned and shown read-only. */}
+            {entities.length > 1 ? (
+              <label className={`block rounded-lg border px-3 py-2 ${importEntityId ? 'border-slate-200 bg-slate-50' : 'border-amber-300 bg-amber-50'}`}>
+                <span className="text-sm font-medium text-slate-700">Insured entity (applied to all policies) *</span>
+                <select value={importEntityId} onChange={(e) => applyImportEntity(e.target.value)} className="mt-1 block rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white">
+                  <option value="">— select entity —</option>
+                  {entities.map((en) => <option key={en.id} value={en.id}>{en.name}</option>)}
+                </select>
+                {!importEntityId && <span className="block text-xs text-amber-700 mt-1">Pick the entity before saving — these policies belong to one insured entity.</span>}
+              </label>
+            ) : entities.length === 1 ? (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                Insured entity: <span className="font-medium text-slate-800">{entities[0].name}</span>
+              </div>
+            ) : null}
             {rows.length === 0 && (
               <p className="text-sm text-slate-400">{stage ? 'Working…' : 'No policies extracted yet.'}</p>
             )}

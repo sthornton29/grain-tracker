@@ -390,15 +390,31 @@ export function computePolicy(args: {
 
 export type CoverageStatus =
   | 'matched'             // insured ≈ planted (within tolerance)
+  | 'covered'             // operator attested all planted acres are covered (acre variance suppressed)
   | 'under_insured'       // insured < planted beyond tolerance (uncovered acres)
   | 'over_reported'       // insured > planted beyond tolerance (review)
   | 'no_policy'           // planted acres with no matching policy (uninsured)
   | 'insured_not_planted' // a policy exists but no plantings (reverse gap)
 
-export type CoveragePlantingInput = { cropId: string; countyId: string | null; practice: Practice; plantedAcres: number }
-export type CoveragePolicyInput = { cropId: string; countyId: string | null; practice: Practice; insuredAcres: number }
+// entityId is optional: when omitted it falls into a single '' group, preserving
+// the operation-wide behavior; when supplied, combinations split per entity
+// (crop insurance is carried at the entity level).
+export type CoveragePlantingInput = { entityId?: string | null; cropId: string; countyId: string | null; practice: Practice; plantedAcres: number }
+export type CoveragePolicyInput = {
+  entityId?: string | null
+  cropId: string
+  countyId: string | null
+  practice: Practice
+  insuredAcres: number
+  // Operator attestation (see crop_insurance_policies.covers_all_planted_acres):
+  // when any policy in a combination has this set, the combination is treated as
+  // fully covered regardless of the insured-vs-planted comparison.
+  coversAllPlanted?: boolean
+  coverageNote?: string | null
+}
 
 export type CoverageRow = {
+  entityId: string | null
   cropId: string
   countyId: string | null
   practice: Practice
@@ -408,6 +424,10 @@ export type CoverageRow = {
   variance: number // insuredAcres − plantedAcres
   tolerance: number
   status: CoverageStatus
+  // True when a policy in this combination attests all planted acres are covered.
+  coversAllPlanted: boolean
+  // The attestation note, if one was recorded.
+  coverageNote: string | null
 }
 
 export type CoverageSummary = {
@@ -423,29 +443,40 @@ export function acreageTolerance(plantedAcres: number): number {
   return Math.max(0.5, plantedAcres * 0.01)
 }
 
-const covKey = (cropId: string, countyId: string | null, practice: Practice) => `${cropId}|${countyId ?? ''}|${practice}`
+const covKey = (entityId: string | null | undefined, cropId: string, countyId: string | null, practice: Practice) =>
+  `${entityId ?? ''}|${cropId}|${countyId ?? ''}|${practice}`
 
 export function reconcileAcreage(args: {
   plantings: readonly CoveragePlantingInput[]
   policies: readonly CoveragePolicyInput[]
 }): { rows: CoverageRow[]; insuredNotPlanted: CoverageRow[]; summary: CoverageSummary } {
-  // Aggregate planted acres per crop × county × practice.
+  // Aggregate planted acres per entity × crop × county × practice.
   const planted = new Map<string, CoveragePlantingInput>()
   for (const p of args.plantings) {
     if (!(p.plantedAcres > 0)) continue
-    const k = covKey(p.cropId, p.countyId, p.practice)
+    const k = covKey(p.entityId, p.cropId, p.countyId, p.practice)
     const cur = planted.get(k)
     if (cur) cur.plantedAcres += p.plantedAcres
     else planted.set(k, { ...p })
   }
-  // Aggregate insured acres + policy count per crop × county × practice (sums
-  // across multiple optional-unit policies for the same combination).
-  const insured = new Map<string, { input: CoveragePolicyInput; insuredAcres: number; count: number }>()
+  // Aggregate insured acres + policy count per entity × crop × county × practice
+  // (sums across multiple optional-unit policies for the same combination). A
+  // combination is "covered" when ANY of its policies attests covers-all-planted;
+  // the first such policy's note is surfaced.
+  const insured = new Map<string, { input: CoveragePolicyInput; insuredAcres: number; count: number; coversAll: boolean; note: string | null }>()
   for (const p of args.policies) {
-    const k = covKey(p.cropId, p.countyId, p.practice)
+    const k = covKey(p.entityId, p.cropId, p.countyId, p.practice)
+    const covers = !!p.coversAllPlanted
+    const note = (p.coverageNote ?? '').trim() || null
     const cur = insured.get(k)
-    if (cur) { cur.insuredAcres += p.insuredAcres; cur.count++ }
-    else insured.set(k, { input: { ...p }, insuredAcres: p.insuredAcres, count: 1 })
+    if (cur) {
+      cur.insuredAcres += p.insuredAcres
+      cur.count++
+      cur.coversAll = cur.coversAll || covers
+      if (covers && !cur.note && note) cur.note = note
+    } else {
+      insured.set(k, { input: { ...p }, insuredAcres: p.insuredAcres, count: 1, coversAll: covers, note: covers ? note : null })
+    }
   }
 
   const rows: CoverageRow[] = []
@@ -453,16 +484,21 @@ export function reconcileAcreage(args: {
     const ins = insured.get(k)
     const insuredAcres = ins?.insuredAcres ?? 0
     const policyCount = ins?.count ?? 0
+    const coversAll = ins?.coversAll ?? false
     const tol = acreageTolerance(pl.plantedAcres)
     let status: CoverageStatus
+    // "No policy" is a real exposure the attestation never suppresses; only the
+    // acre-mismatch flags (under/over) are overridden by covers-all-planted.
     if (policyCount === 0) status = 'no_policy'
+    else if (coversAll) status = 'covered'
     else if (insuredAcres < pl.plantedAcres - tol) status = 'under_insured'
     else if (insuredAcres > pl.plantedAcres + tol) status = 'over_reported'
     else status = 'matched'
     rows.push({
-      cropId: pl.cropId, countyId: pl.countyId, practice: pl.practice,
+      entityId: pl.entityId ?? null, cropId: pl.cropId, countyId: pl.countyId, practice: pl.practice,
       plantedAcres: round2(pl.plantedAcres), insuredAcres: round2(insuredAcres), policyCount,
       variance: round2(insuredAcres - pl.plantedAcres), tolerance: round2(tol), status,
+      coversAllPlanted: coversAll, coverageNote: ins?.note ?? null,
     })
   }
 
@@ -471,9 +507,10 @@ export function reconcileAcreage(args: {
   for (const [k, ins] of insured) {
     if (planted.has(k)) continue
     insuredNotPlanted.push({
-      cropId: ins.input.cropId, countyId: ins.input.countyId, practice: ins.input.practice,
+      entityId: ins.input.entityId ?? null, cropId: ins.input.cropId, countyId: ins.input.countyId, practice: ins.input.practice,
       plantedAcres: 0, insuredAcres: round2(ins.insuredAcres), policyCount: ins.count,
       variance: round2(ins.insuredAcres), tolerance: 0, status: 'insured_not_planted',
+      coversAllPlanted: ins.coversAll, coverageNote: ins.note,
     })
   }
 
@@ -483,7 +520,9 @@ export function reconcileAcreage(args: {
     totalInsured += r.insuredAcres
     if (r.status === 'no_policy') uninsuredAcres += r.plantedAcres
     else if (r.status === 'under_insured') uninsuredAcres += r.plantedAcres - r.insuredAcres
-    if (r.status !== 'matched') flaggedCount++
+    // 'covered' rows are intentionally not flagged and contribute no uninsured
+    // exposure, even when planted > insured.
+    if (r.status !== 'matched' && r.status !== 'covered') flaggedCount++
   }
 
   return {

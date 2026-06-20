@@ -323,6 +323,13 @@ export type CropInsurancePolicy = {
   total_premium: number | null
   premium_subsidy_pct: number | null
   notes: string | null
+  // Operator attestation that this policy covers all planted acres for its
+  // entity × crop × county × crop_year × practice, even when insured acres
+  // differ from planted acres. Suppresses the Coverage Check's acre-mismatch
+  // flag for that combination (never the "no policy" flag). coverage_note holds
+  // the justification (e.g. "confirmed with agent 6/2026").
+  covers_all_planted_acres: boolean
+  coverage_note: string | null
   source: 'manual' | 'document_import'
   created_at: string
 }
