@@ -21,6 +21,7 @@ import { analyzeYields, fieldCropAggregates, harvestStatusOf, type HarvestStatus
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { EmptyState, theadCls, grandTotalRowCls } from '@/components/reports/report-kit'
+import { exportToExcel, exportToPdf, type ExportPayload } from '@/lib/exports'
 import type {
   County, Crop, CropAssumption, Entity, Farm, Field, FieldPlanting, LoadSplit,
 } from '@/lib/types'
@@ -415,20 +416,60 @@ export default function CropInsuranceReport() {
   const entityName = entityId ? (entities.find((e) => e.id === entityId)?.name ?? '') : ''
   const reportTitle = `${entityName ? entityName + ' ' : ''}${cropYear === '' ? '' : cropYear + ' '}Production Report`
 
+  // Build the shared ExportPayload: a Summary section (one sheet) listing each
+  // county × practice with per-crop acres/bu, then one section (sheet) per
+  // county × practice detailing farms. Dynamic crop columns come from reportCrops.
+  function buildPayload(): ExportPayload {
+    const cropCols = (): ExportPayload['sections'][number]['columns'] =>
+      reportCrops.flatMap((c) => [
+        { label: `${c.name} ac`, align: 'right', format: 'acres' as const },
+        { label: `${c.name} bu`, align: 'right', format: 'bu' as const },
+      ])
+    const cropCells = (byCrop: Map<string, FarmCropCell>): Array<string | number> =>
+      reportCrops.flatMap((c) => {
+        const cell = byCrop.get(c.id)
+        return [cell ? cell.acres : '', cell ? cell.bu : '']
+      })
+
+    const sections: ExportPayload['sections'] = []
+
+    // Summary section.
+    const summarySection: ExportPayload['sections'][number] = {
+      title: 'Summary',
+      columns: [{ label: 'County' }, { label: 'Practice' }, ...cropCols()],
+      rows: summaryRows.map((r) => [r.countyLabel, practiceLabel(r.practice), ...cropCells(r.byCrop)]),
+      rowMeta: summaryRows.map(() => 'data' as const),
+    }
+    summarySection.rows.push(['Total', '', ...cropCells(summaryTotals)])
+    summarySection.rowMeta!.push('total')
+    sections.push(summarySection)
+
+    // One detail section (sheet) per county × practice.
+    for (const s of detailSheets) {
+      const farms = [...s.farms.values()]
+      const rows: Array<Array<string | number>> = farms.map((f) => [f.farmName, f.fsaNumber ?? '', ...cropCells(f.byCrop)])
+      const totalByCrop = summaryRows.find((r) => r.sheetName === s.sheetName)?.byCrop ?? new Map()
+      rows.push(['Total', '', ...cropCells(totalByCrop)])
+      sections.push({
+        title: s.sheetName,
+        columns: [{ label: 'Farm' }, { label: 'FSA #' }, ...cropCols()],
+        rows,
+        rowMeta: [...farms.map(() => 'data' as const), 'total'],
+      })
+    }
+
+    return {
+      title: reportTitle,
+      filters: [cropYear === '' ? 'All crop years' : `${cropYear} crop`, entityName || 'All entities'].join(' · '),
+      sections,
+    }
+  }
+
   async function onExportExcel() {
     setExportErr(null)
     setExporting('xlsx')
     try {
-      const { exportCropInsuranceWorkbook } = await import('@/lib/crop-insurance-export')
-      await exportCropInsuranceWorkbook({
-        title: reportTitle,
-        cropYear: cropYear === '' ? null : cropYear,
-        entityName,
-        reportCrops,
-        summaryRows,
-        summaryTotals,
-        detailSheets,
-      })
+      await exportToExcel(buildPayload())
     } catch (e) {
       setExportErr((e as Error)?.message ?? 'Excel export failed.')
     } finally {
@@ -440,16 +481,7 @@ export default function CropInsuranceReport() {
     setExportErr(null)
     setExporting('pdf')
     try {
-      const { exportCropInsurancePdf } = await import('@/lib/crop-insurance-export')
-      await exportCropInsurancePdf({
-        title: reportTitle,
-        cropYear: cropYear === '' ? null : cropYear,
-        entityName,
-        reportCrops,
-        summaryRows,
-        summaryTotals,
-        detailSheets,
-      })
+      await exportToPdf(buildPayload())
     } catch (e) {
       setExportErr((e as Error)?.message ?? 'PDF export failed.')
     } finally {
