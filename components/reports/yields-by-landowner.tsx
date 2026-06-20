@@ -221,11 +221,12 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
   function buildExportPayload(): ExportPayload {
     const columns: ExportPayload['sections'][number]['columns'] = [
       { label: 'Crop' },
-      { label: 'Acres', align: 'right' },
-      { label: 'Dry bu', align: 'right' },
-      { label: 'Yield (bu/ac)', align: 'right' },
+      { label: 'Acres', align: 'right', format: 'acres' },
+      { label: 'Dry bu', align: 'right', format: 'bu' },
+      { label: 'Yield (bu/ac)', align: 'right', format: 'yield' },
     ]
-    const yld = (acres: number, dryBu: number) => (acres > 0 ? (dryBu / acres).toFixed(1) : '—')
+    // Real number (formatted to 1 dec by the column), or '—' when there are no acres.
+    const yld = (acres: number, dryBu: number): number | string => (acres > 0 ? dryBu / acres : '—')
 
     const sections = groups.map((g) => {
       const rows: Array<Array<string | number | null>> = []
@@ -235,7 +236,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
         rows.push([f.fsaNumber ? `${f.farmName}  ·  FSA #${f.fsaNumber}` : f.farmName])
         rowMeta.push('subhead')
         for (const t of f.byCrop.values()) {
-          rows.push([t.cropName, t.acres.toFixed(2), t.dryBu.toFixed(2), yld(t.acres, t.dryBu)])
+          rows.push([t.cropName, t.acres, t.dryBu, yld(t.acres, t.dryBu)])
           rowMeta.push('data')
         }
       }
@@ -244,7 +245,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
         rows.push([`${g.landownerName} totals`])
         rowMeta.push('subhead')
         for (const t of g.byCrop.values()) {
-          rows.push([t.cropName, t.acres.toFixed(2), t.dryBu.toFixed(2), yld(t.acres, t.dryBu)])
+          rows.push([t.cropName, t.acres, t.dryBu, yld(t.acres, t.dryBu)])
           rowMeta.push('total')
         }
       }
