@@ -381,6 +381,25 @@ export function computePolicy(args: {
   }
 }
 
+// Resolve the entity a policy upload / manual entry belongs to. Crop insurance
+// is carried per entity, so every policy from one upload gets one entity:
+//   - if the user explicitly chose one, use it;
+//   - else a single-entity operation auto-assigns its only entity (the user is
+//     never asked to pick);
+//   - else fall back to a provided default (e.g. the page's entity filter);
+//   - else null (a multi-entity upload with nothing chosen — save is blocked
+//     upstream until the user picks).
+// Pure so the AI-import and manual flows resolve identically and it's testable.
+export function resolveUploadEntityId(args: {
+  entities: ReadonlyArray<{ id: string }>
+  chosen: string
+  fallback?: string
+}): string | null {
+  if (args.chosen) return args.chosen
+  if (args.entities.length === 1) return args.entities[0].id
+  return args.fallback || null
+}
+
 // ---------- Acreage coverage check (reconcile insured vs planted) ----------
 //
 // Verifies that every planted acre is covered by a policy at the correct

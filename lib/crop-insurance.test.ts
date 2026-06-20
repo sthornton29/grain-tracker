@@ -8,6 +8,7 @@ import {
   projectedPriceFromEstimates,
   reconcileAcreage,
   acreageTolerance,
+  resolveUploadEntityId,
   type PolicyInputs,
   type BandInputs,
 } from '@/lib/crop-insurance'
@@ -595,5 +596,66 @@ describe('reconcileAcreage — covers-all-planted attestation', () => {
     // insured 220 < planted 300 would be under-insured, but one unit attests.
     expect(rows[0].status).toBe('covered')
     expect(rows[0].coverageNote).toBe('agent ok')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// resolveUploadEntityId — which entity a policy upload/manual entry is saved to.
+// Single-entity ops auto-assign (never asked); multi-entity uses the user's
+// choice (else a fallback, else null → save blocked upstream).
+// ---------------------------------------------------------------------------
+describe('resolveUploadEntityId', () => {
+  it('single-entity op auto-assigns its only entity even when nothing is chosen', () => {
+    expect(resolveUploadEntityId({ entities: [{ id: 'E1' }], chosen: '' })).toBe('E1')
+    // a stale empty fallback doesn't override the lone entity
+    expect(resolveUploadEntityId({ entities: [{ id: 'E1' }], chosen: '', fallback: '' })).toBe('E1')
+  })
+
+  it('multi-entity op uses the chosen entity', () => {
+    expect(resolveUploadEntityId({ entities: [{ id: 'E1' }, { id: 'E2' }], chosen: 'E2' })).toBe('E2')
+  })
+
+  it('multi-entity with nothing chosen falls back to the default, else null', () => {
+    expect(resolveUploadEntityId({ entities: [{ id: 'E1' }, { id: 'E2' }], chosen: '', fallback: 'E1' })).toBe('E1')
+    expect(resolveUploadEntityId({ entities: [{ id: 'E1' }, { id: 'E2' }], chosen: '' })).toBeNull()
+  })
+
+  it('a chosen entity always wins over the single-entity / fallback shortcuts', () => {
+    expect(resolveUploadEntityId({ entities: [{ id: 'E1' }], chosen: 'E2' })).toBe('E2')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// reconcileAcreage — entity matching (the Issue 1 ↔ Issue 2 connection).
+// Plantings carry their entity (field→farm→entity). A policy only matches a
+// planting when their entity_id agrees, so a null-entity policy (the Issue 1
+// bug) leaves the Coverage Check unable to match — every combo "no policy".
+// ---------------------------------------------------------------------------
+describe('reconcileAcreage — entity matching', () => {
+  it('matches a policy to a planting when both carry the same entity', () => {
+    const { rows, insuredNotPlanted } = reconcileAcreage({
+      plantings: [{ entityId: 'E1', cropId: 'corn', countyId: 'A', practice: 'irrigated', plantedAcres: 100 }],
+      policies: [{ entityId: 'E1', cropId: 'corn', countyId: 'A', practice: 'irrigated', insuredAcres: 100 }],
+    })
+    expect(rows).toHaveLength(1)
+    expect(rows[0].status).toBe('matched')
+    expect(rows[0].entityId).toBe('E1')
+    expect(insuredNotPlanted).toHaveLength(0)
+  })
+
+  it('does NOT match when the policy entity is null but the planting has one (the Issue 1 symptom)', () => {
+    const { rows, insuredNotPlanted } = reconcileAcreage({
+      plantings: [{ entityId: 'E1', cropId: 'corn', countyId: 'A', practice: 'irrigated', plantedAcres: 100 }],
+      // policy saved with a null entity (the bug) → different combination key.
+      policies: [{ entityId: null, cropId: 'corn', countyId: 'A', practice: 'irrigated', insuredAcres: 100 }],
+    })
+    // The planting sees no policy at its entity → Coverage Check would show this
+    // as "no policy" with no attestation toggle (policyCount 0)…
+    expect(rows).toHaveLength(1)
+    expect(rows[0].status).toBe('no_policy')
+    expect(rows[0].policyCount).toBe(0)
+    // …and the policy shows up as a reverse gap (insured, not planted).
+    expect(insuredNotPlanted).toHaveLength(1)
+    expect(insuredNotPlanted[0].status).toBe('insured_not_planted')
   })
 })
