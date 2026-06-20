@@ -473,12 +473,12 @@ export default function YieldsPage() {
 
   function buildEntityPayload(): ExportPayload {
     const columns: ExportColumn[] = [{ label: 'Crop' }]
-    if (showEntityYear) columns.push({ label: 'Year' })
-    columns.push({ label: 'Acres', align: 'right' })
-    if (entityShowBreakdown) columns.push({ label: 'Irr ac', align: 'right' }, { label: 'Dry ac', align: 'right' })
-    columns.push({ label: 'Dry bu', align: 'right' })
-    if (entityShowBreakdown) columns.push({ label: 'Irrigated yield', align: 'right' }, { label: 'Dryland yield', align: 'right' })
-    columns.push({ label: 'Yield (bu/ac)', align: 'right' })
+    if (showEntityYear) columns.push({ label: 'Year', format: 'text' })
+    columns.push({ label: 'Acres', align: 'right', format: 'acres' })
+    if (entityShowBreakdown) columns.push({ label: 'Irr ac', align: 'right', format: 'acres' }, { label: 'Dry ac', align: 'right', format: 'acres' })
+    columns.push({ label: 'Dry bu', align: 'right', format: 'bu' })
+    if (entityShowBreakdown) columns.push({ label: 'Irrigated yield', align: 'right', format: 'yield' }, { label: 'Dryland yield', align: 'right', format: 'yield' })
+    columns.push({ label: 'Yield (bu/ac)', align: 'right', format: 'yield' })
 
     const sections = entityGroups.map((g) => {
       const rows: Array<Array<string | number | null>> = []
@@ -486,19 +486,19 @@ export default function YieldsPage() {
       for (const r of g.rows) {
         const cells: (string | number)[] = [r.cropName]
         if (showEntityYear) cells.push(r.seasonYear)
-        cells.push(r.acres.toFixed(2))
-        if (entityShowBreakdown) cells.push(r.irrAc > 0 ? r.irrAc.toFixed(2) : '', r.dryAc > 0 ? r.dryAc.toFixed(2) : '')
-        cells.push(r.dryBu.toFixed(2))
-        if (entityShowBreakdown) cells.push(r.irrigatedYield != null ? r.irrigatedYield.toFixed(1) : '', r.drylandYield != null ? r.drylandYield.toFixed(1) : '')
-        cells.push(r.yield != null ? r.yield.toFixed(1) : '')
+        cells.push(r.acres)
+        if (entityShowBreakdown) cells.push(r.irrAc > 0 ? r.irrAc : '', r.dryAc > 0 ? r.dryAc : '')
+        cells.push(r.dryBu)
+        if (entityShowBreakdown) cells.push(r.irrigatedYield ?? '', r.drylandYield ?? '')
+        cells.push(r.yield ?? '')
         rows.push(cells); rowMeta.push('data')
       }
       if (g.rows.length > 1) {
         const cells: (string | number)[] = [`${g.groupName} total`]
         if (showEntityYear) cells.push('')
-        cells.push(g.acres.toFixed(2))
+        cells.push(g.acres)
         if (entityShowBreakdown) cells.push('', '')
-        cells.push(g.dryBu.toFixed(2))
+        cells.push(g.dryBu)
         if (entityShowBreakdown) cells.push('', '')
         cells.push('')
         rows.push(cells); rowMeta.push('total')
@@ -617,15 +617,15 @@ export default function YieldsPage() {
       { label: 'Farm' },
       { label: 'FSA #' },
       { label: 'Crop' },
-      { label: 'Year' },
-      { label: 'Acres', align: 'right' },
+      { label: 'Year', format: 'text' },
+      { label: 'Acres', align: 'right', format: 'acres' },
     ]
-    if (showIrrigatedCol) columns.push({ label: 'Irr ac', align: 'right' })
-    if (showDrylandCol) columns.push({ label: 'Dry ac', align: 'right' })
-    columns.push({ label: 'Dry bu', align: 'right' })
-    if (showIrrigatedCol) columns.push({ label: 'Irrigated yield', align: 'right' })
-    if (showDrylandCol) columns.push({ label: 'Dryland yield', align: 'right' })
-    if (showTotalCol) columns.push({ label: 'Yield (bu/ac)', align: 'right' })
+    if (showIrrigatedCol) columns.push({ label: 'Irr ac', align: 'right', format: 'acres' })
+    if (showDrylandCol) columns.push({ label: 'Dry ac', align: 'right', format: 'acres' })
+    columns.push({ label: 'Dry bu', align: 'right', format: 'bu' })
+    if (showIrrigatedCol) columns.push({ label: 'Irrigated yield', align: 'right', format: 'yield' })
+    if (showDrylandCol) columns.push({ label: 'Dryland yield', align: 'right', format: 'yield' })
+    if (showTotalCol) columns.push({ label: 'Yield (bu/ac)', align: 'right', format: 'yield' })
 
     const rows = includedPlantings.map((p) => {
       const r = rowFor(p)
@@ -639,14 +639,14 @@ export default function YieldsPage() {
         r.farm?.fsa_number ?? '',
         r.crop?.name ?? '',
         p.season_year,
-        r.acres.toFixed(2),
+        r.acres,
       ]
-      if (showIrrigatedCol) cells.push(r.irrAc.toFixed(2))
-      if (showDrylandCol) cells.push(r.dryAc.toFixed(2))
-      cells.push(r.dryBu.toFixed(2))
-      if (showIrrigatedCol) cells.push(irrY != null ? irrY.toFixed(2) : '')
-      if (showDrylandCol) cells.push(dryY != null ? dryY.toFixed(2) : '')
-      if (showTotalCol) cells.push(r.totalYield != null ? r.totalYield.toFixed(2) : '')
+      if (showIrrigatedCol) cells.push(r.irrAc)
+      if (showDrylandCol) cells.push(r.dryAc)
+      cells.push(r.dryBu)
+      if (showIrrigatedCol) cells.push(irrY ?? '')
+      if (showDrylandCol) cells.push(dryY ?? '')
+      if (showTotalCol) cells.push(r.totalYield ?? '')
       return cells
     })
     return { title: 'Yields by Field', filters: fieldFiltersLabel(), sections: [{ columns, rows }] }
@@ -658,17 +658,17 @@ export default function YieldsPage() {
       { label: 'FSA #' },
       { label: 'Entity' },
       { label: 'Crop' },
-      { label: 'Year' },
-      { label: 'Acres', align: 'right' },
+      { label: 'Year', format: 'text' },
+      { label: 'Acres', align: 'right', format: 'acres' },
     ]
     if (farmShowBreakdown) {
-      columns.push({ label: 'Irr ac', align: 'right' }, { label: 'Dry ac', align: 'right' })
+      columns.push({ label: 'Irr ac', align: 'right', format: 'acres' }, { label: 'Dry ac', align: 'right', format: 'acres' })
     }
-    columns.push({ label: 'Dry bu', align: 'right' })
+    columns.push({ label: 'Dry bu', align: 'right', format: 'bu' })
     if (farmShowBreakdown) {
-      columns.push({ label: 'Irrigated yield', align: 'right' }, { label: 'Dryland yield', align: 'right' })
+      columns.push({ label: 'Irrigated yield', align: 'right', format: 'yield' }, { label: 'Dryland yield', align: 'right', format: 'yield' })
     }
-    columns.push({ label: 'Yield (bu/ac)', align: 'right' })
+    columns.push({ label: 'Yield (bu/ac)', align: 'right', format: 'yield' })
 
     const rows = byFarm.map((r) => {
       const y = farmYields(r)
@@ -678,16 +678,16 @@ export default function YieldsPage() {
         r.entityName,
         r.cropName,
         r.seasonYear,
-        r.acres.toFixed(2),
+        r.acres,
       ]
       if (farmShowBreakdown) {
-        cells.push(r.irrAc > 0 ? r.irrAc.toFixed(2) : '', r.dryAc > 0 ? r.dryAc.toFixed(2) : '')
+        cells.push(r.irrAc > 0 ? r.irrAc : '', r.dryAc > 0 ? r.dryAc : '')
       }
-      cells.push(r.dryBu.toFixed(2))
+      cells.push(r.dryBu)
       if (farmShowBreakdown) {
-        cells.push(y.irrigated != null ? y.irrigated.toFixed(2) : '', y.dryland != null ? y.dryland.toFixed(2) : '')
+        cells.push(y.irrigated ?? '', y.dryland ?? '')
       }
-      cells.push(y.total != null ? y.total.toFixed(2) : '')
+      cells.push(y.total ?? '')
       return cells
     })
     return { title: 'Yields by Farm', filters: fieldFiltersLabel(), sections: [{ columns, rows }] }
@@ -697,11 +697,11 @@ export default function YieldsPage() {
     const columns: ExportColumn[] = [
       { label: 'Crop' },
       { label: 'Variety' },
-      { label: 'Year' },
-      { label: 'Plantings', align: 'right' },
-      { label: 'Acres', align: 'right' },
-      { label: 'Dry bu', align: 'right' },
-      { label: 'Yield (bu/ac)', align: 'right' },
+      { label: 'Year', format: 'text' },
+      { label: 'Plantings', align: 'right', format: 'int' },
+      { label: 'Acres', align: 'right', format: 'acres' },
+      { label: 'Dry bu', align: 'right', format: 'bu' },
+      { label: 'Yield (bu/ac)', align: 'right', format: 'yield' },
     ]
     const rows = varietyAgg.map((r) => {
       const yld = r.acres > 0 ? r.dryBu / r.acres : null
@@ -710,9 +710,9 @@ export default function YieldsPage() {
         r.variety,
         r.seasonYear,
         r.plantings,
-        r.acres.toFixed(2),
-        r.dryBu.toFixed(2),
-        yld != null ? yld.toFixed(2) : '',
+        r.acres,
+        r.dryBu,
+        yld ?? '',
       ]
     })
     return { title: 'Yields by Variety', filters: fieldFiltersLabel(), sections: [{ columns, rows }] }
