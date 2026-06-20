@@ -7,6 +7,8 @@ import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { splitFieldLabel } from '@/lib/load-splits'
+import ExportBar from '@/components/export-bar'
+import type { ExportPayload } from '@/lib/exports'
 import type { Entity, Farm, Field, FieldPlanting, County, LoadSplit } from '@/lib/types'
 
 type Row = {
@@ -396,6 +398,34 @@ export default function LoadsPage() {
   function exportCsv() {
     downloadCsv(filtered)
   }
+
+  // Formatted PDF/Excel of the filtered loads (mirrors the on-screen list).
+  function buildPayload(): ExportPayload {
+    return {
+      title: 'Load Log',
+      filters: `${filtered.length} load${filtered.length === 1 ? '' : 's'}`,
+      sections: [{
+        columns: [
+          { label: 'Date' }, { label: 'Ticket' }, { label: 'Truck' }, { label: 'Crop' },
+          { label: 'From' }, { label: 'To' }, { label: 'Contract' },
+          { label: 'Gross lb', align: 'right', format: 'int' }, { label: 'Tare lb', align: 'right', format: 'int' }, { label: 'Net lb', align: 'right', format: 'int' },
+          { label: 'Wet bu', align: 'right', format: 'bu' }, { label: 'Dry bu', align: 'right', format: 'bu' },
+          { label: 'Moisture %', align: 'right', format: 'dec1' }, { label: 'Test wt', align: 'right', format: 'dec1' }, { label: 'Split' },
+        ],
+        rows: filtered.map((r) => {
+          const { wetBushels, dryBushels } = bushelsFor(r)
+          const rSplits = splitsByLoad.get(r.id)
+          return [
+            r.date, r.ticket_number ?? '', r.truck?.name_or_number ?? '', r.crop?.name ?? '',
+            fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number ?? '',
+            r.gross_weight ?? '', r.tare_weight ?? '', r.net_weight ?? '',
+            wetBushels ?? '', dryBushels ?? '', r.moisture ?? '', r.test_weight ?? '',
+            rSplits && rSplits.length > 0 ? 'Yes' : '',
+          ]
+        }),
+      }],
+    }
+  }
   function exportSelected() {
     if (selected.size === 0) return
     // Preserve current sort order in the export by filtering `sorted`, not `rows`.
@@ -411,6 +441,7 @@ export default function LoadsPage() {
         <Link href="/loads/import" className="rounded-lg bg-white border border-slate-300 px-4 py-2 text-sm">Import CSV</Link>
         <Link href="/loads/new" className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">+ New Load</Link>
         <button onClick={exportCsv} className="rounded-lg bg-white border border-slate-300 px-4 py-2">Export CSV</button>
+        {filtered.length > 0 && <ExportBar buildPayload={buildPayload} />}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-3">
