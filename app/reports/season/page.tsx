@@ -6,6 +6,8 @@ import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
+import ExportBar from '@/components/export-bar'
+import { formatNumber, type ExportPayload } from '@/lib/exports'
 import {
   SummaryCards,
   EmptyState,
@@ -164,6 +166,40 @@ export default function SeasonSummaryPage() {
     { label: 'Dryland acres', value: fmt(totals.dryland, 2) },
   ]
 
+  // Export mirrors the on-screen table (real numbers + shared formatting).
+  function buildPayload(): ExportPayload {
+    const rows = byCrop.map((r) => {
+      const yld = r.harvestedAcres > 0 ? r.dryBu / r.harvestedAcres : ''
+      return [
+        r.cropName, r.fullSeasonAcres, r.doubleCropAcres, r.totalAcres,
+        r.irrigatedAcres > 0 ? r.irrigatedAcres : '', r.drylandAcres > 0 ? r.drylandAcres : '',
+        r.dryBu, yld,
+      ]
+    })
+    rows.push(['Total', totals.fullSeason, totals.doubleCrop, totals.acres, totals.irrigated, totals.dryland, totals.dryBu, ''])
+    return {
+      title: 'Season Summary',
+      filters: `Season: ${year}`,
+      summary: [
+        { label: 'Crops planted', value: formatNumber(byCrop.length, 'int') },
+        { label: 'Total acres', value: formatNumber(totals.acres, 'acres') },
+        { label: 'Irrigated acres', value: formatNumber(totals.irrigated, 'acres') },
+        { label: 'Dryland acres', value: formatNumber(totals.dryland, 'acres') },
+      ],
+      sections: [{
+        columns: [
+          { label: 'Crop' },
+          { label: 'Full-season ac', align: 'right', format: 'acres' }, { label: 'Double-crop ac', align: 'right', format: 'acres' },
+          { label: 'Total ac', align: 'right', format: 'acres' }, { label: 'Irrigated ac', align: 'right', format: 'acres' },
+          { label: 'Dryland ac', align: 'right', format: 'acres' }, { label: 'Dry bu', align: 'right', format: 'bu' },
+          { label: 'Yield (bu/ac)', align: 'right', format: 'yield' },
+        ],
+        rows,
+        rowMeta: [...byCrop.map(() => 'data' as const), 'total'],
+      }],
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
@@ -175,6 +211,7 @@ export default function SeasonSummaryPage() {
             {!distinctYears.includes(year) && <option value={year}>{year}</option>}
           </select>
         </label>
+        {!loading && byCrop.length > 0 && <ExportBar buildPayload={buildPayload} />}
       </div>
 
       {loading ? (

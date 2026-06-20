@@ -15,6 +15,8 @@ import {
   reconcileAcreage, PRACTICE_LABEL,
   type CoveragePlantingInput, type CoveragePolicyInput, type CoverageRow, type CoverageStatus,
 } from '@/lib/crop-insurance'
+import ExportBar from '@/components/export-bar'
+import { formatNumber, type ExportPayload } from '@/lib/exports'
 import type { Crop, County, Entity, FieldPlanting, CropInsurancePolicy, Field, Farm } from '@/lib/types'
 
 const STATUS_META: Record<CoverageStatus, { label: string; dot: string; cls: string }> = {
@@ -148,6 +150,61 @@ export default function CoverageCheck({
   const headers = [...(multiEntity ? ['Entity'] : []), 'Crop', 'County', 'Practice', 'Planted ac', 'Insured ac', 'Policies', ...(showVariance ? ['Variance'] : []), 'Status']
   const leftCols = multiEntity ? 4 : 3
 
+  // Export mirrors the on-screen table: planted vs insured acres side by side,
+  // the variance column only when one still has a real gap, and the status text
+  // (covered/under/over/no-policy) with any attestation note.
+  function buildPayload(): ExportPayload {
+    if (!result || cropYear === '') return { title: 'Coverage Check', sections: [] }
+    const cols: ExportPayload['sections'][number]['columns'] = []
+    if (multiEntity) cols.push({ label: 'Entity' })
+    cols.push({ label: 'Crop' }, { label: 'County' }, { label: 'Practice' },
+      { label: 'Planted ac', align: 'right', format: 'acres' }, { label: 'Insured ac', align: 'right', format: 'acres' },
+      { label: 'Policies', align: 'right', format: 'int' })
+    if (showVariance) cols.push({ label: 'Variance', align: 'right', format: 'acres' })
+    cols.push({ label: 'Status' })
+
+    const rowOf = (r: CoverageRow) => {
+      const cells: Array<string | number> = []
+      if (multiEntity) cells.push(entityName(r.entityId))
+      cells.push(cropName(r.cropId), countyName(r.countyId), PRACTICE_LABEL[r.practice], r.plantedAcres, r.insuredAcres, r.policyCount || '')
+      if (showVariance) cells.push(r.variance)
+      cells.push(STATUS_META[r.status].label + (r.coverageNote ? ` — ${r.coverageNote}` : ''))
+      return cells
+    }
+    const sections: ExportPayload['sections'] = [{ title: 'Coverage by Combination', columns: cols, rows: sortRows(result.rows).map(rowOf) }]
+
+    if (result.insuredNotPlanted.length > 0) {
+      const gapCols: ExportPayload['sections'][number]['columns'] = []
+      if (multiEntity) gapCols.push({ label: 'Entity' })
+      gapCols.push({ label: 'Crop' }, { label: 'County' }, { label: 'Practice' },
+        { label: 'Insured ac', align: 'right', format: 'acres' }, { label: 'Policies', align: 'right', format: 'int' })
+      sections.push({
+        title: 'Insured but not planted',
+        columns: gapCols,
+        rows: sortRows(result.insuredNotPlanted).map((r) => {
+          const cells: Array<string | number> = []
+          if (multiEntity) cells.push(entityName(r.entityId))
+          cells.push(cropName(r.cropId), countyName(r.countyId), PRACTICE_LABEL[r.practice], r.insuredAcres, r.policyCount)
+          return cells
+        }),
+      })
+    }
+
+    return {
+      title: 'Coverage Check',
+      filters: `Crop year: ${cropYear}`,
+      summary: [
+        { label: 'Planted acres', value: formatNumber(result.summary.totalPlanted, 'acres') },
+        { label: 'Insured acres', value: formatNumber(result.summary.totalInsured, 'acres') },
+        { label: 'Uninsured acres', value: formatNumber(result.summary.uninsuredAcres, 'acres'), tone: result.summary.uninsuredAcres > 0 ? 'unfavorable' : 'favorable' },
+        { label: 'Flagged', value: formatNumber(result.summary.flaggedCount, 'int') },
+      ],
+      sections,
+    }
+  }
+
+  const hasCoverageData = !!result && (result.rows.length > 0 || result.insuredNotPlanted.length > 0)
+
   return (
     <div className="bg-white rounded-xl shadow p-4 space-y-3">
       <div className="flex flex-wrap items-end gap-3">
@@ -162,6 +219,7 @@ export default function CoverageCheck({
             {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
           </select>
         </label>
+        {hasCoverageData && <ExportBar buildPayload={buildPayload} />}
       </div>
 
       {cropYear === '' && <p className="text-sm text-amber-700">Pick a crop year to check coverage.</p>}
