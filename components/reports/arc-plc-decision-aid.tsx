@@ -165,8 +165,8 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
       sections: [{
         title: 'Projected Payments by Farm × Commodity',
         columns: [
-          { label: 'Farm' }, { label: 'Commodity' }, { label: 'Base Acres', align: 'right' }, { label: 'PLC Yield', align: 'right' },
-          { label: 'PLC Projected', align: 'right' }, { label: 'ARC-CO Projected', align: 'right' }, { label: 'Recommendation' }, { label: 'Current Election' },
+          { label: 'Farm' }, { label: 'Commodity' }, { label: 'Base Acres', align: 'right', format: 'int' }, { label: 'PLC Yield', align: 'right', format: 'yield' },
+          { label: 'PLC Projected', align: 'right', format: 'usd0' }, { label: 'ARC-CO Projected', align: 'right', format: 'usd0' }, { label: 'Recommendation' }, { label: 'Current Election' },
         ],
         rows: rows.map((r) => [
           r.farmName, r.commodity.name, Math.round(r.base.base_acres), Number(r.base.plc_yield),

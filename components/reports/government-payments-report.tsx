@@ -20,7 +20,7 @@ import {
   SummaryCards, EmptyState, theadCls, grandTotalRowCls, toneText,
   type SummaryCardData,
 } from '@/components/reports/report-kit'
-import type { ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportPayload } from '@/lib/exports'
 import type {
   Farm, Entity, Crop, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection,
   ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment, PaymentLimitConfig, ProgramYearConfig,
@@ -227,8 +227,8 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
 
   function buildExportPayload(): ExportPayload {
     const cols: ExportPayload['sections'][number]['columns'] = [{ label: 'Farm' }, { label: 'FSA #' }, { label: 'Entity' }]
-    for (const c of shownCommodities) { cols.push({ label: `${c.name} Base Ac`, align: 'right' }); cols.push({ label: `${c.name} Payment`, align: 'right' }) }
-    cols.push({ label: 'Total ARC/PLC', align: 'right' }, { label: 'Other', align: 'right' }, { label: 'Total Govt', align: 'right' })
+    for (const c of shownCommodities) { cols.push({ label: `${c.name} Base Ac`, align: 'right', format: 'int' }); cols.push({ label: `${c.name} Payment`, align: 'right', format: 'usd0' }) }
+    cols.push({ label: 'Total ARC/PLC', align: 'right', format: 'usd0' }, { label: 'Other', align: 'right', format: 'usd0' }, { label: 'Total Govt', align: 'right', format: 'usd0' })
     const rows = farmRows.map((r) => {
       const cells: Array<string | number> = [r.farm.name, r.farm.fsa_number ?? '', entityById.get(r.farm.entity_id ?? '')?.name ?? '']
       for (const c of shownCommodities) {
@@ -246,6 +246,11 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     return {
       title: 'Government Payment Tracker',
       filters: `Crop year: ${cropYear || '—'}${entityId ? ` · Entity: ${entityById.get(entityId)?.name ?? ''}` : ''}`,
+      summary: [
+        { label: 'Total ARC/PLC', value: formatNumber(totals.arcPlc, 'usd0'), tone: 'favorable' },
+        { label: 'Other USDA', value: formatNumber(totals.other, 'usd0') },
+        { label: 'Grand Total', value: formatNumber(totals.grand, 'usd0'), tone: 'favorable', sub: `${shownFarms.length} farm${shownFarms.length === 1 ? '' : 's'}` },
+      ],
       sections: [{ title: 'Projected Payments by Farm', columns: cols, rows, rowMeta: [...farmRows.map(() => 'data' as const), 'total'] }],
     }
   }
