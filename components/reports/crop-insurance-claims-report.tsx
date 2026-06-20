@@ -15,7 +15,7 @@ import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fmtPrice } from '@/lib/hedging'
-import type { ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportPayload } from '@/lib/exports'
 import {
   sensitivityTable, harvestContractLabel,
   projectInsuranceIndemnities, resolveHarvestPriceByCrop, actualYieldByCropFromLoads,
@@ -312,17 +312,17 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     sections.push({
       title: 'Estimated Indemnity by Policy',
       columns: [
-        { label: 'Crop' }, { label: 'County' }, { label: 'Plan' }, { label: 'Practice' }, { label: 'Coverage', align: 'right' },
-        { label: 'APH', align: 'right' }, { label: 'Proj $', align: 'right' }, { label: 'Harvest $', align: 'right' },
-        { label: 'Assumed Yld', align: 'right' }, { label: 'Acres', align: 'right' },
-        { label: 'Revenue Guarantee', align: 'right' }, { label: 'Expected Revenue', align: 'right' },
-        { label: 'Base Indemnity', align: 'right' }, { label: 'SCO', align: 'right' }, { label: 'ECO', align: 'right' },
-        { label: 'Total Indemnity', align: 'right' }, { label: 'Premium Paid', align: 'right' }, { label: 'Net Ins. P&L', align: 'right' },
+        { label: 'Crop' }, { label: 'County' }, { label: 'Plan' }, { label: 'Practice' }, { label: 'Coverage', align: 'right', format: 'pct0' },
+        { label: 'APH', align: 'right', format: 'yield' }, { label: 'Proj $', align: 'right', format: 'price' }, { label: 'Harvest $', align: 'right', format: 'price' },
+        { label: 'Assumed Yld', align: 'right', format: 'yield' }, { label: 'Acres', align: 'right', format: 'acres' },
+        { label: 'Revenue Guarantee', align: 'right', format: 'usd0' }, { label: 'Expected Revenue', align: 'right', format: 'usd0' },
+        { label: 'Base Indemnity', align: 'right', format: 'usd0' }, { label: 'SCO', align: 'right', format: 'usd0' }, { label: 'ECO', align: 'right', format: 'usd0' },
+        { label: 'Total Indemnity', align: 'right', format: 'usd0' }, { label: 'Premium Paid', align: 'right', format: 'usd0' }, { label: 'Net Ins. P&L', align: 'right', format: 'usd0' },
       ],
       rows: computed.map((c) => [
         cropName(c.policy.crop_id), countyName(c.policy.county_id), PLAN_TYPE_SHORT[c.policy.plan_type],
         PRACTICE_LABEL[c.policy.practice ?? 'non_irrigated'],
-        `${Math.round(Number(c.policy.coverage_level) * 100)}%`, Number(c.policy.aph_yield), Number(c.policy.projected_price),
+        Math.round(Number(c.policy.coverage_level) * 100), Number(c.policy.aph_yield), Number(c.policy.projected_price),
         Number((c.harvest?.price ?? 0).toFixed(4)), Number(c.assumedYield.toFixed(1)), Number(c.policy.insured_acres),
         Math.round(c.comp.base.revenueGuarantee), Math.round(c.comp.base.expectedRevenue), Math.round(c.comp.base.indemnity),
         Math.round(c.comp.sco?.indemnity ?? 0), Math.round(c.comp.eco?.indemnity ?? 0),
@@ -338,7 +338,17 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       Math.round(totals.premium), Math.round(totals.netPnl),
     ])
     sections[0].rowMeta!.push('total')
-    return { title: 'Crop Insurance Claims Monitor', filters, sections }
+    return {
+      title: 'Crop Insurance Claims Monitor',
+      filters,
+      summary: [
+        { label: 'Total Indemnity', value: formatNumber(totals.totalIndemnity, 'usd0'), tone: totals.totalIndemnity > 0 ? 'favorable' : 'muted' },
+        { label: 'Premium Paid', value: formatNumber(totals.premium, 'usd0') },
+        { label: 'Net Ins. P&L', value: formatNumber(totals.netPnl, 'usd0'), tone: signedTone(totals.netPnl) },
+        { label: 'Insured Acres', value: formatNumber(totals.acres, 'acres') },
+      ],
+      sections,
+    }
   }
 
   useEffect(() => {
