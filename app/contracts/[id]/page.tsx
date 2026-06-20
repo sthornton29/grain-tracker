@@ -6,6 +6,8 @@ import { computeBushels } from '@/lib/shrink'
 import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, effectiveContractType, type ContractType, type PricingStatus } from '@/lib/contracts'
 import ContractActions from './contract-actions'
 import ContractAttachments from '@/components/contract-attachments'
+import StaticExportBar from '@/components/static-export-bar'
+import { formatNumber, type ExportPayload } from '@/lib/exports'
 
 export const dynamic = 'force-dynamic'
 
@@ -213,11 +215,66 @@ export default async function ContractDetailPage({ params }: { params: { id: str
     ['Notes', contract.notes ?? '—'],
   ]
 
+  // Formatted PDF/Excel of the contract document (plain data → StaticExportBar).
+  const contractExportPayload: ExportPayload = {
+    title: `Contract #${contract.contract_number}`,
+    filters: [contract.buyer?.name, contract.crop?.name, contract.crop_year != null ? `${contract.crop_year} crop` : null].filter(Boolean).join(' · '),
+    summary: [
+      { label: 'Contracted', value: `${formatNumber(Number(contract.contracted_bushels), 'bu')} bu` },
+      { label: 'Delivered', value: `${formatNumber(delivered, 'bu')} bu` },
+      { label: 'Remaining', value: `${formatNumber(remaining, 'bu')} bu` },
+      { label: 'Total revenue', value: contractRevenue != null ? formatNumber(contractRevenue, 'usd0') : '—' },
+    ],
+    sections: [
+      {
+        title: 'Contract',
+        columns: [{ label: 'Field' }, { label: 'Value', align: 'right' }],
+        rows: [
+          ['Contract #', contract.contract_number ?? ''],
+          ['Buyer', contract.buyer?.name ?? '—'],
+          ['Crop', contract.crop?.name ?? '—'],
+          ['Crop year', contract.crop_year != null ? String(contract.crop_year) : '—'],
+          ['Contract month', contract.contract_month ?? '—'],
+          ['Type', CONTRACT_TYPE_LABEL[effectiveContractType(contract)]],
+          ['Pricing status', PRICING_STATUS_LABEL[contract.pricing_status]],
+          ['Entity', contract.entity?.name ?? '—'],
+          ['Contracted bushels', formatNumber(Number(contract.contracted_bushels), 'bu')],
+          ['Futures price', contract.futures_price != null ? formatNumber(Number(contract.futures_price), 'price') : '—'],
+          ['Basis', contract.basis != null ? Number(contract.basis).toFixed(4) : '—'],
+          ['Cash price', contract.cash_price != null ? formatNumber(Number(contract.cash_price), 'price') : '—'],
+          ['Total revenue', contractRevenue != null ? formatNumber(contractRevenue, 'usd0') : '—'],
+          ['Delivery', contract.delivery_type === 'delivered' ? `Delivered → ${contract.delivery_location?.name ?? '—'}` : 'Pickup'],
+        ],
+      },
+      {
+        title: 'Loads delivered',
+        columns: [
+          { label: 'Date' }, { label: 'Ticket' }, { label: 'Truck' }, { label: 'From' },
+          { label: 'Net wt (lb)', align: 'right', format: 'int' }, { label: 'Moisture %', align: 'right', format: 'dec1' },
+          { label: 'Dry bu', align: 'right', format: 'bu' }, { label: 'Paid bu', align: 'right', format: 'bu' }, { label: 'Revenue', align: 'right', format: 'usd0' },
+        ],
+        rows: [
+          ...loads.map((l) => {
+            const ln = lineFor(l)
+            const fromName = l.from_type === 'bin' ? l.from_bin?.name_or_number : l.from_field?.name_or_number
+            return [
+              l.date, l.ticket_number ?? '', l.truck?.name_or_number ?? '', fromName ?? '',
+              l.net_weight ?? '', l.moisture ?? '', dryBu(l), ln ? Number(ln.net_bushels) : '', ln?.net_revenue != null ? Number(ln.net_revenue) : '',
+            ]
+          }),
+          ['Totals', '', '', '', '', '', delivered, paidBu, paidRev],
+        ],
+        rowMeta: [...loads.map(() => 'data' as const), 'total'],
+      },
+    ],
+  }
+
   return (
     <div className="space-y-4 print:space-y-2">
       <div className="flex items-center gap-3 flex-wrap print:hidden">
         <Link href="/contracts" className="text-sm text-sky-700">← Back to contracts</Link>
         <div className="flex-1" />
+        <StaticExportBar payload={contractExportPayload} />
         <ContractActions
           contractId={contract.id}
           contractNumber={contract.contract_number}
