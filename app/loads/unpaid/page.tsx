@@ -2,6 +2,8 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import StaticExportBar from '@/components/static-export-bar'
+import type { ExportPayload } from '@/lib/exports'
 
 export const dynamic = 'force-dynamic'
 
@@ -72,11 +74,38 @@ export default async function UnpaidLoadsPage({
 
   const fmt = (n: number | null) => n != null ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : ''
 
+  const dryBuOf = (r: Row): number => computeBushels({
+    netWeightLb: r.net_weight, moisturePct: r.moisture,
+    baseMoisturePct: r.crop?.base_moisture_pct ?? null, baseLbPerBushel: r.crop?.base_lb_per_bushel ?? null,
+    dryBushelsOverride: r.dry_bushels_override,
+  }).dryBushels ?? 0
+
+  const exportPayload: ExportPayload = {
+    title: 'Unpaid Loads',
+    filters: cropYear != null ? `${cropYear} crop` : 'All crop years',
+    summary: [
+      { label: 'Unpaid loads', value: String(unpaid.length) },
+      { label: 'Outstanding dry bu', value: totalDryBu.toLocaleString(undefined, { maximumFractionDigits: 0 }) },
+    ],
+    sections: [{
+      columns: [
+        { label: 'Date' }, { label: 'Ticket' }, { label: 'Crop' }, { label: 'Crop year', format: 'text' },
+        { label: 'Buyer' }, { label: 'Contract' }, { label: 'Dry bu', align: 'right', format: 'bu' },
+      ],
+      rows: [
+        ...unpaid.map((r) => [r.date, r.ticket_number ?? '', r.crop?.name ?? '', r.crop_year ?? '', r.buyer?.name ?? '', r.contract?.contract_number ? `#${r.contract.contract_number}` : '', dryBuOf(r)]),
+        ['Total', '', '', '', '', '', totalDryBu],
+      ],
+      rowMeta: [...unpaid.map(() => 'data' as const), 'total'],
+    }],
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
         <h1 className="text-2xl font-bold flex-1">Unpaid Loads</h1>
         <Link href="/loads" className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">All loads</Link>
+        {unpaid.length > 0 && <StaticExportBar payload={exportPayload} />}
         <form className="flex items-center gap-2">
           <select name="crop_year" defaultValue={cropYear ?? ''} className="rounded-lg border border-slate-300 px-3 py-2">
             <option value="">All crop years</option>

@@ -4,6 +4,8 @@ import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import ContractFlagIcon, { type ContractFlag } from '@/components/contract-flag'
+import StaticExportBar from '@/components/static-export-bar'
+import type { ExportPayload } from '@/lib/exports'
 import { CONTRACT_TYPE_LABEL, effectiveContractType, type ContractType, type PricingStatus } from '@/lib/contracts'
 import { parseContractMonth } from '@/lib/hedging'
 
@@ -331,6 +333,43 @@ export default async function ContractsPage({
     .filter((x): x is { c: ContractRow; days: number } => x.days != null && x.days <= 30)
     .sort((a, b) => a.days - b.days)
 
+  // Formatted PDF/Excel of the visible contracts (mirrors the table; payload is
+  // plain data handed to the client StaticExportBar).
+  const contractsExportPayload: ExportPayload = {
+    title: 'Contract Tracker',
+    filters: [
+      entityId ? entities.find((e) => e.id === entityId)?.name ?? 'Entity' : 'All entities',
+      cropFilter ? crops.find((c) => c.id === cropFilter)?.name ?? 'Crop' : 'All crops',
+      cropYear ? `${cropYear} crop` : 'All crop years',
+      typeFilter ? CONTRACT_TYPE_LABEL[typeFilter as ContractType] : null,
+      pricingFilter ? pricingFilter.replace(/_/g, ' ') : null,
+    ].filter(Boolean).join(' · '),
+    sections: [{
+      columns: [
+        { label: 'Contract #' }, { label: 'Buyer' }, { label: 'Crop' }, { label: 'Type' }, { label: 'Year', format: 'text' },
+        { label: 'Location' }, { label: 'Delivery window' },
+        { label: 'Contracted', align: 'right', format: 'bu' }, { label: 'Delivered', align: 'right', format: 'bu' }, { label: 'Remaining', align: 'right', format: 'bu' },
+        { label: '% Delivered', align: 'right', format: 'pct1' }, { label: '$/bu', align: 'right', format: 'price' },
+        { label: 'Revenue', align: 'right', format: 'usd0' }, { label: 'Paid bu', align: 'right', format: 'bu' }, { label: 'Unpaid bu', align: 'right', format: 'bu' },
+      ],
+      rows: visible.map((c) => {
+        const agg = aggByContract.get(c.id)
+        const delivered = agg?.delivered ?? 0
+        const contracted = Number(c.contracted_bushels)
+        const remaining = Math.max(0, contracted - delivered)
+        const pct = contracted > 0 ? Math.min(100, (delivered / contracted) * 100) : 0
+        const price = c.price_per_bushel != null ? Number(c.price_per_bushel) : ''
+        const revenue = c.price_per_bushel != null ? Number(c.price_per_bushel) * contracted : ''
+        const location = c.delivery_type === 'delivered' ? `Del → ${c.delivery_location?.name ?? '—'}` : 'Pickup'
+        const window = (c.delivery_start_date || c.delivery_end_date) ? `${fmtDate(c.delivery_start_date)} → ${fmtDate(c.delivery_end_date)}` : '—'
+        return [
+          c.contract_number, c.buyer?.name ?? '', c.crop?.name ?? '', CONTRACT_TYPE_LABEL[effectiveContractType(c)], c.crop_year ?? '',
+          location, window, contracted, delivered, remaining, pct, price, revenue, agg?.paidBushels ?? 0, agg?.deliveredUnpaid ?? 0,
+        ]
+      }),
+    }],
+  }
+
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Contract Tracker</h1>
@@ -341,6 +380,7 @@ export default async function ContractsPage({
         >
           New Contract
         </Link>
+        {visible.length > 0 && <StaticExportBar payload={contractsExportPayload} />}
         <form className="flex items-center gap-2 flex-wrap">
           <select name="entity" defaultValue={entityId} className="rounded-lg border border-slate-300 px-3 py-2">
             <option value="">All entities</option>
