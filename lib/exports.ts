@@ -22,6 +22,20 @@
 
 // ---------- formatting model ----------
 
+// CANONICAL metric → format mapping (the consistency contract — every report
+// uses the same NumFmt for the same metric so a value reads identically across
+// all PDF/Excel exports):
+//   year / crop year ............ 'text'  (never comma-grouped)
+//   bushels (any) ............... 'bu'    (0 dec, comma)
+//   acres (any) ................. 'acres' (1 dec)
+//   yield (bu/ac) ............... 'yield' (1 dec)
+//   $/bu prices ................. 'price' ($, 2 dec)
+//   whole-dollar totals ......... 'usd0'  (revenue, cost, profit, indemnity, payments…)
+//   trading P&L (with cents) .... 'usd2'  (hedging — matches its on-screen cents)
+//   counts / weights (lb) ....... 'int'
+//   moisture .................... 'dec1'
+//   option premium (cents) ...... 'dec2'
+//   percentages ................. 'pct0' / 'pct1'
 export type NumFmt =
   | 'text'
   | 'int' // 1,234
