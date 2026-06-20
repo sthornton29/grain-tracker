@@ -20,7 +20,7 @@ import type { ExportPayload } from '@/lib/exports'
 import {
   computePolicy, sensitivityTable, harvestContractLabel,
   PLAN_TYPE_SHORT, PRACTICE_LABEL, type PolicyInputs, type ScoConfig, type EcoConfig, type PolicyComputation,
-  policyPremium,
+  type Practice, policyPremium,
 } from '@/lib/crop-insurance'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import {
@@ -218,21 +218,32 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     return m
   }, [plantings, cropYear])
 
-  // Default assumed yield for a crop: expected yield from assumptions, else
-  // actual loads/acre, else the mean APH across that crop's policies.
-  const defaultYieldByCrop = useMemo(() => {
+  // Default assumed yield per crop × practice. Mirrors the Marketing report's
+  // expected-yield breakout so irrigated and dryland policies differ even before
+  // harvest: the per-practice expected yield (assumptions.expected_yield_irr /
+  // _dry, each falling back to the blended expected_yield) while an estimate is
+  // in play, then the crop's actual loads/acre once harvest is complete, then the
+  // mean APH across that crop's policies. Keyed `cropId|practice`.
+  const defaultYieldByCropPractice = useMemo(() => {
     const m = new Map<string, number>()
+    const practices: Practice[] = ['irrigated', 'non_irrigated']
     for (const cropId of reportCropIds) {
       const a = assumptions.find((x) => x.crop_id === cropId && x.crop_year === cropYear)
-      if (a?.expected_yield != null && (!a.harvest_complete || !actualYieldByCrop.has(cropId))) {
-        m.set(cropId, Number(a.expected_yield))
-        continue
-      }
-      const actual = actualYieldByCrop.get(cropId)
-      if (actual != null) { m.set(cropId, actual); continue }
+      const blended = a?.expected_yield != null ? Number(a.expected_yield) : null
+      const harvestComplete = !!a?.harvest_complete
+      const actual = actualYieldByCrop.get(cropId) ?? null
       const pols = yearPolicies.filter((p) => p.crop_id === cropId)
       const meanAph = pols.length > 0 ? pols.reduce((s, p) => s + Number(p.aph_yield), 0) / pols.length : 0
-      m.set(cropId, meanAph)
+      for (const practice of practices) {
+        const expectedPractice = practice === 'irrigated'
+          ? (a?.expected_yield_irr != null ? Number(a.expected_yield_irr) : blended)
+          : (a?.expected_yield_dry != null ? Number(a.expected_yield_dry) : blended)
+        let y: number
+        if (expectedPractice != null && (!harvestComplete || actual == null)) y = expectedPractice
+        else if (actual != null) y = actual
+        else y = meanAph
+        m.set(`${cropId}|${practice}`, y)
+      }
     }
     return m
   }, [reportCropIds, assumptions, cropYear, actualYieldByCrop, yearPolicies])
@@ -288,7 +299,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     const base = o != null && o.trim() !== '' && Number.isFinite(Number(o))
       ? Number(o)
       : (practiceYieldByCrop.get(`${p.crop_id}|${p.practice ?? 'non_irrigated'}`)
-        ?? defaultYieldByCrop.get(p.crop_id)
+        ?? defaultYieldByCropPractice.get(`${p.crop_id}|${p.practice ?? 'non_irrigated'}`)
         ?? Number(p.aph_yield))
     return base * (1 + globalYieldPct / 100)
   }
@@ -337,7 +348,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       return { policy: p, comp: computePolicy({ ...inp, scoTriggerDefault: programCfg.scoTrigger }), harvest: harvestByCrop.get(p.crop_id), assumedYield: inp.base.actualYield }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [yearPolicies, harvestByCrop, defaultYieldByCrop, practiceYieldByCrop, yieldOverride, harvestOverride, globalYieldPct, scoByPolicy, ecoByPolicy, programCfg])
+  }, [yearPolicies, harvestByCrop, defaultYieldByCropPractice, practiceYieldByCrop, yieldOverride, harvestOverride, globalYieldPct, scoByPolicy, ecoByPolicy, programCfg])
 
   const totals = useMemo(() => {
     return computed.reduce(
@@ -657,18 +668,33 @@ function WhatIfPanel({
         <button onClick={() => setGlobalYieldPct(0)} className="text-xs text-slate-500 underline">0%</button>
       </label>
       <div className="flex flex-wrap gap-3">
-        {crops.map((c) => (
-          <label key={c.id} className="text-sm flex flex-col gap-1">
-            <span className="text-slate-500">{c.name} harvest $ {c.harvest?.label ? `(${c.harvest.label})` : ''}</span>
-            <input
-              type="number" step="0.01"
-              placeholder={(c.harvest?.price ?? 0).toFixed(2)}
-              value={harvestOverride.get(c.id) ?? ''}
-              onChange={(e) => setHarvestOverride((m) => { const n = new Map(m); if (e.target.value === '') n.delete(c.id); else n.set(c.id, e.target.value); return n })}
-              className="rounded-lg border border-slate-300 px-3 py-2 w-40"
-            />
-          </label>
-        ))}
+        {crops.map((c) => {
+          // Before the RMA harvest price is set (source is still an 'estimate',
+          // not a 'final'), default the lever to today's Barchart price so the
+          // what-if starts from the live market — still fully editable, and it
+          // reverts to today's price if cleared. Once a final is on file we leave
+          // it blank (the final is the basis, shown as the placeholder).
+          const beforePeriod = c.harvest?.source === 'estimate'
+          const defaultStr = beforePeriod ? String(c.harvest!.price) : ''
+          const usingDefault = harvestOverride.get(c.id) == null
+          return (
+            <label key={c.id} className="text-sm flex flex-col gap-1">
+              <span className="text-slate-500">{c.name} harvest $ {c.harvest?.label ? `(${c.harvest.label})` : ''}</span>
+              <input
+                type="number" step="0.01"
+                placeholder={(c.harvest?.price ?? 0).toFixed(2)}
+                value={harvestOverride.get(c.id) ?? defaultStr}
+                onChange={(e) => setHarvestOverride((m) => { const n = new Map(m); if (e.target.value === '') n.delete(c.id); else n.set(c.id, e.target.value); return n })}
+                className="rounded-lg border border-slate-300 px-3 py-2 w-40"
+              />
+              {beforePeriod && usingDefault && (
+                <span className="text-[11px] text-slate-400">
+                  {c.harvest!.stale ? 'Most recent Barchart price' : 'Today’s Barchart price'} — harvest price not set yet
+                </span>
+              )}
+            </label>
+          )
+        })}
       </div>
     </section>
   )
