@@ -12,15 +12,15 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
-import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fmtPrice } from '@/lib/hedging'
 import type { ExportPayload } from '@/lib/exports'
 import {
-  computePolicy, sensitivityTable, harvestContractLabel,
+  sensitivityTable, harvestContractLabel,
+  projectInsuranceIndemnities, resolveHarvestPriceByCrop, actualYieldByCropFromLoads,
   PLAN_TYPE_SHORT, PRACTICE_LABEL, type PolicyInputs, type ScoConfig, type EcoConfig, type PolicyComputation,
-  type Practice, policyPremium,
+  type LiveHarvest,
 } from '@/lib/crop-insurance'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import {
@@ -169,170 +169,44 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     return () => { cancelled = true }
   }, [cropYear, reportCropIds, cropById])
 
-  // Actual production (dry bushels) and planted acres by crop for the year — to
-  // derive a default assumed yield when no expected yield is on file.
-  const actualYieldByCrop = useMemo(() => {
-    if (cropYear === '') return new Map<string, number>()
-    const prod = new Map<string, number>()
-    for (const l of loads) {
-      if (l.from_type !== 'field' || !l.crop_id || l.crop_year !== cropYear) continue
-      const crop = cropById.get(l.crop_id)
-      const { dryBushels } = computeBushels({
-        netWeightLb: l.net_weight, moisturePct: l.moisture,
-        baseMoisturePct: crop?.base_moisture_pct ?? null, baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
-        dryBushelsOverride: l.dry_bushels_override,
-      })
-      if (dryBushels) prod.set(l.crop_id, (prod.get(l.crop_id) ?? 0) + dryBushels)
-    }
-    const acres = new Map<string, number>()
-    for (const p of plantings) {
-      if (p.season_year !== cropYear) continue
-      acres.set(p.crop_id, (acres.get(p.crop_id) ?? 0) + Number(p.planted_acres ?? 0))
-    }
-    const out = new Map<string, number>()
-    for (const [cropId, b] of prod) {
-      const a = acres.get(cropId) ?? 0
-      if (a > 0) out.set(cropId, b / a)
-    }
-    return out
-  }, [loads, plantings, cropYear, cropById])
+  // Crop-level actual yield (Σ dry bu / Σ planted ac) — shared resolver so this
+  // matches the Cash Flow's safety-net exactly.
+  const actualYieldByCrop = useMemo(
+    () => (cropYear === '' ? new Map<string, number>() : actualYieldByCropFromLoads({ loads, plantings, crops, cropYear })),
+    [loads, plantings, crops, cropYear],
+  )
 
-  // Per-practice actual yield from the field_plantings irrigated/dryland bushel
-  // breakout: irrigated yield = Σ irrigated_bushels / Σ irrigated_acres, dryland
-  // likewise. Keyed `cropId|practice`. Only set where the breakout is entered and
-  // acres > 0; otherwise the policy falls back to the crop-level default yield.
-  const practiceYieldByCrop = useMemo(() => {
-    if (cropYear === '') return new Map<string, number>()
-    const agg = new Map<string, { bu: number; ac: number }>()
-    const add = (key: string, bu: number, ac: number) => {
-      const cur = agg.get(key) ?? { bu: 0, ac: 0 }
-      cur.bu += bu; cur.ac += ac; agg.set(key, cur)
-    }
-    for (const p of plantings) {
-      if (p.season_year !== cropYear) continue
-      if (p.irrigated_bushels != null && Number(p.irrigated_acres) > 0) add(`${p.crop_id}|irrigated`, Number(p.irrigated_bushels), Number(p.irrigated_acres))
-      if (p.dryland_bushels != null && Number(p.dryland_acres) > 0) add(`${p.crop_id}|non_irrigated`, Number(p.dryland_bushels), Number(p.dryland_acres))
-    }
-    const m = new Map<string, number>()
-    for (const [k, v] of agg) if (v.ac > 0) m.set(k, v.bu / v.ac)
+  // Today's live Barchart estimate per crop_id, for the shared resolver.
+  const liveHarvestByCrop = useMemo(() => {
+    const m = new Map<string, LiveHarvest>()
+    for (const [id, e] of liveEstimates) m.set(id, { price: e.price, stale: e.stale, priceDate: e.priceDate })
     return m
-  }, [plantings, cropYear])
+  }, [liveEstimates])
 
-  // Default assumed yield per crop × practice. Mirrors the Marketing report's
-  // expected-yield breakout so irrigated and dryland policies differ even before
-  // harvest: the per-practice expected yield (assumptions.expected_yield_irr /
-  // _dry, each falling back to the blended expected_yield) while an estimate is
-  // in play, then the crop's actual loads/acre once harvest is complete, then the
-  // mean APH across that crop's policies. Keyed `cropId|practice`.
-  const defaultYieldByCropPractice = useMemo(() => {
-    const m = new Map<string, number>()
-    const practices: Practice[] = ['irrigated', 'non_irrigated']
-    for (const cropId of reportCropIds) {
-      const a = assumptions.find((x) => x.crop_id === cropId && x.crop_year === cropYear)
-      const blended = a?.expected_yield != null ? Number(a.expected_yield) : null
-      const harvestComplete = !!a?.harvest_complete
-      const actual = actualYieldByCrop.get(cropId) ?? null
-      const pols = yearPolicies.filter((p) => p.crop_id === cropId)
-      const meanAph = pols.length > 0 ? pols.reduce((s, p) => s + Number(p.aph_yield), 0) / pols.length : 0
-      for (const practice of practices) {
-        const expectedPractice = practice === 'irrigated'
-          ? (a?.expected_yield_irr != null ? Number(a.expected_yield_irr) : blended)
-          : (a?.expected_yield_dry != null ? Number(a.expected_yield_dry) : blended)
-        let y: number
-        if (expectedPractice != null && (!harvestComplete || actual == null)) y = expectedPractice
-        else if (actual != null) y = actual
-        else y = meanAph
-        m.set(`${cropId}|${practice}`, y)
-      }
-    }
-    return m
-  }, [reportCropIds, assumptions, cropYear, actualYieldByCrop, yearPolicies])
-
-  // Resolve the harvest price for each crop: RMA-final (policy or stored final)
-  // → running Barchart estimate → projected price fallback.
+  // Per-crop harvest resolution for DISPLAY (the table + What-If labels). The
+  // actual indemnity math goes through projectInsuranceIndemnities below, which
+  // resolves the same way — this just adds the futures-contract label.
   const harvestByCrop = useMemo(() => {
+    if (cropYear === '') return new Map<string, HarvestInfo>()
+    const resolved = resolveHarvestPriceByCrop({ cropIds: reportCropIds, cropYear, policies: yearPolicies, estimates: priceEstimates, liveByCrop: liveHarvestByCrop })
     const m = new Map<string, HarvestInfo>()
-    for (const cropId of reportCropIds) {
-      const crop = cropById.get(cropId)
-      const pols = yearPolicies.filter((p) => p.crop_id === cropId)
-      const avgProjected = pols.length > 0 ? pols.reduce((s, p) => s + Number(p.projected_price), 0) / pols.length : 0
-
-      // Final: a policy's entered harvest price, or a stored 'harvest_final' row.
-      const policyFinal = pols.find((p) => p.harvest_price != null)?.harvest_price
-      const storedFinal = priceEstimates.find((e) => e.crop_id === cropId && e.crop_year === cropYear && e.price_type === 'harvest_final')
-      if (policyFinal != null || storedFinal) {
-        m.set(cropId, {
-          price: Number(policyFinal ?? storedFinal!.price),
-          isFinal: true, label: harvestContractLabel(crop?.name, cropYear === '' ? 0 : cropYear),
-          source: 'final', stale: false, priceDate: storedFinal?.price_date ?? null,
-        })
-        continue
-      }
-      // Estimate: live Barchart, else most-recent stored 'harvest_estimate'.
-      const live = liveEstimates.get(cropId)
-      const storedEst = priceEstimates.find((e) => e.crop_id === cropId && e.crop_year === cropYear && e.price_type === 'harvest_estimate')
-      if (live) {
-        m.set(cropId, { price: live.price, isFinal: false, label: live.label, source: 'estimate', stale: live.stale, priceDate: live.priceDate })
-        continue
-      }
-      if (storedEst) {
-        m.set(cropId, { price: Number(storedEst.price), isFinal: false, label: harvestContractLabel(crop?.name, cropYear === '' ? 0 : cropYear), source: 'estimate', stale: true, priceDate: storedEst.price_date })
-        continue
-      }
-      // Fallback: projected price.
-      m.set(cropId, { price: avgProjected, isFinal: false, label: harvestContractLabel(crop?.name, cropYear === '' ? 0 : cropYear), source: 'projected', stale: false, priceDate: null })
+    for (const [cropId, h] of resolved) {
+      m.set(cropId, { price: h.price, isFinal: h.source === 'final', label: harvestContractLabel(cropById.get(cropId)?.name, cropYear), source: h.source, stale: h.stale, priceDate: h.priceDate })
     }
     return m
-  }, [reportCropIds, cropById, yearPolicies, priceEstimates, liveEstimates, cropYear])
+  }, [reportCropIds, cropYear, yearPolicies, priceEstimates, liveHarvestByCrop, cropById])
 
-  // Effective (what-if-adjusted) harvest price for a crop.
-  function effHarvest(cropId: string): number {
-    const o = harvestOverride.get(cropId)
-    if (o != null && o.trim() !== '' && Number.isFinite(Number(o))) return Number(o)
-    return harvestByCrop.get(cropId)?.price ?? 0
-  }
-  // Effective assumed yield for a policy: per-policy override, else the policy's
-  // OWN PRACTICE yield from the breakout, else the crop default, scaled by the
-  // global yield slider.
-  function effYield(p: CropInsurancePolicy): number {
-    const o = yieldOverride.get(p.id)
-    const base = o != null && o.trim() !== '' && Number.isFinite(Number(o))
-      ? Number(o)
-      : (practiceYieldByCrop.get(`${p.crop_id}|${p.practice ?? 'non_irrigated'}`)
-        ?? defaultYieldByCropPractice.get(`${p.crop_id}|${p.practice ?? 'non_irrigated'}`)
-        ?? Number(p.aph_yield))
-    return base * (1 + globalYieldPct / 100)
-  }
-
-  function buildInputs(p: CropInsurancePolicy): { base: PolicyInputs; sco: ScoConfig | null; eco: EcoConfig | null; basePremium: number } {
-    const harvest = effHarvest(p.crop_id)
-    const base: PolicyInputs = {
-      planType: p.plan_type,
-      coverageLevel: Number(p.coverage_level),
-      aphYield: Number(p.aph_yield),
-      projectedPrice: Number(p.projected_price),
-      harvestPrice: harvest,
-      insuredAcres: Number(p.insured_acres),
-      actualYield: effYield(p),
-    }
-    const scoRow = scoByPolicy.get(p.id)
-    const ecoRow = ecoByPolicy.get(p.id)
-    const sco: ScoConfig | null = scoRow ? {
-      coverageTrigger: Number(scoRow.coverage_trigger),
-      expectedCountyYield: Number(scoRow.expected_county_yield),
-      countyYieldAssumptionPct: scoRow.county_yield_assumption_pct == null ? 0 : Number(scoRow.county_yield_assumption_pct),
-      premiumPerAcre: scoRow.premium_per_acre == null ? null : Number(scoRow.premium_per_acre),
-      totalPremium: scoRow.total_premium == null ? null : Number(scoRow.total_premium),
-    } : null
-    const eco: EcoConfig | null = ecoRow ? {
-      ecoTriggerLevel: Number(ecoRow.eco_trigger_level),
-      expectedCountyYield: Number(ecoRow.expected_county_yield),
-      countyYieldAssumptionPct: ecoRow.county_yield_assumption_pct == null ? 0 : Number(ecoRow.county_yield_assumption_pct),
-      premiumPerAcre: ecoRow.premium_per_acre == null ? null : Number(ecoRow.premium_per_acre),
-      totalPremium: ecoRow.total_premium == null ? null : Number(ecoRow.total_premium),
-    } : null
-    return { base, sco, eco, basePremium: policyPremium(p) }
-  }
+  // What-if levers parsed from the editable string maps into numbers.
+  const yieldOverrideNums = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const [id, s] of yieldOverride) if (s.trim() !== '' && Number.isFinite(Number(s))) m.set(id, Number(s))
+    return m
+  }, [yieldOverride])
+  const harvestOverrideNums = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const [id, s] of harvestOverride) if (s.trim() !== '' && Number.isFinite(Number(s))) m.set(id, Number(s))
+    return m
+  }, [harvestOverride])
 
   // Per-year program parameters (SCO trigger), with most-recent-year fallback.
   const programCfg = useMemo(
@@ -341,14 +215,22 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   )
   const programNotice = cropYear === '' ? null : programConfigNotice(programCfg)
 
-  type Computed = { policy: CropInsurancePolicy; comp: PolicyComputation; harvest: HarvestInfo | undefined; assumedYield: number }
+  type Computed = { policy: CropInsurancePolicy; comp: PolicyComputation; harvest: HarvestInfo | undefined; assumedYield: number; base: PolicyInputs; sco: ScoConfig | null; eco: EcoConfig | null; basePremium: number }
   const computed: Computed[] = useMemo(() => {
-    return yearPolicies.map((p) => {
-      const inp = buildInputs(p)
-      return { policy: p, comp: computePolicy({ ...inp, scoTriggerDefault: programCfg.scoTrigger }), harvest: harvestByCrop.get(p.crop_id), assumedYield: inp.base.actualYield }
+    if (cropYear === '') return []
+    // Single source of truth shared with the Cash Flow safety-net so the two
+    // pages' projected indemnity reconciles; the what-if levers feed in here.
+    const projected = projectInsuranceIndemnities({
+      cropYear, policies: yearPolicies, scos, ecos, assumptions, plantings,
+      actualYieldByCrop, harvestEstimates: priceEstimates, liveHarvestByCrop,
+      scoTrigger: programCfg.scoTrigger,
+      globalYieldPct, yieldOverrideByPolicy: yieldOverrideNums, harvestOverrideByCrop: harvestOverrideNums,
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [yearPolicies, harvestByCrop, defaultYieldByCropPractice, practiceYieldByCrop, yieldOverride, harvestOverride, globalYieldPct, scoByPolicy, ecoByPolicy, programCfg])
+    return projected.map((r) => ({
+      policy: r.policy, comp: r.comp, harvest: harvestByCrop.get(r.policy.crop_id),
+      assumedYield: r.assumedYield, base: r.base, sco: r.sco, eco: r.eco, basePremium: r.basePremium,
+    }))
+  }, [cropYear, yearPolicies, scos, ecos, assumptions, plantings, actualYieldByCrop, priceEstimates, liveHarvestByCrop, programCfg, globalYieldPct, yieldOverrideNums, harvestOverrideNums, harvestByCrop])
 
   const totals = useMemo(() => {
     return computed.reduce(
@@ -633,7 +515,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
               countyName={countyName(c.policy.county_id)}
               sco={scoByPolicy.get(c.policy.id) ?? null}
               eco={ecoByPolicy.get(c.policy.id) ?? null}
-              sensitivity={sensitivityTable(buildInputs(c.policy))}
+              sensitivity={sensitivityTable({ base: c.base, basePremium: c.basePremium, sco: c.sco, eco: c.eco })}
             />
           ))}
         </>
