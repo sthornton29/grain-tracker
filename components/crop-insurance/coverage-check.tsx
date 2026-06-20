@@ -141,7 +141,11 @@ export default function CoverageCheck({
       || a.practice.localeCompare(b.practice))
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white'
-  const headers = [...(multiEntity ? ['Entity'] : []), 'Crop', 'County', 'Practice', 'Planted ac', 'Insured ac', 'Policies', 'Variance', 'Status']
+  // Once acreage is attested up front (during import) or matches, there's no
+  // variance to act on — so only show the Variance column when a row still has a
+  // real, un-attested gap (under-insured / over-reported) after submittal.
+  const showVariance = !!result && result.rows.some((r) => r.status === 'under_insured' || r.status === 'over_reported')
+  const headers = [...(multiEntity ? ['Entity'] : []), 'Crop', 'County', 'Practice', 'Planted ac', 'Insured ac', 'Policies', ...(showVariance ? ['Variance'] : []), 'Status']
   const leftCols = multiEntity ? 4 : 3
 
   return (
@@ -221,9 +225,11 @@ export default function CoverageCheck({
                       <td className="px-2 py-1.5 text-right tabular-nums">{ac(r.plantedAcres)}</td>
                       <td className="px-2 py-1.5 text-right tabular-nums">{ac(r.insuredAcres)}</td>
                       <td className="px-2 py-1.5 text-right tabular-nums">{r.policyCount || '—'}</td>
-                      <td className={`px-2 py-1.5 text-right tabular-nums ${varCls}`}>
-                        {r.variance > 0 ? '+' : ''}{ac(r.variance)}
-                      </td>
+                      {showVariance && (
+                        <td className={`px-2 py-1.5 text-right tabular-nums ${varCls}`}>
+                          {r.variance > 0 ? '+' : ''}{ac(r.variance)}
+                        </td>
+                      )}
                       <td className={`px-2 py-1.5 text-right whitespace-nowrap ${m.cls}`}>
                         <div title={r.coverageNote ?? undefined}>{m.dot} {m.label}</div>
                         {canAttest && (

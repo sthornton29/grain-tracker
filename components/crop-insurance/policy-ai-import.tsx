@@ -120,6 +120,11 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
       : DEFAULT_SCO_TRIGGER
     const sco = p.sco
     const eco = p.eco
+    const practice: Practice = p.practice === 'irrigated' ? 'irrigated' : 'non_irrigated'
+    // Seed the "covers all planted acres" attestation from a matching existing
+    // policy so a re-import reflects (and doesn't silently wipe) what's on file;
+    // a brand-new policy defaults to unattested.
+    const existing = existingByKey.get(dedupKey(importEntityId, crop?.id ?? '', county?.id ?? '', year, plan, practice)) ?? null
     const form: PolicyFormState = {
       ...emptyPolicyForm,
       entity_id: importEntityId,
@@ -128,7 +133,9 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
       county_id: county?.id ?? '',
       policy_number: p.policy_number ?? '',
       plan_type: plan,
-      practice: p.practice === 'irrigated' ? 'irrigated' : 'non_irrigated',
+      practice,
+      covers_all_planted_acres: existing?.covers_all_planted_acres ?? false,
+      coverage_note: existing?.coverage_note ?? '',
       coverage_level: snapCoverage(p.coverage_level),
       unit_structure: p.unit_structure && ['enterprise', 'basic', 'optional'].includes(p.unit_structure) ? p.unit_structure : 'enterprise',
       aph_yield: numStr(p.aph_yield),
@@ -255,6 +262,11 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
           setNum('premium_subsidy_pct', f.premium_subsidy_pct)
           setNum('volatility_factor', f.volatility_factor)
           if (f.policy_number.trim() !== '') patch.policy_number = f.policy_number.trim()
+          // Attestation is a definite reviewed choice (not AI-extracted), so apply
+          // it directly — the row was seeded from the existing policy, so leaving
+          // it as-is is a no-op and toggling it persists.
+          patch.covers_all_planted_acres = f.covers_all_planted_acres
+          patch.coverage_note = f.covers_all_planted_acres ? (f.coverage_note.trim() || null) : null
           if (Object.keys(patch).length > 0) {
             const { error } = await supabase.from('crop_insurance_policies').update(patch).eq('id', status.existing.id)
             if (error) throw new Error(error.message)
@@ -427,6 +439,20 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
                   {r.form.eco_enabled && (
                     <input type="number" step="0.1" placeholder="ECO county yield" value={r.form.eco_expected_county_yield}
                       onChange={(e) => setRowForm(i, { eco_expected_county_yield: e.target.value })} className="rounded border border-slate-300 px-2 py-0.5 w-32" />
+                  )}
+                </div>
+                {/* Attest coverage up front so the saved policy is already
+                    reconciled — no separate post-save step needed. */}
+                <div className="rounded border border-slate-200 bg-slate-50 px-2 py-1.5 space-y-1">
+                  <label className="flex items-start gap-1.5 text-xs">
+                    <input type="checkbox" className="mt-0.5" checked={r.form.covers_all_planted_acres}
+                      onChange={(e) => setRowForm(i, { covers_all_planted_acres: e.target.checked })} />
+                    <span>Covers <strong>all planted acres</strong> for this crop · county · practice (insured acres may differ from planted)</span>
+                  </label>
+                  {r.form.covers_all_planted_acres && (
+                    <input type="text" placeholder="Coverage note (optional) — e.g. confirmed with agent 6/2026"
+                      value={r.form.coverage_note} onChange={(e) => setRowForm(i, { coverage_note: e.target.value })}
+                      className="w-full rounded border border-slate-300 px-2 py-1 text-xs" />
                   )}
                 </div>
                 <PolicyLiveSummary value={r.form} />
