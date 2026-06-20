@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatNumber, excelNumFmt, defaultFilename, type NumFmt } from '@/lib/exports'
+import { formatNumber, excelNumFmt, defaultFilename, pdfSafe, type NumFmt } from '@/lib/exports'
 
 // The shared export number formatting is the single source of truth for every
 // report's PDF/Excel. Conventions (hand-verified against the spec):
@@ -84,6 +84,21 @@ describe('excelNumFmt — real-number formats with parenthesized negatives', () 
   it("'text' has no number format; inference uses up-to-2-decimals", () => {
     expect(excelNumFmt('text')).toBeUndefined()
     expect(excelNumFmt(undefined)).toBe('#,##0.##;(#,##0.##)')
+  })
+})
+
+describe('pdfSafe — replace glyphs jsPDF Latin-1 fonts cannot render', () => {
+  it('maps arrows to ASCII (so a date window reads, not tofu)', () => {
+    expect(pdfSafe('2026-03-01 → 2026-06-30')).toBe('2026-03-01 -> 2026-06-30')
+    expect(pdfSafe('Del → Riverside')).toBe('Del -> Riverside')
+  })
+  it('maps comparison/approx symbols', () => {
+    expect(pdfSafe('≤ 5')).toBe('<= 5')
+    expect(pdfSafe('≥ 5')).toBe('>= 5')
+    expect(pdfSafe('≈ 100')).toBe('~ 100')
+  })
+  it('leaves WinAnsi-supported punctuation (em dash, middot, $) intact', () => {
+    expect(pdfSafe('2026 crop · Corn — $1,234')).toBe('2026 crop · Corn — $1,234')
   })
 })
 

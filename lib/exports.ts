@@ -378,6 +378,19 @@ export async function exportToExcel(payload: ExportPayload): Promise<void> {
 
 // ---------- PDF (jsPDF + jspdf-autotable) ----------
 
+// jsPDF's default fonts are Latin-1/WinAnsi and have no glyph for arrows or
+// math symbols (e.g. "→" renders as tofu). Map the few we use to ASCII so PDF
+// text stays legible. Em dash / middot / curly quotes ARE in WinAnsi, so they
+// pass through unchanged.
+export function pdfSafe(s: string): string {
+  return s
+    .replace(/[→➔➜➡⟶⭢]/g, '->') // → and friends
+    .replace(/[←⟵]/g, '<-')
+    .replace(/≤/g, '<=')
+    .replace(/≥/g, '>=')
+    .replace(/≈/g, '~')
+}
+
 export async function exportToPdf(payload: ExportPayload): Promise<void> {
   const [{ default: JsPDF }, autoTableMod] = await Promise.all([import('jspdf'), import('jspdf-autotable')])
   const autoTable = (autoTableMod as { default: unknown }).default ?? autoTableMod
@@ -388,7 +401,7 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
   const today = new Date().toLocaleString()
 
   doc.setFontSize(16)
-  doc.text(payload.title, 40, 40)
+  doc.text(pdfSafe(payload.title), 40, 40)
   doc.setFontSize(10)
   doc.setTextColor(110)
   doc.text(`Generated ${today}`, pageWidth - 40, 40, { align: 'right' })
@@ -398,7 +411,7 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
   if (payload.filters) {
     doc.setFontSize(10)
     doc.setTextColor(90)
-    doc.text(payload.filters, 40, cursorY)
+    doc.text(pdfSafe(payload.filters), 40, cursorY)
     doc.setTextColor(0)
     cursorY += 16
   }
@@ -409,7 +422,7 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
   // Summary band: a compact Metric / Value table mirroring the cards.
   if (payload.summary?.length) {
     at(doc, {
-      body: payload.summary.map((c) => [c.sub ? `${c.label}  (${c.sub})` : c.label, c.value]),
+      body: payload.summary.map((c) => [pdfSafe(c.sub ? `${c.label}  (${c.sub})` : c.label), pdfSafe(c.value)]),
       startY: cursorY + 4,
       theme: 'plain',
       styles: { fontSize: 9, cellPadding: 3 },
@@ -435,30 +448,34 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
       cursorY += 30
     }
 
+    // Resolved horizontal alignment per column (numeric → right).
+    const colAlign = (i: number): 'left' | 'right' =>
+      cols[i]?.align ?? (cols[i]?.format && cols[i].format !== 'text' ? 'right' : 'left')
+
     // Head: optional spanning-group row above the column labels.
     const head: any[] = []
     if (section.groups && section.groups.length > 0) {
       head.push(section.groups.map((g) => ({
-        content: g.label,
+        content: pdfSafe(g.label),
         colSpan: g.span,
         styles: { halign: 'center' as const, fillColor: [22, 101, 52] as [number, number, number], textColor: [255, 255, 255] as [number, number, number], fontStyle: 'bold' as const },
       })))
     }
-    head.push(cols.map((c) => c.label))
+    head.push(cols.map((c) => pdfSafe(c.label)))
 
     // Body: format numbers; expand subhead rows to a full-width spanning cell.
     const body = section.rows.map((r, ri) => {
       if (meta[ri] === 'subhead') {
         const label = r.map(normCell).find((c) => c.raw != null && c.raw !== '')?.raw ?? ''
         return [{
-          content: String(label),
+          content: pdfSafe(String(label)),
           colSpan: cols.length,
           styles: { fontStyle: 'bold' as const, fillColor: [241, 245, 249] as [number, number, number], textColor: [51, 65, 85] as [number, number, number], halign: 'left' as const },
         }]
       }
       return r.map((cell, ci) => {
         const { raw, format, tone } = normCell(cell)
-        const text = cellText(raw, format ?? cols[ci]?.format)
+        const text = pdfSafe(cellText(raw, format ?? cols[ci]?.format))
         const styles: Record<string, unknown> = {}
         if (tone && tone !== 'neutral') styles.textColor = TONE_RGB[tone]
         return Object.keys(styles).length ? { content: text, styles } : text
@@ -475,6 +492,13 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
       margin: { left: 40, right: 40 },
       rowPageBreak: 'avoid', // don't split a row across pages
       didParseCell: (data: any) => {
+        // Align column-label headers with their column (autotable's headStyles
+        // otherwise left-aligns them, so headings sit left of right-aligned
+        // numbers). Spanning cells (group headers) keep their own alignment.
+        if (data.section === 'head' && data.cell.colSpan === 1) {
+          data.cell.styles.halign = colAlign(data.column.index)
+          return
+        }
         if (data.section !== 'body') return
         const kind = meta[data.row.index]
         if (kind === 'total') { data.cell.styles.fontStyle = 'bold'; data.cell.styles.fillColor = [226, 232, 240] }
@@ -484,7 +508,7 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
         const n = (doc.internal as any).getNumberOfPages?.() ?? doc.getNumberOfPages()
         doc.setFontSize(8)
         doc.setTextColor(140)
-        doc.text(payload.title, 40, pageHeight - 20)
+        doc.text(pdfSafe(payload.title), 40, pageHeight - 20)
         doc.text(`Page ${n}`, pageWidth - 40, pageHeight - 20, { align: 'right' })
         doc.setTextColor(0)
       },
