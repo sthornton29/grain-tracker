@@ -5,7 +5,7 @@
 > programs. **Not a SaaS product** — single-tenant, used on iPads in trucks by a
 > small team, so the UX favors fast capture and forgiving data entry.
 >
-> _Snapshot date: 2026-06-19. Schema at migration `035`._
+> _Snapshot date: 2026-06-20. Schema at migration `035`._
 
 ---
 
