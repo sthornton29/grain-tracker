@@ -13,7 +13,7 @@ import {
   fmtPnl,
   fmtCents,
 } from '@/lib/hedging'
-import type { ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportPayload } from '@/lib/exports'
 import type { Entity, FuturesPosition, OptionPosition } from '@/lib/types'
 import {
   SummaryCards,
@@ -175,11 +175,11 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
     sections.push({
       title: 'Summary by Crop Year',
       columns: [
-        { label: 'Crop Year' }, { label: 'Commodity' },
-        { label: 'Futures Contracts', align: 'right' }, { label: 'Bushels', align: 'right' },
-        { label: 'Avg Hedge Price', align: 'right' }, { label: 'Futures Unrealized', align: 'right' },
-        { label: 'Futures Realized (net)', align: 'right' }, { label: 'Options P&L (net)', align: 'right' },
-        { label: 'Combined P&L', align: 'right' },
+        { label: 'Crop Year', format: 'text' }, { label: 'Commodity' },
+        { label: 'Futures Contracts', align: 'right', format: 'int' }, { label: 'Bushels', align: 'right', format: 'bu' },
+        { label: 'Avg Hedge Price', align: 'right', format: 'price' }, { label: 'Futures Unrealized', align: 'right', format: 'usd2' },
+        { label: 'Futures Realized (net)', align: 'right', format: 'usd2' }, { label: 'Options P&L (net)', align: 'right', format: 'usd2' },
+        { label: 'Combined P&L', align: 'right', format: 'usd2' },
       ],
       rows: summary.map((s) => {
         const opt = optPnlForKey(s.cropYear, s.commodity)
@@ -194,12 +194,12 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
     sections.push({
       title: 'Positions',
       columns: [
-        { label: 'Crop Year' }, { label: 'Commodity' }, { label: 'Month' }, { label: 'Symbol' },
-        { label: 'Side' }, { label: 'Contracts', align: 'right' }, { label: 'Bushels', align: 'right' },
-        { label: 'Trade Date' }, { label: 'Trade Price', align: 'right' }, { label: 'Status' },
-        { label: 'Close Date' }, { label: 'Close Price', align: 'right' },
-        { label: 'Realized P&L', align: 'right' }, { label: 'Commission', align: 'right' },
-        { label: 'Net P&L', align: 'right' }, { label: 'Unrealized P&L', align: 'right' }, { label: 'Entity' },
+        { label: 'Crop Year', format: 'text' }, { label: 'Commodity' }, { label: 'Month' }, { label: 'Symbol' },
+        { label: 'Side' }, { label: 'Contracts', align: 'right', format: 'int' }, { label: 'Bushels', align: 'right', format: 'bu' },
+        { label: 'Trade Date' }, { label: 'Trade Price', align: 'right', format: 'price' }, { label: 'Status' },
+        { label: 'Close Date' }, { label: 'Close Price', align: 'right', format: 'price' },
+        { label: 'Realized P&L', align: 'right', format: 'usd2' }, { label: 'Commission', align: 'right', format: 'usd2' },
+        { label: 'Net P&L', align: 'right', format: 'usd2' }, { label: 'Unrealized P&L', align: 'right', format: 'usd2' }, { label: 'Entity' },
       ],
       rows: filtered.map((p) => {
         const u = unrealizedOf(p)
@@ -218,11 +218,11 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
       sections.push({
         title: 'Options',
         columns: [
-          { label: 'Crop Year' }, { label: 'Commodity' }, { label: 'Type' }, { label: 'Side' },
-          { label: 'Month' }, { label: 'Strike', align: 'right' }, { label: 'Contracts', align: 'right' },
-          { label: 'Trade Date' }, { label: 'Premium ¢', align: 'right' }, { label: 'Premium $', align: 'right' },
-          { label: 'Status' }, { label: 'Close Date' }, { label: 'Close ¢', align: 'right' },
-          { label: 'Realized P&L', align: 'right' }, { label: 'Unrealized P&L', align: 'right' }, { label: 'Entity' },
+          { label: 'Crop Year', format: 'text' }, { label: 'Commodity' }, { label: 'Type' }, { label: 'Side' },
+          { label: 'Month' }, { label: 'Strike', align: 'right', format: 'price' }, { label: 'Contracts', align: 'right', format: 'int' },
+          { label: 'Trade Date' }, { label: 'Premium ¢', align: 'right', format: 'dec2' }, { label: 'Premium $', align: 'right', format: 'usd2' },
+          { label: 'Status' }, { label: 'Close Date' }, { label: 'Close ¢', align: 'right', format: 'dec2' },
+          { label: 'Realized P&L', align: 'right', format: 'usd2' }, { label: 'Unrealized P&L', align: 'right', format: 'usd2' }, { label: 'Entity' },
         ],
         rows: filteredOptions.map((o) => {
           const u = optUnrealizedOf(o)
@@ -235,7 +235,19 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
         }),
       })
     }
-    return { title: 'Hedging Summary', filters: filtersLabel(), sections }
+    // Headline band mirroring the on-screen summary cards (formatted through the
+    // shared formatter so negatives parenthesize consistently with the tables).
+    const gUnrealized = summary.reduce((s, r) => s + r.unrealized, 0)
+    const gRealized = summary.reduce((s, r) => s + r.realized, 0)
+    const gOptions = filteredOptions.reduce((s, o) => s + (optUnrealizedOf(o) ?? 0) + optNetRealizedOf(o), 0)
+    const gCombined = gUnrealized + gRealized + gOptions
+    const summaryBand: ExportPayload['summary'] = [
+      { label: 'Futures Unrealized', value: formatNumber(gUnrealized, 'usd2'), tone: signedTone(gUnrealized) },
+      { label: 'Futures Realized (net)', value: formatNumber(gRealized, 'usd2'), tone: signedTone(gRealized) },
+      { label: 'Options P&L (net)', value: formatNumber(gOptions, 'usd2'), tone: signedTone(gOptions) },
+      { label: 'Combined P&L', value: formatNumber(gCombined, 'usd2'), tone: signedTone(gCombined) },
+    ]
+    return { title: 'Hedging Summary', filters: filtersLabel(), summary: summaryBand, sections }
   }
 
   useEffect(() => {
