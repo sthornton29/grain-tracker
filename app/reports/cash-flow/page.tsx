@@ -5,14 +5,15 @@ import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { projectPayments, expectedArcPlcDate } from '@/lib/government-payments'
-import { computePolicy, type PolicyInputs, type ScoConfig, type EcoConfig } from '@/lib/crop-insurance'
+import { projectInsuranceIndemnities, actualYieldByCropFromLoads, type LiveHarvest } from '@/lib/crop-insurance'
+import { resolveProgramYearConfig } from '@/lib/program-config'
 import {
   SummaryCards, EmptyState, type SummaryCardData,
   numCell, textCell, theadCls,
 } from '@/components/reports/report-kit'
 import type {
   Buyer, Contract, Crop, Entity, FieldPlanting, LoadSplit,
-  CropAssumption, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate,
+  CropAssumption, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate, ProgramYearConfig,
   CoveredCommodity, FarmBaseAcres, ArcPlcElection, ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment,
 } from '@/lib/types'
 
@@ -23,6 +24,7 @@ type LoadRow = {
   net_weight: number | null
   moisture: number | null
   crop_id: string | null
+  crop_year: number | null
   dry_bushels_override: number | null
   from_type: string | null
   from_field_id: string | null
@@ -84,6 +86,10 @@ export default function CashFlowPage() {
   const [scos, setScos] = useState<CropInsuranceSco[]>([])
   const [ecos, setEcos] = useState<CropInsuranceEco[]>([])
   const [harvestEstimates, setHarvestEstimates] = useState<HarvestPriceEstimate[]>([])
+  const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
+  // Today's live Barchart harvest estimate per crop year → crop_id, fetched so
+  // the insurance projection uses the same price the Claims Monitor does.
+  const [liveHarvestByYear, setLiveHarvestByYear] = useState<Map<number, Map<string, LiveHarvest>>>(new Map())
   const [commodities, setCommodities] = useState<CoveredCommodity[]>([])
   const [baseAcres, setBaseAcres] = useState<FarmBaseAcres[]>([])
   const [elections, setElections] = useState<ArcPlcElection[]>([])
@@ -109,7 +115,7 @@ export default function CashFlowPage() {
         for (let from = 0; ; from += PAGE) {
           const { data, error } = await supabase
             .from('loads')
-            .select('id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override, from_type, from_field_id')
+            .select('id, contract_id, ticket_number, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id')
             .order('id', { ascending: true })
             .range(from, from + PAGE - 1)
           if (error) throw error
@@ -129,15 +135,16 @@ export default function CashFlowPage() {
         supabase.from('entities').select('*').order('name'),
         supabase.from('fields').select('id, farm_id'),
         supabase.from('farms').select('id, entity_id'),
-        supabase.from('field_plantings').select('season_year'),
+        supabase.from('field_plantings').select('*'),
         supabase.from('load_splits').select('load_id, field_id'),
       ])
-      const [ca, po, sc, ec, hpe, cc, ba, el, apd, apay, ogp] = await Promise.all([
+      const [ca, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp] = await Promise.all([
         supabase.from('crop_assumptions').select('*'),
         supabase.from('crop_insurance_policies').select('*'),
         supabase.from('crop_insurance_sco').select('*'),
         supabase.from('crop_insurance_eco').select('*'),
         supabase.from('harvest_price_estimates').select('*').order('price_date', { ascending: false }),
+        supabase.from('program_year_config').select('*'),
         supabase.from('covered_commodities').select('*'),
         supabase.from('farm_base_acres').select('*'),
         supabase.from('arc_plc_elections').select('*'),
@@ -161,6 +168,7 @@ export default function CashFlowPage() {
       setScos((sc.data as CropInsuranceSco[]) || [])
       setEcos((ec.data as CropInsuranceEco[]) || [])
       setHarvestEstimates((hpe.data as HarvestPriceEstimate[]) || [])
+      setProgramConfigs((pgc.data as ProgramYearConfig[]) || [])
       setCommodities((cc.data as CoveredCommodity[]) || [])
       setBaseAcres((ba.data as FarmBaseAcres[]) || [])
       setElections((el.data as ArcPlcElection[]) || [])
@@ -178,6 +186,50 @@ export default function CashFlowPage() {
     const farmEntity = new Map(farms.map((f) => [f.id, f.entity_id]))
     return new Map(fields.map((f) => [f.id, f.farm_id ? farmEntity.get(f.farm_id) ?? null : null]))
   }, [farms, fields])
+
+  // Crops carrying a policy, grouped by crop year, within the active filters —
+  // drives the live harvest-price fetch (one call per year) so the insurance
+  // projection prices at today's market, matching the Claims Monitor.
+  const insurancePolicyScope = useMemo(() => {
+    const m = new Map<number, Set<string>>()
+    for (const p of policies) {
+      if (cropYear !== '' && p.crop_year !== cropYear) continue
+      if (entityId && p.entity_id !== entityId) continue
+      if (cropId && p.crop_id !== cropId) continue
+      const set = m.get(p.crop_year) ?? new Set<string>()
+      set.add(p.crop_id)
+      m.set(p.crop_year, set)
+    }
+    return m
+  }, [policies, cropYear, entityId, cropId])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const out = new Map<number, Map<string, LiveHarvest>>()
+      for (const [yr, ids] of insurancePolicyScope) {
+        const cropsPayload = Array.from(ids)
+          .map((id) => ({ crop_id: id, crop_name: cropById.get(id)?.name ?? '' }))
+          .filter((c) => c.crop_name)
+        if (cropsPayload.length === 0) continue
+        try {
+          const res = await fetch('/api/harvest-price-estimate', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ crop_year: yr, crops: cropsPayload }),
+          })
+          const json = await res.json().catch(() => null)
+          if (!json) continue
+          const m = new Map<string, LiveHarvest>()
+          for (const e of (json.estimates ?? []) as Array<{ crop_id: string; price: number | null; stale: boolean; price_date: string | null }>) {
+            if (e.price != null) m.set(e.crop_id, { price: Number(e.price), stale: !!e.stale, priceDate: e.price_date })
+          }
+          out.set(yr, m)
+        } catch { /* fall back to stored estimate / projected in the resolver */ }
+      }
+      if (!cancelled) setLiveHarvestByYear(out)
+    })()
+    return () => { cancelled = true }
+  }, [insurancePolicyScope, cropById])
   const splitsByLoadId = useMemo(() => {
     const m = new Map<string, string[]>()
     for (const s of loadSplits) {
@@ -376,43 +428,30 @@ export default function CashFlowPage() {
       }
     }
 
-    // Crop insurance — total indemnity per policy, placed in the chosen month.
-    const scoBy = new Map(scos.map((s) => [s.policy_id, s]))
-    const ecoBy = new Map(ecos.map((e) => [e.policy_id, e]))
-    for (const p of policies) {
-      if (cropYear !== '' && p.crop_year !== cropYear) continue
-      if (entityId && p.entity_id !== entityId) continue
-      if (cropId && p.crop_id !== cropId) continue
-      let harvest = p.harvest_price != null ? Number(p.harvest_price) : null
-      if (harvest == null) {
-        const fin = harvestEstimates.find((e) => e.crop_id === p.crop_id && e.crop_year === p.crop_year && e.price_type === 'harvest_final')
-        const est = harvestEstimates.find((e) => e.crop_id === p.crop_id && e.crop_year === p.crop_year && e.price_type === 'harvest_estimate')
-        harvest = fin ? Number(fin.price) : est ? Number(est.price) : Number(p.projected_price)
-      }
-      const a = assumptions.find((x) => x.crop_id === p.crop_id && x.crop_year === p.crop_year)
-      const assumedYield = a?.expected_yield != null ? Number(a.expected_yield) : Number(p.aph_yield)
-      const base: PolicyInputs = {
-        planType: p.plan_type, coverageLevel: Number(p.coverage_level), aphYield: Number(p.aph_yield),
-        projectedPrice: Number(p.projected_price), harvestPrice: harvest, insuredAcres: Number(p.insured_acres), actualYield: assumedYield,
-      }
-      const scoRow = scoBy.get(p.id)
-      const ecoRow = ecoBy.get(p.id)
-      const sco: ScoConfig | null = scoRow ? {
-        coverageTrigger: Number(scoRow.coverage_trigger), expectedCountyYield: Number(scoRow.expected_county_yield),
-        countyYieldAssumptionPct: scoRow.county_yield_assumption_pct == null ? 0 : Number(scoRow.county_yield_assumption_pct),
-        premiumPerAcre: scoRow.premium_per_acre == null ? null : Number(scoRow.premium_per_acre),
-        totalPremium: scoRow.total_premium == null ? null : Number(scoRow.total_premium),
-      } : null
-      const eco: EcoConfig | null = ecoRow ? {
-        ecoTriggerLevel: Number(ecoRow.eco_trigger_level), expectedCountyYield: Number(ecoRow.expected_county_yield),
-        countyYieldAssumptionPct: ecoRow.county_yield_assumption_pct == null ? 0 : Number(ecoRow.county_yield_assumption_pct),
-        premiumPerAcre: ecoRow.premium_per_acre == null ? null : Number(ecoRow.premium_per_acre),
-        totalPremium: ecoRow.total_premium == null ? null : Number(ecoRow.total_premium),
-      } : null
-      const comp = computePolicy({ base, basePremium: 0, sco, eco })
-      if (comp.totalIndemnity > 0) {
-        ensure(`${p.crop_year}-${String(insuranceMonth).padStart(2, '0')}`).insurance += comp.totalIndemnity
-      }
+    // Crop insurance — projected indemnity via the SHARED projection (same
+    // per-practice yields + today's harvest price the Claims Monitor uses), so
+    // the two pages reconcile. Run once per crop year present in the filtered
+    // policies and bucket each year's total into the chosen month.
+    const insuranceYears = Array.from(new Set(
+      policies
+        .filter((p) => (cropYear === '' || p.crop_year === cropYear) && (!entityId || p.entity_id === entityId) && (!cropId || p.crop_id === cropId))
+        .map((p) => p.crop_year),
+    ))
+    for (const yr of insuranceYears) {
+      const yrPolicies = policies.filter((p) =>
+        p.crop_year === yr && (!entityId || p.entity_id === entityId) && (!cropId || p.crop_id === cropId))
+      if (yrPolicies.length === 0) continue
+      const projected = projectInsuranceIndemnities({
+        cropYear: yr,
+        policies: yrPolicies,
+        scos, ecos, assumptions, plantings,
+        actualYieldByCrop: actualYieldByCropFromLoads({ loads, plantings, crops, cropYear: yr }),
+        harvestEstimates,
+        liveHarvestByCrop: liveHarvestByYear.get(yr),
+        scoTrigger: resolveProgramYearConfig(yr, programConfigs).scoTrigger,
+      })
+      const total = projected.reduce((s, r) => s + r.comp.totalIndemnity, 0)
+      if (total > 0) ensure(`${yr}-${String(insuranceMonth).padStart(2, '0')}`).insurance += total
     }
 
     // Other USDA payments — on payment_date, else December of the crop year.
@@ -425,7 +464,7 @@ export default function CashFlowPage() {
     }
 
     return buckets
-  }, [cropYear, cropId, entityId, elections, baseAcres, commodities, arcPriceData, arcPayments, farmEntity, policies, scos, ecos, harvestEstimates, assumptions, insuranceMonth, otherPayments])
+  }, [cropYear, cropId, entityId, elections, baseAcres, commodities, arcPriceData, arcPayments, farmEntity, policies, scos, ecos, harvestEstimates, assumptions, plantings, loads, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments])
 
   const monthlyRows = useMemo(() => {
     const keys = [...new Set([...monthly.keys(), ...safetyNet.keys()])].sort()

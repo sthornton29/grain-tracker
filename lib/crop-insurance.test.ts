@@ -9,10 +9,48 @@ import {
   reconcileAcreage,
   acreageTolerance,
   resolveUploadEntityId,
+  resolveHarvestPriceByCrop,
+  practiceActualYieldByCrop,
+  projectInsuranceIndemnities,
+  totalProjectedIndemnity,
   type PolicyInputs,
   type BandInputs,
 } from '@/lib/crop-insurance'
-import type { HarvestPriceEstimate } from '@/lib/types'
+import type { HarvestPriceEstimate, CropInsurancePolicy, CropAssumption, FieldPlanting } from '@/lib/types'
+
+// ---------------------------------------------------------------------------
+// Fixtures for the shared indemnity projection. Builders fill every field so the
+// objects are real DB types; tests override only what they exercise.
+// ---------------------------------------------------------------------------
+function mkPolicy(over: Partial<CropInsurancePolicy> = {}): CropInsurancePolicy {
+  return {
+    id: 'p1', entity_id: null, crop_id: 'corn', crop_year: 2026, county_id: 'A',
+    policy_number: null, plan_type: 'RP', practice: 'non_irrigated', coverage_level: 0.8,
+    unit_structure: 'enterprise', aph_yield: 100, projected_price: 5, harvest_price: null,
+    volatility_factor: null, insured_acres: 100, premium_per_acre: null, total_premium: null,
+    premium_subsidy_pct: null, notes: null, covers_all_planted_acres: false, coverage_note: null,
+    source: 'manual', created_at: '2026-01-01', ...over,
+  }
+}
+function mkAssumption(over: Partial<CropAssumption> = {}): CropAssumption {
+  return {
+    id: 'a1', crop_id: 'corn', crop_year: 2026, expected_yield: null,
+    expected_yield_irr: null, expected_yield_dry: null, expected_yield_dc_irr: null, expected_yield_dc_dry: null,
+    harvest_complete: false, assumed_basis: 0, assumed_futures: null,
+    cost_per_acre: null, cost_per_acre_irr: null, cost_per_acre_dry: null, cost_per_acre_dc_irr: null, cost_per_acre_dc_dry: null,
+    notes: null, ...over,
+  } as CropAssumption
+}
+function mkEstimate(over: Partial<HarvestPriceEstimate> = {}): HarvestPriceEstimate {
+  return { id: 'e1', crop_id: 'corn', crop_year: 2026, price_type: 'harvest_estimate', price: 5, price_date: '2026-09-01', source: null, created_at: '2026-09-01', ...over } as HarvestPriceEstimate
+}
+function mkPlanting(over: Partial<FieldPlanting> = {}): FieldPlanting {
+  return {
+    crop_id: 'corn', season_year: 2026, irrigated_acres: 0, dryland_acres: 0,
+    irrigated_bushels: null, dryland_bushels: null,
+    ...over,
+  } as FieldPlanting
+}
 
 // All worked examples below are hand-derived from the formulas/comments in
 // lib/crop-insurance.ts. Arithmetic is shown inline so a reviewer can re-check
@@ -657,5 +695,146 @@ describe('reconcileAcreage — entity matching', () => {
     // …and the policy shows up as a reverse gap (insured, not planted).
     expect(insuredNotPlanted).toHaveLength(1)
     expect(insuredNotPlanted[0].status).toBe('insured_not_planted')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// resolveHarvestPriceByCrop — final → live → stored estimate → projected.
+// ---------------------------------------------------------------------------
+describe('resolveHarvestPriceByCrop', () => {
+  const base = { cropIds: ['corn'], cropYear: 2026 }
+
+  it('a policy-entered final harvest price wins over everything', () => {
+    const m = resolveHarvestPriceByCrop({
+      ...base,
+      policies: [mkPolicy({ harvest_price: 4.1, projected_price: 5 })],
+      estimates: [mkEstimate({ price_type: 'harvest_final', price: 4.5 })],
+      liveByCrop: new Map([['corn', { price: 4.9, stale: false, priceDate: '2026-10-01' }]]),
+    })
+    expect(m.get('corn')).toMatchObject({ price: 4.1, source: 'final' })
+  })
+
+  it('today’s live estimate wins over a stored estimate when no final', () => {
+    const m = resolveHarvestPriceByCrop({
+      ...base,
+      policies: [mkPolicy({ harvest_price: null, projected_price: 5 })],
+      estimates: [mkEstimate({ price_type: 'harvest_estimate', price: 4.2 })],
+      liveByCrop: new Map([['corn', { price: 4.8, stale: false, priceDate: '2026-10-01' }]]),
+    })
+    expect(m.get('corn')).toMatchObject({ price: 4.8, source: 'estimate', stale: false })
+  })
+
+  it('falls back to a stored estimate, then to the average projected price', () => {
+    const stored = resolveHarvestPriceByCrop({ ...base, policies: [mkPolicy({ harvest_price: null })], estimates: [mkEstimate({ price_type: 'harvest_estimate', price: 4.2 })] })
+    expect(stored.get('corn')).toMatchObject({ price: 4.2, source: 'estimate', stale: true })
+    const projected = resolveHarvestPriceByCrop({ ...base, policies: [mkPolicy({ harvest_price: null, projected_price: 5 }), mkPolicy({ id: 'p2', harvest_price: null, projected_price: 7 })], estimates: [] })
+    expect(projected.get('corn')).toMatchObject({ price: 6, source: 'projected' }) // avg(5,7)
+  })
+})
+
+describe('practiceActualYieldByCrop', () => {
+  it('irrigated = Σ irr bu / Σ irr ac; dryland = Σ dry bu / Σ dry ac', () => {
+    const m = practiceActualYieldByCrop([
+      mkPlanting({ irrigated_acres: 100, irrigated_bushels: 22000, dryland_acres: 50, dryland_bushels: 8000 }),
+      mkPlanting({ irrigated_acres: 100, irrigated_bushels: 20000 }),
+    ], 2026)
+    expect(m.get('corn|irrigated')).toBeCloseTo((22000 + 20000) / 200, 6) // 210
+    expect(m.get('corn|non_irrigated')).toBeCloseTo(8000 / 50, 6) // 160
+  })
+})
+
+// ---------------------------------------------------------------------------
+// projectInsuranceIndemnities — the SHARED projection the Claims Monitor and the
+// Cash Flow both call (so their crop-insurance dollars reconcile). RP indemnity
+// hand-check (coverage 0.80, APH 100, projected $5, 100 ac, no SCO/ECO):
+//   guarantee = 100 × 0.80 × max(proj,harvest) × 100 ac
+//   actual    = assumedYield × harvest × 100 ac
+//   indemnity = max(0, guarantee − actual)
+// ---------------------------------------------------------------------------
+describe('projectInsuranceIndemnities', () => {
+  const common = {
+    cropYear: 2026,
+    scos: [], ecos: [],
+    actualYieldByCrop: new Map<string, number>(),
+    harvestEstimates: [] as HarvestPriceEstimate[],
+  }
+
+  it('uses the per-practice EXPECTED breakout so irrigated and dryland differ', () => {
+    // Harvest falls back to projected $5 (no live/stored). gp = 5.
+    // dryland: assumed 60 → actual 60·5·100=30,000 vs guarantee 40,000 → 10,000.
+    // irrigated: assumed 90 → actual 90·5·100=45,000 > 40,000 → 0.
+    const res = projectInsuranceIndemnities({
+      ...common,
+      policies: [
+        mkPolicy({ id: 'd', practice: 'non_irrigated' }),
+        mkPolicy({ id: 'i', practice: 'irrigated' }),
+      ],
+      assumptions: [mkAssumption({ expected_yield: 75, expected_yield_irr: 90, expected_yield_dry: 60 })],
+      plantings: [],
+    })
+    const dry = res.find((r) => r.policy.id === 'd')!
+    const irr = res.find((r) => r.policy.id === 'i')!
+    expect(dry.assumedYield).toBeCloseTo(60, 6)
+    expect(irr.assumedYield).toBeCloseTo(90, 6)
+    expect(dry.comp.totalIndemnity).toBeCloseTo(10000, 2)
+    expect(irr.comp.totalIndemnity).toBeCloseTo(0, 2)
+  })
+
+  it('priority: per-policy override > actual per-practice > expected breakout', () => {
+    const policies = [mkPolicy({ id: 'd', practice: 'non_irrigated' })]
+    const assumptions = [mkAssumption({ expected_yield_dry: 60 })]
+    // expected only → assumed 60 → 10,000
+    expect(projectInsuranceIndemnities({ ...common, policies, assumptions, plantings: [] })[0].assumedYield).toBeCloseTo(60, 6)
+    // actual per-practice (90) overrides expected → assumed 90
+    const withActual = projectInsuranceIndemnities({
+      ...common, policies, assumptions,
+      plantings: [mkPlanting({ dryland_acres: 100, dryland_bushels: 9000 })], // 90 bu/ac
+    })
+    expect(withActual[0].assumedYield).toBeCloseTo(90, 6)
+    // per-policy override (50) wins over both
+    const withOverride = projectInsuranceIndemnities({
+      ...common, policies, assumptions,
+      plantings: [mkPlanting({ dryland_acres: 100, dryland_bushels: 9000 })],
+      yieldOverrideByPolicy: new Map([['d', 50]]),
+    })
+    expect(withOverride[0].assumedYield).toBeCloseTo(50, 6)
+    expect(withOverride[0].comp.totalIndemnity).toBeCloseTo(15000, 2) // (40000 − 50·5·100)
+  })
+
+  it('applies the global yield slider and the harvest override', () => {
+    const policies = [mkPolicy({ id: 'd', practice: 'non_irrigated' })]
+    const assumptions = [mkAssumption({ expected_yield_dry: 60 })]
+    // slider −20% → assumed 48 → actual 48·5·100=24,000 → 16,000
+    const slid = projectInsuranceIndemnities({ ...common, policies, assumptions, plantings: [], globalYieldPct: -20 })
+    expect(slid[0].assumedYield).toBeCloseTo(48, 6)
+    expect(slid[0].comp.totalIndemnity).toBeCloseTo(16000, 2)
+    // harvest override $4 (gp still max(5,4)=5): actual 60·4·100=24,000 → 16,000
+    const ho = projectInsuranceIndemnities({ ...common, policies, assumptions, plantings: [], harvestOverrideByCrop: new Map([['corn', 4]]) })
+    expect(ho[0].harvest.source).toBe('projected')
+    expect(ho[0].comp.totalIndemnity).toBeCloseTo(16000, 2)
+  })
+
+  it('a live harvest estimate changes the projection (matches the Claims Monitor’s today-price)', () => {
+    const policies = [mkPolicy({ id: 'd', practice: 'non_irrigated' })]
+    const assumptions = [mkAssumption({ expected_yield_dry: 60 })]
+    // live $4 → RP: gp=max(5,4)=5, actual=60·4·100=24,000 → 16,000 (vs 10,000 at projected $5).
+    const res = projectInsuranceIndemnities({
+      ...common, policies, assumptions, plantings: [],
+      liveHarvestByCrop: new Map([['corn', { price: 4, stale: false, priceDate: '2026-10-01' }]]),
+    })
+    expect(res[0].harvest).toMatchObject({ price: 4, source: 'estimate' })
+    expect(res[0].comp.totalIndemnity).toBeCloseTo(16000, 2)
+    expect(totalProjectedIndemnity(res)).toBeCloseTo(16000, 2)
+  })
+
+  it('identical inputs give identical totals regardless of caller (the reconciliation guarantee)', () => {
+    const policies = [mkPolicy({ id: 'd', practice: 'non_irrigated' }), mkPolicy({ id: 'i', practice: 'irrigated' })]
+    const assumptions = [mkAssumption({ expected_yield_irr: 90, expected_yield_dry: 60 })]
+    const args = { ...common, policies, assumptions, plantings: [], liveHarvestByCrop: new Map([['corn', { price: 4.5, stale: false, priceDate: '2026-10-01' }]]) }
+    // Claims Monitor path (with empty what-if) and Cash Flow path (no what-if)
+    // are the same call → identical totals.
+    const claims = totalProjectedIndemnity(projectInsuranceIndemnities({ ...args, globalYieldPct: 0, yieldOverrideByPolicy: new Map(), harvestOverrideByCrop: new Map() }))
+    const cashflow = totalProjectedIndemnity(projectInsuranceIndemnities(args))
+    expect(claims).toBeCloseTo(cashflow, 2)
   })
 })
