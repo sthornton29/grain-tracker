@@ -7,6 +7,8 @@ import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { projectPayments, expectedArcPlcDate } from '@/lib/government-payments'
 import { projectInsuranceIndemnities, actualYieldByCropFromLoads, type LiveHarvest } from '@/lib/crop-insurance'
 import { resolveProgramYearConfig } from '@/lib/program-config'
+import ExportBar from '@/components/export-bar'
+import { formatNumber, type ExportPayload } from '@/lib/exports'
 import {
   SummaryCards, EmptyState, type SummaryCardData,
   numCell, textCell, theadCls,
@@ -516,9 +518,71 @@ export default function CashFlowPage() {
     { label: 'Total Safety Net', value: `$${fmt(safetyTotals.total)}`, tone: 'favorable' },
   ]
 
+  // Export mirrors the on-screen monthly forecast + contract detail tables.
+  function buildPayload(): ExportPayload {
+    const filters = [
+      cropYear === '' ? 'All crop years' : `${cropYear} crop`,
+      cropId ? cropById.get(cropId)?.name ?? 'Crop' : 'All crops',
+      buyerId ? buyerById.get(buyerId)?.name ?? 'Buyer' : 'All buyers',
+      entityId ? entities.find((e) => e.id === entityId)?.name ?? 'Entity' : 'All entities',
+    ].join(' · ')
+
+    const monthly: ExportPayload['sections'][number] = {
+      title: 'Monthly Forecast',
+      columns: [
+        { label: 'Month' },
+        { label: 'Received', align: 'right', format: 'usd0' }, { label: 'Outstanding', align: 'right', format: 'usd0' },
+        { label: 'Projected', align: 'right', format: 'usd0' }, { label: 'ARC/PLC', align: 'right', format: 'usd0' },
+        { label: 'Crop Insurance', align: 'right', format: 'usd0' }, { label: 'Other Govt', align: 'right', format: 'usd0' },
+        { label: 'Month total', align: 'right', format: 'usd0' }, { label: 'Cumulative', align: 'right', format: 'usd0' },
+      ],
+      rows: monthlyRows.map((r) => [r.label, r.received, r.outstanding, r.projected, r.arcPlc, r.insurance, r.other, r.total, r.cumulative]),
+    }
+
+    const detail: ExportPayload['sections'][number] = {
+      title: 'Contract Detail',
+      columns: [
+        { label: 'Contract #' }, { label: 'Buyer' }, { label: 'Crop' }, { label: 'Year', format: 'text' }, { label: 'Window' },
+        { label: 'Price/bu', align: 'right', format: 'price' }, { label: 'Contracted', align: 'right', format: 'bu' },
+        { label: 'Delivered', align: 'right', format: 'bu' }, { label: 'Remaining', align: 'right', format: 'bu' },
+        { label: 'Value', align: 'right', format: 'usd0' }, { label: 'Received', align: 'right', format: 'usd0' },
+        { label: 'Outstanding', align: 'right', format: 'usd0' }, { label: 'Unearned', align: 'right', format: 'usd0' },
+      ],
+      rows: visibleContracts.map((c) => {
+        const agg = aggByContract.get(c.id)!
+        const price = Number(c.price_per_bushel ?? 0)
+        const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered)
+        const complete = isContractComplete(c.completed_at, Number(c.contracted_bushels), agg.delivered)
+        const window = (c.delivery_start_date || c.delivery_end_date) ? `${c.delivery_start_date ?? '?'} → ${c.delivery_end_date ?? '?'}` : '—'
+        return [
+          complete ? `${c.contract_number} (complete)` : c.contract_number ?? '',
+          buyerById.get(c.buyer_id ?? '')?.name ?? '', cropById.get(c.crop_id ?? '')?.name ?? '', c.crop_year ?? '', window,
+          price || '', Number(c.contracted_bushels), agg.delivered, remainingBu,
+          Number(c.contracted_bushels) * price, agg.revenueReceived, agg.deliveredUnpaid * price, complete ? 0 : remainingBu * price,
+        ]
+      }),
+    }
+
+    return {
+      title: 'Cash Flow Forecast',
+      filters,
+      summary: [
+        { label: 'Contract value', value: formatNumber(summary.value, 'usd0') },
+        { label: 'Received', value: formatNumber(summary.received, 'usd0'), tone: 'favorable' },
+        { label: 'Outstanding', value: formatNumber(summary.outstanding, 'usd0'), tone: 'warning' },
+        { label: 'Remaining', value: formatNumber(summary.remaining, 'usd0') },
+        { label: 'Total Safety Net', value: formatNumber(safetyTotals.total, 'usd0'), tone: 'favorable' },
+      ],
+      sections: [monthly, detail],
+    }
+  }
+
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">Cash Flow Forecast</h1>
+      <div className="flex items-start gap-3 flex-wrap">
+        <h1 className="text-2xl font-bold flex-1">Cash Flow Forecast</h1>
+        {!loading && (monthlyRows.length > 0 || visibleContracts.length > 0) && <ExportBar buildPayload={buildPayload} />}
+      </div>
 
       <SummaryCards cards={summaryCards} />
 
