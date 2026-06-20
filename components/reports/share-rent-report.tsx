@@ -10,7 +10,7 @@ import {
   subtotalRowCls, grandTotalRowCls, toneText,
   type SummaryCardData,
 } from '@/components/reports/report-kit'
-import type { ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportPayload } from '@/lib/exports'
 import type {
   Crop, Entity, Farm, Field, FieldPlanting, Landowner, LoadSplit,
 } from '@/lib/types'
@@ -272,58 +272,62 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
         title: 'Summary',
         columns: [
           { label: 'Crop' },
-          { label: 'Bushels Owed (total)', align: 'right' },
+          { label: 'Bushels Owed (total)', align: 'right', format: 'bu' },
         ],
-        rows: summaryByCrop.map((s) => [s.cropName, s.landlordBu.toFixed(2)]),
+        rows: summaryByCrop.map((s) => [s.cropName, s.landlordBu]),
       })
     }
 
+    // Real numbers (not toFixed strings) so Excel cells stay numeric; subtotal /
+    // landowner-total rows are tagged so they render distinctly, like the screen.
     const detailRows: Array<Array<string | number>> = []
+    const detailMeta: Array<'data' | 'subtotal' | 'total'> = []
+    const yieldOf = (bu: number, ac: number): number | string => (ac > 0 ? bu / ac : '')
     for (const g of groups) {
       for (const f of g.farms) {
         for (const c of f.crops) {
           for (const r of c.fields) {
             detailRows.push([
-              g.landownerName, f.farmName, f.fsaNumber ?? '', `${f.sharePercentage}%`,
+              g.landownerName, f.farmName, f.fsaNumber ?? '', f.sharePercentage,
               c.cropName, r.fieldName,
-              r.acres.toFixed(2), r.dryBu.toFixed(2), r.yieldBuPerAc != null ? r.yieldBuPerAc.toFixed(2) : '',
-              r.landlordBu.toFixed(2),
+              r.acres, r.dryBu, r.yieldBuPerAc ?? '', r.landlordBu,
             ])
+            detailMeta.push('data')
           }
           detailRows.push([
-            g.landownerName, f.farmName, f.fsaNumber ?? '', `${f.sharePercentage}%`,
+            g.landownerName, f.farmName, f.fsaNumber ?? '', f.sharePercentage,
             c.cropName, `${c.cropName} subtotal`,
-            c.totals.acres.toFixed(2), c.totals.dryBu.toFixed(2),
-            c.totals.acres > 0 ? (c.totals.dryBu / c.totals.acres).toFixed(2) : '',
-            c.totals.landlordBu.toFixed(2),
+            c.totals.acres, c.totals.dryBu, yieldOf(c.totals.dryBu, c.totals.acres), c.totals.landlordBu,
           ])
+          detailMeta.push('subtotal')
         }
       }
       for (const t of g.byCrop.values()) {
         detailRows.push([
           `${g.landownerName} — ${t.cropName} TOTAL`, '', '', '',
           t.cropName, '',
-          t.acres.toFixed(2), t.dryBu.toFixed(2),
-          t.acres > 0 ? (t.dryBu / t.acres).toFixed(2) : '',
-          t.landlordBu.toFixed(2),
+          t.acres, t.dryBu, yieldOf(t.dryBu, t.acres), t.landlordBu,
         ])
+        detailMeta.push('total')
       }
     }
 
     sections.push({
       title: 'Detail',
       columns: [
-        { label: 'Landowner' }, { label: 'Farm' }, { label: 'FSA #' }, { label: 'Share %' },
+        { label: 'Landowner' }, { label: 'Farm' }, { label: 'FSA #' }, { label: 'Share %', align: 'right', format: 'pct0' },
         { label: 'Crop' }, { label: 'Field' },
-        { label: 'Acres', align: 'right' }, { label: 'Dry bu', align: 'right' },
-        { label: 'Yield (bu/ac)', align: 'right' }, { label: 'Landlord bu', align: 'right' },
+        { label: 'Acres', align: 'right', format: 'acres' }, { label: 'Dry bu', align: 'right', format: 'bu' },
+        { label: 'Yield (bu/ac)', align: 'right', format: 'yield' }, { label: 'Landlord bu', align: 'right', format: 'bu' },
       ],
       rows: detailRows,
+      rowMeta: detailMeta,
     })
 
     return {
       title: 'Share Rent Report',
       filters: filtersLabel(),
+      summary: summaryByCrop.map((s) => ({ label: `${s.cropName} owed`, value: formatNumber(s.landlordBu, 'bu') })),
       sections,
     }
   }

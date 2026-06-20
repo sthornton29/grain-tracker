@@ -24,7 +24,7 @@ import {
   SummaryCards, EmptyState, fmtUsd, signedTone, toneText,
   theadCls, grandTotalRowCls, type SummaryCardData,
 } from '@/components/reports/report-kit'
-import type { ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportPayload } from '@/lib/exports'
 import type {
   Crop, Contract, CropAssumption, FieldPlanting, FuturesPosition, OptionPosition,
   CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate,
@@ -376,10 +376,10 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     const revenueSection: ExportPayload['sections'][number] = {
       title: 'Revenue by Crop',
       columns: [
-        { label: 'Crop' }, { label: 'Acres', align: 'right' }, { label: 'Yield', align: 'right' },
-        { label: 'Total Production', align: 'right' }, { label: 'Crop Sales Revenue', align: 'right' },
-        { label: 'Insurance Proceeds', align: 'right' }, { label: 'Govt Payments', align: 'right' },
-        { label: 'Total Revenue', align: 'right' }, { label: 'Revenue/Acre', align: 'right' },
+        { label: 'Crop' }, { label: 'Acres', align: 'right', format: 'acres' }, { label: 'Yield', align: 'right', format: 'yield' },
+        { label: 'Total Production', align: 'right', format: 'bu' }, { label: 'Crop Sales Revenue', align: 'right', format: 'usd0' },
+        { label: 'Insurance Proceeds', align: 'right', format: 'usd0' }, { label: 'Govt Payments', align: 'right', format: 'usd0' },
+        { label: 'Total Revenue', align: 'right', format: 'usd0' }, { label: 'Revenue/Acre', align: 'right', format: 'usd0' },
       ],
       rows: rows.map((r) => [
         r.cropName, Math.round(r.acres), r.yield != null ? Number(r.yield.toFixed(1)) : '',
@@ -398,9 +398,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     const profitSection: ExportPayload['sections'][number] = {
       title: 'Cost, Profit & Breakeven',
       columns: [
-        { label: 'Crop' }, { label: 'Cost/Acre', align: 'right' }, { label: 'Total Cost', align: 'right' },
-        { label: 'Total Revenue', align: 'right' }, { label: 'Profit', align: 'right' }, { label: 'Profit/Acre', align: 'right' },
-        { label: 'Total Avg Price', align: 'right' }, { label: 'Breakeven Price', align: 'right' }, { label: 'Breakeven Yield', align: 'right' },
+        { label: 'Crop' }, { label: 'Cost/Acre', align: 'right', format: 'usd0' }, { label: 'Total Cost', align: 'right', format: 'usd0' },
+        { label: 'Total Revenue', align: 'right', format: 'usd0' }, { label: 'Profit', align: 'right', format: 'usd0' }, { label: 'Profit/Acre', align: 'right', format: 'usd0' },
+        { label: 'Total Avg Price', align: 'right', format: 'price' }, { label: 'Breakeven Price', align: 'right', format: 'price' }, { label: 'Breakeven Yield', align: 'right', format: 'yield' },
       ],
       rows: rows.map((r) => [
         r.cropName, r.costPerAcre != null ? Math.round(r.costPerAcre) : '', Math.round(r.totalCost),
@@ -416,7 +416,17 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     ])
     profitSection.rowMeta!.push('total')
 
-    return { title: 'Revenue Projections', filters, sections: [revenueSection, profitSection] }
+    return {
+      title: 'Revenue Projections',
+      filters,
+      summary: [
+        { label: 'Total Revenue', value: formatNumber(totals.totalRevenue, 'usd0') },
+        { label: 'Total Cost', value: formatNumber(totals.totalCost, 'usd0') },
+        { label: 'Total Profit', value: formatNumber(totals.profit, 'usd0'), tone: signedTone(totals.profit) },
+        { label: 'Profit / Acre', value: totals.profitPerAcre != null ? formatNumber(totals.profitPerAcre, 'usd0') : '—', tone: signedTone(totals.profitPerAcre) },
+      ],
+      sections: [revenueSection, profitSection],
+    }
   }
 
   useEffect(() => {
