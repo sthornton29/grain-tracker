@@ -507,4 +507,93 @@ describe('reconcileAcreage', () => {
     expect(rows).toHaveLength(2)
     expect(rows.every((r) => r.status === 'matched')).toBe(true)
   })
+
+  it('splits combinations by entity (same crop/county/practice, two entities)', () => {
+    const { rows } = reconcileAcreage({
+      plantings: [
+        { entityId: 'E1', cropId: 'corn', countyId: 'A', practice: 'irrigated', plantedAcres: 100 },
+        { entityId: 'E2', cropId: 'corn', countyId: 'A', practice: 'irrigated', plantedAcres: 60 },
+      ],
+      policies: [
+        { entityId: 'E1', cropId: 'corn', countyId: 'A', practice: 'irrigated', insuredAcres: 100 }, // matched
+        { entityId: 'E2', cropId: 'corn', countyId: 'A', practice: 'irrigated', insuredAcres: 20 },  // under (tol 0.6)
+      ],
+    })
+    expect(rows).toHaveLength(2)
+    expect(rows.find((r) => r.entityId === 'E1')!.status).toBe('matched')
+    expect(rows.find((r) => r.entityId === 'E2')!.status).toBe('under_insured')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// reconcileAcreage — "covers all planted acres" attestation (Part B).
+// The attestation suppresses ONLY the acre-mismatch flags (under/over); it never
+// suppresses "no policy". Covered rows are excluded from uninsured + flagged.
+// ---------------------------------------------------------------------------
+describe('reconcileAcreage — covers-all-planted attestation', () => {
+  it('planted > insured but attested → "covered" (not under-insured), excluded from totals; no-policy unaffected', () => {
+    const { rows, summary } = reconcileAcreage({
+      plantings: [
+        // Would be under-insured (insured 150 < planted 200, tol 2.0)…
+        { cropId: 'corn', countyId: 'A', practice: 'non_irrigated', plantedAcres: 200 },
+        // …and a separate combination with no policy at all.
+        { cropId: 'corn', countyId: 'B', practice: 'irrigated', plantedAcres: 80 },
+      ],
+      policies: [
+        { cropId: 'corn', countyId: 'A', practice: 'non_irrigated', insuredAcres: 150, coversAllPlanted: true, coverageNote: 'confirmed with agent 6/2026' },
+      ],
+    })
+    const covered = rows.find((r) => r.countyId === 'A')!
+    expect(covered.status).toBe('covered')          // NOT 'under_insured'
+    expect(covered.plantedAcres).toBeCloseTo(200, 2) // numbers still shown side by side
+    expect(covered.insuredAcres).toBeCloseTo(150, 2)
+    expect(covered.variance).toBeCloseTo(-50, 2)     // variance kept as informational
+    expect(covered.coversAllPlanted).toBe(true)
+    expect(covered.coverageNote).toBe('confirmed with agent 6/2026')
+
+    // No-policy combination is unaffected by the attestation.
+    const gap = rows.find((r) => r.countyId === 'B')!
+    expect(gap.status).toBe('no_policy')
+
+    // Uncovered exposure excludes the covered row's 50-ac shortfall; only the
+    // 80 no-policy acres count. Flagged excludes covered → just the no-policy row.
+    expect(summary.uninsuredAcres).toBeCloseTo(80, 2)
+    expect(summary.flaggedCount).toBe(1)
+    // Totals still sum every planted/insured acre regardless of attestation.
+    expect(summary.totalPlanted).toBeCloseTo(280, 2)
+    expect(summary.totalInsured).toBeCloseTo(150, 2)
+  })
+
+  it('the SAME inputs without the flag are under-insured and counted (contrast)', () => {
+    const { rows, summary } = reconcileAcreage({
+      plantings: [{ cropId: 'corn', countyId: 'A', practice: 'non_irrigated', plantedAcres: 200 }],
+      policies: [{ cropId: 'corn', countyId: 'A', practice: 'non_irrigated', insuredAcres: 150 }],
+    })
+    expect(rows[0].status).toBe('under_insured')
+    expect(summary.uninsuredAcres).toBeCloseTo(50, 2) // 200 − 150
+    expect(summary.flaggedCount).toBe(1)
+  })
+
+  it('attestation also suppresses an over-reported flag (insured > planted)', () => {
+    const { rows, summary } = reconcileAcreage({
+      plantings: [{ cropId: 'soy', countyId: 'A', practice: 'irrigated', plantedAcres: 100 }],
+      policies: [{ cropId: 'soy', countyId: 'A', practice: 'irrigated', insuredAcres: 130, coversAllPlanted: true }],
+    })
+    expect(rows[0].status).toBe('covered') // not 'over_reported'
+    expect(summary.flaggedCount).toBe(0)
+    expect(summary.uninsuredAcres).toBeCloseTo(0, 2)
+  })
+
+  it('covered when ANY policy in the combination attests (one of two optional units)', () => {
+    const { rows } = reconcileAcreage({
+      plantings: [{ cropId: 'corn', countyId: 'A', practice: 'non_irrigated', plantedAcres: 300 }],
+      policies: [
+        { cropId: 'corn', countyId: 'A', practice: 'non_irrigated', insuredAcres: 100 }, // no attestation
+        { cropId: 'corn', countyId: 'A', practice: 'non_irrigated', insuredAcres: 120, coversAllPlanted: true, coverageNote: 'agent ok' },
+      ],
+    })
+    // insured 220 < planted 300 would be under-insured, but one unit attests.
+    expect(rows[0].status).toBe('covered')
+    expect(rows[0].coverageNote).toBe('agent ok')
+  })
 })

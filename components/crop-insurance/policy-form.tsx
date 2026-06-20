@@ -6,7 +6,7 @@
 // helpers to map a saved policy ⇄ form ⇄ insert/update payloads. The settings
 // page and the AI import screen both drive this.
 
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import {
   PLAN_TYPES, PLAN_TYPE_LABEL, UNIT_STRUCTURES, UNIT_STRUCTURE_LABEL,
   PRACTICES, PRACTICE_LABEL, ECO_TRIGGER_LEVELS, guaranteePriceFor, projectedPriceFromEstimates,
@@ -38,6 +38,8 @@ export type PolicyFormState = {
   total_premium: string
   premium_subsidy_pct: string
   notes: string
+  covers_all_planted_acres: boolean
+  coverage_note: string
   sco_enabled: boolean
   sco_coverage_trigger: string
   sco_expected_county_yield: string
@@ -73,6 +75,8 @@ export const emptyPolicyForm: PolicyFormState = {
   total_premium: '',
   premium_subsidy_pct: '',
   notes: '',
+  covers_all_planted_acres: false,
+  coverage_note: '',
   sco_enabled: false,
   sco_coverage_trigger: String(DEFAULT_SCO_TRIGGER),
   sco_expected_county_yield: '',
@@ -114,6 +118,8 @@ export function policyToForm(p: CropInsurancePolicy, sco?: CropInsuranceSco | nu
     total_premium: numStr(p.total_premium),
     premium_subsidy_pct: numStr(p.premium_subsidy_pct),
     notes: p.notes ?? '',
+    covers_all_planted_acres: !!p.covers_all_planted_acres,
+    coverage_note: p.coverage_note ?? '',
     sco_enabled: !!sco,
     sco_coverage_trigger: numStr(sco?.coverage_trigger) || String(DEFAULT_SCO_TRIGGER),
     sco_expected_county_yield: numStr(sco?.expected_county_yield),
@@ -161,6 +167,9 @@ export function policyFormToPayloads(form: PolicyFormState, source: 'manual' | '
     total_premium: totalPremium,
     premium_subsidy_pct: num(form.premium_subsidy_pct),
     notes: form.notes.trim() || null,
+    covers_all_planted_acres: form.covers_all_planted_acres,
+    // Only keep a note when the attestation is on, so an old note can't linger.
+    coverage_note: form.covers_all_planted_acres ? (form.coverage_note.trim() || null) : null,
     source,
   }
 
@@ -190,7 +199,8 @@ export function policyFormToPayloads(form: PolicyFormState, source: 'manual' | '
   return { policy, sco, eco }
 }
 
-export function validatePolicyForm(form: PolicyFormState): string | null {
+export function validatePolicyForm(form: PolicyFormState, requireEntity = false): string | null {
+  if (requireEntity && !form.entity_id) return 'Select the entity this policy belongs to.'
   if (!form.crop_id) return 'Pick a crop.'
   if (!form.crop_year || !Number.isFinite(Number(form.crop_year))) return 'Enter a crop year.'
   if ((num(form.coverage_level) ?? 0) <= 0) return 'Pick a coverage level.'
@@ -227,6 +237,15 @@ export function PolicyFields({
   function set<K extends keyof PolicyFormState>(key: K, v: PolicyFormState[K]) {
     onChange({ ...value, [key]: v })
   }
+
+  // Single-entity operations should never have to pick: auto-assign the only
+  // entity so the (hidden) selector is always satisfied and non-blocking.
+  useEffect(() => {
+    if (entities.length === 1 && value.entity_id !== entities[0].id) {
+      onChange({ ...value, entity_id: entities[0].id })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [entities, value.entity_id])
 
   // Resolved SCO trigger for a given crop year (from program_year_config).
   function triggerForYear(yearStr: string): number {
@@ -289,13 +308,25 @@ export function PolicyFields({
             {counties.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
           </select>
         </label>
-        <label className={labelCls}>
-          <span className={spanCls}>Entity</span>
-          <select value={value.entity_id} onChange={(e) => set('entity_id', e.target.value)} className={inputCls}>
-            <option value="">— optional —</option>
-            {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-          </select>
-        </label>
+        {/* Crop insurance is carried per entity. Multi-entity operations must
+            pick; single-entity ones are auto-assigned (selector shown disabled
+            and pre-filled) and never blocked. */}
+        {entities.length > 1 ? (
+          <label className={labelCls}>
+            <span className={spanCls}>Entity *</span>
+            <select value={value.entity_id} onChange={(e) => set('entity_id', e.target.value)} className={inputCls}>
+              <option value="">— select entity —</option>
+              {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+          </label>
+        ) : entities.length === 1 ? (
+          <label className={labelCls}>
+            <span className={spanCls}>Entity</span>
+            <select value={entities[0].id} disabled className={`${inputCls} bg-slate-50 text-slate-600`}>
+              <option value={entities[0].id}>{entities[0].name}</option>
+            </select>
+          </label>
+        ) : null}
         <label className={labelCls}>
           <span className={spanCls}>Policy #</span>
           <input value={value.policy_number} onChange={(e) => set('policy_number', e.target.value)} className={inputCls} />
@@ -362,6 +393,37 @@ export function PolicyFields({
         <span className={spanCls}>Notes</span>
         <input value={value.notes} onChange={(e) => set('notes', e.target.value)} className={inputCls} />
       </label>
+
+      {/* "Covers all planted acres" attestation */}
+      <div className="rounded-lg border border-slate-200 p-3 space-y-2">
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={value.covers_all_planted_acres}
+            onChange={(e) => set('covers_all_planted_acres', e.target.checked)}
+          />
+          <span>
+            <span className="font-medium">This policy covers all planted acres for this entity, crop, county, and practice.</span>
+            <span className="block text-xs text-slate-500 mt-0.5">
+              Check this if your agent has confirmed all your planted acres are covered, even when planted acres differ
+              from the insured acres on the policy. This stops the Coverage Check from flagging an acreage gap for this
+              combination.
+            </span>
+          </span>
+        </label>
+        {value.covers_all_planted_acres && (
+          <label className={labelCls}>
+            <span className={spanCls}>Coverage note (optional)</span>
+            <input
+              value={value.coverage_note}
+              onChange={(e) => set('coverage_note', e.target.value)}
+              placeholder="e.g. confirmed with agent 6/2026"
+              className={inputCls}
+            />
+          </label>
+        )}
+      </div>
 
       {/* SCO endorsement */}
       <div className="rounded-lg border border-slate-200 p-3 space-y-3">
