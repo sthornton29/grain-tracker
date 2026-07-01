@@ -110,6 +110,7 @@ export default function LoadsPage() {
   const [cropYear, setCropYear] = useState<number | ''>('')
   const [contractId, setContractId] = useState('')
   const [paidTickets, setPaidTickets] = useState<Set<string>>(new Set())
+  const [paidLoadIds, setPaidLoadIds] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [splitsByLoad, setSplitsByLoad] = useState<Map<string, LoadSplit[]>>(new Map())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -133,7 +134,7 @@ export default function LoadsPage() {
       supabase.from('farms').select('*'),
       supabase.from('fields').select('*'),
       supabase.from('counties').select('*').order('state_code').order('name'),
-      supabase.from('settlement_lines').select('ticket_number'),
+      supabase.from('settlement_lines').select('ticket_number, load_id'),
       supabase.from('field_plantings').select('season_year'),
       supabase.from('contracts')
         .select('id, contract_number, buyer_id, crop_id, entity_id, crop_year, buyer:buyers(name), crop:crops(name)')
@@ -155,10 +156,13 @@ export default function LoadsPage() {
     setPlantings((plantingsRes.data as FieldPlanting[]) || [])
     setContracts((contractsRes.data as unknown as ContractOption[]) || [])
     const tickets = new Set<string>()
-    for (const l of (settlementLinesRes.data ?? []) as Array<{ ticket_number: string | null }>) {
+    const paidLoads = new Set<string>()
+    for (const l of (settlementLinesRes.data ?? []) as Array<{ ticket_number: string | null; load_id: string | null }>) {
       if (l.ticket_number) tickets.add(l.ticket_number.trim().toLowerCase())
+      if (l.load_id) paidLoads.add(l.load_id)
     }
     setPaidTickets(tickets)
+    setPaidLoadIds(paidLoads)
     setLoading(false)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [from, to])
@@ -350,6 +354,10 @@ export default function LoadsPage() {
 
   function paymentStatus(r: Row): 'paid' | 'unpaid' | null {
     if (r.to_type !== 'buyer') return null
+    // Paid if a settlement line is linked to this load (manual match writes
+    // load_id) OR its ticket appears on a settlement line. Manual matches only
+    // set load_id, so ticket-only checking misses them — see settlement Review.
+    if (paidLoadIds.has(r.id)) return 'paid'
     const t = r.ticket_number?.trim().toLowerCase()
     if (!t) return 'unpaid'
     return paidTickets.has(t) ? 'paid' : 'unpaid'

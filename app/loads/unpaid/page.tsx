@@ -40,17 +40,22 @@ export default async function UnpaidLoadsPage({
       `)
       .eq('to_type', 'buyer')
       .order('date', { ascending: false }),
-    supabase.from('settlement_lines').select('ticket_number'),
+    supabase.from('settlement_lines').select('ticket_number, load_id'),
     supabase.from('field_plantings').select('season_year'),
   ])
 
   const loads = (loadsRes.data as unknown as Row[]) ?? []
   const paid = new Set<string>()
-  for (const l of (linesRes.data ?? []) as Array<{ ticket_number: string | null }>) {
+  const paidLoadIds = new Set<string>()
+  for (const l of (linesRes.data ?? []) as Array<{ ticket_number: string | null; load_id: string | null }>) {
     if (l.ticket_number) paid.add(l.ticket_number.trim().toLowerCase())
+    if (l.load_id) paidLoadIds.add(l.load_id)
   }
 
   const unpaid = loads.filter((r) => {
+    // A manual match on the Review screen links the line by load_id (not ticket),
+    // so treat a load as paid if it's linked OR its ticket matches a line.
+    if (paidLoadIds.has(r.id)) return false
     const t = r.ticket_number?.trim().toLowerCase()
     const isPaid = t ? paid.has(t) : false
     if (isPaid) return false
@@ -115,7 +120,7 @@ export default async function UnpaidLoadsPage({
         </form>
       </div>
       <p className="text-sm text-slate-500">
-        Buyer-delivered loads with no settlement line matching the ticket number.{' '}
+        Buyer-delivered loads not matched to any settlement line (by ticket or manual match).{' '}
         {unpaid.length} load{unpaid.length === 1 ? '' : 's'} · {fmt(totalDryBu)} dry bu outstanding.
       </p>
 
