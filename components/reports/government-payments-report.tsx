@@ -20,7 +20,7 @@ import {
   SummaryCards, EmptyState, theadCls, grandTotalRowCls, toneText,
   type SummaryCardData,
 } from '@/components/reports/report-kit'
-import { formatNumber, type ExportPayload } from '@/lib/exports'
+import { formatNumber, type ExportPayload, type ExportCell } from '@/lib/exports'
 import type {
   Farm, Entity, Crop, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection,
   ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment, PaymentLimitConfig, ProgramYearConfig,
@@ -227,22 +227,61 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
 
   function buildExportPayload(): ExportPayload {
     const cols: ExportPayload['sections'][number]['columns'] = [{ label: 'Farm' }, { label: 'FSA #' }, { label: 'Entity' }]
-    for (const c of shownCommodities) { cols.push({ label: `${c.name} Base Ac`, align: 'right', format: 'int' }); cols.push({ label: `${c.name} Payment`, align: 'right', format: 'usd0' }) }
+    // Per commodity: base acres, the farm's election (PLC / ARC-CO — shown under
+    // each cell on screen), and the projected net payment.
+    for (const c of shownCommodities) {
+      cols.push({ label: `${c.name} Base Ac`, align: 'right', format: 'int' })
+      cols.push({ label: `${c.name} Election` })
+      cols.push({ label: `${c.name} Payment`, align: 'right', format: 'usd0' })
+    }
     cols.push({ label: 'Total ARC/PLC', align: 'right', format: 'usd0' }, { label: 'Other', align: 'right', format: 'usd0' }, { label: 'Total Govt', align: 'right', format: 'usd0' })
-    const rows = farmRows.map((r) => {
-      const cells: Array<string | number> = [r.farm.name, r.farm.fsa_number ?? '', entityById.get(r.farm.entity_id ?? '')?.name ?? '']
+    const rows: ExportCell[][] = farmRows.map((r) => {
+      const cells: ExportCell[] = [r.farm.name, r.farm.fsa_number ?? '', entityById.get(r.farm.entity_id ?? '')?.name ?? '']
       for (const c of shownCommodities) {
         const p = r.byCommodity.get(c.id)
         cells.push(p ? Math.round(p.baseAcres) : '')
+        cells.push(p ? ELECTION_LABEL[p.election] : '')
         cells.push(p ? Math.round(p.result.net) : '')
       }
       cells.push(Math.round(r.arcPlcTotal), Math.round(r.other), Math.round(r.total))
       return cells
     })
-    const totalRow: Array<string | number> = ['Total', '', '']
-    for (const c of shownCommodities) { totalRow.push(''); totalRow.push(Math.round(totals.byCommodity.get(c.id) ?? 0)) }
+    const totalRow: ExportCell[] = ['Total', '', '']
+    for (const c of shownCommodities) { totalRow.push('', ''); totalRow.push(Math.round(totals.byCommodity.get(c.id) ?? 0)) }
     totalRow.push(Math.round(totals.arcPlc), Math.round(totals.other), Math.round(totals.grand))
     rows.push(totalRow)
+
+    const sections: ExportPayload['sections'] = [
+      { title: 'Projected Payments by Farm', columns: cols, rows, rowMeta: [...farmRows.map(() => 'data' as const), 'total'] },
+    ]
+
+    // Per-entity Payment Limit Status — the second on-screen table. Mirror its
+    // Entity / Limit / Projected / Remaining / Status columns, plus the persons ×
+    // per-person breakdown shown inline in the Limit cell.
+    if (limitRows.length > 0) {
+      sections.push({
+        title: 'Payment Limit Status',
+        columns: [
+          { label: 'Entity' },
+          { label: 'Eligible Persons', align: 'right', format: 'int' },
+          { label: 'Per-Person Limit', align: 'right', format: 'usd0' },
+          { label: 'Payment Limit', align: 'right', format: 'usd0' },
+          { label: 'Projected', align: 'right', format: 'usd0' },
+          { label: 'Remaining', align: 'right', format: 'usd0' },
+          { label: 'Status' },
+        ],
+        rows: limitRows.map((l): ExportCell[] => [
+          l.entity.name,
+          l.persons,
+          Math.round(l.perPerson),
+          Math.round(l.limit),
+          { v: Math.round(l.projTotal), tone: l.pct > 1 ? 'unfavorable' : l.pct > 0.8 ? 'warning' : 'neutral' },
+          { v: Math.round(l.remaining), tone: l.remaining < 0 ? 'unfavorable' : 'neutral' },
+          { v: l.pct > 1 ? 'Exceeds limit' : l.pct > 0.8 ? 'Approaching limit' : 'Under limit', tone: l.pct > 1 ? 'unfavorable' : l.pct > 0.8 ? 'warning' : 'favorable' },
+        ]),
+      })
+    }
+
     return {
       title: 'Government Payment Tracker',
       filters: `Crop year: ${cropYear || '—'}${entityId ? ` · Entity: ${entityById.get(entityId)?.name ?? ''}` : ''}`,
@@ -251,14 +290,14 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
         { label: 'Other USDA', value: formatNumber(totals.other, 'usd0') },
         { label: 'Grand Total', value: formatNumber(totals.grand, 'usd0'), tone: 'favorable', sub: `${shownFarms.length} farm${shownFarms.length === 1 ? '' : 's'}` },
       ],
-      sections: [{ title: 'Projected Payments by Farm', columns: cols, rows, rowMeta: [...farmRows.map(() => 'data' as const), 'total'] }],
+      sections,
     }
   }
   useEffect(() => {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [farmRows, totals, shownCommodities, cropYear, onPayloadChange])
+  }, [farmRows, totals, shownCommodities, limitRows, cropYear, onPayloadChange])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   if (loading) return <p className="text-slate-500">Loading…</p>

@@ -420,16 +420,31 @@ export default function CropInsuranceReport() {
   // county × practice with per-crop acres/bu, then one section (sheet) per
   // county × practice detailing farms. Dynamic crop columns come from reportCrops.
   function buildPayload(): ExportPayload {
+    // Mirror the on-screen grouped layout: three per-crop metric groups —
+    // Certified Acres, Production, Yield/Acre — each spanning every crop, with
+    // the crop name as the column header. (The screen shows all three; earlier
+    // exports dropped Yield/Acre entirely.)
+    const metricCols = (fmt: 'acres' | 'bu' | 'yield') =>
+      reportCrops.map((c) => ({ label: c.name, align: 'right' as const, format: fmt }))
     const cropCols = (): ExportPayload['sections'][number]['columns'] =>
-      reportCrops.flatMap((c) => [
-        { label: `${c.name} ac`, align: 'right', format: 'acres' as const },
-        { label: `${c.name} bu`, align: 'right', format: 'bu' as const },
-      ])
-    const cropCells = (byCrop: Map<string, FarmCropCell>): Array<string | number> =>
-      reportCrops.flatMap((c) => {
-        const cell = byCrop.get(c.id)
-        return [cell ? cell.acres : '', cell ? cell.bu : '']
-      })
+      [...metricCols('acres'), ...metricCols('bu'), ...metricCols('yield')]
+    // Values for all three metrics across every crop. Blank where the screen is
+    // blank — 0 acres / 0 bu render empty, and yield needs both to be positive.
+    const metricCells = (byCrop: Map<string, FarmCropCell>): Array<string | number> => {
+      const acres = reportCrops.map((c) => { const v = byCrop.get(c.id); return v && v.acres > 0 ? v.acres : '' })
+      const bu = reportCrops.map((c) => { const v = byCrop.get(c.id); return v && v.bu > 0 ? v.bu : '' })
+      const yld = reportCrops.map((c) => { const v = byCrop.get(c.id); return v && v.acres > 0 && v.bu > 0 ? v.bu / v.acres : '' })
+      return [...acres, ...bu, ...yld]
+    }
+    const metricGroups = (acresLabel: string, prodLabel: string): ExportPayload['sections'][number]['groups'] =>
+      reportCrops.length > 0
+        ? [
+            { label: '', span: 2 },
+            { label: acresLabel, span: reportCrops.length },
+            { label: prodLabel, span: reportCrops.length },
+            { label: 'Yield/Acre (Bu. Or Lbs.)', span: reportCrops.length },
+          ]
+        : undefined
 
     const sections: ExportPayload['sections'] = []
 
@@ -437,22 +452,25 @@ export default function CropInsuranceReport() {
     const summarySection: ExportPayload['sections'][number] = {
       title: 'Summary',
       columns: [{ label: 'County' }, { label: 'Practice' }, ...cropCols()],
-      rows: summaryRows.map((r) => [r.countyLabel, practiceLabel(r.practice), ...cropCells(r.byCrop)]),
+      groups: metricGroups('Certified Acres', 'Production (Bu. Or Lbs.)'),
+      rows: summaryRows.map((r) => [r.countyLabel, practiceLabel(r.practice), ...metricCells(r.byCrop)]),
       rowMeta: summaryRows.map(() => 'data' as const),
     }
-    summarySection.rows.push(['Total', '', ...cropCells(summaryTotals)])
+    summarySection.rows.push(['Total', '', ...metricCells(summaryTotals)])
     summarySection.rowMeta!.push('total')
     sections.push(summarySection)
 
     // One detail section (sheet) per county × practice.
     for (const s of detailSheets) {
+      const practice = practiceLabel(s.practice)
       const farms = [...s.farms.values()]
-      const rows: Array<Array<string | number>> = farms.map((f) => [f.farmName, f.fsaNumber ?? '', ...cropCells(f.byCrop)])
+      const rows: Array<Array<string | number>> = farms.map((f) => [f.farmName, f.fsaNumber ?? '', ...metricCells(f.byCrop)])
       const totalByCrop = summaryRows.find((r) => r.sheetName === s.sheetName)?.byCrop ?? new Map()
-      rows.push(['Total', '', ...cropCells(totalByCrop)])
+      rows.push(['Total', '', ...metricCells(totalByCrop)])
       sections.push({
         title: s.sheetName,
         columns: [{ label: 'Farm' }, { label: 'FSA #' }, ...cropCols()],
+        groups: metricGroups(`Certified ${practice} Acres`, `${practice} Production (Bu. Or Lbs.)`),
         rows,
         rowMeta: [...farms.map(() => 'data' as const), 'total'],
       })
