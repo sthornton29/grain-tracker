@@ -8,7 +8,7 @@ import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { splitFieldLabel } from '@/lib/load-splits'
 import ExportBar from '@/components/export-bar'
-import type { ExportPayload } from '@/lib/exports'
+import type { ExportPayload, ExportCell } from '@/lib/exports'
 import type { Entity, Farm, Field, FieldPlanting, County, LoadSplit } from '@/lib/types'
 
 type Row = {
@@ -367,7 +367,7 @@ export default function LoadsPage() {
     const headers = [
       'date','time','ticket','truck','crop','from','to','contract',
       'gross_lb','tare_lb','net_lb','wet_bu','dry_bu','moisture','test_weight',
-      'is_split','split_details',
+      'is_split','split_details','paid_status',
     ]
     const lines = [headers.join(',')]
     for (const r of rowsToExport) {
@@ -392,7 +392,7 @@ export default function LoadsPage() {
         wetBushels != null ? wetBushels.toFixed(2) : '',
         dryBushels != null ? dryBushels.toFixed(2) : '',
         r.moisture ?? '', r.test_weight ?? '',
-        isSplit ? 'true' : 'false', splitDetails,
+        isSplit ? 'true' : 'false', splitDetails, paymentStatus(r) ?? '',
       ].map(csvEscape).join(','))
     }
     const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
@@ -415,17 +415,23 @@ export default function LoadsPage() {
       sections: [{
         columns: [
           { label: 'Date' }, { label: 'Ticket' }, { label: 'Truck' }, { label: 'Crop' },
-          { label: 'From' }, { label: 'To' }, { label: 'Contract' },
+          { label: 'From' }, { label: 'To' }, { label: 'Contract' }, { label: 'Payment' },
           { label: 'Gross lb', align: 'right', format: 'int' }, { label: 'Tare lb', align: 'right', format: 'int' }, { label: 'Net lb', align: 'right', format: 'int' },
           { label: 'Wet bu', align: 'right', format: 'bu' }, { label: 'Dry bu', align: 'right', format: 'bu' },
           { label: 'Moisture %', align: 'right', format: 'dec1' }, { label: 'Test wt', align: 'right', format: 'dec1' }, { label: 'Split' },
         ],
-        rows: filtered.map((r) => {
+        rows: filtered.map((r): ExportCell[] => {
           const { wetBushels, dryBushels } = bushelsFor(r)
           const rSplits = splitsByLoad.get(r.id)
+          // Paid/unpaid mirrors the on-screen badge (blank for stored/non-buyer loads).
+          const pay = paymentStatus(r)
+          const payCell: ExportCell =
+            pay === 'paid' ? { v: 'Paid', tone: 'favorable' as const }
+            : pay === 'unpaid' ? { v: 'Unpaid', tone: 'warning' as const }
+            : ''
           return [
             r.date, r.ticket_number ?? '', r.truck?.name_or_number ?? '', r.crop?.name ?? '',
-            fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number ?? '',
+            fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number ?? '', payCell,
             r.gross_weight ?? '', r.tare_weight ?? '', r.net_weight ?? '',
             wetBushels ?? '', dryBushels ?? '', r.moisture ?? '', r.test_weight ?? '',
             rSplits && rSplits.length > 0 ? 'Yes' : '',

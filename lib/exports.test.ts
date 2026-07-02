@@ -186,3 +186,32 @@ describe('exportToExcel — worksheet naming never collides', () => {
     expect(names.every((n) => n.length <= 31)).toBe(true)
   })
 })
+
+// Spanning group headers (ExportSection.groups) merge cells above the columns.
+// The Crop Insurance Production Report uses three metric groups (Certified Acres /
+// Production / Yield-Acre) plus an empty-labelled leading group over the identity
+// columns — exercise that exact shape so a bad merge/empty label can't regress.
+describe('exportToExcel — grouped sections render without throwing', () => {
+  it('handles three metric groups + an empty leading group (crop-insurance shape)', async () => {
+    const crops = ['Corn', 'Soybean']
+    const metricCols = (fmt: 'acres' | 'bu' | 'yield') => crops.map((c) => ({ label: c, align: 'right' as const, format: fmt }))
+    const section: ExportPayload['sections'][number] = {
+      title: 'Summary',
+      columns: [{ label: 'County' }, { label: 'Practice' }, ...metricCols('acres'), ...metricCols('bu'), ...metricCols('yield')],
+      groups: [
+        { label: '', span: 2 },
+        { label: 'Certified Acres', span: crops.length },
+        { label: 'Production (Bu. Or Lbs.)', span: crops.length },
+        { label: 'Yield/Acre (Bu. Or Lbs.)', span: crops.length },
+      ],
+      rows: [
+        ['Bolivar County', 'Irrigated', 1250, '', 231000, '', 184.8, ''],
+        ['Total', '', 1250, '', 231000, '', 184.8, ''],
+      ],
+      rowMeta: ['data', 'total'],
+    }
+    // The whole point: this must resolve, not throw. Group spans (2 + 2 + 2 + 2)
+    // sum to the 8 columns; the empty leading group still merges + fills cleanly.
+    await expect(exportToExcel({ title: '2026 Production Report', filters: '2026 crop', sections: [section] })).resolves.toBeUndefined()
+  })
+})
