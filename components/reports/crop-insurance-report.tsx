@@ -109,6 +109,8 @@ export default function CropInsuranceReport() {
   // Filters persist across visits (see usePersistentState).
   const [cropYear, setCropYear] = usePersistentState<number | ''>('crop-insurance:cropYear', '')
   const [entityId, setEntityId] = usePersistentState('crop-insurance:entityId', '')
+  // Optional crop filter — empty means all crops. Multi-select via toggle chips.
+  const [cropIds, setCropIds] = usePersistentState<string[]>('crop-insurance:cropIds', [])
   // Gate state for mixed-without-breakout plantings. The user must explicitly
   // resolve this before we generate the report — either fill in the breakout
   // upstream or accept that production rolls into dryland.
@@ -150,7 +152,7 @@ export default function CropInsuranceReport() {
   // affected plantings depends on the year, so the user should re-confirm.
   useEffect(() => {
     setAcceptedAsDryland(false)
-  }, [cropYear, entityId])
+  }, [cropYear, entityId, cropIds])
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
@@ -174,8 +176,9 @@ export default function CropInsuranceReport() {
     [plantings, cropYear],
   )
 
-  // Plantings matching the year + entity filter.
-  const yearPlantings = useMemo(() => {
+  // Plantings matching the year + entity filter (before the crop filter). This
+  // drives the crop-filter option list so it only offers crops actually present.
+  const yearEntityPlantings = useMemo(() => {
     if (cropYear === '') return []
     return plantings.filter((p) => {
       if (p.season_year !== cropYear) return false
@@ -185,6 +188,20 @@ export default function CropInsuranceReport() {
       return true
     })
   }, [plantings, cropYear, entityId, fieldById, farmById])
+
+  // Crops present in the selected year + entity — the crop-filter options (name
+  // order preserved from the crops query).
+  const cropFilterOptions = useMemo(() => {
+    const ids = new Set(yearEntityPlantings.map((p) => p.crop_id))
+    return crops.filter((c) => ids.has(c.id))
+  }, [yearEntityPlantings, crops])
+
+  // Apply the optional crop filter. Empty selection = all crops. Everything
+  // downstream (gate, resolution, sheets) keys off this filtered list.
+  const yearPlantings = useMemo(
+    () => (cropIds.length === 0 ? yearEntityPlantings : yearEntityPlantings.filter((p) => cropIds.includes(p.crop_id))),
+    [yearEntityPlantings, cropIds],
+  )
 
   // Crop+year combos flagged harvest-complete at the crop level (Marketing
   // assumptions) — these force every field of that crop to "complete".
@@ -478,7 +495,11 @@ export default function CropInsuranceReport() {
 
     return {
       title: reportTitle,
-      filters: [cropYear === '' ? 'All crop years' : `${cropYear} crop`, entityName || 'All entities'].join(' · '),
+      filters: [
+        cropYear === '' ? 'All crop years' : `${cropYear} crop`,
+        entityName || 'All entities',
+        cropIds.length === 0 ? 'All crops' : cropIds.map((id) => cropById.get(id)?.name ?? '').filter(Boolean).join(', '),
+      ].join(' · '),
       sections,
     }
   }
@@ -535,6 +556,36 @@ export default function CropInsuranceReport() {
             {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
         </label>
+        {cropFilterOptions.length > 0 && (
+          <div className="text-sm flex flex-col gap-1">
+            <span className="text-slate-500">Crops (optional)</span>
+            <div className="flex flex-wrap gap-1.5 items-center">
+              {cropFilterOptions.map((c) => {
+                const on = cropIds.includes(c.id)
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    aria-pressed={on}
+                    onClick={() => setCropIds((prev) => (prev.includes(c.id) ? prev.filter((x) => x !== c.id) : [...prev, c.id]))}
+                    className={
+                      on
+                        ? 'rounded-full bg-green-700 text-white px-3 py-1.5 text-xs font-semibold'
+                        : 'rounded-full bg-white border border-slate-300 text-slate-700 px-3 py-1.5 text-xs'
+                    }
+                  >
+                    {c.name}
+                  </button>
+                )
+              })}
+              {cropIds.length > 0 && (
+                <button type="button" onClick={() => setCropIds([])} className="text-xs text-slate-500 underline px-1">
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         <div className="ml-auto flex flex-wrap gap-2">
           <button
             type="button"
@@ -640,7 +691,11 @@ export default function CropInsuranceReport() {
 
       {cropYear !== '' && !isBlocked && detailSheets.length === 0 && (
         <EmptyState
-          message={`No plantings with acres for ${cropYear}.`}
+          message={
+            cropIds.length > 0
+              ? `No plantings with acres for the selected crop${cropIds.length === 1 ? '' : 's'} in ${cropYear}.`
+              : `No plantings with acres for ${cropYear}.`
+          }
           linkHref="/settings/plantings"
           linkLabel="Add field plantings"
         />
