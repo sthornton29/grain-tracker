@@ -333,13 +333,31 @@ export async function exportToExcel(payload: ExportPayload): Promise<void> {
   const ExcelJS: any = (mod as any).default ?? mod
   const wb = new ExcelJS.Workbook()
 
-  const sanitize = (s: string, fallback: string) => (s.slice(0, 31).replace(/[\\/?*[\]:]/g, '-') || fallback)
+  // Excel sheet names must be ≤31 chars, exclude \ / ? * [ ] :, be non-empty, and
+  // be UNIQUE within the workbook (case-insensitively) — exceljs throws
+  // "Worksheet name already exists" otherwise. addSheet sanitizes each requested
+  // name and disambiguates collisions with a " (2)" suffix, so a report whose own
+  // section is titled "Summary" (which would collide with the auto Summary sheet)
+  // or whose long section titles truncate to the same 31 chars still exports.
+  const usedSheetNames = new Set<string>()
+  const addSheet = (desired: string, fallback: string): Ws => {
+    const base = desired.replace(/[\\/?*[\]:]/g, '-').trim().slice(0, 31) || fallback
+    let name = base
+    for (let n = 2; usedSheetNames.has(name.toLowerCase()); n++) {
+      const suffix = ` (${n})`
+      name = base.slice(0, 31 - suffix.length).trim() + suffix
+    }
+    usedSheetNames.add(name.toLowerCase())
+    return wb.addWorksheet(name)
+  }
 
   // Multi-section reports: a Summary sheet first (title/filters/cards), then one
-  // sheet per section — matching how the report is organized on screen.
+  // sheet per section — matching how the report is organized on screen. Filters
+  // already render atop every section sheet, so only summary CARDS justify a
+  // dedicated cover sheet (a report may also define its own "Summary" section).
   const multi = !payload.singleSheet && payload.sections.length > 1
-  if (multi && (payload.summary?.length || payload.filters)) {
-    const ws = wb.addWorksheet('Summary')
+  if (multi && payload.summary?.length) {
+    const ws = addSheet('Summary', 'Summary')
     ws.addRow([payload.title]); ws.lastRow.font = { bold: true, size: 14 }
     if (payload.filters) { ws.addRow([payload.filters]); ws.lastRow.font = { color: { argb: 'FF64748B' } } }
     ws.addRow([`Generated ${new Date().toLocaleString()}`]); ws.lastRow.font = { color: { argb: 'FF94A3B8' }, size: 9 }
@@ -358,7 +376,7 @@ export async function exportToExcel(payload: ExportPayload): Promise<void> {
   }
 
   if (payload.singleSheet) {
-    const ws = wb.addWorksheet(sanitize(payload.title, 'Report'))
+    const ws = addSheet(payload.title, 'Report')
     payload.sections.forEach((section, i) => {
       if (i > 0) ws.addRow([])
       writeExcelSection(ws, payload, section, { withTitle: i === 0 })
@@ -367,7 +385,7 @@ export async function exportToExcel(payload: ExportPayload): Promise<void> {
     // sections, so leave the per-section freeze from writeExcelSection (last wins).
   } else {
     payload.sections.forEach((section, i) => {
-      const ws = wb.addWorksheet(sanitize(section.title || `Sheet ${i + 1}`, `Sheet ${i + 1}`))
+      const ws = addSheet(section.title || `Sheet ${i + 1}`, `Sheet ${i + 1}`)
       writeExcelSection(ws, payload, section, { withTitle: true })
     })
   }
