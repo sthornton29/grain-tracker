@@ -69,6 +69,91 @@ export function myaPrice(priceData?: ArcPlcPriceData | null): number | null {
   return null
 }
 
+// ---------- Shared MYA resolution (Decision Aid + Payment Tracker) ----------
+//
+// ONE precedence for the MYA price driving every PLC projection, so the two
+// pages always show the same price and the same resulting payments:
+//   published final  >  manual override  >  estimate (live Barchart, else the
+//   stored estimate)  >  missing.
+// The final outranks everything: it is itself operator-entered (Settings), and
+// the Settings page stamps source='manual' on EVERY price edit while carrying
+// the old estimate forward — so ranking a 'manual' estimate above the final
+// would let a stale Barchart number silently beat a just-entered USDA final.
+// A manual estimate DOES outrank a live Barchart quote — an override mid-year
+// must never be displaced by the market. Commodities with no traded futures
+// (seed cotton, sorghum, oats, …) are manual-only: liveEstimate is ignored.
+
+export type MyaState = 'manual' | 'final' | 'estimate' | 'missing'
+
+export const MYA_STATE_LABEL: Record<MyaState, string> = {
+  manual: 'MYA (manual)',
+  final: 'MYA (final)',
+  estimate: 'MYA (est.)',
+  missing: 'MYA — not set',
+}
+
+export type MyaResolution = {
+  price: number | null
+  state: MyaState
+  /** No Barchart futures mapping — the MYA can only ever be entered manually. */
+  manualOnly: boolean
+  /** For 'estimate': true when the number is the live fetch, false when stored. */
+  live: boolean
+}
+
+export function resolveMyaPrice(args: {
+  commodityName: string | null | undefined
+  priceData?: ArcPlcPriceData | null
+  liveEstimate?: number | null
+}): MyaResolution {
+  const manualOnly = !commodityToTraded(args.commodityName)
+  const pd = args.priceData
+  if (pd?.mya_price_final != null) {
+    return { price: Number(pd.mya_price_final), state: 'final', manualOnly, live: false }
+  }
+  if (pd?.source === 'manual' && pd.mya_price_estimate != null) {
+    return { price: Number(pd.mya_price_estimate), state: 'manual', manualOnly, live: false }
+  }
+  if (!manualOnly && args.liveEstimate != null) {
+    return { price: Number(args.liveEstimate), state: 'estimate', manualOnly, live: true }
+  }
+  if (pd?.mya_price_estimate != null) {
+    return { price: Number(pd.mya_price_estimate), state: 'estimate', manualOnly, live: false }
+  }
+  return { price: null, state: 'missing', manualOnly, live: false }
+}
+
+// Effective price-data rows for projectPayments(): the shared resolution applied
+// to the stored rows + live estimates for one crop year. Each commodity's row
+// carries the RESOLVED price where myaPrice() will pick it up, synthetic rows
+// are added for commodities with only a live estimate, and other years pass
+// through untouched.
+export function applyMyaResolution(args: {
+  cropYear: number
+  commodities: readonly CoveredCommodity[]
+  priceData: readonly ArcPlcPriceData[]
+  liveEstimates?: ReadonlyMap<string, number>
+}): ArcPlcPriceData[] {
+  const out = args.priceData.filter((p) => !(p.crop_year === args.cropYear && args.commodities.some((c) => c.id === p.commodity_id)))
+  for (const c of args.commodities) {
+    const stored = args.priceData.find((p) => p.commodity_id === c.id && p.crop_year === args.cropYear) ?? null
+    const r = resolveMyaPrice({ commodityName: c.name, priceData: stored, liveEstimate: args.liveEstimates?.get(c.id) ?? null })
+    if (stored == null && r.price == null) continue
+    const base: ArcPlcPriceData = stored ?? {
+      id: `live-${c.id}`, commodity_id: c.id, crop_year: args.cropYear,
+      effective_reference_price: null, mya_price_estimate: null, mya_price_final: null,
+      source: 'barchart', updated_at: '',
+    }
+    // A final present on the row already wins inside myaPrice(); otherwise the
+    // resolved price rides in the estimate slot (final is null in those states).
+    out.push({
+      ...base,
+      mya_price_estimate: r.state === 'final' ? base.mya_price_estimate : r.price,
+    })
+  }
+  return out
+}
+
 // Seed cotton MYA from a lint price ($/lb) and a cottonseed price ($/ton).
 export function seedCottonMya(lintPerLb: number, cottonseedPerTon: number): number {
   const cottonseedPerLb = cottonseedPerTon / 2000

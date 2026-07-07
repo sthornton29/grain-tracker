@@ -9,9 +9,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { useLiveMya } from '@/lib/use-live-mya'
 import EntityFilter from '@/components/entity-filter'
+import MyaPricePanel from '@/components/reports/mya-price-panel'
 import {
-  projectPayments, computeCommodityPayment, ELECTION_LABEL, paymentLimitTotal,
+  projectPayments, computeCommodityPayment, applyMyaResolution, ELECTION_LABEL, paymentLimitTotal,
   type ProjectedPayment,
 } from '@/lib/government-payments'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
@@ -46,7 +48,6 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
   const [limits, setLimits] = useState<PaymentLimitConfig[]>([])
   const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
-  const [liveMya, setLiveMya] = useState<Map<string, number>>(new Map())
   const [cropYear, setCropYear] = usePersistentState<number | ''>('gov-pay:cropYear', '')
   const [entityId, setEntityId] = usePersistentState('gov-pay:entity', '')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -95,43 +96,24 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     [plantings, elections, cropYear],
   )
 
-  // Live MYA refresh for the tradeable commodities.
-  useEffect(() => {
-    if (cropYear === '' || commodities.length === 0) return
-    const tradeable = commodities.filter((c) => ['Corn', 'Soybeans', 'Wheat'].includes(c.name))
-    if (tradeable.length === 0) return
-    let cancelled = false
-    ;(async () => {
-      try {
-        const res = await fetch('/api/mya-estimate', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ crop_year: cropYear, commodities: tradeable.map((c) => ({ commodity_id: c.id, name: c.name })) }),
-        })
-        const json = await res.json().catch(() => null)
-        if (cancelled || !json) return
-        const m = new Map<string, number>()
-        for (const e of (json.estimates ?? []) as Array<{ commodity_id: string; price: number | null }>) if (e.price != null) m.set(e.commodity_id, Number(e.price))
-        setLiveMya(m)
-      } catch { /* fall back to stored price data */ }
-    })()
-    return () => { cancelled = true }
-  }, [cropYear, commodities])
+  // Live MYA estimates for the tradeable commodities (shared hook — resets on
+  // year change so a failed refetch never leaves last year's prices in play).
+  const liveMya = useLiveMya(cropYear, commodities)
 
-  // Stored price data with the live MYA estimate merged in for tradeable crops.
+  // Stored price data with the SHARED per-commodity MYA resolution applied
+  // (manual override > published final > live/stored estimate) — the same
+  // function the Decision Aid reads, so both pages project the same payments.
   const effectivePriceData = useMemo(() => {
-    if (liveMya.size === 0) return priceData
-    const byKey = new Map(priceData.map((p) => [`${p.commodity_id}|${p.crop_year}`, p]))
-    const out = priceData.map((p) => (cropYear !== '' && p.crop_year === cropYear && liveMya.has(p.commodity_id) ? { ...p, mya_price_estimate: liveMya.get(p.commodity_id)! } : p))
-    // Add synthetic rows for commodities that have a live estimate but no stored row.
-    if (cropYear !== '') {
-      for (const [cid, price] of liveMya) {
-        if (!byKey.has(`${cid}|${cropYear}`)) {
-          out.push({ id: `live-${cid}`, commodity_id: cid, crop_year: cropYear, effective_reference_price: null, mya_price_estimate: price, mya_price_final: null, source: 'barchart', updated_at: '' })
-        }
-      }
-    }
-    return out
-  }, [priceData, liveMya, cropYear])
+    if (cropYear === '') return priceData
+    return applyMyaResolution({ cropYear, commodities, priceData, liveEstimates: liveMya })
+  }, [priceData, liveMya, cropYear, commodities])
+
+  // Refetch just the price data after an MYA toggle/override so every PLC
+  // projection on the page updates live.
+  async function refreshPriceData() {
+    const { data } = await supabase.from('arc_plc_price_data').select('*')
+    setPriceData((data as ArcPlcPriceData[]) || [])
+  }
 
   // Resolve per-year program parameters (sequestration %, per-person limit),
   // falling back to the most recent configured year when this one is missing.
@@ -332,6 +314,16 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
           </div>
 
           <SummaryCards cards={summaryCards} />
+
+          {/* Per-commodity MYA — the same shared resolution the Decision Aid
+              reads; toggling Auto/Manual here updates every projection below. */}
+          <MyaPricePanel
+            cropYear={cropYear}
+            commodities={shownCommodities}
+            priceData={priceData}
+            liveMya={liveMya}
+            onChanged={refreshPriceData}
+          />
 
           <section className="bg-white rounded-xl shadow p-4 avoid-break overflow-x-auto">
             <h2 className="font-bold text-lg mb-2">Government Payment Tracker — {cropYear}</h2>

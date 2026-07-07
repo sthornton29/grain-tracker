@@ -18,9 +18,10 @@ export default function CropInsuranceClaimsPage() {
         <ExportBar buildPayload={() => buildPayload()} />
       </div>
       <p className="text-sm text-slate-600 no-print max-w-3xl">
-        Estimated indemnity for each RP / RP-HPE / YP policy (with SCO and ECO endorsements) at your current yield
-        assumptions and the running harvest-price estimate, netted against premium paid. Use the What-If panel to test
-        yield and price scenarios.{' '}
+        Estimated indemnity for each RP / RP-HPE / YP policy (with SCO and ECO endorsements) at your current
+        per-practice yields and the running harvest-price estimate, netted against premium paid. For price and yield
+        scenarios, use the{' '}
+        <Link href="/reports/income-sensitivity" className="text-sky-700 underline">Income Sensitivity Report →</Link>{' '}
         <Link href="/settings/crop-insurance" className="text-sky-700 underline">Manage policies →</Link>
       </p>
       <CropInsuranceClaimsReport onPayloadChange={handlePayload} />

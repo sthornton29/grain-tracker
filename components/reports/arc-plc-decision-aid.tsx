@@ -10,9 +10,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { useLiveMya } from '@/lib/use-live-mya'
 import EntityFilter from '@/components/entity-filter'
+import MyaPricePanel from '@/components/reports/mya-price-panel'
 import {
-  computePlcPayment, computeArcCoPayment, effectiveReferencePrice, myaPrice, ELECTION_LABEL,
+  computePlcPayment, computeArcCoPayment, effectiveReferencePrice, resolveMyaPrice, ELECTION_LABEL,
 } from '@/lib/government-payments'
 import type { ExportPayload } from '@/lib/exports'
 import type {
@@ -37,7 +39,6 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
   const [elections, setElections] = useState<ArcPlcElection[]>([])
   const [priceData, setPriceData] = useState<ArcPlcPriceData[]>([])
   const [payments, setPayments] = useState<ArcPlcPayment[]>([])
-  const [liveMya, setLiveMya] = useState<Map<string, number>>(new Map())
   const [cropYear, setCropYear] = usePersistentState<number | ''>('arc-plc-aid:cropYear', '')
   const [entityId, setEntityId] = usePersistentState('arc-plc-aid:entity', '')
   const [myaPct, setMyaPct] = useState(0)
@@ -82,35 +83,28 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
     [plantings, elections, cropYear],
   )
 
-  // Refresh live MYA estimates for tradeable commodities.
-  useEffect(() => {
-    if (cropYear === '' || commodities.length === 0) return
-    const tradeable = commodities.filter((c) => ['Corn', 'Soybeans', 'Wheat'].includes(c.name))
-    if (tradeable.length === 0) return
-    let cancelled = false
-    ;(async () => {
-      try {
-        const res = await fetch('/api/mya-estimate', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ crop_year: cropYear, commodities: tradeable.map((c) => ({ commodity_id: c.id, name: c.name })) }),
-        })
-        const json = await res.json().catch(() => null)
-        if (cancelled || !json) return
-        const m = new Map<string, number>()
-        for (const e of (json.estimates ?? []) as Array<{ commodity_id: string; price: number | null }>) if (e.price != null) m.set(e.commodity_id, Number(e.price))
-        setLiveMya(m)
-      } catch { /* fall back to stored */ }
-    })()
-    return () => { cancelled = true }
-  }, [cropYear, commodities])
+  // Live MYA estimates for tradeable commodities (shared hook — resets on
+  // year change so a failed refetch never leaves last year's prices in play).
+  const liveMya = useLiveMya(cropYear, commodities)
 
   const priceFor = (commodityId: string) => priceData.find((p) => p.commodity_id === commodityId && p.crop_year === cropYear) ?? null
-  // Effective MYA for a commodity: live estimate → stored → applied with the slider.
+  // Effective MYA for a commodity: the SHARED resolution (manual override >
+  // published final > live/stored estimate — same as the Payment Tracker), with
+  // the What-If slider applied on top.
   function effMya(commodity: CoveredCommodity): number | null {
-    const base = liveMya.get(commodity.id) ?? myaPrice(priceFor(commodity.id))
+    const base = resolveMyaPrice({
+      commodityName: commodity.name,
+      priceData: priceFor(commodity.id),
+      liveEstimate: liveMya.get(commodity.id) ?? null,
+    }).price
     if (base == null) return null
     return base * (1 + myaPct / 100)
   }
+  // Commodities with eligible base acres — the ones whose MYA matters here.
+  const shownCommodities = useMemo(() => {
+    const ids = new Set(baseAcres.filter((b) => !b.is_unassigned && b.commodity_id).map((b) => b.commodity_id!))
+    return commodities.filter((c) => ids.has(c.id))
+  }, [baseAcres, commodities])
   function arcRate(farmId: string, commodityId: string | null): number | null {
     if (commodityId == null) return null
     const p = payments.find((x) => x.farm_id === farmId && x.commodity_id === commodityId && x.crop_year === cropYear)
@@ -213,6 +207,16 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
           <div className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-sm text-sky-900 no-print">
             Farms enrolled in <strong>PLC are eligible for SCO</strong> crop insurance. Farms enrolled in <strong>ARC are NOT</strong> eligible for SCO.
           </div>
+
+          {/* Per-commodity MYA — the shared resolution the Payment Tracker also
+              reads, so both pages project PLC from the same price. */}
+          <MyaPricePanel
+            cropYear={cropYear}
+            commodities={shownCommodities}
+            priceData={priceData}
+            liveMya={liveMya}
+            onChanged={refresh}
+          />
 
           {/* What-If MYA */}
           <section className="bg-white rounded-xl shadow p-4 space-y-2 no-print">

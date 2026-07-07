@@ -20,6 +20,7 @@ export const REPORT_GROUPS: ReportNavGroup[] = [
       { label: 'Season Summary', href: '/reports/season', description: 'Acres and yield by crop for a season, with the same views and exports as before.' },
       { label: 'Marketing Dashboard', href: '/reports/marketing', description: 'Per-crop marketing position for a crop year — production, contracted vs. remaining bushels, average futures/basis/cash price, cost, and projected profit, with assumptions and supporting detail.' },
       { label: 'Revenue Projections', href: '/reports/revenue-projections', description: 'Every revenue source for a crop year — crop sales, insurance proceeds, and government payments — with cost, profit, and breakeven. A one-page financial summary.' },
+      { label: 'Income Sensitivity', href: '/reports/income-sensitivity', description: 'A futures-price × yield data table per crop: revenue or net profit per acre in every scenario, with locked contract prices held, crop-insurance indemnities net of premium, and an optional flat government-payment layer.' },
       { label: 'Cash Flow Forecast', href: '/reports/cash-flow', description: 'Monthly projected revenue from contracts and delivered grain, plus the projected ARC/PLC, crop-insurance, and other USDA safety net.' },
       { label: 'Hedging Summary', href: '/reports/hedging-summary', description: 'All futures positions (open and closed) with realized and unrealized P&L, summarized by crop year. Suitable for a lender or business partner.' },
     ],
@@ -28,7 +29,7 @@ export const REPORT_GROUPS: ReportNavGroup[] = [
     title: 'Crop Insurance',
     reports: [
       { label: 'Crop Insurance Production Report', href: '/reports/crop-insurance', description: 'County × practice (irrigated / dryland) production report formatted for crop insurance agents. Summary plus a detail sheet per county/practice, with Excel, PDF, and print exports.' },
-      { label: 'Crop Insurance Claims Monitor', href: '/reports/crop-insurance-claims', description: 'Estimated indemnity for each RP / RP-HPE / YP policy (with SCO & ECO) at your current yields and the running harvest-price estimate, netted against premium.' },
+      { label: 'Crop Insurance Claims Monitor', href: '/reports/crop-insurance-claims', description: 'Estimated indemnity for each RP / RP-HPE / YP policy (with SCO & ECO) at your current yields and the running harvest-price estimate, netted against premium. For scenarios, see the Income Sensitivity Report.' },
       { label: 'Bundled Settlement Statements (Production Audit)', href: '/reports/settlement-pdfs', description: 'Bundles every attached buyer settlement PDF for a crop & crop year into a single zip — what an auditor needs to confirm sales match self-reported production.' },
     ],
   },

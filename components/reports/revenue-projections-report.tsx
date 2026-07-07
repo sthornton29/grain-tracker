@@ -14,11 +14,12 @@ import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { cropToCommodity } from '@/lib/contracts'
 import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { useLiveMya } from '@/lib/use-live-mya'
 import {
   computePolicy, harvestContractLabel, policyPremium,
   type PolicyInputs, type ScoConfig, type EcoConfig,
 } from '@/lib/crop-insurance'
-import { projectPayments } from '@/lib/government-payments'
+import { projectPayments, applyMyaResolution } from '@/lib/government-payments'
 import { computeRevenueProjections, type InsuranceProceeds, type GovtProceeds } from '@/lib/revenue-projections'
 import {
   SummaryCards, EmptyState, fmtUsd, signedTone, toneText,
@@ -78,7 +79,6 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   const [arcPriceData, setArcPriceData] = useState<ArcPlcPriceData[]>([])
   const [arcPayments, setArcPayments] = useState<ArcPlcPayment[]>([])
   const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
-  const [liveMya, setLiveMya] = useState<Map<string, number>>(new Map())
 
   const [cropYear, setCropYear] = usePersistentState<number | ''>('rev-proj:cropYear', '')
 
@@ -306,27 +306,8 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [marketingRows, liveEstimates, priceEstimates, policies, cropYear])
 
-  // Refresh live MYA for the tradeable commodities (feeds PLC projections).
-  useEffect(() => {
-    if (cropYear === '' || commodities.length === 0) return
-    const tradeable = commodities.filter((c) => ['Corn', 'Soybeans', 'Wheat'].includes(c.name))
-    if (tradeable.length === 0) return
-    let cancelled = false
-    ;(async () => {
-      try {
-        const res = await fetch('/api/mya-estimate', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ crop_year: cropYear, commodities: tradeable.map((c) => ({ commodity_id: c.id, name: c.name })) }),
-        })
-        const json = await res.json().catch(() => null)
-        if (cancelled || !json) return
-        const m = new Map<string, number>()
-        for (const e of (json.estimates ?? []) as Array<{ commodity_id: string; price: number | null }>) if (e.price != null) m.set(e.commodity_id, Number(e.price))
-        setLiveMya(m)
-      } catch { /* fall back to stored */ }
-    })()
-    return () => { cancelled = true }
-  }, [cropYear, commodities])
+  // Live MYA for the tradeable commodities (shared hook; feeds PLC projections).
+  const liveMya = useLiveMya(cropYear, commodities)
 
   // Government payments allocated per crop: total ARC/PLC (across all farms) and
   // non-crop-specific other payments are split by planted acres; crop-specific
@@ -334,12 +315,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   const govtByCrop = useMemo(() => {
     const m = new Map<string, GovtProceeds>()
     if (cropYear === '') return m
-    const effPrice = arcPriceData.map((p) => (p.crop_year === cropYear && liveMya.has(p.commodity_id) ? { ...p, mya_price_estimate: liveMya.get(p.commodity_id)! } : p))
-    for (const [cid, price] of liveMya) {
-      if (!effPrice.some((p) => p.commodity_id === cid && p.crop_year === cropYear)) {
-        effPrice.push({ id: `live-${cid}`, commodity_id: cid, crop_year: cropYear, effective_reference_price: null, mya_price_estimate: price, mya_price_final: null, source: 'barchart', updated_at: '' })
-      }
-    }
+    // Shared MYA resolution (manual override > final > live/stored estimate) —
+    // the same effective prices the Decision Aid and Payment Tracker project from.
+    const effPrice = applyMyaResolution({ cropYear, commodities, priceData: arcPriceData, liveEstimates: liveMya })
     const projected = projectPayments({ cropYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments })
     const totalArcPlc = projected.reduce((s, p) => s + p.result.net, 0)
     const yearOther = otherPayments.filter((o) => o.crop_year === cropYear)
