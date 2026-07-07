@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   computePlcPayment, computeArcCoPayment, seedCottonMya, effectiveReferencePrice,
   myaPrice, paymentLimitTotal, expectedArcPlcDate, computeCommodityPayment, projectPayments,
+  resolveMyaPrice, applyMyaResolution,
   PAYMENT_FACTOR, LINT_SHARE, COTTONSEED_SHARE,
 } from '@/lib/government-payments'
 import { DEFAULT_SEQUESTRATION_PCT } from '@/lib/program-config'
@@ -377,5 +378,112 @@ describe('PAYMENT_FACTOR / default sequestration constants', () => {
   it('match the documented values', () => {
     expect(PAYMENT_FACTOR).toBe(0.85)
     expect(DEFAULT_SEQUESTRATION_PCT).toBe(0.054)
+  })
+})
+
+// ---------- resolveMyaPrice / applyMyaResolution (shared MYA resolution) ----------
+
+describe('resolveMyaPrice', () => {
+  it('a published final outranks everything — including a source=manual row', () => {
+    // The Settings page stamps source='manual' on every edit while carrying the
+    // old Barchart estimate forward, so the final MUST win or entering a USDA
+    // final would leave a stale estimate driving PLC.
+    const r = resolveMyaPrice({
+      commodityName: 'Corn',
+      priceData: priceData({ source: 'manual', mya_price_estimate: 4.50, mya_price_final: 4.10 }),
+      liveEstimate: 4.20,
+    })
+    expect(r).toEqual({ price: 4.10, state: 'final', manualOnly: false, live: false })
+  })
+
+  it('a manual override (no final yet) outranks the live estimate', () => {
+    const r = resolveMyaPrice({
+      commodityName: 'Corn',
+      priceData: priceData({ source: 'manual', mya_price_estimate: 3.80 }),
+      liveEstimate: 4.20,
+    })
+    expect(r).toEqual({ price: 3.80, state: 'manual', manualOnly: false, live: false })
+  })
+
+  it('live estimate beats the stored estimate for a tradeable commodity', () => {
+    const r = resolveMyaPrice({
+      commodityName: 'Corn',
+      priceData: priceData({ source: 'barchart', mya_price_estimate: 4.10 }),
+      liveEstimate: 4.22,
+    })
+    expect(r).toEqual({ price: 4.22, state: 'estimate', manualOnly: false, live: true })
+  })
+
+  it('falls back to the stored estimate, else missing', () => {
+    expect(resolveMyaPrice({
+      commodityName: 'Corn',
+      priceData: priceData({ source: 'barchart', mya_price_estimate: 4.10 }),
+    })).toEqual({ price: 4.10, state: 'estimate', manualOnly: false, live: false })
+    expect(resolveMyaPrice({ commodityName: 'Corn' }).state).toBe('missing')
+  })
+
+  it('Barchart-less commodities are manual-only: the live estimate is ignored', () => {
+    // Seed cotton has no traded-futures mapping, so a "live" number can only be
+    // a bug upstream — resolution must never surface it.
+    const r = resolveMyaPrice({ commodityName: 'Seed Cotton', liveEstimate: 0.38 })
+    expect(r).toEqual({ price: null, state: 'missing', manualOnly: true, live: false })
+    const manual = resolveMyaPrice({
+      commodityName: 'Seed Cotton',
+      priceData: priceData({ commodity_id: 'sc', source: 'manual', mya_price_estimate: 0.36 }),
+      liveEstimate: 0.38,
+    })
+    expect(manual).toEqual({ price: 0.36, state: 'manual', manualOnly: true, live: false })
+  })
+})
+
+describe('applyMyaResolution', () => {
+  const corn = commodity({ id: 'corn', name: 'Corn' })
+  const seedCotton = commodity({ id: 'sc', name: 'Seed Cotton' })
+
+  it('a manual override (no final yet) survives the live merge', () => {
+    const rows = applyMyaResolution({
+      cropYear: 2026,
+      commodities: [corn],
+      priceData: [priceData({ source: 'manual', mya_price_estimate: 3.80 })],
+      liveEstimates: new Map([['corn', 4.22]]),
+    })
+    expect(rows).toHaveLength(1)
+    expect(myaPrice(rows[0])).toBe(3.80)
+  })
+
+  it('a source=manual row with a published final resolves to the final', () => {
+    const rows = applyMyaResolution({
+      cropYear: 2026,
+      commodities: [corn],
+      priceData: [priceData({ source: 'manual', mya_price_estimate: 4.50, mya_price_final: 4.10 })],
+      liveEstimates: new Map([['corn', 4.22]]),
+    })
+    expect(myaPrice(rows[0])).toBe(4.10)
+  })
+
+  it('creates a synthetic row for a live-only commodity and passes other years through', () => {
+    const prior = priceData({ id: 'pd-2025', crop_year: 2025, mya_price_final: 4.85 })
+    const rows = applyMyaResolution({
+      cropYear: 2026,
+      commodities: [corn, seedCotton],
+      priceData: [prior],
+      liveEstimates: new Map([['corn', 4.22], ['sc', 0.38]]),
+    })
+    // 2025 row untouched; corn gets a synthetic 2026 row; manual-only seed
+    // cotton gets nothing from the (ignored) live estimate.
+    expect(rows.find((r) => r.crop_year === 2025)).toEqual(prior)
+    const cornRow = rows.find((r) => r.commodity_id === 'corn' && r.crop_year === 2026)
+    expect(myaPrice(cornRow)).toBe(4.22)
+    expect(rows.some((r) => r.commodity_id === 'sc' && r.crop_year === 2026)).toBe(false)
+  })
+
+  it('keeps a published final when nothing overrides it', () => {
+    const rows = applyMyaResolution({
+      cropYear: 2026,
+      commodities: [corn],
+      priceData: [priceData({ source: 'usda', mya_price_estimate: 4.20, mya_price_final: 4.05 })],
+      liveEstimates: new Map([['corn', 4.30]]),
+    })
+    expect(myaPrice(rows[0])).toBe(4.05)
   })
 })

@@ -3,11 +3,12 @@
 // Crop Insurance Claims Monitor.
 //
 // For a crop year, estimates the indemnity each MPCI policy (RP / RP-HPE / YP,
-// plus SCO/ECO endorsements) would pay at the producer's assumed yields and the
-// current/estimated harvest price, and nets it against premium paid. Every
-// number is an ESTIMATE until RMA sets the final harvest price and county yields
-// after harvest. The What-If panel lets the user dial yields and harvest prices
-// and watch indemnities move in real time — the most valuable mid-season lever.
+// plus SCO/ECO endorsements) would pay at the producer's per-practice yields and
+// the current harvest-price basis (live Barchart discovery-month price until an
+// RMA final is on file), and nets it against premium paid. Every number is an
+// ESTIMATE until RMA sets the final harvest price and county yields after
+// harvest. Scenario analysis (price × yield what-ifs) lives in the Income
+// Sensitivity Report (/reports/income-sensitivity), linked below.
 
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
@@ -77,10 +78,6 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   const [cropYear, setCropYear] = usePersistentState<number | ''>('ci-claims:cropYear', '')
   const [entityId, setEntityId] = usePersistentState('ci-claims:entityId', '')
 
-  // What-if levers.
-  const [globalYieldPct, setGlobalYieldPct] = useState(0)
-  const [yieldOverride, setYieldOverride] = useState<Map<string, string>>(new Map()) // policyId -> bu/ac
-  const [harvestOverride, setHarvestOverride] = useState<Map<string, string>>(new Map()) // cropId -> $/bu
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   useEffect(() => {
@@ -183,7 +180,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     return m
   }, [liveEstimates])
 
-  // Per-crop harvest resolution for DISPLAY (the table + What-If labels). The
+  // Per-crop harvest resolution for DISPLAY (the table's Harvest $ column). The
   // actual indemnity math goes through projectInsuranceIndemnities below, which
   // resolves the same way — this just adds the futures-contract label.
   const harvestByCrop = useMemo(() => {
@@ -196,18 +193,6 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     return m
   }, [reportCropIds, cropYear, yearPolicies, priceEstimates, liveHarvestByCrop, cropById])
 
-  // What-if levers parsed from the editable string maps into numbers.
-  const yieldOverrideNums = useMemo(() => {
-    const m = new Map<string, number>()
-    for (const [id, s] of yieldOverride) if (s.trim() !== '' && Number.isFinite(Number(s))) m.set(id, Number(s))
-    return m
-  }, [yieldOverride])
-  const harvestOverrideNums = useMemo(() => {
-    const m = new Map<string, number>()
-    for (const [id, s] of harvestOverride) if (s.trim() !== '' && Number.isFinite(Number(s))) m.set(id, Number(s))
-    return m
-  }, [harvestOverride])
-
   // Per-year program parameters (SCO trigger), with most-recent-year fallback.
   const programCfg = useMemo(
     () => resolveProgramYearConfig(cropYear === '' ? new Date().getFullYear() : cropYear, programConfigs),
@@ -219,18 +204,17 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   const computed: Computed[] = useMemo(() => {
     if (cropYear === '') return []
     // Single source of truth shared with the Cash Flow safety-net so the two
-    // pages' projected indemnity reconciles; the what-if levers feed in here.
+    // pages' projected indemnity reconciles.
     const projected = projectInsuranceIndemnities({
       cropYear, policies: yearPolicies, scos, ecos, assumptions, plantings,
       actualYieldByCrop, harvestEstimates: priceEstimates, liveHarvestByCrop,
       scoTrigger: programCfg.scoTrigger,
-      globalYieldPct, yieldOverrideByPolicy: yieldOverrideNums, harvestOverrideByCrop: harvestOverrideNums,
     })
     return projected.map((r) => ({
       policy: r.policy, comp: r.comp, harvest: harvestByCrop.get(r.policy.crop_id),
       assumedYield: r.assumedYield, base: r.base, sco: r.sco, eco: r.eco, basePremium: r.basePremium,
     }))
-  }, [cropYear, yearPolicies, scos, ecos, assumptions, plantings, actualYieldByCrop, priceEstimates, liveHarvestByCrop, programCfg, globalYieldPct, yieldOverrideNums, harvestOverrideNums, harvestByCrop])
+  }, [cropYear, yearPolicies, scos, ecos, assumptions, plantings, actualYieldByCrop, priceEstimates, liveHarvestByCrop, programCfg, harvestByCrop])
 
   const totals = useMemo(() => {
     return computed.reduce(
@@ -306,8 +290,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   // ----- Export payload -----
   function buildExportPayload(): ExportPayload {
     const entityName = entityId ? entities.find((e) => e.id === entityId)?.name ?? '' : ''
-    const filters = [`Crop year: ${cropYear || '—'}`, entityName ? `Entity: ${entityName}` : 'All entities',
-      globalYieldPct !== 0 ? `Yield what-if: ${globalYieldPct > 0 ? '+' : ''}${globalYieldPct}%` : null].filter(Boolean).join(' · ')
+    const filters = [`Crop year: ${cropYear || '—'}`, entityName ? `Entity: ${entityName}` : 'All entities'].join(' · ')
     const sections: ExportPayload['sections'] = []
     sections.push({
       title: 'Estimated Indemnity by Policy',
@@ -355,7 +338,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [computed, totals, cropYear, entityId, globalYieldPct, onPayloadChange])
+  }, [computed, totals, cropYear, entityId, onPayloadChange])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
 
@@ -379,12 +362,20 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
             {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
         </label>
-        <Link
-          href="/settings/crop-insurance#coverage-check"
-          className="ml-auto self-end rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-        >
-          Coverage Check: insured vs planted acres →
-        </Link>
+        <div className="ml-auto self-end flex flex-wrap gap-2">
+          <Link
+            href="/reports/income-sensitivity"
+            className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            Scenario analysis: Income Sensitivity →
+          </Link>
+          <Link
+            href="/settings/crop-insurance#coverage-check"
+            className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            Coverage Check: insured vs planted acres →
+          </Link>
+        </div>
       </div>
 
       {cropYear === '' && <p className="text-amber-700 text-sm">Pick a crop year to run the claims monitor.</p>}
@@ -407,20 +398,11 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         <>
           <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print">
             <strong>Estimated</strong> — based on current yield assumptions and futures prices. Final amounts are
-            determined by RMA after harvest.{priceNote ? ` ${priceNote}` : ''}
+            determined by RMA after harvest.{priceNote ? ` ${priceNote}` : ''} For price and yield scenarios, use the{' '}
+            <Link href="/reports/income-sensitivity" className="underline font-semibold">Income Sensitivity Report</Link>.
           </div>
 
           <SummaryCards cards={summaryCards} />
-
-          {/* What-If panel */}
-          <WhatIfPanel
-            globalYieldPct={globalYieldPct}
-            setGlobalYieldPct={setGlobalYieldPct}
-            crops={reportCropIds.map((id) => ({ id, name: cropName(id), harvest: harvestByCrop.get(id) }))}
-            harvestOverride={harvestOverride}
-            setHarvestOverride={setHarvestOverride}
-            onReset={() => { setGlobalYieldPct(0); setYieldOverride(new Map()); setHarvestOverride(new Map()) }}
-          />
 
           {/* Summary table */}
           <section className="bg-white rounded-xl shadow p-4 avoid-break overflow-x-auto">
@@ -451,16 +433,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                       <td className="px-2 py-1 text-right tabular-nums">{Number(p.aph_yield).toFixed(1)}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{fmtPrice(p.projected_price)}</td>
                       <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">{harvestLabel(c.harvest)}</td>
-                      <td className="px-2 py-1 text-right">
-                        <input
-                          type="number" step="0.1"
-                          value={yieldOverride.get(p.id) ?? ''}
-                          placeholder={c.assumedYield.toFixed(1)}
-                          onChange={(e) => setYieldOverride((m) => { const n = new Map(m); if (e.target.value === '') n.delete(p.id); else n.set(p.id, e.target.value); return n })}
-                          className="w-20 rounded border border-slate-300 px-1 py-0.5 text-right tabular-nums no-print"
-                        />
-                        <span className="hidden print:inline tabular-nums">{c.assumedYield.toFixed(1)}</span>
-                      </td>
+                      <td className="px-2 py-1 text-right tabular-nums">{c.assumedYield.toFixed(1)}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{bu(Number(p.insured_acres))}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.base.revenueGuarantee)}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.base.expectedRevenue)}</td>
@@ -531,64 +504,6 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         </>
       )}
     </div>
-  )
-}
-
-function WhatIfPanel({
-  globalYieldPct, setGlobalYieldPct, crops, harvestOverride, setHarvestOverride, onReset,
-}: {
-  globalYieldPct: number
-  setGlobalYieldPct: (n: number) => void
-  crops: Array<{ id: string; name: string; harvest: HarvestInfo | undefined }>
-  harvestOverride: Map<string, string>
-  setHarvestOverride: (fn: (m: Map<string, string>) => Map<string, string>) => void
-  onReset: () => void
-}) {
-  return (
-    <section className="bg-white rounded-xl shadow p-4 space-y-3 no-print">
-      <div className="flex items-center gap-3 flex-wrap">
-        <h2 className="font-bold text-lg flex-1">What-If</h2>
-        <button onClick={onReset} className="text-sm text-slate-500 underline">Reset assumptions</button>
-      </div>
-      <p className="text-xs text-slate-500">
-        Move the yield slider or override a crop’s harvest price to see how indemnities change in real time. Per-policy
-        assumed yield can also be edited directly in the table above.
-      </p>
-      <label className="flex items-center gap-3 flex-wrap text-sm">
-        <span className="w-40 text-slate-600">Yield adjustment: <strong>{globalYieldPct > 0 ? '+' : ''}{globalYieldPct}%</strong></span>
-        <input type="range" min={-40} max={40} step={5} value={globalYieldPct} onChange={(e) => setGlobalYieldPct(Number(e.target.value))} className="flex-1 min-w-[12rem]" />
-        <button onClick={() => setGlobalYieldPct(0)} className="text-xs text-slate-500 underline">0%</button>
-      </label>
-      <div className="flex flex-wrap gap-3">
-        {crops.map((c) => {
-          // Before the RMA harvest price is set (source is still an 'estimate',
-          // not a 'final'), default the lever to today's Barchart price so the
-          // what-if starts from the live market — still fully editable, and it
-          // reverts to today's price if cleared. Once a final is on file we leave
-          // it blank (the final is the basis, shown as the placeholder).
-          const beforePeriod = c.harvest?.source === 'estimate'
-          const defaultStr = beforePeriod ? String(c.harvest!.price) : ''
-          const usingDefault = harvestOverride.get(c.id) == null
-          return (
-            <label key={c.id} className="text-sm flex flex-col gap-1">
-              <span className="text-slate-500">{c.name} harvest $ {c.harvest?.label ? `(${c.harvest.label})` : ''}</span>
-              <input
-                type="number" step="0.01"
-                placeholder={(c.harvest?.price ?? 0).toFixed(2)}
-                value={harvestOverride.get(c.id) ?? defaultStr}
-                onChange={(e) => setHarvestOverride((m) => { const n = new Map(m); if (e.target.value === '') n.delete(c.id); else n.set(c.id, e.target.value); return n })}
-                className="rounded-lg border border-slate-300 px-3 py-2 w-40"
-              />
-              {beforePeriod && usingDefault && (
-                <span className="text-[11px] text-slate-400">
-                  {c.harvest!.stale ? 'Most recent Barchart price' : 'Today’s Barchart price'} — harvest price not set yet
-                </span>
-              )}
-            </label>
-          )
-        })}
-      </div>
-    </section>
   )
 }
 

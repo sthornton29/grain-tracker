@@ -708,7 +708,9 @@ export type ProjectedPolicy = {
   assumedYield: number
 }
 
-function scoConfigFrom(s: CropInsuranceSco | undefined): ScoConfig | null {
+// Adapt DB endorsement rows into the compute configs. Exported so composers
+// (e.g. lib/income-sensitivity.ts) build policy inputs exactly the same way.
+export function scoConfigFrom(s: CropInsuranceSco | undefined): ScoConfig | null {
   if (!s) return null
   return {
     coverageTrigger: Number(s.coverage_trigger),
@@ -718,7 +720,7 @@ function scoConfigFrom(s: CropInsuranceSco | undefined): ScoConfig | null {
     totalPremium: s.total_premium == null ? null : Number(s.total_premium),
   }
 }
-function ecoConfigFrom(e: CropInsuranceEco | undefined): EcoConfig | null {
+export function ecoConfigFrom(e: CropInsuranceEco | undefined): EcoConfig | null {
   if (!e) return null
   return {
     ecoTriggerLevel: Number(e.eco_trigger_level),
