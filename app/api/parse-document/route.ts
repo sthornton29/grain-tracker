@@ -105,7 +105,12 @@ CRITICAL RULES FOR DETERMINING LONG VS SHORT:
 
 3. FARMER CONTEXT: This is a farmer's hedging account. Farmers almost always SHORT (sell) futures to lock in prices for crops they are growing. If ambiguous, default to SHORT, but still apply rule #2 above.
 
-4. For the PURCHASE & SALE section: each offset group's opening lots and closing transaction sit in the BUY and SELL columns. If the OPENING lots are in the SELL column (sold first) and closed by a BUY, the group was SHORT. If the opening lots are in the BUY column (bought first) and closed by a SELL, it was LONG.
+4. For the PURCHASE & SALE section, do NOT use rules #2/#3 — determine each offset group's side from CHRONOLOGY + COLUMN alone:
+   - The lots with the EARLIEST trade dates in the group are the OPENING lots; the latest-dated transaction is the CLOSING one.
+   - Opening lots' quantities in the SELL column, closing transaction in the BUY column -> side = "short" (sold first, bought back).
+   - Opening lots in the BUY column, closing transaction in the SELL column -> side = "long".
+   - NEVER infer the side from the sign of the GROSS PROFIT/LOSS (a short can lose money and a long can gain), and NEVER from which line is printed first — print order does not follow trade order.
+   WORKED EXAMPLE: a NOV 26 SOYBEANS group shows quantities 2 and 4 dated 3/18 in the SELL column at 11.43 1/2 and 11.43 3/4, and quantity 6 dated 7/06 in the BUY column at 11.91 3/4, followed by "GROSS PROFIT/LOSS FROM TRADES 14,425.00DR". The earliest-dated lots (3/18) are in the SELL column, so this group is side "short": lots = [{ open_date "2026-03-18", open_price 11.435, contracts 2 }, { open_date "2026-03-18", open_price 11.4375, contracts 4 }], close_date "2026-07-06", close_price 11.9175, statement_reported_total -14425.00 (the DR suffix means a loss, so the value is negative — the short was bought back higher than it was sold).
 
 For each OPEN POSITION, extract:
 - trade_date (format YYYY-MM-DD — the statement may show dates as M/DD/Y like "3/09/6" meaning 2026-03-09)
@@ -128,7 +133,7 @@ Extract ONLY the raw facts for each offset group — do NOT compute, split, or g
 - close_date (the closing transaction date, format YYYY-MM-DD)
 - close_price (the closing price as a decimal — convert fractional, e.g., "4.42 3/4" = 4.4275)
 - lots (an array with ONE entry per opening lot in this group, each: { open_date (YYYY-MM-DD), open_price (decimal, fractional converted), contracts (the number of contracts in THIS lot only) }). Capture each lot's OWN contract count — three lots of ten contracts each are 10, 10, 10, never 30 and never the group's grand total.
-- statement_reported_total (the group's printed GROSS PROFIT/LOSS total, as a decimal — negative if DR/loss). This is for reconciliation ONLY.
+- statement_reported_total (the group's printed GROSS PROFIT/LOSS total, as a decimal. SIGN MATTERS: a total suffixed DR is a debit/LOSS and MUST be negative; CR or no suffix is a gain and positive. "14,425.00DR" -> -14425.00). This is for reconciliation ONLY.
 
 ALSO extract any OPTIONS positions from the statement. Options appear in the OPEN POSITIONS section and may look like:
 - "DEC 26 CORN 480 PUT" (a put option on DEC 26 Corn with strike price 480, meaning $4.80/bu)

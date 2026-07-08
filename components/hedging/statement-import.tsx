@@ -21,6 +21,8 @@ import {
   optionPremiumTotal,
   expandClosedGroup,
   reconcileClosedGroup,
+  coercePrice,
+  pricesMatch,
   fmtPrice,
   fmtPnl,
   fmtCents,
@@ -31,6 +33,12 @@ import {
   type OptionType,
   type OptionSide,
 } from '@/lib/hedging'
+import {
+  matchExistingOpenPosition,
+  resolveClosedGroupSide,
+  normalizeTradeDate,
+  type FieldDifference,
+} from '@/lib/statement-matching'
 import type { Entity, FuturesPosition, OptionPosition } from '@/lib/types'
 
 function cropYearOptions(): number[] {
@@ -64,7 +72,14 @@ type OpenRow = {
   unrealized_pnl: number | null
   crop_year: string
   include: boolean
-  existing: boolean
+  existing: boolean // auto-detected as already in the database
+  // The user manually paired this row with a stored open position ("Match to
+  // existing") — treated like `existing`: nothing is imported for it.
+  manualMatchId: string | null
+  // When flagged New but a same-commodity/month position is close, the
+  // near-miss and exactly which fields differ — shown inline so the verdict
+  // is explainable (and so parse drift is visible, not mysterious).
+  nearMiss: { position: FuturesPosition; differences: FieldDifference[] } | null
 }
 // One opening lot inside a closed offset group. Realized P&L is NOT stored here
 // — it's computed per lot from the group's side/close price via expandClosedGroup
@@ -85,6 +100,11 @@ type ClosedGroupRow = {
   commodity: Commodity
   contract_month: string
   side: Side
+  // True when the extracted side contradicted the side of the matched open DB
+  // positions this group closes, and the DB side won (it's authoritative — a
+  // group can't close short positions "as long"). Cleared if the user changes
+  // the side by hand.
+  sideOverriddenFromDb: boolean
   close_trade_date: string
   close_price: number
   // The statement's printed GROSS PROFIT/LOSS for the whole group — used ONLY to
@@ -158,33 +178,43 @@ export default function StatementImport({ entities, existingPositions, existingO
 
   function buildOpenRow(p: NonNullable<BrokerageStatementExtraction['open_positions']>[number]): OpenRow | null {
     const commodity = normalizeCommodity(p.commodity)
-    if (!commodity || !p.contract_month || p.side == null || p.num_contracts == null || p.trade_price == null || !p.trade_date) {
+    const trade_price = coercePrice(p.trade_price)
+    if (!commodity || !p.contract_month || p.side == null || p.num_contracts == null || trade_price == null || !p.trade_date) {
       return null
     }
-    // Identify an already-imported position by its fill fingerprint:
-    // commodity + contract month + trade date + trade price. Side is
-    // intentionally NOT part of the key — the AI sometimes mis-reads long/short,
-    // and a re-upload must not create a duplicate just because the side flipped.
-    // (A long and short of the same contract at the same price/date doesn't
-    // happen in a hedging account.) Matches against open OR closed positions.
-    const existing = existingPositions.some(
-      (ex) =>
-        ex.commodity === commodity &&
-        up(ex.contract_month) === up(p.contract_month!) &&
-        ex.trade_date === p.trade_date &&
-        priceEq(ex.trade_price, p.trade_price!),
+    // Already imported? Tolerant fingerprint via matchExistingOpenPosition:
+    // commodity + month + contracts exact, date exact after normalization,
+    // price within half a cent (fractional-parse drift between extraction runs
+    // must not re-flag an existing position as New). Side intentionally doesn't
+    // block a match — the AI sometimes mis-reads long/short, and a re-upload
+    // must not create a duplicate just because the side flipped. Matches
+    // against open OR closed positions. When it doesn't match, the closest
+    // candidate and its differing fields are kept for the review screen.
+    const { match, nearMiss } = matchExistingOpenPosition(
+      {
+        commodity,
+        contract_month: up(p.contract_month),
+        side: p.side,
+        num_contracts: p.num_contracts,
+        trade_date: p.trade_date,
+        trade_price,
+      },
+      existingPositions,
     )
+    const existing = match != null
     return {
       commodity,
       contract_month: up(p.contract_month),
       side: p.side,
       num_contracts: p.num_contracts,
       trade_date: p.trade_date,
-      trade_price: p.trade_price,
+      trade_price,
       unrealized_pnl: p.unrealized_pnl ?? null,
       crop_year: '',
       include: !existing,
       existing,
+      manualMatchId: null,
+      nearMiss,
     }
   }
 
@@ -214,26 +244,33 @@ export default function StatementImport({ entities, existingPositions, existingO
 
     for (const g of raw) {
       const commodity = normalizeCommodity(g.commodity)
-      if (!commodity || !g.contract_month || g.side == null || g.close_price == null || !g.close_date) continue
+      const close_price = coercePrice(g.close_price)
+      if (!commodity || !g.contract_month || g.side == null || close_price == null || !g.close_date) continue
       const month = up(g.contract_month)
+      const closeDate = normalizeTradeDate(g.close_date)
       const lots: ClosedLotRow[] = []
+      // Sides of the open DB positions this group's lots match — they dictate
+      // the group's side below (resolveClosedGroupSide).
+      const matchedSides: Side[] = []
 
       for (const lot of g.lots ?? []) {
-        if (lot.open_price == null || lot.contracts == null || !lot.open_date) continue
+        const lotOpenPrice = coercePrice(lot.open_price)
+        if (lotOpenPrice == null || lot.contracts == null || !lot.open_date) continue
+        const lotOpenDate = normalizeTradeDate(lot.open_date)
 
         // Already imported as a closed position? (Statements keep listing recent
         // closed trades, so a re-upload would otherwise duplicate them.) Matched
-        // on the full per-lot closed fingerprint, ignoring side.
+        // on the full per-lot closed fingerprint, ignoring side; dates are
+        // normalized and prices compared within tolerance, same as open dedupe.
         const alreadyImported = existingPositions.some(
           (ex) =>
             ex.status === 'closed' &&
             ex.commodity === commodity &&
             up(ex.contract_month) === month &&
-            ex.trade_date === lot.open_date &&
-            priceEq(ex.trade_price, lot.open_price!) &&
-            ex.close_date === g.close_date &&
-            ex.close_price != null &&
-            priceEq(ex.close_price, g.close_price!),
+            normalizeTradeDate(ex.trade_date) === lotOpenDate &&
+            pricesMatch(ex.trade_price, lotOpenPrice) &&
+            normalizeTradeDate(ex.close_date) === closeDate &&
+            pricesMatch(ex.close_price, close_price),
         )
 
         // Otherwise, does this lot close an OPEN position we already hold? Match
@@ -242,7 +279,7 @@ export default function StatementImport({ entities, existingPositions, existingO
         // several open lots share that date, prefer the one whose price matches.
         let matchedOpenId: string | null = null
         let fromDb = false
-        let open_price = lot.open_price
+        let open_price = lotOpenPrice
         let num_contracts = lot.contracts
         let crop_year = ''
         if (!alreadyImported) {
@@ -251,13 +288,14 @@ export default function StatementImport({ entities, existingPositions, existingO
               ex.status === 'open' &&
               ex.commodity === commodity &&
               up(ex.contract_month) === month &&
-              ex.trade_date === lot.open_date &&
+              normalizeTradeDate(ex.trade_date) === lotOpenDate &&
               !usedOpenIds.has(ex.id),
           )
-          const match = candidates.find((c) => priceEq(c.trade_price, lot.open_price!)) ?? candidates[0]
+          const match = candidates.find((c) => pricesMatch(c.trade_price, lotOpenPrice)) ?? candidates[0]
           if (match) {
             matchedOpenId = match.id
             fromDb = true
+            matchedSides.push(match.side)
             // Part C: anchor the math to the verified DB entry price & size; take
             // only the close price/date from the statement.
             open_price = match.trade_price
@@ -280,12 +318,16 @@ export default function StatementImport({ entities, existingPositions, existingO
       }
 
       if (lots.length === 0) continue
+      // The matched DB positions are authoritative for the group's side: a
+      // group closing short positions is short, whatever the extraction said.
+      const { side, overridden } = resolveClosedGroupSide(g.side, matchedSides)
       out.push({
         commodity,
         contract_month: month,
-        side: g.side,
+        side,
+        sideOverriddenFromDb: overridden,
         close_trade_date: g.close_date,
-        close_price: g.close_price,
+        close_price,
         statement_reported_total: g.statement_reported_total ?? null,
         lots,
       })
@@ -403,8 +445,10 @@ export default function StatementImport({ entities, existingPositions, existingO
     )
   }
   // Side lives at the group level — flipping it re-derives every lot's realized.
+  // A manual change also clears the "side set from matched positions" note,
+  // since the side no longer comes from the DB.
   function setClosedGroupSide(gi: number, side: Side) {
-    setClosedGroups((gs) => gs.map((g, j) => (j === gi ? { ...g, side } : g)))
+    setClosedGroups((gs) => gs.map((g, j) => (j === gi ? { ...g, side, sideOverriddenFromDb: false } : g)))
   }
   function setOpenOption(i: number, patch: Partial<OptionOpenRow>) {
     setOpenOptionRows((rs) => rs.map((r, j) => (i === j ? { ...r, ...patch } : r)))
@@ -414,7 +458,7 @@ export default function StatementImport({ entities, existingPositions, existingO
   }
   function applyBulkCropYear() {
     if (!bulkCropYear) return
-    setOpenRows((rs) => rs.map((r) => (r.existing ? r : { ...r, crop_year: bulkCropYear })))
+    setOpenRows((rs) => rs.map((r) => (r.existing || r.manualMatchId ? r : { ...r, crop_year: bulkCropYear })))
     setClosedGroups((gs) =>
       gs.map((g) => ({
         ...g,
@@ -428,7 +472,7 @@ export default function StatementImport({ entities, existingPositions, existingO
   }
   function applyBulkSide(side: Side) {
     setOpenRows((rs) => rs.map((r) => ({ ...r, side })))
-    setClosedGroups((gs) => gs.map((g) => ({ ...g, side })))
+    setClosedGroups((gs) => gs.map((g) => ({ ...g, side, sideOverriddenFromDb: false })))
   }
 
   // Per-lot realized P&L (computed, never from the statement) + per-group
@@ -470,7 +514,22 @@ export default function StatementImport({ entities, existingPositions, existingO
   )
   const closedLotCount = allClosedLots.length
 
-  const newOpen = openRows.filter((r) => r.include && !r.existing)
+  const newOpen = openRows.filter((r) => r.include && !r.existing && !r.manualMatchId)
+  // Open DB positions already claimed by a manual pairing, so two statement
+  // rows can't be pointed at the same stored position.
+  const manuallyClaimedIds = new Set(openRows.map((r) => r.manualMatchId).filter((id): id is string => id != null))
+  // Manual-pairing choices for a New row: open positions in the row's
+  // commodity + month (any side — side reads are unreliable), minus ones
+  // another row already claimed.
+  function pairingOptions(row: OpenRow): FuturesPosition[] {
+    return existingPositions.filter(
+      (ex) =>
+        ex.status === 'open' &&
+        ex.commodity === row.commodity &&
+        up(ex.contract_month) === row.contract_month &&
+        (!manuallyClaimedIds.has(ex.id) || row.manualMatchId === ex.id),
+    )
+  }
   const closesMatched = allClosedLots.filter((r) => r.include && r.matchedOpenId && !r.alreadyImported)
   const closedToImport = allClosedLots.filter((r) => r.include && !r.matchedOpenId && !r.alreadyImported)
   const totalClosedRealized = [...closesMatched, ...closedToImport].reduce((s, r) => s + r.realized_pnl, 0)
@@ -742,14 +801,39 @@ export default function StatementImport({ entities, existingPositions, existingO
                     <tbody>
                       {openRows.length === 0 && <tr><td colSpan={10} className="px-3 py-6 text-center text-slate-400">No open positions found.</td></tr>}
                       {openRows.map((r, i) => (
-                        <tr key={i} className={`border-t border-slate-100 align-top ${r.existing ? 'opacity-60' : ''}`}>
+                        <tr key={i} className={`border-t border-slate-100 align-top ${r.existing || r.manualMatchId ? 'opacity-60' : ''}`}>
                           <td className="px-2 py-1">
-                            <input type="checkbox" checked={r.include} disabled={r.existing} onChange={(e) => setOpen(i, { include: e.target.checked })} />
+                            <input type="checkbox" checked={r.include} disabled={r.existing || r.manualMatchId != null} onChange={(e) => setOpen(i, { include: e.target.checked })} />
                           </td>
-                          <td className="px-2 py-1 whitespace-nowrap">
+                          <td className="px-2 py-1">
                             {r.existing
-                              ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Already exists</span>
-                              : <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">New</span>}
+                              ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5 whitespace-nowrap">Already exists</span>
+                              : r.manualMatchId
+                              ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5 whitespace-nowrap">Matched to existing</span>
+                              : <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5 whitespace-nowrap">New</span>}
+                            {!r.existing && !r.manualMatchId && r.nearMiss && (
+                              <div className="mt-1 text-[11px] leading-tight text-amber-700 max-w-[230px]">
+                                Similar existing position: {r.nearMiss.position.num_contracts} @ {fmtPrice(r.nearMiss.position.trade_price)} on{' '}
+                                {r.nearMiss.position.trade_date} ({r.nearMiss.differences.map((d) => d.message).join(', ')})
+                              </div>
+                            )}
+                            {!r.existing && pairingOptions(r).length > 0 && (
+                              <div className="mt-1">
+                                <select
+                                  value={r.manualMatchId ?? ''}
+                                  onChange={(e) => setOpen(i, { manualMatchId: e.target.value || null, include: !e.target.value })}
+                                  className="rounded border border-slate-300 px-1.5 py-0.5 text-xs bg-white max-w-[230px]"
+                                  title="Mark this row as one of your existing open positions instead of importing it as new"
+                                >
+                                  <option value="">Match to existing…</option>
+                                  {pairingOptions(r).map((ex) => (
+                                    <option key={ex.id} value={ex.id}>
+                                      {ex.side} {ex.num_contracts} @ {fmtPrice(ex.trade_price)} · {ex.trade_date}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            )}
                           </td>
                           <td className={`px-2 py-1 whitespace-nowrap ${STICKY_CELL_1}`}>{r.commodity}</td>
                           <td className={`px-2 py-1 whitespace-nowrap ${STICKY_CELL_2}`}>{r.contract_month}</td>
@@ -763,8 +847,8 @@ export default function StatementImport({ entities, existingPositions, existingO
                           <td className="px-2 py-1 text-right">{r.num_contracts}</td>
                           <td className="px-2 py-1 whitespace-nowrap">{r.trade_date}</td>
                           <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(r.trade_price)}</td>
-                          <td className={`px-2 py-1 ${!r.existing && r.include && !r.crop_year ? 'bg-amber-50' : ''}`} style={{ minWidth: 90 }}>
-                            {r.existing ? <span className="text-slate-400 text-xs">—</span> : (
+                          <td className={`px-2 py-1 ${!r.existing && !r.manualMatchId && r.include && !r.crop_year ? 'bg-amber-50' : ''}`} style={{ minWidth: 90 }}>
+                            {r.existing || r.manualMatchId ? <span className="text-slate-400 text-xs">—</span> : (
                               <select value={r.crop_year} onChange={(e) => setOpen(i, { crop_year: e.target.value })} className={cellInput}>
                                 <option value="">— pick —</option>
                                 {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
@@ -802,6 +886,14 @@ export default function StatementImport({ entities, existingPositions, existingO
                             <option value="long">Long</option>
                           </select>
                         </label>
+                        {g.sideOverriddenFromDb && (
+                          <span
+                            className="text-[11px] rounded-full bg-sky-100 text-sky-800 px-2 py-0.5"
+                            title="The statement was read with the opposite side, but this group closes positions you hold on this side — your recorded positions win."
+                          >
+                            side corrected from your records
+                          </span>
+                        )}
                         <span className="text-slate-300">·</span>
                         <span className="text-xs text-slate-600">Closed {g.close_trade_date} @ <span className="font-mono">{fmtPrice(g.close_price)}</span></span>
                         <span className="text-xs text-slate-500">· {lots.length} lot{lots.length === 1 ? '' : 's'}</span>
@@ -854,6 +946,17 @@ export default function StatementImport({ entities, existingPositions, existingO
                         recon.matches ? (
                           <div className="px-3 py-1.5 text-xs text-green-700 bg-green-50 border-t border-green-100">
                             ✓ Ties to the statement total ({fmtPnl(recon.reportedTotal!)}).
+                          </div>
+                        ) : recon.signFlipSuspected ? (
+                          <div className="px-3 py-2 text-sm text-amber-900 bg-amber-50 border-t border-amber-200">
+                            ⚠ <b>Computed P&amp;L ({fmtPnl(recon.computedTotal)}) is the exact opposite of the statement total ({fmtPnl(recon.reportedTotal!)})</b> — the side is likely inverted.
+                            <button
+                              type="button"
+                              onClick={() => setClosedGroupSide(gi, g.side === 'long' ? 'short' : 'long')}
+                              className="ml-2 rounded-lg bg-amber-600 text-white px-2.5 py-1 text-xs font-semibold"
+                            >
+                              Flip to {g.side === 'long' ? 'Short' : 'Long'}
+                            </button>
                           </div>
                         ) : (
                           <div className="px-3 py-2 text-sm text-red-800 bg-red-50 border-t border-red-200">

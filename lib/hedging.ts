@@ -140,6 +140,32 @@ export function roundPrice(n: number): number {
   return Math.round(n * 1e6) / 1e6
 }
 
+// Two extractions of the same fill can disagree by a fractional-parse hair —
+// one run reads "6.67 3/4" as 6.6775, another drops or rounds the fraction.
+// When matching statement rows to stored positions, prices within half a cent
+// (two quarter-cent ticks) are the same fill. Exact float equality is too
+// brittle for AI-extracted prices and re-flags existing positions as new.
+export const PRICE_MATCH_EPSILON = 0.005
+
+export function pricesMatch(
+  a: number | null | undefined,
+  b: number | null | undefined,
+  epsilon = PRICE_MATCH_EPSILON,
+): boolean {
+  if (a == null || b == null) return false
+  return Math.abs(a - b) <= epsilon
+}
+
+// Normalize a price that may arrive as a number (the usual extraction shape)
+// or as a fractional string ("7.00 1/4"). EVERY price that enters a
+// statement-import comparison — extracted or stored — must pass through this
+// one function so the import path and the stored-position path can't drift.
+export function coercePrice(v: number | string | null | undefined): number | null {
+  if (v == null) return null
+  if (typeof v === 'number') return Number.isFinite(v) ? roundPrice(v) : null
+  return parsePrice(v)
+}
+
 export function bushelsFor(numContracts: number, contractSizeBu = CONTRACT_SIZE_BU): number {
   return numContracts * contractSizeBu
 }
@@ -250,6 +276,10 @@ export type GroupReconciliation = {
   hasReportedTotal: boolean
   diff: number | null // computedTotal - reportedTotal (null when nothing to compare)
   matches: boolean // |diff| <= tolerance, or true when there's no reported total
+  // computed == -(reported) within tolerance: the signature of an inverted
+  // side (short read as long or vice versa), not a math error. The UI offers a
+  // one-click side flip instead of the generic mismatch warning.
+  signFlipSuspected: boolean
 }
 
 // Reconcile the sum of per-lot realized P&L against the statement's reported
@@ -263,10 +293,15 @@ export function reconcileClosedGroup(
 ): GroupReconciliation {
   const computedTotal = Math.round(lots.reduce((s, l) => s + l.realized_pnl, 0) * 100) / 100
   if (reportedTotal == null) {
-    return { computedTotal, reportedTotal: null, hasReportedTotal: false, diff: null, matches: true }
+    return { computedTotal, reportedTotal: null, hasReportedTotal: false, diff: null, matches: true, signFlipSuspected: false }
   }
   const diff = Math.round((computedTotal - reportedTotal) * 100) / 100
-  return { computedTotal, reportedTotal, hasReportedTotal: true, diff, matches: Math.abs(diff) <= tolerance }
+  const matches = Math.abs(diff) <= tolerance
+  const signFlipSuspected =
+    !matches &&
+    Math.abs(computedTotal) > tolerance &&
+    Math.abs(Math.round((computedTotal + reportedTotal) * 100) / 100) <= tolerance
+  return { computedTotal, reportedTotal, hasReportedTotal: true, diff, matches, signFlipSuspected }
 }
 
 // ---------- Options ----------
