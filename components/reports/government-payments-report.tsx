@@ -3,20 +3,24 @@
 // Government Payments tracker. For a crop year: one row per farm with a column
 // per covered commodity (base acres + election + projected net payment), the
 // farm's other USDA payments, and a grand total — plus per-entity payment-limit
-// status and an expandable per-farm calculation breakdown.
+// status and an expandable per-farm calculation breakdown. ARC-CO rows run the
+// same county-revenue engine as the Decision Aid (shared projectPayments /
+// computeCommodityPayment — the two pages agree to the cent), with a badge
+// when the payment-rate cap binds.
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
-import { useLiveMya } from '@/lib/use-live-mya'
+import { useLiveMyaDetailed } from '@/lib/use-live-mya'
 import EntityFilter from '@/components/entity-filter'
 import MyaPricePanel from '@/components/reports/mya-price-panel'
+import CountyYieldExpectation from '@/components/government/county-yield-expectation'
 import {
-  projectPayments, computeCommodityPayment, applyMyaResolution, ELECTION_LABEL, paymentLimitTotal,
+  projectPayments, applyMyaResolution, ELECTION_LABEL, paymentLimitTotal,
   type ProjectedPayment,
 } from '@/lib/government-payments'
-import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
+import { resolveProgramYearConfig, programConfigNotice, type ResolvedProgramConfig } from '@/lib/program-config'
 import { fmtPrice } from '@/lib/hedging'
 import {
   SummaryCards, EmptyState, theadCls, grandTotalRowCls, toneText,
@@ -24,8 +28,9 @@ import {
 } from '@/components/reports/report-kit'
 import { formatNumber, type ExportPayload, type ExportCell } from '@/lib/exports'
 import type {
-  Farm, Entity, Crop, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection,
+  Farm, Entity, County, Crop, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection,
   ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment, PaymentLimitConfig, ProgramYearConfig,
+  ArcBenchmarkData, MyaMonthlyPrice,
 } from '@/lib/types'
 
 type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
@@ -48,13 +53,16 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
   const [limits, setLimits] = useState<PaymentLimitConfig[]>([])
   const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
+  const [counties, setCounties] = useState<County[]>([])
+  const [benchmarks, setBenchmarks] = useState<ArcBenchmarkData[]>([])
+  const [monthlyPrices, setMonthlyPrices] = useState<MyaMonthlyPrice[]>([])
   const [cropYear, setCropYear] = usePersistentState<number | ''>('gov-pay:cropYear', '')
   const [entityId, setEntityId] = usePersistentState('gov-pay:entity', '')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     ;(async () => {
-      const [fa, en, cr, pl, cc, ba, el, pd, pay, op, lim, pc] = await Promise.all([
+      const [fa, en, cr, pl, cc, ba, el, pd, pay, op, lim, pc, co, bm, mp] = await Promise.all([
         supabase.from('farms').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('crops').select('*').order('name'),
@@ -67,6 +75,9 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
         supabase.from('other_government_payments').select('*'),
         supabase.from('payment_limit_config').select('*'),
         supabase.from('program_year_config').select('*'),
+        supabase.from('counties').select('*').order('name'),
+        supabase.from('arc_benchmark_data').select('*'),
+        supabase.from('mya_monthly_prices').select('*'),
       ])
       setFarms((fa.data as Farm[]) || [])
       setEntities((en.data as Entity[]) || [])
@@ -80,6 +91,9 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
       setOtherPayments((op.data as OtherGovernmentPayment[]) || [])
       setLimits((lim.data as PaymentLimitConfig[]) || [])
       setProgramConfigs((pc.data as ProgramYearConfig[]) || [])
+      setCounties((co.data as County[]) || [])
+      setBenchmarks((bm.data as ArcBenchmarkData[]) || [])
+      setMonthlyPrices((mp.data as MyaMonthlyPrice[]) || [])
       const yrs = (el.data as ArcPlcElection[] | null)?.map((e) => e.crop_year) ?? []
       if (yrs.length > 0) setCropYear((cy) => (cy === '' ? Math.max(...yrs) : cy))
       else setCropYear((cy) => (cy === '' ? new Date().getFullYear() : cy))
@@ -96,38 +110,61 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     [plantings, elections, cropYear],
   )
 
-  // Live MYA estimates for the tradeable commodities (shared hook — resets on
+  // Live MYA estimates — the marketing-year blend (shared hook — resets on
   // year change so a failed refetch never leaves last year's prices in play).
-  const liveMya = useLiveMya(cropYear, commodities)
+  const { prices: liveMya, details: liveDetails, refresh: refreshEstimates } = useLiveMyaDetailed(cropYear, commodities)
 
   // Stored price data with the SHARED per-commodity MYA resolution applied
-  // (manual override > published final > live/stored estimate) — the same
-  // function the Decision Aid reads, so both pages project the same payments.
+  // (manual override > published final > WASDE > live/stored estimate) — the
+  // same function the Decision Aid reads, so both pages project the same
+  // payments.
   const effectivePriceData = useMemo(() => {
     if (cropYear === '') return priceData
     return applyMyaResolution({ cropYear, commodities, priceData, liveEstimates: liveMya })
   }, [priceData, liveMya, cropYear, commodities])
 
-  // Refetch just the price data after an MYA toggle/override so every PLC
-  // projection on the page updates live.
+  // Refetch price/benchmark/monthly data after an MYA toggle, monthly edit, or
+  // county-yield change so every projection on the page updates live.
   async function refreshPriceData() {
-    const { data } = await supabase.from('arc_plc_price_data').select('*')
+    const [{ data }, { data: bm }, { data: mp }] = await Promise.all([
+      supabase.from('arc_plc_price_data').select('*'),
+      supabase.from('arc_benchmark_data').select('*'),
+      supabase.from('mya_monthly_prices').select('*'),
+    ])
     setPriceData((data as ArcPlcPriceData[]) || [])
+    setBenchmarks((bm as ArcBenchmarkData[]) || [])
+    setMonthlyPrices((mp as MyaMonthlyPrice[]) || [])
   }
 
-  // Resolve per-year program parameters (sequestration %, per-person limit),
-  // falling back to the most recent configured year when this one is missing.
+  // Resolve per-year program parameters (sequestration %, per-person limit,
+  // ARC guarantee/cap %, payment factors), falling back to the most recent
+  // configured year when this one is missing.
   const programCfg = useMemo(
     () => resolveProgramYearConfig(cropYear === '' ? new Date().getFullYear() : cropYear, programConfigs),
     [cropYear, programConfigs],
   )
   const programNotice = cropYear === '' ? null : programConfigNotice(programCfg)
 
-  // Project all farm × commodity payments for the year.
+  const countyNameById = useMemo(() => new Map(counties.map((c) => [c.id, c.name])), [counties])
+  const farmCountyList = useMemo(
+    () => farms.map((f) => ({ id: f.id, county: f.county_id ? (countyNameById.get(f.county_id) ?? null) : null })),
+    [farms, countyNameById],
+  )
+
+  // Project all farm × commodity payments for the year — same engine and same
+  // inputs as the Decision Aid.
   const projected: ProjectedPayment[] = useMemo(() => {
     if (cropYear === '') return []
-    return projectPayments({ cropYear, baseAcres, commodities, elections, priceData: effectivePriceData, payments, sequestrationPct: programCfg.sequestrationPct })
-  }, [cropYear, baseAcres, commodities, elections, effectivePriceData, payments, programCfg])
+    return projectPayments({
+      cropYear, baseAcres, commodities, elections, priceData: effectivePriceData, payments,
+      benchmarks, farms: farmCountyList,
+      sequestrationPct: programCfg.sequestrationPct,
+      paymentFactor: programCfg.paymentFactor,
+      arcGuaranteePct: programCfg.arcGuaranteePct,
+      arcPaymentCapPct: programCfg.arcPaymentCapPct,
+      arcIcPaymentFactor: programCfg.arcIcPaymentFactor,
+    })
+  }, [cropYear, baseAcres, commodities, elections, effectivePriceData, payments, benchmarks, farmCountyList, programCfg])
 
   // Only eligible (assigned) base drives the payment columns; unassigned base is
   // excluded from this report entirely.
@@ -310,7 +347,10 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
       {cropYear !== '' && farmRows.length > 0 && (
         <>
           <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print">
-            <strong>Projected</strong> — PLC from current MYA estimates, ARC-CO from your entered rates. FSA determines final payments after the marketing year.
+            <strong>Projected</strong> — PLC from current MYA estimates; ARC-CO from the county-revenue engine
+            ({Math.round(programCfg.arcGuaranteePct * 100)}% guarantee, capped at {Math.round(programCfg.arcPaymentCapPct * 100)}% of
+            benchmark revenue) where benchmark data exists, else your flat $/acre estimate. FSA determines final
+            payments after the marketing year.
           </div>
 
           <SummaryCards cards={summaryCards} />
@@ -322,6 +362,20 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
             commodities={shownCommodities}
             priceData={priceData}
             liveMya={liveMya}
+            liveDetails={liveDetails}
+            monthlyPrices={monthlyPrices}
+            onChanged={refreshPriceData}
+            onRefreshEstimates={refreshEstimates}
+          />
+
+          {/* County yield expectation — drives every ARC-CO row below. */}
+          <CountyYieldExpectation
+            cropYear={cropYear}
+            commodities={shownCommodities}
+            farms={farms}
+            counties={counties}
+            baseAcres={baseAcres}
+            benchmarks={benchmarks}
             onChanged={refreshPriceData}
           />
 
@@ -350,7 +404,15 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
                       return (
                         <td key={c.id} className={`px-2 py-1 text-right tabular-nums ${p.result.net > 0 ? '' : 'text-slate-400'}`}>
                           <div className="font-mono">{usd(p.result.net)}</div>
-                          <div className="text-[10px] text-slate-500">{Number(p.baseAcres).toLocaleString()} ac · {ELECTION_LABEL[p.election]}</div>
+                          <div className="text-[10px] text-slate-500">
+                            {Number(p.baseAcres).toLocaleString()} ac · {ELECTION_LABEL[p.election]}
+                            {p.result.arcMethod === 'engine' && p.result.arcDetail?.capped && (
+                              <span className="ml-1 rounded-full bg-violet-100 text-violet-800 px-1.5 py-0.5 whitespace-nowrap">capped at {Math.round(p.result.arcDetail.capPct * 100)}%</span>
+                            )}
+                            {p.result.arcMethod === 'flat' && p.result.computable && (
+                              <span className="ml-1 rounded-full bg-amber-100 text-amber-800 px-1.5 py-0.5 whitespace-nowrap" title="No county benchmark data — flat $/acre estimate">flat est.</span>
+                            )}
+                          </div>
                         </td>
                       )
                     })}
@@ -375,7 +437,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
 
           {/* Per-farm detail */}
           {farmRows.filter((r) => expanded.has(r.farm.id)).map((r) => (
-            <FarmDetail key={r.farm.id} farmRow={r} commodityById={commodityById} otherForFarm={yearOther.filter((o) => o.farm_id === r.farm.id)} crops={crops} />
+            <FarmDetail key={r.farm.id} farmRow={r} commodityById={commodityById} otherForFarm={yearOther.filter((o) => o.farm_id === r.farm.id)} crops={crops} programCfg={programCfg} />
           ))}
 
           {/* Payment limits */}
@@ -411,11 +473,12 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   )
 }
 
-function FarmDetail({ farmRow, commodityById, otherForFarm, crops }: {
+function FarmDetail({ farmRow, commodityById, otherForFarm, crops, programCfg }: {
   farmRow: { farm: Farm; byCommodity: Map<string, ProjectedPayment>; other: number }
   commodityById: Map<string, CoveredCommodity>
   otherForFarm: OtherGovernmentPayment[]
   crops: Crop[]
+  programCfg: ResolvedProgramConfig
 }) {
   const Line = ({ label, value }: { label: string; value: string }) => (
     <div className="flex justify-between gap-4 border-b border-slate-100 py-0.5"><span className="text-slate-500">{label}</span><span className="font-mono">{value}</span></div>
@@ -426,10 +489,15 @@ function FarmDetail({ farmRow, commodityById, otherForFarm, crops }: {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
         {[...farmRow.byCommodity.values()].map((p) => {
           const commodity = commodityById.get(p.commodityId)!
-          const detail = computeCommodityPayment({ commodity, baseAcres: p.baseAcres, plcYield: p.plcYield, election: p.election, priceData: null, arcRatePerAcre: p.arcRatePerAcre })
+          const arcD = p.result.arcDetail
+          const factor = p.election === 'ARC_IC' ? programCfg.arcIcPaymentFactor : programCfg.paymentFactor
           return (
             <div key={p.commodityId}>
-              <div className="font-semibold mb-1">{commodity.name} — {ELECTION_LABEL[p.election]}</div>
+              <div className="font-semibold mb-1">
+                {commodity.name} — {ELECTION_LABEL[p.election]}
+                {p.result.arcMethod === 'engine' && <span className="ml-1 text-[10px] rounded-full bg-sky-100 text-sky-800 px-1.5 py-0.5">county engine</span>}
+                {p.result.arcMethod === 'flat' && <span className="ml-1 text-[10px] rounded-full bg-amber-100 text-amber-800 px-1.5 py-0.5">flat estimate</span>}
+              </div>
               <Line label="Base acres" value={p.baseAcres.toLocaleString()} />
               <Line label="Effective reference price" value={fmtPrice(p.result.effectiveReferencePrice)} />
               {p.election === 'PLC' ? (
@@ -440,11 +508,19 @@ function FarmDetail({ farmRow, commodityById, otherForFarm, crops }: {
                   <Line label="PLC yield" value={String(p.plcYield)} />
                   <Line label="Gross/acre = rate × yield" value={`$${p.result.grossPerAcre.toFixed(2)}`} />
                 </>
+              ) : arcD ? (
+                <>
+                  <Line label="MYA price" value={p.result.myaPrice != null ? fmtPrice(p.result.myaPrice) : 'needs MYA'} />
+                  <Line label={`Benchmark revenue (${fmtPrice(arcD.benchmarkPrice)} × ${arcD.benchmarkYield})`} value={`$${arcD.benchmarkRevenue.toFixed(2)}/ac`} />
+                  <Line label={`Guarantee (${Math.round(arcD.guaranteePct * 100)}%)`} value={`$${arcD.guarantee.toFixed(2)}/ac`} />
+                  <Line label={`Actual county revenue (${arcD.actualCountyYield} yd${arcD.countyYieldVsBenchmarkPct !== 0 ? `, ${arcD.countyYieldVsBenchmarkPct > 0 ? '+' : ''}${arcD.countyYieldVsBenchmarkPct}% vs benchmark` : ''})`} value={`$${arcD.actualRevenue.toFixed(2)}/ac`} />
+                  <Line label={`Payment rate/acre${arcD.capped ? ` (capped at ${Math.round(arcD.capPct * 100)}% = $${arcD.maxRatePerAcre.toFixed(2)})` : ''}`} value={`$${p.result.grossPerAcre.toFixed(2)}`} />
+                </>
               ) : (
-                <Line label="Projected rate/acre" value={`$${p.result.grossPerAcre.toFixed(2)}`} />
+                <Line label="Projected rate/acre (flat)" value={`$${p.result.grossPerAcre.toFixed(2)}`} />
               )}
               <Line label="Gross payment" value={`$${p.result.gross.toLocaleString()}`} />
-              <Line label="× 0.85 base factor × (1 − 5.4% seq.)" value={`$${detail.net.toLocaleString()}`} />
+              <Line label={`× ${factor} base factor × (1 − ${(programCfg.sequestrationPct * 100).toFixed(1)}% seq.)`} value={`$${p.result.net.toLocaleString()}`} />
               <Line label="Net payment" value={`$${p.result.net.toLocaleString()}`} />
             </div>
           )

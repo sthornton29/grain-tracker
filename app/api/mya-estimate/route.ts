@@ -1,24 +1,40 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { nearbyContractSymbol, commodityToTraded } from '@/lib/government-payments'
+import { commodityToTraded } from '@/lib/government-payments'
+import {
+  estimateMyaBlend,
+  futuresSymbolsForBlend,
+  type MyaBlendResult,
+} from '@/lib/mya-estimate'
 
 export const runtime = 'nodejs'
 export const maxDuration = 30
 
 const BARCHART_URL = 'https://ondemand.websol.barchart.com/getQuote.json'
 
-// Estimates the Marketing Year Average price for each tradeable commodity using
-// the nearby futures price as a proxy for the current level. Corn/Soybeans/Wheat
-// have Barchart data; other commodities (seed cotton, sorghum, oats, barley,
-// peanuts) return no estimate and the user enters the MYA manually.
+// Estimates the Marketing Year Average price for each commodity as a
+// month-by-month blend over the marketing year: operator-entered USDA/NASS
+// monthly farm prices for the months that have them, futures-implied prices
+// (nearest contract + per-commodity basis adjustment) for the rest, weighted
+// by typical monthly marketing weights. See lib/mya-estimate.ts. A single
+// day's futures quote is NOT an MYA — this replaces the old nearby-quote
+// proxy. Untraded commodities (seed cotton, sorghum, …) still get an estimate
+// when monthly prices have been entered; otherwise the user enters the MYA
+// manually.
 type Estimate = {
   commodity_id: string
   name: string
-  symbol: string | null
-  price: number | null // dollars per bushel
-  price_date: string | null
-  stale: boolean
+  price: number | null // blended MYA estimate, $/bu (or $/lb for pound units)
+  price_date: string | null // most recent futures quote date used
+  stale: boolean // true when any futures month used a non-today quote
   tradeable: boolean
+  composition: {
+    publishedCount: number
+    futuresCount: number
+    missingCount: number
+    basisAdj: number
+    months: MyaBlendResult['months']
+  } | null
 }
 
 type CommodityInput = { commodity_id: string; name: string }
@@ -48,7 +64,7 @@ export async function POST(req: NextRequest) {
   if (!Number.isFinite(cropYear)) {
     return NextResponse.json({ error: 'crop_year is required.' }, { status: 400 })
   }
-  const commodities: CommodityInput[] = Array.isArray(body.commodities)
+  const inputs: CommodityInput[] = Array.isArray(body.commodities)
     ? (body.commodities as unknown[])
         .map((c) => {
           const o = c as { commodity_id?: unknown; name?: unknown }
@@ -58,25 +74,60 @@ export async function POST(req: NextRequest) {
     : []
   const force = body.force === true
 
-  const withSymbol = commodities.map((c) => ({ ...c, symbol: nearbyContractSymbol(c.name), tradeable: !!commodityToTraded(c.name) }))
-  const symbols = Array.from(new Set(withSymbol.map((c) => c.symbol).filter((s): s is string => !!s)))
-
   const supabase = createClient()
   const today = todayISO()
+  const ids = inputs.map((c) => c.commodity_id)
 
-  const cachedToday = new Map<string, { price: number; price_date: string }>()
+  // Full commodity rows (marketing-year start, basis adj, weights) + the
+  // entered monthly prices for this marketing year.
+  const [{ data: ccRows }, { data: monthlyRows }] = await Promise.all([
+    supabase.from('covered_commodities').select('*').in('id', ids),
+    supabase.from('mya_monthly_prices').select('commodity_id, month, price').in('commodity_id', ids).eq('crop_year', cropYear),
+  ])
+  const ccById = new Map((ccRows ?? []).map((c) => [c.id as string, c]))
+  const monthlyByCommodity = new Map<string, Array<{ month: number; price: number }>>()
+  for (const r of monthlyRows ?? []) {
+    const list = monthlyByCommodity.get(r.commodity_id as string) ?? []
+    list.push({ month: Number(r.month), price: Number(r.price) })
+    monthlyByCommodity.set(r.commodity_id as string, list)
+  }
+
+  // Every futures symbol any commodity's blend needs (months without a
+  // published price), resolved through the usual quote pipeline: today's
+  // cache → Barchart → most recent cached.
+  const perCommodity = inputs.map((c) => {
+    const cc = ccById.get(c.commodity_id)
+    const startMonth = Number(cc?.marketing_year_start_month ?? 9)
+    const monthly = monthlyByCommodity.get(c.commodity_id) ?? []
+    return {
+      ...c,
+      tradeable: !!commodityToTraded(c.name),
+      startMonth,
+      monthly,
+      basisAdj: cc?.mya_basis_adj != null ? Number(cc.mya_basis_adj) : null,
+      weights: Array.isArray(cc?.mya_month_weights) ? (cc!.mya_month_weights as number[]) : null,
+      symbols: futuresSymbolsForBlend({
+        commodityName: c.name,
+        marketingYearStartMonth: startMonth,
+        cropYear,
+        monthlyPrices: monthly,
+      }),
+    }
+  })
+  const symbols = Array.from(new Set(perCommodity.flatMap((c) => c.symbols)))
+
+  const quotes = new Map<string, { price: number; price_date: string }>()
   if (symbols.length > 0) {
     const { data: todaysRows } = await supabase
       .from('market_prices')
       .select('contract_symbol, price, price_date')
       .in('contract_symbol', symbols)
       .eq('price_date', today)
-    for (const r of todaysRows ?? []) cachedToday.set(r.contract_symbol, { price: Number(r.price), price_date: r.price_date as string })
+    for (const r of todaysRows ?? []) quotes.set(r.contract_symbol, { price: Number(r.price), price_date: r.price_date as string })
   }
 
-  const needFetch = force ? symbols : symbols.filter((s) => !cachedToday.has(s))
+  const needFetch = force ? symbols : symbols.filter((s) => !quotes.has(s))
   const apiKey = process.env.BARCHART_API_KEY
-  const fetched = new Map<string, { price: number; price_date: string }>()
   let note: string | undefined
 
   if (needFetch.length > 0 && apiKey) {
@@ -93,23 +144,22 @@ export async function POST(req: NextRequest) {
         if (!sym || !Number.isFinite(cents)) continue
         const price = Math.round((cents / 100) * 1e6) / 1e6 // cents/bu -> $/bu
         const price_date = dateFromTimestamp(r?.tradeTimestamp ?? r?.serverTimestamp, today)
-        fetched.set(sym, { price, price_date })
+        quotes.set(sym, { price, price_date })
         marketUpserts.push({ contract_symbol: sym, price, price_date })
       }
       if (marketUpserts.length > 0) {
         await supabase.from('market_prices').upsert(marketUpserts, { onConflict: 'contract_symbol,price_date' })
       }
-      if (results.length === 0) note = 'Barchart returned no quotes (market closed or contract not yet listed) — showing the most recent cached estimate.'
+      if (results.length === 0) note = 'Barchart returned no quotes (market closed or contract not yet listed) — using the most recent cached quotes.'
     } catch (e: any) {
-      note = `Could not reach Barchart (${e?.message ?? 'network error'}) — showing the most recent cached estimate.`
+      note = `Could not reach Barchart (${e?.message ?? 'network error'}) — using the most recent cached quotes.`
     }
   } else if (needFetch.length > 0 && !apiKey) {
-    note = 'BARCHART_API_KEY is not configured — showing the most recent cached estimate only.'
+    note = 'BARCHART_API_KEY is not configured — using cached quotes and published months only.'
   }
 
-  // Fall back to most-recent cached price for any symbol not refreshed.
-  const stillMissing = symbols.filter((s) => !cachedToday.has(s) && !fetched.has(s))
-  const fallback = new Map<string, { price: number; price_date: string }>()
+  // Fall back to the most recent cached price for any symbol still missing.
+  const stillMissing = symbols.filter((s) => !quotes.has(s))
   if (stillMissing.length > 0) {
     const { data: recent } = await supabase
       .from('market_prices')
@@ -117,41 +167,62 @@ export async function POST(req: NextRequest) {
       .in('contract_symbol', stillMissing)
       .order('price_date', { ascending: false })
     for (const r of recent ?? []) {
-      if (!fallback.has(r.contract_symbol)) fallback.set(r.contract_symbol, { price: Number(r.price), price_date: r.price_date as string })
+      if (!quotes.has(r.contract_symbol)) quotes.set(r.contract_symbol, { price: Number(r.price), price_date: r.price_date as string })
     }
   }
 
-  // Persist the estimate per commodity/year so the PLC engine and reports can
-  // read it even before a refresh, without clobbering a manually-entered MYA.
-  const priceUpserts: Array<{ commodity_id: string; crop_year: number; mya_price_estimate: number; source: string; updated_at: string }> = []
-  const estimates: Estimate[] = withSymbol.map((c) => {
-    const hit = c.symbol ? cachedToday.get(c.symbol) ?? fetched.get(c.symbol) ?? fallback.get(c.symbol) : undefined
-    if (hit) priceUpserts.push({ commodity_id: c.commodity_id, crop_year: cropYear, mya_price_estimate: hit.price, source: 'barchart', updated_at: new Date().toISOString() })
-    return {
+  // Blend per commodity and persist the estimate (without clobbering a manual
+  // override or a finalized MYA).
+  const estimates: Estimate[] = []
+  for (const c of perCommodity) {
+    const blend = estimateMyaBlend({
+      commodityName: c.name,
+      marketingYearStartMonth: c.startMonth,
+      cropYear,
+      monthlyPrices: c.monthly,
+      futuresPriceForSymbol: (sym) => quotes.get(sym)?.price ?? null,
+      basisAdj: c.basisAdj,
+      weights: c.weights,
+    })
+    const usedQuoteDates = blend.months
+      .filter((m) => m.source === 'futures' && m.symbol)
+      .map((m) => quotes.get(m.symbol!)?.price_date)
+      .filter((d): d is string => !!d)
+    const priceDate = usedQuoteDates.length ? usedQuoteDates.reduce((a, b) => (a > b ? a : b)) : null
+    estimates.push({
       commodity_id: c.commodity_id,
       name: c.name,
-      symbol: c.symbol,
-      price: hit ? hit.price : null,
-      price_date: hit ? hit.price_date : null,
-      stale: hit ? hit.price_date < today : true,
+      price: blend.estimate,
+      price_date: priceDate,
+      stale: usedQuoteDates.some((d) => d < today),
       tradeable: c.tradeable,
-    }
-  })
+      composition: {
+        publishedCount: blend.publishedCount,
+        futuresCount: blend.futuresCount,
+        missingCount: blend.missingCount,
+        basisAdj: blend.basisAdj,
+        months: blend.months,
+      },
+    })
 
-  if (priceUpserts.length > 0) {
-    // Only update the estimate + source for rows whose MYA hasn't been finalized
-    // or manually overridden; a fresh row is created when none exists yet.
-    for (const up of priceUpserts) {
+    if (blend.estimate != null) {
       const { data: existing } = await supabase
         .from('arc_plc_price_data')
-        .select('id, source')
-        .eq('commodity_id', up.commodity_id)
-        .eq('crop_year', up.crop_year)
+        .select('id, source, mya_price_final')
+        .eq('commodity_id', c.commodity_id)
+        .eq('crop_year', cropYear)
         .maybeSingle()
+      const stamp = new Date().toISOString()
       if (!existing) {
-        await supabase.from('arc_plc_price_data').insert(up)
+        await supabase.from('arc_plc_price_data').insert({
+          commodity_id: c.commodity_id, crop_year: cropYear,
+          mya_price_estimate: blend.estimate, source: 'barchart', updated_at: stamp,
+        })
       } else if ((existing as { source: string }).source !== 'manual') {
-        await supabase.from('arc_plc_price_data').update({ mya_price_estimate: up.mya_price_estimate, source: 'barchart', updated_at: up.updated_at }).eq('id', (existing as { id: string }).id)
+        await supabase
+          .from('arc_plc_price_data')
+          .update({ mya_price_estimate: blend.estimate, source: 'barchart', updated_at: stamp })
+          .eq('id', (existing as { id: string }).id)
       }
     }
   }

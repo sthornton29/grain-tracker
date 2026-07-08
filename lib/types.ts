@@ -378,7 +378,45 @@ export type CoveredCommodity = {
   national_loan_rate: number
   marketing_year_start_month: number
   marketing_year_end_month: number
+  // MYA blend-estimate defaults: the futures→farm-price adjustment (negative =
+  // farm price under futures) and the 12 monthly marketing weights aligned to
+  // the marketing year. null = built-in defaults in lib/mya-estimate.ts.
+  mya_basis_adj: number | null
+  mya_month_weights: number[] | null
   created_at: string
+}
+
+// FSA-published ARC-CO benchmark data per commodity × crop year, optionally per
+// county (county null = the default row used when no county-specific one
+// exists). county_yield_vs_benchmark_pct persists the operator's mid-season
+// expectation of actual county yield vs benchmark (−30..+30; 0 = at benchmark).
+export type ArcBenchmarkData = {
+  id: string
+  commodity_id: string
+  crop_year: number
+  county: string | null
+  benchmark_price: number | null
+  benchmark_yield: number | null
+  price_source: 'usda' | 'manual' | 'ai'
+  yield_source: 'usda' | 'manual' | 'ai'
+  county_yield_vs_benchmark_pct: number
+  source_description: string | null
+  created_at: string
+  updated_at: string
+}
+
+// USDA/NASS monthly national average farm price, entered as published through
+// the marketing year. month is the CALENDAR month; crop_year labels the
+// marketing year (2026 corn = Sep 2026 – Aug 2027).
+export type MyaMonthlyPrice = {
+  id: string
+  commodity_id: string
+  crop_year: number
+  month: number
+  price: number
+  source: 'usda' | 'manual'
+  created_at: string
+  updated_at: string
 }
 
 export type FarmBaseAcres = {
@@ -414,7 +452,13 @@ export type ArcPlcPriceData = {
   effective_reference_price: number | null
   mya_price_estimate: number | null
   mya_price_final: number | null
-  source: 'manual' | 'barchart' | 'usda'
+  // WASDE season-average price forecast midpoint. When set it overrides the
+  // blended estimate inside the estimate tier (final/manual still outrank it).
+  wasde_midpoint: number | null
+  // How the current MYA input was derived (e.g. the seed-cotton lint+seed
+  // composition) — display-only.
+  mya_note: string | null
+  source: 'manual' | 'barchart' | 'usda' | 'wasde'
   updated_at: string
 }
 
@@ -473,6 +517,15 @@ export type ProgramYearConfig = {
   sco_trigger: number
   per_person_payment_limit: number
   sequestration_pct: number
+  // OBBBA parameters (migration 037): ARC guarantee % (0.90 for 2025+), ARC
+  // payment cap % (0.12), ERP Olympic factor (0.88) and cap (1.15), and the
+  // base-acre payment factors (0.85 ARC-CO/PLC, 0.65 ARC-IC).
+  arc_guarantee_pct: number
+  arc_payment_cap_pct: number
+  erp_olympic_factor: number
+  erp_cap_pct: number
+  payment_factor: number
+  arc_ic_payment_factor: number
   notes: string | null
   created_at: string
   updated_at: string
