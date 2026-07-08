@@ -1,13 +1,15 @@
 import { describe, it, expect } from 'vitest'
 import {
-  computePlcPayment, computeArcCoPayment, seedCottonMya, effectiveReferencePrice,
+  computePlcPayment, computeArcCoPayment, computeArcCoFlatPayment, seedCottonMya, effectiveReferencePrice,
   myaPrice, paymentLimitTotal, expectedArcPlcDate, computeCommodityPayment, projectPayments,
   resolveMyaPrice, applyMyaResolution,
+  olympicAverage, computeEffectiveReferencePrice, arcBenchmarkPriceFromHistory,
+  resolveArcBenchmark, expectedCountyYield,
   PAYMENT_FACTOR, LINT_SHARE, COTTONSEED_SHARE,
 } from '@/lib/government-payments'
 import { DEFAULT_SEQUESTRATION_PCT } from '@/lib/program-config'
 import type {
-  ArcPlcElection, ArcPlcPayment, ArcPlcPriceData, CoveredCommodity, FarmBaseAcres,
+  ArcBenchmarkData, ArcPlcElection, ArcPlcPayment, ArcPlcPriceData, CoveredCommodity, FarmBaseAcres,
 } from '@/lib/types'
 
 // Hand-verified worked examples for the ARC/PLC engine. Every expected money
@@ -24,7 +26,8 @@ function commodity(over: Partial<CoveredCommodity> = {}): CoveredCommodity {
   return {
     id: 'corn', name: 'Corn', crop_id: null,
     statutory_reference_price: 4.10, unit: 'bushel', national_loan_rate: 2.20,
-    marketing_year_start_month: 9, marketing_year_end_month: 8, created_at: '',
+    marketing_year_start_month: 9, marketing_year_end_month: 8,
+    mya_basis_adj: null, mya_month_weights: null, created_at: '',
     ...over,
   }
 }
@@ -33,7 +36,19 @@ function priceData(over: Partial<ArcPlcPriceData> = {}): ArcPlcPriceData {
   return {
     id: 'pd', commodity_id: 'corn', crop_year: 2026,
     effective_reference_price: null, mya_price_estimate: null, mya_price_final: null,
+    wasde_midpoint: null, mya_note: null,
     source: 'manual', updated_at: '',
+    ...over,
+  }
+}
+
+function benchmarkRow(over: Partial<ArcBenchmarkData> = {}): ArcBenchmarkData {
+  return {
+    id: 'bm', commodity_id: 'corn', crop_year: 2026, county: null,
+    benchmark_price: 5.03, benchmark_yield: 200,
+    price_source: 'usda', yield_source: 'usda',
+    county_yield_vs_benchmark_pct: 0, source_description: null,
+    created_at: '', updated_at: '',
     ...over,
   }
 }
@@ -136,14 +151,181 @@ describe('computePlcPayment', () => {
   })
 })
 
-// ---------- computeArcCoPayment ----------
+// ---------- Effective Reference Price (ERP) ----------
 
-describe('computeArcCoPayment', () => {
-  it('computes ARC-CO from a projected rate per acre with default factor/sequestration', () => {
+describe('olympicAverage', () => {
+  it('drops the single highest and lowest, averages the rest', () => {
+    // 5 values: drop 3.00 and 6.00, average (4.00 + 4.50 + 5.00) / 3 = 4.50
+    expect(olympicAverage([4.5, 3.0, 5.0, 6.0, 4.0])).toBeCloseTo(4.5, 6)
+  })
+  it('needs at least 3 values', () => {
+    expect(olympicAverage([4, 5])).toBeNull()
+    expect(olympicAverage([])).toBeNull()
+  })
+})
+
+describe('computeEffectiveReferencePrice — the three OBBBA regimes (88% / statutory / 115% cap)', () => {
+  // Corn statutory $4.10; cap = 1.15 × 4.10 = 4.715.
+  it('regime 1 — statutory floor: 88% of a low Olympic average stays below statutory', () => {
+    // 0.88 × 4.50 = 3.96 < 4.10 → ERP = 4.10
+    expect(computeEffectiveReferencePrice({
+      statutoryReferencePrice: 4.10, olympicAvgMya: 4.50, erpOlympicFactor: 0.88, erpCapPct: 1.15,
+    })).toBeCloseTo(4.10, 6)
+  })
+  it('regime 2 — escalator: 88% of the Olympic average lands between statutory and the cap', () => {
+    // 0.88 × 5.10 = 4.488; 4.10 < 4.488 < 4.715 → ERP = 4.488
+    expect(computeEffectiveReferencePrice({
+      statutoryReferencePrice: 4.10, olympicAvgMya: 5.10, erpOlympicFactor: 0.88, erpCapPct: 1.15,
+    })).toBeCloseTo(4.488, 6)
+  })
+  it('regime 3 — 115% cap: a high Olympic average is clamped', () => {
+    // 0.88 × 5.60 = 4.928 > 4.715 → ERP = 4.715
+    expect(computeEffectiveReferencePrice({
+      statutoryReferencePrice: 4.10, olympicAvgMya: 5.60, erpOlympicFactor: 0.88, erpCapPct: 1.15,
+    })).toBeCloseTo(4.715, 6)
+  })
+  it('no Olympic average → statutory stands', () => {
+    expect(computeEffectiveReferencePrice({ statutoryReferencePrice: 4.10, olympicAvgMya: null })).toBe(4.10)
+  })
+  it('effectiveReferencePrice prefers the FSA-published value, else computes, else statutory', () => {
+    const c = commodity({ statutory_reference_price: 4.10 })
+    // Published wins over a computed Olympic escalation.
+    expect(effectiveReferencePrice(c, priceData({ effective_reference_price: 4.42 }), { olympicAvgMya: 5.10 })).toBe(4.42)
+    // No published → computed from the Olympic average.
+    expect(effectiveReferencePrice(c, null, { olympicAvgMya: 5.10, erpOlympicFactor: 0.88, erpCapPct: 1.15 })).toBeCloseTo(4.488, 6)
+  })
+})
+
+describe('arcBenchmarkPriceFromHistory — ERP substitution', () => {
+  it('substitutes the ERP for any year whose MYA fell below it, then Olympic-averages', () => {
+    // ERP 4.10 every year. MYAs: 6.00, 4.85, 3.80→4.10, 4.50, 3.90→4.10
+    // Substituted: [6.00, 4.85, 4.10, 4.50, 4.10]; drop 6.00 & one 4.10,
+    // average (4.85 + 4.50 + 4.10) / 3 = 13.45 / 3 = 4.483333
+    const p = arcBenchmarkPriceFromHistory([
+      { mya: 6.00, erp: 4.10 }, { mya: 4.85, erp: 4.10 }, { mya: 3.80, erp: 4.10 },
+      { mya: 4.50, erp: 4.10 }, { mya: 3.90, erp: 4.10 },
+    ])
+    expect(p).toBeCloseTo(4.483333, 5)
+  })
+  it('a year with no MYA counts at its ERP', () => {
+    const p = arcBenchmarkPriceFromHistory([
+      { mya: null, erp: 4.10 }, { mya: 4.50, erp: 4.10 }, { mya: 5.00, erp: 4.10 },
+      { mya: 4.80, erp: 4.10 }, { mya: 4.20, erp: 4.10 },
+    ])
+    // Substituted: [4.10, 4.50, 5.00, 4.80, 4.20]; drop 4.10 & 5.00 → (4.50+4.80+4.20)/3 = 4.50
+    expect(p).toBeCloseTo(4.5, 6)
+  })
+  it('needs at least 3 years', () => {
+    expect(arcBenchmarkPriceFromHistory([{ mya: 4, erp: 4 }])).toBeNull()
+  })
+})
+
+// ---------- computeArcCoPayment — the county-revenue engine ----------
+
+describe('computeArcCoPayment (county-revenue engine)', () => {
+  // The 2025 corn benchmark price $5.03 with a 200 bu/ac benchmark county yield:
+  //   benchmark revenue = 5.03 × 200 = 1006.00 $/ac
+  //   guarantee (90%)   = 905.40 $/ac
+  //   cap (12%)         = 120.72 $/ac
+  it('pays the revenue shortfall when the 12% cap does NOT bind', () => {
+    // MYA 4.20, county at benchmark (yield 200): actual = 4.20 × 200 = 840.00
+    // shortfall = 905.40 − 840.00 = 65.40 ≤ 120.72 → rate 65.40
+    // gross = 65.40 × 1000 ac = 65,400; net = 65,400 × 0.85 × 0.946 = 52,588.14
+    const r = computeArcCoPayment({
+      benchmarkPrice: 5.03, benchmarkYield: 200, myaPrice: 4.20, actualCountyYield: 200,
+      nationalLoanRate: 2.42, baseAcres: 1000, guaranteePct: 0.90, capPct: 0.12,
+    })
+    expect(r.benchmarkRevenue).toBeCloseTo(1006.00, 2)
+    expect(r.guarantee).toBeCloseTo(905.40, 2)
+    expect(r.actualRevenue).toBeCloseTo(840.00, 2)
+    expect(r.paymentRatePerUnit).toBeCloseTo(65.40, 2)
+    expect(r.capped).toBe(false)
+    expect(r.gross).toBeCloseTo(65400.00, 2)
+    expect(r.net).toBeCloseTo(52588.14, 2)
+  })
+
+  it('caps the rate at 12% of benchmark revenue when the shortfall exceeds it', () => {
+    // MYA 3.80, county −5% (yield 190): actual = 3.80 × 190 = 722.00
+    // shortfall = 905.40 − 722.00 = 183.40 > 120.72 → rate capped at 120.72
+    // gross = 120.72 × 1000 = 120,720; net = 120,720 × 0.85 × 0.946 = 97,070.95
+    const r = computeArcCoPayment({
+      benchmarkPrice: 5.03, benchmarkYield: 200, myaPrice: 3.80, actualCountyYield: 190,
+      nationalLoanRate: 2.42, baseAcres: 1000, guaranteePct: 0.90, capPct: 0.12,
+    })
+    expect(r.capped).toBe(true)
+    expect(r.maxRatePerAcre).toBeCloseTo(120.72, 2)
+    expect(r.paymentRatePerUnit).toBeCloseTo(120.72, 2)
+    expect(r.gross).toBeCloseTo(120720.00, 2)
+    expect(r.net).toBeCloseTo(97070.95, 2)
+  })
+
+  it('the 90% trigger can pay even with county yield ABOVE benchmark when the MYA is well below the benchmark price', () => {
+    // County +2% (yield 204), MYA 4.00: actual = 4.00 × 204 = 816.00 < 905.40
+    // shortfall = 89.40 ≤ 120.72 → a payment despite the above-benchmark yield.
+    const r = computeArcCoPayment({
+      benchmarkPrice: 5.03, benchmarkYield: 200, myaPrice: 4.00, actualCountyYield: 204,
+      nationalLoanRate: 2.42, baseAcres: 100, guaranteePct: 0.90, capPct: 0.12,
+    })
+    expect(r.paymentRatePerUnit).toBeCloseTo(89.40, 2)
+    expect(r.capped).toBe(false)
+    expect(r.paymentRatePerUnit).toBeGreaterThan(0)
+  })
+
+  it('floors the price in actual county revenue at the national loan rate', () => {
+    // MYA 2.00 below loan 2.42 → actual = 2.42 × 200 = 484.00 (not 400.00)
+    const r = computeArcCoPayment({
+      benchmarkPrice: 5.03, benchmarkYield: 200, myaPrice: 2.00, actualCountyYield: 200,
+      nationalLoanRate: 2.42, baseAcres: 100, guaranteePct: 0.90, capPct: 0.12,
+    })
+    expect(r.effectivePrice).toBeCloseTo(2.42, 6)
+    expect(r.actualRevenue).toBeCloseTo(484.00, 2)
+  })
+
+  it('never pays when actual revenue meets the guarantee', () => {
+    // MYA 5.00 × 200 = 1000 > 905.40 → rate 0
+    const r = computeArcCoPayment({
+      benchmarkPrice: 5.03, benchmarkYield: 200, myaPrice: 5.00, actualCountyYield: 200,
+      nationalLoanRate: 2.42, baseAcres: 100, guaranteePct: 0.90, capPct: 0.12,
+    })
+    expect(r.paymentRatePerUnit).toBe(0)
+    expect(r.net).toBe(0)
+  })
+})
+
+describe('expectedCountyYield', () => {
+  it('applies the % above/below expectation to the benchmark yield', () => {
+    expect(expectedCountyYield(200, 0)).toBe(200)
+    expect(expectedCountyYield(200, -5)).toBe(190)
+    expect(expectedCountyYield(200, 2)).toBe(204)
+  })
+})
+
+describe('resolveArcBenchmark', () => {
+  const rows: ArcBenchmarkData[] = [
+    benchmarkRow({ id: 'default', county: null }),
+    benchmarkRow({ id: 'washington', county: 'Washington', benchmark_yield: 185 }),
+  ]
+  it('a county-specific row (case-insensitive) wins over the default row', () => {
+    expect(resolveArcBenchmark({ commodityId: 'corn', cropYear: 2026, county: 'washington', benchmarks: rows })?.id).toBe('washington')
+  })
+  it('falls back to the county-null default row', () => {
+    expect(resolveArcBenchmark({ commodityId: 'corn', cropYear: 2026, county: 'Lee', benchmarks: rows })?.id).toBe('default')
+    expect(resolveArcBenchmark({ commodityId: 'corn', cropYear: 2026, county: null, benchmarks: rows })?.id).toBe('default')
+  })
+  it('null when no rows match the commodity/year', () => {
+    expect(resolveArcBenchmark({ commodityId: 'soy', cropYear: 2026, county: null, benchmarks: rows })).toBeNull()
+    expect(resolveArcBenchmark({ commodityId: 'corn', cropYear: 2025, county: null, benchmarks: rows })).toBeNull()
+  })
+})
+
+// ---------- computeArcCoFlatPayment — the fallback ----------
+
+describe('computeArcCoFlatPayment', () => {
+  it('computes ARC from a projected rate per acre with default factor/sequestration', () => {
     // rate 45.00, base 200
     // gross = 45 * 200 = 9000.00
     // net   = 9000 * 0.85 * 0.946 = 7650 * 0.946 = 7236.90
-    const r = computeArcCoPayment({ projectedRatePerAcre: 45.00, baseAcres: 200 })
+    const r = computeArcCoFlatPayment({ projectedRatePerAcre: 45.00, baseAcres: 200 })
     expect(r.effectivePrice).toBe(0)
     expect(r.paymentRatePerUnit).toBeCloseTo(45.00, 6)
     expect(r.grossPerAcre).toBeCloseTo(45.00, 2)
@@ -153,7 +335,7 @@ describe('computeArcCoPayment', () => {
 
   it('honors a custom sequestrationPct', () => {
     // rate 45, base 200, seq 0.10 => net = 9000 * 0.85 * 0.90 = 6885.00
-    const r = computeArcCoPayment({ projectedRatePerAcre: 45.00, baseAcres: 200, sequestrationPct: 0.10 })
+    const r = computeArcCoFlatPayment({ projectedRatePerAcre: 45.00, baseAcres: 200, sequestrationPct: 0.10 })
     expect(r.net).toBeCloseTo(6885.00, 2)
   })
 })
@@ -261,20 +443,52 @@ describe('computeCommodityPayment', () => {
     expect(r.net).toBeCloseTo(direct.net, 2) // 6271.98
   })
 
-  it('ARC-CO with a projected rate is computable and matches computeArcCoPayment', () => {
+  it('ARC-CO without benchmark data falls back to the flat rate and matches computeArcCoFlatPayment', () => {
     const r = computeCommodityPayment({
       commodity: commodity(), baseAcres: 200, plcYield: 130, election: 'ARC_CO',
       priceData: priceData({ mya_price_estimate: 3.50 }), arcRatePerAcre: 45,
     })
-    const direct = computeArcCoPayment({ projectedRatePerAcre: 45, baseAcres: 200 })
+    const direct = computeArcCoFlatPayment({ projectedRatePerAcre: 45, baseAcres: 200 })
     expect(r.computable).toBe(true)
+    expect(r.arcMethod).toBe('flat')
+    expect(r.arcDetail).toBeNull()
     expect(r.effectivePrice).toBeNull() // ARC has no effective price
     expect(r.myaPrice).toBe(3.50) // carried through from price data
     expect(r.gross).toBeCloseTo(direct.gross, 2) // 9000
     expect(r.net).toBeCloseTo(direct.net, 2) // 7236.90
   })
 
-  it('ARC-CO with a null rate is not computable and returns zeros', () => {
+  it('ARC-CO with benchmark data runs the county-revenue engine and matches computeArcCoPayment', () => {
+    const bm = benchmarkRow({ benchmark_price: 5.03, benchmark_yield: 200, county_yield_vs_benchmark_pct: -5 })
+    const r = computeCommodityPayment({
+      commodity: commodity({ national_loan_rate: 2.42 }), baseAcres: 1000, plcYield: 130, election: 'ARC_CO',
+      priceData: priceData({ mya_price_estimate: 3.80 }), arcRatePerAcre: null,
+      benchmark: bm, arcGuaranteePct: 0.90, arcPaymentCapPct: 0.12,
+    })
+    // −5% expectation → actual county yield 190; same capped worked example as
+    // the direct engine test: rate 120.72, net 97,070.95 on 1000 acres.
+    const direct = computeArcCoPayment({
+      benchmarkPrice: 5.03, benchmarkYield: 200, myaPrice: 3.80, actualCountyYield: 190,
+      nationalLoanRate: 2.42, baseAcres: 1000, guaranteePct: 0.90, capPct: 0.12,
+    })
+    expect(r.computable).toBe(true)
+    expect(r.arcMethod).toBe('engine')
+    expect(r.arcDetail?.actualCountyYield).toBe(190)
+    expect(r.arcDetail?.capped).toBe(true)
+    expect(r.net).toBeCloseTo(direct.net, 2) // 97,070.95
+  })
+
+  it('ARC-IC uses the 65% payment factor on the flat rate', () => {
+    // rate 45 × 200 ac = 9000 gross; net = 9000 × 0.65 × 0.946 = 5534.10
+    const r = computeCommodityPayment({
+      commodity: commodity(), baseAcres: 200, plcYield: 130, election: 'ARC_IC',
+      arcRatePerAcre: 45,
+    })
+    expect(r.computable).toBe(true)
+    expect(r.net).toBeCloseTo(5534.10, 2)
+  })
+
+  it('ARC-CO with a null rate and no benchmark is not computable and returns zeros', () => {
     const r = computeCommodityPayment({
       commodity: commodity(), baseAcres: 200, plcYield: 130, election: 'ARC_CO',
       arcRatePerAcre: null,
@@ -422,6 +636,37 @@ describe('resolveMyaPrice', () => {
     expect(resolveMyaPrice({ commodityName: 'Corn' }).state).toBe('missing')
   })
 
+  it('a typed WASDE midpoint overrides the blended (live) estimate within the estimate tier', () => {
+    const r = resolveMyaPrice({
+      commodityName: 'Corn',
+      priceData: priceData({ source: 'wasde', wasde_midpoint: 4.05, mya_price_estimate: 4.22 }),
+      liveEstimate: 4.22,
+    })
+    expect(r).toEqual({ price: 4.05, state: 'wasde', manualOnly: false, live: false })
+  })
+
+  it('WASDE precedence: final > manual > wasde > blended', () => {
+    // manual beats wasde
+    const manual = resolveMyaPrice({
+      commodityName: 'Corn',
+      priceData: priceData({ source: 'manual', mya_price_estimate: 3.80, wasde_midpoint: 4.05 }),
+      liveEstimate: 4.22,
+    })
+    expect(manual.state).toBe('manual')
+    expect(manual.price).toBe(3.80)
+    // final beats wasde
+    const final = resolveMyaPrice({
+      commodityName: 'Corn',
+      priceData: priceData({ mya_price_final: 4.15, wasde_midpoint: 4.05, source: 'usda' }),
+    })
+    expect(final.state).toBe('final')
+    expect(final.price).toBe(4.15)
+    // myaPrice (the projectPayments-side resolver) agrees on all tiers
+    expect(myaPrice(priceData({ mya_price_final: 4.15, wasde_midpoint: 4.05, source: 'usda' }))).toBe(4.15)
+    expect(myaPrice(priceData({ source: 'manual', mya_price_estimate: 3.80, wasde_midpoint: 4.05 }))).toBe(3.80)
+    expect(myaPrice(priceData({ source: 'wasde', wasde_midpoint: 4.05, mya_price_estimate: 4.22 }))).toBe(4.05)
+  })
+
   it('Barchart-less commodities are manual-only: the live estimate is ignored', () => {
     // Seed cotton has no traded-futures mapping, so a "live" number can only be
     // a bug upstream — resolution must never surface it.
@@ -485,5 +730,67 @@ describe('applyMyaResolution', () => {
       liveEstimates: new Map([['corn', 4.30]]),
     })
     expect(myaPrice(rows[0])).toBe(4.05)
+  })
+
+  it('clears wasde_midpoint on output rows so downstream myaPrice cannot re-rank it above the resolution', () => {
+    // A manual override + a WASDE midpoint: the resolution picks manual; the
+    // baked row must not let myaPrice() pick the wasde column instead.
+    const rows = applyMyaResolution({
+      cropYear: 2026,
+      commodities: [corn],
+      priceData: [priceData({ source: 'manual', mya_price_estimate: 3.80, wasde_midpoint: 4.05 })],
+      liveEstimates: new Map([['corn', 4.22]]),
+    })
+    expect(rows[0].wasde_midpoint).toBeNull()
+    expect(myaPrice(rows[0])).toBe(3.80)
+    // And a wasde-driven resolution rides the estimate slot with the WASDE value.
+    const rows2 = applyMyaResolution({
+      cropYear: 2026,
+      commodities: [corn],
+      priceData: [priceData({ source: 'wasde', wasde_midpoint: 4.05, mya_price_estimate: 4.30 })],
+      liveEstimates: new Map([['corn', 4.22]]),
+    })
+    expect(rows2[0].wasde_midpoint).toBeNull()
+    expect(myaPrice(rows2[0])).toBe(4.05)
+  })
+})
+
+// ---------- projectPayments with benchmarks (the shared Decision Aid / Tracker path) ----------
+
+describe('projectPayments — ARC-CO engine via benchmarks + farm county', () => {
+  it('resolves the farm county to its benchmark row and runs the engine', () => {
+    const corn = commodity({ id: 'corn', national_loan_rate: 2.42 })
+    const out = projectPayments({
+      cropYear: 2026,
+      baseAcres: [baseAcresRow({ commodity_id: 'corn', base_acres: 1000, plc_yield: 130 })],
+      commodities: [corn],
+      elections: [electionRow({ commodity_id: 'corn', crop_year: 2026, election: 'ARC_CO' })],
+      priceData: [priceData({ commodity_id: 'corn', crop_year: 2026, mya_price_estimate: 4.20, source: 'barchart' })],
+      payments: [],
+      benchmarks: [benchmarkRow({ benchmark_price: 5.03, benchmark_yield: 200, county: 'Washington' })],
+      farms: [{ id: 'farm-1', county: 'Washington' }],
+      arcGuaranteePct: 0.90, arcPaymentCapPct: 0.12,
+    })
+    expect(out).toHaveLength(1)
+    expect(out[0].result.arcMethod).toBe('engine')
+    // Same uncapped worked example: rate 65.40 × 1000 × 0.85 × 0.946 = 52,588.14
+    expect(out[0].result.net).toBeCloseTo(52588.14, 2)
+    expect(out[0].result.arcDetail?.capped).toBe(false)
+  })
+
+  it('falls back to the flat rate when no benchmark row matches', () => {
+    const corn = commodity({ id: 'corn' })
+    const out = projectPayments({
+      cropYear: 2026,
+      baseAcres: [baseAcresRow({ commodity_id: 'corn', base_acres: 200, plc_yield: 130 })],
+      commodities: [corn],
+      elections: [electionRow({ commodity_id: 'corn', crop_year: 2026, election: 'ARC_CO' })],
+      priceData: [],
+      payments: [paymentRow({ commodity_id: 'corn', crop_year: 2026, payment_rate_per_unit: 45 })],
+      benchmarks: [],
+      farms: [{ id: 'farm-1', county: 'Washington' }],
+    })
+    expect(out[0].result.arcMethod).toBe('flat')
+    expect(out[0].result.net).toBeCloseTo(7236.90, 2)
   })
 })

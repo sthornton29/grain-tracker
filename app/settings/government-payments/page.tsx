@@ -8,18 +8,20 @@ import { usePersistentState } from '@/lib/use-persistent-state'
 import EntityFilter from '@/components/entity-filter'
 import {
   ELECTION_LABEL, COMMON_PROGRAMS, effectiveReferencePrice,
-  computeArcCoPayment, expectedArcPlcDate, paymentLimitTotal,
+  computeArcCoFlatPayment, expectedArcPlcDate, paymentLimitTotal,
 } from '@/lib/government-payments'
 import {
   DEFAULT_PER_PERSON_PAYMENT_LIMIT, DEFAULT_SCO_TRIGGER, DEFAULT_SEQUESTRATION_PCT,
+  DEFAULT_ERP_CAP_PCT, DEFAULT_PAYMENT_FACTOR, DEFAULT_ARC_IC_PAYMENT_FACTOR,
+  defaultArcGuaranteePct, defaultArcPaymentCapPct, defaultErpOlympicFactor,
   resolveProgramYearConfig,
 } from '@/lib/program-config'
 import FsaBaseAcresImport from '@/components/government/fsa-base-acres-import'
 import SeedCottonCalculator from '@/components/government/seed-cotton-calculator'
 import type {
-  Farm, Entity, Crop, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection,
+  Farm, Entity, Crop, County, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection,
   ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment, PaymentLimitConfig, ArcPlcElectionType,
-  ProgramYearConfig,
+  ProgramYearConfig, ArcBenchmarkData,
 } from '@/lib/types'
 
 const num = (s: string): number | null => {
@@ -44,6 +46,8 @@ export default function GovernmentPaymentsSettingsPage() {
   const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
   const [limits, setLimits] = useState<PaymentLimitConfig[]>([])
   const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
+  const [counties, setCounties] = useState<County[]>([])
+  const [benchmarks, setBenchmarks] = useState<ArcBenchmarkData[]>([])
   const [cropYear, setCropYear] = useState<number>(new Date().getFullYear())
   const [entityFilter, setEntityFilter] = usePersistentState('gov-pay-settings:entity', '')
   const [err, setErr] = useState<string | null>(null)
@@ -51,7 +55,7 @@ export default function GovernmentPaymentsSettingsPage() {
   const [open, setOpen] = useState<string>('base')
 
   async function refresh() {
-    const [fa, en, cr, pl, cc, ba, el, pd, pay, op, lim, pc] = await Promise.all([
+    const [fa, en, cr, pl, cc, ba, el, pd, pay, op, lim, pc, co, bm] = await Promise.all([
       supabase.from('farms').select('*').order('name'),
       supabase.from('entities').select('*').order('name'),
       supabase.from('crops').select('*').order('name'),
@@ -64,6 +68,8 @@ export default function GovernmentPaymentsSettingsPage() {
       supabase.from('other_government_payments').select('*').order('created_at', { ascending: false }),
       supabase.from('payment_limit_config').select('*'),
       supabase.from('program_year_config').select('*').order('crop_year', { ascending: false }),
+      supabase.from('counties').select('*').order('name'),
+      supabase.from('arc_benchmark_data').select('*'),
     ])
     setFarms((fa.data as Farm[]) || [])
     setEntities((en.data as Entity[]) || [])
@@ -77,6 +83,8 @@ export default function GovernmentPaymentsSettingsPage() {
     setOtherPayments((op.data as OtherGovernmentPayment[]) || [])
     setLimits((lim.data as PaymentLimitConfig[]) || [])
     setProgramConfigs((pc.data as ProgramYearConfig[]) || [])
+    setCounties((co.data as County[]) || [])
+    setBenchmarks((bm.data as ArcBenchmarkData[]) || [])
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
@@ -156,6 +164,9 @@ export default function GovernmentPaymentsSettingsPage() {
         effective_reference_price: patch.effective_reference_price ?? existing?.effective_reference_price ?? null,
         mya_price_estimate: patch.mya_price_estimate ?? existing?.mya_price_estimate ?? null,
         mya_price_final: patch.mya_price_final ?? existing?.mya_price_final ?? null,
+        // WASDE is an explicit clear-able field: the row editor always sends it
+        // (null clears), unlike the coalescing fields above.
+        wasde_midpoint: 'wasde_midpoint' in patch ? patch.wasde_midpoint : existing?.wasde_midpoint ?? null,
         source: 'manual', updated_at: new Date().toISOString(),
       },
       { onConflict: 'commodity_id,crop_year' },
@@ -166,10 +177,11 @@ export default function GovernmentPaymentsSettingsPage() {
   async function refreshMya() {
     setRefreshing(true); setErr(null)
     try {
-      const tradeable = commodities.filter((c) => ['Corn', 'Soybeans', 'Wheat'].includes(c.name))
+      // All commodities: traded ones blend futures-implied months; untraded
+      // ones still blend from any entered monthly prices.
       await fetch('/api/mya-estimate', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ crop_year: cropYear, commodities: tradeable.map((c) => ({ commodity_id: c.id, name: c.name })) }),
+        body: JSON.stringify({ crop_year: cropYear, commodities: commodities.map((c) => ({ commodity_id: c.id, name: c.name })), force: true }),
       })
       await refresh()
     } catch { setErr('Could not refresh MYA estimates.') } finally { setRefreshing(false) }
@@ -178,19 +190,54 @@ export default function GovernmentPaymentsSettingsPage() {
     const ba = baseAcres.find((b) => b.farm_id === farm_id && b.commodity_id === commodity_id)
     const acres = ba ? Number(ba.base_acres) : 0
     const election = electionFor(farm_id, commodity_id)
-    const r = computeArcCoPayment({ projectedRatePerAcre: ratePerAcre, baseAcres: acres })
+    const pf = election === 'ARC_IC' ? programParams.arcIcPaymentFactor : programParams.paymentFactor
+    const r = computeArcCoFlatPayment({
+      projectedRatePerAcre: ratePerAcre, baseAcres: acres,
+      paymentFactor: pf, sequestrationPct: programParams.sequestrationPct,
+    })
     const { error } = await supabase.from('arc_plc_payments').upsert(
       {
         farm_id, commodity_id, crop_year: cropYear, election,
         base_acres: acres, plc_yield: ba ? Number(ba.plc_yield) : 0,
         payment_rate_per_unit: ratePerAcre, gross_payment: r.gross,
-        payment_factor: 0.85, sequestration_pct: 0.054, net_payment: r.net,
+        payment_factor: pf, sequestration_pct: programParams.sequestrationPct, net_payment: r.net,
         payment_status: 'projected', expected_payment_date: expectedArcPlcDate(cropYear),
       },
       { onConflict: 'farm_id,commodity_id,crop_year' },
     )
     if (error) { setErr(error.message); return }
     refresh()
+  }
+  async function saveBenchmark(patch: {
+    id?: string
+    commodity_id: string
+    county: string | null
+    benchmark_price: number | null
+    benchmark_yield: number | null
+    price_source?: 'usda' | 'manual' | 'ai'
+    yield_source?: 'usda' | 'manual' | 'ai'
+    source_description?: string | null
+  }) {
+    const payload = {
+      commodity_id: patch.commodity_id,
+      crop_year: cropYear,
+      county: patch.county,
+      benchmark_price: patch.benchmark_price,
+      benchmark_yield: patch.benchmark_yield,
+      price_source: patch.price_source ?? 'manual',
+      yield_source: patch.yield_source ?? 'manual',
+      source_description: patch.source_description ?? null,
+      updated_at: new Date().toISOString(),
+    }
+    const { error } = patch.id
+      ? await supabase.from('arc_benchmark_data').update(payload).eq('id', patch.id)
+      : await supabase.from('arc_benchmark_data').insert(payload)
+    if (error) { setErr(error.message); return }
+    setErr(null); refresh()
+  }
+  async function deleteBenchmark(id: string) {
+    if (!confirm('Delete this benchmark row?')) return
+    await supabase.from('arc_benchmark_data').delete().eq('id', id); refresh()
   }
   async function saveLimit(entity_id: string, eligible_persons: number, per_person_limit: number) {
     const { error } = await supabase.from('payment_limit_config').upsert(
@@ -200,7 +247,11 @@ export default function GovernmentPaymentsSettingsPage() {
     if (error) { setErr(error.message); return }
     refresh()
   }
-  async function saveProgramConfig(year: number, patch: { sco_trigger: number; per_person_payment_limit: number; sequestration_pct: number }) {
+  async function saveProgramConfig(year: number, patch: {
+    sco_trigger: number; per_person_payment_limit: number; sequestration_pct: number
+    arc_guarantee_pct: number; arc_payment_cap_pct: number; erp_olympic_factor: number
+    erp_cap_pct: number; payment_factor: number; arc_ic_payment_factor: number
+  }) {
     const { error } = await supabase.from('program_year_config').upsert(
       { crop_year: year, ...patch, updated_at: new Date().toISOString() },
       { onConflict: 'crop_year' },
@@ -326,7 +377,10 @@ export default function GovernmentPaymentsSettingsPage() {
 
       {/* Elections */}
       <Section title="ARC/PLC Elections" open={open === 'elect'} onToggle={() => setOpen(open === 'elect' ? '' : 'elect')}>
-        <p className="text-sm text-slate-500">Set the program election for each farm × commodity for {cropYear}. PLC farms are SCO-eligible; ARC farms are not.</p>
+        <p className="text-sm text-slate-500">
+          Set the program election for each farm × commodity for {cropYear}. Under OBBBA (2025+), SCO can be purchased
+          regardless of the ARC/PLC election (subsidy 80%) — the old ARC-blocks-SCO rule no longer applies.
+        </p>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-slate-600"><tr>{['Farm', 'Commodity', 'Base Acres', 'Election'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
@@ -352,12 +406,17 @@ export default function GovernmentPaymentsSettingsPage() {
       {/* Price Data */}
       <Section title="Price Data" open={open === 'price'} onToggle={() => setOpen(open === 'price' ? '' : 'price')}>
         <div className="flex items-center gap-3 flex-wrap">
-          <p className="text-sm text-slate-500 flex-1">MYA estimates auto-populate from Barchart for Corn/Soybeans/Wheat; enter others manually.</p>
-          <button onClick={refreshMya} disabled={refreshing} className="rounded-lg bg-slate-700 text-white px-3 py-2 text-sm font-semibold disabled:opacity-50">{refreshing ? 'Refreshing…' : 'Refresh MYA from Barchart'}</button>
+          <p className="text-sm text-slate-500 flex-1">
+            MYA estimates are a marketing-year blend (USDA monthly prices + futures-implied months) for
+            Corn/Soybeans/Wheat — enter monthly prices and WASDE midpoints from the MYA panel on the Decision Aid or
+            Tracker. Enter other commodities manually. A typed WASDE midpoint overrides the blend; a Manual estimate
+            and a published Final outrank both.
+          </p>
+          <button onClick={refreshMya} disabled={refreshing} className="rounded-lg bg-slate-700 text-white px-3 py-2 text-sm font-semibold disabled:opacity-50">{refreshing ? 'Refreshing…' : 'Refresh MYA blend'}</button>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 text-slate-600"><tr>{['Commodity', 'Unit', 'Statutory Ref', 'Effective Ref', 'MYA Estimate', 'MYA Final', 'Loan Rate', 'Source', ''].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+            <thead className="bg-slate-50 text-slate-600"><tr>{['Commodity', 'Unit', 'Statutory Ref', 'Effective Ref', 'MYA Estimate', 'WASDE Midpoint', 'MYA Final', 'Loan Rate', 'Source', ''].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
             <tbody>
               {commodities.map((c) => (
                 <PriceDataRow key={c.id} commodity={c} priceData={priceFor(c.id)} onSave={savePrice} />
@@ -370,9 +429,51 @@ export default function GovernmentPaymentsSettingsPage() {
         ))}
       </Section>
 
-      {/* ARC-CO projected rates */}
-      <Section title="ARC-CO Projected Rates" open={open === 'arc'} onToggle={() => setOpen(open === 'arc' ? '' : 'arc')}>
-        <p className="text-sm text-slate-500">ARC-CO payments are determined by county revenue. Enter your best estimate ($/base acre) from your FSA office or extension decision tools.</p>
+      {/* ARC-CO benchmarks (FSA-published price & county yield) */}
+      <Section title="ARC-CO Benchmarks" open={open === 'bench'} onToggle={() => setOpen(open === 'bench' ? '' : 'bench')}>
+        <p className="text-sm text-slate-500">
+          FSA-published ARC-CO benchmark data for {cropYear}: the <b>benchmark price</b> (national, 5-yr Olympic
+          average with effective-reference-price substitution — 2025/2026: corn $5.03, soybeans $12.17, wheat $6.98)
+          and the <b>benchmark county yield</b> (5-yr Olympic average trend-adjusted). A row with no county is the
+          default for all counties; add county rows if your farms span counties with different benchmarks. The AI
+          lookup searches FSA/extension publications — you confirm before anything is saved.
+        </p>
+        <AddBenchmarkForm commodities={commodities} counties={counties} existing={benchmarks.filter((b) => b.crop_year === cropYear)} onAdd={saveBenchmark} />
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-slate-50 text-slate-600"><tr>{['Commodity', 'County', 'Benchmark Price', 'Benchmark Yield', 'Source', '', ''].map((h, i) => <th key={i} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+            <tbody>
+              {benchmarks.filter((b) => b.crop_year === cropYear).length === 0 && (
+                <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">No benchmark rows for {cropYear} yet — add one above.</td></tr>
+              )}
+              {benchmarks
+                .filter((b) => b.crop_year === cropYear)
+                .sort((a, b) => (commodityById.get(a.commodity_id)?.name ?? '').localeCompare(commodityById.get(b.commodity_id)?.name ?? '') || (a.county ?? '').localeCompare(b.county ?? ''))
+                .map((b) => (
+                  <BenchmarkRow
+                    key={b.id}
+                    row={b}
+                    commodity={commodityById.get(b.commodity_id)}
+                    counties={counties}
+                    cropYear={cropYear}
+                    onSave={saveBenchmark}
+                    onDelete={deleteBenchmark}
+                    onErr={setErr}
+                  />
+                ))}
+            </tbody>
+          </table>
+        </div>
+      </Section>
+
+      {/* ARC projected rates — the flat fallback */}
+      <Section title="ARC Flat Rates (fallback)" open={open === 'arc'} onToggle={() => setOpen(open === 'arc' ? '' : 'arc')}>
+        <p className="text-sm text-slate-500">
+          <b>Fallback only:</b> ARC-CO is normally computed from the benchmark data above (county-revenue engine).
+          This flat $/base-acre estimate is used when a county has no benchmark data yet — and for ARC-IC, which FSA
+          computes from individual farm revenue. Enter your best estimate from your FSA office or extension decision
+          tools.
+        </p>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-slate-600"><tr>{['Farm', 'Commodity', 'Election', 'Base Acres', 'Projected $/acre', ''].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
@@ -406,13 +507,15 @@ export default function GovernmentPaymentsSettingsPage() {
       {/* Program parameters (per-year constants) */}
       <Section title="Program Parameters" open={open === 'program'} onToggle={() => setOpen(open === 'program' ? '' : 'program')}>
         <p className="text-sm text-slate-500">
-          Per-crop-year program values used across crop-insurance and ARC/PLC calculations: the SCO trigger
-          (0.86 for 2026, 0.90 from 2027), the per-person FSA payment limit, and the sequestration rate. A year
-          with no row falls back to the most recent configured year.
+          Per-crop-year program values used across crop-insurance and ARC/PLC calculations — all data, not code. The
+          OBBBA values (2025–2031): ARC guarantee 90% (was 86%), ARC payment cap 12% (was 10%), ERP Olympic factor
+          88% (was 85%), ERP cap 115%, payment factor 0.85 (ARC-CO/PLC) and 0.65 (ARC-IC); plus the SCO trigger
+          (0.86 for 2026, 0.90 from 2027), the per-person FSA payment limit, and the sequestration rate. A year with
+          no row falls back to the most recent configured year (historical years default to the pre-OBBBA values).
         </p>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 text-slate-600"><tr>{['Crop Year', 'SCO Trigger', 'Per-Person Limit', 'Sequestration %', ''].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+            <thead className="bg-slate-50 text-slate-600"><tr>{['Crop Year', 'SCO Trigger', 'Per-Person Limit', 'Sequestration %', 'ARC Guarantee', 'ARC Cap', 'ERP Factor', 'ERP Cap', 'Pay Factor', 'ARC-IC Factor', ''].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
             <tbody>
               {programParamYears.map((y) => (
                 <ProgramParamsRow key={y} year={y} config={programConfigs.find((c) => c.crop_year === y) ?? null} onSave={saveProgramConfig} />
@@ -502,10 +605,12 @@ function BaseAcreRow({ row, farm, commodity, onSave, onDelete }: { row: FarmBase
 function PriceDataRow({ commodity, priceData, onSave }: { commodity: CoveredCommodity; priceData: ArcPlcPriceData | null; onSave: (id: string, patch: Partial<ArcPlcPriceData>) => void }) {
   const [effRef, setEffRef] = useState(priceData?.effective_reference_price != null ? String(Number(priceData.effective_reference_price)) : '')
   const [est, setEst] = useState(priceData?.mya_price_estimate != null ? String(Number(priceData.mya_price_estimate)) : '')
+  const [wasde, setWasde] = useState(priceData?.wasde_midpoint != null ? String(Number(priceData.wasde_midpoint)) : '')
   const [fin, setFin] = useState(priceData?.mya_price_final != null ? String(Number(priceData.mya_price_final)) : '')
   useEffect(() => {
     setEffRef(priceData?.effective_reference_price != null ? String(Number(priceData.effective_reference_price)) : '')
     setEst(priceData?.mya_price_estimate != null ? String(Number(priceData.mya_price_estimate)) : '')
+    setWasde(priceData?.wasde_midpoint != null ? String(Number(priceData.wasde_midpoint)) : '')
     setFin(priceData?.mya_price_final != null ? String(Number(priceData.mya_price_final)) : '')
   }, [priceData])
   const inputCls = 'rounded border border-slate-300 px-2 py-1 w-24'
@@ -517,11 +622,12 @@ function PriceDataRow({ commodity, priceData, onSave }: { commodity: CoveredComm
       <td className="px-3 py-2 text-right font-mono">{Number(commodity.statutory_reference_price).toFixed(4)}</td>
       <td className="px-3 py-2"><input type="number" step="0.0001" placeholder={effShown.toFixed(4)} value={effRef} onChange={(e) => setEffRef(e.target.value)} className={inputCls} /></td>
       <td className="px-3 py-2"><input type="number" step="0.0001" value={est} onChange={(e) => setEst(e.target.value)} className={inputCls} /></td>
+      <td className="px-3 py-2"><input type="number" step="0.01" value={wasde} onChange={(e) => setWasde(e.target.value)} className={inputCls} /></td>
       <td className="px-3 py-2"><input type="number" step="0.0001" value={fin} onChange={(e) => setFin(e.target.value)} className={inputCls} /></td>
       <td className="px-3 py-2 text-right font-mono text-xs">{Number(commodity.national_loan_rate).toFixed(4)}</td>
       <td className="px-3 py-2 text-xs text-slate-400">{priceData?.source ?? '—'}</td>
       <td className="px-3 py-2">
-        <button onClick={() => onSave(commodity.id, { effective_reference_price: num(effRef), mya_price_estimate: num(est), mya_price_final: num(fin) })} className="text-green-700 font-semibold">Save</button>
+        <button onClick={() => onSave(commodity.id, { effective_reference_price: num(effRef), mya_price_estimate: num(est), wasde_midpoint: num(wasde), mya_price_final: num(fin) })} className="text-green-700 font-semibold">Save</button>
       </td>
     </tr>
   )
@@ -594,38 +700,226 @@ function LimitRow({ entity, config, defaultLimit, onSave }: { entity: Entity; co
 }
 
 // One editable row of the program_year_config table. Pre-fills with the built-in
-// defaults for a year that has no row yet, so saving creates it.
+// (era-aware) defaults for a year that has no row yet, so saving creates it.
 function ProgramParamsRow({ year, config, onSave }: {
   year: number
   config: ProgramYearConfig | null
-  onSave: (year: number, patch: { sco_trigger: number; per_person_payment_limit: number; sequestration_pct: number }) => void
+  onSave: (year: number, patch: {
+    sco_trigger: number; per_person_payment_limit: number; sequestration_pct: number
+    arc_guarantee_pct: number; arc_payment_cap_pct: number; erp_olympic_factor: number
+    erp_cap_pct: number; payment_factor: number; arc_ic_payment_factor: number
+  }) => void
 }) {
-  const [sco, setSco] = useState(String(config?.sco_trigger ?? DEFAULT_SCO_TRIGGER))
-  const [limit, setLimit] = useState(String(config?.per_person_payment_limit ?? DEFAULT_PER_PERSON_PAYMENT_LIMIT))
-  const [seq, setSeq] = useState(String(config?.sequestration_pct ?? DEFAULT_SEQUESTRATION_PCT))
+  const d = {
+    sco: config?.sco_trigger ?? DEFAULT_SCO_TRIGGER,
+    limit: config?.per_person_payment_limit ?? DEFAULT_PER_PERSON_PAYMENT_LIMIT,
+    seq: config?.sequestration_pct ?? DEFAULT_SEQUESTRATION_PCT,
+    guar: config?.arc_guarantee_pct ?? defaultArcGuaranteePct(year),
+    cap: config?.arc_payment_cap_pct ?? defaultArcPaymentCapPct(year),
+    erpF: config?.erp_olympic_factor ?? defaultErpOlympicFactor(year),
+    erpC: config?.erp_cap_pct ?? DEFAULT_ERP_CAP_PCT,
+    pf: config?.payment_factor ?? DEFAULT_PAYMENT_FACTOR,
+    icf: config?.arc_ic_payment_factor ?? DEFAULT_ARC_IC_PAYMENT_FACTOR,
+  }
+  const [sco, setSco] = useState(String(d.sco))
+  const [limit, setLimit] = useState(String(d.limit))
+  const [seq, setSeq] = useState(String(d.seq))
+  const [guar, setGuar] = useState(String(d.guar))
+  const [cap, setCap] = useState(String(d.cap))
+  const [erpF, setErpF] = useState(String(d.erpF))
+  const [erpC, setErpC] = useState(String(d.erpC))
+  const [pf, setPf] = useState(String(d.pf))
+  const [icf, setIcf] = useState(String(d.icf))
   useEffect(() => {
     setSco(String(config?.sco_trigger ?? DEFAULT_SCO_TRIGGER))
     setLimit(String(config?.per_person_payment_limit ?? DEFAULT_PER_PERSON_PAYMENT_LIMIT))
     setSeq(String(config?.sequestration_pct ?? DEFAULT_SEQUESTRATION_PCT))
-  }, [config])
-  const inputCls = 'rounded border border-slate-300 px-2 py-1 w-24'
+    setGuar(String(config?.arc_guarantee_pct ?? defaultArcGuaranteePct(year)))
+    setCap(String(config?.arc_payment_cap_pct ?? defaultArcPaymentCapPct(year)))
+    setErpF(String(config?.erp_olympic_factor ?? defaultErpOlympicFactor(year)))
+    setErpC(String(config?.erp_cap_pct ?? DEFAULT_ERP_CAP_PCT))
+    setPf(String(config?.payment_factor ?? DEFAULT_PAYMENT_FACTOR))
+    setIcf(String(config?.arc_ic_payment_factor ?? DEFAULT_ARC_IC_PAYMENT_FACTOR))
+  }, [config, year])
+  const inputCls = 'rounded border border-slate-300 px-2 py-1 w-20'
   return (
     <tr className="border-t border-slate-100">
       <td className="px-3 py-2 font-semibold">{year}{!config && <span className="ml-2 text-xs text-amber-700">not yet set</span>}</td>
       <td className="px-3 py-2"><input type="number" step="0.01" value={sco} onChange={(e) => setSco(e.target.value)} className={inputCls} /></td>
       <td className="px-3 py-2"><input type="number" step="1000" value={limit} onChange={(e) => setLimit(e.target.value)} className="rounded border border-slate-300 px-2 py-1 w-28" /></td>
       <td className="px-3 py-2"><input type="number" step="0.001" value={seq} onChange={(e) => setSeq(e.target.value)} className={inputCls} /></td>
+      <td className="px-3 py-2"><input type="number" step="0.01" value={guar} onChange={(e) => setGuar(e.target.value)} className={inputCls} /></td>
+      <td className="px-3 py-2"><input type="number" step="0.01" value={cap} onChange={(e) => setCap(e.target.value)} className={inputCls} /></td>
+      <td className="px-3 py-2"><input type="number" step="0.01" value={erpF} onChange={(e) => setErpF(e.target.value)} className={inputCls} /></td>
+      <td className="px-3 py-2"><input type="number" step="0.01" value={erpC} onChange={(e) => setErpC(e.target.value)} className={inputCls} /></td>
+      <td className="px-3 py-2"><input type="number" step="0.01" value={pf} onChange={(e) => setPf(e.target.value)} className={inputCls} /></td>
+      <td className="px-3 py-2"><input type="number" step="0.01" value={icf} onChange={(e) => setIcf(e.target.value)} className={inputCls} /></td>
       <td className="px-3 py-2">
         <button
           onClick={() => onSave(year, {
             sco_trigger: num(sco) ?? DEFAULT_SCO_TRIGGER,
             per_person_payment_limit: num(limit) ?? DEFAULT_PER_PERSON_PAYMENT_LIMIT,
             sequestration_pct: num(seq) ?? DEFAULT_SEQUESTRATION_PCT,
+            arc_guarantee_pct: num(guar) ?? defaultArcGuaranteePct(year),
+            arc_payment_cap_pct: num(cap) ?? defaultArcPaymentCapPct(year),
+            erp_olympic_factor: num(erpF) ?? defaultErpOlympicFactor(year),
+            erp_cap_pct: num(erpC) ?? DEFAULT_ERP_CAP_PCT,
+            payment_factor: num(pf) ?? DEFAULT_PAYMENT_FACTOR,
+            arc_ic_payment_factor: num(icf) ?? DEFAULT_ARC_IC_PAYMENT_FACTOR,
           })}
           className="text-green-700 font-semibold"
         >Save</button>
       </td>
     </tr>
+  )
+}
+
+// ---------- ARC-CO Benchmarks ----------
+
+function AddBenchmarkForm({ commodities, counties, existing, onAdd }: {
+  commodities: CoveredCommodity[]
+  counties: County[]
+  existing: ArcBenchmarkData[]
+  onAdd: (patch: { commodity_id: string; county: string | null; benchmark_price: number | null; benchmark_yield: number | null }) => void
+}) {
+  const [commodity, setCommodity] = useState('')
+  const [county, setCounty] = useState('')
+  const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm bg-white'
+  const dup = commodity !== '' && existing.some((b) => b.commodity_id === commodity && (b.county ?? '') === county.trim())
+  return (
+    <div className="flex flex-wrap items-end gap-2 border border-slate-200 rounded-lg p-3">
+      <select value={commodity} onChange={(e) => setCommodity(e.target.value)} className={inputCls}>
+        <option value="">Commodity…</option>
+        {commodities.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+      </select>
+      <input list="benchmark-counties" placeholder="County (blank = all)" value={county} onChange={(e) => setCounty(e.target.value)} className={inputCls} />
+      <datalist id="benchmark-counties">
+        {counties.map((c) => <option key={c.id} value={c.name} />)}
+      </datalist>
+      <button
+        onClick={() => { if (commodity && !dup) { onAdd({ commodity_id: commodity, county: county.trim() || null, benchmark_price: null, benchmark_yield: null }); setCommodity(''); setCounty('') } }}
+        disabled={!commodity || dup}
+        className="rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50"
+      >Add row</button>
+      {dup && <span className="text-xs text-amber-700">That commodity × county row already exists.</span>}
+    </div>
+  )
+}
+
+type AiLookup = { benchmark_yield: number | null; benchmark_price: number | null; source_description: string; confidence: 'high' | 'low' }
+
+function BenchmarkRow({ row, commodity, counties, cropYear, onSave, onDelete, onErr }: {
+  row: ArcBenchmarkData
+  commodity?: CoveredCommodity
+  counties: County[]
+  cropYear: number
+  onSave: (patch: {
+    id?: string; commodity_id: string; county: string | null; benchmark_price: number | null; benchmark_yield: number | null
+    price_source?: 'usda' | 'manual' | 'ai'; yield_source?: 'usda' | 'manual' | 'ai'; source_description?: string | null
+  }) => void
+  onDelete: (id: string) => void
+  onErr: (s: string) => void
+}) {
+  const [price, setPrice] = useState(row.benchmark_price != null ? String(Number(row.benchmark_price)) : '')
+  const [yld, setYld] = useState(row.benchmark_yield != null ? String(Number(row.benchmark_yield)) : '')
+  const [looking, setLooking] = useState(false)
+  const [aiResult, setAiResult] = useState<AiLookup | null>(null)
+  useEffect(() => {
+    setPrice(row.benchmark_price != null ? String(Number(row.benchmark_price)) : '')
+    setYld(row.benchmark_yield != null ? String(Number(row.benchmark_yield)) : '')
+  }, [row])
+
+  const sourceChip = (s: 'usda' | 'manual' | 'ai') => (
+    <span className={`text-[10px] rounded-full px-1.5 py-0.5 ${s === 'usda' ? 'bg-green-100 text-green-800' : s === 'ai' ? 'bg-violet-100 text-violet-800' : 'bg-slate-200 text-slate-600'}`}>{s}</span>
+  )
+
+  async function aiLookup() {
+    if (!commodity) return
+    setLooking(true); setAiResult(null)
+    try {
+      const countyRec = counties.find((c) => c.name.trim().toLowerCase() === (row.county ?? '').trim().toLowerCase())
+      const res = await fetch('/api/arc-benchmark-lookup', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          commodity: commodity.name,
+          county: row.county ?? counties[0]?.name ?? '',
+          state: countyRec?.state ?? counties[0]?.state ?? '',
+          crop_year: cropYear,
+        }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok || !json?.data) { onErr(json?.error ?? 'AI lookup failed.'); return }
+      setAiResult(json.data as AiLookup)
+    } catch {
+      onErr('AI lookup failed — enter the benchmark manually from your FSA office or fsa.usda.gov.')
+    } finally {
+      setLooking(false)
+    }
+  }
+
+  function confirmAi() {
+    if (!aiResult) return
+    onSave({
+      id: row.id, commodity_id: row.commodity_id, county: row.county,
+      benchmark_price: aiResult.benchmark_price ?? (price.trim() !== '' ? Number(price) : null),
+      benchmark_yield: aiResult.benchmark_yield ?? (yld.trim() !== '' ? Number(yld) : null),
+      price_source: aiResult.benchmark_price != null ? 'ai' : row.price_source,
+      yield_source: aiResult.benchmark_yield != null ? 'ai' : row.yield_source,
+      source_description: aiResult.source_description || null,
+    })
+    setAiResult(null)
+  }
+
+  const inputCls = 'rounded border border-slate-300 px-2 py-1 w-24'
+  return (
+    <>
+      <tr className="border-t border-slate-100 align-middle">
+        <td className="px-3 py-2 font-semibold whitespace-nowrap">{commodity?.name ?? '—'}</td>
+        <td className="px-3 py-2 whitespace-nowrap">{row.county ?? <span className="text-slate-400">all counties</span>}</td>
+        <td className="px-3 py-2"><input type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} className={inputCls} /></td>
+        <td className="px-3 py-2"><input type="number" step="0.1" value={yld} onChange={(e) => setYld(e.target.value)} className={inputCls} /></td>
+        <td className="px-3 py-2 whitespace-nowrap">
+          <span className="inline-flex gap-1">price {sourceChip(row.price_source)} · yield {sourceChip(row.yield_source)}</span>
+          {row.source_description && <div className="text-[10px] text-slate-400 max-w-[220px]">{row.source_description}</div>}
+        </td>
+        <td className="px-3 py-2 whitespace-nowrap">
+          <button
+            onClick={() => onSave({ id: row.id, commodity_id: row.commodity_id, county: row.county, benchmark_price: num(price), benchmark_yield: num(yld), price_source: 'manual', yield_source: 'manual', source_description: row.source_description })}
+            className="text-green-700 font-semibold mr-3"
+          >Save</button>
+          <button onClick={aiLookup} disabled={looking} className="rounded-lg bg-violet-700 text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50">
+            {looking ? 'Searching…' : 'AI lookup'}
+          </button>
+        </td>
+        <td className="px-3 py-2"><button onClick={() => onDelete(row.id)} className="text-red-600 text-xs">Delete</button></td>
+      </tr>
+      {aiResult && (
+        <tr className="bg-violet-50">
+          <td colSpan={7} className="px-3 py-2 text-sm">
+            <div className="flex flex-wrap items-center gap-3">
+              <span>
+                AI found: yield <b>{aiResult.benchmark_yield ?? '—'}</b>, price <b>{aiResult.benchmark_price != null ? `$${aiResult.benchmark_price}` : '—'}</b>{' '}
+                <span className={`text-xs rounded-full px-1.5 py-0.5 ${aiResult.confidence === 'high' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>{aiResult.confidence} confidence</span>
+              </span>
+              <span className="text-xs text-slate-500 flex-1 min-w-[200px]">{aiResult.source_description}</span>
+              {(aiResult.benchmark_yield != null || aiResult.benchmark_price != null) && aiResult.confidence === 'high' ? (
+                <button onClick={confirmAi} className="rounded-lg bg-green-700 text-white px-3 py-1 text-xs font-semibold">Confirm &amp; save</button>
+              ) : (
+                <span className="text-xs text-amber-800">
+                  {aiResult.benchmark_yield == null && aiResult.benchmark_price == null
+                    ? 'Nothing reliable found — enter the values manually from your FSA office or fsa.usda.gov.'
+                    : 'Low confidence — verify against FSA data before saving, or enter manually.'}
+                </span>
+              )}
+              {(aiResult.benchmark_yield != null || aiResult.benchmark_price != null) && aiResult.confidence === 'low' && (
+                <button onClick={confirmAi} className="rounded-lg bg-white border border-slate-300 px-3 py-1 text-xs">Use anyway</button>
+              )}
+              <button onClick={() => setAiResult(null)} className="text-xs text-slate-500 underline">dismiss</button>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   )
 }
 

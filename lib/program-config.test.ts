@@ -2,14 +2,19 @@ import { describe, it, expect } from 'vitest'
 import {
   resolveProgramYearConfig, programConfigNotice,
   DEFAULT_SCO_TRIGGER, DEFAULT_PER_PERSON_PAYMENT_LIMIT, DEFAULT_SEQUESTRATION_PCT,
+  DEFAULT_ERP_CAP_PCT, DEFAULT_PAYMENT_FACTOR, DEFAULT_ARC_IC_PAYMENT_FACTOR,
+  defaultArcGuaranteePct, defaultArcPaymentCapPct, defaultErpOlympicFactor,
 } from '@/lib/program-config'
 import type { ProgramYearConfig } from '@/lib/types'
 
-function cfg(year: number, sco: number, limit: number, seq: number): ProgramYearConfig {
+function cfg(year: number, sco: number, limit: number, seq: number, over: Partial<ProgramYearConfig> = {}): ProgramYearConfig {
   return {
     id: `cfg-${year}`, crop_year: year, sco_trigger: sco,
     per_person_payment_limit: limit, sequestration_pct: seq,
+    arc_guarantee_pct: 0.9, arc_payment_cap_pct: 0.12, erp_olympic_factor: 0.88,
+    erp_cap_pct: 1.15, payment_factor: 0.85, arc_ic_payment_factor: 0.65,
     notes: null, created_at: '', updated_at: '',
+    ...over,
   }
 }
 
@@ -48,6 +53,30 @@ describe('resolveProgramYearConfig', () => {
     expect(r.scoTrigger).toBe(DEFAULT_SCO_TRIGGER)
     expect(r.perPersonPaymentLimit).toBe(DEFAULT_PER_PERSON_PAYMENT_LIMIT)
     expect(r.sequestrationPct).toBe(DEFAULT_SEQUESTRATION_PCT)
+    expect(r.arcGuaranteePct).toBe(0.9)
+    expect(r.arcPaymentCapPct).toBe(0.12)
+    expect(r.erpOlympicFactor).toBe(0.88)
+    expect(r.erpCapPct).toBe(DEFAULT_ERP_CAP_PCT)
+    expect(r.paymentFactor).toBe(DEFAULT_PAYMENT_FACTOR)
+    expect(r.arcIcPaymentFactor).toBe(DEFAULT_ARC_IC_PAYMENT_FACTOR)
+  })
+
+  it('carries the OBBBA columns from a config row', () => {
+    const r = resolveProgramYearConfig(2026, [cfg(2026, 0.86, 155000, 0.054, { arc_guarantee_pct: 0.91, arc_payment_cap_pct: 0.13 })])
+    expect(r.arcGuaranteePct).toBe(0.91)
+    expect(r.arcPaymentCapPct).toBe(0.13)
+  })
+
+  it('era-aware built-in defaults: pre-OBBBA years use 86% / 10% / 85%', () => {
+    expect(defaultArcGuaranteePct(2024)).toBe(0.86)
+    expect(defaultArcPaymentCapPct(2024)).toBe(0.1)
+    expect(defaultErpOlympicFactor(2024)).toBe(0.85)
+    expect(defaultArcGuaranteePct(2025)).toBe(0.9)
+    expect(defaultArcPaymentCapPct(2025)).toBe(0.12)
+    expect(defaultErpOlympicFactor(2025)).toBe(0.88)
+    const r = resolveProgramYearConfig(2024, [])
+    expect(r.arcGuaranteePct).toBe(0.86)
+    expect(r.erpOlympicFactor).toBe(0.85)
   })
 })
 
