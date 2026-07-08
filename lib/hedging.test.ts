@@ -19,6 +19,9 @@ import {
   normalizeCommodity,
   expandClosedGroup,
   reconcileClosedGroup,
+  pricesMatch,
+  coercePrice,
+  PRICE_MATCH_EPSILON,
   CONTRACT_SIZE_BU,
 } from '@/lib/hedging'
 
@@ -95,6 +98,48 @@ describe('roundPrice', () => {
     expect(roundPrice(4.93 + 0.0025)).toBeCloseTo(4.9325, 6)
     // 7th decimal rounds away.
     expect(roundPrice(1.23456749)).toBe(1.234567)
+  })
+})
+
+// ---------- Tolerant price matching + shared price coercion ----------
+describe('pricesMatch', () => {
+  it('treats fractional-parse drift within half a cent as the same fill', () => {
+    // "6.67 3/4" read as 6.6775 in one run and 6.675 in another: drift 0.0025.
+    expect(PRICE_MATCH_EPSILON).toBe(0.005)
+    expect(pricesMatch(6.6775, 6.675)).toBe(true)
+    // A quarter-cent tick of drift also passes (7.0025 vs 7.00).
+    expect(pricesMatch(7.0025, 7.0)).toBe(true)
+    // Exactly at the epsilon boundary still matches (<=).
+    expect(pricesMatch(6.7, 6.705)).toBe(true)
+  })
+  it('rejects gaps beyond the epsilon (a genuinely different price)', () => {
+    expect(pricesMatch(6.7, 6.71)).toBe(false)
+    expect(pricesMatch(6.7, 6.8)).toBe(false)
+  })
+  it('null/undefined on either end never matches', () => {
+    expect(pricesMatch(null, 6.7)).toBe(false)
+    expect(pricesMatch(6.7, undefined)).toBe(false)
+  })
+  it('honors an explicit epsilon', () => {
+    expect(pricesMatch(6.7, 6.71, 0.02)).toBe(true)
+  })
+})
+
+describe('coercePrice - one shared normalize for extracted and stored prices', () => {
+  it('passes finite numbers through (rounded to 6 decimals)', () => {
+    expect(coercePrice(7.0025)).toBe(7.0025)
+    expect(coercePrice(4.93 + 0.0025)).toBe(4.9325) // float noise clamped
+  })
+  it('parses fractional strings via parsePrice ("7.00 1/4" -> 7.0025)', () => {
+    expect(coercePrice('7.00 1/4')).toBeCloseTo(7.0025, 6)
+    expect(coercePrice('6.67 3/4')).toBeCloseTo(6.6775, 6)
+    expect(coercePrice('11.43 1/2')).toBeCloseTo(11.435, 6)
+  })
+  it('returns null for null/undefined/NaN/garbage', () => {
+    expect(coercePrice(null)).toBeNull()
+    expect(coercePrice(undefined)).toBeNull()
+    expect(coercePrice(Number.NaN)).toBeNull()
+    expect(coercePrice('abc')).toBeNull()
   })
 })
 
@@ -253,6 +298,29 @@ describe('expandClosedGroup - per-lot realized P&L', () => {
     expect(lots.every((l) => l.close_price === 4.4275 && l.contracts === 10)).toBe(true)
   })
 
+  it('the 7/06 NOV 26 soybean short group: buyback higher = per-lot losses', () => {
+    // Statement facts: opens 3/18 in the SELL column (2 @ 11.435, 4 @ 11.4375),
+    // closed 7/06 by a BUY of 6 @ 11.9175 — sold first, bought back = SHORT.
+    //   lot1: (11.435  - 11.9175) = -0.4825 * 2 * 5000 = -4,825
+    //   lot2: (11.4375 - 11.9175) = -0.4800 * 4 * 5000 = -9,600
+    //   sum = -14,425  (statement prints 14,425.00DR = a loss)
+    const lots = expandClosedGroup({
+      commodity: 'Soybeans',
+      contract_month: 'NOV 26',
+      side: 'short',
+      close_date: '2026-07-06',
+      close_price: 11.9175,
+      lots: [
+        { open_date: '2026-03-18', open_price: 11.435, contracts: 2 },
+        { open_date: '2026-03-18', open_price: 11.4375, contracts: 4 },
+      ],
+    })
+    expect(lots).toHaveLength(2)
+    expect(lots[0].realized_pnl).toBeCloseTo(-4825, 2)
+    expect(lots[1].realized_pnl).toBeCloseTo(-9600, 2)
+    expect(lots.reduce((s, l) => s + l.realized_pnl, 0)).toBeCloseTo(-14425, 2)
+  })
+
   it('single-lot single-close (short)', () => {
     // SHORT 1 lot, 5 contracts, open 4.80 -> close 4.50:
     //   (4.80-4.50)=0.30 * 5 * 5000 = 7,500
@@ -360,6 +428,62 @@ describe('reconcileClosedGroup', () => {
     expect(recon.hasReportedTotal).toBe(false)
     expect(recon.diff).toBeNull()
     expect(recon.matches).toBe(true)
+    expect(recon.signFlipSuspected).toBe(false)
+  })
+
+  it('the soybean group ties when the side is SHORT (correct read)', () => {
+    const lots = expandClosedGroup({
+      commodity: 'Soybeans',
+      contract_month: 'NOV 26',
+      side: 'short',
+      close_date: '2026-07-06',
+      close_price: 11.9175,
+      lots: [
+        { open_date: '2026-03-18', open_price: 11.435, contracts: 2 },
+        { open_date: '2026-03-18', open_price: 11.4375, contracts: 4 },
+      ],
+    })
+    // 14,425.00DR on the statement = -14,425 after sign parsing.
+    const recon = reconcileClosedGroup(lots, -14425)
+    expect(recon.computedTotal).toBeCloseTo(-14425, 2)
+    expect(recon.matches).toBe(true)
+    expect(recon.signFlipSuspected).toBe(false)
+  })
+
+  it('the soybean group read as LONG: computed is the EXACT OPPOSITE -> sign flip suspected', () => {
+    // Same lots with the side inverted flips every per-lot sign:
+    //   +4,825 and +9,600 -> computed +14,425 vs reported -14,425.
+    const lots = expandClosedGroup({
+      commodity: 'Soybeans',
+      contract_month: 'NOV 26',
+      side: 'long',
+      close_date: '2026-07-06',
+      close_price: 11.9175,
+      lots: [
+        { open_date: '2026-03-18', open_price: 11.435, contracts: 2 },
+        { open_date: '2026-03-18', open_price: 11.4375, contracts: 4 },
+      ],
+    })
+    const recon = reconcileClosedGroup(lots, -14425)
+    expect(recon.computedTotal).toBeCloseTo(14425, 2)
+    expect(recon.matches).toBe(false)
+    // computed == -(reported) within $1: an inverted side, not a math error.
+    expect(recon.signFlipSuspected).toBe(true)
+  })
+
+  it('a plain mismatch (not the exact opposite) is NOT a suspected sign flip', () => {
+    const recon = reconcileClosedGroup([{ realized_pnl: 7500 }], 7000)
+    expect(recon.matches).toBe(false)
+    expect(recon.signFlipSuspected).toBe(false)
+  })
+
+  it('a near-zero computed total never suggests a flip (flipping ~0 fixes nothing)', () => {
+    // computed 0.90 vs reported -0.90: diff 1.80 is a mismatch and the values
+    // are exact opposites, but |computed| <= the $1 tolerance — flipping the
+    // side of a ~$0 group is meaningless noise, so no flip is suggested.
+    const recon = reconcileClosedGroup([{ realized_pnl: 0.9 }], -0.9)
+    expect(recon.matches).toBe(false)
+    expect(recon.signFlipSuspected).toBe(false)
   })
 })
 
