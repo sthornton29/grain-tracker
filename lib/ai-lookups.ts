@@ -59,25 +59,38 @@ export function parseArcBenchmarkRequest(body: unknown): ParseResult<ArcBenchmar
 export type ArcBenchmarkLookupResult = {
   benchmark_yield: number | null
   benchmark_price: number | null
+  // The crop year the returned numbers are actually FOR: the requested year
+  // when FSA has published it, else the most recent prior year with published
+  // FSA benchmark data (early in a program year the current year often isn't
+  // out yet). null when the model didn't say.
+  data_year: number | null
   source_description: string
   confidence: 'high' | 'low'
 }
 
 // Normalize whatever JSON came back into the contract. The source_description
 // always names the county + state so the user can verify the right county was
-// found — prepended if the model left it out.
+// found — and, when the numbers came from an earlier year than requested,
+// always names that year. Both are prepended if the model left them out.
 export function normalizeArcBenchmarkResult(
   raw: unknown,
-  loc: { county: string; state: string },
+  loc: { county: string; state: string; cropYear?: number },
 ): ArcBenchmarkLookupResult {
   const r = (raw ?? {}) as Record<string, unknown>
+  const dataYear = typeof r.data_year === 'number' && Number.isInteger(r.data_year) && r.data_year > 1990 && r.data_year < 2100
+    ? r.data_year
+    : null
   let desc = typeof r.source_description === 'string' ? r.source_description : ''
   if (!desc.toLowerCase().includes(loc.county.toLowerCase())) {
     desc = `${loc.county} County, ${loc.state}: ${desc}`.trim().replace(/:\s*$/, '')
   }
+  if (dataYear != null && loc.cropYear != null && dataYear !== loc.cropYear && !desc.includes(String(dataYear))) {
+    desc = `${dataYear} data (most recent available — ${loc.cropYear} not yet published): ${desc}`
+  }
   return {
     benchmark_yield: typeof r.benchmark_yield === 'number' && Number.isFinite(r.benchmark_yield) ? r.benchmark_yield : null,
     benchmark_price: typeof r.benchmark_price === 'number' && Number.isFinite(r.benchmark_price) ? r.benchmark_price : null,
+    data_year: dataYear,
     source_description: desc,
     confidence: r.confidence === 'high' ? 'high' : 'low',
   }

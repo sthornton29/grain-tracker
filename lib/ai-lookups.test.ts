@@ -56,7 +56,41 @@ describe('normalizeArcBenchmarkResult', () => {
     const r = normalizeArcBenchmarkResult({ benchmark_yield: 'about 185', benchmark_price: NaN }, { county: 'Lee', state: 'MS' })
     expect(r.benchmark_yield).toBeNull()
     expect(r.benchmark_price).toBeNull()
+    expect(r.data_year).toBeNull()
     expect(r.confidence).toBe('low')
+  })
+
+  // Most-recent-available-year fallback: when the requested crop year isn't
+  // published yet, the model reports the latest year it found via data_year.
+  describe('data_year (most recent available crop year)', () => {
+    it('passes the data year through and leaves the description alone when it names the year', () => {
+      const r = normalizeArcBenchmarkResult(
+        { benchmark_yield: 182, data_year: 2024, source_description: 'FSA 2024 ARC-CO file for Lee County, Mississippi (2025 not yet published).' },
+        { county: 'Lee', state: 'Mississippi', cropYear: 2025 },
+      )
+      expect(r.data_year).toBe(2024)
+      expect(r.source_description).toBe('FSA 2024 ARC-CO file for Lee County, Mississippi (2025 not yet published).')
+    })
+    it('prepends the fallback-year note when the model reported a prior year but left it out of the description', () => {
+      const r = normalizeArcBenchmarkResult(
+        { benchmark_yield: 182, data_year: 2024, source_description: 'FSA ARC/PLC data for Lee County, Mississippi.' },
+        { county: 'Lee', state: 'Mississippi', cropYear: 2025 },
+      )
+      expect(r.source_description).toBe('2024 data (most recent available — 2025 not yet published): FSA ARC/PLC data for Lee County, Mississippi.')
+    })
+    it('no year note when the data is for the requested year', () => {
+      const r = normalizeArcBenchmarkResult(
+        { benchmark_yield: 182, data_year: 2025, source_description: 'FSA data for Lee County, Mississippi.' },
+        { county: 'Lee', state: 'Mississippi', cropYear: 2025 },
+      )
+      expect(r.data_year).toBe(2025)
+      expect(r.source_description).toBe('FSA data for Lee County, Mississippi.')
+    })
+    it('rejects garbage data years', () => {
+      expect(normalizeArcBenchmarkResult({ data_year: 'last year' }, { county: 'Lee', state: 'MS', cropYear: 2025 }).data_year).toBeNull()
+      expect(normalizeArcBenchmarkResult({ data_year: 24 }, { county: 'Lee', state: 'MS', cropYear: 2025 }).data_year).toBeNull()
+      expect(normalizeArcBenchmarkResult({ data_year: 2024.5 }, { county: 'Lee', state: 'MS', cropYear: 2025 }).data_year).toBeNull()
+    })
   })
 })
 

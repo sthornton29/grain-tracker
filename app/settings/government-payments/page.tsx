@@ -866,7 +866,7 @@ function AddBenchmarkForm({ commodities, counties, existing, preferredCountyIds,
   )
 }
 
-type AiLookup = { benchmark_yield: number | null; benchmark_price: number | null; source_description: string; confidence: 'high' | 'low' }
+type AiLookup = { benchmark_yield: number | null; benchmark_price: number | null; data_year: number | null; source_description: string; confidence: 'high' | 'low' }
 
 function BenchmarkRow({ row, commodity, counties, cropYear, onSave, onDelete, onErr }: {
   row: ArcBenchmarkData
@@ -988,6 +988,11 @@ function BenchmarkRow({ row, commodity, counties, cropYear, onSave, onDelete, on
               <span>
                 AI found: yield <b>{aiResult.benchmark_yield ?? '—'}</b>, price <b>{aiResult.benchmark_price != null ? `$${aiResult.benchmark_price}` : '—'}</b>{' '}
                 <span className={`text-xs rounded-full px-1.5 py-0.5 ${aiResult.confidence === 'high' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>{aiResult.confidence} confidence</span>
+                {aiResult.data_year != null && aiResult.data_year !== cropYear && (
+                  <span className="ml-1 text-xs rounded-full px-1.5 py-0.5 bg-amber-100 text-amber-800" title={`FSA hasn't published ${cropYear} benchmark data yet — this is the most recent available year. Re-run the lookup once ${cropYear} is out.`}>
+                    {aiResult.data_year} data — {cropYear} not yet published
+                  </span>
+                )}
               </span>
               <span className="text-xs text-slate-500 flex-1 min-w-[200px]">{aiResult.source_description}</span>
               {(aiResult.benchmark_yield != null || aiResult.benchmark_price != null) && aiResult.confidence === 'high' ? (
