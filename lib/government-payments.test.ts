@@ -44,7 +44,7 @@ function priceData(over: Partial<ArcPlcPriceData> = {}): ArcPlcPriceData {
 
 function benchmarkRow(over: Partial<ArcBenchmarkData> = {}): ArcBenchmarkData {
   return {
-    id: 'bm', commodity_id: 'corn', crop_year: 2026, county: null,
+    id: 'bm', commodity_id: 'corn', crop_year: 2026, county: null, county_id: null,
     benchmark_price: 5.03, benchmark_yield: 200,
     price_source: 'usda', yield_source: 'usda',
     county_yield_vs_benchmark_pct: 0, source_description: null,
@@ -315,6 +315,36 @@ describe('resolveArcBenchmark', () => {
   it('null when no rows match the commodity/year', () => {
     expect(resolveArcBenchmark({ commodityId: 'soy', cropYear: 2026, county: null, benchmarks: rows })).toBeNull()
     expect(resolveArcBenchmark({ commodityId: 'corn', cropYear: 2025, county: null, benchmarks: rows })).toBeNull()
+  })
+
+  // County names repeat across states (30+ Washington Counties) — county_id
+  // (which carries the state) is the key; the name only matches legacy rows.
+  describe('county_id disambiguation', () => {
+    const twoStates: ArcBenchmarkData[] = [
+      benchmarkRow({ id: 'default', county: null }),
+      benchmarkRow({ id: 'wash-ar', county: 'Washington', county_id: 'cid-wash-ar', benchmark_yield: 185 }),
+      benchmarkRow({ id: 'wash-al', county: 'Washington', county_id: 'cid-wash-al', benchmark_yield: 142 }),
+    ]
+    it('resolves same-named counties by county_id', () => {
+      expect(resolveArcBenchmark({ commodityId: 'corn', cropYear: 2026, county: 'Washington', countyId: 'cid-wash-al', benchmarks: twoStates })?.id).toBe('wash-al')
+      expect(resolveArcBenchmark({ commodityId: 'corn', cropYear: 2026, county: 'Washington', countyId: 'cid-wash-ar', benchmarks: twoStates })?.id).toBe('wash-ar')
+    })
+    it("never name-matches a row pinned to a DIFFERENT county_id — a Washington County in a third state gets the default row, not another state's yield", () => {
+      expect(resolveArcBenchmark({ commodityId: 'corn', cropYear: 2026, county: 'Washington', countyId: 'cid-wash-ut', benchmarks: twoStates })?.id).toBe('default')
+    })
+    it('a caller with a countyId still name-matches legacy rows that lack one', () => {
+      const legacy: ArcBenchmarkData[] = [
+        benchmarkRow({ id: 'default', county: null }),
+        benchmarkRow({ id: 'legacy-lee', county: 'Lee', county_id: null, benchmark_yield: 170 }),
+      ]
+      expect(resolveArcBenchmark({ commodityId: 'corn', cropYear: 2026, county: 'Lee', countyId: 'cid-lee-ms', benchmarks: legacy })?.id).toBe('legacy-lee')
+    })
+    it('the default row requires county_id null too', () => {
+      const noDefault: ArcBenchmarkData[] = [
+        benchmarkRow({ id: 'wash-ar', county: 'Washington', county_id: 'cid-wash-ar' }),
+      ]
+      expect(resolveArcBenchmark({ commodityId: 'corn', cropYear: 2026, county: 'Lee', countyId: 'cid-lee-ms', benchmarks: noDefault })).toBeNull()
+    })
   })
 })
 

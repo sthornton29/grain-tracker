@@ -212,6 +212,7 @@ export default function GovernmentPaymentsSettingsPage() {
     id?: string
     commodity_id: string
     county: string | null
+    county_id: string | null
     benchmark_price: number | null
     benchmark_yield: number | null
     price_source?: 'usda' | 'manual' | 'ai'
@@ -222,6 +223,7 @@ export default function GovernmentPaymentsSettingsPage() {
       commodity_id: patch.commodity_id,
       crop_year: cropYear,
       county: patch.county,
+      county_id: patch.county_id,
       benchmark_price: patch.benchmark_price,
       benchmark_yield: patch.benchmark_yield,
       price_source: patch.price_source ?? 'manual',
@@ -776,32 +778,48 @@ function ProgramParamsRow({ year, config, onSave }: {
 
 // ---------- ARC-CO Benchmarks ----------
 
+// County + state label used everywhere a benchmark county is shown or picked —
+// county names repeat across states, so a bare name is ambiguous.
+const countyLabel = (c: County) => `${c.name}, ${c.state_code}`
+
 function AddBenchmarkForm({ commodities, counties, existing, onAdd }: {
   commodities: CoveredCommodity[]
   counties: County[]
   existing: ArcBenchmarkData[]
-  onAdd: (patch: { commodity_id: string; county: string | null; benchmark_price: number | null; benchmark_yield: number | null }) => void
+  onAdd: (patch: { commodity_id: string; county: string | null; county_id: string | null; benchmark_price: number | null; benchmark_yield: number | null }) => void
 }) {
   const [commodity, setCommodity] = useState('')
   const [county, setCounty] = useState('')
   const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm bg-white'
-  const dup = commodity !== '' && existing.some((b) => b.commodity_id === commodity && (b.county ?? '') === county.trim())
+  // The typed text must resolve to a real "County, ST" so the row carries the
+  // county_id (and therefore the state) — never a bare name.
+  const countyRec = useMemo(() => {
+    const t = county.trim().toLowerCase()
+    return t === '' ? null : counties.find((c) => countyLabel(c).toLowerCase() === t) ?? null
+  }, [county, counties])
+  const unmatched = county.trim() !== '' && !countyRec
+  const dup = commodity !== '' && existing.some((b) =>
+    b.commodity_id === commodity &&
+    (countyRec
+      ? b.county_id === countyRec.id || (b.county_id == null && (b.county ?? '').trim().toLowerCase() === countyRec.name.toLowerCase())
+      : county.trim() === '' && b.county_id == null && (b.county ?? '').trim() === ''))
   return (
     <div className="flex flex-wrap items-end gap-2 border border-slate-200 rounded-lg p-3">
       <select value={commodity} onChange={(e) => setCommodity(e.target.value)} className={inputCls}>
         <option value="">Commodity…</option>
         {commodities.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
-      <input list="benchmark-counties" placeholder="County (blank = all)" value={county} onChange={(e) => setCounty(e.target.value)} className={inputCls} />
+      <input list="benchmark-counties" placeholder="County, ST (blank = all)" value={county} onChange={(e) => setCounty(e.target.value)} className={inputCls} />
       <datalist id="benchmark-counties">
-        {counties.map((c) => <option key={c.id} value={c.name} />)}
+        {counties.map((c) => <option key={c.id} value={countyLabel(c)} />)}
       </datalist>
       <button
-        onClick={() => { if (commodity && !dup) { onAdd({ commodity_id: commodity, county: county.trim() || null, benchmark_price: null, benchmark_yield: null }); setCommodity(''); setCounty('') } }}
-        disabled={!commodity || dup}
+        onClick={() => { if (commodity && !dup && !unmatched) { onAdd({ commodity_id: commodity, county: countyRec?.name ?? null, county_id: countyRec?.id ?? null, benchmark_price: null, benchmark_yield: null }); setCommodity(''); setCounty('') } }}
+        disabled={!commodity || dup || unmatched}
         className="rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50"
       >Add row</button>
       {dup && <span className="text-xs text-amber-700">That commodity × county row already exists.</span>}
+      {unmatched && !dup && <span className="text-xs text-amber-700">Pick a county from the list as “County, ST”.</span>}
     </div>
   )
 }
@@ -814,7 +832,7 @@ function BenchmarkRow({ row, commodity, counties, cropYear, onSave, onDelete, on
   counties: County[]
   cropYear: number
   onSave: (patch: {
-    id?: string; commodity_id: string; county: string | null; benchmark_price: number | null; benchmark_yield: number | null
+    id?: string; commodity_id: string; county: string | null; county_id: string | null; benchmark_price: number | null; benchmark_yield: number | null
     price_source?: 'usda' | 'manual' | 'ai'; yield_source?: 'usda' | 'manual' | 'ai'; source_description?: string | null
   }) => void
   onDelete: (id: string) => void
@@ -829,21 +847,39 @@ function BenchmarkRow({ row, commodity, counties, cropYear, onSave, onDelete, on
     setYld(row.benchmark_yield != null ? String(Number(row.benchmark_yield)) : '')
   }, [row])
 
+  // The county record behind this row: by county_id, or — for legacy rows that
+  // predate county_id — by name when that name is unambiguous nationwide.
+  // Saving through this row persists the resolved id, healing legacy rows.
+  const countyRec = useMemo(() => {
+    if (row.county_id) return counties.find((c) => c.id === row.county_id) ?? null
+    const name = (row.county ?? '').trim().toLowerCase()
+    if (!name) return null
+    const matches = counties.filter((c) => c.name.trim().toLowerCase() === name)
+    return matches.length === 1 ? matches[0] : null
+  }, [row.county_id, row.county, counties])
+  const ambiguousLegacy = row.county != null && row.county.trim() !== '' && !countyRec
+
   const sourceChip = (s: 'usda' | 'manual' | 'ai') => (
     <span className={`text-[10px] rounded-full px-1.5 py-0.5 ${s === 'usda' ? 'bg-green-100 text-green-800' : s === 'ai' ? 'bg-violet-100 text-violet-800' : 'bg-slate-200 text-slate-600'}`}>{s}</span>
   )
 
   async function aiLookup() {
     if (!commodity) return
+    if (!countyRec) {
+      onErr(ambiguousLegacy
+        ? `Can't tell which state "${row.county}" is in — delete this row and re-add it picking “County, ST” from the list, then retry the AI lookup.`
+        : 'The AI lookup needs a county + state. The default (all counties) row holds the national benchmark price — add county rows for yields, or copy the price from one.')
+      return
+    }
     setLooking(true); setAiResult(null)
     try {
-      const countyRec = counties.find((c) => c.name.trim().toLowerCase() === (row.county ?? '').trim().toLowerCase())
       const res = await fetch('/api/arc-benchmark-lookup', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           commodity: commodity.name,
-          county: row.county ?? counties[0]?.name ?? '',
-          state: countyRec?.state ?? counties[0]?.state ?? '',
+          county: countyRec.name,
+          state: countyRec.state,
+          county_id: countyRec.id,
           crop_year: cropYear,
         }),
       })
@@ -860,7 +896,8 @@ function BenchmarkRow({ row, commodity, counties, cropYear, onSave, onDelete, on
   function confirmAi() {
     if (!aiResult) return
     onSave({
-      id: row.id, commodity_id: row.commodity_id, county: row.county,
+      id: row.id, commodity_id: row.commodity_id,
+      county: countyRec?.name ?? row.county, county_id: countyRec?.id ?? row.county_id,
       benchmark_price: aiResult.benchmark_price ?? (price.trim() !== '' ? Number(price) : null),
       benchmark_yield: aiResult.benchmark_yield ?? (yld.trim() !== '' ? Number(yld) : null),
       price_source: aiResult.benchmark_price != null ? 'ai' : row.price_source,
@@ -875,7 +912,11 @@ function BenchmarkRow({ row, commodity, counties, cropYear, onSave, onDelete, on
     <>
       <tr className="border-t border-slate-100 align-middle">
         <td className="px-3 py-2 font-semibold whitespace-nowrap">{commodity?.name ?? '—'}</td>
-        <td className="px-3 py-2 whitespace-nowrap">{row.county ?? <span className="text-slate-400">all counties</span>}</td>
+        <td className="px-3 py-2 whitespace-nowrap">
+          {countyRec ? countyLabel(countyRec)
+            : ambiguousLegacy ? <span title="This row predates county+state keying and its name exists in several states — re-add it as “County, ST”.">{row.county} <span className="text-xs text-amber-700">(state unknown)</span></span>
+            : <span className="text-slate-400">all counties</span>}
+        </td>
         <td className="px-3 py-2"><input type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} className={inputCls} /></td>
         <td className="px-3 py-2"><input type="number" step="0.1" value={yld} onChange={(e) => setYld(e.target.value)} className={inputCls} /></td>
         <td className="px-3 py-2 whitespace-nowrap">
@@ -884,10 +925,15 @@ function BenchmarkRow({ row, commodity, counties, cropYear, onSave, onDelete, on
         </td>
         <td className="px-3 py-2 whitespace-nowrap">
           <button
-            onClick={() => onSave({ id: row.id, commodity_id: row.commodity_id, county: row.county, benchmark_price: num(price), benchmark_yield: num(yld), price_source: 'manual', yield_source: 'manual', source_description: row.source_description })}
+            onClick={() => onSave({ id: row.id, commodity_id: row.commodity_id, county: countyRec?.name ?? row.county, county_id: countyRec?.id ?? row.county_id, benchmark_price: num(price), benchmark_yield: num(yld), price_source: 'manual', yield_source: 'manual', source_description: row.source_description })}
             className="text-green-700 font-semibold mr-3"
           >Save</button>
-          <button onClick={aiLookup} disabled={looking} className="rounded-lg bg-violet-700 text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50">
+          <button
+            onClick={aiLookup}
+            disabled={looking || !countyRec}
+            title={countyRec ? undefined : ambiguousLegacy ? 'State unknown — re-add this row as “County, ST” first.' : 'AI lookup needs a county + state — add county rows for yields.'}
+            className="rounded-lg bg-violet-700 text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
+          >
             {looking ? 'Searching…' : 'AI lookup'}
           </button>
         </td>

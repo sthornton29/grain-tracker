@@ -394,7 +394,11 @@ export type ArcBenchmarkData = {
   id: string
   commodity_id: string
   crop_year: number
+  // Display name; county_id (→ counties, which carries the state) is the key.
+  // Both null = the all-counties default row. county set with county_id null =
+  // a legacy row whose name was ambiguous across states at backfill time.
   county: string | null
+  county_id: string | null
   benchmark_price: number | null
   benchmark_yield: number | null
   price_source: 'usda' | 'manual' | 'ai'
@@ -414,7 +418,9 @@ export type MyaMonthlyPrice = {
   crop_year: number
   month: number
   price: number
-  source: 'usda' | 'manual'
+  // 'manual' = operator-typed (or an AI value the operator edited before
+  // confirming); 'ai' = confirmed from the USDA lookup; 'usda' = legacy rows.
+  source: 'usda' | 'manual' | 'ai'
   created_at: string
   updated_at: string
 }

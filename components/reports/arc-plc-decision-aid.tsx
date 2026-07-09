@@ -100,10 +100,10 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
 
   const commodityById = useMemo(() => new Map(commodities.map((c) => [c.id, c])), [commodities])
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
-  const countyNameById = useMemo(() => new Map(counties.map((c) => [c.id, c.name])), [counties])
-  const farmCounty = (farmId: string): string | null => {
+  const countyById = useMemo(() => new Map(counties.map((c) => [c.id, c])), [counties])
+  const farmCounty = (farmId: string): County | null => {
     const f = farmById.get(farmId)
-    return f?.county_id ? (countyNameById.get(f.county_id) ?? null) : null
+    return f?.county_id ? (countyById.get(f.county_id) ?? null) : null
   }
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings([...plantings.map((p) => p.season_year), ...elections.map((e) => e.crop_year), new Date().getFullYear()], cropYear === '' ? null : cropYear),
@@ -171,8 +171,14 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
       .map((b) => {
         const commodity = commodityById.get(b.commodity_id!)
         if (!commodity) return null
-        const county = farmCounty(b.farm_id)
-        const benchmark = resolveArcBenchmark({ commodityId: b.commodity_id!, cropYear: cropYear as number, county, benchmarks })
+        const countyRec = farmCounty(b.farm_id)
+        // Resolve on county_id — county names repeat across states; the name
+        // is only a fallback for legacy benchmark rows without a county_id.
+        const benchmark = resolveArcBenchmark({
+          commodityId: b.commodity_id!, cropYear: cropYear as number,
+          countyId: countyRec?.id ?? null, county: countyRec?.name ?? null, benchmarks,
+        })
+        const county = countyRec ? `${countyRec.name}, ${countyRec.state_code}` : null
         const shared = {
           commodity,
           baseAcres: Number(b.base_acres),

@@ -145,10 +145,16 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   )
   const programNotice = cropYear === '' ? null : programConfigNotice(programCfg)
 
-  const countyNameById = useMemo(() => new Map(counties.map((c) => [c.id, c.name])), [counties])
+  const countyById = useMemo(() => new Map(counties.map((c) => [c.id, c])), [counties])
+  // county_id is what disambiguates same-named counties across states; the
+  // name rides along as the fallback for legacy benchmark rows.
   const farmCountyList = useMemo(
-    () => farms.map((f) => ({ id: f.id, county: f.county_id ? (countyNameById.get(f.county_id) ?? null) : null })),
-    [farms, countyNameById],
+    () => farms.map((f) => ({
+      id: f.id,
+      county: f.county_id ? (countyById.get(f.county_id)?.name ?? null) : null,
+      county_id: f.county_id ?? null,
+    })),
+    [farms, countyById],
   )
 
   // Project all farm × commodity payments for the year — same engine and same
