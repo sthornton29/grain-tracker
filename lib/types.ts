@@ -472,7 +472,11 @@ export type ArcPlcPayment = {
   id: string
   farm_id: string
   commodity_id: string
+  // PROGRAM year — drives the math (MYA, benchmarks, elections, limits).
   crop_year: number
+  // Generated in the DB as crop_year + 1: the crop year the payment actually
+  // arrives in (October of program year + 1) — drives revenue attribution.
+  revenue_crop_year: number
   election: ArcPlcElectionType
   base_acres: number
   plc_yield: number
@@ -493,6 +497,9 @@ export type OtherGovernmentPayment = {
   id: string
   entity_id: string | null
   program_name: string
+  // The crop year the payment is received in / attributed to (payment year,
+  // NOT a program year). Attribution prefers payment_date's year when set —
+  // see paymentAttributionYear in lib/government-payments.ts.
   crop_year: number
   crop_id: string | null
   farm_id: string | null

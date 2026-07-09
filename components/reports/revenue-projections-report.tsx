@@ -14,12 +14,11 @@ import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { cropToCommodity } from '@/lib/contracts'
 import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
-import { useLiveMya } from '@/lib/use-live-mya'
 import {
   computePolicy, harvestContractLabel, policyPremium,
   type PolicyInputs, type ScoConfig, type EcoConfig,
 } from '@/lib/crop-insurance'
-import { projectPayments, applyMyaResolution } from '@/lib/government-payments'
+import { projectPayments, applyMyaResolution, programYearFor, otherPaymentsInRevenueYear } from '@/lib/government-payments'
 import { computeRevenueProjections, type InsuranceProceeds, type GovtProceeds } from '@/lib/revenue-projections'
 import {
   SummaryCards, EmptyState, fmtUsd, signedTone, toneText,
@@ -306,21 +305,27 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [marketingRows, liveEstimates, priceEstimates, policies, cropYear])
 
-  // Live MYA for the tradeable commodities (shared hook; feeds PLC projections).
-  const liveMya = useLiveMya(cropYear, commodities)
-
   // Government payments allocated per crop: total ARC/PLC (across all farms) and
   // non-crop-specific other payments are split by planted acres; crop-specific
   // other payments go straight to their crop.
+  //
+  // ATTRIBUTION: payments belong to the crop year they're PAID in. ARC/PLC for
+  // program year Y−1 arrives in October of Y, so crop year Y's Govt Payments
+  // column projects program year Y−1 (its own stored/final prices — the live
+  // estimate applies to the current marketing year, not the prior program
+  // year); other payments count by the year they land in (payment-date year,
+  // else crop_year).
   const govtByCrop = useMemo(() => {
     const m = new Map<string, GovtProceeds>()
     if (cropYear === '') return m
-    // Shared MYA resolution (manual override > final > live/stored estimate) —
-    // the same effective prices the Decision Aid and Payment Tracker project from.
-    const effPrice = applyMyaResolution({ cropYear, commodities, priceData: arcPriceData, liveEstimates: liveMya })
-    const projected = projectPayments({ cropYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments })
+    const programYear = programYearFor(cropYear)
+    // Shared MYA resolution for the PROGRAM year (manual override > final >
+    // stored estimate) — the same effective prices the Payment Tracker
+    // projects that program year from.
+    const effPrice = applyMyaResolution({ cropYear: programYear, commodities, priceData: arcPriceData, liveEstimates: new Map() })
+    const projected = projectPayments({ cropYear: programYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments })
     const totalArcPlc = projected.reduce((s, p) => s + p.result.net, 0)
-    const yearOther = otherPayments.filter((o) => o.crop_year === cropYear)
+    const yearOther = otherPaymentsInRevenueYear(otherPayments, cropYear)
     const nonSpecificOther = yearOther.filter((o) => !o.crop_id).reduce((s, o) => s + Number(o.amount), 0)
     const cropSpecific = new Map<string, number>()
     for (const o of yearOther) if (o.crop_id) cropSpecific.set(o.crop_id, (cropSpecific.get(o.crop_id) ?? 0) + Number(o.amount))
@@ -334,7 +339,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       })
     }
     return m
-  }, [cropYear, arcPriceData, liveMya, baseAcres, commodities, elections, arcPayments, otherPayments, marketingRows])
+  }, [cropYear, arcPriceData, baseAcres, commodities, elections, arcPayments, otherPayments, marketingRows])
 
   const { rows, totals } = useMemo(
     () => computeRevenueProjections({
@@ -452,8 +457,12 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                 futures/options P&amp;L counted once. The per-crop and total figures match the dashboard.</p>
               <p><strong className="text-slate-700">Insurance + government payments</strong> — added here on top of crop
                 sales (insurance = indemnity − premium; government = ARC/PLC + other USDA, allocated by planted acres).
-                These are the <strong>only</strong> reason this page&apos;s profit differs from the Marketing Dashboard —
-                with no insurance or government payments for a crop, the two profits match to the cent.</p>
+                Government payments are attributed to the crop year they&apos;re <strong>received</strong> in: for crop
+                year {cropYear}, that&apos;s the {programYearFor(cropYear)} program
+                year&apos;s ARC/PLC (paid October {cropYear}) plus other USDA payments landing
+                in {cropYear}. These are the <strong>only</strong> reason this page&apos;s profit differs from
+                the Marketing Dashboard — with no insurance or government payments for a crop, the two profits match to
+                the cent.</p>
               <p><strong className="text-slate-700">Assumptions</strong> — the Marketing Dashboard&apos;s What-If pricing
                 (assumed basis &amp; assumed futures) is a <strong>standing assumption saved to the crop</strong>, so it
                 flows straight through here and values the unpriced bushels exactly the same way the dashboard does.</p>

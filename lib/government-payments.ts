@@ -16,7 +16,7 @@ import {
 } from '@/lib/program-config'
 import type {
   ArcBenchmarkData, ArcPlcElection, ArcPlcElectionType, ArcPlcPayment, ArcPlcPriceData,
-  CoveredCommodity, FarmBaseAcres,
+  CoveredCommodity, FarmBaseAcres, OtherGovernmentPayment,
 } from '@/lib/types'
 
 // The 85% base-acre payment factor applies to ARC-CO and PLC gross payments
@@ -391,10 +391,53 @@ export function expectedCountyYield(benchmarkYield: number, vsBenchmarkPct: numb
   return round2(benchmarkYield * (1 + vsBenchmarkPct / 100))
 }
 
-// ARC/PLC for a crop year is paid in October of the following year. Returns an
-// ISO date string (Oct 1 of crop_year + 1).
-export function expectedArcPlcDate(cropYear: number): string {
-  return `${cropYear + 1}-10-01`
+// ---------- Program year vs revenue crop year ----------
+// ARC/PLC for PROGRAM year N is paid in October of N+1. All the math (MYA,
+// benchmarks, base acres, elections, payment limits) is keyed to the program
+// year; revenue attribution belongs to the crop year the cash arrives in.
+// These two functions are the ONE place the +1 lives — never scatter it.
+
+export function revenueCropYearFor(programYear: number): number {
+  return programYear + 1
+}
+
+export function programYearFor(revenueCropYear: number): number {
+  return revenueCropYear - 1
+}
+
+// ARC/PLC for a program year is paid in October of the following (revenue)
+// crop year. Returns an ISO date string (Oct 1 of program year + 1).
+export function expectedArcPlcDate(programYear: number): string {
+  return `${revenueCropYearFor(programYear)}-10-01`
+}
+
+// The crop year an other-USDA payment is attributed to: the payment date's
+// year when one is entered, else its crop_year (which, for manual entries,
+// means the payment/attribution year — not a program year).
+export function paymentAttributionYear(o: Pick<OtherGovernmentPayment, 'payment_date' | 'crop_year'>): number {
+  if (o.payment_date) {
+    const y = Number(o.payment_date.slice(0, 4))
+    if (Number.isFinite(y) && y > 0) return y
+  }
+  return o.crop_year
+}
+
+// Other USDA payments landing in a revenue crop year.
+export function otherPaymentsInRevenueYear<T extends Pick<OtherGovernmentPayment, 'payment_date' | 'crop_year'>>(
+  payments: readonly T[],
+  revenueCropYear: number,
+): T[] {
+  return payments.filter((o) => paymentAttributionYear(o) === revenueCropYear)
+}
+
+// Existing other-payment entries that look like they were entered under the
+// OLD program-year semantics: a payment date in the year AFTER their
+// crop_year. Surfaced once in the Payment Tracker for review — crop_year now
+// means the year the payment is received.
+export function suspectProgramYearEntries<T extends Pick<OtherGovernmentPayment, 'payment_date' | 'crop_year'>>(
+  payments: readonly T[],
+): T[] {
+  return payments.filter((o) => o.payment_date != null && Number(o.payment_date.slice(0, 4)) === o.crop_year + 1)
 }
 
 // Per-entity payment limit total = eligible persons × per-person limit.

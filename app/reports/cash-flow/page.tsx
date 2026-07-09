@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
-import { projectPayments, expectedArcPlcDate } from '@/lib/government-payments'
+import { projectPayments, expectedArcPlcDate, programYearFor, paymentAttributionYear } from '@/lib/government-payments'
 import { projectInsuranceIndemnities, actualYieldByCropFromLoads, type LiveHarvest } from '@/lib/crop-insurance'
 import { resolveProgramYearConfig } from '@/lib/program-config'
 import ExportBar from '@/components/export-bar'
@@ -416,9 +416,13 @@ export default function CashFlowPage() {
       return b
     }
 
-    // ARC/PLC — net projections per crop year, placed in October of year + 1.
-    const electionYears = cropYear !== '' ? [cropYear] : Array.from(new Set(elections.map((e) => e.crop_year)))
-    for (const yr of electionYears) {
+    // ARC/PLC — net projections per PROGRAM year, placed in October of program
+    // year + 1 (the revenue crop year). Filtering to crop year Y therefore
+    // shows the program-year-Y−1 payment arriving in fall Y — the same
+    // attribution Revenue Projections and Income Sensitivity use, so each
+    // program year's payment appears in exactly one crop year everywhere.
+    const programYears = cropYear !== '' ? [programYearFor(cropYear)] : Array.from(new Set(elections.map((e) => e.crop_year)))
+    for (const yr of programYears) {
       if (!cropId) {
         const projected = projectPayments({ cropYear: yr, baseAcres, commodities, elections, priceData: arcPriceData, payments: arcPayments })
         let net = 0
@@ -457,8 +461,10 @@ export default function CashFlowPage() {
     }
 
     // Other USDA payments — on payment_date, else December of the crop year.
+    // Attributed to the year the payment lands in (payment-date year, else
+    // crop_year, which for manual entries means the payment year).
     for (const o of otherPayments) {
-      if (cropYear !== '' && o.crop_year !== cropYear) continue
+      if (cropYear !== '' && paymentAttributionYear(o) !== cropYear) continue
       if (entityId && o.entity_id !== entityId) continue
       if (cropId && o.crop_id !== cropId) continue
       const key = o.payment_date ? monthKey(new Date(o.payment_date + 'T00:00:00')) : `${o.crop_year}-12`
@@ -512,7 +518,10 @@ export default function CashFlowPage() {
   ]
 
   const safetyCards: SummaryCardData[] = [
-    { label: 'ARC/PLC', value: `$${fmt(safetyTotals.arcPlc)}` },
+    {
+      label: cropYear !== '' ? `ARC/PLC (${programYearFor(cropYear)} program year — paid Oct ${cropYear})` : 'ARC/PLC',
+      value: `$${fmt(safetyTotals.arcPlc)}`,
+    },
     { label: 'Crop Insurance', value: `$${fmt(safetyTotals.insurance)}` },
     { label: 'Other Govt', value: `$${fmt(safetyTotals.other)}` },
     { label: 'Total Safety Net', value: `$${fmt(safetyTotals.total)}`, tone: 'favorable' },
@@ -622,9 +631,11 @@ export default function CashFlowPage() {
             </div>
             <SummaryCards cards={safetyCards} />
             <p className="text-xs text-slate-500">
-              <strong>Estimated</strong> — ARC/PLC lands in October of the year after the crop year, crop insurance
-              proceeds in the selected month (default December), other payments on their entered date. Final amounts are
-              determined by RMA / FSA after harvest and the marketing year.
+              <strong>Estimated</strong> — ARC/PLC for a program year lands in October of the following crop year
+              {cropYear !== '' ? <> (shown here: the <strong>{programYearFor(cropYear)} program year</strong> ARC/PLC — paid Oct {cropYear})</> : null},
+              crop insurance proceeds in the selected month (default December), other payments on their entered date
+              (attributed to the year received). Final amounts are determined by RMA / FSA after harvest and the
+              marketing year.
             </p>
           </div>
 
