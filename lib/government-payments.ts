@@ -354,24 +354,34 @@ export function computeArcCoFlatPayment(args: {
   }
 }
 
-// Resolve the benchmark row for a commodity × year × county: a county-specific
-// row (case-insensitive) wins over the county-null default row.
+// Resolve the benchmark row for a commodity × year × county: a countyId
+// (counties.id, which carries the state) match wins, then a name match against
+// legacy rows that lack a county_id (case-insensitive — but never a row pinned
+// to a DIFFERENT county_id, since the same name recurs across states), then
+// the county-null default row.
 export function resolveArcBenchmark(args: {
   commodityId: string
   cropYear: number
   county: string | null | undefined
+  countyId?: string | null
   benchmarks: readonly ArcBenchmarkData[]
 }): ArcBenchmarkData | null {
   const rows = args.benchmarks.filter(
     (b) => b.commodity_id === args.commodityId && b.crop_year === args.cropYear,
   )
   if (rows.length === 0) return null
+  if (args.countyId) {
+    const byId = rows.find((b) => b.county_id === args.countyId)
+    if (byId) return byId
+  }
   const county = args.county?.trim().toLowerCase()
   if (county) {
-    const exact = rows.find((b) => b.county?.trim().toLowerCase() === county)
+    const exact = rows.find(
+      (b) => b.county?.trim().toLowerCase() === county && (b.county_id == null || args.countyId == null),
+    )
     if (exact) return exact
   }
-  return rows.find((b) => b.county == null || b.county.trim() === '') ?? null
+  return rows.find((b) => b.county_id == null && (b.county == null || b.county.trim() === '')) ?? null
 }
 
 // The county-yield expectation applied to a benchmark yield: actual county
@@ -567,8 +577,10 @@ export function projectPayments(args: {
   priceData: ArcPlcPriceData[]
   payments: ArcPlcPayment[]
   // ARC-CO benchmark rows + farm counties; both needed for the engine path.
+  // county_id disambiguates same-named counties across states; the name is the
+  // fallback for legacy benchmark rows that predate county_id.
   benchmarks?: ArcBenchmarkData[]
-  farms?: Array<{ id: string; county?: string | null }>
+  farms?: Array<{ id: string; county?: string | null; county_id?: string | null }>
   // Per-year parameters (from program_year_config). Defaults to built-ins
   // when omitted.
   sequestrationPct?: number
@@ -579,6 +591,7 @@ export function projectPayments(args: {
 }): ProjectedPayment[] {
   const commodityById = new Map(args.commodities.map((c) => [c.id, c]))
   const countyByFarm = new Map((args.farms ?? []).map((f) => [f.id, f.county ?? null]))
+  const countyIdByFarm = new Map((args.farms ?? []).map((f) => [f.id, f.county_id ?? null]))
   const out: ProjectedPayment[] = []
   for (const b of args.baseAcres) {
     // Unassigned (generic) base never generates a payment.
@@ -594,6 +607,7 @@ export function projectPayments(args: {
           commodityId: b.commodity_id,
           cropYear: args.cropYear,
           county: countyByFarm.get(b.farm_id) ?? null,
+          countyId: countyIdByFarm.get(b.farm_id) ?? null,
           benchmarks: args.benchmarks,
         })
       : null

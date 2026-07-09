@@ -31,26 +31,30 @@ export default function CountyYieldExpectation({
   const [absDrafts, setAbsDrafts] = useState<Map<string, string>>(new Map())
   const [err, setErr] = useState<string | null>(null)
 
-  const countyNameById = useMemo(() => new Map(counties.map((c) => [c.id, c.name])), [counties])
+  const countyById = useMemo(() => new Map(counties.map((c) => [c.id, c])), [counties])
 
   // One entry per resolved benchmark row in play: commodity × the counties its
   // base-acre farms sit in (deduped when several counties resolve to the same
-  // default row). Commodities with no benchmark row surface a settings hint.
+  // default row). Counties resolve and display as county + state — names
+  // repeat across states. Commodities with no benchmark row surface a hint.
   const entries = useMemo(() => {
     const byRow = new Map<string, { row: ArcBenchmarkData; commodity: CoveredCommodity; counties: Set<string> }>()
     const missing: Array<{ commodity: CoveredCommodity; county: string }> = []
     for (const c of commodities) {
       const farmIds = new Set(baseAcres.filter((b) => !b.is_unassigned && b.commodity_id === c.id).map((b) => b.farm_id))
       if (farmIds.size === 0) continue
-      const countyNames = new Set<string>()
+      const countyIds = new Set<string>()
       for (const f of farms) {
         if (!farmIds.has(f.id)) continue
-        countyNames.add(f.county_id ? (countyNameById.get(f.county_id) ?? '') : '')
+        countyIds.add(f.county_id ?? '')
       }
-      if (countyNames.size === 0) countyNames.add('')
-      for (const county of countyNames) {
-        const row = resolveArcBenchmark({ commodityId: c.id, cropYear, county: county || null, benchmarks })
-        const label = county || 'all counties'
+      if (countyIds.size === 0) countyIds.add('')
+      for (const countyId of countyIds) {
+        const county = countyId ? countyById.get(countyId) ?? null : null
+        const row = resolveArcBenchmark({
+          commodityId: c.id, cropYear, countyId: countyId || null, county: county?.name ?? null, benchmarks,
+        })
+        const label = county ? `${county.name}, ${county.state_code}` : 'all counties'
         if (!row) {
           missing.push({ commodity: c, county: label })
           continue
@@ -61,7 +65,7 @@ export default function CountyYieldExpectation({
       }
     }
     return { rows: [...byRow.values()], missing }
-  }, [commodities, baseAcres, farms, countyNameById, cropYear, benchmarks])
+  }, [commodities, baseAcres, farms, countyById, cropYear, benchmarks])
 
   async function commit(row: ArcBenchmarkData, pct: number) {
     const clamped = Math.max(-30, Math.min(30, Math.round(pct * 10) / 10))

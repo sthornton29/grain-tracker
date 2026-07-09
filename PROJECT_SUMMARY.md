@@ -373,7 +373,7 @@ Extracted rows are fuzzy-matched (`lib/fuzzy.ts`) to existing reference data and
 ```bash
 npm install
 cp .env.local.example .env.local      # then fill in the values below
-# In the Supabase SQL editor, run supabase/schema.sql, then 002…033 in order
+# In the Supabase SQL editor, run supabase/schema.sql, then 002…038 in order
 # Create a Supabase Auth user (this app has no self-serve signup)
 npm run dev
 ```

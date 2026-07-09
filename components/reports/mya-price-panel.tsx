@@ -18,6 +18,9 @@ import {
   resolveMyaPrice, effectiveReferencePrice, MYA_STATE_LABEL, type MyaResolution,
 } from '@/lib/government-payments'
 import { marketingYearMonths, describeMyaComposition } from '@/lib/mya-estimate'
+import {
+  defaultConfirmedMonths, planMonthlySaves, type MyaMonthlyLookupResult,
+} from '@/lib/ai-lookups'
 import type { LiveMyaDetail } from '@/lib/use-live-mya'
 import SeedCottonCalculator from '@/components/government/seed-cotton-calculator'
 import { theadCls, toneText } from '@/components/reports/report-kit'
@@ -50,6 +53,13 @@ export default function MyaPricePanel({
   const [saving, setSaving] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [err, setErr] = useState<string | null>(null)
+  // USDA monthly-price AI lookup, keyed commodity × crop year like the drafts:
+  // the fetched months, which ones the user has confirmed, and any edits made
+  // to the fetched values before confirming. Never auto-saved.
+  const [aiLookups, setAiLookups] = useState<Map<string, MyaMonthlyLookupResult>>(new Map())
+  const [aiLooking, setAiLooking] = useState<Set<string>>(new Set())
+  const [aiConfirmed, setAiConfirmed] = useState<Map<string, Set<number>>>(new Map())
+  const [aiEdits, setAiEdits] = useState<Map<string, Map<number, string>>>(new Map())
 
   const draftKey = (commodityId: string) => `${cropYear}:${commodityId}`
   const storedFor = (commodityId: string) =>
@@ -120,7 +130,7 @@ export default function MyaPricePanel({
       const v = Number(trimmed)
       if (!Number.isFinite(v) || v < 0) { setSaving((s) => { const n = new Set(s); n.delete(c.id); return n }); return }
       ;({ error } = await supabase.from('mya_monthly_prices').upsert(
-        { commodity_id: c.id, crop_year: cropYear, month, price: v, source: 'usda', updated_at: new Date().toISOString() },
+        { commodity_id: c.id, crop_year: cropYear, month, price: v, source: 'manual', updated_at: new Date().toISOString() },
         { onConflict: 'commodity_id,crop_year,month' },
       ))
     }
@@ -128,6 +138,72 @@ export default function MyaPricePanel({
     if (error) { setErr(`Could not save the ${c.name} monthly price: ${error.message}`); return }
     setErr(null)
     setMonthDrafts((m) => { const n = new Map(m); n.delete(`${draftKey(c.id)}:${month}`); return n })
+    onChanged()
+    onRefreshEstimates?.()
+  }
+
+  async function lookupUsdaPrices(c: CoveredCommodity) {
+    const k = draftKey(c.id)
+    setAiLooking((s) => new Set(s).add(k))
+    setErr(null)
+    try {
+      const res = await fetch('/api/mya-monthly-lookup', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          commodity: c.name,
+          marketing_year: cropYear,
+          start_month: Number(c.marketing_year_start_month || 9),
+          unit: c.unit === 'pound' ? 'pound' : 'bushel',
+        }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok || !json?.data) { setErr(json?.error ?? `USDA price lookup failed for ${c.name}.`); return }
+      const data = json.data as MyaMonthlyLookupResult
+      const existing = new Set(monthlyFor(c.id).map((m) => m.month))
+      setAiLookups((m) => new Map(m).set(k, data))
+      // Months already entered start UNCHECKED — they are never overwritten
+      // without the user explicitly ticking them.
+      setAiConfirmed((m) => new Map(m).set(k, defaultConfirmedMonths(data.monthly_prices, existing)))
+      setAiEdits((m) => { const n = new Map(m); n.delete(k); return n })
+    } catch {
+      setErr(`USDA price lookup failed for ${c.name} — check your connection and try again.`)
+    } finally {
+      setAiLooking((s) => { const n = new Set(s); n.delete(k); return n })
+    }
+  }
+
+  function dismissLookup(commodityId: string) {
+    const k = draftKey(commodityId)
+    setAiLookups((m) => { const n = new Map(m); n.delete(k); return n })
+    setAiConfirmed((m) => { const n = new Map(m); n.delete(k); return n })
+    setAiEdits((m) => { const n = new Map(m); n.delete(k); return n })
+  }
+
+  async function saveConfirmedMonths(c: CoveredCommodity) {
+    const k = draftKey(c.id)
+    const lookup = aiLookups.get(k)
+    if (!lookup) return
+    const edited = new Map<number, number>()
+    for (const [month, raw] of aiEdits.get(k) ?? []) {
+      const v = Number(raw)
+      if (raw.trim() !== '' && Number.isFinite(v) && v >= 0) edited.set(month, v)
+    }
+    const plan = planMonthlySaves({
+      fetched: lookup.monthly_prices,
+      confirmed: aiConfirmed.get(k) ?? new Set(),
+      edited,
+    })
+    if (plan.length === 0) { dismissLookup(c.id); return }
+    setSaving((s) => new Set(s).add(c.id))
+    const now = new Date().toISOString()
+    const { error } = await supabase.from('mya_monthly_prices').upsert(
+      plan.map((p) => ({ commodity_id: c.id, crop_year: cropYear, month: p.month, price: p.price, source: p.source, updated_at: now })),
+      { onConflict: 'commodity_id,crop_year,month' },
+    )
+    setSaving((s) => { const n = new Set(s); n.delete(c.id); return n })
+    if (error) { setErr(`Could not save the ${c.name} USDA prices: ${error.message}`); return }
+    setErr(null)
+    dismissLookup(c.id)
     onChanged()
     onRefreshEstimates?.()
   }
@@ -278,6 +354,13 @@ export default function MyaPricePanel({
                               {c.mya_basis_adj != null ? ` (futures ${Number(c.mya_basis_adj) < 0 ? '−' : '+'} $${Math.abs(Number(c.mya_basis_adj)).toFixed(2)})` : ''}.
                               <span className="ml-1 font-semibold">{monthly.length} of 12 filled.</span>
                             </div>
+                            <button
+                              onClick={() => lookupUsdaPrices(c)}
+                              disabled={busy || aiLooking.has(draftKey(c.id))}
+                              className="rounded-lg bg-violet-700 text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
+                            >
+                              {aiLooking.has(draftKey(c.id)) ? 'Searching…' : 'Look up USDA prices'}
+                            </button>
                           </div>
                           <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
                             {months.map((m) => {
@@ -286,7 +369,10 @@ export default function MyaPricePanel({
                               const monthDetail = detail?.composition?.months.find((x) => x.month === m.month)
                               return (
                                 <label key={m.month} className="text-xs flex flex-col gap-0.5">
-                                  <span className={existing ? 'text-green-700 font-semibold' : 'text-slate-500'}>
+                                  <span
+                                    className={existing?.source === 'ai' ? 'text-violet-700 font-semibold' : existing ? 'text-green-700 font-semibold' : 'text-slate-500'}
+                                    title={existing?.source === 'ai' ? 'Confirmed from the USDA AI lookup' : existing ? 'Entered manually' : undefined}
+                                  >
                                     {MONTH_ABBR[m.month - 1]} {String(m.year % 100).padStart(2, '0')}
                                     {!existing && monthDetail?.source === 'futures' && monthDetail.symbol ? ` · ${monthDetail.symbol}` : ''}
                                   </span>
@@ -304,6 +390,85 @@ export default function MyaPricePanel({
                               )
                             })}
                           </div>
+                          {(() => {
+                            const k = draftKey(c.id)
+                            const lookup = aiLookups.get(k)
+                            if (!lookup) return null
+                            const confirmed = aiConfirmed.get(k) ?? new Set<number>()
+                            const edits = aiEdits.get(k) ?? new Map<number, string>()
+                            const confirmable = lookup.monthly_prices.filter((f) => f.price != null)
+                            const confirmCount = confirmable.filter((f) => confirmed.has(f.month)).length
+                            const toggle = (month: number) => setAiConfirmed((m) => {
+                              const set = new Set(m.get(k) ?? [])
+                              if (set.has(month)) set.delete(month); else set.add(month)
+                              return new Map(m).set(k, set)
+                            })
+                            return (
+                              <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 space-y-2">
+                                <div className="flex flex-wrap items-center gap-2 text-sm">
+                                  <span className="font-semibold">USDA NASS monthly prices found</span>
+                                  <span className={`text-xs rounded-full px-1.5 py-0.5 ${lookup.confidence === 'high' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>{lookup.confidence} confidence</span>
+                                  <span className="text-xs text-slate-500 flex-1 min-w-[200px]">{lookup.source_description}</span>
+                                </div>
+                                <p className="text-xs text-slate-500">
+                                  Check the months to save (source “ai”); edit a value before saving and it becomes “manual”.
+                                  Months you already entered start unchecked and are never overwritten without checking them.
+                                  NASS revises recent months — the one or two most recent published months are often preliminary.
+                                </p>
+                                {confirmable.length === 0 ? (
+                                  <p className="text-xs text-amber-800">No published months found — NASS may not have released prices for this marketing year yet.</p>
+                                ) : (
+                                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                                    {lookup.monthly_prices.map((f) => {
+                                      const existing = monthly.find((mp) => mp.month === f.month)
+                                      const label = `${MONTH_ABBR[f.month - 1]} ${String(f.year % 100).padStart(2, '0')}`
+                                      if (f.price == null) {
+                                        return (
+                                          <div key={f.key} className="text-xs text-slate-400 rounded border border-slate-200 bg-white px-2 py-1.5">
+                                            {label} — not yet published
+                                          </div>
+                                        )
+                                      }
+                                      const differs = existing != null && Number(existing.price) !== f.price
+                                      return (
+                                        <label key={f.key} className={`text-xs flex flex-col gap-0.5 rounded border px-2 py-1.5 bg-white ${differs ? 'border-amber-300' : 'border-slate-200'}`}>
+                                          <span className="flex items-center gap-1.5">
+                                            <input type="checkbox" checked={confirmed.has(f.month)} onChange={() => toggle(f.month)} />
+                                            <span className="font-semibold">{label}</span>
+                                          </span>
+                                          <input
+                                            type="number" step="0.01" min="0"
+                                            value={edits.get(f.month) ?? String(f.price)}
+                                            onChange={(e) => setAiEdits((m) => {
+                                              const inner = new Map(m.get(k) ?? [])
+                                              inner.set(f.month, e.target.value)
+                                              return new Map(m).set(k, inner)
+                                            })}
+                                            className="w-full rounded border border-slate-300 px-1.5 py-1 text-right tabular-nums"
+                                          />
+                                          {existing != null && (
+                                            <span className={differs ? 'text-amber-700' : 'text-slate-400'}>
+                                              {differs ? `differs from your ${fmtPrice(Number(existing.price))}` : 'matches your entry'}
+                                            </span>
+                                          )}
+                                        </label>
+                                      )
+                                    })}
+                                  </div>
+                                )}
+                                <div className="flex items-center gap-3">
+                                  <button
+                                    onClick={() => saveConfirmedMonths(c)}
+                                    disabled={busy || confirmCount === 0}
+                                    className="rounded-lg bg-green-700 text-white px-3 py-1 text-xs font-semibold disabled:opacity-50"
+                                  >
+                                    Save {confirmCount} confirmed month{confirmCount === 1 ? '' : 's'}
+                                  </button>
+                                  <button onClick={() => dismissLookup(c.id)} className="text-xs text-slate-500 underline">dismiss</button>
+                                </div>
+                              </div>
+                            )
+                          })()}
                           {isSeedCotton && (
                             <SeedCottonCalculator
                               commodity={c}
