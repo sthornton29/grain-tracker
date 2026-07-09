@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllCounties } from '@/lib/counties'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import EntityFilter from '@/components/entity-filter'
@@ -68,7 +69,7 @@ export default function GovernmentPaymentsSettingsPage() {
       supabase.from('other_government_payments').select('*').order('created_at', { ascending: false }),
       supabase.from('payment_limit_config').select('*'),
       supabase.from('program_year_config').select('*').order('crop_year', { ascending: false }),
-      supabase.from('counties').select('*').order('name'),
+      fetchAllCounties(supabase),
       supabase.from('arc_benchmark_data').select('*'),
     ])
     setFarms((fa.data as Farm[]) || [])
@@ -83,10 +84,19 @@ export default function GovernmentPaymentsSettingsPage() {
     setOtherPayments((op.data as OtherGovernmentPayment[]) || [])
     setLimits((lim.data as PaymentLimitConfig[]) || [])
     setProgramConfigs((pc.data as ProgramYearConfig[]) || [])
-    setCounties((co.data as County[]) || [])
+    setCounties(co || [])
     setBenchmarks((bm.data as ArcBenchmarkData[]) || [])
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
+
+  // Deep links from the reports (e.g. the Payment Tracker's "ARC-CO settings"
+  // button → #bench): open the hashed section and scroll to it once mounted.
+  useEffect(() => {
+    const h = window.location.hash.replace('#', '')
+    if (!['base', 'elect', 'price', 'bench', 'arc', 'limit', 'program', 'other'].includes(h)) return
+    setOpen(h)
+    requestAnimationFrame(() => document.getElementById(h)?.scrollIntoView({ block: 'start' }))
+  }, [])
 
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings([...plantings.map((p) => p.season_year), cropYear, new Date().getFullYear()]),
@@ -94,6 +104,9 @@ export default function GovernmentPaymentsSettingsPage() {
   )
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const commodityById = useMemo(() => new Map(commodities.map((c) => [c.id, c])), [commodities])
+  // The counties the operation's farms sit in — sorted to the top of the
+  // benchmark county picker.
+  const farmCountyIds = useMemo(() => new Set(farms.map((f) => f.county_id).filter((id): id is string => !!id)), [farms])
   // Resolved program parameters for the selected year (used to default the
   // payment limit, with most-recent-year fallback).
   const programParams = useMemo(() => resolveProgramYearConfig(cropYear, programConfigs), [cropYear, programConfigs])
@@ -316,7 +329,7 @@ export default function GovernmentPaymentsSettingsPage() {
       {err && <p className="text-sm text-red-600">{err}</p>}
 
       {/* Base Acres & Yields */}
-      <Section title="Base Acres & Yields" open={open === 'base'} onToggle={() => setOpen(open === 'base' ? '' : 'base')}>
+      <Section id="base" title="Base Acres & Yields" open={open === 'base'} onToggle={() => setOpen(open === 'base' ? '' : 'base')}>
         <FsaBaseAcresImport farms={entityFarms} commodities={commodities} existingBaseAcres={entityBaseAcres} cropYear={cropYear} onImported={refresh} />
         <AddBaseAcreForm farms={entityFarms} commodities={commodities} onSave={saveBaseAcre} />
 
@@ -378,7 +391,7 @@ export default function GovernmentPaymentsSettingsPage() {
       </Section>
 
       {/* Elections */}
-      <Section title="ARC/PLC Elections" open={open === 'elect'} onToggle={() => setOpen(open === 'elect' ? '' : 'elect')}>
+      <Section id="elect" title="ARC/PLC Elections" open={open === 'elect'} onToggle={() => setOpen(open === 'elect' ? '' : 'elect')}>
         <p className="text-sm text-slate-500">
           Set the program election for each farm × commodity for {cropYear}. Under OBBBA (2025+), SCO can be purchased
           regardless of the ARC/PLC election (subsidy 80%) — the old ARC-blocks-SCO rule no longer applies.
@@ -406,7 +419,7 @@ export default function GovernmentPaymentsSettingsPage() {
       </Section>
 
       {/* Price Data */}
-      <Section title="Price Data" open={open === 'price'} onToggle={() => setOpen(open === 'price' ? '' : 'price')}>
+      <Section id="price" title="Price Data" open={open === 'price'} onToggle={() => setOpen(open === 'price' ? '' : 'price')}>
         <div className="flex items-center gap-3 flex-wrap">
           <p className="text-sm text-slate-500 flex-1">
             MYA estimates are a marketing-year blend (USDA monthly prices + futures-implied months) for
@@ -432,7 +445,7 @@ export default function GovernmentPaymentsSettingsPage() {
       </Section>
 
       {/* ARC-CO benchmarks (FSA-published price & county yield) */}
-      <Section title="ARC-CO Benchmarks" open={open === 'bench'} onToggle={() => setOpen(open === 'bench' ? '' : 'bench')}>
+      <Section id="bench" title="ARC-CO Benchmarks" open={open === 'bench'} onToggle={() => setOpen(open === 'bench' ? '' : 'bench')}>
         <p className="text-sm text-slate-500">
           FSA-published ARC-CO benchmark data for {cropYear}: the <b>benchmark price</b> (national, 5-yr Olympic
           average with effective-reference-price substitution — 2025/2026: corn $5.03, soybeans $12.17, wheat $6.98)
@@ -440,7 +453,7 @@ export default function GovernmentPaymentsSettingsPage() {
           default for all counties; add county rows if your farms span counties with different benchmarks. The AI
           lookup searches FSA/extension publications — you confirm before anything is saved.
         </p>
-        <AddBenchmarkForm commodities={commodities} counties={counties} existing={benchmarks.filter((b) => b.crop_year === cropYear)} onAdd={saveBenchmark} />
+        <AddBenchmarkForm commodities={commodities} counties={counties} existing={benchmarks.filter((b) => b.crop_year === cropYear)} preferredCountyIds={farmCountyIds} onAdd={saveBenchmark} />
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
             <thead className="bg-slate-50 text-slate-600"><tr>{['Commodity', 'County', 'Benchmark Price', 'Benchmark Yield', 'Source', '', ''].map((h, i) => <th key={i} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
@@ -469,7 +482,7 @@ export default function GovernmentPaymentsSettingsPage() {
       </Section>
 
       {/* ARC projected rates — the flat fallback */}
-      <Section title="ARC Flat Rates (fallback)" open={open === 'arc'} onToggle={() => setOpen(open === 'arc' ? '' : 'arc')}>
+      <Section id="arc" title="ARC Flat Rates (fallback)" open={open === 'arc'} onToggle={() => setOpen(open === 'arc' ? '' : 'arc')}>
         <p className="text-sm text-slate-500">
           <b>Fallback only:</b> ARC-CO is normally computed from the benchmark data above (county-revenue engine).
           This flat $/base-acre estimate is used when a county has no benchmark data yet — and for ARC-IC, which FSA
@@ -491,7 +504,7 @@ export default function GovernmentPaymentsSettingsPage() {
       </Section>
 
       {/* Payment limits */}
-      <Section title="Payment Limits" open={open === 'limit'} onToggle={() => setOpen(open === 'limit' ? '' : 'limit')}>
+      <Section id="limit" title="Payment Limits" open={open === 'limit'} onToggle={() => setOpen(open === 'limit' ? '' : 'limit')}>
         <p className="text-sm text-slate-500">Per-person limit defaults to the configured Program Parameters value for {cropYear} ({usd(programParams.perPersonPaymentLimit)}). Total limit = eligible persons × per-person limit.</p>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
@@ -507,7 +520,7 @@ export default function GovernmentPaymentsSettingsPage() {
       </Section>
 
       {/* Program parameters (per-year constants) */}
-      <Section title="Program Parameters" open={open === 'program'} onToggle={() => setOpen(open === 'program' ? '' : 'program')}>
+      <Section id="program" title="Program Parameters" open={open === 'program'} onToggle={() => setOpen(open === 'program' ? '' : 'program')}>
         <p className="text-sm text-slate-500">
           Per-crop-year program values used across crop-insurance and ARC/PLC calculations — all data, not code. The
           OBBBA values (2025–2031): ARC guarantee 90% (was 86%), ARC payment cap 12% (was 10%), ERP Olympic factor
@@ -528,7 +541,7 @@ export default function GovernmentPaymentsSettingsPage() {
       </Section>
 
       {/* Other payments */}
-      <Section title="Other USDA Payments" open={open === 'other'} onToggle={() => setOpen(open === 'other' ? '' : 'other')}>
+      <Section id="other" title="Other USDA Payments" open={open === 'other'} onToggle={() => setOpen(open === 'other' ? '' : 'other')}>
         <AddOtherPaymentForm entities={entityList} crops={crops} farms={entityFarms} cropYear={cropYear} defaultEntityId={entityFilter} onSaved={refresh} onErr={setErr} />
         {(() => { const visibleOther = entityFilter ? otherPayments.filter((p) => p.entity_id === entityFilter) : otherPayments; return (
         <div className="overflow-x-auto">
@@ -558,9 +571,9 @@ export default function GovernmentPaymentsSettingsPage() {
   )
 }
 
-function Section({ title, open, onToggle, children }: { title: string; open: boolean; onToggle: () => void; children: React.ReactNode }) {
+function Section({ id, title, open, onToggle, children }: { id?: string; title: string; open: boolean; onToggle: () => void; children: React.ReactNode }) {
   return (
-    <div className="bg-white rounded-xl shadow overflow-hidden">
+    <div id={id} className="bg-white rounded-xl shadow overflow-hidden scroll-mt-4">
       <button onClick={onToggle} className="w-full text-left px-4 py-3 font-semibold flex items-center justify-between">
         <span>{title}</span><span className="text-slate-400">{open ? '▾' : '▸'}</span>
       </button>
@@ -782,44 +795,73 @@ function ProgramParamsRow({ year, config, onSave }: {
 // county names repeat across states, so a bare name is ambiguous.
 const countyLabel = (c: County) => `${c.name}, ${c.state_code}`
 
-function AddBenchmarkForm({ commodities, counties, existing, onAdd }: {
+function AddBenchmarkForm({ commodities, counties, existing, preferredCountyIds, onAdd }: {
   commodities: CoveredCommodity[]
   counties: County[]
   existing: ArcBenchmarkData[]
+  // The operation's own counties (from farms) — sorted to the top of the list.
+  preferredCountyIds: ReadonlySet<string>
   onAdd: (patch: { commodity_id: string; county: string | null; county_id: string | null; benchmark_price: number | null; benchmark_yield: number | null }) => void
 }) {
   const [commodity, setCommodity] = useState('')
-  const [county, setCounty] = useState('')
+  const [stateCode, setStateCode] = useState('')
+  const [countyId, setCountyId] = useState('')
   const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm bg-white'
-  // The typed text must resolve to a real "County, ST" so the row carries the
-  // county_id (and therefore the state) — never a bare name.
-  const countyRec = useMemo(() => {
-    const t = county.trim().toLowerCase()
-    return t === '' ? null : counties.find((c) => countyLabel(c).toLowerCase() === t) ?? null
-  }, [county, counties])
-  const unmatched = county.trim() !== '' && !countyRec
+  // State first, then county filtered to that state — county names repeat
+  // across states, so the pair is the only unambiguous pick. The county list
+  // is the FULL reference table for the state (fetched paginated — Supabase's
+  // row cap used to truncate it), with the operation's own counties on top.
+  const states = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const c of counties) if (!m.has(c.state_code)) m.set(c.state_code, c.state)
+    return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1]))
+  }, [counties])
+  const stateCounties = useMemo(() => {
+    const list = counties.filter((c) => c.state_code === stateCode).sort((a, b) => a.name.localeCompare(b.name))
+    return {
+      preferred: list.filter((c) => preferredCountyIds.has(c.id)),
+      rest: list.filter((c) => !preferredCountyIds.has(c.id)),
+    }
+  }, [counties, stateCode, preferredCountyIds])
+  const countyRec = countyId ? counties.find((c) => c.id === countyId) ?? null : null
+  const needsCounty = stateCode !== '' && !countyRec
   const dup = commodity !== '' && existing.some((b) =>
     b.commodity_id === commodity &&
     (countyRec
       ? b.county_id === countyRec.id || (b.county_id == null && (b.county ?? '').trim().toLowerCase() === countyRec.name.toLowerCase())
-      : county.trim() === '' && b.county_id == null && (b.county ?? '').trim() === ''))
+      : stateCode === '' && b.county_id == null && (b.county ?? '').trim() === ''))
   return (
     <div className="flex flex-wrap items-end gap-2 border border-slate-200 rounded-lg p-3">
       <select value={commodity} onChange={(e) => setCommodity(e.target.value)} className={inputCls}>
         <option value="">Commodity…</option>
         {commodities.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
-      <input list="benchmark-counties" placeholder="County, ST (blank = all)" value={county} onChange={(e) => setCounty(e.target.value)} className={inputCls} />
-      <datalist id="benchmark-counties">
-        {counties.map((c) => <option key={c.id} value={countyLabel(c)} />)}
-      </datalist>
+      <select value={stateCode} onChange={(e) => { setStateCode(e.target.value); setCountyId('') }} className={inputCls}>
+        <option value="">All counties (default row)</option>
+        {states.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
+      </select>
+      <select value={countyId} onChange={(e) => setCountyId(e.target.value)} disabled={!stateCode} className={`${inputCls} disabled:opacity-50`}>
+        <option value="">{stateCode ? 'County…' : '—'}</option>
+        {stateCounties.preferred.length > 0 ? (
+          <>
+            <optgroup label="Your counties">
+              {stateCounties.preferred.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </optgroup>
+            <optgroup label="All counties">
+              {stateCounties.rest.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </optgroup>
+          </>
+        ) : (
+          stateCounties.rest.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)
+        )}
+      </select>
       <button
-        onClick={() => { if (commodity && !dup && !unmatched) { onAdd({ commodity_id: commodity, county: countyRec?.name ?? null, county_id: countyRec?.id ?? null, benchmark_price: null, benchmark_yield: null }); setCommodity(''); setCounty('') } }}
-        disabled={!commodity || dup || unmatched}
+        onClick={() => { if (commodity && !dup && !needsCounty) { onAdd({ commodity_id: commodity, county: countyRec?.name ?? null, county_id: countyRec?.id ?? null, benchmark_price: null, benchmark_yield: null }); setCommodity(''); setStateCode(''); setCountyId('') } }}
+        disabled={!commodity || dup || needsCounty}
         className="rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50"
       >Add row</button>
       {dup && <span className="text-xs text-amber-700">That commodity × county row already exists.</span>}
-      {unmatched && !dup && <span className="text-xs text-amber-700">Pick a county from the list as “County, ST”.</span>}
+      {needsCounty && !dup && <span className="text-xs text-amber-700">Pick the county (or choose “All counties” for the default row).</span>}
     </div>
   )
 }
@@ -1008,6 +1050,11 @@ function AddOtherPaymentForm({ entities, crops, farms, cropYear, defaultEntityId
         <option value="projected">Projected</option><option value="confirmed">Confirmed</option><option value="received">Received</option>
       </select>
       <button onClick={add} className="rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold">Add</button>
+      <p className="w-full text-xs text-slate-500 mt-1">
+        <strong>Year</strong> = the crop year the payment is <em>received</em> in (the payment year). For
+        program-linked payments paid the fall after the program year (ARC/PLC-style), enter the payment year — the
+        Payment Tracker and revenue reports attribute payments to the year the cash arrives.
+      </p>
     </div>
   )
 }

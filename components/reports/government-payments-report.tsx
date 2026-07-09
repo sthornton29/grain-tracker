@@ -9,15 +9,18 @@
 // when the payment-rate cap binds.
 
 import { useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useLiveMyaDetailed } from '@/lib/use-live-mya'
+import { fetchAllCounties } from '@/lib/counties'
 import EntityFilter from '@/components/entity-filter'
 import MyaPricePanel from '@/components/reports/mya-price-panel'
 import CountyYieldExpectation from '@/components/government/county-yield-expectation'
 import {
   projectPayments, applyMyaResolution, ELECTION_LABEL, paymentLimitTotal,
+  programYearFor, revenueCropYearFor, otherPaymentsInRevenueYear, suspectProgramYearEntries,
   type ProjectedPayment,
 } from '@/lib/government-payments'
 import { resolveProgramYearConfig, programConfigNotice, type ResolvedProgramConfig } from '@/lib/program-config'
@@ -59,6 +62,24 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   const [cropYear, setCropYear] = usePersistentState<number | ''>('gov-pay:cropYear', '')
   const [entityId, setEntityId] = usePersistentState('gov-pay:entity', '')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  // Year framing: 'payment' (default) = the selected year is the crop year the
+  // payments are RECEIVED in (program year = Y−1, paid Oct Y); 'program' = the
+  // selected year is the FSA program year (paid Oct Y+1) — for reconciliation.
+  const [yearBasis, setYearBasis] = usePersistentState<'payment' | 'program'>('gov-pay:yearBasis', 'payment')
+  const [suspectNoteDismissed, setSuspectNoteDismissed] = usePersistentState('gov-pay:program-year-note-dismissed', false)
+
+  // The two derived years — the math is ALWAYS keyed to programYear, the
+  // other-payment pool and labels to paymentYear (= programYear + 1).
+  const programYear: number | '' = cropYear === '' ? '' : yearBasis === 'payment' ? programYearFor(cropYear) : cropYear
+  const paymentYear: number | '' = cropYear === '' ? '' : yearBasis === 'payment' ? cropYear : revenueCropYearFor(cropYear)
+
+  function switchBasis(b: 'payment' | 'program') {
+    if (b === yearBasis) return
+    // Keep the same payment pool on screen: the selected number shifts by ±1
+    // so "2026 payments" and "2025 program year" stay the same view.
+    if (cropYear !== '') setCropYear(b === 'payment' ? cropYear + 1 : cropYear - 1)
+    setYearBasis(b)
+  }
 
   useEffect(() => {
     ;(async () => {
@@ -75,7 +96,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
         supabase.from('other_government_payments').select('*'),
         supabase.from('payment_limit_config').select('*'),
         supabase.from('program_year_config').select('*'),
-        supabase.from('counties').select('*').order('name'),
+        fetchAllCounties(supabase),
         supabase.from('arc_benchmark_data').select('*'),
         supabase.from('mya_monthly_prices').select('*'),
       ])
@@ -91,12 +112,14 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
       setOtherPayments((op.data as OtherGovernmentPayment[]) || [])
       setLimits((lim.data as PaymentLimitConfig[]) || [])
       setProgramConfigs((pc.data as ProgramYearConfig[]) || [])
-      setCounties((co.data as County[]) || [])
+      setCounties(co || [])
       setBenchmarks((bm.data as ArcBenchmarkData[]) || [])
       setMonthlyPrices((mp.data as MyaMonthlyPrice[]) || [])
+      // Seed the year from the latest election's PROGRAM year — shown as its
+      // payment year (program + 1) under the default payment-year basis.
       const yrs = (el.data as ArcPlcElection[] | null)?.map((e) => e.crop_year) ?? []
-      if (yrs.length > 0) setCropYear((cy) => (cy === '' ? Math.max(...yrs) : cy))
-      else setCropYear((cy) => (cy === '' ? new Date().getFullYear() : cy))
+      const seedProgram = yrs.length > 0 ? Math.max(...yrs) : new Date().getFullYear()
+      setCropYear((cy) => (cy === '' ? (yearBasis === 'payment' ? revenueCropYearFor(seedProgram) : seedProgram) : cy))
       setLoading(false)
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -105,23 +128,27 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const entityById = useMemo(() => new Map(entities.map((e) => [e.id, e])), [entities])
   const commodityById = useMemo(() => new Map(commodities.map((c) => [c.id, c])), [commodities])
-  const cropYearOptions = useMemo(
-    () => cropYearOptionsFromPlantings([...plantings.map((p) => p.season_year), ...elections.map((e) => e.crop_year), new Date().getFullYear()], cropYear === '' ? null : cropYear),
-    [plantings, elections, cropYear],
-  )
+  const cropYearOptions = useMemo(() => {
+    const base = [...plantings.map((p) => p.season_year), ...elections.map((e) => e.crop_year), new Date().getFullYear()]
+    // Payment-year basis also needs each program year's payment year (+1) in
+    // the list — e.g. 2025 elections mean 2026 payments.
+    const years = yearBasis === 'payment' ? [...base, ...elections.map((e) => revenueCropYearFor(e.crop_year))] : base
+    return cropYearOptionsFromPlantings(years, cropYear === '' ? null : cropYear)
+  }, [plantings, elections, cropYear, yearBasis])
 
-  // Live MYA estimates — the marketing-year blend (shared hook — resets on
-  // year change so a failed refetch never leaves last year's prices in play).
-  const { prices: liveMya, details: liveDetails, refresh: refreshEstimates } = useLiveMyaDetailed(cropYear, commodities)
+  // Live MYA estimates for the PROGRAM year — the marketing-year blend (shared
+  // hook — resets on year change so a failed refetch never leaves another
+  // year's prices in play).
+  const { prices: liveMya, details: liveDetails, refresh: refreshEstimates } = useLiveMyaDetailed(programYear, commodities)
 
   // Stored price data with the SHARED per-commodity MYA resolution applied
   // (manual override > published final > WASDE > live/stored estimate) — the
   // same function the Decision Aid reads, so both pages project the same
-  // payments.
+  // payments. Keyed to the PROGRAM year: that's what drives the math.
   const effectivePriceData = useMemo(() => {
-    if (cropYear === '') return priceData
-    return applyMyaResolution({ cropYear, commodities, priceData, liveEstimates: liveMya })
-  }, [priceData, liveMya, cropYear, commodities])
+    if (programYear === '') return priceData
+    return applyMyaResolution({ cropYear: programYear, commodities, priceData, liveEstimates: liveMya })
+  }, [priceData, liveMya, programYear, commodities])
 
   // Refetch price/benchmark/monthly data after an MYA toggle, monthly edit, or
   // county-yield change so every projection on the page updates live.
@@ -140,10 +167,10 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   // ARC guarantee/cap %, payment factors), falling back to the most recent
   // configured year when this one is missing.
   const programCfg = useMemo(
-    () => resolveProgramYearConfig(cropYear === '' ? new Date().getFullYear() : cropYear, programConfigs),
-    [cropYear, programConfigs],
+    () => resolveProgramYearConfig(programYear === '' ? new Date().getFullYear() : programYear, programConfigs),
+    [programYear, programConfigs],
   )
-  const programNotice = cropYear === '' ? null : programConfigNotice(programCfg)
+  const programNotice = programYear === '' ? null : programConfigNotice(programCfg)
 
   const countyById = useMemo(() => new Map(counties.map((c) => [c.id, c])), [counties])
   // county_id is what disambiguates same-named counties across states; the
@@ -157,12 +184,13 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     [farms, countyById],
   )
 
-  // Project all farm × commodity payments for the year — same engine and same
-  // inputs as the Decision Aid.
+  // Project all farm × commodity payments for the PROGRAM year — same engine
+  // and same inputs as the Decision Aid. The payment lands in October of
+  // programYear + 1 (the payment year shown in the header).
   const projected: ProjectedPayment[] = useMemo(() => {
-    if (cropYear === '') return []
+    if (programYear === '') return []
     return projectPayments({
-      cropYear, baseAcres, commodities, elections, priceData: effectivePriceData, payments,
+      cropYear: programYear, baseAcres, commodities, elections, priceData: effectivePriceData, payments,
       benchmarks, farms: farmCountyList,
       sequestrationPct: programCfg.sequestrationPct,
       paymentFactor: programCfg.paymentFactor,
@@ -170,7 +198,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
       arcPaymentCapPct: programCfg.arcPaymentCapPct,
       arcIcPaymentFactor: programCfg.arcIcPaymentFactor,
     })
-  }, [cropYear, baseAcres, commodities, elections, effectivePriceData, payments, benchmarks, farmCountyList, programCfg])
+  }, [programYear, baseAcres, commodities, elections, effectivePriceData, payments, benchmarks, farmCountyList, programCfg])
 
   // Only eligible (assigned) base drives the payment columns; unassigned base is
   // excluded from this report entirely.
@@ -191,7 +219,14 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   // (farmId|commodityId) -> projected payment.
   const projByKey = useMemo(() => new Map(projected.map((p) => [`${p.farmId}|${p.commodityId}`, p])), [projected])
 
-  const yearOther = useMemo(() => otherPayments.filter((o) => o.crop_year === cropYear), [otherPayments, cropYear])
+  // Other USDA payments landing in the PAYMENT year (payment-date year, else
+  // crop_year — which for manual entries means the year received).
+  const yearOther = useMemo(
+    () => (paymentYear === '' ? [] : otherPaymentsInRevenueYear(otherPayments, paymentYear)),
+    [otherPayments, paymentYear],
+  )
+  // One-time review note: entries that look like OLD program-year semantics.
+  const suspects = useMemo(() => suspectProgramYearEntries(otherPayments), [otherPayments])
   const otherByFarm = useMemo(() => {
     const m = new Map<string, number>()
     for (const o of yearOther) if (o.farm_id) m.set(o.farm_id, (m.get(o.farm_id) ?? 0) + Number(o.amount))
@@ -240,13 +275,15 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
       let projTotal = 0
       for (const r of farmRows) if (entityFarms.has(r.farm.id)) projTotal += r.arcPlcTotal
       for (const o of yearOther) if (o.entity_id === e.id) projTotal += Number(o.amount)
-      const cfg = limits.find((l) => l.entity_id === e.id && l.crop_year === cropYear)
+      // Limits are a PROGRAM-year concept: the $ cap applies to a program
+      // year's payments regardless of when the cash arrives.
+      const cfg = limits.find((l) => l.entity_id === e.id && l.crop_year === programYear)
       const persons = cfg?.eligible_persons ?? 1
       const perPerson = cfg ? Number(cfg.per_person_limit) : programCfg.perPersonPaymentLimit
       const limit = paymentLimitTotal(persons, perPerson)
       return { entity: e, persons, perPerson, limit, projTotal, remaining: limit - projTotal, pct: limit > 0 ? projTotal / limit : 0 }
-    }).filter((r) => r.projTotal > 0 || limits.some((l) => l.entity_id === r.entity.id && l.crop_year === cropYear))
-  }, [entities, farms, farmRows, yearOther, limits, cropYear, entityId, programCfg])
+    }).filter((r) => r.projTotal > 0 || limits.some((l) => l.entity_id === r.entity.id && l.crop_year === programYear))
+  }, [entities, farms, farmRows, yearOther, limits, programYear, entityId, programCfg])
 
   function toggle(id: string) { setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n }) }
 
@@ -309,7 +346,9 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
 
     return {
       title: 'Government Payment Tracker',
-      filters: `Crop year: ${cropYear || '—'}${entityId ? ` · Entity: ${entityById.get(entityId)?.name ?? ''}` : ''}`,
+      filters: `${yearBasis === 'payment'
+        ? `Payments received in crop year ${paymentYear || '—'} (${programYear || '—'} program year, paid Oct ${paymentYear || '—'})`
+        : `Program year ${programYear || '—'} (paid Oct ${paymentYear || '—'})`}${entityId ? ` · Entity: ${entityById.get(entityId)?.name ?? ''}` : ''}`,
       summary: [
         { label: 'Total ARC/PLC', value: formatNumber(totals.arcPlc, 'usd0'), tone: 'favorable' },
         { label: 'Other USDA', value: formatNumber(totals.other, 'usd0') },
@@ -322,7 +361,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [farmRows, totals, shownCommodities, limitRows, cropYear, onPayloadChange])
+  }, [farmRows, totals, shownCommodities, limitRows, cropYear, yearBasis, onPayloadChange])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   if (loading) return <p className="text-slate-500">Loading…</p>
@@ -331,14 +370,53 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     <div className="space-y-4 print-area">
       <div className="flex flex-wrap gap-3 items-end no-print">
         <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Crop year *</span>
+          <span className="text-slate-500">{yearBasis === 'payment' ? 'Crop year (payments received) *' : 'Program year *'}</span>
           <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
-            <option value="">— pick a crop year —</option>
+            <option value="">— pick a year —</option>
             {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </label>
+        <label className="text-sm flex flex-col gap-1">
+          <span className="text-slate-500">Year basis</span>
+          <span className="inline-flex rounded-lg border border-slate-300 overflow-hidden text-sm">
+            <button
+              onClick={() => switchBasis('payment')}
+              className={`px-3 py-2 ${yearBasis === 'payment' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+              title="Show the payments received in the selected crop year (the year's program payments were earned the prior program year)"
+            >
+              By payment year
+            </button>
+            <button
+              onClick={() => switchBasis('program')}
+              className={`px-3 py-2 border-l border-slate-300 ${yearBasis === 'program' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+              title="Show a program year's payments (paid the following October) — for FSA reconciliation"
+            >
+              By program year
+            </button>
+          </span>
+        </label>
         <EntityFilter entities={entities} value={entityId} onChange={setEntityId} />
+        <Link
+          href="/settings/government-payments#bench"
+          className="ml-auto rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+        >
+          ARC-CO settings: benchmarks &amp; county yields →
+        </Link>
       </div>
+
+      {suspects.length > 0 && !suspectNoteDismissed && (
+        <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print flex items-start gap-3">
+          <span className="flex-1">
+            <strong>Review other-payment years</strong> — the crop year on an Other USDA payment now means the year the
+            payment is <em>received</em>. {suspects.length} existing entr{suspects.length === 1 ? 'y has' : 'ies have'} a
+            payment date in the year after {suspects.length === 1 ? 'its' : 'their'} crop year
+            ({suspects.slice(0, 4).map((o) => `${o.program_name} ${o.crop_year}`).join(', ')}{suspects.length > 4 ? ', …' : ''}) —
+            if those crop years were meant as program years, update them to the payment year under Settings → Government
+            Payments → Other USDA Payments.
+          </span>
+          <button onClick={() => setSuspectNoteDismissed(true)} className="text-xs underline whitespace-nowrap">dismiss</button>
+        </div>
+      )}
 
       {programNotice && (
         <div className="rounded-lg bg-yellow-50 border border-yellow-300 px-3 py-2 text-sm text-yellow-900">
@@ -356,7 +434,8 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
             <strong>Projected</strong> — PLC from current MYA estimates; ARC-CO from the county-revenue engine
             ({Math.round(programCfg.arcGuaranteePct * 100)}% guarantee, capped at {Math.round(programCfg.arcPaymentCapPct * 100)}% of
             benchmark revenue) where benchmark data exists, else your flat $/acre estimate. FSA determines final
-            payments after the marketing year.
+            payments after the marketing year. All ARC/PLC rows below are the <strong>{programYear} program
+            year → paid Oct {paymentYear}</strong>.
           </div>
 
           <SummaryCards cards={summaryCards} />
@@ -364,7 +443,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
           {/* Per-commodity MYA — the same shared resolution the Decision Aid
               reads; toggling Auto/Manual here updates every projection below. */}
           <MyaPricePanel
-            cropYear={cropYear}
+            cropYear={programYear as number}
             commodities={shownCommodities}
             priceData={priceData}
             liveMya={liveMya}
@@ -376,7 +455,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
 
           {/* County yield expectation — drives every ARC-CO row below. */}
           <CountyYieldExpectation
-            cropYear={cropYear}
+            cropYear={programYear as number}
             commodities={shownCommodities}
             farms={farms}
             counties={counties}
@@ -386,7 +465,14 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
           />
 
           <section className="bg-white rounded-xl shadow p-4 avoid-break overflow-x-auto">
-            <h2 className="font-bold text-lg mb-2">Government Payment Tracker — {cropYear}</h2>
+            <h2 className="font-bold text-lg mb-2">
+              {yearBasis === 'payment'
+                ? <>Government Payment Tracker — payments received in {paymentYear}</>
+                : <>Government Payment Tracker — {programYear} program year</>}
+              <span className="ml-2 text-sm font-normal text-slate-500">
+                {programYear} program year → paid Oct {paymentYear}
+              </span>
+            </h2>
             <table className="min-w-full text-sm border-collapse">
               <thead className={theadCls}>
                 <tr>
@@ -449,7 +535,12 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
           {/* Payment limits */}
           {limitRows.length > 0 && (
             <section className="bg-white rounded-xl shadow p-4 avoid-break">
-              <h2 className="font-bold text-lg mb-2">Payment Limit Status</h2>
+              <h2 className="font-bold text-lg mb-2">
+                Payment Limit Status — {programYear} program year
+                <span className="ml-2 text-sm font-normal text-slate-500">
+                  the per-person limit applies per program year, regardless of when the cash arrives
+                </span>
+              </h2>
               <div className="overflow-x-auto">
                 <table className="min-w-full text-sm">
                   <thead className="bg-slate-50 text-slate-600"><tr>{['Entity', 'Limit', 'Projected', 'Remaining', 'Status'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>

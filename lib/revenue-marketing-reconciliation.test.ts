@@ -8,7 +8,15 @@ import type { Crop, Contract, CropAssumption } from '@/lib/types'
 // adds on top is crop-insurance proceeds + government payments, so for every crop
 // the two pages must satisfy this identity exactly:
 //
-//   RevenueProjections.profit − Marketing.totalProfit === insurance + government
+//   RevenueProjections.profit − Marketing.totalProfit === insurance(Y) + government attributed to Y
+//
+// "Attributed to Y" (payment-year attribution): the government pool for crop
+// year Y is the PROGRAM year Y−1's net ARC/PLC (paid October of Y) plus other
+// USDA payments landing in Y — the report builds govtByCrop with
+// projectPayments({ cropYear: programYearFor(Y) }) + otherPaymentsInRevenueYear.
+// That year-mapping is covered by the boundary suite in
+// government-payments.test.ts ("payment-year attribution"); here we assert the
+// composition identity itself.
 //
 // These tests feed computeMarketing's real output straight into
 // computeRevenueProjections (so both share the identical blendedRevenue) and

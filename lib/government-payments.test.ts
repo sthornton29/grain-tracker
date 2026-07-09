@@ -5,8 +5,10 @@ import {
   resolveMyaPrice, applyMyaResolution,
   olympicAverage, computeEffectiveReferencePrice, arcBenchmarkPriceFromHistory,
   resolveArcBenchmark, expectedCountyYield,
+  revenueCropYearFor, programYearFor, paymentAttributionYear, otherPaymentsInRevenueYear, suspectProgramYearEntries,
   PAYMENT_FACTOR, LINT_SHARE, COTTONSEED_SHARE,
 } from '@/lib/government-payments'
+import { flatGovPerAcre } from '@/lib/income-sensitivity'
 import { DEFAULT_SEQUESTRATION_PCT } from '@/lib/program-config'
 import type {
   ArcBenchmarkData, ArcPlcElection, ArcPlcPayment, ArcPlcPriceData, CoveredCommodity, FarmBaseAcres,
@@ -71,7 +73,7 @@ function electionRow(over: Partial<ArcPlcElection> = {}): ArcPlcElection {
 
 function paymentRow(over: Partial<ArcPlcPayment> = {}): ArcPlcPayment {
   return {
-    id: 'pay', farm_id: 'farm-1', commodity_id: 'corn', crop_year: 2026, election: 'ARC_CO',
+    id: 'pay', farm_id: 'farm-1', commodity_id: 'corn', crop_year: 2026, revenue_crop_year: 2027, election: 'ARC_CO',
     base_acres: 100, plc_yield: 130, payment_rate_per_unit: 45, gross_payment: 0,
     payment_factor: 0.85, sequestration_pct: 0.054, net_payment: 0,
     payment_status: 'projected', expected_payment_date: null, actual_payment_date: null,
@@ -822,5 +824,72 @@ describe('projectPayments — ARC-CO engine via benchmarks + farm county', () =>
     })
     expect(out[0].result.arcMethod).toBe('flat')
     expect(out[0].result.net).toBeCloseTo(7236.90, 2)
+  })
+})
+
+// ---------- payment-year attribution ----------
+// ARC/PLC for PROGRAM year N is paid in October of N+1: the math stays keyed
+// to the program year, revenue attribution to the crop year the cash arrives
+// in. revenueCropYearFor/programYearFor are the ONE place the +1 lives.
+
+describe('payment-year attribution (program year N pays in crop year N+1)', () => {
+  it('revenueCropYearFor / programYearFor are inverses holding the single +1', () => {
+    expect(revenueCropYearFor(2025)).toBe(2026)
+    expect(programYearFor(2026)).toBe(2025)
+    expect(programYearFor(revenueCropYearFor(2031))).toBe(2031)
+  })
+
+  it('expectedArcPlcDate lands in the revenue crop year', () => {
+    expect(expectedArcPlcDate(2025)).toBe('2026-10-01')
+    expect(Number(expectedArcPlcDate(2025).slice(0, 4))).toBe(revenueCropYearFor(2025))
+  })
+
+  it('other payments attribute by payment-date year, else crop_year (payment-year semantics)', () => {
+    const dated = { payment_date: '2026-03-15', crop_year: 2025 } // date wins
+    const manual = { payment_date: null, crop_year: 2026 }
+    expect(paymentAttributionYear(dated)).toBe(2026)
+    expect(paymentAttributionYear(manual)).toBe(2026)
+    const pool26 = otherPaymentsInRevenueYear([dated, manual, { payment_date: '2025-11-01', crop_year: 2025 }], 2026)
+    expect(pool26).toEqual([dated, manual])
+  })
+
+  it('suspectProgramYearEntries flags entries dated the year AFTER their crop_year (old program-year semantics)', () => {
+    const suspect = { payment_date: '2026-10-15', crop_year: 2025 }
+    const fine = { payment_date: '2026-10-15', crop_year: 2026 }
+    const undated = { payment_date: null, crop_year: 2025 }
+    expect(suspectProgramYearEntries([suspect, fine, undated])).toEqual([suspect])
+  })
+
+  describe('boundary: a program-year-2025 payment appears in crop year 2026 and NOT in 2025', () => {
+    // One PLC-payable fixture keyed entirely to PROGRAM year 2025:
+    // effRef 4.10, mya 3.50, loan 2.20, yield 130, base 100 => net 6271.98
+    // (the computePlcPayment worked example above).
+    const data = {
+      baseAcres: [baseAcresRow()],
+      commodities: [commodity()],
+      elections: [electionRow({ crop_year: 2025 })],
+      priceData: [priceData({ crop_year: 2025, mya_price_estimate: 3.50 })],
+      payments: [] as ArcPlcPayment[],
+    }
+    const netForProgramYear = (py: number) =>
+      projectPayments({ cropYear: py, ...data }).reduce((s, p) => s + p.result.net, 0)
+
+    it('Revenue Projections / Tracker pool: crop year 2026 projects program year 2025; crop year 2025 (program 2024) projects nothing', () => {
+      expect(netForProgramYear(programYearFor(2026))).toBeCloseTo(6271.98, 2)
+      expect(netForProgramYear(programYearFor(2025))).toBe(0)
+    })
+
+    it('Income Sensitivity: the flat gov $/acre is funded in 2026 and zero in 2025', () => {
+      expect(flatGovPerAcre(netForProgramYear(programYearFor(2026)), 1000)).toBeCloseTo(6.27198, 4)
+      expect(flatGovPerAcre(netForProgramYear(programYearFor(2025)), 1000)).toBe(0)
+    })
+
+    it('Cash Flow: the payment month is October of the revenue crop year — each program year in exactly one crop year, no double count or gap', () => {
+      expect(expectedArcPlcDate(2025).slice(0, 7)).toBe('2026-10')
+      for (const py of [2024, 2025, 2026, 2027]) {
+        expect(programYearFor(revenueCropYearFor(py))).toBe(py)
+        expect(Number(expectedArcPlcDate(py).slice(0, 4))).toBe(revenueCropYearFor(py))
+      }
+    })
   })
 })

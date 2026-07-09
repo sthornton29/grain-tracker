@@ -17,7 +17,7 @@ import { fmtPrice } from '@/lib/hedging'
 import {
   resolveMyaPrice, effectiveReferencePrice, MYA_STATE_LABEL, type MyaResolution,
 } from '@/lib/government-payments'
-import { marketingYearMonths, describeMyaComposition } from '@/lib/mya-estimate'
+import { marketingYearMonths, describeMyaComposition, estimateMyaBlend } from '@/lib/mya-estimate'
 import {
   defaultConfirmedMonths, planMonthlySaves, type MyaMonthlyLookupResult,
 } from '@/lib/ai-lookups'
@@ -60,6 +60,9 @@ export default function MyaPricePanel({
   const [aiLooking, setAiLooking] = useState<Set<string>>(new Set())
   const [aiConfirmed, setAiConfirmed] = useState<Map<string, Set<number>>>(new Map())
   const [aiEdits, setAiEdits] = useState<Map<string, Map<number, string>>>(new Map())
+  // Lookups fired from the row's inline ↻ render as a compact confirm strip
+  // under the row (instead of the full table inside Details).
+  const [compactFor, setCompactFor] = useState<Set<string>>(new Set())
 
   const draftKey = (commodityId: string) => `${cropYear}:${commodityId}`
   const storedFor = (commodityId: string) =>
@@ -142,8 +145,9 @@ export default function MyaPricePanel({
     onRefreshEstimates?.()
   }
 
-  async function lookupUsdaPrices(c: CoveredCommodity) {
+  async function lookupUsdaPrices(c: CoveredCommodity, opts?: { compact?: boolean }) {
     const k = draftKey(c.id)
+    setCompactFor((s) => { const n = new Set(s); if (opts?.compact) n.add(k); else n.delete(k); return n })
     setAiLooking((s) => new Set(s).add(k))
     setErr(null)
     try {
@@ -177,6 +181,37 @@ export default function MyaPricePanel({
     setAiLookups((m) => { const n = new Map(m); n.delete(k); return n })
     setAiConfirmed((m) => { const n = new Map(m); n.delete(k); return n })
     setAiEdits((m) => { const n = new Map(m); n.delete(k); return n })
+    setCompactFor((s) => { const n = new Set(s); n.delete(k); return n })
+  }
+
+  // The MYA the blend would resolve to if the currently-confirmed fetched
+  // months were saved: confirmed AI months merged over the existing entries,
+  // the remaining months futures-implied from the live composition (whose
+  // prices already include the basis adjustment — strip it so estimateMyaBlend
+  // can re-apply it).
+  function previewMya(c: CoveredCommodity, detail: LiveMyaDetail | undefined): number | null {
+    const k = draftKey(c.id)
+    const lookup = aiLookups.get(k)
+    if (!lookup) return null
+    const confirmed = aiConfirmed.get(k) ?? new Set<number>()
+    const merged = new Map<number, number>(monthlyFor(c.id).map((m) => [m.month, Number(m.price)]))
+    for (const f of lookup.monthly_prices) if (f.price != null && confirmed.has(f.month)) merged.set(f.month, f.price)
+    const comp = detail?.composition
+    const futuresBySymbol = new Map<string, number>()
+    if (comp) {
+      for (const m of comp.months) {
+        if (m.source === 'futures' && m.symbol && m.price != null) futuresBySymbol.set(m.symbol, m.price - comp.basisAdj)
+      }
+    }
+    return estimateMyaBlend({
+      commodityName: c.name,
+      marketingYearStartMonth: Number(c.marketing_year_start_month || 9),
+      cropYear,
+      monthlyPrices: [...merged].map(([month, price]) => ({ month, price })),
+      futuresPriceForSymbol: (s) => futuresBySymbol.get(s) ?? null,
+      basisAdj: comp?.basisAdj ?? (c.mya_basis_adj != null ? Number(c.mya_basis_adj) : null),
+      weights: (c.mya_month_weights as number[] | null) ?? null,
+    }).estimate
   }
 
   async function saveConfirmedMonths(c: CoveredCommodity) {
@@ -259,6 +294,13 @@ export default function MyaPricePanel({
               const monthly = monthlyFor(c.id)
               const months = marketingYearMonths(Number(c.marketing_year_start_month || 9), cropYear)
               const isSeedCotton = c.name.trim().toLowerCase() === 'seed cotton'
+              const k = draftKey(c.id)
+              const canRefresh = !isManual && !r.manualOnly && r.state !== 'final'
+              const refreshTitle = canRefresh
+                ? 'Refresh from USDA monthly prices (AI lookup — you confirm before anything saves)'
+                : isManual ? 'Switch to Auto to use lookups'
+                : r.state === 'final' ? 'USDA final published — nothing to refresh'
+                : 'No auto estimate for this commodity — enter monthly prices in Details'
               return (
                 <FragmentRow key={c.id}>
                   <tr className="border-t border-slate-100 align-middle">
@@ -278,6 +320,15 @@ export default function MyaPricePanel({
                         <span className={r.price == null ? toneText('warning') : ''}>{r.price != null ? fmtPrice(r.price) : 'enter a price'}</span>
                       )}
                       {editable && <span className="hidden print:inline">{r.price != null ? fmtPrice(r.price) : '—'}</span>}
+                      <button
+                        onClick={() => { if (canRefresh) lookupUsdaPrices(c, { compact: true }) }}
+                        disabled={!canRefresh || busy || aiLooking.has(k)}
+                        title={refreshTitle}
+                        aria-label={`Refresh ${c.name} MYA from USDA prices`}
+                        className="ml-1.5 align-middle text-violet-700 hover:text-violet-900 disabled:text-slate-300 no-print"
+                      >
+                        <span className={aiLooking.has(k) ? 'inline-block animate-spin' : ''}>↻</span>
+                      </button>
                     </td>
                     <td className="px-2 py-1">{stateChip(r)}</td>
                     <td className="px-2 py-1 text-xs text-slate-500">
@@ -329,6 +380,57 @@ export default function MyaPricePanel({
                       </span>
                     </td>
                   </tr>
+                  {!isOpen && compactFor.has(k) && (() => {
+                    const lookup = aiLookups.get(k)
+                    if (!lookup) return null
+                    const confirmed = aiConfirmed.get(k) ?? new Set<number>()
+                    const published = lookup.monthly_prices.filter((f) => f.price != null)
+                    const confirmCount = published.filter((f) => confirmed.has(f.month)).length
+                    const skipped = published.length - confirmCount
+                    const resulting = previewMya(c, detail)
+                    return (
+                      <tr className="bg-violet-50 no-print">
+                        <td colSpan={7} className="px-3 py-2 text-sm">
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                            <span className="font-semibold whitespace-nowrap">USDA prices found:</span>
+                            <span className="text-xs text-slate-600">
+                              {published.length === 0
+                                ? 'no published months yet'
+                                : published.map((f) => `${MONTH_ABBR[f.month - 1]} ${fmtPrice(f.price!)}`).join(' · ')}
+                            </span>
+                            <span className={`text-xs rounded-full px-1.5 py-0.5 ${lookup.confidence === 'high' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>{lookup.confidence} confidence</span>
+                            {resulting != null && confirmCount > 0 && (
+                              <span className="whitespace-nowrap">→ resulting MYA <b>{fmtPrice(resulting)}</b></span>
+                            )}
+                            {confirmCount > 0 ? (
+                              <button
+                                onClick={() => saveConfirmedMonths(c)}
+                                disabled={busy}
+                                className="rounded-lg bg-green-700 text-white px-3 py-1 text-xs font-semibold disabled:opacity-50"
+                              >
+                                Confirm &amp; save {confirmCount} month{confirmCount === 1 ? '' : 's'}
+                              </button>
+                            ) : (
+                              <span className="text-xs text-amber-800">Nothing new to save{skipped > 0 ? ' — all fetched months are already entered (open Details to overwrite)' : ''}.</span>
+                            )}
+                            <button
+                              onClick={() => setExpanded((s) => new Set(s).add(c.id))}
+                              className="text-xs text-slate-600 underline whitespace-nowrap"
+                            >
+                              Review / edit in details
+                            </button>
+                            <button onClick={() => dismissLookup(c.id)} className="text-xs text-slate-500 underline">cancel</button>
+                          </div>
+                          {skipped > 0 && confirmCount > 0 && (
+                            <p className="text-[11px] text-slate-500 mt-1">
+                              {skipped} month{skipped === 1 ? ' was' : 's were'} left out because you already entered {skipped === 1 ? 'it' : 'them'} —
+                              open Details to overwrite explicitly. Recent NASS months are often preliminary.
+                            </p>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })()}
                   {isOpen && (
                     <tr className="border-t border-slate-100 bg-slate-50 no-print">
                       <td colSpan={7} className="px-3 py-3">

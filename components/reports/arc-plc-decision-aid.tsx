@@ -13,6 +13,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllCounties } from '@/lib/counties'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useLiveMyaDetailed } from '@/lib/use-live-mya'
@@ -61,7 +62,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
     const [fa, en, co, pl, cc, ba, el, pd, pay, bm, mp, pyc] = await Promise.all([
       supabase.from('farms').select('*').order('name'),
       supabase.from('entities').select('*').order('name'),
-      supabase.from('counties').select('*').order('name'),
+      fetchAllCounties(supabase),
       supabase.from('field_plantings').select('*'),
       supabase.from('covered_commodities').select('*').order('name'),
       supabase.from('farm_base_acres').select('*'),
@@ -74,7 +75,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
     ])
     setFarms((fa.data as Farm[]) || [])
     setEntities((en.data as Entity[]) || [])
-    setCounties((co.data as County[]) || [])
+    setCounties(co || [])
     setPlantings((pl.data as FieldPlanting[]) || [])
     setCommodities((cc.data as CoveredCommodity[]) || [])
     setBaseAcres((ba.data as FarmBaseAcres[]) || [])

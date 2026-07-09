@@ -21,13 +21,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
-import { useLiveMya } from '@/lib/use-live-mya'
 import { fieldCropAggregates } from '@/lib/yields'
 import { segmentAcresByCrop, expectedProductionFromBreakout } from '@/lib/marketing'
 import { harvestContractSymbol } from '@/lib/crop-insurance'
 import { cropToCommodity } from '@/lib/contracts'
 import { CONTRACT_SIZE_BU } from '@/lib/hedging'
-import { projectPayments, applyMyaResolution } from '@/lib/government-payments'
+import { projectPayments, applyMyaResolution, programYearFor, otherPaymentsInRevenueYear } from '@/lib/government-payments'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import {
   axisValues, defaultPriceStep, defaultYieldStep, closestIndex,
@@ -214,10 +213,6 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
     return () => { cancelled = true }
   }, [cropYear, plantedCropIds, cropById])
 
-  // Live MYA for the government-payment projection (shared hook — same
-  // resolution feed as the Payment Tracker / Decision Aid).
-  const liveMya = useLiveMya(cropYear, commodities)
-
   // Field-level dry bushels + last load date, splits-aware.
   const aggByKey = useMemo(
     () => fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear }),
@@ -259,18 +254,23 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   )
   const programNotice = cropYear === '' ? null : programConfigNotice(programCfg)
 
-  // Flat government $/acre: total projected net ARC/PLC + other USDA payments
-  // for the year ÷ total planted acres across ALL crops. Held constant across
-  // cells (current projections — never re-derived from the scenario price).
+  // Flat government $/acre: the payments RECEIVED during crop year Y ÷ total
+  // planted acres across ALL crops — net ARC/PLC for program year Y−1 (paid
+  // October of Y, projected from that program year's own stored/final prices
+  // and parameters) plus other USDA payments landing in Y. Held constant
+  // across cells (current projections — never re-derived from the scenario
+  // price).
   const govPerAcre = useMemo(() => {
     if (cropYear === '') return 0
-    const effPrice = applyMyaResolution({ cropYear, commodities, priceData: arcPriceData, liveEstimates: liveMya })
-    const projected = projectPayments({ cropYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments, sequestrationPct: programCfg.sequestrationPct })
+    const programYear = programYearFor(cropYear)
+    const payCfg = resolveProgramYearConfig(programYear, programConfigs)
+    const effPrice = applyMyaResolution({ cropYear: programYear, commodities, priceData: arcPriceData, liveEstimates: new Map() })
+    const projected = projectPayments({ cropYear: programYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments, sequestrationPct: payCfg.sequestrationPct })
     const totalArcPlc = projected.reduce((s, p) => s + p.result.net, 0)
-    const totalOther = otherPayments.filter((o) => o.crop_year === cropYear).reduce((s, o) => s + Number(o.amount), 0)
+    const totalOther = otherPaymentsInRevenueYear(otherPayments, cropYear).reduce((s, o) => s + Number(o.amount), 0)
     const totalAcres = yearPlantings.reduce((s, p) => s + Number(p.planted_acres ?? 0), 0)
     return flatGovPerAcre(totalArcPlc + totalOther, totalAcres)
-  }, [cropYear, commodities, arcPriceData, liveMya, baseAcres, elections, arcPayments, otherPayments, yearPlantings, programCfg])
+  }, [cropYear, commodities, arcPriceData, baseAcres, elections, arcPayments, otherPayments, yearPlantings, programConfigs])
 
   // ---- Per-crop views: inputs, axes, and the computed grid ----
   const cropViews: CropView[] = useMemo(() => {
@@ -499,10 +499,13 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
                 yield allocated to the policy&apos;s practice. Once the RMA <em>final</em> harvest price is on file it is
                 used in every cell instead (the price axis then moves crop sales only), matching the Claims Monitor.
                 Cells show <em>net</em> insurance P&amp;L (indemnity − premium), the same engine as the Claims Monitor.</p>
-              <p><strong className="text-slate-700">Government payments</strong> (toggle) — total projected net ARC/PLC +
-                other USDA payments ÷ total planted acres = one flat $/acre added identically to every crop&apos;s cells
-                (payments are decoupled from planted acres). Held constant across cells — they are current projections,
-                not re-derived from the scenario price.</p>
+              <p><strong className="text-slate-700">Government payments</strong> (toggle) — government payments shown
+                are those expected to be <strong>received during the {cropYear} crop year</strong> (i.e.,
+                the {programYearFor(cropYear)} program-year ARC/PLC paid in
+                fall {cropYear}, plus other USDA payments landing in {cropYear}). Total ÷
+                total planted acres = one flat $/acre added identically to every crop&apos;s cells (payments are
+                decoupled from planted acres). Held constant across cells — they are current projections, not
+                re-derived from the scenario price.</p>
               <p><strong className="text-slate-700">Cell value</strong> — Revenue/acre = (crop sales + net insurance
                 [+ government]) ÷ planted acres. Net profit/acre subtracts the crop&apos;s cost/acre from the Marketing
                 assumptions.</p>
