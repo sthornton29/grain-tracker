@@ -153,8 +153,11 @@ export function myaPrice(priceData?: ArcPlcPriceData | null): number | null {
 // mid-year must never be displaced by the market. The WASDE midpoint sits at
 // the top of the estimate tier: when the operator has typed the current WASDE
 // season-average forecast it beats the futures-implied blend. Commodities with
-// no traded futures (seed cotton, sorghum, oats, …) are manual-only:
-// liveEstimate is ignored.
+// no traded futures (seed cotton, sorghum, oats, …) get the SAME treatment:
+// their Auto tier is the USDA monthly blend alone (/api/mya-estimate blends
+// entered/AI-confirmed months with no futures-implied remainder), delivered
+// through the same liveEstimate slot. manualOnly is display metadata ("no
+// futures market"), not a gate.
 
 export type MyaState = 'manual' | 'final' | 'wasde' | 'estimate' | 'missing'
 
@@ -169,7 +172,7 @@ export const MYA_STATE_LABEL: Record<MyaState, string> = {
 export type MyaResolution = {
   price: number | null
   state: MyaState
-  /** No Barchart futures mapping — the MYA can only ever be entered manually. */
+  /** No Barchart futures mapping — the Auto estimate is the USDA monthly blend alone. */
   manualOnly: boolean
   /** For 'estimate': true when the number is the live fetch, false when stored. */
   live: boolean
@@ -191,7 +194,7 @@ export function resolveMyaPrice(args: {
   if (pd?.wasde_midpoint != null) {
     return { price: Number(pd.wasde_midpoint), state: 'wasde', manualOnly, live: false }
   }
-  if (!manualOnly && args.liveEstimate != null) {
+  if (args.liveEstimate != null) {
     return { price: Number(args.liveEstimate), state: 'estimate', manualOnly, live: true }
   }
   if (pd?.mya_price_estimate != null) {

@@ -4,6 +4,7 @@ import {
   parseMyaMonthlyRequest, normalizeMyaMonthlyResult,
   elapsedMarketingMonths, monthKey,
   defaultConfirmedMonths, planMonthlySaves,
+  blendSeedCottonMonth, normalizeSeedCottonMonthlyResult,
 } from './ai-lookups'
 
 // ---------- ARC benchmark lookup request: county + state both required ----------
@@ -99,7 +100,28 @@ describe('normalizeArcBenchmarkResult', () => {
 describe('parseMyaMonthlyRequest', () => {
   it('accepts commodity + marketing year with wheat start month', () => {
     const r = parseMyaMonthlyRequest({ commodity: 'Wheat', marketing_year: 2026, start_month: 6, unit: 'bushel' })
-    expect(r).toEqual({ ok: true, value: { commodity: 'Wheat', marketingYear: 2026, startMonth: 6, unit: 'bushel' } })
+    expect(r).toEqual({
+      ok: true,
+      value: {
+        commodity: 'Wheat', marketingYear: 2026, startMonth: 6, unit: 'bushel',
+        seedCotton: false, lintShare: 0.43, seedShare: 0.57,
+      },
+    })
+  })
+  it('flags seed cotton and honors configured shares (defaulting 43/57)', () => {
+    const r = parseMyaMonthlyRequest({ commodity: 'Seed Cotton', marketing_year: 2025, start_month: 8, unit: 'pound', lint_share: 0.45, seed_share: 0.55 })
+    expect(r.ok).toBe(true)
+    if (r.ok) {
+      expect(r.value.seedCotton).toBe(true)
+      expect(r.value.lintShare).toBe(0.45)
+      expect(r.value.seedShare).toBe(0.55)
+    }
+    const bad = parseMyaMonthlyRequest({ commodity: 'Seed Cotton', marketing_year: 2025, lint_share: -1, seed_share: 'x' })
+    expect(bad.ok).toBe(true)
+    if (bad.ok) {
+      expect(bad.value.lintShare).toBe(0.43)
+      expect(bad.value.seedShare).toBe(0.57)
+    }
   })
   it('defaults start_month to 9 (corn/soy) and unit to bushel', () => {
     const r = parseMyaMonthlyRequest({ commodity: 'Corn', marketing_year: 2025 })
@@ -155,7 +177,7 @@ describe('normalizeMyaMonthlyResult', () => {
     expect(r.monthly_prices.map((m) => m.key)).toEqual(['2025-09', '2025-10', '2025-11', '2026-03'])
   })
   it('maps to calendar month/year and forces status from the price', () => {
-    expect(r.monthly_prices[0]).toEqual({ month: 9, year: 2025, key: '2025-09', price: 4.12, status: 'published' })
+    expect(r.monthly_prices[0]).toEqual({ month: 9, year: 2025, key: '2025-09', price: 4.12, status: 'published', note: null, components: null })
     expect(r.monthly_prices.find((m) => m.key === '2026-03')).toMatchObject({ price: null, status: 'not_yet_published' })
     // a negative "price" is not a price
     expect(r.monthly_prices.find((m) => m.key === '2025-11')).toMatchObject({ price: null, status: 'not_yet_published' })
@@ -192,7 +214,7 @@ describe('planMonthlySaves', () => {
   ]
   it('manual wins unless explicitly confirmed: unconfirmed months are not saved', () => {
     expect(planMonthlySaves({ fetched, confirmed: new Set([9]) })).toEqual([
-      { month: 9, price: 4.12, source: 'ai' },
+      { month: 9, price: 4.12, source: 'ai', note: null },
     ])
   })
   it('null (not-yet-published) months are ignored even if somehow confirmed', () => {
@@ -200,21 +222,83 @@ describe('planMonthlySaves', () => {
   })
   it('a confirmed month the user explicitly checked overwrites — with source ai', () => {
     expect(planMonthlySaves({ fetched, confirmed: new Set([9, 10]) })).toEqual([
-      { month: 9, price: 4.12, source: 'ai' },
-      { month: 10, price: 4.05, source: 'ai' },
+      { month: 9, price: 4.12, source: 'ai', note: null },
+      { month: 10, price: 4.05, source: 'ai', note: null },
     ])
   })
   it('a confirmed AI value the user edited saves as manual with the edited price', () => {
     expect(planMonthlySaves({ fetched, confirmed: new Set([9]), edited: new Map([[9, 4.2]]) })).toEqual([
-      { month: 9, price: 4.2, source: 'manual' },
+      { month: 9, price: 4.2, source: 'manual', note: null },
     ])
   })
   it('an edit equal to the fetched value stays source ai; invalid edits are ignored', () => {
     expect(planMonthlySaves({ fetched, confirmed: new Set([9]), edited: new Map([[9, 4.12]]) })).toEqual([
-      { month: 9, price: 4.12, source: 'ai' },
+      { month: 9, price: 4.12, source: 'ai', note: null },
     ])
     expect(planMonthlySaves({ fetched, confirmed: new Set([9]), edited: new Map([[9, -2]]) })).toEqual([
-      { month: 9, price: 4.12, source: 'ai' },
+      { month: 9, price: 4.12, source: 'ai', note: null },
     ])
+  })
+  it('a derived (seed cotton) month keeps its component note; an edit drops it', () => {
+    const sc = [{ month: 9, price: 0.351685, note: 'lint 68.2¢ + seed $205/ton → 35.17¢ SC' }]
+    expect(planMonthlySaves({ fetched: sc, confirmed: new Set([9]) })).toEqual([
+      { month: 9, price: 0.351685, source: 'ai', note: 'lint 68.2¢ + seed $205/ton → 35.17¢ SC' },
+    ])
+    expect(planMonthlySaves({ fetched: sc, confirmed: new Set([9]), edited: new Map([[9, 0.36]]) })).toEqual([
+      { month: 9, price: 0.36, source: 'manual', note: null },
+    ])
+  })
+})
+
+// ---------- Seed cotton: blend the two NASS series in code ----------
+
+describe('seed cotton monthly blend', () => {
+  it('worked example: lint 68.2¢/lb + cottonseed $205/ton at 43/57', () => {
+    // By hand: 0.43 × $0.682 = $0.29326; $205/ton ÷ 2000 = $0.1025/lb;
+    // 0.57 × $0.1025 = $0.058425; total $0.351685/lb = 35.17¢/lb.
+    const { price, note } = blendSeedCottonMonth(68.2, 205)
+    expect(price).toBe(0.351685)
+    expect(note).toBe('lint 68.2¢ + seed $205/ton → 35.17¢ SC')
+  })
+
+  it('honors configured shares', () => {
+    const { price } = blendSeedCottonMonth(68.2, 205, { lintShare: 0.45, seedShare: 0.55 })
+    expect(price).toBe(Math.round((0.45 * 0.682 + 0.55 * 0.1025) * 1e6) / 1e6)
+  })
+
+  it('requires BOTH components: a lint-only month is not_yet_published, never a lint-only blend', () => {
+    const raw = {
+      monthly_prices: [
+        { month: '2025-08', lint_cents_per_lb: 68.2, cottonseed_dollars_per_ton: 205 },
+        { month: '2025-09', lint_cents_per_lb: 66.9, cottonseed_dollars_per_ton: null }, // seed not out yet
+        { month: '2025-10', lint_cents_per_lb: null, cottonseed_dollars_per_ton: 210 }, // lint not out yet
+        { month: '2025-11', lint_cents_per_lb: null, cottonseed_dollars_per_ton: null },
+      ],
+      source_description: 'USDA NASS Agricultural Prices',
+      confidence: 'high',
+    }
+    // Seed cotton marketing year starts in August.
+    const r = normalizeSeedCottonMonthlyResult(raw, 8, 2025)
+    const aug = r.monthly_prices.find((m) => m.key === '2025-08')!
+    expect(aug.status).toBe('published')
+    expect(aug.price).toBe(0.351685)
+    expect(aug.note).toBe('lint 68.2¢ + seed $205/ton → 35.17¢ SC')
+    expect(aug.components).toEqual({ lint_cents_per_lb: 68.2, cottonseed_dollars_per_ton: 205 })
+    for (const key of ['2025-09', '2025-10', '2025-11']) {
+      expect(r.monthly_prices.find((m) => m.key === key)).toMatchObject({ price: null, status: 'not_yet_published', note: null })
+    }
+  })
+
+  it('only accepts months inside the marketing year and tolerates garbage', () => {
+    const r = normalizeSeedCottonMonthlyResult({
+      monthly_prices: [
+        { month: '2025-07', lint_cents_per_lb: 70, cottonseed_dollars_per_ton: 200 }, // before the MY window
+        { month: 'bogus', lint_cents_per_lb: 70, cottonseed_dollars_per_ton: 200 },
+        { month: '2025-08', lint_cents_per_lb: -5, cottonseed_dollars_per_ton: 200 }, // negative lint → unusable
+      ],
+    }, 8, 2025)
+    expect(r.monthly_prices.map((m) => m.key)).toEqual(['2025-08'])
+    expect(r.monthly_prices[0].status).toBe('not_yet_published')
+    expect(r.confidence).toBe('low')
   })
 })

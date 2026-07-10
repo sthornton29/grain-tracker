@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import {
-  parseMyaMonthlyRequest, normalizeMyaMonthlyResult, elapsedMarketingMonths, monthKey,
+  parseMyaMonthlyRequest, normalizeMyaMonthlyResult, normalizeSeedCottonMonthlyResult,
+  elapsedMarketingMonths, monthKey,
 } from '@/lib/ai-lookups'
 import { aiWebSearchJson, AiLookupError } from '@/lib/ai-web-search'
 
@@ -30,7 +31,7 @@ export async function POST(req: NextRequest) {
   }
   const parsed = parseMyaMonthlyRequest(body)
   if (!parsed.ok) return NextResponse.json({ error: parsed.error }, { status: 400 })
-  const { commodity, marketingYear, startMonth, unit } = parsed.value
+  const { commodity, marketingYear, startMonth, unit, seedCotton, lintShare, seedShare } = parsed.value
 
   const elapsed = elapsedMarketingMonths(startMonth, marketingYear, new Date())
   if (elapsed.length === 0) {
@@ -41,11 +42,30 @@ export async function POST(req: NextRequest) {
   }
 
   const endMonth = ((startMonth + 10) % 12) + 1
-  const unitTxt = unit === 'pound'
-    ? 'dollars per pound ($/lb — NASS reports upland cotton lint in cents per pound and cottonseed in dollars per ton; for cotton, report the lint price converted to $/lb and say so in source_description)'
-    : 'dollars per bushel ($/bu)'
+  const unitTxt = unit === 'pound' ? 'dollars per pound ($/lb)' : 'dollars per bushel ($/bu)'
 
-  const prompt = `Look up the USDA NASS monthly average prices received by farmers (U.S. national) for:
+  // Seed cotton has no NASS "seed cotton" price series — its MYA is the
+  // production-weighted blend of the upland cotton LINT price (¢/lb) and the
+  // COTTONSEED price ($/ton). The model retrieves BOTH raw series per month;
+  // the blend is computed in code (normalizeSeedCottonMonthlyResult), never
+  // by the AI. A month with only one component is not yet publishable.
+  const prompt = seedCotton
+    ? `Look up TWO USDA NASS monthly "prices received by farmers" series (U.S. national) needed to compute the seed cotton price:
+
+1. UPLAND COTTON lint price, in CENTS PER POUND (¢/lb) — as published by NASS.
+2. COTTONSEED price, in DOLLARS PER TON ($/ton) — as published by NASS.
+
+Marketing year: ${marketingYear} (${MONTH_NAME[startMonth - 1]} ${marketingYear} – ${MONTH_NAME[endMonth - 1]} ${marketingYear + 1})
+
+NASS publishes both in the monthly Agricultural Prices report and in Quick Stats (quickstats.nass.usda.gov); farmdoc and university extension sites republish the same tables. Report each raw series exactly as NASS publishes it — do NOT blend, convert units, estimate, interpolate, or use futures prices. For each of these elapsed months of the marketing year:
+
+${elapsed.map((m) => `- ${monthKey(m)} (${MONTH_NAME[m.month - 1]} ${m.year})`).join('\n')}
+
+For any month where NASS has not yet published a series, return null for that series. The one or two most recent published months are often preliminary (mid-month) values; report them anyway and note it in source_description. Say in source_description which NASS release the numbers came from. Set confidence to "high" ONLY if both series come from NASS data or a source that clearly republishes NASS data for exactly these months.
+
+Respond ONLY with JSON, no other text, no markdown fences:
+{"commodity": "Seed Cotton", "marketing_year": ${marketingYear}, "monthly_prices": [{"month": "YYYY-MM", "lint_cents_per_lb": number or null, "cottonseed_dollars_per_ton": number or null}], "source_description": "which release/source the numbers came from", "confidence": "high" or "low"}`
+    : `Look up the USDA NASS monthly average prices received by farmers (U.S. national) for:
 
 - Commodity: ${commodity}
 - Marketing year: ${marketingYear} (${MONTH_NAME[startMonth - 1]} ${marketingYear} – ${MONTH_NAME[endMonth - 1]} ${marketingYear + 1})
@@ -62,12 +82,15 @@ Respond ONLY with JSON, no other text, no markdown fences:
   try {
     const raw = await aiWebSearchJson({
       prompt,
-      cacheKey: `mya-monthly:${commodity.toLowerCase()}:${marketingYear}:${startMonth}`,
+      cacheKey: `mya-monthly:${commodity.toLowerCase()}:${marketingYear}:${startMonth}${seedCotton ? ':sc' : ''}`,
       cacheTtlMs: CACHE_TTL_MS,
       maxSearches: 8,
       maxTokens: 3072,
     })
-    return NextResponse.json({ data: normalizeMyaMonthlyResult(raw, startMonth, marketingYear) })
+    const data = seedCotton
+      ? normalizeSeedCottonMonthlyResult(raw, startMonth, marketingYear, { lintShare, seedShare })
+      : normalizeMyaMonthlyResult(raw, startMonth, marketingYear)
+    return NextResponse.json({ data })
   } catch (e) {
     if (e instanceof AiLookupError) {
       const msg = e.kind === 'parse'

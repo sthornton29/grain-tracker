@@ -7,6 +7,7 @@
 // exercises everything here directly.
 
 import { marketingYearMonths, type MarketingMonth } from './mya-estimate'
+import { LINT_SHARE, COTTONSEED_SHARE } from './government-payments'
 
 // Pull the JSON object out of a model reply that may carry markdown fences or
 // stray prose around it.
@@ -98,6 +99,10 @@ export function normalizeArcBenchmarkResult(
 
 // ---------- USDA monthly MYA price lookup ----------
 
+export function isSeedCotton(name: string | null | undefined): boolean {
+  return /seed\s*cotton/i.test(name ?? '')
+}
+
 export type MyaMonthlyLookupRequest = {
   commodity: string
   marketingYear: number
@@ -105,6 +110,17 @@ export type MyaMonthlyLookupRequest = {
   // from covered_commodities.marketing_year_start_month.
   startMonth: number
   unit: 'bushel' | 'pound'
+  // Seed cotton: the lookup retrieves NASS lint (¢/lb) + cottonseed ($/ton)
+  // and the BLEND happens in code at these weight shares (configurable on
+  // covered_commodities; standard 43/57).
+  seedCotton: boolean
+  lintShare: number
+  seedShare: number
+}
+
+function parseShare(raw: unknown, fallback: number): number {
+  const v = Number(raw)
+  return Number.isFinite(v) && v > 0 && v <= 1 ? v : fallback
 }
 
 export function parseMyaMonthlyRequest(body: unknown): ParseResult<MyaMonthlyLookupRequest> {
@@ -119,7 +135,15 @@ export function parseMyaMonthlyRequest(body: unknown): ParseResult<MyaMonthlyLoo
   if (!Number.isInteger(startMonthRaw) || startMonthRaw < 1 || startMonthRaw > 12) {
     return { ok: false, error: 'start_month must be a calendar month 1–12.' }
   }
-  return { ok: true, value: { commodity, marketingYear, startMonth: startMonthRaw, unit } }
+  return {
+    ok: true,
+    value: {
+      commodity, marketingYear, startMonth: startMonthRaw, unit,
+      seedCotton: isSeedCotton(commodity),
+      lintShare: parseShare(b.lint_share, LINT_SHARE),
+      seedShare: parseShare(b.seed_share, COTTONSEED_SHARE),
+    },
+  }
 }
 
 // The marketing-year months that have started as of `now` — the ones NASS can
@@ -142,6 +166,10 @@ export type MyaLookupMonth = {
   key: string // "YYYY-MM"
   price: number | null
   status: 'published' | 'not_yet_published'
+  // Derived prices (seed cotton) carry their composition, e.g.
+  // "lint 68.2¢ + seed $205/ton → 35.17¢ SC". null for plain NASS prices.
+  note: string | null
+  components: { lint_cents_per_lb: number; cottonseed_dollars_per_ton: number } | null
 }
 
 export type MyaMonthlyLookupResult = {
@@ -175,7 +203,83 @@ export function normalizeMyaMonthlyResult(
       key,
       price,
       status: price != null ? 'published' : 'not_yet_published',
+      note: null,
+      components: null,
     })
+  }
+  return {
+    monthly_prices: window.filter((m) => out.has(monthKey(m))).map((m) => out.get(monthKey(m))!),
+    source_description: typeof r.source_description === 'string' ? r.source_description : '',
+    confidence: r.confidence === 'high' ? 'high' : 'low',
+  }
+}
+
+// ---------- Seed cotton: blend NASS lint + cottonseed in code ----------
+
+const round6 = (n: number) => Math.round(n * 1e6) / 1e6
+const fmtCents = (c: number) => (Math.round(c * 100) / 100).toString()
+
+/**
+ * The seed cotton monthly price is the production-weighted blend of the NASS
+ * upland cotton LINT price (¢/lb) and the NASS COTTONSEED price ($/ton) —
+ * lint alone materially misstates it. Computed HERE, never by the AI:
+ *   sc $/lb = lintShare × (lint¢ ÷ 100) + seedShare × (seed$/ton ÷ 2000)
+ * (equivalently in ¢/lb: lintShare × lint¢ + seedShare × (seed$/ton ÷ 20)).
+ * Stored in $/lb like every other pound-unit price in the app, so the PLC
+ * comparison against the $0.42/lb seed cotton reference stays unit-consistent.
+ */
+export function blendSeedCottonMonth(
+  lintCentsPerLb: number,
+  cottonseedDollarsPerTon: number,
+  shares?: { lintShare?: number; seedShare?: number },
+): { price: number; note: string } {
+  const lintShare = shares?.lintShare ?? LINT_SHARE
+  const seedShare = shares?.seedShare ?? COTTONSEED_SHARE
+  const price = round6(lintShare * (lintCentsPerLb / 100) + seedShare * (cottonseedDollarsPerTon / 2000))
+  const note = `lint ${fmtCents(lintCentsPerLb)}¢ + seed $${fmtCents(cottonseedDollarsPerTon)}/ton → ${fmtCents(price * 100)}¢ SC`
+  return { price, note }
+}
+
+/**
+ * Normalize the seed cotton lookup's JSON: the model reports the two NASS
+ * series per month (lint ¢/lb, cottonseed $/ton) and the blended price is
+ * computed here. A month missing EITHER component is not_yet_published —
+ * never a lint-only blend.
+ */
+export function normalizeSeedCottonMonthlyResult(
+  raw: unknown,
+  startMonth: number,
+  marketingYear: number,
+  shares?: { lintShare?: number; seedShare?: number },
+): MyaMonthlyLookupResult {
+  const r = (raw ?? {}) as Record<string, unknown>
+  const window = marketingYearMonths(startMonth, marketingYear)
+  const byKey = new Map(window.map((m) => [monthKey(m), m]))
+  const out = new Map<string, MyaLookupMonth>()
+  const entries = Array.isArray(r.monthly_prices) ? r.monthly_prices : []
+  for (const e of entries) {
+    const rec = (e ?? {}) as Record<string, unknown>
+    const key = typeof rec.month === 'string' ? rec.month.trim() : ''
+    const m = byKey.get(key)
+    if (!m || out.has(key)) continue
+    const lint = typeof rec.lint_cents_per_lb === 'number' && Number.isFinite(rec.lint_cents_per_lb) && rec.lint_cents_per_lb >= 0
+      ? rec.lint_cents_per_lb : null
+    const seed = typeof rec.cottonseed_dollars_per_ton === 'number' && Number.isFinite(rec.cottonseed_dollars_per_ton) && rec.cottonseed_dollars_per_ton >= 0
+      ? rec.cottonseed_dollars_per_ton : null
+    if (lint != null && seed != null) {
+      const blended = blendSeedCottonMonth(lint, seed, shares)
+      out.set(key, {
+        month: m.month, year: m.year, key,
+        price: blended.price, status: 'published',
+        note: blended.note,
+        components: { lint_cents_per_lb: lint, cottonseed_dollars_per_ton: seed },
+      })
+    } else {
+      out.set(key, {
+        month: m.month, year: m.year, key,
+        price: null, status: 'not_yet_published', note: null, components: null,
+      })
+    }
   }
   return {
     monthly_prices: window.filter((m) => out.has(monthKey(m))).map((m) => out.get(monthKey(m))!),
@@ -196,14 +300,15 @@ export function defaultConfirmedMonths(
   return new Set(fetched.filter((f) => f.price != null && !existingMonths.has(f.month)).map((f) => f.month))
 }
 
-export type MonthlySavePlan = { month: number; price: number; source: 'ai' | 'manual' }
+export type MonthlySavePlan = { month: number; price: number; source: 'ai' | 'manual'; note: string | null }
 
 // What actually gets upserted after the operator hits save: only confirmed,
 // published months (null months are ignored; unconfirmed months — including
 // every month that already has an entry the operator didn't re-check — are
-// left alone). A confirmed AI value the operator edited saves as 'manual'.
+// left alone). A confirmed AI value the operator edited saves as 'manual' —
+// and drops the component note, which no longer describes the edited number.
 export function planMonthlySaves(args: {
-  fetched: ReadonlyArray<{ month: number; price: number | null }>
+  fetched: ReadonlyArray<{ month: number; price: number | null; note?: string | null }>
   confirmed: ReadonlySet<number>
   edited?: ReadonlyMap<number, number>
 }): MonthlySavePlan[] {
@@ -212,9 +317,9 @@ export function planMonthlySaves(args: {
     if (f.price == null || !args.confirmed.has(f.month)) continue
     const edit = args.edited?.get(f.month)
     if (edit != null && Number.isFinite(edit) && edit >= 0 && edit !== f.price) {
-      out.push({ month: f.month, price: edit, source: 'manual' })
+      out.push({ month: f.month, price: edit, source: 'manual', note: null })
     } else {
-      out.push({ month: f.month, price: f.price, source: 'ai' })
+      out.push({ month: f.month, price: f.price, source: 'ai', note: f.note ?? null })
     }
   }
   return out

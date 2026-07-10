@@ -18,7 +18,6 @@ import {
   resolveProgramYearConfig,
 } from '@/lib/program-config'
 import FsaBaseAcresImport from '@/components/government/fsa-base-acres-import'
-import SeedCottonCalculator from '@/components/government/seed-cotton-calculator'
 import type {
   Farm, Entity, Crop, County, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection,
   ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment, PaymentLimitConfig, ArcPlcElectionType,
@@ -422,10 +421,11 @@ export default function GovernmentPaymentsSettingsPage() {
       <Section id="price" title="Price Data" open={open === 'price'} onToggle={() => setOpen(open === 'price' ? '' : 'price')}>
         <div className="flex items-center gap-3 flex-wrap">
           <p className="text-sm text-slate-500 flex-1">
-            MYA estimates are a marketing-year blend (USDA monthly prices + futures-implied months) for
-            Corn/Soybeans/Wheat — enter monthly prices and WASDE midpoints from the MYA panel on the Decision Aid or
-            Tracker. Enter other commodities manually. A typed WASDE midpoint overrides the blend; a Manual estimate
-            and a published Final outrank both.
+            MYA estimates are a marketing-year blend of USDA monthly prices (+ futures-implied months for traded
+            commodities) — enter monthly prices, run the USDA lookup, and set WASDE midpoints from the MYA panel on
+            the Decision Aid or Tracker; every commodity (including seed cotton) has the same Auto | Manual toggle
+            there. Seed cotton&apos;s monthly price is blended in the app from the NASS lint + cottonseed series. A typed
+            WASDE midpoint overrides the blend; a Manual estimate and a published Final outrank both.
           </p>
           <button onClick={refreshMya} disabled={refreshing} className="rounded-lg bg-slate-700 text-white px-3 py-2 text-sm font-semibold disabled:opacity-50">{refreshing ? 'Refreshing…' : 'Refresh MYA blend'}</button>
         </div>
@@ -439,9 +439,6 @@ export default function GovernmentPaymentsSettingsPage() {
             </tbody>
           </table>
         </div>
-        {commodities.filter((c) => c.name === 'Seed Cotton').map((c) => (
-          <SeedCottonCalculator key={c.id} commodity={c} cropYear={cropYear} priceData={priceFor(c.id)} onSaved={refresh} />
-        ))}
       </Section>
 
       {/* ARC-CO benchmarks (FSA-published price & county yield) */}
@@ -450,8 +447,11 @@ export default function GovernmentPaymentsSettingsPage() {
           FSA-published ARC-CO benchmark data for {cropYear}: the <b>benchmark price</b> (national, 5-yr Olympic
           average with effective-reference-price substitution — 2025/2026: corn $5.03, soybeans $12.17, wheat $6.98)
           and the <b>benchmark county yield</b> (5-yr Olympic average trend-adjusted). A row with no county is the
-          default for all counties; add county rows if your farms span counties with different benchmarks. The AI
-          lookup searches FSA/extension publications — you confirm before anything is saved.
+          default for all counties; add county rows if your farms span counties with different benchmarks. The{' '}
+          <b>FSA lookup</b> reads the county yield straight from FSA&apos;s published “ARC-County Benchmark Yields and
+          Revenues” workbook (cached; falls back to the most recent published year) and takes the price from the
+          seeded national values; an AI web search remains as a labeled fallback. You confirm before anything is
+          saved.
         </p>
         <AddBenchmarkForm commodities={commodities} counties={counties} existing={benchmarks.filter((b) => b.crop_year === cropYear)} preferredCountyIds={farmCountyIds} onAdd={saveBenchmark} />
         <div className="overflow-x-auto">
@@ -471,6 +471,12 @@ export default function GovernmentPaymentsSettingsPage() {
                     commodity={commodityById.get(b.commodity_id)}
                     counties={counties}
                     cropYear={cropYear}
+                    defaultPrice={
+                      benchmarks.find((x) =>
+                        x.commodity_id === b.commodity_id && x.crop_year === cropYear &&
+                        x.county_id == null && (x.county ?? '').trim() === '' && x.benchmark_price != null,
+                      )?.benchmark_price ?? null
+                    }
                     onSave={saveBenchmark}
                     onDelete={deleteBenchmark}
                     onErr={setErr}
@@ -867,12 +873,30 @@ function AddBenchmarkForm({ commodities, counties, existing, preferredCountyIds,
 }
 
 type AiLookup = { benchmark_yield: number | null; benchmark_price: number | null; data_year: number | null; source_description: string; confidence: 'high' | 'low' }
+type FsaFileLookup = {
+  rows: Array<{ practice: 'irrigated' | 'non_irrigated' | 'all'; benchmark_yield: number | null; benchmark_price: number | null; benchmark_revenue: number | null }>
+  data_year: number | null
+  requested_year: number
+  county: string
+  state: string
+  fetched_at: string | null
+  source_description: string
+  not_found?: boolean
+  // Client-side only: the file service failed (network/parse) — the strip
+  // shows the error and offers the AI fallback.
+  error?: string
+}
+const PRACTICE_LABEL: Record<'irrigated' | 'non_irrigated' | 'all', string> = {
+  all: 'All practices', non_irrigated: 'Non-irrigated', irrigated: 'Irrigated',
+}
 
-function BenchmarkRow({ row, commodity, counties, cropYear, onSave, onDelete, onErr }: {
+function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave, onDelete, onErr }: {
   row: ArcBenchmarkData
   commodity?: CoveredCommodity
   counties: County[]
   cropYear: number
+  /** The seeded/published national benchmark price (the all-counties default row). */
+  defaultPrice: number | null
   onSave: (patch: {
     id?: string; commodity_id: string; county: string | null; county_id: string | null; benchmark_price: number | null; benchmark_yield: number | null
     price_source?: 'usda' | 'manual' | 'ai'; yield_source?: 'usda' | 'manual' | 'ai'; source_description?: string | null
@@ -884,6 +908,8 @@ function BenchmarkRow({ row, commodity, counties, cropYear, onSave, onDelete, on
   const [yld, setYld] = useState(row.benchmark_yield != null ? String(Number(row.benchmark_yield)) : '')
   const [looking, setLooking] = useState(false)
   const [aiResult, setAiResult] = useState<AiLookup | null>(null)
+  const [fileResult, setFileResult] = useState<FsaFileLookup | null>(null)
+  const [filePractice, setFilePractice] = useState<'irrigated' | 'non_irrigated' | 'all'>('all')
   useEffect(() => {
     setPrice(row.benchmark_price != null ? String(Number(row.benchmark_price)) : '')
     setYld(row.benchmark_yield != null ? String(Number(row.benchmark_yield)) : '')
@@ -905,23 +931,89 @@ function BenchmarkRow({ row, commodity, counties, cropYear, onSave, onDelete, on
     <span className={`text-[10px] rounded-full px-1.5 py-0.5 ${s === 'usda' ? 'bg-green-100 text-green-800' : s === 'ai' ? 'bg-violet-100 text-violet-800' : 'bg-slate-200 text-slate-600'}`}>{s}</span>
   )
 
-  async function aiLookup() {
-    if (!commodity) return
+  function lookupGuard(): boolean {
+    if (!commodity) return false
     if (!countyRec) {
       onErr(ambiguousLegacy
-        ? `Can't tell which state "${row.county}" is in — delete this row and re-add it picking “County, ST” from the list, then retry the AI lookup.`
-        : 'The AI lookup needs a county + state. The default (all counties) row holds the national benchmark price — add county rows for yields, or copy the price from one.')
-      return
+        ? `Can't tell which state "${row.county}" is in — delete this row and re-add it picking “County, ST” from the list, then retry the lookup.`
+        : 'The lookup needs a county + state. The default (all counties) row holds the national benchmark price — add county rows for yields, or copy the price from one.')
+      return false
     }
-    setLooking(true); setAiResult(null)
+    return true
+  }
+
+  // Primary lookup: the county YIELD comes straight from FSA's published
+  // "ARC-County Benchmark Yields and Revenues" workbook (parsed + cached
+  // server-side); the PRICE comes from the seeded/published national values.
+  // The AI web search below is only a labeled fallback.
+  async function fsaFileLookup() {
+    if (!lookupGuard()) return
+    setLooking(true); setAiResult(null); setFileResult(null)
+    try {
+      const res = await fetch('/api/fsa-benchmark-yield', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          commodity: commodity!.name,
+          county: countyRec!.name,
+          state: countyRec!.state_code,
+          county_id: countyRec!.id,
+          crop_year: cropYear,
+        }),
+      })
+      const json = await res.json().catch(() => null)
+      const failed = (error: string) => setFileResult({
+        rows: [], data_year: null, requested_year: cropYear, county: countyRec!.name, state: countyRec!.state_code,
+        fetched_at: null, source_description: '', not_found: true, error,
+      })
+      if (!res.ok || !json?.data) { failed(json?.error ?? 'FSA file lookup failed.'); return }
+      const data = json.data as FsaFileLookup
+      setFileResult(data)
+      const practices = data.rows.map((r) => r.practice)
+      setFilePractice(practices.includes('all') ? 'all' : practices.includes('non_irrigated') ? 'non_irrigated' : 'irrigated')
+    } catch {
+      setFileResult({
+        rows: [], data_year: null, requested_year: cropYear, county: countyRec!.name, state: countyRec!.state_code,
+        fetched_at: null, source_description: '', not_found: true, error: 'FSA file lookup failed — check your connection.',
+      })
+    } finally {
+      setLooking(false)
+    }
+  }
+
+  function confirmFile() {
+    if (!fileResult) return
+    const picked = fileResult.rows.find((r) => r.practice === filePractice) ?? fileResult.rows[0]
+    if (!picked || picked.benchmark_yield == null) return
+    // Price precedence: the file's own printed benchmark price, else the
+    // seeded/published national value, else whatever is typed on the row.
+    const filePrice = picked.benchmark_price ?? defaultPrice
+    const usePrice = filePrice ?? (price.trim() !== '' ? Number(price) : null)
+    onSave({
+      id: row.id, commodity_id: row.commodity_id,
+      county: countyRec?.name ?? row.county, county_id: countyRec?.id ?? row.county_id,
+      benchmark_price: usePrice,
+      benchmark_yield: picked.benchmark_yield,
+      // The workbook IS the FSA-published source.
+      yield_source: 'usda',
+      price_source: filePrice != null ? 'usda' : row.price_source,
+      source_description: `${fileResult.source_description}${picked.practice !== 'all' ? ` (${PRACTICE_LABEL[picked.practice]})` : ''}`,
+    })
+    setFileResult(null)
+  }
+
+  // Labeled fallback when the file service can't find the county/commodity —
+  // keeps the AI web search's low-confidence guardrails.
+  async function aiLookup() {
+    if (!lookupGuard()) return
+    setLooking(true); setAiResult(null); setFileResult(null)
     try {
       const res = await fetch('/api/arc-benchmark-lookup', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
-          commodity: commodity.name,
-          county: countyRec.name,
-          state: countyRec.state,
-          county_id: countyRec.id,
+          commodity: commodity!.name,
+          county: countyRec!.name,
+          state: countyRec!.state,
+          county_id: countyRec!.id,
           crop_year: cropYear,
         }),
       })
@@ -971,19 +1063,71 @@ function BenchmarkRow({ row, commodity, counties, cropYear, onSave, onDelete, on
             className="text-green-700 font-semibold mr-3"
           >Save</button>
           <button
-            onClick={aiLookup}
+            onClick={fsaFileLookup}
             disabled={looking || !countyRec}
-            title={countyRec ? undefined : ambiguousLegacy ? 'State unknown — re-add this row as “County, ST” first.' : 'AI lookup needs a county + state — add county rows for yields.'}
-            className="rounded-lg bg-violet-700 text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
+            title={countyRec
+              ? 'County yield from FSA’s published benchmark workbook + the seeded national price — you confirm before anything saves.'
+              : ambiguousLegacy ? 'State unknown — re-add this row as “County, ST” first.' : 'The lookup needs a county + state — add county rows for yields.'}
+            className="rounded-lg bg-green-800 text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
           >
-            {looking ? 'Searching…' : 'AI lookup'}
+            {looking ? 'Looking up…' : 'FSA lookup'}
           </button>
         </td>
         <td className="px-3 py-2"><button onClick={() => onDelete(row.id)} className="text-red-600 text-xs">Delete</button></td>
       </tr>
+      {fileResult && (
+        <tr className="bg-green-50">
+          <td colSpan={7} className="px-3 py-2 text-sm">
+            {fileResult.not_found || fileResult.rows.every((r) => r.benchmark_yield == null) ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-slate-700">
+                  {fileResult.error
+                    ? fileResult.error
+                    : <>FSA&apos;s published benchmark file has no {commodity?.name} row for {fileResult.county} County, {fileResult.state}.</>}
+                </span>
+                <button onClick={aiLookup} disabled={looking} className="rounded-lg bg-violet-700 text-white px-3 py-1 text-xs font-semibold disabled:opacity-50">
+                  {looking ? 'Searching…' : 'Try AI web search (fallback)'}
+                </button>
+                <button onClick={() => setFileResult(null)} className="text-xs text-slate-500 underline">dismiss</button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap items-center gap-3">
+                <span>
+                  FSA file:{' '}
+                  {fileResult.rows.filter((r) => r.benchmark_yield != null).map((r) => (
+                    <label key={r.practice} className="inline-flex items-center gap-1 mr-2">
+                      {fileResult.rows.filter((x) => x.benchmark_yield != null).length > 1 && (
+                        <input type="radio" name={`fsa-practice-${row.id}`} checked={filePractice === r.practice} onChange={() => setFilePractice(r.practice)} />
+                      )}
+                      <span>{PRACTICE_LABEL[r.practice]} yield <b>{r.benchmark_yield}</b></span>
+                    </label>
+                  ))}
+                  {(() => {
+                    const shown = fileResult.rows.find((r) => r.practice === filePractice) ?? fileResult.rows[0]
+                    const p = shown?.benchmark_price ?? defaultPrice
+                    return p != null
+                      ? <span>· price <b>${Number(p)}</b> <span className="text-xs text-slate-500">({shown?.benchmark_price != null ? 'from the FSA file' : 'seeded national benchmark'})</span></span>
+                      : <span className="text-xs text-amber-700">· no published price found — current price kept</span>
+                  })()}
+                  {fileResult.data_year != null && fileResult.data_year !== cropYear && (
+                    <span className="ml-1 text-xs rounded-full px-1.5 py-0.5 bg-amber-100 text-amber-800" title={`FSA hasn't published the ${cropYear} benchmark file yet — this is the most recent published year. Re-run once ${cropYear} is out.`}>
+                      {fileResult.data_year} data — {cropYear} not yet published
+                    </span>
+                  )}
+                </span>
+                <span className="text-xs text-slate-500 flex-1 min-w-[200px]">{fileResult.source_description}</span>
+                <button onClick={confirmFile} className="rounded-lg bg-green-700 text-white px-3 py-1 text-xs font-semibold">Confirm &amp; save</button>
+                <button onClick={aiLookup} disabled={looking} className="text-xs text-violet-700 underline">AI web search instead</button>
+                <button onClick={() => setFileResult(null)} className="text-xs text-slate-500 underline">dismiss</button>
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
       {aiResult && (
         <tr className="bg-violet-50">
           <td colSpan={7} className="px-3 py-2 text-sm">
+            <div className="mb-1 text-xs text-violet-800 font-semibold">AI web search (fallback — verify against FSA data)</div>
             <div className="flex flex-wrap items-center gap-3">
               <span>
                 AI found: yield <b>{aiResult.benchmark_yield ?? '—'}</b>, price <b>{aiResult.benchmark_price != null ? `$${aiResult.benchmark_price}` : '—'}</b>{' '}
