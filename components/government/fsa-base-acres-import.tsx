@@ -12,6 +12,7 @@
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { findBestMatch } from '@/lib/fuzzy'
+import { mergeFsaLines, planBaseAcreSaves, describeBaseAcreConflict, type BaseAcreUpsertRow } from '@/lib/fsa-base-import'
 import { PdfTooLargeError, parseDocument, type FsaFarmExtraction } from '@/lib/pdf-upload'
 import { splitPdfIntoBatches } from '@/lib/pdf-split'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
@@ -28,6 +29,7 @@ type Props = {
 
 const NEW_COMMODITY = '__new__'
 
+type MergeSource = { raw_name: string | null; base_acres: string; plc_yield: string }
 type CommodityRow = {
   commodity_id: string // matched existing commodity, or '' (new/unassigned)
   createName: string // when set + no commodity_id, create this covered_commodity on save
@@ -37,6 +39,9 @@ type CommodityRow = {
   election: '' | ArcPlcElectionType
   is_unassigned: boolean
   include: boolean
+  // Source lines this row was merged from (length > 1 ⇒ show the merge on review).
+  merged_from: MergeSource[]
+  merge_note: string | null
 }
 type FarmRow = {
   farm_id: string
@@ -98,6 +103,8 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
         election: unassigned ? '' : normalizeElection(c.arc_plc_election),
         is_unassigned: unassigned,
         include: true,
+        merged_from: [],
+        merge_note: null,
       }
     })
     return {
@@ -107,6 +114,51 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
       matched: !!farm,
       commodities: cmds,
     }
+  }
+
+  // One review row per farm × commodity: FSA documents repeat a commodity
+  // across tracts, existing-/new-base lines, and page batches, and the DB is
+  // unique on (farm_id, commodity_id) — duplicate lines merge here so the
+  // review shows exactly what will be saved (no surprise math at save).
+  function mergeCommodityRows(cmds: CommodityRow[]): CommodityRow[] {
+    const merged = mergeFsaLines(
+      cmds.map((c) => ({
+        key: c.is_unassigned ? 'generic' : c.commodity_id || c.raw_name?.trim().toLowerCase() || '',
+        isUnassigned: c.is_unassigned,
+        baseAcres: num(c.base_acres),
+        plcYield: num(c.plc_yield),
+        election: c.election,
+        row: c,
+      })),
+    )
+    return merged.map((m) => ({
+      ...m.sources[0].row,
+      base_acres: numStr(m.baseAcres),
+      plc_yield: numStr(m.plcYield),
+      election: m.election as '' | ArcPlcElectionType,
+      include: m.sources.some((s) => s.row.include),
+      merged_from: m.sources.length > 1
+        ? m.sources.map((s) => ({ raw_name: s.row.raw_name, base_acres: s.row.base_acres, plc_yield: s.row.plc_yield }))
+        : [],
+      merge_note: m.mergeNote,
+    }))
+  }
+
+  function mergeFarmRows(farmRows: FarmRow[]): FarmRow[] {
+    // The same farm often spans pages/batches — collapse to one card per farm.
+    const byKey = new Map<string, FarmRow>()
+    const order: FarmRow[] = []
+    farmRows.forEach((r, i) => {
+      const key = r.farm_id || (r.raw_fsa ? `fsa:${r.raw_fsa.trim().toLowerCase()}` : `#${i}`)
+      const g = byKey.get(key)
+      if (g) g.commodities = [...g.commodities, ...r.commodities]
+      else {
+        const copy = { ...r }
+        byKey.set(key, copy)
+        order.push(copy)
+      }
+    })
+    return order.map((r) => ({ ...r, commodities: mergeCommodityRows(r.commodities) }))
   }
 
   async function onSource(src: DocumentSource) {
@@ -135,10 +187,15 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
         setErr('No farms found in this document. The scan may be unclear or the format may not be readable.')
         return
       }
-      const next = extracted.map(extractionToRow)
+      const next = mergeFarmRows(extracted.map(extractionToRow))
       setRows(next)
       const totalCmds = next.reduce((s, r) => s + r.commodities.length, 0)
-      setBanner(`AI extracted ${next.length} farm${next.length === 1 ? '' : 's'} with ${totalCmds} commodity line${totalCmds === 1 ? '' : 's'}. Review before saving.`)
+      const mergedCount = next.reduce((s, r) => s + r.commodities.filter((c) => c.merged_from.length > 1).length, 0)
+      setBanner(
+        `AI extracted ${next.length} farm${next.length === 1 ? '' : 's'} with ${totalCmds} commodity line${totalCmds === 1 ? '' : 's'}` +
+          (mergedCount > 0 ? ` (${mergedCount} merged from duplicate document lines)` : '') +
+          '. Review before saving.',
+      )
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) setErr(e.message)
       else if (e?.message?.includes('504') || e?.message?.toLowerCase?.().includes('timeout')) {
@@ -166,29 +223,13 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
     setSaving(true)
     try {
       const now = new Date().toISOString()
-      // 1. Create any new covered_commodities the user opted into (reference
-      //    price defaults to 0 for them to fill in later).
-      const newNames = Array.from(new Set(
-        rows.flatMap((r) => r.commodities)
-          .filter((c) => c.include && !c.is_unassigned && !c.commodity_id && c.createName)
-          .map((c) => c.createName),
-      ))
-      const idByName = new Map<string, string>()
-      for (const name of newNames) {
-        const existing = commodities.find((c) => c.name.toLowerCase() === name.toLowerCase())
-        if (existing) { idByName.set(name, existing.id); continue }
-        const { data, error } = await supabase.from('covered_commodities').insert({
-          name, statutory_reference_price: 0, unit: 'bushel', national_loan_rate: 0,
-          marketing_year_start_month: 9, marketing_year_end_month: 8,
-        }).select('id').single()
-        if (error || !data) throw new Error(error?.message ?? `Could not add commodity ${name}`)
-        idByName.set(name, (data as { id: string }).id)
-      }
-
-      // 2. Assigned base — upsert by (farm_id, commodity_id). Unassigned base —
-      //    summed per farm into one generic (null-commodity) row.
-      const eligible: Array<Record<string, unknown>> = []
-      const electionUpserts: Array<{ farm_id: string; commodity_id: string; crop_year: number; election: ArcPlcElectionType }> = []
+      const NEW_KEY = 'new:'
+      // 1. Collect assigned lines keyed provisionally — the matched commodity
+      //    id, or `new:<name>` for a to-be-created commodity — so duplicate
+      //    conflict keys are caught BEFORE anything is written.
+      type Pending = BaseAcreUpsertRow & { election: '' | ArcPlcElectionType; notes: string | null }
+      const pending: Pending[] = []
+      const newNameByKey = new Map<string, string>()
       const unassignedByFarm = new Map<string, number>()
       for (const r of rows) {
         if (!r.farm_id) continue
@@ -198,18 +239,69 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
             unassignedByFarm.set(r.farm_id, (unassignedByFarm.get(r.farm_id) ?? 0) + (num(c.base_acres) ?? 0))
             continue
           }
-          const cid = c.commodity_id || (c.createName ? idByName.get(c.createName) : undefined)
-          if (!cid) continue
-          eligible.push({ farm_id: r.farm_id, commodity_id: cid, base_acres: num(c.base_acres) ?? 0, plc_yield: num(c.plc_yield) ?? 0, is_unassigned: false, source: 'document_import', updated_at: now })
-          if (c.election) electionUpserts.push({ farm_id: r.farm_id, commodity_id: cid, crop_year: cropYear, election: c.election })
+          // A "new" name that matches an existing commodity resolves to its id
+          // here, so it can't collide with a directly-matched row later.
+          const cid = c.commodity_id
+            || (c.createName ? commodities.find((m) => m.name.toLowerCase() === c.createName.toLowerCase())?.id ?? '' : '')
+          const key = cid || (c.createName ? `${NEW_KEY}${c.createName.trim().toLowerCase()}` : '')
+          if (!key) continue
+          if (key.startsWith(NEW_KEY) && !newNameByKey.has(key)) newNameByKey.set(key, c.createName.trim())
+          pending.push({ farm_id: r.farm_id, commodity_id: key, base_acres: num(c.base_acres) ?? 0, plc_yield: num(c.plc_yield) ?? 0, election: c.election, notes: c.merge_note })
         }
       }
 
-      if (eligible.length === 0 && unassignedByFarm.size === 0) {
+      if (pending.length === 0 && unassignedByFarm.size === 0) {
         setErr('Nothing to save — each line needs a matched farm and commodity, or an unassigned flag.')
         setSaving(false)
         return
       }
+
+      // 2. Belt and suspenders: identical duplicates collapse to one row;
+      //    conflicting duplicates (same farm × commodity, different values —
+      //    only possible via hand edits after the review-screen merge) block
+      //    with a plain-English message, never the raw Postgres ON CONFLICT
+      //    error, and nothing is written.
+      const plan = planBaseAcreSaves(pending)
+      if (plan.conflicts.length > 0) {
+        const farmName = (id: string) => {
+          const f = farms.find((x) => x.id === id)
+          return f ? `Farm ${f.fsa_number ?? f.name}` : 'Farm'
+        }
+        const commodityName = (key: string) =>
+          key.startsWith(NEW_KEY) ? (newNameByKey.get(key) ?? 'new commodity') : commodities.find((m) => m.id === key)?.name ?? 'commodity'
+        setErr(
+          `Could not save: ${plan.conflicts
+            .map((c) => describeBaseAcreConflict(c, farmName(c.farm_id), commodityName(c.commodity_id)))
+            .join('; ')}. Resolve on the review screen before saving.`,
+        )
+        setSaving(false)
+        return
+      }
+
+      // 3. Create any new covered_commodities the user opted into (reference
+      //    price defaults to 0 for them to fill in later).
+      const idByKey = new Map<string, string>()
+      for (const [key, name] of Array.from(newNameByKey.entries())) {
+        const { data, error } = await supabase.from('covered_commodities').insert({
+          name, statutory_reference_price: 0, unit: 'bushel', national_loan_rate: 0,
+          marketing_year_start_month: 9, marketing_year_end_month: 8,
+        }).select('id').single()
+        if (error || !data) throw new Error(error?.message ?? `Could not add commodity ${name}`)
+        idByKey.set(key, (data as { id: string }).id)
+      }
+      const resolveId = (key: string) => (key.startsWith(NEW_KEY) ? idByKey.get(key)! : key)
+
+      // 4. Assigned base — upsert by (farm_id, commodity_id); the plan
+      //    guarantees the batch has no duplicate conflict keys, so a re-upload
+      //    cleanly updates existing rows. Unassigned base — summed per farm
+      //    into one generic (null-commodity) row.
+      const eligible = plan.rows.map((p) => ({
+        farm_id: p.farm_id, commodity_id: resolveId(p.commodity_id), base_acres: p.base_acres, plc_yield: p.plc_yield,
+        is_unassigned: false, source: 'document_import', notes: p.notes, updated_at: now,
+      }))
+      const electionUpserts = plan.rows
+        .filter((p) => p.election)
+        .map((p) => ({ farm_id: p.farm_id, commodity_id: resolveId(p.commodity_id), crop_year: cropYear, election: p.election as ArcPlcElectionType }))
 
       if (eligible.length > 0) {
         const { error } = await supabase.from('farm_base_acres').upsert(eligible, { onConflict: 'farm_id,commodity_id' })
@@ -307,6 +399,16 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
                                 {c.createName && <div className="text-sky-700">new commodity — set its reference price after saving</div>}
                                 {dup && <div className="text-slate-400">updates existing</div>}
                               </>
+                            )}
+                            {c.merged_from.length > 1 && (
+                              <details className="mt-0.5">
+                                <summary className="cursor-pointer text-sky-700">merged from {c.merged_from.length} lines</summary>
+                                <ul className="mt-0.5 list-disc pl-4 text-slate-500">
+                                  {c.merged_from.map((s, k) => (
+                                    <li key={k}>{s.base_acres || '?'} ac{s.plc_yield ? ` @ ${s.plc_yield} yield` : ''}{s.raw_name ? ` — ${s.raw_name}` : ''}</li>
+                                  ))}
+                                </ul>
+                              </details>
                             )}
                           </td>
                           <td className="px-1 py-1"><input type="number" step="0.01" value={c.base_acres} onChange={(e) => setCommodity(i, ci, { base_acres: e.target.value })} className={`${inputCls} w-20`} /></td>
