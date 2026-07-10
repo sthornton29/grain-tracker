@@ -383,6 +383,11 @@ export type CoveredCommodity = {
   // the marketing year. null = built-in defaults in lib/mya-estimate.ts.
   mya_basis_adj: number | null
   mya_month_weights: number[] | null
+  // Seed cotton only: lint/cottonseed weight shares for blending the NASS
+  // lint (¢/lb) + cottonseed ($/ton) series into one seed cotton price.
+  // null = the standard 43/57 defaults in lib/government-payments.ts.
+  lint_share: number | null
+  cottonseed_share: number | null
   created_at: string
 }
 
@@ -421,6 +426,9 @@ export type MyaMonthlyPrice = {
   // 'manual' = operator-typed (or an AI value the operator edited before
   // confirming); 'ai' = confirmed from the USDA lookup; 'usda' = legacy rows.
   source: 'usda' | 'manual' | 'ai'
+  // Component provenance for derived prices (seed cotton:
+  // "lint 68.2¢ + seed $205/ton → 35.17¢ SC"). Display-only.
+  note: string | null
   created_at: string
   updated_at: string
 }

@@ -3,26 +3,28 @@
 // MYA price panel — shared by the ARC/PLC Decision Aid and the Government
 // Payment Tracker so both pages surface (and edit) the SAME per-commodity MYA
 // resolution (lib/government-payments.ts resolveMyaPrice: published final >
-// manual override > WASDE midpoint > blended estimate). For each commodity:
-// the resolved MYA with its state, an Auto | Manual toggle, the effective
-// reference price, and the PLC payment rate the spread produces. The
-// expandable Details row exposes the estimate's composition (which months are
-// USDA-published vs futures-implied), the editable monthly-price table, the
-// WASDE-midpoint shortcut, and — for seed cotton — the lint↔seed-cotton entry
-// modes.
+// manual override > WASDE midpoint > blended estimate). EVERY covered
+// commodity gets the same treatment: an Auto | Manual toggle, inline manual
+// entry, and the USDA monthly AI lookup — commodities without Barchart
+// futures (seed cotton, sorghum, oats, …) simply have no futures-implied
+// months, so their Auto mode is the USDA monthly blend alone. Seed cotton is
+// ONE commodity with ONE price: the lookup fetches the NASS lint + cottonseed
+// series and the blend (configurable 43/57 shares) is computed in code, with
+// the components shown before anything saves. The expandable Details row
+// exposes the estimate's composition, the editable monthly-price table, and
+// the WASDE-midpoint shortcut.
 
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fmtPrice } from '@/lib/hedging'
 import {
-  resolveMyaPrice, effectiveReferencePrice, MYA_STATE_LABEL, type MyaResolution,
+  resolveMyaPrice, effectiveReferencePrice, MYA_STATE_LABEL, LINT_SHARE, COTTONSEED_SHARE, type MyaResolution,
 } from '@/lib/government-payments'
 import { marketingYearMonths, describeMyaComposition, estimateMyaBlend } from '@/lib/mya-estimate'
 import {
-  defaultConfirmedMonths, planMonthlySaves, type MyaMonthlyLookupResult,
+  defaultConfirmedMonths, planMonthlySaves, isSeedCotton, type MyaMonthlyLookupResult,
 } from '@/lib/ai-lookups'
 import type { LiveMyaDetail } from '@/lib/use-live-mya'
-import SeedCottonCalculator from '@/components/government/seed-cotton-calculator'
 import { theadCls, toneText } from '@/components/reports/report-kit'
 import type { ArcPlcPriceData, CoveredCommodity, MyaMonthlyPrice } from '@/lib/types'
 
@@ -133,7 +135,7 @@ export default function MyaPricePanel({
       const v = Number(trimmed)
       if (!Number.isFinite(v) || v < 0) { setSaving((s) => { const n = new Set(s); n.delete(c.id); return n }); return }
       ;({ error } = await supabase.from('mya_monthly_prices').upsert(
-        { commodity_id: c.id, crop_year: cropYear, month, price: v, source: 'manual', updated_at: new Date().toISOString() },
+        { commodity_id: c.id, crop_year: cropYear, month, price: v, source: 'manual', note: null, updated_at: new Date().toISOString() },
         { onConflict: 'commodity_id,crop_year,month' },
       ))
     }
@@ -158,6 +160,10 @@ export default function MyaPricePanel({
           marketing_year: cropYear,
           start_month: Number(c.marketing_year_start_month || 9),
           unit: c.unit === 'pound' ? 'pound' : 'bushel',
+          // Seed cotton: the route fetches lint + cottonseed and blends at
+          // these shares (in code, never by the AI).
+          lint_share: c.lint_share != null ? Number(c.lint_share) : undefined,
+          seed_share: c.cottonseed_share != null ? Number(c.cottonseed_share) : undefined,
         }),
       })
       const json = await res.json().catch(() => null)
@@ -232,7 +238,7 @@ export default function MyaPricePanel({
     setSaving((s) => new Set(s).add(c.id))
     const now = new Date().toISOString()
     const { error } = await supabase.from('mya_monthly_prices').upsert(
-      plan.map((p) => ({ commodity_id: c.id, crop_year: cropYear, month: p.month, price: p.price, source: p.source, updated_at: now })),
+      plan.map((p) => ({ commodity_id: c.id, crop_year: cropYear, month: p.month, price: p.price, source: p.source, note: p.note, updated_at: now })),
       { onConflict: 'commodity_id,crop_year,month' },
     )
     setSaving((s) => { const n = new Set(s); n.delete(c.id); return n })
@@ -260,9 +266,10 @@ export default function MyaPricePanel({
       <p className="text-xs text-slate-500">
         The Marketing-Year Average price drives every PLC and ARC-CO projection. Estimates are a month-by-month
         marketing-year blend: USDA-published monthly farm prices where entered, futures-implied for the remaining
-        months (nearest contract − a per-commodity adjustment), weighted by typical monthly marketings. Open{' '}
-        <b>Details</b> to enter monthly prices, a WASDE season-average midpoint (which overrides the blend), or the
-        seed-cotton lint conversion. A Manual override and a published USDA final outrank all estimates.
+        months (nearest contract − a per-commodity adjustment), weighted by typical monthly marketings. Commodities
+        without traded futures blend from USDA monthly prices alone — every commodity has the same Auto | Manual
+        toggle and the same USDA lookup. Open <b>Details</b> to enter monthly prices or a WASDE season-average
+        midpoint (which overrides the blend). A Manual override and a published USDA final outrank all estimates.
       </p>
       {err && (
         <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-800">{err}</div>
@@ -284,23 +291,23 @@ export default function MyaPricePanel({
               const loan = Number(c.national_loan_rate)
               const rate = r.price != null ? Math.max(0, effRef - Math.max(r.price, loan)) : null
               const isManual = r.state === 'manual'
-              // Manual-only commodities always edit inline — there is no auto
-              // estimate to toggle back to. A published final locks the row.
-              const editable = isManual || (r.manualOnly && r.state !== 'final')
+              // Uniform behavior for every commodity: Manual state (and a row
+              // with nothing resolved yet) edits inline; a published final
+              // locks the row; everything else shows the Auto estimate.
+              const editable = isManual || r.state === 'missing'
               const busy = saving.has(c.id)
               const draft = drafts.get(draftKey(c.id))
               const detail = liveDetails?.get(c.id)
               const isOpen = expanded.has(c.id)
               const monthly = monthlyFor(c.id)
               const months = marketingYearMonths(Number(c.marketing_year_start_month || 9), cropYear)
-              const isSeedCotton = c.name.trim().toLowerCase() === 'seed cotton'
+              const seedCotton = isSeedCotton(c.name)
               const k = draftKey(c.id)
-              const canRefresh = !isManual && !r.manualOnly && r.state !== 'final'
+              const canRefresh = !isManual && r.state !== 'final'
               const refreshTitle = canRefresh
                 ? 'Refresh from USDA monthly prices (AI lookup — you confirm before anything saves)'
                 : isManual ? 'Switch to Auto to use lookups'
-                : r.state === 'final' ? 'USDA final published — nothing to refresh'
-                : 'No auto estimate for this commodity — enter monthly prices in Details'
+                : 'USDA final published — nothing to refresh'
               return (
                 <FragmentRow key={c.id}>
                   <tr className="border-t border-slate-100 align-middle">
@@ -343,8 +350,8 @@ export default function MyaPricePanel({
                             missingCount: detail.composition.missingCount,
                             basisAdj: detail.composition.basisAdj,
                           })
-                        : r.manualOnly ? 'Manual only — no futures market'
-                        : r.state === 'estimate' ? (r.live ? 'Live marketing-year blend' : 'Most recent stored estimate')
+                        : r.state === 'estimate' ? (r.live ? (r.manualOnly ? 'USDA monthly blend (no futures market)' : 'Live marketing-year blend') : 'Most recent stored estimate')
+                        : r.manualOnly ? 'No futures market — look up USDA prices (↻) or type a price'
                         : 'No estimate available'}
                     </td>
                     <td className="px-2 py-1 text-right tabular-nums">{fmtPrice(effRef)}</td>
@@ -353,7 +360,7 @@ export default function MyaPricePanel({
                     </td>
                     <td className="px-2 py-1 no-print whitespace-nowrap">
                       <span className="inline-flex items-center gap-2">
-                        {r.manualOnly || r.state === 'final' ? null : (
+                        {r.state === 'final' ? null : (
                           <span className="inline-flex rounded-lg border border-slate-300 overflow-hidden text-xs">
                             <button
                               onClick={() => revertToAuto(c)}
@@ -396,7 +403,11 @@ export default function MyaPricePanel({
                             <span className="text-xs text-slate-600">
                               {published.length === 0
                                 ? 'no published months yet'
-                                : published.map((f) => `${MONTH_ABBR[f.month - 1]} ${fmtPrice(f.price!)}`).join(' · ')}
+                                : published.map((f, i) => (
+                                    <span key={f.key} title={f.note ?? undefined}>
+                                      {i > 0 ? ' · ' : ''}{MONTH_ABBR[f.month - 1]} {fmtPrice(f.price!)}{f.note ? '*' : ''}
+                                    </span>
+                                  ))}
                             </span>
                             <span className={`text-xs rounded-full px-1.5 py-0.5 ${lookup.confidence === 'high' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>{lookup.confidence} confidence</span>
                             {resulting != null && confirmCount > 0 && (
@@ -473,7 +484,7 @@ export default function MyaPricePanel({
                                 <label key={m.month} className="text-xs flex flex-col gap-0.5">
                                   <span
                                     className={existing?.source === 'ai' ? 'text-violet-700 font-semibold' : existing ? 'text-green-700 font-semibold' : 'text-slate-500'}
-                                    title={existing?.source === 'ai' ? 'Confirmed from the USDA AI lookup' : existing ? 'Entered manually' : undefined}
+                                    title={existing?.note ?? (existing?.source === 'ai' ? 'Confirmed from the USDA AI lookup' : existing ? 'Entered manually' : undefined)}
                                   >
                                     {MONTH_ABBR[m.month - 1]} {String(m.year % 100).padStart(2, '0')}
                                     {!existing && monthDetail?.source === 'futures' && monthDetail.symbol ? ` · ${monthDetail.symbol}` : ''}
@@ -548,6 +559,7 @@ export default function MyaPricePanel({
                                             })}
                                             className="w-full rounded border border-slate-300 px-1.5 py-1 text-right tabular-nums"
                                           />
+                                          {f.note && <span className="text-slate-500" title="Blended in the app from the two NASS series — never by the AI.">{f.note}</span>}
                                           {existing != null && (
                                             <span className={differs ? 'text-amber-700' : 'text-slate-400'}>
                                               {differs ? `differs from your ${fmtPrice(Number(existing.price))}` : 'matches your entry'}
@@ -571,15 +583,7 @@ export default function MyaPricePanel({
                               </div>
                             )
                           })()}
-                          {isSeedCotton && (
-                            <SeedCottonCalculator
-                              commodity={c}
-                              cropYear={cropYear}
-                              priceData={stored}
-                              onSaved={onChanged}
-                              compact
-                            />
-                          )}
+                          {seedCotton && <SeedCottonShares commodity={c} busy={busy} onSaved={onChanged} />}
                         </div>
                       </td>
                     </tr>
@@ -592,8 +596,9 @@ export default function MyaPricePanel({
       </div>
       {commodities.some((c) => resolveMyaPrice({ commodityName: c.name, priceData: storedFor(c.id), liveEstimate: liveMya.get(c.id) ?? null }).manualOnly) && (
         <p className="text-xs text-slate-400">
-          Commodities without traded futures (seed cotton, sorghum, oats, …) have no futures-implied months — enter
-          monthly USDA prices in Details, use the seed-cotton conversion, or set the MYA manually.
+          Commodities without traded futures (seed cotton, sorghum, oats, …) have no futures-implied months — their
+          Auto estimate is the USDA monthly blend alone (use the ↻ lookup or type months in Details). Seed
+          cotton&apos;s monthly price is blended in the app from the NASS lint (¢/lb) and cottonseed ($/ton) series.
         </p>
       )}
     </section>
@@ -603,4 +608,55 @@ export default function MyaPricePanel({
 // A keyed fragment for the main row + expandable detail row pair.
 function FragmentRow({ children }: { children: React.ReactNode }) {
   return <>{children}</>
+}
+
+// Seed cotton lint/cottonseed weight shares (standard 43/57), persisted on
+// covered_commodities and applied by the USDA lookup's in-code blend. Blank =
+// the standard defaults.
+function SeedCottonShares({ commodity, busy, onSaved }: { commodity: CoveredCommodity; busy: boolean; onSaved: () => void }) {
+  const supabase = useMemo(() => createClient(), [])
+  const [lint, setLint] = useState(commodity.lint_share != null ? String(Number(commodity.lint_share)) : '')
+  const [seed, setSeed] = useState(commodity.cottonseed_share != null ? String(Number(commodity.cottonseed_share)) : '')
+  const [err, setErr] = useState<string | null>(null)
+  const lintNum = lint.trim() === '' ? LINT_SHARE : Number(lint)
+  const seedNum = seed.trim() === '' ? COTTONSEED_SHARE : Number(seed)
+  const offSum = Number.isFinite(lintNum) && Number.isFinite(seedNum) && Math.abs(lintNum + seedNum - 1) > 0.001
+
+  async function save() {
+    const l = lint.trim() === '' ? null : Number(lint)
+    const s = seed.trim() === '' ? null : Number(seed)
+    const bad = (v: number | null) => v != null && (!Number.isFinite(v) || v <= 0 || v > 1)
+    if (bad(l) || bad(s)) { setErr('Shares must be between 0 and 1 (e.g. 0.43).'); return }
+    const { error } = await supabase.from('covered_commodities')
+      .update({ lint_share: l, cottonseed_share: s })
+      .eq('id', commodity.id)
+    if (error) { setErr(`Could not save the seed cotton shares: ${error.message}`); return }
+    setErr(null)
+    onSaved()
+  }
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-1.5">
+      <div className="flex flex-wrap items-end gap-3 text-sm">
+        <span className="text-slate-500 max-w-sm text-xs">
+          Seed cotton monthly prices are blended in the app from the NASS lint (¢/lb) and cottonseed ($/ton)
+          series at these weight shares (standard 43/57). Blank = standard.
+        </span>
+        <label className="flex flex-col gap-0.5 text-xs">
+          <span className="text-slate-500">Lint share</span>
+          <input type="number" step="0.01" min="0" max="1" placeholder={String(LINT_SHARE)} value={lint}
+            onChange={(e) => setLint(e.target.value)} onBlur={save} disabled={busy}
+            className="w-20 rounded border border-slate-300 px-2 py-1 text-right tabular-nums" />
+        </label>
+        <label className="flex flex-col gap-0.5 text-xs">
+          <span className="text-slate-500">Seed share</span>
+          <input type="number" step="0.01" min="0" max="1" placeholder={String(COTTONSEED_SHARE)} value={seed}
+            onChange={(e) => setSeed(e.target.value)} onBlur={save} disabled={busy}
+            className="w-20 rounded border border-slate-300 px-2 py-1 text-right tabular-nums" />
+        </label>
+        {offSum && <span className="text-xs text-amber-700 pb-1.5">Shares don’t sum to 1.00 — check the split.</span>}
+      </div>
+      {err && <p className="text-xs text-red-600">{err}</p>}
+    </div>
+  )
 }

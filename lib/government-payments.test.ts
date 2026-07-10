@@ -29,7 +29,8 @@ function commodity(over: Partial<CoveredCommodity> = {}): CoveredCommodity {
     id: 'corn', name: 'Corn', crop_id: null,
     statutory_reference_price: 4.10, unit: 'bushel', national_loan_rate: 2.20,
     marketing_year_start_month: 9, marketing_year_end_month: 8,
-    mya_basis_adj: null, mya_month_weights: null, created_at: '',
+    mya_basis_adj: null, mya_month_weights: null,
+    lint_share: null, cottonseed_share: null, created_at: '',
     ...over,
   }
 }
@@ -699,17 +700,30 @@ describe('resolveMyaPrice', () => {
     expect(myaPrice(priceData({ source: 'wasde', wasde_midpoint: 4.05, mya_price_estimate: 4.22 }))).toBe(4.05)
   })
 
-  it('Barchart-less commodities are manual-only: the live estimate is ignored', () => {
-    // Seed cotton has no traded-futures mapping, so a "live" number can only be
-    // a bug upstream — resolution must never surface it.
-    const r = resolveMyaPrice({ commodityName: 'Seed Cotton', liveEstimate: 0.38 })
-    expect(r).toEqual({ price: null, state: 'missing', manualOnly: true, live: false })
+  it('Barchart-less commodities get the uniform Auto/Manual treatment', () => {
+    // Seed cotton has no traded futures, so its Auto tier is the USDA monthly
+    // blend alone — delivered through the same liveEstimate slot every other
+    // commodity uses (/api/mya-estimate produces it with zero futures-implied
+    // months). manualOnly stays true as display metadata, not a gate.
+    const auto = resolveMyaPrice({ commodityName: 'Seed Cotton', liveEstimate: 0.38 })
+    expect(auto).toEqual({ price: 0.38, state: 'estimate', manualOnly: true, live: true })
+    // With no blend and no stored data there is nothing to resolve.
+    const empty = resolveMyaPrice({ commodityName: 'Seed Cotton' })
+    expect(empty).toEqual({ price: null, state: 'missing', manualOnly: true, live: false })
+    // A Manual override outranks the blend, exactly like a traded commodity.
     const manual = resolveMyaPrice({
       commodityName: 'Seed Cotton',
       priceData: priceData({ commodity_id: 'sc', source: 'manual', mya_price_estimate: 0.36 }),
       liveEstimate: 0.38,
     })
     expect(manual).toEqual({ price: 0.36, state: 'manual', manualOnly: true, live: false })
+    // And a published final locks it above everything.
+    const final = resolveMyaPrice({
+      commodityName: 'Seed Cotton',
+      priceData: priceData({ commodity_id: 'sc', source: 'usda', mya_price_final: 0.41 }),
+      liveEstimate: 0.38,
+    })
+    expect(final).toEqual({ price: 0.41, state: 'final', manualOnly: true, live: false })
   })
 })
 
@@ -746,12 +760,14 @@ describe('applyMyaResolution', () => {
       priceData: [prior],
       liveEstimates: new Map([['corn', 4.22], ['sc', 0.38]]),
     })
-    // 2025 row untouched; corn gets a synthetic 2026 row; manual-only seed
-    // cotton gets nothing from the (ignored) live estimate.
+    // 2025 row untouched; corn gets a synthetic 2026 row; seed cotton's Auto
+    // tier (the USDA monthly blend riding the liveEstimate slot) gets one too
+    // — uniform treatment for Barchart-less commodities.
     expect(rows.find((r) => r.crop_year === 2025)).toEqual(prior)
     const cornRow = rows.find((r) => r.commodity_id === 'corn' && r.crop_year === 2026)
     expect(myaPrice(cornRow)).toBe(4.22)
-    expect(rows.some((r) => r.commodity_id === 'sc' && r.crop_year === 2026)).toBe(false)
+    const scRow = rows.find((r) => r.commodity_id === 'sc' && r.crop_year === 2026)
+    expect(myaPrice(scRow)).toBe(0.38)
   })
 
   it('keeps a published final when nothing overrides it', () => {
