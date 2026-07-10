@@ -809,65 +809,74 @@ function AddBenchmarkForm({ commodities, counties, existing, preferredCountyIds,
   preferredCountyIds: ReadonlySet<string>
   onAdd: (patch: { commodity_id: string; county: string | null; county_id: string | null; benchmark_price: number | null; benchmark_yield: number | null }) => void
 }) {
+  const OTHER = '__other__'
   const [commodity, setCommodity] = useState('')
+  // The county picker DEFAULTS to the operation's own counties (from farms) —
+  // one select, "County, ST" labels. "Other county…" reveals the state →
+  // county cascade over the FULL reference table (county names repeat across
+  // states, so the pair is the only unambiguous pick for arbitrary counties).
+  const [pick, setPick] = useState('') // '' = default row, a county id, or OTHER
   const [stateCode, setStateCode] = useState('')
   const [countyId, setCountyId] = useState('')
   const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm bg-white'
-  // State first, then county filtered to that state — county names repeat
-  // across states, so the pair is the only unambiguous pick. The county list
-  // is the FULL reference table for the state (fetched paginated — Supabase's
-  // row cap used to truncate it), with the operation's own counties on top.
+  const myCounties = useMemo(
+    () => counties
+      .filter((c) => preferredCountyIds.has(c.id))
+      .sort((a, b) => a.state_code.localeCompare(b.state_code) || a.name.localeCompare(b.name)),
+    [counties, preferredCountyIds],
+  )
   const states = useMemo(() => {
     const m = new Map<string, string>()
     for (const c of counties) if (!m.has(c.state_code)) m.set(c.state_code, c.state)
     return [...m.entries()].sort((a, b) => a[1].localeCompare(b[1]))
   }, [counties])
-  const stateCounties = useMemo(() => {
-    const list = counties.filter((c) => c.state_code === stateCode).sort((a, b) => a.name.localeCompare(b.name))
-    return {
-      preferred: list.filter((c) => preferredCountyIds.has(c.id)),
-      rest: list.filter((c) => !preferredCountyIds.has(c.id)),
-    }
-  }, [counties, stateCode, preferredCountyIds])
-  const countyRec = countyId ? counties.find((c) => c.id === countyId) ?? null : null
-  const needsCounty = stateCode !== '' && !countyRec
+  const stateCounties = useMemo(
+    () => counties.filter((c) => c.state_code === stateCode).sort((a, b) => a.name.localeCompare(b.name)),
+    [counties, stateCode],
+  )
+  const countyRec = pick === OTHER
+    ? (countyId ? counties.find((c) => c.id === countyId) ?? null : null)
+    : (pick ? counties.find((c) => c.id === pick) ?? null : null)
+  const needsCounty = pick === OTHER && !countyRec
   const dup = commodity !== '' && existing.some((b) =>
     b.commodity_id === commodity &&
     (countyRec
       ? b.county_id === countyRec.id || (b.county_id == null && (b.county ?? '').trim().toLowerCase() === countyRec.name.toLowerCase())
-      : stateCode === '' && b.county_id == null && (b.county ?? '').trim() === ''))
+      : pick === '' && b.county_id == null && (b.county ?? '').trim() === ''))
   return (
     <div className="flex flex-wrap items-end gap-2 border border-slate-200 rounded-lg p-3">
       <select value={commodity} onChange={(e) => setCommodity(e.target.value)} className={inputCls}>
         <option value="">Commodity…</option>
         {commodities.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
       </select>
-      <select value={stateCode} onChange={(e) => { setStateCode(e.target.value); setCountyId('') }} className={inputCls}>
+      <select value={pick} onChange={(e) => { setPick(e.target.value); setStateCode(''); setCountyId('') }} className={inputCls}>
         <option value="">All counties (default row)</option>
-        {states.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
-      </select>
-      <select value={countyId} onChange={(e) => setCountyId(e.target.value)} disabled={!stateCode} className={`${inputCls} disabled:opacity-50`}>
-        <option value="">{stateCode ? 'County…' : '—'}</option>
-        {stateCounties.preferred.length > 0 ? (
-          <>
-            <optgroup label="Your counties">
-              {stateCounties.preferred.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </optgroup>
-            <optgroup label="All counties">
-              {stateCounties.rest.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </optgroup>
-          </>
-        ) : (
-          stateCounties.rest.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)
+        {myCounties.length > 0 && (
+          <optgroup label="Your counties">
+            {myCounties.map((c) => <option key={c.id} value={c.id}>{countyLabel(c)}</option>)}
+          </optgroup>
         )}
+        <option value={OTHER}>Other county…</option>
       </select>
+      {pick === OTHER && (
+        <>
+          <select value={stateCode} onChange={(e) => { setStateCode(e.target.value); setCountyId('') }} className={inputCls}>
+            <option value="">State…</option>
+            {states.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
+          </select>
+          <select value={countyId} onChange={(e) => setCountyId(e.target.value)} disabled={!stateCode} className={`${inputCls} disabled:opacity-50`}>
+            <option value="">{stateCode ? 'County…' : '—'}</option>
+            {stateCounties.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </>
+      )}
       <button
-        onClick={() => { if (commodity && !dup && !needsCounty) { onAdd({ commodity_id: commodity, county: countyRec?.name ?? null, county_id: countyRec?.id ?? null, benchmark_price: null, benchmark_yield: null }); setCommodity(''); setStateCode(''); setCountyId('') } }}
+        onClick={() => { if (commodity && !dup && !needsCounty) { onAdd({ commodity_id: commodity, county: countyRec?.name ?? null, county_id: countyRec?.id ?? null, benchmark_price: null, benchmark_yield: null }); setCommodity(''); setPick(''); setStateCode(''); setCountyId('') } }}
         disabled={!commodity || dup || needsCounty}
         className="rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50"
       >Add row</button>
       {dup && <span className="text-xs text-amber-700">That commodity × county row already exists.</span>}
-      {needsCounty && !dup && <span className="text-xs text-amber-700">Pick the county (or choose “All counties” for the default row).</span>}
+      {needsCounty && !dup && <span className="text-xs text-amber-700">Pick the state and county (or choose “All counties” for the default row).</span>}
     </div>
   )
 }
@@ -910,10 +919,22 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
   const [aiResult, setAiResult] = useState<AiLookup | null>(null)
   const [fileResult, setFileResult] = useState<FsaFileLookup | null>(null)
   const [filePractice, setFilePractice] = useState<'irrigated' | 'non_irrigated' | 'all'>('all')
+  // Retry targets when the row's own county × year has no published data: a
+  // nearby county (same state) and/or an earlier program year. The values
+  // always SAVE to this row's county — provenance records what was borrowed.
+  const [altCountyId, setAltCountyId] = useState('')
+  const [altYear, setAltYear] = useState(cropYear)
+  // What the current lookup result was actually fetched for.
+  const [usedTarget, setUsedTarget] = useState<{ county: County; year: number } | null>(null)
   useEffect(() => {
     setPrice(row.benchmark_price != null ? String(Number(row.benchmark_price)) : '')
     setYld(row.benchmark_yield != null ? String(Number(row.benchmark_yield)) : '')
-  }, [row])
+    setAltCountyId('')
+    setAltYear(cropYear)
+    setUsedTarget(null)
+    setFileResult(null)
+    setAiResult(null)
+  }, [row, cropYear])
 
   // The county record behind this row: by county_id, or — for legacy rows that
   // predate county_id — by name when that name is unambiguous nationwide.
@@ -944,25 +965,28 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
 
   // Primary lookup: the county YIELD comes straight from FSA's published
   // "ARC-County Benchmark Yields and Revenues" workbook (parsed + cached
-  // server-side); the PRICE comes from the seeded/published national values.
-  // The AI web search below is only a labeled fallback.
-  async function fsaFileLookup() {
+  // server-side); the PRICE comes from the file / seeded national values.
+  // The AI web search below is only a labeled fallback. `target` lets the
+  // user retry against a nearby county and/or an earlier program year when
+  // this row's own county × year has nothing published.
+  async function fsaFileLookup(target?: { county: County; year: number }) {
     if (!lookupGuard()) return
-    setLooking(true); setAiResult(null); setFileResult(null)
+    const t = target ?? { county: countyRec!, year: cropYear }
+    setLooking(true); setAiResult(null); setFileResult(null); setUsedTarget(t)
     try {
       const res = await fetch('/api/fsa-benchmark-yield', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           commodity: commodity!.name,
-          county: countyRec!.name,
-          state: countyRec!.state_code,
-          county_id: countyRec!.id,
-          crop_year: cropYear,
+          county: t.county.name,
+          state: t.county.state_code,
+          county_id: t.county.id,
+          crop_year: t.year,
         }),
       })
       const json = await res.json().catch(() => null)
       const failed = (error: string) => setFileResult({
-        rows: [], data_year: null, requested_year: cropYear, county: countyRec!.name, state: countyRec!.state_code,
+        rows: [], data_year: null, requested_year: t.year, county: t.county.name, state: t.county.state_code,
         fetched_at: null, source_description: '', not_found: true, error,
       })
       if (!res.ok || !json?.data) { failed(json?.error ?? 'FSA file lookup failed.'); return }
@@ -972,12 +996,23 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
       setFilePractice(practices.includes('all') ? 'all' : practices.includes('non_irrigated') ? 'non_irrigated' : 'irrigated')
     } catch {
       setFileResult({
-        rows: [], data_year: null, requested_year: cropYear, county: countyRec!.name, state: countyRec!.state_code,
+        rows: [], data_year: null, requested_year: t.year, county: t.county.name, state: t.county.state_code,
         fetched_at: null, source_description: '', not_found: true, error: 'FSA file lookup failed — check your connection.',
       })
     } finally {
       setLooking(false)
     }
+  }
+
+  // Provenance notes when the confirmed values were borrowed from a nearby
+  // county or an earlier program year — the save always lands on THIS row.
+  function borrowNote(): string {
+    let s = ''
+    if (usedTarget && countyRec && usedTarget.county.id !== countyRec.id) {
+      s += ` — nearby-county data (${usedTarget.county.name} County, ${usedTarget.county.state_code}) applied to ${countyRec.name} County, ${countyRec.state_code}`
+    }
+    if (usedTarget && usedTarget.year !== cropYear) s += ` — used for program year ${cropYear}`
+    return s
   }
 
   function confirmFile() {
@@ -996,25 +1031,26 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
       // The workbook IS the FSA-published source.
       yield_source: 'usda',
       price_source: filePrice != null ? 'usda' : row.price_source,
-      source_description: `${fileResult.source_description}${picked.practice !== 'all' ? ` (${PRACTICE_LABEL[picked.practice]})` : ''}`,
+      source_description: `${fileResult.source_description}${picked.practice !== 'all' ? ` (${PRACTICE_LABEL[picked.practice]})` : ''}${borrowNote()}`,
     })
     setFileResult(null)
   }
 
   // Labeled fallback when the file service can't find the county/commodity —
   // keeps the AI web search's low-confidence guardrails.
-  async function aiLookup() {
+  async function aiLookup(target?: { county: County; year: number }) {
     if (!lookupGuard()) return
-    setLooking(true); setAiResult(null); setFileResult(null)
+    const t = target ?? { county: countyRec!, year: cropYear }
+    setLooking(true); setAiResult(null); setFileResult(null); setUsedTarget(t)
     try {
       const res = await fetch('/api/arc-benchmark-lookup', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           commodity: commodity!.name,
-          county: countyRec!.name,
-          state: countyRec!.state,
-          county_id: countyRec!.id,
-          crop_year: cropYear,
+          county: t.county.name,
+          state: t.county.state,
+          county_id: t.county.id,
+          crop_year: t.year,
         }),
       })
       const json = await res.json().catch(() => null)
@@ -1036,12 +1072,51 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
       benchmark_yield: aiResult.benchmark_yield ?? (yld.trim() !== '' ? Number(yld) : null),
       price_source: aiResult.benchmark_price != null ? 'ai' : row.price_source,
       yield_source: aiResult.benchmark_yield != null ? 'ai' : row.yield_source,
-      source_description: aiResult.source_description || null,
+      source_description: `${aiResult.source_description || ''}${borrowNote()}` || null,
     })
     setAiResult(null)
   }
 
   const inputCls = 'rounded border border-slate-300 px-2 py-1 w-24'
+  const altSelectCls = 'rounded border border-slate-300 px-1.5 py-1 text-xs bg-white'
+  const nearbyCounties = countyRec
+    ? counties.filter((c) => c.state_code === countyRec.state_code && c.id !== countyRec.id).sort((a, b) => a.name.localeCompare(b.name))
+    : []
+  const altCounty = altCountyId ? counties.find((c) => c.id === altCountyId) ?? null : null
+  const retryTarget = countyRec ? { county: altCounty ?? countyRec, year: altYear } : null
+  // Offered when a lookup comes back empty: retry against a nearby county
+  // (same state) and/or an earlier program year — values still save to THIS
+  // row, with the borrowed source recorded in the provenance.
+  const altControls = countyRec && (
+    <span className="inline-flex flex-wrap items-center gap-2">
+      <label className="inline-flex items-center gap-1 text-xs text-slate-600">
+        County
+        <select value={altCountyId} onChange={(e) => setAltCountyId(e.target.value)} className={altSelectCls}>
+          <option value="">{countyRec.name} (this row)</option>
+          {nearbyCounties.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </label>
+      <label className="inline-flex items-center gap-1 text-xs text-slate-600">
+        Year
+        <select value={altYear} onChange={(e) => setAltYear(Number(e.target.value))} className={altSelectCls}>
+          {[cropYear, cropYear - 1, cropYear - 2, cropYear - 3].map((y) => (
+            <option key={y} value={y}>{y}{y !== cropYear ? ' (prior)' : ''}</option>
+          ))}
+        </select>
+      </label>
+      <button
+        onClick={() => retryTarget && fsaFileLookup(retryTarget)}
+        disabled={looking}
+        className="rounded-lg bg-green-800 text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
+      >{looking ? 'Looking up…' : 'Retry FSA lookup'}</button>
+      <button
+        onClick={() => retryTarget && aiLookup(retryTarget)}
+        disabled={looking}
+        className="rounded-lg bg-violet-700 text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
+      >AI web search</button>
+    </span>
+  )
+  const borrowedCounty = usedTarget && countyRec && usedTarget.county.id !== countyRec.id ? usedTarget.county : null
   return (
     <>
       <tr className="border-t border-slate-100 align-middle">
@@ -1063,7 +1138,7 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
             className="text-green-700 font-semibold mr-3"
           >Save</button>
           <button
-            onClick={fsaFileLookup}
+            onClick={() => { setAltCountyId(''); setAltYear(cropYear); fsaFileLookup() }}
             disabled={looking || !countyRec}
             title={countyRec
               ? 'County yield from FSA’s published benchmark workbook + the seeded national price — you confirm before anything saves.'
@@ -1083,11 +1158,9 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
                 <span className="text-slate-700">
                   {fileResult.error
                     ? fileResult.error
-                    : <>FSA&apos;s published benchmark file has no {commodity?.name} row for {fileResult.county} County, {fileResult.state}.</>}
+                    : <>FSA&apos;s published benchmark file has no {commodity?.name} row for {fileResult.county} County, {fileResult.state}{fileResult.requested_year !== cropYear ? ` (${fileResult.requested_year})` : ''}. Try a nearby county or a prior year, or the AI web search:</>}
                 </span>
-                <button onClick={aiLookup} disabled={looking} className="rounded-lg bg-violet-700 text-white px-3 py-1 text-xs font-semibold disabled:opacity-50">
-                  {looking ? 'Searching…' : 'Try AI web search (fallback)'}
-                </button>
+                {altControls}
                 <button onClick={() => setFileResult(null)} className="text-xs text-slate-500 underline">dismiss</button>
               </div>
             ) : (
@@ -1110,14 +1183,19 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
                       : <span className="text-xs text-amber-700">· no published price found — current price kept</span>
                   })()}
                   {fileResult.data_year != null && fileResult.data_year !== cropYear && (
-                    <span className="ml-1 text-xs rounded-full px-1.5 py-0.5 bg-amber-100 text-amber-800" title={`FSA hasn't published the ${cropYear} benchmark file yet — this is the most recent published year. Re-run once ${cropYear} is out.`}>
-                      {fileResult.data_year} data — {cropYear} not yet published
+                    <span className="ml-1 text-xs rounded-full px-1.5 py-0.5 bg-amber-100 text-amber-800" title={`Data from the ${fileResult.data_year} FSA benchmark file, saved against this ${cropYear} row.`}>
+                      {fileResult.data_year} data
+                    </span>
+                  )}
+                  {borrowedCounty && (
+                    <span className="ml-1 text-xs rounded-full px-1.5 py-0.5 bg-amber-100 text-amber-800" title={`Looked up ${borrowedCounty.name} County, ${borrowedCounty.state_code} — confirming saves these values to ${countyRec?.name} County, ${countyRec?.state_code} with the borrowed source recorded.`}>
+                      nearby county: {borrowedCounty.name} → saves to {countyRec?.name}
                     </span>
                   )}
                 </span>
                 <span className="text-xs text-slate-500 flex-1 min-w-[200px]">{fileResult.source_description}</span>
                 <button onClick={confirmFile} className="rounded-lg bg-green-700 text-white px-3 py-1 text-xs font-semibold">Confirm &amp; save</button>
-                <button onClick={aiLookup} disabled={looking} className="text-xs text-violet-700 underline">AI web search instead</button>
+                <button onClick={() => aiLookup(usedTarget ?? undefined)} disabled={looking} className="text-xs text-violet-700 underline">AI web search instead</button>
                 <button onClick={() => setFileResult(null)} className="text-xs text-slate-500 underline">dismiss</button>
               </div>
             )}
@@ -1133,8 +1211,13 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
                 AI found: yield <b>{aiResult.benchmark_yield ?? '—'}</b>, price <b>{aiResult.benchmark_price != null ? `$${aiResult.benchmark_price}` : '—'}</b>{' '}
                 <span className={`text-xs rounded-full px-1.5 py-0.5 ${aiResult.confidence === 'high' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>{aiResult.confidence} confidence</span>
                 {aiResult.data_year != null && aiResult.data_year !== cropYear && (
-                  <span className="ml-1 text-xs rounded-full px-1.5 py-0.5 bg-amber-100 text-amber-800" title={`FSA hasn't published ${cropYear} benchmark data yet — this is the most recent available year. Re-run the lookup once ${cropYear} is out.`}>
-                    {aiResult.data_year} data — {cropYear} not yet published
+                  <span className="ml-1 text-xs rounded-full px-1.5 py-0.5 bg-amber-100 text-amber-800" title={`${aiResult.data_year} data, saved against this ${cropYear} row.`}>
+                    {aiResult.data_year} data
+                  </span>
+                )}
+                {borrowedCounty && (
+                  <span className="ml-1 text-xs rounded-full px-1.5 py-0.5 bg-amber-100 text-amber-800" title={`Looked up ${borrowedCounty.name} County, ${borrowedCounty.state_code} — confirming saves these values to ${countyRec?.name} County, ${countyRec?.state_code} with the borrowed source recorded.`}>
+                    nearby county: {borrowedCounty.name} → saves to {countyRec?.name}
                   </span>
                 )}
               </span>
@@ -1153,6 +1236,12 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
               )}
               <button onClick={() => setAiResult(null)} className="text-xs text-slate-500 underline">dismiss</button>
             </div>
+            {aiResult.benchmark_yield == null && aiResult.benchmark_price == null && altControls && (
+              <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                <span className="text-xs text-slate-600">Or try a nearby county / prior year:</span>
+                {altControls}
+              </div>
+            )}
           </td>
         </tr>
       )}
