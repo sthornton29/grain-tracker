@@ -20,7 +20,7 @@ import {
 import FsaBaseAcresImport from '@/components/government/fsa-base-acres-import'
 import type {
   Farm, Entity, Crop, County, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection,
-  ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment, PaymentLimitConfig, ArcPlcElectionType,
+  ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment, ArcPlcElectionType,
   ProgramYearConfig, ArcBenchmarkData,
 } from '@/lib/types'
 
@@ -44,7 +44,6 @@ export default function GovernmentPaymentsSettingsPage() {
   const [priceData, setPriceData] = useState<ArcPlcPriceData[]>([])
   const [payments, setPayments] = useState<ArcPlcPayment[]>([])
   const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
-  const [limits, setLimits] = useState<PaymentLimitConfig[]>([])
   const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
   const [counties, setCounties] = useState<County[]>([])
   const [benchmarks, setBenchmarks] = useState<ArcBenchmarkData[]>([])
@@ -55,7 +54,7 @@ export default function GovernmentPaymentsSettingsPage() {
   const [open, setOpen] = useState<string>('base')
 
   async function refresh() {
-    const [fa, en, cr, pl, cc, ba, el, pd, pay, op, lim, pc, co, bm] = await Promise.all([
+    const [fa, en, cr, pl, cc, ba, el, pd, pay, op, pc, co, bm] = await Promise.all([
       supabase.from('farms').select('*').order('name'),
       supabase.from('entities').select('*').order('name'),
       supabase.from('crops').select('*').order('name'),
@@ -66,7 +65,6 @@ export default function GovernmentPaymentsSettingsPage() {
       supabase.from('arc_plc_price_data').select('*'),
       supabase.from('arc_plc_payments').select('*'),
       supabase.from('other_government_payments').select('*').order('created_at', { ascending: false }),
-      supabase.from('payment_limit_config').select('*'),
       supabase.from('program_year_config').select('*').order('crop_year', { ascending: false }),
       fetchAllCounties(supabase),
       supabase.from('arc_benchmark_data').select('*'),
@@ -81,7 +79,6 @@ export default function GovernmentPaymentsSettingsPage() {
     setPriceData((pd.data as ArcPlcPriceData[]) || [])
     setPayments((pay.data as ArcPlcPayment[]) || [])
     setOtherPayments((op.data as OtherGovernmentPayment[]) || [])
-    setLimits((lim.data as PaymentLimitConfig[]) || [])
     setProgramConfigs((pc.data as ProgramYearConfig[]) || [])
     setCounties(co || [])
     setBenchmarks((bm.data as ArcBenchmarkData[]) || [])
@@ -257,14 +254,6 @@ export default function GovernmentPaymentsSettingsPage() {
   async function deleteBenchmark(id: string) {
     if (!confirm('Delete this benchmark row?')) return
     await supabase.from('arc_benchmark_data').delete().eq('id', id); refresh()
-  }
-  async function saveLimit(entity_id: string, eligible_persons: number, per_person_limit: number) {
-    const { error } = await supabase.from('payment_limit_config').upsert(
-      { entity_id, crop_year: cropYear, eligible_persons, per_person_limit, updated_at: new Date().toISOString() },
-      { onConflict: 'entity_id,crop_year' },
-    )
-    if (error) { setErr(error.message); return }
-    refresh()
   }
   async function saveProgramConfig(year: number, patch: {
     sco_trigger: number; per_person_payment_limit: number; sequestration_pct: number
@@ -521,14 +510,24 @@ export default function GovernmentPaymentsSettingsPage() {
 
       {/* Payment limits */}
       <Section id="limit" title="Payment Limits" open={open === 'limit'} onToggle={() => setOpen(open === 'limit' ? '' : 'limit')}>
-        <p className="text-sm text-slate-500">Per-person limit defaults to the configured Program Parameters value for {cropYear} ({usd(programParams.perPersonPaymentLimit)}). Total limit = eligible persons × per-person limit.</p>
+        <p className="text-sm text-slate-500">
+          Payment limits are no longer entered per year. Each entity carries its <b>eligible persons</b> count —
+          set once under <Link href="/settings/entities" className="underline font-semibold">Settings → Entities</Link>{' '}
+          and edited only when the entity&apos;s structure changes. The total ARC/PLC limit = persons × the
+          per-person limit from <b>Program Parameters</b> below ({usd(programParams.perPersonPaymentLimit)} for {cropYear}).
+        </p>
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 text-slate-600"><tr>{['Entity', 'Eligible Persons', 'Per-Person Limit', 'Total Limit', ''].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+            <thead className="bg-slate-50 text-slate-600"><tr>{['Entity', 'Eligible Persons', 'Per-Person Limit', 'Total Limit'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
             <tbody>
-              {entityList.length === 0 && <tr><td colSpan={5} className="px-3 py-6 text-center text-slate-400">No entities.</td></tr>}
+              {entityList.length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-400">No entities.</td></tr>}
               {entityList.map((e) => (
-                <LimitRow key={e.id} entity={e} config={limits.find((l) => l.entity_id === e.id && l.crop_year === cropYear) ?? null} defaultLimit={programParams.perPersonPaymentLimit} onSave={saveLimit} />
+                <tr key={e.id} className="border-t border-slate-100">
+                  <td className="px-3 py-2 font-semibold">{e.name}</td>
+                  <td className="px-3 py-2">{e.payment_limit_persons ?? 1}</td>
+                  <td className="px-3 py-2 text-right font-mono">{usd(programParams.perPersonPaymentLimit)}</td>
+                  <td className="px-3 py-2 text-right font-mono font-semibold">{usd(paymentLimitTotal(e.payment_limit_persons ?? 1, programParams.perPersonPaymentLimit))}</td>
+                </tr>
               ))}
             </tbody>
           </table>
@@ -710,22 +709,6 @@ function ConvertUnassignedRow({ row, farmName, commodities, onConvert, onDelete 
         >Convert</button>
       </td>
       <td className="px-3 py-2"><button onClick={() => onDelete(row.id)} className="text-red-600 text-xs">Delete</button></td>
-    </tr>
-  )
-}
-
-function LimitRow({ entity, config, defaultLimit, onSave }: { entity: Entity; config: PaymentLimitConfig | null; defaultLimit: number; onSave: (e: string, persons: number, limit: number) => void }) {
-  const [persons, setPersons] = useState(String(config?.eligible_persons ?? 1))
-  const [limit, setLimit] = useState(String(config?.per_person_limit ?? defaultLimit))
-  useEffect(() => { setPersons(String(config?.eligible_persons ?? 1)); setLimit(String(config?.per_person_limit ?? defaultLimit)) }, [config, defaultLimit])
-  const total = paymentLimitTotal(num(persons) ?? 0, num(limit) ?? 0)
-  return (
-    <tr className="border-t border-slate-100">
-      <td className="px-3 py-2 font-semibold">{entity.name}</td>
-      <td className="px-3 py-2"><input type="number" step="1" value={persons} onChange={(e) => setPersons(e.target.value)} className="rounded border border-slate-300 px-2 py-1 w-20" /></td>
-      <td className="px-3 py-2"><input type="number" step="1000" value={limit} onChange={(e) => setLimit(e.target.value)} className="rounded border border-slate-300 px-2 py-1 w-28" /></td>
-      <td className="px-3 py-2 text-right font-mono font-semibold">{usd(total)}</td>
-      <td className="px-3 py-2"><button onClick={() => onSave(entity.id, num(persons) ?? 1, num(limit) ?? defaultLimit)} className="text-green-700 font-semibold">Save</button></td>
     </tr>
   )
 }
