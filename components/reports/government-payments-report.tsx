@@ -32,7 +32,7 @@ import {
 import { formatNumber, type ExportPayload, type ExportCell } from '@/lib/exports'
 import type {
   Farm, Entity, County, Crop, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection,
-  ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment, PaymentLimitConfig, ProgramYearConfig,
+  ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment, ProgramYearConfig,
   ArcBenchmarkData, MyaMonthlyPrice,
 } from '@/lib/types'
 
@@ -54,7 +54,6 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   const [priceData, setPriceData] = useState<ArcPlcPriceData[]>([])
   const [payments, setPayments] = useState<ArcPlcPayment[]>([])
   const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
-  const [limits, setLimits] = useState<PaymentLimitConfig[]>([])
   const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
   const [counties, setCounties] = useState<County[]>([])
   const [benchmarks, setBenchmarks] = useState<ArcBenchmarkData[]>([])
@@ -83,7 +82,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [fa, en, cr, pl, cc, ba, el, pd, pay, op, lim, pc, co, bm, mp] = await Promise.all([
+      const [fa, en, cr, pl, cc, ba, el, pd, pay, op, pc, co, bm, mp] = await Promise.all([
         supabase.from('farms').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('crops').select('*').order('name'),
@@ -94,7 +93,6 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
         supabase.from('arc_plc_price_data').select('*'),
         supabase.from('arc_plc_payments').select('*'),
         supabase.from('other_government_payments').select('*'),
-        supabase.from('payment_limit_config').select('*'),
         supabase.from('program_year_config').select('*'),
         fetchAllCounties(supabase),
         supabase.from('arc_benchmark_data').select('*'),
@@ -110,7 +108,6 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
       setPriceData((pd.data as ArcPlcPriceData[]) || [])
       setPayments((pay.data as ArcPlcPayment[]) || [])
       setOtherPayments((op.data as OtherGovernmentPayment[]) || [])
-      setLimits((lim.data as PaymentLimitConfig[]) || [])
       setProgramConfigs((pc.data as ProgramYearConfig[]) || [])
       setCounties(co || [])
       setBenchmarks((bm.data as ArcBenchmarkData[]) || [])
@@ -268,22 +265,21 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   ], [totals, shownFarms])
 
   // Per-entity payment-limit status: sum ARC/PLC for that entity's farms + the
-  // entity's other payments (farm-specific and not).
+  // entity's other payments (farm-specific and not). Eligible persons live ON
+  // the entity (set once — Settings → Entities); the per-person $ cap is the
+  // PROGRAM year's statutory value from Program Parameters.
   const limitRows = useMemo(() => {
     return entities.filter((e) => !entityId || e.id === entityId).map((e) => {
       const entityFarms = new Set(farms.filter((f) => f.entity_id === e.id).map((f) => f.id))
       let projTotal = 0
       for (const r of farmRows) if (entityFarms.has(r.farm.id)) projTotal += r.arcPlcTotal
       for (const o of yearOther) if (o.entity_id === e.id) projTotal += Number(o.amount)
-      // Limits are a PROGRAM-year concept: the $ cap applies to a program
-      // year's payments regardless of when the cash arrives.
-      const cfg = limits.find((l) => l.entity_id === e.id && l.crop_year === programYear)
-      const persons = cfg?.eligible_persons ?? 1
-      const perPerson = cfg ? Number(cfg.per_person_limit) : programCfg.perPersonPaymentLimit
+      const persons = e.payment_limit_persons ?? 1
+      const perPerson = programCfg.perPersonPaymentLimit
       const limit = paymentLimitTotal(persons, perPerson)
       return { entity: e, persons, perPerson, limit, projTotal, remaining: limit - projTotal, pct: limit > 0 ? projTotal / limit : 0 }
-    }).filter((r) => r.projTotal > 0 || limits.some((l) => l.entity_id === r.entity.id && l.crop_year === programYear))
-  }, [entities, farms, farmRows, yearOther, limits, programYear, entityId, programCfg])
+    }).filter((r) => r.projTotal > 0)
+  }, [entities, farms, farmRows, yearOther, entityId, programCfg])
 
   // "I set it in Settings but the report doesn't see it": benchmarks and
   // payment limits are keyed per PROGRAM year, and in payment-year framing
@@ -293,10 +289,6 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     if (programYear === '' || benchmarks.length === 0 || benchmarks.some((b) => b.crop_year === programYear)) return []
     return Array.from(new Set(benchmarks.map((b) => b.crop_year))).sort((a, b) => b - a)
   }, [benchmarks, programYear])
-  const limitYearsElsewhere = useMemo(() => {
-    if (programYear === '' || limits.length === 0 || limits.some((l) => l.crop_year === programYear)) return []
-    return Array.from(new Set(limits.map((l) => l.crop_year))).sort((a, b) => b - a)
-  }, [limits, programYear])
 
   function toggle(id: string) { setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n }) }
 
@@ -417,19 +409,12 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
         </Link>
       </div>
 
-      {(benchmarkYearsElsewhere.length > 0 || limitYearsElsewhere.length > 0) && (
+      {benchmarkYearsElsewhere.length > 0 && (
         <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print">
           <strong>Program-year mismatch</strong> — this view computes <b>program year {programYear}</b>
-          {yearBasis === 'payment' ? <> (its payments arrive in {paymentYear})</> : null}, but{' '}
-          {benchmarkYearsElsewhere.length > 0 && (
-            <>your ARC-CO benchmark rows are for {benchmarkYearsElsewhere.join(', ')}</>
-          )}
-          {benchmarkYearsElsewhere.length > 0 && limitYearsElsewhere.length > 0 && ' and '}
-          {limitYearsElsewhere.length > 0 && (
-            <>your payment-limit rows are for {limitYearsElsewhere.join(', ')}</>
-          )}
-          {' '}— so the projections fall back to flat estimates / default limits. Benchmarks, elections, and limits
-          are keyed to the program year:{' '}
+          {yearBasis === 'payment' ? <> (its payments arrive in {paymentYear})</> : null}, but your ARC-CO benchmark
+          rows are for {benchmarkYearsElsewhere.join(', ')} — so ARC-CO falls back to flat estimates. Benchmarks and
+          elections are keyed to the program year:{' '}
           <Link href={`/settings/government-payments?year=${programYear}#bench`} className="underline font-semibold">
             add {programYear} rows in Settings
           </Link>
@@ -571,7 +556,8 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
               <h2 className="font-bold text-lg mb-2">
                 Payment Limit Status — {programYear} program year
                 <span className="ml-2 text-sm font-normal text-slate-500">
-                  the per-person limit applies per program year, regardless of when the cash arrives
+                  eligible persons set per entity (Settings → Entities) × the {programYear} per-person limit; the
+                  cap applies per program year regardless of when the cash arrives
                 </span>
               </h2>
               <div className="overflow-x-auto">

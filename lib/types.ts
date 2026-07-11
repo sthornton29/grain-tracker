@@ -1,4 +1,11 @@
-export type Entity = { id: string; name: string; notes: string | null }
+export type Entity = {
+  id: string
+  name: string
+  notes: string | null
+  // Eligible persons for FSA payment limits (entity-level, set once): total
+  // ARC/PLC limit = this × the program year's per-person limit.
+  payment_limit_persons: number
+}
 export type Landowner = {
   id: string
   name: string
@@ -519,16 +526,9 @@ export type OtherGovernmentPayment = {
   created_at: string
 }
 
-export type PaymentLimitConfig = {
-  id: string
-  entity_id: string
-  crop_year: number
-  eligible_persons: number
-  per_person_limit: number
-  notes: string | null
-  created_at: string
-  updated_at: string
-}
+// payment_limit_config is deprecated (041): eligible persons live on
+// entities.payment_limit_persons; the per-person limit is per program year
+// in program_year_config.
 
 // Per-crop-year program parameters that used to be hard-coded constants. Edited
 // under Settings → Government Payments; resolved (with most-recent-year

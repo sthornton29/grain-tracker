@@ -5,8 +5,13 @@ import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
 import type { Entity, County, EntityCounty } from '@/lib/types'
 
-type Form = { name: string; notes: string }
-const empty: Form = { name: '', notes: '' }
+type Form = { name: string; notes: string; persons: string }
+const empty: Form = { name: '', notes: '', persons: '1' }
+
+function parsePersons(raw: string): number | null {
+  const n = Number(raw)
+  return Number.isInteger(n) && n >= 1 ? n : null
+}
 
 export default function EntitiesPage() {
   const supabase = useMemo(() => createClient(), [])
@@ -71,9 +76,11 @@ export default function EntitiesPage() {
       setErr('Select at least one county before saving.')
       return
     }
+    const persons = parsePersons(form.persons)
+    if (persons == null) { setErr('Payment-limit persons must be a whole number of at least 1.'); return }
     const { data, error } = await supabase
       .from('entities')
-      .insert({ name: form.name.trim(), notes: form.notes.trim() || null })
+      .insert({ name: form.name.trim(), notes: form.notes.trim() || null, payment_limit_persons: persons })
       .select('id')
       .single()
     if (error) { setErr(error.message); return }
@@ -91,9 +98,12 @@ export default function EntitiesPage() {
       setErr('Select at least one county before saving.')
       return
     }
+    const persons = parsePersons(editForm.persons)
+    if (persons == null) { setErr('Payment-limit persons must be a whole number of at least 1.'); return }
     const { error } = await supabase.from('entities').update({
       name: editForm.name.trim(),
       notes: editForm.notes.trim() || null,
+      payment_limit_persons: persons,
     }).eq('id', id)
     if (error) { setErr(error.message); return }
     try {
@@ -113,7 +123,7 @@ export default function EntitiesPage() {
 
   function startEdit(e: Entity) {
     setEditingId(e.id)
-    setEditForm({ name: e.name, notes: e.notes ?? '' })
+    setEditForm({ name: e.name, notes: e.notes ?? '', persons: String(e.payment_limit_persons ?? 1) })
     setEditCountyIds(new Set(entityCountyIds.get(e.id) ?? []))
   }
 
@@ -161,6 +171,19 @@ export default function EntitiesPage() {
             className={inputCls}
           />
         </div>
+        <label className="text-sm flex items-center gap-2 flex-wrap">
+          <span className="font-semibold">Payment-limit persons</span>
+          <input
+            type="number" min="1" step="1"
+            value={form.persons}
+            onChange={(e) => setForm({ ...form, persons: e.target.value })}
+            className={`${inputCls} w-20`}
+          />
+          <span className="text-slate-500">
+            Eligible persons for FSA payment limits — total ARC/PLC limit = persons × the program year&apos;s
+            per-person limit (Program Parameters). Set once; edit if the entity&apos;s structure changes.
+          </span>
+        </label>
         <div>
           <div className="text-sm font-semibold mb-1">Counties <span className="text-red-600">*</span></div>
           <CountyMultiPicker
@@ -197,6 +220,16 @@ export default function EntitiesPage() {
                       placeholder="Notes"
                     />
                   </div>
+                  <label className="text-sm flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold">Payment-limit persons</span>
+                    <input
+                      type="number" min="1" step="1"
+                      value={editForm.persons}
+                      onChange={(ev) => setEditForm({ ...editForm, persons: ev.target.value })}
+                      className={`${inputCls} w-20`}
+                    />
+                    <span className="text-slate-500">× the program year&apos;s per-person limit = the entity&apos;s total ARC/PLC cap.</span>
+                  </label>
                   <div>
                     <div className="text-sm font-semibold mb-1">Counties <span className="text-red-600">*</span></div>
                     <CountyMultiPicker
@@ -215,6 +248,9 @@ export default function EntitiesPage() {
                   <div className="flex-1 min-w-0">
                     <div className="font-semibold">{e.name}</div>
                     {e.notes && <div className="text-sm text-slate-500">{e.notes}</div>}
+                    <div className="text-sm text-slate-500">
+                      Payment limit: {e.payment_limit_persons ?? 1} person{(e.payment_limit_persons ?? 1) === 1 ? '' : 's'} × the program year&apos;s per-person limit
+                    </div>
                     <div className="text-sm text-slate-500 mt-1">
                       {ids.length === 0 ? (
                         <span className="text-amber-700">No counties assigned</span>
