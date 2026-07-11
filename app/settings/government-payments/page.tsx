@@ -89,8 +89,13 @@ export default function GovernmentPaymentsSettingsPage() {
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
   // Deep links from the reports (e.g. the Payment Tracker's "ARC-CO settings"
-  // button → #bench): open the hashed section and scroll to it once mounted.
+  // button → ?year=2025#bench): adopt the PROGRAM year the report was
+  // computing — benchmarks/elections/limits are keyed per program year, and
+  // landing here on a different year is exactly how "I set it in settings
+  // but the report can't see it" happens — then open the hashed section.
   useEffect(() => {
+    const y = Number(new URLSearchParams(window.location.search).get('year'))
+    if (Number.isInteger(y) && y > 2000 && y < 2100) setCropYear(y)
     const h = window.location.hash.replace('#', '')
     if (!['base', 'elect', 'price', 'bench', 'arc', 'limit', 'program', 'other'].includes(h)) return
     setOpen(h)
@@ -318,12 +323,17 @@ export default function GovernmentPaymentsSettingsPage() {
       </div>
       <div className="flex items-end gap-3 flex-wrap">
         <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Crop year</span>
+          <span className="text-slate-500">Program year</span>
           <select value={cropYear} onChange={(e) => setCropYear(Number(e.target.value))} className={inputCls}>
             {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </label>
         <EntityFilter entities={entities} value={entityFilter} onChange={setEntityFilter} />
+        <p className="text-xs text-slate-500 basis-full sm:basis-auto sm:max-w-md">
+          Everything on this page — base acres, elections, prices, benchmarks, payment limits — is keyed to the{' '}
+          <b>program year</b>. The Payment Tracker&apos;s default “By payment year” view for {cropYear + 1} computes
+          program year {cropYear} (paid Oct {cropYear + 1}), so enter that year&apos;s data here.
+        </p>
       </div>
       {err && <p className="text-sm text-red-600">{err}</p>}
 
