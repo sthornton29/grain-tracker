@@ -48,12 +48,15 @@ async function fetchNassRows(apiKey: string, params: Record<string, string>): Pr
       throw new NassError('The NASS Quick Stats API rate limit was hit — try again in a few minutes.')
     }
     const json = await resp.json().catch(() => null)
-    // Quick Stats reports "no rows for these parameters" as an error payload
-    // — that's a valid empty result, not a failure. Real failures (bad
-    // params, record-limit, key problems) surface as NassError.
+    // Quick Stats reports a parameter combination with NO DATA as
+    // "bad request - invalid query" (verified live: sesame exists as a
+    // commodity but has no price series and gets exactly this error) —
+    // that's a valid empty result, not a failure: the panel then shows
+    // "no published months" and offers the AI fallback. Real failures
+    // (key problems, rate limit, record limit) surface as NassError.
     if (json && typeof json === 'object' && 'error' in json) {
       const msg = String((json as { error: unknown }).error)
-      if (/no data/i.test(msg)) return []
+      if (/no data|invalid query/i.test(msg)) return []
       throw new NassError(`NASS Quick Stats: ${msg}`)
     }
     if (!resp.ok) throw new NassError(`NASS Quick Stats returned HTTP ${resp.status}.`)

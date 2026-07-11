@@ -115,6 +115,14 @@ export function nassSeriesFor(commodityName: string, unit: 'bushel' | 'pound'): 
   }
   if (s === 'canola') return { params: { commodity_desc: 'CANOLA' }, target: 'dollars_per_bushel', lbPerBushel: 50 }
   if (s === 'peanuts') return { params: { commodity_desc: 'PEANUTS' }, target: 'dollars_per_lb' }
+  if (s.includes('sunflower')) {
+    // NASS says SUNFLOWER (singular), published in $/CWT; the all-types
+    // series is preferred over OIL TYPE / NON-OIL TYPE by window coverage.
+    return {
+      params: { commodity_desc: 'SUNFLOWER' },
+      target: unit === 'pound' ? 'dollars_per_lb' : 'dollars_per_bushel',
+    }
+  }
   // Unknown commodity: try its uppercased name; storage unit from the config.
   return {
     params: { commodity_desc: commodityName.trim().toUpperCase() },

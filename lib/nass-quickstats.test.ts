@@ -53,7 +53,11 @@ describe('nassSeriesFor', () => {
     expect(nassSeriesFor('Grain Sorghum', 'bushel')).toMatchObject({ params: { commodity_desc: 'SORGHUM' }, lbPerBushel: 56 })
     expect(nassSeriesFor('Peanuts', 'pound')).toMatchObject({ params: { commodity_desc: 'PEANUTS' }, target: 'dollars_per_lb' })
     expect(nassSeriesFor('Canola', 'bushel')).toMatchObject({ lbPerBushel: 50 })
-    // Unknown commodities try their name with the configured storage unit.
+    // Sunflowers: NASS names the commodity SUNFLOWER (singular, $/CWT).
+    expect(nassSeriesFor('Sunflowers', 'pound')).toMatchObject({ params: { commodity_desc: 'SUNFLOWER' }, target: 'dollars_per_lb' })
+    // Unknown commodities try their name with the configured storage unit
+    // (sesame exists in NASS but has no price series — the route treats its
+    // "invalid query" response as an empty result, offering the AI fallback).
     expect(nassSeriesFor('Sesame', 'pound')).toMatchObject({ params: { commodity_desc: 'SESAME' }, target: 'dollars_per_lb' })
     expect(LINT_SERIES.params).toMatchObject({ commodity_desc: 'COTTON', class_desc: 'UPLAND' })
     // Cottonseed is NOT its own commodity_desc in Quick Stats (verified live):
