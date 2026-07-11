@@ -122,11 +122,14 @@ export async function POST(req: NextRequest) {
       // year's annual cottonseed price stands in, clearly labeled.
       let priorYearSeedAnnual: number | null = null
       if (seed.prices.length === 0 && lint.prices.length > 0) {
+        // agg_level_desc must be pinned: the annual query also returns ~18
+        // per-state MARKETING YEAR rows (verified live).
         const annualRows = await fetchNassRows(apiKey, {
           ...COTTONSEED_SERIES.params,
           source_desc: 'SURVEY',
           statisticcat_desc: 'PRICE RECEIVED',
           freq_desc: 'ANNUAL',
+          agg_level_desc: 'NATIONAL',
           year: String(marketingYear - 1),
         })
         priorYearSeedAnnual = extractAnnualPrice(annualRows, 'dollars_per_ton')
