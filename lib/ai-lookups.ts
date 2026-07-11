@@ -300,17 +300,20 @@ export function defaultConfirmedMonths(
   return new Set(fetched.filter((f) => f.price != null && !existingMonths.has(f.month)).map((f) => f.month))
 }
 
-export type MonthlySavePlan = { month: number; price: number; source: 'ai' | 'manual'; note: string | null }
+export type MonthlySavePlan = { month: number; price: number; source: 'usda' | 'ai' | 'manual'; note: string | null }
 
 // What actually gets upserted after the operator hits save: only confirmed,
 // published months (null months are ignored; unconfirmed months — including
 // every month that already has an entry the operator didn't re-check — are
-// left alone). A confirmed AI value the operator edited saves as 'manual' —
-// and drops the component note, which no longer describes the edited number.
+// left alone). An unedited confirmed value carries the lookup's source —
+// 'usda' for NASS Quick Stats data, 'ai' for the web-search fallback. A
+// confirmed value the operator edited saves as 'manual' — and drops the
+// component note, which no longer describes the edited number.
 export function planMonthlySaves(args: {
   fetched: ReadonlyArray<{ month: number; price: number | null; note?: string | null }>
   confirmed: ReadonlySet<number>
   edited?: ReadonlyMap<number, number>
+  confirmedSource?: 'usda' | 'ai'
 }): MonthlySavePlan[] {
   const out: MonthlySavePlan[] = []
   for (const f of args.fetched) {
@@ -319,7 +322,7 @@ export function planMonthlySaves(args: {
     if (edit != null && Number.isFinite(edit) && edit >= 0 && edit !== f.price) {
       out.push({ month: f.month, price: edit, source: 'manual', note: null })
     } else {
-      out.push({ month: f.month, price: f.price, source: 'ai', note: f.note ?? null })
+      out.push({ month: f.month, price: f.price, source: args.confirmedSource ?? 'ai', note: f.note ?? null })
     }
   }
   return out
