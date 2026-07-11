@@ -56,6 +56,9 @@ describe('nassSeriesFor', () => {
     // Unknown commodities try their name with the configured storage unit.
     expect(nassSeriesFor('Sesame', 'pound')).toMatchObject({ params: { commodity_desc: 'SESAME' }, target: 'dollars_per_lb' })
     expect(LINT_SERIES.params).toMatchObject({ commodity_desc: 'COTTON', class_desc: 'UPLAND' })
+    // Cottonseed is NOT its own commodity_desc in Quick Stats (verified live):
+    // it's COTTON with class COTTONSEED.
+    expect(COTTONSEED_SERIES.params).toMatchObject({ commodity_desc: 'COTTON', class_desc: 'COTTONSEED' })
     expect(COTTONSEED_SERIES.target).toBe('dollars_per_ton')
   })
 })

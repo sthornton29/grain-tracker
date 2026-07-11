@@ -122,13 +122,18 @@ export function nassSeriesFor(commodityName: string, unit: 'bushel' | 'pound'): 
   }
 }
 
-/** Seed cotton components (blended in code, never a single NASS series). */
+/**
+ * Seed cotton components (blended in code, never a single NASS series).
+ * Verified against the live API: lint is COTTON/UPLAND published in $ / LB
+ * (normalized to ¢/lb here); cottonseed is NOT its own commodity — it is
+ * COTTON with class_desc=COTTONSEED, in $ / TON.
+ */
 export const LINT_SERIES: NassSeriesSpec = {
   params: { commodity_desc: 'COTTON', class_desc: 'UPLAND' },
   target: 'cents_per_lb',
 }
 export const COTTONSEED_SERIES: NassSeriesSpec = {
-  params: { commodity_desc: 'COTTONSEED' },
+  params: { commodity_desc: 'COTTON', class_desc: 'COTTONSEED' },
   target: 'dollars_per_ton',
 }
 
