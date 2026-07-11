@@ -423,8 +423,9 @@ export type MyaMonthlyPrice = {
   crop_year: number
   month: number
   price: number
-  // 'manual' = operator-typed (or an AI value the operator edited before
-  // confirming); 'ai' = confirmed from the USDA lookup; 'usda' = legacy rows.
+  // 'usda' = confirmed from the NASS Quick Stats lookup (real published
+  // data); 'ai' = confirmed from the AI web-search fallback; 'manual' =
+  // operator-typed (or a fetched value the operator edited before confirming).
   source: 'usda' | 'manual' | 'ai'
   // Component provenance for derived prices (seed cotton:
   // "lint 68.2¢ + seed $205/ton → 35.17¢ SC"). Display-only.

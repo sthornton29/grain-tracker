@@ -55,13 +55,19 @@ export default function MyaPricePanel({
   const [saving, setSaving] = useState<Set<string>>(new Set())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [err, setErr] = useState<string | null>(null)
-  // USDA monthly-price AI lookup, keyed commodity × crop year like the drafts:
+  // USDA monthly-price lookup, keyed commodity × crop year like the drafts:
   // the fetched months, which ones the user has confirmed, and any edits made
-  // to the fetched values before confirming. Never auto-saved.
+  // to the fetched values before confirming. Never auto-saved. The PRIMARY
+  // source is the NASS Quick Stats API (real published data → source 'usda');
+  // the AI web search is an explicit fallback (source 'ai').
   const [aiLookups, setAiLookups] = useState<Map<string, MyaMonthlyLookupResult>>(new Map())
   const [aiLooking, setAiLooking] = useState<Set<string>>(new Set())
   const [aiConfirmed, setAiConfirmed] = useState<Map<string, Set<number>>>(new Map())
   const [aiEdits, setAiEdits] = useState<Map<string, Map<number, string>>>(new Map())
+  // Which backend produced the current result — drives the saved source.
+  const [lookupSource, setLookupSource] = useState<Map<string, 'nass' | 'ai'>>(new Map())
+  // NASS failure per key → an inline strip offering the AI fallback.
+  const [lookupFailed, setLookupFailed] = useState<Map<string, string>>(new Map())
   // Lookups fired from the row's inline ↻ render as a compact confirm strip
   // under the row (instead of the full table inside Details).
   const [compactFor, setCompactFor] = useState<Set<string>>(new Set())
@@ -147,36 +153,47 @@ export default function MyaPricePanel({
     onRefreshEstimates?.()
   }
 
-  async function lookupUsdaPrices(c: CoveredCommodity, opts?: { compact?: boolean }) {
+  // Primary path hits the NASS Quick Stats route; `viaAi` retries through the
+  // AI web-search route (offered only when NASS fails or finds nothing).
+  async function lookupUsdaPrices(c: CoveredCommodity, opts?: { compact?: boolean; viaAi?: boolean }) {
     const k = draftKey(c.id)
     setCompactFor((s) => { const n = new Set(s); if (opts?.compact) n.add(k); else n.delete(k); return n })
     setAiLooking((s) => new Set(s).add(k))
     setErr(null)
+    setLookupFailed((m) => { const n = new Map(m); n.delete(k); return n })
     try {
-      const res = await fetch('/api/mya-monthly-lookup', {
+      const res = await fetch(opts?.viaAi ? '/api/mya-monthly-lookup' : '/api/nass-monthly-prices', {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           commodity: c.name,
           marketing_year: cropYear,
           start_month: Number(c.marketing_year_start_month || 9),
           unit: c.unit === 'pound' ? 'pound' : 'bushel',
-          // Seed cotton: the route fetches lint + cottonseed and blends at
-          // these shares (in code, never by the AI).
+          // Seed cotton: both routes fetch lint + cottonseed and blend at
+          // these shares (in code, never at the source).
           lint_share: c.lint_share != null ? Number(c.lint_share) : undefined,
           seed_share: c.cottonseed_share != null ? Number(c.cottonseed_share) : undefined,
         }),
       })
       const json = await res.json().catch(() => null)
-      if (!res.ok || !json?.data) { setErr(json?.error ?? `USDA price lookup failed for ${c.name}.`); return }
+      if (!res.ok || !json?.data) {
+        const msg = json?.error ?? `USDA price lookup failed for ${c.name}.`
+        if (opts?.viaAi) setErr(msg)
+        else setLookupFailed((m) => new Map(m).set(k, msg))
+        return
+      }
       const data = json.data as MyaMonthlyLookupResult
       const existing = new Set(monthlyFor(c.id).map((m) => m.month))
+      setLookupSource((m) => new Map(m).set(k, opts?.viaAi ? 'ai' : 'nass'))
       setAiLookups((m) => new Map(m).set(k, data))
       // Months already entered start UNCHECKED — they are never overwritten
       // without the user explicitly ticking them.
       setAiConfirmed((m) => new Map(m).set(k, defaultConfirmedMonths(data.monthly_prices, existing)))
       setAiEdits((m) => { const n = new Map(m); n.delete(k); return n })
     } catch {
-      setErr(`USDA price lookup failed for ${c.name} — check your connection and try again.`)
+      const msg = `USDA price lookup failed for ${c.name} — check your connection and try again.`
+      if (opts?.viaAi) setErr(msg)
+      else setLookupFailed((m) => new Map(m).set(k, msg))
     } finally {
       setAiLooking((s) => { const n = new Set(s); n.delete(k); return n })
     }
@@ -188,6 +205,8 @@ export default function MyaPricePanel({
     setAiConfirmed((m) => { const n = new Map(m); n.delete(k); return n })
     setAiEdits((m) => { const n = new Map(m); n.delete(k); return n })
     setCompactFor((s) => { const n = new Set(s); n.delete(k); return n })
+    setLookupSource((m) => { const n = new Map(m); n.delete(k); return n })
+    setLookupFailed((m) => { const n = new Map(m); n.delete(k); return n })
   }
 
   // The MYA the blend would resolve to if the currently-confirmed fetched
@@ -233,6 +252,9 @@ export default function MyaPricePanel({
       fetched: lookup.monthly_prices,
       confirmed: aiConfirmed.get(k) ?? new Set(),
       edited,
+      // NASS Quick Stats results are real published data → 'usda'; the AI
+      // web-search fallback stays 'ai'.
+      confirmedSource: lookupSource.get(k) === 'ai' ? 'ai' : 'usda',
     })
     if (plan.length === 0) { dismissLookup(c.id); return }
     setSaving((s) => new Set(s).add(c.id))
@@ -268,8 +290,10 @@ export default function MyaPricePanel({
         marketing-year blend: USDA-published monthly farm prices where entered, futures-implied for the remaining
         months (nearest contract − a per-commodity adjustment), weighted by typical monthly marketings. Commodities
         without traded futures blend from USDA monthly prices alone — every commodity has the same Auto | Manual
-        toggle and the same USDA lookup. Open <b>Details</b> to enter monthly prices or a WASDE season-average
-        midpoint (which overrides the blend). A Manual override and a published USDA final outrank all estimates.
+        toggle and the same lookup, which pulls published months <b>directly from the USDA NASS Quick Stats API</b>
+        (an AI web search remains as an explicit fallback). Open <b>Details</b> to enter monthly prices or a WASDE
+        season-average midpoint (which overrides the blend). A Manual override and a published USDA final outrank
+        all estimates.
       </p>
       {err && (
         <div className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-800">{err}</div>
@@ -305,9 +329,10 @@ export default function MyaPricePanel({
               const k = draftKey(c.id)
               const canRefresh = !isManual && r.state !== 'final'
               const refreshTitle = canRefresh
-                ? 'Refresh from USDA monthly prices (AI lookup — you confirm before anything saves)'
+                ? 'Refresh from USDA monthly prices (NASS Quick Stats — you confirm before anything saves)'
                 : isManual ? 'Switch to Auto to use lookups'
                 : 'USDA final published — nothing to refresh'
+              const viaAi = lookupSource.get(k) === 'ai'
               return (
                 <FragmentRow key={c.id}>
                   <tr className="border-t border-slate-100 align-middle">
@@ -409,7 +434,9 @@ export default function MyaPricePanel({
                                     </span>
                                   ))}
                             </span>
-                            <span className={`text-xs rounded-full px-1.5 py-0.5 ${lookup.confidence === 'high' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>{lookup.confidence} confidence</span>
+                            {viaAi
+                              ? <span className={`text-xs rounded-full px-1.5 py-0.5 ${lookup.confidence === 'high' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>AI fallback — {lookup.confidence} confidence</span>
+                              : <span className="text-xs rounded-full px-1.5 py-0.5 bg-green-100 text-green-800">NASS published</span>}
                             {resulting != null && confirmCount > 0 && (
                               <span className="whitespace-nowrap">→ resulting MYA <b>{fmtPrice(resulting)}</b></span>
                             )}
@@ -423,6 +450,15 @@ export default function MyaPricePanel({
                               </button>
                             ) : (
                               <span className="text-xs text-amber-800">Nothing new to save{skipped > 0 ? ' — all fetched months are already entered (open Details to overwrite)' : ''}.</span>
+                            )}
+                            {published.length === 0 && !viaAi && (
+                              <button
+                                onClick={() => lookupUsdaPrices(c, { compact: true, viaAi: true })}
+                                disabled={busy || aiLooking.has(k)}
+                                className="rounded-lg bg-violet-700 text-white px-3 py-1 text-xs font-semibold disabled:opacity-50"
+                              >
+                                Try AI lookup
+                              </button>
                             )}
                             <button
                               onClick={() => setExpanded((s) => new Set(s).add(c.id))}
@@ -442,6 +478,23 @@ export default function MyaPricePanel({
                       </tr>
                     )
                   })()}
+                  {!isOpen && lookupFailed.has(k) && (
+                    <tr className="bg-amber-50 no-print">
+                      <td colSpan={7} className="px-3 py-2 text-sm">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <span className="text-amber-900">{lookupFailed.get(k)}</span>
+                          <button
+                            onClick={() => lookupUsdaPrices(c, { compact: true, viaAi: true })}
+                            disabled={busy || aiLooking.has(k)}
+                            className="rounded-lg bg-violet-700 text-white px-3 py-1 text-xs font-semibold disabled:opacity-50"
+                          >
+                            {aiLooking.has(k) ? 'Searching…' : 'Try AI lookup'}
+                          </button>
+                          <button onClick={() => setLookupFailed((m) => { const n = new Map(m); n.delete(k); return n })} className="text-xs text-slate-500 underline">dismiss</button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                   {isOpen && (
                     <tr className="border-t border-slate-100 bg-slate-50 no-print">
                       <td colSpan={7} className="px-3 py-3">
@@ -470,11 +523,25 @@ export default function MyaPricePanel({
                             <button
                               onClick={() => lookupUsdaPrices(c)}
                               disabled={busy || aiLooking.has(draftKey(c.id))}
+                              title="Pulls the published months straight from the USDA NASS Quick Stats API — you confirm before anything saves."
                               className="rounded-lg bg-violet-700 text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
                             >
                               {aiLooking.has(draftKey(c.id)) ? 'Searching…' : 'Look up USDA prices'}
                             </button>
                           </div>
+                          {lookupFailed.has(k) && (
+                            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm flex flex-wrap items-center gap-3">
+                              <span className="text-amber-900">{lookupFailed.get(k)}</span>
+                              <button
+                                onClick={() => lookupUsdaPrices(c, { viaAi: true })}
+                                disabled={busy || aiLooking.has(k)}
+                                className="rounded-lg bg-violet-700 text-white px-3 py-1 text-xs font-semibold disabled:opacity-50"
+                              >
+                                {aiLooking.has(k) ? 'Searching…' : 'Try AI lookup'}
+                              </button>
+                              <button onClick={() => setLookupFailed((m) => { const n = new Map(m); n.delete(k); return n })} className="text-xs text-slate-500 underline">dismiss</button>
+                            </div>
+                          )}
                           <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
                             {months.map((m) => {
                               const existing = monthly.find((mp) => mp.month === m.month)
@@ -483,8 +550,8 @@ export default function MyaPricePanel({
                               return (
                                 <label key={m.month} className="text-xs flex flex-col gap-0.5">
                                   <span
-                                    className={existing?.source === 'ai' ? 'text-violet-700 font-semibold' : existing ? 'text-green-700 font-semibold' : 'text-slate-500'}
-                                    title={existing?.note ?? (existing?.source === 'ai' ? 'Confirmed from the USDA AI lookup' : existing ? 'Entered manually' : undefined)}
+                                    className={existing && existing.source !== 'manual' ? 'text-violet-700 font-semibold' : existing ? 'text-green-700 font-semibold' : 'text-slate-500'}
+                                    title={existing?.note ?? (existing?.source === 'usda' ? 'USDA NASS published (confirmed from the lookup)' : existing?.source === 'ai' ? 'Confirmed from the AI lookup' : existing ? 'Entered manually' : undefined)}
                                   >
                                     {MONTH_ABBR[m.month - 1]} {String(m.year % 100).padStart(2, '0')}
                                     {!existing && monthDetail?.source === 'futures' && monthDetail.symbol ? ` · ${monthDetail.symbol}` : ''}
@@ -520,16 +587,29 @@ export default function MyaPricePanel({
                               <div className="rounded-lg border border-violet-200 bg-violet-50 p-3 space-y-2">
                                 <div className="flex flex-wrap items-center gap-2 text-sm">
                                   <span className="font-semibold">USDA NASS monthly prices found</span>
-                                  <span className={`text-xs rounded-full px-1.5 py-0.5 ${lookup.confidence === 'high' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>{lookup.confidence} confidence</span>
+                                  {viaAi
+                                    ? <span className={`text-xs rounded-full px-1.5 py-0.5 ${lookup.confidence === 'high' ? 'bg-green-100 text-green-800' : 'bg-amber-100 text-amber-800'}`}>AI fallback — {lookup.confidence} confidence</span>
+                                    : <span className="text-xs rounded-full px-1.5 py-0.5 bg-green-100 text-green-800">NASS published</span>}
                                   <span className="text-xs text-slate-500 flex-1 min-w-[200px]">{lookup.source_description}</span>
                                 </div>
                                 <p className="text-xs text-slate-500">
-                                  Check the months to save (source “ai”); edit a value before saving and it becomes “manual”.
+                                  Check the months to save (source “{viaAi ? 'ai' : 'usda'}”); edit a value before saving and it becomes “manual”.
                                   Months you already entered start unchecked and are never overwritten without checking them.
                                   NASS revises recent months — the one or two most recent published months are often preliminary.
                                 </p>
                                 {confirmable.length === 0 ? (
-                                  <p className="text-xs text-amber-800">No published months found — NASS may not have released prices for this marketing year yet.</p>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-xs text-amber-800">No published months found — NASS may not have released prices for this marketing year yet.</p>
+                                    {!viaAi && (
+                                      <button
+                                        onClick={() => lookupUsdaPrices(c, { viaAi: true })}
+                                        disabled={busy || aiLooking.has(k)}
+                                        className="rounded-lg bg-violet-700 text-white px-3 py-1 text-xs font-semibold disabled:opacity-50"
+                                      >
+                                        Try AI lookup
+                                      </button>
+                                    )}
+                                  </div>
                                 ) : (
                                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                                     {lookup.monthly_prices.map((f) => {
