@@ -285,6 +285,19 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     }).filter((r) => r.projTotal > 0 || limits.some((l) => l.entity_id === r.entity.id && l.crop_year === programYear))
   }, [entities, farms, farmRows, yearOther, limits, programYear, entityId, programCfg])
 
+  // "I set it in Settings but the report doesn't see it": benchmarks and
+  // payment limits are keyed per PROGRAM year, and in payment-year framing
+  // the selected year's math runs on programYear = year − 1. When rows exist
+  // only for OTHER years, say so explicitly instead of silently falling back.
+  const benchmarkYearsElsewhere = useMemo(() => {
+    if (programYear === '' || benchmarks.length === 0 || benchmarks.some((b) => b.crop_year === programYear)) return []
+    return Array.from(new Set(benchmarks.map((b) => b.crop_year))).sort((a, b) => b - a)
+  }, [benchmarks, programYear])
+  const limitYearsElsewhere = useMemo(() => {
+    if (programYear === '' || limits.length === 0 || limits.some((l) => l.crop_year === programYear)) return []
+    return Array.from(new Set(limits.map((l) => l.crop_year))).sort((a, b) => b - a)
+  }, [limits, programYear])
+
   function toggle(id: string) { setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n }) }
 
   function buildExportPayload(): ExportPayload {
@@ -397,12 +410,32 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
         </label>
         <EntityFilter entities={entities} value={entityId} onChange={setEntityId} />
         <Link
-          href="/settings/government-payments#bench"
+          href={`/settings/government-payments${programYear !== '' ? `?year=${programYear}` : ''}#bench`}
           className="ml-auto rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
         >
           ARC-CO settings: benchmarks &amp; county yields →
         </Link>
       </div>
+
+      {(benchmarkYearsElsewhere.length > 0 || limitYearsElsewhere.length > 0) && (
+        <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print">
+          <strong>Program-year mismatch</strong> — this view computes <b>program year {programYear}</b>
+          {yearBasis === 'payment' ? <> (its payments arrive in {paymentYear})</> : null}, but{' '}
+          {benchmarkYearsElsewhere.length > 0 && (
+            <>your ARC-CO benchmark rows are for {benchmarkYearsElsewhere.join(', ')}</>
+          )}
+          {benchmarkYearsElsewhere.length > 0 && limitYearsElsewhere.length > 0 && ' and '}
+          {limitYearsElsewhere.length > 0 && (
+            <>your payment-limit rows are for {limitYearsElsewhere.join(', ')}</>
+          )}
+          {' '}— so the projections fall back to flat estimates / default limits. Benchmarks, elections, and limits
+          are keyed to the program year:{' '}
+          <Link href={`/settings/government-payments?year=${programYear}#bench`} className="underline font-semibold">
+            add {programYear} rows in Settings
+          </Link>
+          , or switch the year / year basis above if you meant a different program year.
+        </div>
+      )}
 
       {suspects.length > 0 && !suspectNoteDismissed && (
         <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print flex items-start gap-3">

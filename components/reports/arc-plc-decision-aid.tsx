@@ -12,6 +12,7 @@
 // moves BOTH programs (ARC-CO actual county revenue uses the MYA too).
 
 import { useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllCounties } from '@/lib/counties'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
@@ -205,6 +206,14 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseAcres, commodityById, farmById, cropYear, entityId, effectivePriceData, payments, elections, benchmarks, programCfg])
 
+  // Benchmarks exist, but none for THIS program year → name the years that do
+  // have rows instead of silently falling back to flat estimates (the classic
+  // miss: data entered in Settings under a different program year).
+  const benchmarkYearsElsewhere = useMemo(() => {
+    if (cropYear === '' || benchmarks.length === 0 || benchmarks.some((b) => b.crop_year === cropYear)) return []
+    return Array.from(new Set(benchmarks.map((b) => b.crop_year))).sort((a, b) => b - a)
+  }, [benchmarks, cropYear])
+
   async function setElection(farmId: string, commodityId: string | null, election: ArcPlcElectionType) {
     if (commodityId == null) return
     await supabase.from('arc_plc_elections').upsert({ farm_id: farmId, commodity_id: commodityId, crop_year: cropYear, election }, { onConflict: 'farm_id,commodity_id,crop_year' })
@@ -266,6 +275,17 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
         <>
           {cfgNotice && (
             <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print">{cfgNotice}</div>
+          )}
+          {benchmarkYearsElsewhere.length > 0 && (
+            <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print">
+              <strong>Program-year mismatch</strong> — no ARC-CO benchmark rows exist for program year {cropYear}; your
+              rows are for {benchmarkYearsElsewhere.join(', ')}, so ARC-CO falls back to flat estimates. Benchmarks are
+              keyed to the program year:{' '}
+              <Link href={`/settings/government-payments?year=${cropYear}#bench`} className="underline font-semibold">
+                add {cropYear} rows in Settings
+              </Link>
+              , or change the year above if you meant a different program year.
+            </div>
           )}
           <div className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-sm text-sky-900 no-print">
             Under OBBBA (2025+ crop years), <strong>SCO can be purchased regardless of your ARC/PLC election</strong> —
@@ -340,7 +360,12 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
                           <span className="ml-1 text-[10px] rounded-full bg-violet-100 text-violet-800 px-1.5 py-0.5 whitespace-nowrap align-middle">capped at {Math.round((r.arc.arcDetail.capPct) * 100)}%</span>
                         )}
                         {r.arc.arcMethod === 'flat' && r.arcNet != null && (
-                          <span className="ml-1 text-[10px] rounded-full bg-amber-100 text-amber-800 px-1.5 py-0.5 whitespace-nowrap align-middle" title="No county benchmark data — using your flat $/acre estimate">flat est.</span>
+                          <span
+                            className="ml-1 text-[10px] rounded-full bg-amber-100 text-amber-800 px-1.5 py-0.5 whitespace-nowrap align-middle"
+                            title={r.county == null
+                              ? 'This farm has no county assigned (Settings → Farms) — benchmark rows are matched by the farm’s county. Using your flat $/acre estimate.'
+                              : `No ${cropYear} benchmark row for ${r.county} — add one under Settings → ARC-CO Benchmarks. Using your flat $/acre estimate.`}
+                          >flat est.</span>
                         )}
                       </td>
                       <td className="px-2 py-1 whitespace-nowrap">
