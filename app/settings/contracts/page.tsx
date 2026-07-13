@@ -209,7 +209,9 @@ export default function ContractsSettingsPage() {
           <span className="text-xs text-slate-400">or fill the form manually below</span>
         </div>
         {aiBanner && <div className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-sm text-sky-900">{aiBanner}</div>}
-        <ContractFields value={form} onChange={setForm} buyers={buyers} crops={crops} locations={locations} entities={entities} cropYearOptions={cropYearOptions} />
+        <ContractFields value={form} onChange={setForm} buyers={buyers} crops={crops} locations={locations} entities={entities} cropYearOptions={cropYearOptions}
+          onBuyerCreated={(b) => setBuyers((xs) => [...xs, b].sort((a, z) => a.name.localeCompare(z.name)))}
+          onLocationCreated={(l) => setLocations((xs) => [...xs, l].sort((a, z) => a.name.localeCompare(z.name)))} />
         <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add Contract</button>
       </form>
 
@@ -267,7 +269,9 @@ export default function ContractsSettingsPage() {
           <li key={c.id} className={`px-4 py-3 space-y-2 ${selected.has(c.id) ? 'bg-sky-50' : ''}`}>
             {editingId === c.id ? (
               <>
-                <ContractFields value={editForm} onChange={setEditForm} buyers={buyers} crops={crops} locations={locations} entities={entities} cropYearOptions={cropYearOptions} />
+                <ContractFields value={editForm} onChange={setEditForm} buyers={buyers} crops={crops} locations={locations} entities={entities} cropYearOptions={cropYearOptions}
+          onBuyerCreated={(b) => setBuyers((xs) => [...xs, b].sort((a, z) => a.name.localeCompare(z.name)))}
+          onLocationCreated={(l) => setLocations((xs) => [...xs, l].sort((a, z) => a.name.localeCompare(z.name)))} />
                 <div className="flex gap-2">
                   <button onClick={() => save(c.id)} className="text-green-700 font-semibold">Save</button>
                   <button onClick={() => setEditingId(null)} className="text-slate-500">Cancel</button>

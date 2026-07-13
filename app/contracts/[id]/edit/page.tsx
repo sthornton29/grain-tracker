@@ -84,7 +84,9 @@ export default function EditContractPage() {
       </div>
 
       <form onSubmit={onSave} className="bg-white p-4 rounded-xl shadow space-y-3">
-        <ContractFields value={form} onChange={setForm} buyers={buyers} crops={crops} locations={locations} entities={entities} cropYearOptions={cropYearOptions} />
+        <ContractFields value={form} onChange={setForm} buyers={buyers} crops={crops} locations={locations} entities={entities} cropYearOptions={cropYearOptions}
+          onBuyerCreated={(b) => setBuyers((xs) => [...xs, b].sort((a, z) => a.name.localeCompare(z.name)))}
+          onLocationCreated={(l) => setLocations((xs) => [...xs, l].sort((a, z) => a.name.localeCompare(z.name)))} />
         {err && <p className="text-sm text-red-600">{err}</p>}
         <div className="flex gap-2 pt-2">
           <button type="submit" disabled={saving} className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50">

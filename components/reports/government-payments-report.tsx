@@ -281,6 +281,49 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     }).filter((r) => r.projTotal > 0)
   }, [entities, farms, farmRows, yearOther, entityId, programCfg])
 
+  // At-a-glance entity × crop matrix (rendered above the per-farm detail and
+  // exported as the first section). Farm-linked payments roll up to the
+  // farm's entity; non-farm other payments attribute by their entity_id, with
+  // a "— no entity —" row for anything unattributable so the corner ALWAYS
+  // reconciles with the page totals.
+  type EntityMatrixRow = { name: string; byCommodity: Map<string, number>; arcPlc: number; other: number; total: number; limitPct: number | null }
+  const matrixCommodities = useMemo(
+    () => shownCommodities.filter((c) => (totals.byCommodity.get(c.id) ?? 0) !== 0),
+    [shownCommodities, totals],
+  )
+  const entityMatrix: EntityMatrixRow[] = useMemo(() => {
+    const buckets = new Map<string, { byCommodity: Map<string, number>; arcPlc: number; other: number }>()
+    const bucket = (key: string) => {
+      let b = buckets.get(key)
+      if (!b) { b = { byCommodity: new Map(), arcPlc: 0, other: 0 }; buckets.set(key, b) }
+      return b
+    }
+    for (const r of farmRows) {
+      const b = bucket(r.farm.entity_id ?? '')
+      for (const [cid, p] of r.byCommodity) b.byCommodity.set(cid, (b.byCommodity.get(cid) ?? 0) + p.result.net)
+      b.arcPlc += r.arcPlcTotal
+      b.other += r.other
+    }
+    // Non-farm other payments — same semantics as the page totals (not
+    // entity-filtered), attributed by entity_id.
+    for (const o of yearOther) {
+      if (o.farm_id) continue
+      bucket(o.entity_id ?? '').other += Number(o.amount)
+    }
+    const rows: EntityMatrixRow[] = []
+    for (const [key, b] of Array.from(buckets.entries())) {
+      if (b.arcPlc === 0 && b.other === 0) continue
+      const entity = key ? entityById.get(key) ?? null : null
+      const lim = entity ? limitRows.find((l) => l.entity.id === entity.id) : null
+      rows.push({
+        name: entity?.name ?? '— no entity —',
+        byCommodity: b.byCommodity, arcPlc: b.arcPlc, other: b.other, total: b.arcPlc + b.other,
+        limitPct: lim ? lim.pct : null,
+      })
+    }
+    return rows.sort((a, z) => a.name.localeCompare(z.name))
+  }, [farmRows, yearOther, entityById, limitRows])
+
   // "I set it in Settings but the report doesn't see it": benchmarks and
   // payment limits are keyed per PROGRAM year, and in payment-year framing
   // the selected year's math runs on programYear = year − 1. When rows exist
@@ -318,9 +361,38 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     totalRow.push(Math.round(totals.arcPlc), Math.round(totals.other), Math.round(totals.grand))
     rows.push(totalRow)
 
-    const sections: ExportPayload['sections'] = [
+    const sections: ExportPayload['sections'] = []
+
+    // At-a-glance entity × crop matrix — the FIRST export section, mirroring
+    // the on-screen summary (limit tone on entity totals).
+    if (entityMatrix.length > 0) {
+      const matrixTotal: ExportCell[] = ['Total']
+      for (const c of matrixCommodities) matrixTotal.push(Math.round(totals.byCommodity.get(c.id) ?? 0))
+      matrixTotal.push(Math.round(totals.other), Math.round(totals.grand))
+      sections.push({
+        title: 'By Entity x Crop',
+        columns: [
+          { label: 'Entity' },
+          ...matrixCommodities.map((c) => ({ label: c.name, align: 'right' as const, format: 'usd0' as const })),
+          { label: 'Other USDA', align: 'right', format: 'usd0' },
+          { label: 'Total', align: 'right', format: 'usd0' },
+        ],
+        rows: [
+          ...entityMatrix.map((r): ExportCell[] => [
+            r.name,
+            ...matrixCommodities.map((c): ExportCell => { const v = r.byCommodity.get(c.id); return v ? Math.round(v) : '' }),
+            Math.round(r.other),
+            { v: Math.round(r.total), tone: r.limitPct != null && r.limitPct > 1 ? 'unfavorable' : r.limitPct != null && r.limitPct > 0.8 ? 'warning' : 'neutral' },
+          ]),
+          matrixTotal,
+        ],
+        rowMeta: [...entityMatrix.map(() => 'data' as const), 'total'],
+      })
+    }
+
+    sections.push(
       { title: 'Projected Payments by Farm', columns: cols, rows, rowMeta: [...farmRows.map(() => 'data' as const), 'total'] },
-    ]
+    )
 
     // Per-entity Payment Limit Status — the second on-screen table. Mirror its
     // Entity / Limit / Projected / Remaining / Status columns, plus the persons ×
@@ -366,7 +438,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [farmRows, totals, shownCommodities, limitRows, cropYear, yearBasis, onPayloadChange])
+  }, [farmRows, totals, shownCommodities, limitRows, entityMatrix, matrixCommodities, cropYear, yearBasis, onPayloadChange])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   if (loading) return <p className="text-slate-500">Loading…</p>
@@ -457,6 +529,55 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
           </div>
 
           <SummaryCards cards={summaryCards} />
+
+          {/* At-a-glance entity × crop matrix — the detail tables below stay
+              unchanged; entity Total cells carry the payment-limit tone. */}
+          {entityMatrix.length > 0 && (
+            <section className="bg-white rounded-xl shadow p-4 space-y-2 avoid-break">
+              <h2 className="font-bold text-lg">
+                By Entity × Crop
+                <span className="ml-2 text-sm font-normal text-slate-500">
+                  projected net ARC/PLC {yearBasis === 'payment' ? `received in ${paymentYear}` : `for program year ${programYear}`} + other USDA
+                </span>
+              </h2>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm border-collapse">
+                  <thead className={theadCls}>
+                    <tr>
+                      <th className="text-left px-2 py-1">Entity</th>
+                      {matrixCommodities.map((c) => <th key={c.id} className="text-right px-2 py-1 whitespace-nowrap">{c.name}</th>)}
+                      <th className="text-right px-2 py-1 whitespace-nowrap">Other USDA</th>
+                      <th className="text-right px-2 py-1">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {entityMatrix.map((r) => (
+                      <tr key={r.name} className="border-t border-slate-100">
+                        <td className="px-2 py-1 font-semibold whitespace-nowrap">{r.name}</td>
+                        {matrixCommodities.map((c) => {
+                          const v = r.byCommodity.get(c.id)
+                          return <td key={c.id} className="px-2 py-1 text-right font-mono tabular-nums">{v ? usd(v) : <span className="text-slate-300">—</span>}</td>
+                        })}
+                        <td className="px-2 py-1 text-right font-mono tabular-nums">{r.other !== 0 ? usd(r.other) : <span className="text-slate-300">—</span>}</td>
+                        <td
+                          className={`px-2 py-1 text-right font-mono tabular-nums font-bold ${r.limitPct != null && r.limitPct > 1 ? 'text-red-700' : r.limitPct != null && r.limitPct > 0.8 ? 'text-amber-700' : ''}`}
+                          title={r.limitPct != null ? `${Math.round(r.limitPct * 100)}% of this entity's payment limit (see Payment Limit Status below)` : undefined}
+                        >
+                          {usd(r.total)}
+                        </td>
+                      </tr>
+                    ))}
+                    <tr className={grandTotalRowCls}>
+                      <td className="px-2 py-1">Total</td>
+                      {matrixCommodities.map((c) => <td key={c.id} className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.byCommodity.get(c.id) ?? 0)}</td>)}
+                      <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.other)}</td>
+                      <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.grand)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
 
           {/* Per-commodity MYA — the same shared resolution the Decision Aid
               reads; toggling Auto/Manual here updates every projection below. */}
