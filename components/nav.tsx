@@ -16,25 +16,20 @@ const GRAIN_LINKS = [
   { href: '/settings', label: 'Settings' },
 ]
 
-// The Cotton module's pages, flattened into the top bar when enabled — one
-// tap to any cotton page, same as Loads (routes unchanged).
-const COTTON_LINKS = [
-  { href: '/cotton/loads', label: 'Cotton Loads' },
-  { href: '/cotton/receipts', label: 'Gin Receipts' },
-  { href: '/cotton/bales', label: 'Bales & Grades' },
-]
+// The Cotton module is ONE top-level tab; its three pages live in a
+// Reports-style sidebar (app/cotton/layout.tsx).
+const COTTON_TAB = { href: '/cotton/loads', label: 'Cotton' }
 
 export default function Nav({ cottonEnabled = false, role = 'owner' }: { cottonEnabled?: boolean; role?: AppRole }) {
   const pathname = usePathname()
-  // Gin operators see ONLY the cotton intake pages. Owners with the module
-  // enabled get the three cotton pages as direct top-level tabs after the
-  // grain operational tabs (the bar already scrolls/overflows on narrow
-  // screens — no sub-menu).
+  // Gin operators see ONLY the Cotton tab (the sidebar inside gives them the
+  // three intake pages). Owners with the module enabled get Cotton after
+  // Hedging.
   const hedgingIdx = GRAIN_LINKS.findIndex((l) => l.label === 'Hedging') + 1
   const links = role === 'gin'
-    ? COTTON_LINKS
+    ? [COTTON_TAB]
     : cottonEnabled
-      ? [...GRAIN_LINKS.slice(0, hedgingIdx), ...COTTON_LINKS, ...GRAIN_LINKS.slice(hedgingIdx)]
+      ? [...GRAIN_LINKS.slice(0, hedgingIdx), COTTON_TAB, ...GRAIN_LINKS.slice(hedgingIdx)]
       : GRAIN_LINKS
   return (
     <nav className="sticky top-0 z-10 bg-green-800 text-white shadow">
@@ -44,7 +39,9 @@ export default function Nav({ cottonEnabled = false, role = 'owner' }: { cottonE
         </Link>
         <div className="flex gap-1 flex-1">
           {links.map((l) => {
-            const active = pathname === l.href || pathname?.startsWith(l.href + '/')
+            const active = l.label === 'Cotton'
+              ? pathname?.startsWith('/cotton')
+              : pathname === l.href || pathname?.startsWith(l.href + '/')
             return (
               <Link
                 key={l.label}
