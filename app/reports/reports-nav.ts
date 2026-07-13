@@ -40,6 +40,7 @@ export const REPORT_GROUPS: ReportNavGroup[] = [
       { label: 'Yields by Farm', href: '/yields', external: true, description: 'Yields rolled up by farm. Opens the standalone Yields page.' },
       { label: 'Yields by Landowner', href: '/reports/yields-by-landowner', description: 'Per-landowner production grouped by farm and field. Splits-aware. Export to Excel, PDF, or print as a handout.' },
       { label: 'Share Rent Report', href: '/reports/share-rent', description: 'For each share-rent farm: production by crop and field, plus the landlord’s share of bushels at the configured percentage. Ready to hand to a landowner.' },
+      { label: 'Bale Quality Summary', href: '/reports/bale-quality', description: 'Cotton module: per-field bales, lint pounds, weighted avg loan ¢/lb, and HVI grade distributions (color, staple, mic, strength) — the quality package for buyers.' },
     ],
   },
   {

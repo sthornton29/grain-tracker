@@ -1,6 +1,7 @@
 'use client'
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import CottonYieldsSection from '@/components/reports/cotton-yields-section'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, analyzeYields, isHarvestComplete, groupYieldAggregates, type HarvestProgress, type GroupYieldAgg, type GroupYieldPlanting } from '@/lib/yields'
@@ -1492,6 +1493,8 @@ export default function YieldsPage() {
           </table>
         </div>
       )}
+      {/* Cotton module (feature-flagged): lint lbs/acre from gin receipts. */}
+      <CottonYieldsSection year={year} />
     </div>
   )
 }
