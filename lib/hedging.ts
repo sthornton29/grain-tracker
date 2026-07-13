@@ -2,7 +2,7 @@
 // price parsing, and P&L math. Pure functions, no I/O, so they're reused by
 // the dashboard, the position forms, and the statement-import flow.
 
-export const COMMODITIES = ['Corn', 'Soybeans', 'Chicago Wheat'] as const
+export const COMMODITIES = ['Corn', 'Soybeans', 'Chicago Wheat', 'Cotton'] as const
 export type Commodity = (typeof COMMODITIES)[number]
 export type Side = 'long' | 'short'
 
@@ -20,6 +20,30 @@ export const COMMODITY_SPECS: Record<
   Corn: { symbol: 'ZC', contractSizeBu: 5000, contractMonths: ['H', 'K', 'N', 'U', 'Z'] },
   Soybeans: { symbol: 'ZS', contractSizeBu: 5000, contractMonths: ['F', 'H', 'K', 'N', 'Q', 'U', 'X'] },
   'Chicago Wheat': { symbol: 'ZW', contractSizeBu: 5000, contractMonths: ['H', 'K', 'N', 'U', 'Z'] },
+  // ICE Cotton No. 2 — 50,000 lbs, priced in CENTS/lb (72.65), tick 0.01¢ =
+  // $5. December is the new-crop benchmark. contractSizeBu holds LBS.
+  Cotton: { symbol: 'CT', contractSizeBu: 50000, contractMonths: ['H', 'K', 'N', 'V', 'Z'] },
+}
+
+// The unit a commodity's contract size is measured in (display only).
+export function contractUnit(commodity: Commodity | string | null | undefined): 'bu' | 'lbs' {
+  return commodity === 'Cotton' ? 'lbs' : 'bu'
+}
+
+// Futures P&L size per 1.00 of PRICE: grains are quoted in $/bu so a 1.00
+// move is worth the full contract size; cotton is quoted in ¢/lb so a 1.00
+// move (1¢) is worth size ÷ 100 = $500/contract. Pass this as contractSizeBu
+// into the P&L helpers so (open − close) × contracts × size stays correct.
+export function pnlSizeFor(commodity: Commodity | string | null | undefined): number {
+  const size = COMMODITY_SPECS[commodity as Commodity]?.contractSizeBu ?? CONTRACT_SIZE_BU
+  return commodity === 'Cotton' ? size / 100 : size
+}
+
+// Price display: grains in $/bu; cotton in ¢/lb as quoted (72.65¢).
+export function fmtCommodityPrice(commodity: Commodity | string | null | undefined, n: number | null | undefined): string {
+  if (n == null) return '—'
+  if (commodity === 'Cotton') return `${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}¢`
+  return fmtPrice(n)
 }
 
 // Futures month codes. Index 1..12 = Jan..Dec.
@@ -415,6 +439,7 @@ export function normalizeCommodity(raw: string | null | undefined): Commodity | 
   if (s.includes('CORN')) return 'Corn'
   if (s.includes('SOYBEAN') || s === 'BEANS' || s === 'SOY') return 'Soybeans'
   if (s.includes('WHEAT')) return 'Chicago Wheat' // we only trade Chicago/SRW
+  if (s.includes('COTTON') && !s.includes('SEED')) return 'Cotton' // ICE Cotton No. 2; seed cotton is not the lint contract
   return null
 }
 

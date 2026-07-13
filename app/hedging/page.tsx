@@ -14,6 +14,7 @@ import {
   type Commodity,
   contractMonthSortKey,
   unrealizedPnl,
+  pnlSizeFor,
   optionUnrealizedPnl,
   optionPremiumTotal,
   parseFractional,
@@ -178,7 +179,7 @@ export default function HedgingPage() {
 
   const curPrice = (symbol: string) => prices.get(symbol)?.price ?? null
   const posUnrealized = (p: FuturesPosition) =>
-    unrealizedPnl({ side: p.side, tradePrice: p.trade_price, currentPrice: curPrice(p.contract_symbol), numContracts: p.num_contracts })
+    unrealizedPnl({ side: p.side, tradePrice: p.trade_price, currentPrice: curPrice(p.contract_symbol), numContracts: p.num_contracts, contractSizeBu: pnlSizeFor(p.commodity) })
   const netRealized = (p: FuturesPosition) => (p.realized_pnl ?? 0) - (p.commission ?? 0)
 
   // Options: same crop-year / commodity / entity filters; status split with the

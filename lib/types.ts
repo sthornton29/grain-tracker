@@ -579,3 +579,90 @@ export type Load = {
   created_at: string
   updated_at: string
 }
+
+// ---------- Cotton module (042) ----------
+
+export type AppSettings = { id: number; cotton_module_enabled: boolean; updated_at: string }
+export type AppRole = 'owner' | 'gin'
+
+export type Gin = { id: string; name: string; address: string | null; phone: string | null; notes: string | null }
+
+// Seed cotton module/weight ticket — yard inventory until it appears on a
+// gin receipt. Weights in lbs (no moisture/shrink math).
+export type CottonLoad = {
+  id: string
+  load_number: string
+  entity_id: string | null
+  farm_id: string | null
+  field_id: string | null
+  crop_year: number
+  picked_date: string | null
+  delivered_date: string | null
+  truck: string | null
+  gross_weight: number | null
+  tare_weight: number | null
+  net_weight: number | null // lbs seed cotton
+  gin_id: string | null
+  location: string | null
+  notes: string | null
+  source: 'manual' | 'document_import'
+  source_pdf_url: string | null
+  created_at: string
+}
+
+export type GinReceipt = {
+  id: string
+  gin_id: string | null
+  receipt_number: string
+  receipt_date: string | null
+  entity_id: string | null
+  farm_id: string | null
+  field_id: string | null
+  crop_year: number
+  modules_count: number | null
+  total_seed_cotton_weight: number | null // lbs
+  bales_count: number | null
+  total_bale_weight: number | null // lbs lint
+  avg_bale_weight: number | null
+  seed_lbs: number | null // cottonseed produced
+  lint_turnout_pct: number | null
+  lint_lbs_per_bale: number | null
+  notes: string | null
+  source: 'manual' | 'document_import'
+  source_pdf_url: string | null
+  created_at: string
+}
+
+export type GinReceiptLoad = { id: string; receipt_id: string; cotton_load_id: string }
+
+export type CottonBale = {
+  id: string
+  gin_receipt_id: string
+  crop_year: number
+  pbi_number: string
+  net_weight_lbs: number
+  created_at: string
+}
+
+export type CottonBaleGrade = {
+  id: string
+  bale_id: string
+  class_date: string | null
+  color_grade: string | null
+  leaf_grade: string | null
+  staple_32nds: number | null
+  micronaire: number | null
+  strength_g_tex: number | null
+  composite_grade: string | null
+  rd: number | null
+  plus_b: number | null
+  trash_pct: number | null
+  uniformity_pct: number | null
+  length_100ths: number | null
+  extraneous: string | null
+  remarks: string | null
+  loan_value_total: number | null
+  loan_value_cents_per_lb: number | null
+  source: 'csv_import' | 'manual'
+  created_at: string
+}

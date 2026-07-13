@@ -641,7 +641,9 @@ describe('buildContractSymbol', () => {
     expect(buildContractSymbol('Corn', 'DEC 2005')).toBe('ZCZ05')
   })
   it('returns "" for an unknown commodity or unparseable month', () => {
-    expect(buildContractSymbol('Cotton', 'DEC 26')).toBe('')
+    // Cotton is a tracked commodity since the Cotton module (042).
+    expect(buildContractSymbol('Cotton', 'DEC 26')).toBe('CTZ26')
+    expect(buildContractSymbol('Rice', 'DEC 26')).toBe('')
     expect(buildContractSymbol('Corn', 'nope')).toBe('')
   })
 })
@@ -676,7 +678,11 @@ describe('normalizeCommodity', () => {
     expect(normalizeCommodity('WHEAT')).toBe('Chicago Wheat')
   })
   it('returns null for untracked commodities and empties', () => {
-    expect(normalizeCommodity('COTTON')).toBeNull()
+    // ICE Cotton No. 2 is tracked since the Cotton module; SEED cotton is
+    // not the lint contract and stays untracked.
+    expect(normalizeCommodity('COTTON')).toBe('Cotton')
+    expect(normalizeCommodity('SEED COTTON')).toBeNull()
+    expect(normalizeCommodity('RICE')).toBeNull()
     expect(normalizeCommodity(null)).toBeNull()
   })
 })

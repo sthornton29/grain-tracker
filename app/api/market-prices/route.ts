@@ -79,7 +79,9 @@ export async function POST(req: NextRequest) {
         const raw = r?.lastPrice ?? r?.close ?? r?.settlement
         const cents = typeof raw === 'number' ? raw : Number(raw)
         if (!sym || !Number.isFinite(cents)) continue
-        const price = Math.round((cents / 100) * 1e6) / 1e6 // cents/bu -> $/bu
+        // Grains: cents/bu -> $/bu. ICE Cotton (CT...) stays in cents/lb --
+        // the app stores and displays cotton prices as quoted (72.65).
+        const price = sym.startsWith('CT') ? cents : Math.round((cents / 100) * 1e6) / 1e6
         const price_date = dateFromTimestamp(r?.tradeTimestamp ?? r?.serverTimestamp, today)
         fetched.set(sym, { price, price_date })
         upserts.push({ contract_symbol: sym, price, price_date })

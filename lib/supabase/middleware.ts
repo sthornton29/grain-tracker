@@ -39,5 +39,26 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
+  // Gin-operator role guard: gin logins may reach ONLY the Cotton intake
+  // pages. Server-side redirect here; the nav hides everything else and the
+  // RLS policies (042) are the real enforcement underneath.
+  if (user && !isPublic) {
+    const ginAllowed =
+      pathname.startsWith('/cotton') || pathname.startsWith('/logout') || pathname.startsWith('/api/parse-document')
+    if (!ginAllowed) {
+      const { data: profile } = await supabase
+        .from('user_profiles')
+        .select('role')
+        .eq('user_id', user.id)
+        .maybeSingle()
+      if ((profile as { role?: string } | null)?.role === 'gin') {
+        const url = request.nextUrl.clone()
+        url.pathname = '/cotton/loads'
+        url.search = ''
+        return NextResponse.redirect(url)
+      }
+    }
+  }
+
   return response
 }

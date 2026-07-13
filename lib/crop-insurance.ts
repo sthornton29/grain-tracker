@@ -61,6 +61,8 @@ const HARVEST_MONTH_ABBR: Record<Commodity, string> = {
   Corn: 'DEC',
   Soybeans: 'NOV',
   'Chicago Wheat': 'SEP',
+  // ICE Cotton No. 2 December — RMA upland cotton harvest-price discovery.
+  Cotton: 'DEC',
 }
 
 export function round2(n: number): number {

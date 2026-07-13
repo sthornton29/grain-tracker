@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
+import CottonYieldsSection from '@/components/reports/cotton-yields-section'
 import { createClient } from '@/lib/supabase/client'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
@@ -270,6 +271,8 @@ export default function SeasonSummaryPage() {
           )}
         </>
       )}
+      {/* Cotton module (feature-flagged): lint lbs/acre from gin receipts. */}
+      <CottonYieldsSection year={year} />
     </div>
   )
 }

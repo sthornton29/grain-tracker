@@ -28,12 +28,24 @@ export const viewport: Viewport = {
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const supabase = createClient()
   const { data: { user } } = await supabase.auth.getUser()
+  // Module flag + role drive what the nav shows (gin operators see only the
+  // cotton intake pages; RLS + middleware enforce beyond the UI).
+  let cottonEnabled = false
+  let role: 'owner' | 'gin' = 'owner'
+  if (user) {
+    const [settings, profile] = await Promise.all([
+      supabase.from('app_settings').select('cotton_module_enabled').eq('id', 1).maybeSingle(),
+      supabase.from('user_profiles').select('role').eq('user_id', user.id).maybeSingle(),
+    ])
+    cottonEnabled = Boolean((settings.data as { cotton_module_enabled?: boolean } | null)?.cotton_module_enabled)
+    role = ((profile.data as { role?: string } | null)?.role === 'gin' ? 'gin' : 'owner')
+  }
 
   return (
     <html lang="en">
       <body className="min-h-screen">
         <PwaRegister />
-        {user ? <Nav /> : null}
+        {user ? <Nav cottonEnabled={cottonEnabled || role === 'gin'} role={role} /> : null}
         <main className="max-w-6xl mx-auto p-4 pb-24">{children}</main>
       </body>
     </html>

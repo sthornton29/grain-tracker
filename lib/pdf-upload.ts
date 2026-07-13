@@ -32,7 +32,7 @@ export function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings' | 'crop_insurance_policy' | 'fsa_base_acres'
+export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt'
 
 export type SettlementExtraction = {
   buyer_name: string | null
@@ -286,10 +286,12 @@ export async function parseDocument(input: File | ParseImage[], documentType: 'f
 export async function parseDocument(input: File | ParseImage[], documentType: 'plantings'): Promise<PlantingsExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'crop_insurance_policy'): Promise<CropInsuranceExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'fsa_base_acres'): Promise<FsaBaseAcresExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'cotton_weight_ticket'): Promise<CottonLoadsExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'gin_receipt'): Promise<GinReceiptExtraction>
 export async function parseDocument(
   input: File | ParseImage[],
   documentType: DocumentType,
-): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction> {
+): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonLoadsExtraction | GinReceiptExtraction> {
   // Build the request body. Photos are compressed small enough to inline as
   // base64. A PDF, however, is uploaded to storage first and sent as a URL:
   // Vercel rejects serverless request bodies over 4.5 MB with a 413, well below
@@ -377,4 +379,51 @@ export async function deleteStorageObjectByUrl(
   const path = decodeURIComponent(url.slice(i + marker.length))
   if (!path) return
   await supabase.storage.from(PDF_BUCKET).remove([path])
+}
+
+// ---------- Cotton module extractions ----------
+
+export type CottonLoadExtraction = {
+  load_number: string | null
+  producer: string | null
+  farm_number: string | null
+  field: string | null
+  picked_date: string | null
+  delivered_date: string | null
+  truck: string | null
+  gross_weight: number | null
+  tare_weight: number | null
+  net_weight: number | null
+  crop_year: number | null
+}
+export type CottonLoadsExtraction = { loads: CottonLoadExtraction[] }
+
+export type GinReceiptLoadLine = {
+  load_number: string | null
+  rolls: number | null
+  gross: number | null
+  tare: number | null
+  net: number | null
+}
+export type GinReceiptExtraction = {
+  gin_name: string | null
+  gin_address: string | null
+  gin_phone: string | null
+  receipt_number: string | null
+  receipt_date: string | null
+  producer: string | null
+  farm_number: string | null
+  farm_name: string | null
+  field: string | null
+  crop_year: number | null
+  modules_count: number | null
+  total_seed_cotton_weight: number | null
+  bales_count: number | null
+  total_bale_weight: number | null
+  avg_bale_weight: number | null
+  seed_lbs: number | null
+  lint_turnout_pct: number | null
+  lint_lbs_per_bale: number | null
+  loads: GinReceiptLoadLine[]
+  bales: Array<{ pbi_number: string | null; net_weight_lbs: number | null }>
 }

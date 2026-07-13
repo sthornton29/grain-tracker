@@ -7,6 +7,7 @@ import {
   type Commodity,
   contractMonthSortKey,
   unrealizedPnl,
+  pnlSizeFor,
   optionUnrealizedPnl,
   bushelsFor,
   fmtPrice,
@@ -96,7 +97,7 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
 
   const unrealizedOf = (p: FuturesPosition) =>
     p.status === 'open'
-      ? unrealizedPnl({ side: p.side, tradePrice: p.trade_price, currentPrice: priceBySymbol.get(p.contract_symbol) ?? null, numContracts: p.num_contracts })
+      ? unrealizedPnl({ side: p.side, tradePrice: p.trade_price, currentPrice: priceBySymbol.get(p.contract_symbol) ?? null, numContracts: p.num_contracts, contractSizeBu: pnlSizeFor(p.commodity) })
       : null
   const netRealizedOf = (p: FuturesPosition) => (p.status === 'closed' ? (p.realized_pnl ?? 0) - (p.commission ?? 0) : 0)
 

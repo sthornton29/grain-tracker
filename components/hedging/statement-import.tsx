@@ -20,6 +20,7 @@ import {
   normalizeOptionType,
   optionPremiumTotal,
   expandClosedGroup,
+  pnlSizeFor,
   reconcileClosedGroup,
   coercePrice,
   pricesMatch,
@@ -482,6 +483,7 @@ export default function StatementImport({ entities, existingPositions, existingO
     () =>
       closedGroups.map((g) => {
         const expanded = expandClosedGroup({
+          contractSizeBu: pnlSizeFor(g.commodity),
           commodity: g.commodity,
           contract_month: g.contract_month,
           side: g.side,

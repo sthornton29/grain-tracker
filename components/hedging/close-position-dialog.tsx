@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Modal } from './position-form'
-import {
+import { pnlSizeFor,
   parsePrice,
   realizedPnl,
   bushelsFor,
@@ -39,7 +39,8 @@ export default function ClosePositionDialog({ position, onClose, onSaved }: Prop
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
-  const sizeBu = COMMODITY_SPECS[position.commodity as Commodity]?.contractSizeBu ?? 5000
+  // P&L size per 1.00 of price (cotton is quoted in cents/lb -> size / 100).
+  const sizeBu = pnlSizeFor(position.commodity)
   const closePrice = parsePrice(closePriceInput)
   const qtyNum = Number(qty)
   const partial = Number.isInteger(qtyNum) && qtyNum > 0 && qtyNum < position.num_contracts

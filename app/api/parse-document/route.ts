@@ -116,8 +116,8 @@ For each OPEN POSITION, extract:
 - trade_date (format YYYY-MM-DD — the statement may show dates as M/DD/Y like "3/09/6" meaning 2026-03-09)
 - side ("long" or "short" — determine using the CRITICAL RULES above; apply them to every line and do NOT default to "long")
 - num_contracts (the number of contracts)
-- contract_description (exactly as shown, e.g., "DEC 26 CORN", "NOV 26 SOYBEANS", "JUL 27 WHEAT")
-- commodity (parsed from description: "CORN", "SOYBEANS", or "WHEAT" — ignore COTTON or other commodities)
+- contract_description (exactly as shown, e.g., "DEC 26 CORN", "NOV 26 SOYBEANS", "JUL 27 WHEAT", "DEC 26 ICE COTTON 2")
+- commodity (parsed from description: "CORN", "SOYBEANS", "WHEAT", or "COTTON" — ICE Cotton No. 2 lines like "DEC 26 ICE COTTON 2" are COTTON; cotton prices stay in cents/lb exactly as printed, e.g. 72.65)
 - contract_month (parsed from description, e.g., "DEC 26", "NOV 26", "JUL 27")
 - trade_price (as a decimal number — convert fractional prices: "4.93 1/4" = 4.9325, "11.43 1/2" = 11.435, "6.16 1/2" = 6.165)
 - unrealized_pnl (the DEBIT(DR)/CREDIT amount — negative if DR, positive if credit)
@@ -127,7 +127,7 @@ PURCHASE & SALE — CLOSED OFFSET GROUPS (read this carefully):
 The Purchase & Sale section lists, for each offset, one or more OPENING lots (often at different prices and on different dates) and one or more CLOSING transactions, followed by a SINGLE "GROSS PROFIT/LOSS FROM TRADES" line. That GROSS PROFIT/LOSS line is the TOTAL for the WHOLE offset group — it is NOT a per-lot value and must NOT be split across or attached to individual lots. When several opening lots are offset by one closing transaction, the SAME closing price applies to every lot in that group.
 
 Extract ONLY the raw facts for each offset group — do NOT compute, split, or guess any profit/loss yourself. Emit one object per offset group:
-- commodity ("Corn", "Soybeans", or "Chicago Wheat" — ignore COTTON and any others)
+- commodity ("Corn", "Soybeans", "Chicago Wheat", or "Cotton")
 - contract_month (e.g., "DEC 26")
 - side ("short" if the opening lots are in the SELL column and closed by a BUY; "long" if bought first and sold to close — see CRITICAL RULE #4)
 - close_date (the closing transaction date, format YYYY-MM-DD)
@@ -145,7 +145,7 @@ For each OPTIONS position, extract:
 - side ("buy" if the position shows a debit/premium paid, "sell" if credit/premium received. Use the same long/short column logic: if quantity is in the LONG column it was bought, SHORT column means it was sold)
 - option_type ("put" or "call")
 - num_contracts (number)
-- commodity ("Corn", "Soybeans", or "Chicago Wheat" — ignore COTTON)
+- commodity ("Corn", "Soybeans", "Chicago Wheat", or "Cotton")
 - underlying_contract_month (e.g., "DEC 26")
 - strike_price (decimal dollars per bushel — convert from the whole number shown: 480 = 4.80)
 - premium_cents (the trade price shown, in cents per bushel — e.g., if price shows "15 1/2" that means 15.5 cents)
@@ -164,7 +164,7 @@ Also extract the account summary:
 
 IMPORTANT: Dates on these statements use abbreviated years. "3/09/6" means March 9, 2026. "5/05/6" means May 5, 2026. Use the statement date's year as context for interpreting 2-digit years.
 
-IMPORTANT: Ignore any COTTON positions — only extract CORN, SOYBEANS, and WHEAT.
+IMPORTANT: Extract COTTON (ICE Cotton No. 2) positions too — commodity "Cotton", prices in cents/lb exactly as printed (72.65 means 72.65 cents/lb; do NOT convert).
 
 Respond ONLY in JSON with no other text, no markdown backticks:
 {
@@ -174,7 +174,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
       "trade_date": "YYYY-MM-DD",
       "side": "long or short",
       "num_contracts": number,
-      "commodity": "Corn or Soybeans or Chicago Wheat",
+      "commodity": "Corn or Soybeans or Chicago Wheat or Cotton",
       "contract_month": "string like DEC 26",
       "trade_price": number,
       "unrealized_pnl": number
@@ -182,7 +182,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
   ],
   "closed_groups": [
     {
-      "commodity": "Corn or Soybeans or Chicago Wheat",
+      "commodity": "Corn or Soybeans or Chicago Wheat or Cotton",
       "contract_month": "string like DEC 26",
       "side": "long or short",
       "close_date": "YYYY-MM-DD",
@@ -199,7 +199,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
       "side": "buy or sell",
       "option_type": "put or call",
       "num_contracts": number,
-      "commodity": "Corn or Soybeans or Chicago Wheat",
+      "commodity": "Corn or Soybeans or Chicago Wheat or Cotton",
       "underlying_contract_month": "string like DEC 26",
       "strike_price": number,
       "premium_cents": number,
@@ -213,7 +213,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
       "side": "buy or sell",
       "option_type": "put or call",
       "num_contracts": number,
-      "commodity": "Corn or Soybeans or Chicago Wheat",
+      "commodity": "Corn or Soybeans or Chicago Wheat or Cotton",
       "underlying_contract_month": "string like DEC 26",
       "strike_price": number,
       "open_premium_cents": number,
@@ -438,7 +438,39 @@ Respond ONLY in JSON with no other text, no markdown backticks:
   ]
 }`
 
-type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings' | 'crop_insurance_policy' | 'fsa_base_acres'
+type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt'
+
+
+const COTTON_TICKET_PROMPT = `This document contains cotton MODULE/LOAD weight tickets (a gin's "Module List" or seed cotton weight tickets). Multi-page PDFs contain ONE LOAD PER PAGE - extract every load from every page.
+
+For each load extract:
+- load_number (the gin's module/load number, exactly as printed)
+- producer (the producer/farmer name)
+- farm_number (the FSA farm number if printed - null if not)
+- field (the field name/description exactly as printed, e.g. "JOE MCCOULOUGH IRR")
+- picked_date, delivered_date (YYYY-MM-DD; null when absent)
+- truck (truck/trailer identifier text)
+- gross_weight, tare_weight, net_weight (POUNDS of seed cotton, plain numbers, no commas)
+- crop_year (the crop year if printed, else null)
+
+Respond ONLY in JSON, no other text, no markdown fences:
+{"loads": [{"load_number": "...", "producer": "...", "farm_number": "... or null", "field": "... or null", "picked_date": "YYYY-MM-DD or null", "delivered_date": "YYYY-MM-DD or null", "truck": "... or null", "gross_weight": number or null, "tare_weight": number or null, "net_weight": number or null, "crop_year": number or null}]}`
+
+const GIN_RECEIPT_PROMPT = `This is a STATEMENT OF GINNING from a cotton gin (a gin receipt). Extract the full statement:
+
+- gin_name (the gin's name), gin_address, gin_phone (null when absent)
+- receipt_number (the statement/gin number, e.g. "040614" from "Gin 040614")
+- receipt_date (YYYY-MM-DD)
+- producer (producer/farmer name)
+- farm_number (FSA farm number if printed), farm_name
+- field (field name/description)
+- crop_year (number, else null)
+- Statement totals: modules_count, total_seed_cotton_weight (lbs), bales_count, total_bale_weight (lbs lint), avg_bale_weight, seed_lbs (cottonseed produced), lint_turnout_pct, lint_lbs_per_bale
+- loads: the statement's load table - one entry per line: {"load_number": "...", "rolls": number or null, "gross": number or null, "tare": number or null, "net": number or null}
+- bales: the FULL bale list - it may span multiple pages; extract EVERY bale row: {"pbi_number": "...", "net_weight_lbs": number}. Do not truncate or summarize the list.
+
+Respond ONLY in JSON, no other text, no markdown fences:
+{"gin_name": "...", "gin_address": null, "gin_phone": null, "receipt_number": "...", "receipt_date": "YYYY-MM-DD or null", "producer": "...", "farm_number": "... or null", "farm_name": "... or null", "field": "... or null", "crop_year": number or null, "modules_count": number or null, "total_seed_cotton_weight": number or null, "bales_count": number or null, "total_bale_weight": number or null, "avg_bale_weight": number or null, "seed_lbs": number or null, "lint_turnout_pct": number or null, "lint_lbs_per_bale": number or null, "loads": [...], "bales": [...]}`
 
 const PROMPTS: Record<DocumentType, string> = {
   settlement: SETTLEMENT_PROMPT,
@@ -449,6 +481,8 @@ const PROMPTS: Record<DocumentType, string> = {
   plantings: PLANTINGS_PROMPT,
   crop_insurance_policy: CROP_INSURANCE_POLICY_PROMPT,
   fsa_base_acres: FSA_BASE_ACRES_PROMPT,
+  cotton_weight_ticket: COTTON_TICKET_PROMPT,
+  gin_receipt: GIN_RECEIPT_PROMPT,
 }
 
 type ParseBody = {
