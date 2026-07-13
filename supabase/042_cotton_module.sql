@@ -172,7 +172,7 @@ create table if not exists public.cotton_bale_grades (
 
 -- Cotton commodity for hedging: ICE Cotton No. 2, 50,000 lbs, prices in ¢/lb
 -- (contract_size_bu holds LBS for cotton — P&L divides by 100 in code).
-insert into public.commodity_specs (commodity, symbol, exchange, contract_size_bu, tick_size, tick_value, contract_months)
+insert into public.commodity_specs (commodity, symbol, exchange, contract_size_bu, tick_size_cents, tick_value_usd, contract_months)
 select 'Cotton', 'CT', 'ICE', 50000, 0.01, 5, 'H,K,N,V,Z'
 where not exists (select 1 from public.commodity_specs where commodity = 'Cotton');
 
