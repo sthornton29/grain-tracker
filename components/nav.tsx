@@ -16,22 +16,26 @@ const GRAIN_LINKS = [
   { href: '/settings', label: 'Settings' },
 ]
 
-// The Cotton module's own operational area (feature-flagged).
+// The Cotton module's pages, flattened into the top bar when enabled — one
+// tap to any cotton page, same as Loads (routes unchanged).
 const COTTON_LINKS = [
-  { href: '/cotton/loads', label: 'Seed Cotton Loads' },
+  { href: '/cotton/loads', label: 'Cotton Loads' },
   { href: '/cotton/receipts', label: 'Gin Receipts' },
   { href: '/cotton/bales', label: 'Bales & Grades' },
 ]
 
 export default function Nav({ cottonEnabled = false, role = 'owner' }: { cottonEnabled?: boolean; role?: AppRole }) {
   const pathname = usePathname()
-  // Gin operators see ONLY the cotton intake pages.
+  // Gin operators see ONLY the cotton intake pages. Owners with the module
+  // enabled get the three cotton pages as direct top-level tabs after the
+  // grain operational tabs (the bar already scrolls/overflows on narrow
+  // screens — no sub-menu).
+  const hedgingIdx = GRAIN_LINKS.findIndex((l) => l.label === 'Hedging') + 1
   const links = role === 'gin'
     ? COTTON_LINKS
     : cottonEnabled
-      ? [...GRAIN_LINKS.slice(0, -1), { href: '/cotton/loads', label: 'Cotton' }, GRAIN_LINKS[GRAIN_LINKS.length - 1]]
+      ? [...GRAIN_LINKS.slice(0, hedgingIdx), ...COTTON_LINKS, ...GRAIN_LINKS.slice(hedgingIdx)]
       : GRAIN_LINKS
-  const inCotton = pathname?.startsWith('/cotton')
   return (
     <nav className="sticky top-0 z-10 bg-green-800 text-white shadow">
       <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-2 overflow-x-auto">
@@ -40,9 +44,7 @@ export default function Nav({ cottonEnabled = false, role = 'owner' }: { cottonE
         </Link>
         <div className="flex gap-1 flex-1">
           {links.map((l) => {
-            const active = l.label === 'Cotton'
-              ? inCotton
-              : pathname === l.href || pathname?.startsWith(l.href + '/')
+            const active = pathname === l.href || pathname?.startsWith(l.href + '/')
             return (
               <Link
                 key={l.label}
@@ -57,24 +59,6 @@ export default function Nav({ cottonEnabled = false, role = 'owner' }: { cottonE
           })}
         </div>
       </div>
-      {/* Cotton sub-nav inside the module (gin users already have these as the main nav). */}
-      {role !== 'gin' && cottonEnabled && inCotton && (
-        <div className="bg-green-900/60">
-          <div className="max-w-6xl mx-auto px-4 py-1.5 flex gap-1 overflow-x-auto">
-            {COTTON_LINKS.map((l) => (
-              <Link
-                key={l.href}
-                href={l.href}
-                className={`px-3 py-1.5 rounded-lg text-xs whitespace-nowrap ${
-                  pathname === l.href || pathname?.startsWith(l.href + '/') ? 'bg-green-950' : 'hover:bg-green-800'
-                }`}
-              >
-                {l.label}
-              </Link>
-            ))}
-          </div>
-        </div>
-      )}
     </nav>
   )
 }

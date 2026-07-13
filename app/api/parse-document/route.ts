@@ -119,7 +119,7 @@ For each OPEN POSITION, extract:
 - contract_description (exactly as shown, e.g., "DEC 26 CORN", "NOV 26 SOYBEANS", "JUL 27 WHEAT", "DEC 26 ICE COTTON 2")
 - commodity (parsed from description: "CORN", "SOYBEANS", "WHEAT", or "COTTON" — ICE Cotton No. 2 lines like "DEC 26 ICE COTTON 2" are COTTON; cotton prices stay in cents/lb exactly as printed, e.g. 72.65)
 - contract_month (parsed from description, e.g., "DEC 26", "NOV 26", "JUL 27")
-- trade_price (as a decimal number — convert fractional prices: "4.93 1/4" = 4.9325, "11.43 1/2" = 11.435, "6.16 1/2" = 6.165)
+- trade_price (as a decimal number. CBT GRAINS ONLY: convert fractional prices — "4.93 1/4" = 4.9325, "11.43 1/2" = 11.435. ICE COTTON 2 prices are already plain decimals in cents/lb (72.65, 78.30) — copy them EXACTLY, never apply fractional conversion or unit conversion to cotton)
 - unrealized_pnl (the DEBIT(DR)/CREDIT amount — negative if DR, positive if credit)
 
 PURCHASE & SALE — CLOSED OFFSET GROUPS (read this carefully):
@@ -131,8 +131,8 @@ Extract ONLY the raw facts for each offset group — do NOT compute, split, or g
 - contract_month (e.g., "DEC 26")
 - side ("short" if the opening lots are in the SELL column and closed by a BUY; "long" if bought first and sold to close — see CRITICAL RULE #4)
 - close_date (the closing transaction date, format YYYY-MM-DD)
-- close_price (the closing price as a decimal — convert fractional, e.g., "4.42 3/4" = 4.4275)
-- lots (an array with ONE entry per opening lot in this group, each: { open_date (YYYY-MM-DD), open_price (decimal, fractional converted), contracts (the number of contracts in THIS lot only) }). Capture each lot's OWN contract count — three lots of ten contracts each are 10, 10, 10, never 30 and never the group's grand total.
+- close_price (the closing price as a decimal — grains: convert fractional, e.g. "4.42 3/4" = 4.4275; cotton: plain decimal ¢/lb as printed)
+- lots (an array with ONE entry per opening lot in this group, each: { open_date (YYYY-MM-DD), open_price (decimal; grains fractional-converted, cotton plain ¢/lb), contracts (the number of contracts in THIS lot only) }). Capture each lot's OWN contract count — three lots of ten contracts each are 10, 10, 10, never 30 and never the group's grand total.
 - statement_reported_total (the group's printed GROSS PROFIT/LOSS total, as a decimal. SIGN MATTERS: a total suffixed DR is a debit/LOSS and MUST be negative; CR or no suffix is a gain and positive. "14,425.00DR" -> -14425.00). This is for reconciliation ONLY.
 
 ALSO extract any OPTIONS positions from the statement. Options appear in the OPEN POSITIONS section and may look like:

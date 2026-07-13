@@ -39,6 +39,22 @@ export function pnlSizeFor(commodity: Commodity | string | null | undefined): nu
   return commodity === 'Cotton' ? size / 100 : size
 }
 
+// Contract quantity in the commodity's own unit (bu for grains, lbs for cotton).
+export function quantityFor(commodity: Commodity | string | null | undefined, numContracts: number): number {
+  return numContracts * (COMMODITY_SPECS[commodity as Commodity]?.contractSizeBu ?? CONTRACT_SIZE_BU)
+}
+export function fmtQuantity(commodity: Commodity | string | null | undefined, numContracts: number): string {
+  return `${quantityFor(commodity, numContracts).toLocaleString()} ${contractUnit(commodity)}`
+}
+
+// The ONE place Barchart quote magnitudes normalize: grains quote in cents/bu
+// and the app stores $/bu (÷100); ICE Cotton (CT…) quotes ARE the app's unit
+// (¢/lb, e.g. 72.65) and pass through unchanged.
+export function normalizeBarchartPrice(symbol: string, raw: number): number {
+  if (symbol.toUpperCase().startsWith('CT')) return Math.round(raw * 1e4) / 1e4
+  return Math.round((raw / 100) * 1e6) / 1e6
+}
+
 // Price display: grains in $/bu; cotton in ¢/lb as quoted (72.65¢).
 export function fmtCommodityPrice(commodity: Commodity | string | null | undefined, n: number | null | undefined): string {
   if (n == null) return '—'
