@@ -10,6 +10,8 @@ import {
   contractMonthOptions,
   parsePrice,
   bushelsFor,
+  contractUnit,
+  fmtCommodityPrice,
   fmtPrice,
   COMMODITY_SPECS,
 } from '@/lib/hedging'
@@ -74,7 +76,7 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
     if (!tradeDate) return setErr('Pick a trade date.')
 
     const sideLabel = side === 'short' ? 'Short' : 'Long'
-    const confirmMsg = `${sideLabel} ${n} ${contractMonth} ${commodity} (${symbol}) at ${fmtPrice(parsedPrice)} — Crop Year ${cropYear}. Bushel exposure: ${bushels.toLocaleString()} bu.`
+    const confirmMsg = `${sideLabel} ${n} ${contractMonth} ${commodity} (${symbol}) at ${fmtCommodityPrice(commodity, parsedPrice)} — Crop Year ${cropYear}. Exposure: ${bushels.toLocaleString()} ${contractUnit(commodity)}.`
     if (!editing && !window.confirm(confirmMsg)) return
 
     setBusy(true)
@@ -179,7 +181,7 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
             />
           </label>
           <label className={labelCls}>
-            Trade Price ($/bu)
+            Trade Price ({contractUnit(commodity) === 'lbs' ? '¢/lb — plain decimal, e.g. 72.65' : '$/bu'})
             <input
               type="text"
               inputMode="decimal"
@@ -190,7 +192,7 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
             />
             {tradePriceInput && (
               <span className={`text-xs ${parsedPrice == null ? 'text-red-600' : 'text-slate-500'}`}>
-                {parsedPrice == null ? 'Unrecognized price' : `= ${fmtPrice(parsedPrice)}`}
+                {parsedPrice == null ? 'Unrecognized price' : `= ${fmtCommodityPrice(commodity, parsedPrice)}`}
               </span>
             )}
           </label>
@@ -225,8 +227,8 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
             <span className="font-mono font-semibold">{symbol || '—'}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-slate-500">Bushel exposure</span>
-            <span className="font-mono">{bushels ? bushels.toLocaleString() : '—'} bu</span>
+            <span className="text-slate-500">Exposure</span>
+            <span className="font-mono">{bushels ? bushels.toLocaleString() : '—'} {contractUnit(commodity)}</span>
           </div>
         </div>
 

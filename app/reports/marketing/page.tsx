@@ -264,7 +264,11 @@ export default function MarketingPage() {
 
   // Crops shown in the assumptions editor: those with plantings this year.
   const plantedCropIds = useMemo(() => new Set(plantings.map((p) => p.crop_id)), [plantings])
-  const plantedCrops = crops.filter((c) => plantedCropIds.has(c.id))
+  // Cotton is production + hedges only (Cotton module) — physical cotton
+  // marketing isn't tracked yet, and the dashboard's bushel-based math must
+  // never touch a lbs crop. Excluded here with a note in the UI.
+  const plantedCrops = crops.filter((c) => plantedCropIds.has(c.id) && !/cotton/i.test(c.name))
+  const hasCottonPlantings = crops.some((c) => plantedCropIds.has(c.id) && /cotton/i.test(c.name))
 
   // The only meaningful combined metrics across mixed crops: total acres and
   // total projected profit (mixing corn/soy/wheat production or price is not).
@@ -511,6 +515,13 @@ export default function MarketingPage() {
             />
           ))}
         </div>
+      )}
+
+      {hasCottonPlantings && (
+        <p className="text-xs text-slate-500 no-print">
+          Cotton is tracked as production + hedges (Cotton module) — physical cotton marketing isn&apos;t tracked
+          yet, so cotton doesn&apos;t appear on this dashboard.
+        </p>
       )}
 
       {/* Assumptions slide-over */}

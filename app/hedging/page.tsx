@@ -19,6 +19,10 @@ import {
   optionPremiumTotal,
   parseFractional,
   bushelsFor,
+  quantityFor,
+  fmtQuantity,
+  contractUnit,
+  fmtCommodityPrice,
   fmtPrice,
   fmtPnl,
   fmtCents,
@@ -254,7 +258,7 @@ export default function HedgingPage() {
     for (const p of base) {
       const f = get(p.crop_year, p.commodity as Commodity).fut
       f.contracts += p.num_contracts
-      f.bushels += bushelsFor(p.num_contracts)
+      f.bushels += quantityFor(p.commodity, p.num_contracts)
       f.priceWeight += p.trade_price * p.num_contracts
       if (p.status === 'open') { f.unrealized += posUnrealized(p) ?? 0; f.hasOpen = true }
       else f.realized += netRealized(p)
@@ -262,7 +266,7 @@ export default function HedgingPage() {
     for (const o of baseOptions) {
       const g = get(o.crop_year, o.commodity as Commodity).opt
       g.contracts += o.num_contracts
-      g.bushels += bushelsFor(o.num_contracts)
+      g.bushels += quantityFor(o.commodity, o.num_contracts)
       // Net premium cash: buying pays out (negative), selling collects (positive).
       g.premium += (o.side === 'buy' ? -1 : 1) * (o.premium_total ?? optionPremiumTotal(o.premium_cents, o.num_contracts))
       if (o.status === 'open') { g.unrealized += optUnrealized(o) ?? 0; g.hasOpen = true }
@@ -396,8 +400,8 @@ export default function HedgingPage() {
                   {s.fut.contracts > 0 && (
                     <div className="space-y-0.5">
                       <div className="text-xs uppercase tracking-wide text-slate-400">Futures</div>
-                      <Row label="Bushels hedged" value={`${s.fut.bushels.toLocaleString()} bu (${s.fut.contracts})`} />
-                      <Row label="Avg hedge price" value={fmtPrice(avg)} />
+                      <Row label={contractUnit(s.commodity) === 'lbs' ? 'Lbs hedged' : 'Bushels hedged'} value={`${s.fut.bushels.toLocaleString()} ${contractUnit(s.commodity)} (${s.fut.contracts})`} />
+                      <Row label="Avg hedge price" value={fmtCommodityPrice(s.commodity, avg)} />
                       {s.fut.hasOpen && <Row label="Unrealized" value={fmtPnl(s.fut.unrealized)} tone={s.fut.unrealized >= 0 ? 'green' : 'red'} />}
                       <Row label="Realized (net)" value={fmtPnl(s.fut.realized)} tone={s.fut.realized >= 0 ? 'green' : 'red'} />
                     </div>
@@ -405,7 +409,7 @@ export default function HedgingPage() {
                   {s.opt.contracts > 0 && (
                     <div className="space-y-0.5">
                       <div className="text-xs uppercase tracking-wide text-slate-400">Options</div>
-                      <Row label="Bushels covered" value={`${s.opt.bushels.toLocaleString()} bu (${s.opt.contracts})`} />
+                      <Row label={contractUnit(s.commodity) === 'lbs' ? 'Lbs covered' : 'Bushels covered'} value={`${s.opt.bushels.toLocaleString()} ${contractUnit(s.commodity)} (${s.opt.contracts})`} />
                       <Row label={s.opt.premium < 0 ? 'Premium paid' : 'Premium received'} value={fmtPnl(Math.abs(s.opt.premium))} />
                       {s.opt.hasOpen && <Row label="Unrealized" value={fmtPnl(s.opt.unrealized)} tone={s.opt.unrealized >= 0 ? 'green' : 'red'} />}
                       <Row label="Realized (net)" value={fmtPnl(s.opt.realized)} tone={s.opt.realized >= 0 ? 'green' : 'red'} />
@@ -439,7 +443,7 @@ export default function HedgingPage() {
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-50 text-slate-600">
-                  <tr>{['Commodity', 'Month', 'Symbol', 'Side', '# Contracts', 'Bushels', 'Trade Date', 'Trade Price', 'Current', 'Unrealized P&L', 'Crop Yr', 'Actions'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr>
+                  <tr>{['Commodity', 'Month', 'Symbol', 'Side', '# Contracts', 'Qty', 'Trade Date', 'Trade Price', 'Current', 'Unrealized P&L', 'Crop Yr', 'Actions'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr>
                 </thead>
                 <tbody>
                   {COMMODITIES.filter((c) => (openGroups.get(c)?.length ?? 0) > 0).map((c) => {
@@ -457,10 +461,10 @@ export default function HedgingPage() {
                               <td className="px-3 py-2 font-mono">{p.contract_symbol}</td>
                               <td className="px-3 py-2 capitalize">{p.side}</td>
                               <td className="px-3 py-2 text-right">{p.num_contracts}</td>
-                              <td className="px-3 py-2 text-right font-mono">{bushelsFor(p.num_contracts).toLocaleString()}</td>
+                              <td className="px-3 py-2 text-right font-mono">{fmtQuantity(p.commodity, p.num_contracts)}</td>
                               <td className="px-3 py-2 whitespace-nowrap">{p.trade_date}</td>
-                              <td className="px-3 py-2 text-right font-mono">{fmtPrice(p.trade_price)}</td>
-                              <td className="px-3 py-2 text-right font-mono">{fmtPrice(curPrice(p.contract_symbol))}</td>
+                              <td className="px-3 py-2 text-right font-mono">{fmtCommodityPrice(p.commodity, p.trade_price)}</td>
+                              <td className="px-3 py-2 text-right font-mono">{fmtCommodityPrice(p.commodity, curPrice(p.contract_symbol))}</td>
                               <td className={`px-3 py-2 text-right font-mono ${u == null ? 'text-slate-400' : u >= 0 ? 'text-green-700' : 'text-red-700'}`}>{u == null ? '—' : fmtPnl(u)}</td>
                               <td className="px-3 py-2">{p.crop_year}</td>
                               <td className="px-3 py-2 whitespace-nowrap">
@@ -474,7 +478,7 @@ export default function HedgingPage() {
                         <tr className="border-t border-slate-200 bg-slate-50 font-semibold">
                           <td className="px-3 py-2" colSpan={4}>{c} subtotal</td>
                           <td className="px-3 py-2 text-right">{subContracts}</td>
-                          <td className="px-3 py-2 text-right font-mono">{bushelsFor(subContracts).toLocaleString()}</td>
+                          <td className="px-3 py-2 text-right font-mono">{fmtQuantity(c, subContracts)}</td>
                           <td colSpan={3} />
                           <td className={`px-3 py-2 text-right font-mono ${subUnrealized >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(subUnrealized)}</td>
                           <td colSpan={2} />
@@ -501,7 +505,7 @@ export default function HedgingPage() {
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-50 text-slate-600">
-                  <tr>{['Commodity', 'Month', 'Side', '# Contracts', 'Bushels', 'Trade Date', 'Trade Price', 'Close Date', 'Close Price', 'Realized P&L', 'Commission', 'Net P&L', 'Crop Yr'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr>
+                  <tr>{['Commodity', 'Month', 'Side', '# Contracts', 'Qty', 'Trade Date', 'Trade Price', 'Close Date', 'Close Price', 'Realized P&L', 'Commission', 'Net P&L', 'Crop Yr'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr>
                 </thead>
                 <tbody>
                   {closedPos.map((p) => {
@@ -512,11 +516,11 @@ export default function HedgingPage() {
                         <td className="px-3 py-2">{p.contract_month}</td>
                         <td className="px-3 py-2 capitalize">{p.side}</td>
                         <td className="px-3 py-2 text-right">{p.num_contracts}</td>
-                        <td className="px-3 py-2 text-right font-mono">{bushelsFor(p.num_contracts).toLocaleString()}</td>
+                        <td className="px-3 py-2 text-right font-mono">{fmtQuantity(p.commodity, p.num_contracts)}</td>
                         <td className="px-3 py-2 whitespace-nowrap">{p.trade_date}</td>
-                        <td className="px-3 py-2 text-right font-mono">{fmtPrice(p.trade_price)}</td>
+                        <td className="px-3 py-2 text-right font-mono">{fmtCommodityPrice(p.commodity, p.trade_price)}</td>
                         <td className="px-3 py-2 whitespace-nowrap">{p.close_date ?? '—'}</td>
-                        <td className="px-3 py-2 text-right font-mono">{fmtPrice(p.close_price)}</td>
+                        <td className="px-3 py-2 text-right font-mono">{fmtCommodityPrice(p.commodity, p.close_price)}</td>
                         <td className={`px-3 py-2 text-right font-mono ${(p.realized_pnl ?? 0) >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(p.realized_pnl)}</td>
                         <td className="px-3 py-2 text-right font-mono">{fmtPnl(p.commission)}</td>
                         <td className={`px-3 py-2 text-right font-mono ${net >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(net)}</td>
@@ -556,7 +560,7 @@ export default function HedgingPage() {
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-50 text-slate-600">
-                  <tr>{['Commodity', 'Type', 'Side', 'Month', 'Strike', '# Contracts', 'Bushels', 'Trade Date', 'Premium ¢', 'Premium $', 'Current ¢', 'Unrealized P&L', 'Crop Yr', 'Actions'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr>
+                  <tr>{['Commodity', 'Type', 'Side', 'Month', 'Strike', '# Contracts', 'Qty', 'Trade Date', 'Premium ¢', 'Premium $', 'Current ¢', 'Unrealized P&L', 'Crop Yr', 'Actions'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr>
                 </thead>
                 <tbody>
                   {COMMODITIES.filter((c) => (optionGroups.get(c)?.length ?? 0) > 0).map((c) => {
@@ -595,7 +599,7 @@ export default function HedgingPage() {
                         <tr className="border-t border-slate-200 bg-slate-50 font-semibold">
                           <td className="px-3 py-2" colSpan={5}>{c} subtotal</td>
                           <td className="px-3 py-2 text-right">{subContracts}</td>
-                          <td className="px-3 py-2 text-right font-mono">{bushelsFor(subContracts).toLocaleString()}</td>
+                          <td className="px-3 py-2 text-right font-mono">{fmtQuantity(c, subContracts)}</td>
                           <td colSpan={4} />
                           <td className={`px-3 py-2 text-right font-mono ${subUnreal >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(subUnreal)}</td>
                           <td colSpan={2} />

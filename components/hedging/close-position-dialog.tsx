@@ -3,7 +3,7 @@
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Modal } from './position-form'
-import { pnlSizeFor,
+import { contractUnit, fmtCommodityPrice, pnlSizeFor,
   parsePrice,
   realizedPnl,
   bushelsFor,
@@ -136,7 +136,7 @@ export default function ClosePositionDialog({ position, onClose, onSaved }: Prop
           <div className="flex justify-between"><span className="text-slate-500">Position</span>
             <span className="font-semibold capitalize">{position.side} {position.num_contracts} {position.contract_month} {position.commodity}</span></div>
           <div className="flex justify-between"><span className="text-slate-500">Entry price</span>
-            <span className="font-mono">{fmtPrice(position.trade_price)}</span></div>
+            <span className="font-mono">{fmtCommodityPrice(position.commodity, position.trade_price)}</span></div>
         </div>
 
         <div className="grid grid-cols-2 gap-3">
@@ -157,7 +157,7 @@ export default function ClosePositionDialog({ position, onClose, onSaved }: Prop
             </span>
           </label>
           <label className={labelCls}>
-            Close Price ($/bu)
+            Close Price ({contractUnit(position.commodity) === 'lbs' ? '¢/lb — plain decimal, e.g. 68.00' : '$/bu'})
             <input
               type="text"
               inputMode="decimal"
@@ -168,7 +168,7 @@ export default function ClosePositionDialog({ position, onClose, onSaved }: Prop
             />
             {closePriceInput && (
               <span className={`text-xs ${closePrice == null ? 'text-red-600' : 'text-slate-500'}`}>
-                {closePrice == null ? 'Unrecognized price' : `= ${fmtPrice(closePrice)}`}
+                {closePrice == null ? 'Unrecognized price' : `= ${fmtCommodityPrice(position.commodity, closePrice)}`}
               </span>
             )}
           </label>

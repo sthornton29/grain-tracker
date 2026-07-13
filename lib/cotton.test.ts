@@ -4,7 +4,7 @@ import {
   yardInventoryByField, cottonFieldYields,
 } from './cotton'
 import { parseGradeCsv } from './cotton-grades'
-import { realizedPnl, pnlSizeFor, buildContractSymbol, normalizeCommodity, contractUnit } from './hedging'
+import { realizedPnl, unrealizedPnl, pnlSizeFor, buildContractSymbol, normalizeCommodity, contractUnit, quantityFor, fmtQuantity, fmtCommodityPrice, normalizeBarchartPrice } from './hedging'
 
 describe('turnout + loan math', () => {
   it('lint turnout = lint ÷ seed cotton', () => {
@@ -169,6 +169,30 @@ describe('cotton futures (ICE Cotton No. 2)', () => {
     expect(normalizeCommodity('SEED COTTON')).toBeNull() // the lint contract ≠ seed cotton
     expect(contractUnit('Cotton')).toBe('lbs')
     expect(contractUnit('Corn')).toBe('bu')
+  })
+  it('statement-name mapping covers the printed variants', () => {
+    for (const name of ['ICE COTTON 2', 'COTTON 2', 'COTTON NO. 2', 'DEC 26 ICE COTTON 2']) {
+      expect(normalizeCommodity(name)).toBe('Cotton')
+    }
+  })
+  it('unrealized on the live statement case: 10 short @ 72.65¢, market 78.30¢ → −$28,250', () => {
+    // (72.65 − 78.30)¢ × 500 $/¢/contract × 10 = −$28,250 (matches the StoneX statement).
+    const u = unrealizedPnl({
+      side: 'short', tradePrice: 72.65, currentPrice: 78.3, numContracts: 10,
+      contractSizeBu: pnlSizeFor('Cotton'),
+    })
+    expect(u).toBeCloseTo(-28250, 2)
+  })
+  it('Barchart normalization in ONE place: CT stays ¢/lb, grains ÷100 to $/bu', () => {
+    expect(normalizeBarchartPrice('CTZ26', 72.65)).toBe(72.65)
+    expect(normalizeBarchartPrice('ZCZ26', 431)).toBe(4.31)
+  })
+  it('mixed grain + cotton unit labeling: quantities and prices carry each commodity’s units', () => {
+    expect(quantityFor('Cotton', 10)).toBe(500000)
+    expect(fmtQuantity('Cotton', 10)).toBe('500,000 lbs')
+    expect(fmtQuantity('Corn', 5)).toBe('25,000 bu')
+    expect(fmtCommodityPrice('Cotton', 72.65)).toBe('72.65¢')
+    expect(fmtCommodityPrice('Corn', 4.9325)).toBe('$4.9325')
   })
   it('P&L: 10 short DEC 26 CT @ 72.65¢ closed @ 68.00¢', () => {
     // (72.65 − 68.00)¢/lb × 50,000 lbs ÷ 100 = $2,325/contract × 10 = $23,250.

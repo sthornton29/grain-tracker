@@ -10,6 +10,9 @@ import {
   pnlSizeFor,
   optionUnrealizedPnl,
   bushelsFor,
+  quantityFor,
+  contractUnit,
+  fmtCommodityPrice,
   fmtPrice,
   fmtPnl,
   fmtCents,
@@ -153,7 +156,7 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
       const key = `${p.crop_year}|${p.commodity}`
       const cur = m.get(key) ?? { cropYear: p.crop_year, commodity: p.commodity as Commodity, contracts: 0, bushels: 0, priceWeight: 0, unrealized: 0, realized: 0 }
       cur.contracts += p.num_contracts
-      cur.bushels += bushelsFor(p.num_contracts)
+      cur.bushels += quantityFor(p.commodity, p.num_contracts)
       cur.priceWeight += p.trade_price * p.num_contracts
       cur.unrealized += unrealizedOf(p) ?? 0
       cur.realized += netRealizedOf(p)
@@ -177,7 +180,7 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
       title: 'Summary by Crop Year',
       columns: [
         { label: 'Crop Year', format: 'text' }, { label: 'Commodity' },
-        { label: 'Futures Contracts', align: 'right', format: 'int' }, { label: 'Bushels', align: 'right', format: 'bu' },
+        { label: 'Futures Contracts', align: 'right', format: 'int' }, { label: 'Qty (bu · lbs)', align: 'right', format: 'bu' }, { label: 'Unit' },
         { label: 'Avg Hedge Price', align: 'right', format: 'price' }, { label: 'Futures Unrealized', align: 'right', format: 'usd2' },
         { label: 'Futures Realized (net)', align: 'right', format: 'usd2' }, { label: 'Options P&L (net)', align: 'right', format: 'usd2' },
         { label: 'Combined P&L', align: 'right', format: 'usd2' },
@@ -185,7 +188,7 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
       rows: summary.map((s) => {
         const opt = optPnlForKey(s.cropYear, s.commodity)
         return [
-          s.cropYear, s.commodity, s.contracts, s.bushels,
+          s.cropYear, s.commodity, s.contracts, s.bushels, contractUnit(s.commodity),
           s.contracts > 0 ? Number((s.priceWeight / s.contracts).toFixed(4)) : '',
           Number(s.unrealized.toFixed(2)), Number(s.realized.toFixed(2)), Number(opt.toFixed(2)),
           Number((s.unrealized + s.realized + opt).toFixed(2)),
@@ -196,7 +199,7 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
       title: 'Positions',
       columns: [
         { label: 'Crop Year', format: 'text' }, { label: 'Commodity' }, { label: 'Month' }, { label: 'Symbol' },
-        { label: 'Side' }, { label: 'Contracts', align: 'right', format: 'int' }, { label: 'Bushels', align: 'right', format: 'bu' },
+        { label: 'Side' }, { label: 'Contracts', align: 'right', format: 'int' }, { label: 'Qty (bu · lbs)', align: 'right', format: 'bu' }, { label: 'Unit' },
         { label: 'Trade Date' }, { label: 'Trade Price', align: 'right', format: 'price' }, { label: 'Status' },
         { label: 'Close Date' }, { label: 'Close Price', align: 'right', format: 'price' },
         { label: 'Realized P&L', align: 'right', format: 'usd2' }, { label: 'Commission', align: 'right', format: 'usd2' },
@@ -206,7 +209,7 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
         const u = unrealizedOf(p)
         return [
           p.crop_year, p.commodity, p.contract_month, p.contract_symbol, p.side,
-          p.num_contracts, bushelsFor(p.num_contracts),
+          p.num_contracts, quantityFor(p.commodity, p.num_contracts), contractUnit(p.commodity),
           p.trade_date, Number(p.trade_price), p.status,
           p.close_date ?? '', p.close_price != null ? Number(p.close_price) : '',
           p.realized_pnl != null ? Number(p.realized_pnl) : '', Number(p.commission ?? 0),
@@ -309,7 +312,7 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead className={theadCls}>
-                  <tr>{['Crop Year', 'Commodity', 'Futures', 'Bushels', 'Avg Price', 'Fut Unrealized', 'Fut Realized', 'Options P&L', 'Combined P&L'].map((h) => <th key={h} className="text-left pr-4 font-medium whitespace-nowrap">{h}</th>)}</tr>
+                  <tr>{['Crop Year', 'Commodity', 'Futures', 'Qty', 'Avg Price', 'Fut Unrealized', 'Fut Realized', 'Options P&L', 'Combined P&L'].map((h) => <th key={h} className="text-left pr-4 font-medium whitespace-nowrap">{h}</th>)}</tr>
                 </thead>
                 <tbody>
                   {summary.map((s) => {
@@ -321,8 +324,8 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
                         <td className="pr-4 py-1 font-semibold">{s.cropYear}</td>
                         <td className="pr-4 py-1">{s.commodity}</td>
                         <td className="pr-4 py-1 text-right tabular-nums">{s.contracts}</td>
-                        <td className="pr-4 py-1 text-right tabular-nums">{s.bushels.toLocaleString()}</td>
-                        <td className="pr-4 py-1 text-right tabular-nums">{fmtPrice(avg)}</td>
+                        <td className="pr-4 py-1 text-right tabular-nums">{s.bushels.toLocaleString()} {contractUnit(s.commodity)}</td>
+                        <td className="pr-4 py-1 text-right tabular-nums">{fmtCommodityPrice(s.commodity, avg)}</td>
                         <td className={`pr-4 py-1 text-right tabular-nums ${toneText(signedTone(s.unrealized))}`}>{fmtPnl(s.unrealized)}</td>
                         <td className={`pr-4 py-1 text-right tabular-nums ${toneText(signedTone(s.realized))}`}>{fmtPnl(s.realized)}</td>
                         <td className={`pr-4 py-1 text-right tabular-nums ${toneText(signedTone(opt))}`}>{fmtPnl(opt)}</td>
