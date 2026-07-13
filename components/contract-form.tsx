@@ -1,8 +1,8 @@
 'use client'
 
 import { useState } from 'react'
-import Link from 'next/link'
 import { parsePrice, fmtPrice } from '@/lib/hedging'
+import { BuyerPicker, DeliveryLocationPicker } from '@/components/buyer-location-pickers'
 import {
   cashFromFuturesBasis,
   futuresFromCashBasis,
@@ -133,7 +133,7 @@ const INPUT_CLS = 'rounded-lg border border-slate-300 px-3 py-2'
 const PENDING = 'rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-slate-400'
 
 export function ContractFields({
-  value, onChange, buyers, crops, locations, entities, cropYearOptions,
+  value, onChange, buyers, crops, locations, entities, cropYearOptions, onBuyerCreated, onLocationCreated,
 }: {
   value: ContractFormState
   onChange: (f: ContractFormState) => void
@@ -142,6 +142,9 @@ export function ContractFields({
   locations: DeliveryLocation[]
   entities: Entity[]
   cropYearOptions: number[]
+  /** Inline "+ Add new…" creations — the parent appends the row to its list. */
+  onBuyerCreated?: (b: Buyer) => void
+  onLocationCreated?: (l: DeliveryLocation) => void
 }) {
   const f = value
   // Order of manually-edited price legs; the leg NOT among the last two is the
@@ -250,10 +253,7 @@ export function ContractFields({
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <input placeholder="Contract #" value={f.contract_number} onChange={(e) => set('contract_number', e.target.value)} className={INPUT_CLS} />
         <input type="number" step="0.01" placeholder="Contracted bushels" value={f.contracted_bushels} onChange={(e) => set('contracted_bushels', e.target.value)} className={INPUT_CLS} />
-        <select value={f.buyer_id} onChange={(e) => setBuyer(e.target.value)} className={INPUT_CLS}>
-          <option value="">— buyer —</option>
-          {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-        </select>
+        <BuyerPicker value={f.buyer_id} onChange={setBuyer} buyers={buyers} onCreated={onBuyerCreated} className={INPUT_CLS} />
         <select value={f.crop_id} onChange={(e) => onChange({ ...f, crop_id: e.target.value, contract_month: '' })} className={INPUT_CLS}>
           <option value="">— crop —</option>
           {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
@@ -368,15 +368,15 @@ export function ContractFields({
           Delivered
         </label>
         {f.delivery_type === 'delivered' && (
-          <>
-            <select value={f.delivery_location_id} onChange={(e) => set('delivery_location_id', e.target.value)} className={INPUT_CLS} disabled={!f.buyer_id}>
-              <option value="">{f.buyer_id ? '— delivery location —' : 'pick a buyer first'}</option>
-              {buyerLocations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
-            </select>
-            {f.buyer_id && buyerLocations.length === 0 && (
-              <Link href="/settings/buyers" className="text-sm text-sky-700 underline">Add a location for this buyer</Link>
-            )}
-          </>
+          <DeliveryLocationPicker
+            value={f.delivery_location_id}
+            onChange={(id) => set('delivery_location_id', id)}
+            buyerId={f.buyer_id}
+            buyerName={buyers.find((b) => b.id === f.buyer_id)?.name ?? null}
+            locations={buyerLocations}
+            onCreated={onLocationCreated}
+            className={INPUT_CLS}
+          />
         )}
       </div>
     </div>

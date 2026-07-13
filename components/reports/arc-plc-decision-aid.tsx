@@ -23,7 +23,8 @@ import MyaPricePanel from '@/components/reports/mya-price-panel'
 import CountyYieldExpectation from '@/components/government/county-yield-expectation'
 import {
   applyMyaResolution, computeCommodityPayment, resolveArcBenchmark, ELECTION_LABEL,
-  type CommodityPaymentResult,
+  resolveMyaPrice, effectiveReferencePrice, MYA_STATE_LABEL,
+  type CommodityPaymentResult, type MyaState,
 } from '@/lib/government-payments'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import type { ExportPayload } from '@/lib/exports'
@@ -38,6 +39,10 @@ import {
 type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
 
 const usd = (n: number | null | undefined, d = 0) => fmtUsd(n, d)
+
+// A per-acre PLC-vs-ARC difference inside this band is a toss-up — too close
+// for the projection's precision to call.
+export const TOSS_UP_BAND_PER_ACRE = 2
 
 export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
   const supabase = useMemo(() => createClient(), [])
@@ -220,11 +225,119 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
     refresh()
   }
 
+  // ---------- By-crop program comparison (the headline summary) ----------
+  // The election is made per farm × commodity, but in practice the answer is
+  // usually uniform per commodity: compare "every farm PLC" vs "every farm
+  // ARC-CO" per crop (each side summed from the same per-farm engine rows —
+  // county benchmarks/yields still apply per farm underneath). Derived from
+  // `rows`, so the What-If MYA slider and entity filter flow through live.
+  type CropSummaryRow = {
+    commodity: CoveredCommodity
+    farms: number
+    baseAcres: number
+    plcTotal: number | null
+    arcTotal: number | null
+    diffPerAcre: number | null // ARC − PLC, per base acre
+    verdict: 'PLC' | 'ARC' | 'TOSS' | null
+    flatCount: number
+    plcElected: number
+    arcElected: number
+    myaState: MyaState
+    myaPrice: number | null // what-if-adjusted, the price the engines used
+    effRef: number
+    spread: number | null // PLC payment rate/unit at that MYA
+  }
+  const cropSummary: CropSummaryRow[] = useMemo(() => {
+    if (cropYear === '') return []
+    return shownCommodities
+      .map((c): CropSummaryRow | null => {
+        const cropRows = rows.filter((r) => r.base.commodity_id === c.id)
+        if (cropRows.length === 0) return null
+        const baseTotal = cropRows.reduce((s, r) => s + Number(r.base.base_acres), 0)
+        const plcTotal = cropRows.every((r) => r.plcNet != null) ? cropRows.reduce((s, r) => s + (r.plcNet ?? 0), 0) : null
+        const arcTotal = cropRows.every((r) => r.arcNet != null) ? cropRows.reduce((s, r) => s + (r.arcNet ?? 0), 0) : null
+        const diffPerAcre = plcTotal != null && arcTotal != null && baseTotal > 0 ? (arcTotal - plcTotal) / baseTotal : null
+        const verdict = diffPerAcre == null ? null
+          : Math.abs(diffPerAcre) < TOSS_UP_BAND_PER_ACRE ? 'TOSS' as const
+          : diffPerAcre > 0 ? 'ARC' as const : 'PLC' as const
+        const stored = priceData.find((p) => p.commodity_id === c.id && p.crop_year === cropYear) ?? null
+        const res = resolveMyaPrice({ commodityName: c.name, priceData: stored, liveEstimate: liveMya.get(c.id) ?? null })
+        const myaPrice = res.price != null ? res.price * (1 + myaPct / 100) : null
+        const effRef = effectiveReferencePrice(c, stored)
+        const spread = myaPrice != null ? Math.max(0, effRef - Math.max(myaPrice, Number(c.national_loan_rate))) : null
+        return {
+          commodity: c,
+          farms: cropRows.length,
+          baseAcres: baseTotal,
+          plcTotal, arcTotal, diffPerAcre, verdict,
+          flatCount: cropRows.filter((r) => r.arc.arcMethod === 'flat').length,
+          plcElected: cropRows.filter((r) => r.election === 'PLC').length,
+          arcElected: cropRows.filter((r) => r.election === 'ARC_CO').length,
+          myaState: res.state, myaPrice, effRef, spread,
+        }
+      })
+      .filter((x): x is CropSummaryRow => x != null)
+      .sort((a, b) => a.commodity.name.localeCompare(b.commodity.name))
+  }, [shownCommodities, rows, priceData, liveMya, myaPct, cropYear])
+
+  // Bulk election: one click sets every farm × this commodity for the program
+  // year — a starting point, not a lock (per-farm rows stay editable below).
+  async function electAllForCommodity(s: CropSummaryRow, election: ArcPlcElectionType) {
+    if (cropYear === '') return
+    const cropRows = rows.filter((r) => r.base.commodity_id === s.commodity.id)
+    const changing = cropRows.filter((r) => r.election !== election)
+    if (changing.length === 0) return
+    const staying = cropRows.length - changing.length
+    const ok = window.confirm(
+      `Elect ${ELECTION_LABEL[election]} for ${s.commodity.name} on all ${cropRows.length} farm${cropRows.length === 1 ? '' : 's'} (${cropYear} program year)?\n\n` +
+      `${changing.length} farm${changing.length === 1 ? '' : 's'} will change: ${changing.map((r) => r.farmName).join(', ')}` +
+      (staying > 0 ? `\n${staying} already ${ELECTION_LABEL[election]} — unchanged.` : '') +
+      `\n\nIndividual elections below stay editable afterward.`,
+    )
+    if (!ok) return
+    const { error } = await supabase.from('arc_plc_elections').upsert(
+      cropRows.map((r) => ({ farm_id: r.base.farm_id, commodity_id: s.commodity.id, crop_year: cropYear, election })),
+      { onConflict: 'farm_id,commodity_id,crop_year' },
+    )
+    if (error) { window.alert(`Could not save the elections: ${error.message}`); return }
+    refresh()
+  }
+
+  const myaChip = (state: MyaState) => {
+    const cls = state === 'final' ? 'bg-green-100 text-green-800'
+      : state === 'manual' ? 'bg-sky-100 text-sky-800'
+      : state === 'wasde' ? 'bg-violet-100 text-violet-800'
+      : state === 'estimate' ? 'bg-slate-200 text-slate-700'
+      : 'bg-amber-100 text-amber-800'
+    return <span className={`text-[10px] rounded-full px-1.5 py-0.5 whitespace-nowrap ${cls}`}>{MYA_STATE_LABEL[state]}</span>
+  }
+
   function buildExportPayload(): ExportPayload {
     return {
       title: 'ARC/PLC Decision Aid',
-      filters: `Crop year: ${cropYear || '—'}${entityId ? ` · Entity: ${entities.find((e) => e.id === entityId)?.name ?? ''}` : ''}${myaPct !== 0 ? ` · MYA what-if: ${myaPct > 0 ? '+' : ''}${myaPct}%` : ''} · ARC guarantee ${Math.round(programCfg.arcGuaranteePct * 100)}% / cap ${Math.round(programCfg.arcPaymentCapPct * 100)}%`,
+      filters: `Crop year: ${cropYear || '—'}${entityId ? ` · Entity: ${entities.find((e) => e.id === entityId)?.name ?? ''}` : ''}${myaPct !== 0 ? ` · MYA what-if: ${myaPct > 0 ? '+' : ''}${myaPct}%` : ''} · ARC guarantee ${Math.round(programCfg.arcGuaranteePct * 100)}% / cap ${Math.round(programCfg.arcPaymentCapPct * 100)}% · toss-up within $${TOSS_UP_BAND_PER_ACRE}/base acre`,
       sections: [{
+        // The page a farmer brings to the FSA office — the by-crop comparison
+        // leads the export.
+        title: 'Program Comparison by Crop',
+        columns: [
+          { label: 'Commodity' }, { label: 'Farms', align: 'right', format: 'int' }, { label: 'Base Acres', align: 'right', format: 'int' },
+          { label: 'MYA', align: 'right', format: 'price' }, { label: 'Eff. Ref Price', align: 'right', format: 'price' }, { label: 'PLC Spread', align: 'right', format: 'price' },
+          { label: 'All PLC', align: 'right', format: 'usd0' }, { label: 'All ARC-CO', align: 'right', format: 'usd0' }, { label: 'Diff $/ac', align: 'right', format: 'dec2' },
+          { label: 'Verdict' }, { label: 'On Flat Est.', align: 'right', format: 'int' },
+        ],
+        rows: cropSummary.map((s) => [
+          s.commodity.name, s.farms, Math.round(s.baseAcres),
+          s.myaPrice != null ? s.myaPrice : '', s.effRef, s.spread != null ? s.spread : '',
+          s.plcTotal != null ? Math.round(s.plcTotal) : '', s.arcTotal != null ? Math.round(s.arcTotal) : '',
+          s.diffPerAcre != null ? s.diffPerAcre : '',
+          {
+            v: s.verdict === 'PLC' ? 'Favors PLC' : s.verdict === 'ARC' ? 'Favors ARC-CO' : s.verdict === 'TOSS' ? 'Toss-up' : 'needs MYA',
+            tone: (s.verdict === 'PLC' || s.verdict === 'ARC' ? 'favorable' : s.verdict === 'TOSS' ? 'neutral' : 'warning') as 'favorable' | 'neutral' | 'warning',
+          },
+          s.flatCount > 0 ? s.flatCount : '',
+        ]),
+      }, {
         title: 'Projected Payments by Farm × Commodity',
         columns: [
           { label: 'Farm' }, { label: 'Commodity' }, { label: 'County' }, { label: 'Base Acres', align: 'right', format: 'int' }, { label: 'PLC Yield', align: 'right', format: 'yield' },
@@ -243,7 +356,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, cropYear, entityId, myaPct, onPayloadChange])
+  }, [rows, cropSummary, cropYear, entityId, myaPct, onPayloadChange])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   if (loading) return <p className="text-slate-500">Loading…</p>
@@ -296,6 +409,83 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
               regardless of your election — the comparison below shows which side that will likely be.</>
             )}
           </div>
+
+          {/* By-crop program comparison — the headline: what happens if EVERY
+              farm elects the same program, per commodity. */}
+          {cropSummary.length > 0 && (
+            <section className="bg-white rounded-xl shadow p-4 space-y-2 avoid-break">
+              <h2 className="font-bold text-lg">
+                Program Comparison by Crop
+                <span className="ml-2 text-sm font-normal text-slate-500">
+                  every farm on the same program — {cropYear} program year; toss-up within ${TOSS_UP_BAND_PER_ACRE}/base acre
+                </span>
+              </h2>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm border-collapse">
+                  <thead className={theadCls}>
+                    <tr>
+                      {['Commodity', 'Base Acres', 'MYA', 'Eff. Ref', 'PLC Spread', 'All PLC', 'All ARC-CO', 'Diff $/ac', 'Verdict', ''].map((h, i) => (
+                        <th key={i} className={`${i >= 1 && i <= 7 ? 'text-right' : 'text-left'} px-2 py-1 whitespace-nowrap`}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cropSummary.map((s) => (
+                      <tr key={s.commodity.id} className="border-t border-slate-100 align-middle">
+                        <td className="px-2 py-1 font-semibold whitespace-nowrap">
+                          {s.commodity.name}
+                          <div className="text-[10px] text-slate-500 font-normal">
+                            {s.farms} farm{s.farms === 1 ? '' : 's'} · now {s.plcElected} PLC / {s.arcElected} ARC-CO
+                          </div>
+                        </td>
+                        <td className={numCell}>{Math.round(s.baseAcres).toLocaleString()}</td>
+                        <td className={`${numCell} whitespace-nowrap`}>
+                          {s.myaPrice != null ? usd(s.myaPrice, 2) : '—'} {myaChip(s.myaState)}
+                        </td>
+                        <td className={numCell}>{usd(s.effRef, 2)}</td>
+                        <td className={`${numCell} ${s.spread != null && s.spread > 0 ? toneText('favorable') : ''}`}>{s.spread != null ? usd(s.spread, 2) : '—'}</td>
+                        <td className={`${numCell} font-mono`}>{s.plcTotal != null ? usd(s.plcTotal) : <span className={toneText('warning')}>needs MYA</span>}</td>
+                        <td className={`${numCell} font-mono`}>{s.arcTotal != null ? usd(s.arcTotal) : <span className={toneText('warning')}>needs MYA</span>}</td>
+                        <td className={`${numCell} font-mono`}>{s.diffPerAcre != null ? `${s.diffPerAcre > 0 ? '+' : ''}${s.diffPerAcre.toFixed(2)}` : '—'}</td>
+                        <td className="px-2 py-1 whitespace-nowrap">
+                          {s.verdict === 'PLC' && <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5 font-semibold">Favors PLC</span>}
+                          {s.verdict === 'ARC' && <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5 font-semibold">Favors ARC-CO</span>}
+                          {s.verdict === 'TOSS' && <span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5 font-semibold" title={`Within $${TOSS_UP_BAND_PER_ACRE}/base acre — too close to call`}>Toss-up</span>}
+                          {s.verdict == null && <span className="text-xs text-slate-400">—</span>}
+                          {s.flatCount > 0 && (
+                            <span className="ml-1 text-[10px] rounded-full bg-amber-100 text-amber-800 px-1.5 py-0.5 whitespace-nowrap" title="These farms have no county benchmark row — their ARC-CO side uses the flat $/acre estimate.">
+                              {s.flatCount} on flat est.
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1 no-print whitespace-nowrap">
+                          <span className="inline-flex rounded-lg border border-slate-300 overflow-hidden text-xs">
+                            <button
+                              onClick={() => electAllForCommodity(s, 'PLC')}
+                              disabled={s.plcElected === s.farms}
+                              title={s.plcElected === s.farms ? 'Every farm is already PLC' : `Set PLC on all ${s.farms} farms`}
+                              className={`px-2 py-1 disabled:opacity-40 ${s.verdict === 'PLC' ? 'bg-sky-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                            >All PLC</button>
+                            <button
+                              onClick={() => electAllForCommodity(s, 'ARC_CO')}
+                              disabled={s.arcElected === s.farms}
+                              title={s.arcElected === s.farms ? 'Every farm is already ARC-CO' : `Set ARC-CO on all ${s.farms} farms`}
+                              className={`px-2 py-1 border-l border-slate-300 disabled:opacity-40 ${s.verdict === 'ARC' ? 'bg-green-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                            >All ARC-CO</button>
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-xs text-slate-500">
+                Both totals are summed from the per-farm engine rows below (county benchmarks and yields still apply
+                per farm) — the bulk buttons set every farm&apos;s election for the {cropYear} program year; individual
+                elections stay editable in the table below.
+              </p>
+            </section>
+          )}
 
           {/* Per-commodity MYA — the shared resolution the Payment Tracker also
               reads, so both pages project from the same price. */}
