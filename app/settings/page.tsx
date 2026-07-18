@@ -10,6 +10,7 @@ const items = [
   { href: '/settings/trucks', label: 'Trucks' },
   { href: '/settings/buyers', label: 'Buyers & Delivery Locations' },
   { href: '/settings/crops', label: 'Crops' },
+  { href: '/settings/varieties', label: 'Varieties' },
   { href: '/settings/contracts', label: 'Contracts' },
   { href: '/settings/crop-insurance', label: 'Crop Insurance' },
   { href: '/settings/government-payments', label: 'Government Payments' },

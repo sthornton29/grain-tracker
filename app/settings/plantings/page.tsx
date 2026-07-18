@@ -572,6 +572,15 @@ export default function PlantingsPage() {
             const irr = Number(r.irrigated_acres) || 0
             return { dryland_acres: Math.max(0, planted - irr) }
           },
+          // Route the variety column through the shared resolution pipeline:
+          // format variants link to the existing spelling, near names need a
+          // decision, new names are created once per file (per crop).
+          resolution: {
+            columnKey: 'variety',
+            scopeKey: 'crop_id',
+            noun: 'variety',
+            loadExisting: async () => varietyOptionsByCrop,
+          },
         }}
         onImported={refresh}
       />
@@ -580,6 +589,7 @@ export default function PlantingsPage() {
         fields={fields}
         crops={crops}
         existingPlantings={plantings}
+        existingVarietiesByCrop={varietyOptionsByCrop}
         defaultYear={year}
         fieldLabel={fieldLabel}
         onImported={refresh}
