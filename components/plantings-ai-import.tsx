@@ -7,12 +7,23 @@ import { PdfTooLargeError, parseDocument, type PlantingExtraction } from '@/lib/
 import { splitPdfIntoBatches } from '@/lib/pdf-split'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
+import {
+  buildVarietyPlan,
+  resolvedName,
+  varietyKey,
+  type VarietyDecision,
+  type VarietyNameRef,
+  type VarietyPlan,
+  type VarietyPlanItem,
+} from '@/lib/variety-resolution'
 import type { Crop, Field, FieldPlanting } from '@/lib/types'
 
 type Props = {
   fields: Field[]
   crops: Crop[]
   existingPlantings: FieldPlanting[]
+  /** Distinct existing variety names per crop id (the resolution catalog). */
+  existingVarietiesByCrop: Map<string, string[]>
   defaultYear: number
   fieldLabel: (id: string) => string
   onImported: () => void
@@ -51,7 +62,7 @@ function rowReady(r: Row): boolean {
   return true
 }
 
-export default function PlantingsAiImport({ fields, crops, existingPlantings, defaultYear, fieldLabel, onImported }: Props) {
+export default function PlantingsAiImport({ fields, crops, existingPlantings, existingVarietiesByCrop, defaultYear, fieldLabel, onImported }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [source, setSource] = useState<DocumentSource | null>(null)
   const [stage, setStage] = useState<string | null>(null)
@@ -59,6 +70,56 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
   const [banner, setBanner] = useState<string | null>(null)
   const [rows, setRows] = useState<Row[]>([])
   const [saving, setSaving] = useState(false)
+  // Possible-match choices, keyed `${crop_id}|${varietyKey}` so one decision
+  // covers every row mentioning that variety for that crop.
+  const [varietyDecisions, setVarietyDecisions] = useState<Record<string, VarietyDecision>>({})
+
+  // Per-crop resolution of every extracted variety against the crop's existing
+  // names, with within-file collapse: format variants across rows share one
+  // plan item, so a new variety is created once under its first-seen spelling.
+  const varietyPlans = useMemo(() => {
+    const refsByCrop = new Map<string, VarietyNameRef[]>()
+    rows.forEach((r, i) => {
+      if (!r.crop_id) return
+      for (const v of r.varieties) {
+        if (!v.variety.trim()) continue
+        const list = refsByCrop.get(r.crop_id) ?? []
+        list.push({ rowIndex: i, name: v.variety })
+        refsByCrop.set(r.crop_id, list)
+      }
+    })
+    const plans = new Map<string, VarietyPlan>()
+    for (const [cropId, refs] of refsByCrop) {
+      plans.set(cropId, buildVarietyPlan(refs, existingVarietiesByCrop.get(cropId) ?? []))
+    }
+    return plans
+  }, [rows, existingVarietiesByCrop])
+
+  function varietyItemFor(cropId: string, name: string): VarietyPlanItem | null {
+    if (!cropId || !name.trim()) return null
+    return varietyPlans.get(cropId)?.items.find((it) => it.key === varietyKey(name)) ?? null
+  }
+
+  /** Final stored name for a variety mention; null while a possible match is undecided. */
+  function finalVarietyName(cropId: string, name: string): string | null {
+    const item = varietyItemFor(cropId, name)
+    if (!item) return name.trim()
+    return resolvedName(item, varietyDecisions[`${cropId}|${item.key}`])
+  }
+
+  function rowVarietiesResolved(r: Row): boolean {
+    return r.varieties.every((v) => !v.variety.trim() || finalVarietyName(r.crop_id, v.variety) != null)
+  }
+
+  const varietyTotals = useMemo(() => {
+    const t = { matched: 0, possible: 0, created: 0 }
+    for (const plan of varietyPlans.values()) {
+      t.matched += plan.matched
+      t.possible += plan.possible
+      t.created += plan.created
+    }
+    return t
+  }, [varietyPlans])
 
   // Existing plantings keyed by field|crop|year, so a re-import updates the match
   // instead of inserting a duplicate.
@@ -182,9 +243,21 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
     setRows([])
     setBanner(null)
     setErr(null)
+    setVarietyDecisions({})
   }
 
-  const toSave = rows.filter((r) => r.include && rowReady(r) && rowStatus(r).kind !== 'unchanged')
+  // Updates never touch varieties, so an unresolved possible match only blocks
+  // rows that would insert varieties (new plantings).
+  const toSave = rows.filter(
+    (r) =>
+      r.include &&
+      rowReady(r) &&
+      rowStatus(r).kind !== 'unchanged' &&
+      (rowStatus(r).kind !== 'new' || rowVarietiesResolved(r)),
+  )
+  const varietyBlocked = rows.filter(
+    (r) => r.include && rowReady(r) && rowStatus(r).kind === 'new' && !rowVarietiesResolved(r),
+  ).length
 
   async function saveAll() {
     setErr(null)
@@ -218,10 +291,17 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
       const varietyInserts = inserted.flatMap((row, i) => {
         const src = newRows[i]
         if (!src) return []
-        return src.varieties
-          .map((v) => ({ variety: v.variety.trim(), acres: num(v.acres) ?? 0 }))
-          .filter((v) => v.variety !== '')
-          .map((v) => ({ planting_id: row.id, variety: v.variety, acres: v.acres }))
+        // Store the resolved canonical name, and coalesce mentions that resolve
+        // to the same variety (two format variants on one row become one row).
+        const byName = new Map<string, { variety: string; acres: number }>()
+        for (const v of src.varieties) {
+          if (!v.variety.trim()) continue
+          const name = finalVarietyName(src.crop_id, v.variety) ?? v.variety.trim()
+          const prior = byName.get(name)
+          if (prior) prior.acres += num(v.acres) ?? 0
+          else byName.set(name, { variety: name, acres: num(v.acres) ?? 0 })
+        }
+        return [...byName.values()].map((v) => ({ planting_id: row.id, variety: v.variety, acres: v.acres }))
       })
       if (varietyInserts.length > 0) {
         const { error: vErr } = await supabase.from('field_planting_varieties').insert(varietyInserts)
@@ -255,7 +335,61 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
     setBanner(`Saved — ${added} added, ${updated} updated.`)
     setRows([])
     setSource(null)
+    setVarietyDecisions({})
     onImported()
+  }
+
+  // Resolution badge + controls under a variety input: matched shows the
+  // canonical spelling it links to, a possible match demands a choice (use the
+  // existing name or create as new — never guessed), new announces creation.
+  function varietyBadge(r: Row, v: RowVariety) {
+    const item = varietyItemFor(r.crop_id, v.variety)
+    if (!item) return null
+    const dk = `${r.crop_id}|${item.key}`
+    const d = varietyDecisions[dk]
+    if (item.resolution.status === 'matched') {
+      const same = item.resolution.canonical === v.variety.trim()
+      return (
+        <div className="text-xs text-green-700">
+          ✓ {same ? 'Existing variety' : <>Matched existing: <span className="font-semibold">{item.resolution.canonical}</span></>}
+        </div>
+      )
+    }
+    if (item.resolution.status === 'new') {
+      const saveAs = resolvedName(item, d) ?? item.name
+      return (
+        <div className="text-xs text-sky-700">
+          New — will be created{saveAs !== v.variety.trim() && <> as “{saveAs}”</>}
+        </div>
+      )
+    }
+    const decided = resolvedName(item, d)
+    return (
+      <div className="text-xs space-y-0.5">
+        <div className={decided == null ? 'text-amber-700 font-semibold' : 'text-slate-600'}>
+          {decided == null ? 'Possible match — choose:' : <>Will save as <span className="font-semibold">“{decided}”</span></>}
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {item.resolution.candidates.map((c) => (
+            <button
+              key={c}
+              type="button"
+              onClick={() => setVarietyDecisions((m) => ({ ...m, [dk]: { useExisting: c } }))}
+              className={`rounded border px-1.5 py-0.5 ${d?.useExisting === c ? 'border-green-600 bg-green-50 text-green-800 font-semibold' : 'border-slate-300 bg-white'}`}
+            >
+              Use “{c}”
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => setVarietyDecisions((m) => ({ ...m, [dk]: { useExisting: null } }))}
+            className={`rounded border px-1.5 py-0.5 ${d && d.useExisting == null ? 'border-sky-600 bg-sky-50 text-sky-800 font-semibold' : 'border-slate-300 bg-white'}`}
+          >
+            Create as new
+          </button>
+        </div>
+      </div>
+    )
   }
 
   const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm w-full bg-white'
@@ -312,6 +446,7 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
                   const ready = rowReady(r)
                   const status = rowStatus(r)
                   const unchanged = status.kind === 'unchanged'
+                  const needsVarietyReview = ready && status.kind === 'new' && !rowVarietiesResolved(r)
                   return (
                     <tr key={i} className={`border-t border-slate-100 align-top ${unchanged ? 'opacity-60' : ''}`}>
                       <td className="px-2 py-1">
@@ -322,9 +457,11 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
                           ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Unchanged</span>
                           : !ready
                             ? <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">Needs review</span>
-                            : status.kind === 'update'
-                              ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">Update</span>
-                              : <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">New</span>}
+                            : needsVarietyReview
+                              ? <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">Variety review</span>
+                              : status.kind === 'update'
+                                ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">Update</span>
+                                : <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">New</span>}
                       </td>
                       <td className="px-2 py-1" style={{ minWidth: 160 }}>
                         <select value={r.field_id} onChange={(e) => setRow(i, { field_id: e.target.value })} className={inputCls}>
@@ -360,28 +497,31 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
                       <td className="px-2 py-1" style={{ minWidth: 200 }}>
                         <div className="space-y-1">
                           {r.varieties.map((v, vi) => (
-                            <div key={vi} className="grid grid-cols-[1fr_4.5rem_auto] gap-1 items-center">
-                              <input
-                                value={v.variety}
-                                onChange={(e) => updateVariety(i, vi, { variety: e.target.value })}
-                                placeholder="Variety"
-                                className={inputCls}
-                              />
-                              <input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                value={v.acres}
-                                onChange={(e) => updateVariety(i, vi, { acres: e.target.value })}
-                                placeholder="ac"
-                                className={inputCls}
-                              />
-                              <button
-                                type="button"
-                                onClick={() => removeVariety(i, vi)}
-                                className="text-red-600 text-sm px-1"
-                                aria-label="Remove variety"
-                              >×</button>
+                            <div key={vi} className="space-y-0.5">
+                              <div className="grid grid-cols-[1fr_4.5rem_auto] gap-1 items-center">
+                                <input
+                                  value={v.variety}
+                                  onChange={(e) => updateVariety(i, vi, { variety: e.target.value })}
+                                  placeholder="Variety"
+                                  className={inputCls}
+                                />
+                                <input
+                                  type="number"
+                                  step="0.01"
+                                  min="0"
+                                  value={v.acres}
+                                  onChange={(e) => updateVariety(i, vi, { acres: e.target.value })}
+                                  placeholder="ac"
+                                  className={inputCls}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => removeVariety(i, vi)}
+                                  className="text-red-600 text-sm px-1"
+                                  aria-label="Remove variety"
+                                >×</button>
+                              </div>
+                              {varietyBadge(r, v)}
                             </div>
                           ))}
                           <button type="button" onClick={() => addVariety(i)} className="text-xs text-sky-700">
@@ -410,6 +550,15 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, de
         <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3">
           <div className="text-sm text-slate-600 flex-1">
             <span className="font-semibold text-green-700">{toSave.length}</span> ready to save · {rows.length} total
+            {(varietyTotals.matched > 0 || varietyTotals.possible > 0 || varietyTotals.created > 0) && (
+              <span className="block text-xs text-slate-500 mt-0.5">
+                Varieties: {varietyTotals.matched} matched · {varietyTotals.possible} possible match{varietyTotals.possible === 1 ? '' : 'es'}
+                {varietyTotals.possible > 0 ? ' need review' : ''} · {varietyTotals.created} new will be created
+                {varietyBlocked > 0 && (
+                  <span className="text-amber-700 font-semibold"> — {varietyBlocked} row{varietyBlocked === 1 ? '' : 's'} blocked until resolved</span>
+                )}
+              </span>
+            )}
           </div>
           <button type="button" onClick={saveAll} disabled={saving || toSave.length === 0}
             className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50">

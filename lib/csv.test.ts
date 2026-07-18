@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   parseCsv,
   autoMapHeaders,
+  extractChildValues,
   runImport,
   type ColumnSpec,
   type ImportConfig,
@@ -789,6 +790,94 @@ describe('runImport — defaults, enums, derived, children, ignoreRowIfOnly', ()
     expect(kids[0]).toEqual({ planting_id: 'plantings-new-1', variety: 'P2089', acres: 70 })
     expect(kids[1]).toEqual({ planting_id: 'plantings-new-1', variety: 'DKC65-95' })
     void parentId
+  })
+
+  it('rewrites child values via childValueTransform and coalesces same-name rows, summing acres', async () => {
+    const { client, inserted } = makeFakeClient({ plantings: [] })
+    const config: ImportConfig = {
+      tableName: 'plantings',
+      columns: [
+        { key: 'name', required: true },
+        {
+          key: 'varieties',
+          child: {
+            table: 'planting_varieties',
+            valueColumn: 'variety',
+            parentKey: 'planting_id',
+            splitOn: ',;',
+            amountColumn: 'acres',
+          },
+        },
+      ],
+      uniqueKey: 'name',
+    }
+    const headers = ['name', 'varieties']
+    const mapping = autoMapHeaders(headers, config.columns)
+    // Two format variants of one variety in a single cell: after the transform
+    // maps both to the canonical spelling, they must collapse into ONE child
+    // row with summed acres — a file can't create its own duplicates.
+    const res = await runImport(
+      client,
+      config,
+      [['North', 'DG3644B3XF:40; DG 3644 B3XF:60']],
+      headers,
+      mapping,
+      {
+        mode: 'add',
+        childValueTransform: (columnKey, value) =>
+          columnKey === 'varieties' && value.replace(/[\s\-.]/g, '').toUpperCase() === 'DG3644B3XF'
+            ? 'DG 3644 B3XF'
+            : value,
+      }
+    )
+    expect(res.added).toBe(1)
+    expect(inserted.planting_varieties).toEqual([
+      { planting_id: 'plantings-new-1', variety: 'DG 3644 B3XF', acres: 100 },
+    ])
+  })
+
+  it('extractChildValues reports each row’s child names with its alias-canonicalized scope', () => {
+    const config: ImportConfig = {
+      tableName: 'plantings',
+      columns: [
+        { key: 'field', required: true },
+        { key: 'crop_id', label: 'crop', fk: { table: 'crops', matchColumn: 'name', aliases: { soybeans: 'Soybean' } } },
+        {
+          key: 'variety',
+          child: {
+            table: 'planting_varieties',
+            valueColumn: 'variety',
+            parentKey: 'planting_id',
+            splitOn: ',;',
+            amountColumn: 'acres',
+          },
+        },
+      ],
+      uniqueKey: 'field',
+      ignoreRowIfOnly: ['field'],
+      resolution: {
+        columnKey: 'variety',
+        scopeKey: 'crop_id',
+        noun: 'variety',
+        loadExisting: async () => new Map(),
+      },
+    }
+    const headers = ['field', 'crop', 'variety']
+    const mapping = autoMapHeaders(headers, config.columns)
+    const out = extractChildValues(
+      config,
+      [
+        ['North', 'Soybeans', 'AG38X8:50; P 31A22:40'], // alias → Soybean; amounts stripped
+        ['South', 'Corn', 'P2089'],
+        ['West', '', ''], // ignoreRowIfOnly: untouched template row, skipped
+      ],
+      headers,
+      mapping
+    )
+    expect(out).toEqual([
+      { rowIndex: 0, scope: 'Soybean', names: ['AG38X8', 'P 31A22'] },
+      { rowIndex: 1, scope: 'Corn', names: ['P2089'] },
+    ])
   })
 
   it('ignores rows whose only non-empty cells are ignoreRowIfOnly columns', async () => {

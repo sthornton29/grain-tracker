@@ -1,17 +1,29 @@
 'use client'
 
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { isExcelFile } from '@/lib/excel-to-pdf'
 import {
   autoMapHeaders,
+  extractChildValues,
   parseCsv,
   runImport,
   type ImportConfig,
   type ImportMode,
   type ImportResult,
 } from '@/lib/csv'
+import {
+  buildVarietyPlan,
+  resolvedName,
+  varietyKey,
+  type VarietyDecision,
+  type VarietyPlan,
+} from '@/lib/variety-resolution'
 import { downloadExcelTemplate } from '@/lib/import-template'
+
+// One scope's (e.g. one crop's) resolution plan over the file's child values.
+type ScopePlan = { scope: string; plan: VarietyPlan }
+type ResolutionState = { scopes: ScopePlan[]; rowScope: Map<number, string> }
 
 type Props = {
   config: ImportConfig
@@ -54,6 +66,11 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
   const [err, setErr] = useState<string | null>(null)
   const [result, setResult] = useState<ImportResult | null>(null)
   const [showAllFailures, setShowAllFailures] = useState(false)
+  const [resolution, setResolution] = useState<ResolutionState | null>(null)
+  const [resolutionBusy, setResolutionBusy] = useState(false)
+  // Keyed `${scope-lowercased}|${varietyKey}` — a possible-match group's
+  // link-or-create choice, or a new group's edited name.
+  const [decisions, setDecisions] = useState<Record<string, VarietyDecision>>({})
   const fileRef = useRef<HTMLInputElement | null>(null)
 
   const uniqueKeys = Array.isArray(config.uniqueKey) ? config.uniqueKey : [config.uniqueKey]
@@ -61,8 +78,77 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
   function reset() {
     setFileName(null); setHeaders([]); setRows([]); setMapping({})
     setErr(null); setResult(null); setShowAllFailures(false)
+    setResolution(null); setDecisions({})
     if (fileRef.current) fileRef.current.value = ''
   }
+
+  // Resolve the file's child-column names (e.g. varieties) per scope (crop)
+  // whenever the parsed rows or mapping change.
+  useEffect(() => {
+    const res = config.resolution
+    if (!res || rows.length === 0) { setResolution(null); setDecisions({}); return }
+    let cancelled = false
+    setResolutionBusy(true)
+    ;(async () => {
+      try {
+        const scopeCol = config.columns.find((c) => c.key === res.scopeKey)
+        const [existingByScopeId, lookupRes] = await Promise.all([
+          res.loadExisting(supabase),
+          scopeCol?.fk
+            ? supabase.from(scopeCol.fk.table).select(`id,${scopeCol.fk.matchColumn}`)
+            : Promise.resolve({ data: null, error: null }),
+        ])
+        if (cancelled) return
+        const lookup = ((lookupRes.data as unknown) as Array<Record<string, unknown>>) ?? []
+        const matchCol = scopeCol?.fk?.matchColumn ?? ''
+        const scopeId = (scope: string): string | null => {
+          const hit = lookup.find((r) => String(r[matchCol] ?? '').toLowerCase() === scope.toLowerCase())
+          return hit ? String(hit.id) : null
+        }
+        const values = extractChildValues(config, rows, headers, mapping)
+        const rowScope = new Map(values.map((v) => [v.rowIndex, v.scope]))
+        const byScope = new Map<string, { scope: string; refs: Array<{ rowIndex: number; name: string }> }>()
+        for (const v of values) {
+          const k = v.scope.toLowerCase()
+          const entry = byScope.get(k) ?? { scope: v.scope, refs: [] }
+          for (const name of v.names) entry.refs.push({ rowIndex: v.rowIndex, name })
+          byScope.set(k, entry)
+        }
+        const scopes: ScopePlan[] = [...byScope.values()].map(({ scope, refs }) => {
+          const id = scopeId(scope)
+          const existing = (id ? existingByScopeId.get(id) : undefined) ?? []
+          return { scope, plan: buildVarietyPlan(refs, existing) }
+        })
+        setResolution({ scopes, rowScope })
+        setDecisions({})
+      } catch (e: any) {
+        if (!cancelled) setErr(e?.message ?? 'Could not resolve existing names')
+      } finally {
+        if (!cancelled) setResolutionBusy(false)
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, headers, mapping, supabase])
+
+  const decisionKey = (scope: string, itemKey: string) => `${scope.toLowerCase()}|${itemKey}`
+  const unresolvedCount = resolution
+    ? resolution.scopes.reduce(
+        (n, s) =>
+          n +
+          s.plan.items.filter(
+            (it) => it.resolution.status === 'possible' && resolvedName(it, decisions[decisionKey(s.scope, it.key)]) == null,
+          ).length,
+        0,
+      )
+    : 0
+  const resolutionReady = !config.resolution || (!resolutionBusy && resolution != null && unresolvedCount === 0)
+  const resolutionTotals = resolution
+    ? resolution.scopes.reduce(
+        (t, s) => ({ matched: t.matched + s.plan.matched, possible: t.possible + s.plan.possible, created: t.created + s.plan.created }),
+        { matched: 0, possible: 0, created: 0 },
+      )
+    : null
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -104,10 +190,24 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
     }
   }
 
+  // Rewrite each incoming child value (variety spelling) to its resolved name:
+  // the matched existing spelling, the user's possible-match pick, or the new
+  // group's (possibly edited) creation name shared by all its format variants.
+  function childValueTransform(columnKey: string, value: string, rowIndex: number): string {
+    const res = config.resolution
+    if (!res || !resolution || columnKey !== res.columnKey) return value
+    const scope = resolution.rowScope.get(rowIndex)
+    if (scope == null) return value
+    const scopePlan = resolution.scopes.find((s) => s.scope.toLowerCase() === scope.toLowerCase())
+    const item = scopePlan?.plan.items.find((it) => it.key === varietyKey(value))
+    if (!item) return value
+    return resolvedName(item, decisions[decisionKey(scope, item.key)]) ?? value
+  }
+
   async function doImport() {
     setBusy(true); setErr(null)
     try {
-      const r = await runImport(supabase, config, rows, headers, mapping, { mode })
+      const r = await runImport(supabase, config, rows, headers, mapping, { mode, childValueTransform })
       setResult(r)
       if (r.added > 0 || r.updated > 0) onImported?.()
     } catch (e: any) {
@@ -206,6 +306,97 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
                 )}
               </div>
 
+              {config.resolution && (resolutionBusy || (resolution && resolution.scopes.some((s) => s.plan.items.length > 0))) && (
+                <div className="rounded-lg border border-slate-200 p-3 space-y-2">
+                  <h3 className="text-sm font-semibold text-slate-700 capitalize">{config.resolution.noun} resolution</h3>
+                  {resolutionBusy && <p className="text-xs text-slate-500">Checking against existing {config.resolution.noun} names…</p>}
+                  {!resolutionBusy && resolutionTotals && (
+                    <p className="text-sm">
+                      <span className="font-semibold text-green-700">{resolutionTotals.matched}</span> matched
+                      {' · '}
+                      <span className={`font-semibold ${resolutionTotals.possible > 0 ? 'text-amber-700' : 'text-slate-500'}`}>{resolutionTotals.possible}</span>
+                      {' '}possible match{resolutionTotals.possible === 1 ? '' : 'es'}{resolutionTotals.possible > 0 ? ' need review' : ''}
+                      {' · '}
+                      <span className="font-semibold text-sky-700">{resolutionTotals.created}</span> new {config.resolution.noun}
+                      {resolutionTotals.created === 1 ? '' : config.resolution.noun.endsWith('y') ? '' : 's'} will be created
+                    </p>
+                  )}
+                  {!resolutionBusy && resolution && resolution.scopes.map((s) => (
+                    <div key={s.scope} className="space-y-1">
+                      {s.plan.items.map((it) => {
+                        const dk = decisionKey(s.scope, it.key)
+                        const d = decisions[dk]
+                        const label = it.spellings.length > 1 ? it.spellings.map((x) => `“${x}”`).join(' / ') : `“${it.name}”`
+                        if (it.resolution.status === 'matched') {
+                          return (
+                            <div key={it.key} className="text-xs text-slate-600">
+                              <span className="rounded-full bg-green-100 text-green-800 px-2 py-0.5 mr-1">Matched</span>
+                              {label} ({s.scope}) — matched existing: <span className="font-semibold">{it.resolution.canonical}</span>
+                            </div>
+                          )
+                        }
+                        if (it.resolution.status === 'new') {
+                          return (
+                            <div key={it.key} className="text-xs text-slate-600 flex items-center gap-2 flex-wrap">
+                              <span className="rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">New — will be created</span>
+                              <span>{label} ({s.scope})</span>
+                              <input
+                                value={d?.newName ?? it.name}
+                                onChange={(e) => setDecisions((m) => ({ ...m, [dk]: { useExisting: null, newName: e.target.value } }))}
+                                className="rounded border border-slate-300 px-2 py-0.5 text-xs"
+                                aria-label={`Name for new ${config.resolution!.noun}`}
+                              />
+                              {it.rowIndexes.length > 1 && <span className="text-slate-400">({it.rowIndexes.length} rows)</span>}
+                            </div>
+                          )
+                        }
+                        const decided = resolvedName(it, d)
+                        return (
+                          <div key={it.key} className={`text-xs rounded-lg border px-2 py-1.5 space-y-1 ${decided == null ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-slate-50'}`}>
+                            <div className="text-slate-700">
+                              <span className="rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 mr-1">Possible match</span>
+                              {label} ({s.scope}){decided != null && <> — will save as <span className="font-semibold">{decided}</span></>}
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {it.resolution.candidates.map((c) => (
+                                <button
+                                  key={c}
+                                  type="button"
+                                  onClick={() => setDecisions((m) => ({ ...m, [dk]: { useExisting: c } }))}
+                                  className={`rounded-lg border px-2 py-1 ${d?.useExisting === c ? 'border-green-600 bg-green-50 text-green-800 font-semibold' : 'border-slate-300 bg-white'}`}
+                                >
+                                  Use existing “{c}”
+                                </button>
+                              ))}
+                              <button
+                                type="button"
+                                onClick={() => setDecisions((m) => ({ ...m, [dk]: { useExisting: null, newName: it.name } }))}
+                                className={`rounded-lg border px-2 py-1 ${d && d.useExisting == null ? 'border-sky-600 bg-sky-50 text-sky-800 font-semibold' : 'border-slate-300 bg-white'}`}
+                              >
+                                Create as new {config.resolution!.noun}
+                              </button>
+                              {d && d.useExisting == null && (
+                                <input
+                                  value={d.newName ?? it.name}
+                                  onChange={(e) => setDecisions((m) => ({ ...m, [dk]: { useExisting: null, newName: e.target.value } }))}
+                                  className="rounded border border-slate-300 px-2 py-0.5"
+                                  aria-label={`Name for new ${config.resolution!.noun}`}
+                                />
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ))}
+                  {!resolutionBusy && unresolvedCount > 0 && (
+                    <p className="text-xs text-amber-700 font-semibold">
+                      Resolve {unresolvedCount} possible match{unresolvedCount === 1 ? '' : 'es'} above before importing.
+                    </p>
+                  )}
+                </div>
+              )}
+
               {preview.length > 0 && (
                 <div>
                   <h3 className="text-sm font-semibold text-slate-700 mb-2">Preview (first {preview.length} of {rows.length})</h3>
@@ -241,7 +432,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
                 <button
                   type="button"
                   onClick={doImport}
-                  disabled={busy || !requiredOk || rows.length === 0}
+                  disabled={busy || !requiredOk || rows.length === 0 || !resolutionReady}
                   className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50"
                 >
                   {busy ? 'Importing…' : `Import ${rows.length} row${rows.length === 1 ? '' : 's'}`}

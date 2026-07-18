@@ -118,6 +118,24 @@ export type ImportTemplate = {
   dataRows?: Array<Record<string, string>>
 }
 
+/**
+ * Resolution of a child column's values against existing names (the variety
+ * pipeline): the importer preview resolves each incoming value per scope
+ * (e.g. per crop) into matched / possible-match / new via
+ * lib/variety-resolution, blocks the import until possible matches are
+ * decided, and rewrites values through runImport's childValueTransform.
+ */
+export type ChildResolution = {
+  /** Column key (must be a `child` column) whose values get resolved. */
+  columnKey: string
+  /** Column key whose FK id scopes the existing-name set (e.g. crop_id). */
+  scopeKey: string
+  /** What the values are, for UI copy (e.g. "variety"). */
+  noun: string
+  /** Existing names keyed by the scope column's FK id. */
+  loadExisting: (supabase: SupabaseClient) => Promise<Map<string, string[]>>
+}
+
 export type ImportConfig = {
   tableName: string
   columns: ColumnSpec[]
@@ -146,6 +164,9 @@ export type ImportConfig = {
    * fields stay consistent with whatever was actually provided.
    */
   derive?: (row: Record<string, unknown>) => Record<string, unknown>
+  /** When set, the importer runs this child column's values through the
+   *  name-resolution pipeline before saving (see ChildResolution). */
+  resolution?: ChildResolution
 }
 
 export type ImportResult = {
@@ -250,13 +271,69 @@ function parseChildCell(raw: string, child: NonNullable<ColumnSpec['child']>): A
   return out
 }
 
+export type ChildValueRow = { rowIndex: number; scope: string; names: string[] }
+
+/**
+ * Pure preview-side extraction for ChildResolution: each data row's child-column
+ * names (amounts stripped) plus its scope cell value (aliases applied, e.g.
+ * "soybeans" → "Soybean"). Skips rows the import itself would ignore
+ * (ignoreRowIfOnly), so the resolution summary reflects what will actually save.
+ */
+export function extractChildValues(
+  config: ImportConfig,
+  csvRows: string[][],
+  headers: string[],
+  mapping: Record<string, string>,
+): ChildValueRow[] {
+  const res = config.resolution
+  if (!res) return []
+  const col = config.columns.find((c) => c.key === res.columnKey)
+  const scopeCol = config.columns.find((c) => c.key === res.scopeKey)
+  if (!col?.child) return []
+
+  const headerIndex = new Map<string, number>()
+  headers.forEach((h, i) => headerIndex.set(h, i))
+  const cellFor = (row: string[], key: string): string => {
+    const csvHeader = mapping[key]
+    const idx = csvHeader ? headerIndex.get(csvHeader) ?? -1 : -1
+    return idx >= 0 ? (row[idx] ?? '') : ''
+  }
+
+  const ignoreOnly = config.ignoreRowIfOnly ?? []
+  const out: ChildValueRow[] = []
+  for (let i = 0; i < csvRows.length; i++) {
+    const csvRow = csvRows[i]
+    if (ignoreOnly.length > 0) {
+      let hasExtra = false
+      for (const c of config.columns) {
+        if (ignoreOnly.includes(c.key)) continue
+        if (cellFor(csvRow, c.key).trim() !== '') { hasExtra = true; break }
+      }
+      if (!hasExtra) continue
+    }
+    const names = parseChildCell(cellFor(csvRow, res.columnKey), col.child)
+      .map((r) => String(r[col.child!.valueColumn] ?? ''))
+      .filter((n) => n !== '')
+    if (names.length === 0) continue
+    const scopeRaw = cellFor(csvRow, res.scopeKey).trim()
+    const scope = scopeCol?.fk?.aliases?.[scopeRaw.toLowerCase()] ?? scopeRaw
+    out.push({ rowIndex: i, scope, names })
+  }
+  return out
+}
+
 export async function runImport(
   supabase: SupabaseClient,
   config: ImportConfig,
   csvRows: string[][],
   headers: string[],
   mapping: Record<string, string>,
-  opts: { mode: ImportMode }
+  opts: {
+    mode: ImportMode
+    /** Rewrite a child column's value before insert (the variety-resolution
+     *  pipeline maps each incoming spelling to its resolved canonical name). */
+    childValueTransform?: (columnKey: string, value: string, rowIndex: number) => string
+  }
 ): Promise<ImportResult> {
   const uniqueKeys = Array.isArray(config.uniqueKey) ? config.uniqueKey : [config.uniqueKey]
   const mode = opts.mode
@@ -353,8 +430,30 @@ export async function runImport(
           const v = coerceValue(raw, col)
           if (col.required && (v === null || v === '')) throw new Error(`${col.label ?? col.key} is required`)
           if (col.child) {
-            for (const childRow of parseChildCell(raw, col.child)) {
-              children.push({ table: col.child.table, parentKey: col.child.parentKey, row: childRow })
+            const child = col.child
+            const parsed = parseChildCell(raw, child)
+            if (opts.childValueTransform) {
+              for (const childRow of parsed) {
+                const v = childRow[child.valueColumn]
+                if (typeof v === 'string') childRow[child.valueColumn] = opts.childValueTransform(col.key, v, i)
+              }
+            }
+            // Coalesce values that resolved to the same name (e.g. two format
+            // variants of one variety in the same cell), summing amounts so a
+            // single row can't create its own duplicates.
+            const byValue = new Map<string, AnyRow>()
+            for (const childRow of parsed) {
+              const valueKey = normValue(childRow[child.valueColumn])
+              const prior = byValue.get(valueKey)
+              if (!prior) { byValue.set(valueKey, childRow); continue }
+              if (child.amountColumn) {
+                const a = prior[child.amountColumn]
+                const b = childRow[child.amountColumn]
+                if (a != null || b != null) prior[child.amountColumn] = (Number(a) || 0) + (Number(b) || 0)
+              }
+            }
+            for (const childRow of byValue.values()) {
+              children.push({ table: child.table, parentKey: child.parentKey, row: childRow })
             }
           } else {
             payload[col.key] = v
