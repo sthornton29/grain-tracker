@@ -2,13 +2,27 @@
 // (futures + options) into a per-crop marketing position for a crop year.
 // Pure: callers pass already-fetched rows and an actual-production map.
 
-import { cropToCommodity, CONTRACT_TYPE_LABEL, effectiveContractType } from '@/lib/contracts'
-import { CONTRACT_SIZE_BU } from '@/lib/hedging'
+import { cropToHedgeCommodity, CONTRACT_TYPE_LABEL, effectiveContractType } from '@/lib/contracts'
+import { CONTRACT_SIZE_BU, quantityFor } from '@/lib/hedging'
 import type { Contract, Crop, CropAssumption, FuturesPosition, OptionPosition } from '@/lib/types'
+
+// Crops the dashboard treats as lbs-native cotton (production + CT hedges only;
+// physical cotton marketing isn't tracked yet). Shared predicate so every
+// consumer draws the same line.
+export function isCottonCrop(cropName: string | null | undefined): boolean {
+  return /cotton/i.test(cropName ?? '')
+}
 
 export type MarketingRow = {
   cropId: string
   cropName: string
+  // 'bu' (grains: bushels, $/bu) or 'lbs' (cotton: lbs of lint, ¢/lb). For a
+  // lbs row every quantity field below holds lbs and every per-unit price
+  // holds ¢/lb; the dollar fields (blendedRevenue, costs, profits) are dollars
+  // either way, which is why aggregate revenue/profit can mix crops safely.
+  unit: 'bu' | 'lbs'
+  // Companion figure for lbs rows ("412,000 lbs · 858 bales"); null for grains.
+  cottonBales: number | null
   acres: number
   yield: number | null
   yieldLabel: 'Est.' | 'Actual'
@@ -184,8 +198,11 @@ export function computeMarketing(args: {
   // the crop-level harvest_complete flag). When complete, production uses ACTUAL
   // harvested bushels instead of the yield estimate — see lib/yields.ts.
   harvestCompleteCropIds?: Set<string>
+  // Cotton actuals per crop id: lbs of lint (from gin receipts/bales) + bale
+  // count. Cotton production never comes from the grain loads map.
+  cottonProductionByCrop?: Map<string, { lintLbs: number; bales: number }>
 }): MarketingRow[] {
-  const { cropYear, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop, expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds } = args
+  const { cropYear, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop, expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop } = args
 
   const cropIdsWithPlantings = new Set(
     plantings.filter((p) => p.season_year === cropYear).map((p) => p.crop_id),
@@ -198,6 +215,14 @@ export function computeMarketing(args: {
     const acres = plantings
       .filter((p) => p.crop_id === crop.id && p.season_year === cropYear)
       .reduce((s, p) => s + Number(p.planted_acres ?? 0), 0)
+
+    if (isCottonCrop(crop.name)) {
+      rows.push(computeCottonRow({
+        crop, acres, cropYear, futures, options, assumptions,
+        expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop,
+      }))
+      continue
+    }
 
     const assumption = assumptions.find((a) => a.crop_id === crop.id && a.crop_year === cropYear)
     const expected = assumption?.expected_yield != null ? Number(assumption.expected_yield) : null
@@ -253,7 +278,7 @@ export function computeMarketing(args: {
     }
     const avgCashPrice = cashBu > 0 ? round(cashW / cashBu) : null
 
-    const commodity = cropToCommodity(crop.name)
+    const commodity = cropToHedgeCommodity(crop.name)
     const cropFutures = commodity ? futures.filter((f) => f.commodity === commodity && f.crop_year === cropYear && f.side === 'short') : []
     const cropOptions = commodity ? options.filter((o) => o.commodity === commodity && o.crop_year === cropYear) : []
 
@@ -410,7 +435,7 @@ export function computeMarketing(args: {
     const totalProfit = totalCost != null ? blendedRevenue - totalCost : null
 
     rows.push({
-      cropId: crop.id, cropName: crop.name, acres, yield: yieldVal, yieldLabel, totalProduction,
+      cropId: crop.id, cropName: crop.name, unit: 'bu', cottonBales: null, acres, yield: yieldVal, yieldLabel, totalProduction,
       contractedBu, remaining, avgCashPrice, excludedAwaitingBu,
       futuresPricedBu, physicalFuturesBu, physicalFuturesAvg, openHedgeBu, openHedgeAvg,
       rawAvgFutures, hedgeRealizedPnl, hedgeAdjPerBu, avgFutures, avgBasis, avgBasisAssumed, assumedBasis, assumedFutures,
@@ -423,6 +448,136 @@ export function computeMarketing(args: {
   return rows.sort((a, b) => a.cropName.localeCompare(b.cropName))
 }
 
+// ---------------------------------------------------------------------------
+// Cotton: production + CT hedges only, lbs-native (¢/lb). Physical cotton
+// marketing isn't tracked yet, so there is no Sold segment, no basis concept,
+// and no contract buckets — hedged lbs are open short CT contracts × 50,000,
+// unhedged lbs are valued at the current CTZ estimate (or the standing assumed
+// ¢/lb), and revenue is lbs × ¢/lb ÷ 100 plus realized hedge P&L counted once
+// (the engine's standard treatment). Dollar outputs (blendedRevenue, costs,
+// profits) mean exactly what they do for grains, so Revenue Projections and the
+// shared aggregate work unchanged.
+// ---------------------------------------------------------------------------
+function computeCottonRow(args: {
+  crop: Crop
+  acres: number
+  cropYear: number
+  futures: FuturesPosition[]
+  options: OptionPosition[]
+  assumptions: CropAssumption[]
+  expectedProductionByCrop?: Map<string, number>
+  currentFuturesByCrop?: Map<string, number>
+  harvestCompleteCropIds?: Set<string>
+  cottonProductionByCrop?: Map<string, { lintLbs: number; bales: number }>
+}): MarketingRow {
+  const { crop, acres, cropYear, futures, options, assumptions, expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop } = args
+
+  // Yield/production: crop_assumptions.expected_yield is lbs of lint per acre
+  // for a cotton crop; actuals come from gin receipts once harvest is complete.
+  const assumption = assumptions.find((a) => a.crop_id === crop.id && a.crop_year === cropYear)
+  const expected = assumption?.expected_yield != null ? Number(assumption.expected_yield) : null
+  const actual = cottonProductionByCrop?.get(crop.id) ?? { lintLbs: 0, bales: 0 }
+  const harvestComplete = (assumption?.harvest_complete ?? false) || (harvestCompleteCropIds?.has(crop.id) ?? false)
+
+  let yieldVal: number | null
+  let yieldLabel: 'Est.' | 'Actual'
+  let totalProduction: number
+  if (harvestComplete && actual.lintLbs > 0) {
+    totalProduction = actual.lintLbs
+    yieldVal = acres > 0 ? round(actual.lintLbs / acres, 1) : null
+    yieldLabel = 'Actual'
+  } else {
+    const broken = expectedProductionByCrop?.get(crop.id)
+    if (broken != null) {
+      totalProduction = broken
+      yieldVal = acres > 0 ? round(broken / acres, 1) : null
+      yieldLabel = 'Est.'
+    } else {
+      yieldVal = expected
+      yieldLabel = 'Est.'
+      totalProduction = yieldVal != null ? yieldVal * acres : (actual.lintLbs > 0 ? actual.lintLbs : 0)
+    }
+  }
+
+  const cropFutures = futures.filter((f) => f.commodity === 'Cotton' && f.crop_year === cropYear && f.side === 'short')
+  const cropOptions = options.filter((o) => o.commodity === 'Cotton' && o.crop_year === cropYear)
+
+  // Hedged lbs + weighted average hedge price (¢/lb) on open short CT contracts.
+  let openHedgeLbs = 0, openW = 0
+  const hedgeByMonth = new Map<string, { lbs: number; w: number }>()
+  for (const f of cropFutures) {
+    if (f.status !== 'open') continue
+    const lbs = quantityFor('Cotton', Number(f.num_contracts))
+    openHedgeLbs += lbs
+    openW += Number(f.trade_price) * lbs
+    const month = f.contract_month ?? f.contract_symbol ?? 'hedge'
+    const g = hedgeByMonth.get(month) ?? { lbs: 0, w: 0 }
+    g.lbs += lbs; g.w += Number(f.trade_price) * lbs
+    hedgeByMonth.set(month, g)
+  }
+  const openHedgeAvg = openHedgeLbs > 0 ? round(openW / openHedgeLbs) : null
+  const futuresSources: FuturesSource[] = []
+  for (const [month, g] of hedgeByMonth) {
+    if (g.lbs > 0) futuresSources.push({ label: `Open hedges (${month})`, bushels: round2(g.lbs), avgPrice: round(g.w / g.lbs) })
+  }
+
+  // Realized results from lifted hedges — dollars, counted ONCE in revenue; the
+  // per-unit adjustment is ¢/lb over total production (× 100 = ¢ per $).
+  const closedFuturesPnl = cropFutures
+    .filter((f) => f.status === 'closed')
+    .reduce((s, f) => s + (Number(f.realized_pnl ?? 0) - Number(f.commission ?? 0)), 0)
+  const closedOptionsPnl = cropOptions
+    .filter((o) => o.status !== 'open')
+    .reduce((s, o) => s + Number(o.realized_pnl ?? 0), 0)
+  const hedgeRealizedPnl = round2(closedFuturesPnl + closedOptionsPnl)
+  const hedgeAdjPerLb = totalProduction > 0 ? round((hedgeRealizedPnl * 100) / totalProduction) : 0
+  const avgFutures = openHedgeAvg != null ? round(openHedgeAvg + hedgeAdjPerLb) : null
+
+  const assumedFutures = assumption?.assumed_futures != null ? Number(assumption.assumed_futures) : null
+  const currentFutures = currentFuturesByCrop?.get(crop.id) ?? null
+  const marketFutures = assumedFutures ?? currentFutures // ¢/lb
+
+  const hedgeCovered = Math.max(0, Math.min(openHedgeLbs, totalProduction))
+  const unpricedLbs = Math.max(0, totalProduction - hedgeCovered)
+
+  // Blended revenue: hedged lbs at the average hedge ¢/lb, unhedged lbs at the
+  // market/assumed ¢/lb, ÷ 100 to dollars, + realized hedge P&L once.
+  let blendedRevenue = 0
+  if (hedgeCovered > 0) blendedRevenue += hedgeCovered * ((openHedgeAvg ?? marketFutures ?? 0) / 100)
+  if (unpricedLbs > 0) blendedRevenue += unpricedLbs * ((marketFutures ?? openHedgeAvg ?? 0) / 100)
+  blendedRevenue = blendedRevenue + hedgeRealizedPnl
+
+  // Headline price: the effective ¢/lb over all production (revenue-derived),
+  // matching how the dashboard header presents it. null with no production.
+  const totalAvgPrice = totalProduction > 0 ? round((blendedRevenue * 100) / totalProduction) : null
+  const unpricedFuturesPrice = round(marketFutures ?? openHedgeAvg ?? 0)
+
+  const costPerAcre = assumption?.cost_per_acre != null ? Number(assumption.cost_per_acre) : null
+  // ¢/lb of lint to grow it (grains use $/bu here) — same field, cotton's unit.
+  const costPerLb = costPerAcre != null && yieldVal != null && yieldVal > 0 ? round((costPerAcre * 100) / yieldVal, 4) : null
+  const totalCost = costPerAcre != null ? costPerAcre * acres : null
+  const revenuePerAcre = acres > 0 ? blendedRevenue / acres : null
+  const profitPerAcre = revenuePerAcre != null && costPerAcre != null ? revenuePerAcre - costPerAcre : null
+  const totalProfit = totalCost != null ? blendedRevenue - totalCost : null
+
+  return {
+    cropId: crop.id, cropName: crop.name, unit: 'lbs',
+    cottonBales: actual.bales > 0 ? actual.bales : null,
+    acres, yield: yieldVal, yieldLabel, totalProduction,
+    contractedBu: 0, remaining: totalProduction, avgCashPrice: null, excludedAwaitingBu: 0,
+    futuresPricedBu: openHedgeLbs, physicalFuturesBu: 0, physicalFuturesAvg: null,
+    openHedgeBu: openHedgeLbs, openHedgeAvg,
+    rawAvgFutures: openHedgeAvg, hedgeRealizedPnl, hedgeAdjPerBu: hedgeAdjPerLb, avgFutures,
+    // No basis concept until physical cotton marketing exists.
+    avgBasis: 0, avgBasisAssumed: true, assumedBasis: 0, assumedFutures,
+    basisLockedBu: 0, basisLockedAvg: null, basisAssumedBu: 0, basisState: 'assumed',
+    totalAvgPrice, unpricedBu: unpricedLbs, blendedRevenue, unpricedFuturesPrice,
+    costPerAcre, costPerBu: costPerLb, revenuePerAcre, profitPerAcre, totalProfit,
+    openFuturesHedgedBu: openHedgeLbs,
+    futuresSources, lockedPriceBu: 0, futuresAssumedBu: unpricedLbs,
+  }
+}
+
 // Grand totals across computeMarketing() rows — the SINGLE shared rollup both the
 // Marketing dashboard and Revenue Projections consume, so neither page sums on its
 // own. Everything is summed at FULL precision (no per-crop rounding fed in); the
@@ -431,7 +586,10 @@ export function computeMarketing(args: {
 // government payments on top of this exact number.
 export type MarketingTotals = {
   acres: number
+  /** Bushels across 'bu' rows only — lbs crops never mix into a bushel total. */
   totalProduction: number
+  /** Lbs of lint across 'lbs' (cotton) rows. */
+  totalProductionLbs: number
   blendedRevenue: number
   totalCost: number
   /** blendedRevenue − totalCost; null when NO crop has a cost set. */
@@ -454,12 +612,13 @@ export function breakevenAvgPrice(
 }
 
 export function aggregateMarketing(rows: readonly MarketingRow[]): MarketingTotals {
-  let acres = 0, totalProduction = 0, blendedRevenue = 0, totalCost = 0, hasCost = false
+  let acres = 0, totalProduction = 0, totalProductionLbs = 0, blendedRevenue = 0, totalCost = 0, hasCost = false
   for (const r of rows) {
     acres += r.acres
-    totalProduction += r.totalProduction
+    if (r.unit === 'lbs') totalProductionLbs += r.totalProduction
+    else totalProduction += r.totalProduction
     blendedRevenue += r.blendedRevenue
     if (r.costPerAcre != null) { totalCost += r.costPerAcre * r.acres; hasCost = true }
   }
-  return { acres, totalProduction, blendedRevenue, totalCost, totalProfit: hasCost ? blendedRevenue - totalCost : null, hasCost }
+  return { acres, totalProduction, totalProductionLbs, blendedRevenue, totalCost, totalProfit: hasCost ? blendedRevenue - totalCost : null, hasCost }
 }

@@ -2,16 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
+import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
+import { buildMarketingExport } from '@/lib/marketing-export'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { buildDoubleCropSet } from '@/lib/plantings'
-import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, cropToCommodity } from '@/lib/contracts'
+import { cropToHedgeCommodity } from '@/lib/contracts'
 import { fmtPnl, buildContractSymbol } from '@/lib/hedging'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { StackedBar } from '@/components/reports/report-kit'
 import ExportBar from '@/components/export-bar'
-import { formatNumber, type ExportPayload } from '@/lib/exports'
-import type { Contract, Crop, CropAssumption, FuturesPosition, OptionPosition } from '@/lib/types'
+import { type ExportPayload } from '@/lib/exports'
+import type { Contract, Crop, CropAssumption, FuturesPosition, OptionPosition, GinReceipt, CottonBale } from '@/lib/types'
 
 type LoadRow = {
   id: string
@@ -39,6 +40,8 @@ type PlantingRow = {
 }
 
 const bu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
+// Cotton ¢/lb price, 2 decimals ("72.65¢").
+const cents2 = (n: number | null | undefined) => (n == null ? '—' : `${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}¢`)
 const usd = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
 const usd0 = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`)
 const round2 = (n: number) => Math.round(n * 100) / 100
@@ -58,14 +61,16 @@ const basisCompositionTitle = (r: MarketingRow) =>
 
 // The new-crop benchmark futures contract for a crop year, used by the what-if
 // "use today's price" button: Corn → DEC (ZCZ{yy}), Soybeans → NOV (ZSX{yy}),
-// Chicago Wheat → JUL (ZWN{yy}). null for crops with no traded future (e.g. Canola).
+// Chicago Wheat → JUL (ZWN{yy}), Cotton → DEC (CTZ{yy}, the new-crop benchmark).
+// null for crops with no traded future (e.g. Canola).
 const NEW_CROP_MONTH: Record<string, { abbr: string; num: number }> = {
   Corn: { abbr: 'DEC', num: 12 },
   Soybeans: { abbr: 'NOV', num: 11 },
   'Chicago Wheat': { abbr: 'JUL', num: 7 },
+  Cotton: { abbr: 'DEC', num: 12 },
 }
 function newCropContract(cropName: string, cropYear: number): { symbol: string; monthNum: number; year: number } | null {
-  const commodity = cropToCommodity(cropName)
+  const commodity = cropToHedgeCommodity(cropName)
   if (!commodity) return null
   const m = NEW_CROP_MONTH[commodity]
   const symbol = buildContractSymbol(commodity, `${m.abbr} ${String(cropYear % 100).padStart(2, '0')}`)
@@ -80,6 +85,14 @@ function newCropContract(cropName: string, cropYear: number): { symbol: string; 
 // until a cost is set.
 function breakevenOf(row: MarketingRow): { price: number | null; yieldPerAcre: number | null } {
   const cost = row.costPerAcre
+  if (row.unit === 'lbs') {
+    // Cotton: breakeven price in ¢/lb; breakeven yield in lbs lint/ac against
+    // the effective ¢/lb the card shows.
+    return {
+      price: cost != null && row.yield != null && row.yield > 0 ? (cost * 100) / row.yield : null,
+      yieldPerAcre: cost != null && row.totalAvgPrice != null && row.totalAvgPrice > 0 ? (cost * 100) / row.totalAvgPrice : null,
+    }
+  }
   const avg = breakevenAvgPrice(row)
   return {
     price: cost != null && row.yield != null && row.yield > 0 ? cost / row.yield : null,
@@ -97,24 +110,28 @@ function breakevenOf(row: MarketingRow): { price: number | null; yieldPerAcre: n
 function scenarioFor(row: MarketingRow, wfFut: number | null, wfBasis: number, advanced: boolean) {
   const prod = row.totalProduction
   if (prod <= 0 || row.acres <= 0 || wfFut == null) return null
+  // Cotton rows price in ¢/lb over lbs: a price delta × lbs is cents, ÷100 to
+  // dollars — and the headline price re-derives in ¢ (×100). Grains are 1:1.
+  const toUsd = row.unit === 'lbs' ? 1 / 100 : 1
   let blended: number
   if (advanced) {
     // Futures delta hits the completely-unpriced bushels; the basis delta hits
     // every assumed-basis bushel (open HTAs + open hedges + unpriced) — exactly
-    // what computeMarketing does when those values are saved.
+    // what computeMarketing does when those values are saved. (Cotton has no
+    // basis bushels, so its basis term is always 0.)
     const dFut = wfFut - row.unpricedFuturesPrice
     const dBasis = wfBasis - row.assumedBasis
-    blended = round2(row.blendedRevenue + dFut * row.unpricedBu + dBasis * row.basisAssumedBu)
+    blended = round2(row.blendedRevenue + (dFut * row.unpricedBu + dBasis * row.basisAssumedBu) * toUsd)
   } else {
     // Simple: a flat cash price replaces (futures + assumed basis) on the unsold
     // (completely-unpriced) bushels.
     const dCash = wfFut - (row.unpricedFuturesPrice + row.assumedBasis)
-    blended = round2(row.blendedRevenue + dCash * row.unpricedBu)
+    blended = round2(row.blendedRevenue + dCash * row.unpricedBu * toUsd)
   }
   const revenuePerAcre = round2(blended / row.acres)
   const profitPerAcre = row.costPerAcre != null ? round2(blended / row.acres - row.costPerAcre) : null
   const totalProfit = row.costPerAcre != null ? round2(blended - row.costPerAcre * row.acres) : null
-  const totalAvgPrice = round2(blended / prod)
+  const totalAvgPrice = round2((blended / prod) * (row.unit === 'lbs' ? 100 : 1))
   return { totalAvgPrice, revenuePerAcre, profitPerAcre, totalProfit }
 }
 
@@ -137,6 +154,8 @@ export default function MarketingPage() {
   const [harvestCompleteIds, setHarvestCompleteIds] = useState<Set<string>>(new Set())
   // Current futures price per crop (Barchart) — values completely-unpriced bushels.
   const [currentFutures, setCurrentFutures] = useState<Map<string, number>>(new Map())
+  // Cotton actuals per cotton crop id: lbs of lint + bales, from gin receipts.
+  const [cottonProd, setCottonProd] = useState<Map<string, { lintLbs: number; bales: number }>>(new Map())
 
   // Expanded crop sections (crop ids) — persisted per crop so a section the user
   // opened is still open when they come back.
@@ -165,7 +184,7 @@ export default function MarketingPage() {
 
   const load = useCallback(async (cropYear: number) => {
     setLoading(true)
-    const [cr, pl, ct, fp, op, ca, ld, sp] = await Promise.all([
+    const [cr, pl, ct, fp, op, ca, ld, sp, gr, cb] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, yield_include_override').eq('season_year', cropYear),
       supabase.from('contracts').select('*').eq('crop_year', cropYear),
@@ -174,6 +193,8 @@ export default function MarketingPage() {
       supabase.from('crop_assumptions').select('*').eq('crop_year', cropYear),
       supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override').eq('crop_year', cropYear),
       supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels'),
+      supabase.from('gin_receipts').select('id, crop_year, bales_count, total_bale_weight').eq('crop_year', cropYear),
+      supabase.from('cotton_bales').select('gin_receipt_id, net_weight_lbs').eq('crop_year', cropYear),
     ])
     const cropsList = (cr.data as Crop[]) ?? []
     const plantingList = (pl.data as PlantingRow[]) ?? []
@@ -195,6 +216,27 @@ export default function MarketingPage() {
       if (cropId) prod.set(cropId, (prod.get(cropId) ?? 0) + agg.dryBu)
     }
     setProduction(prod)
+
+    // Cotton actual production: lbs of lint from gin receipts — per-bale net
+    // weights when the bales are on file, else the receipt's total bale weight.
+    const receipts = ((gr.data as unknown) as Pick<GinReceipt, 'id' | 'bales_count' | 'total_bale_weight'>[]) ?? []
+    const bales = ((cb.data as unknown) as Pick<CottonBale, 'gin_receipt_id' | 'net_weight_lbs'>[]) ?? []
+    const balesByReceipt = new Map<string, { lbs: number; count: number }>()
+    for (const b of bales) {
+      const g = balesByReceipt.get(b.gin_receipt_id) ?? { lbs: 0, count: 0 }
+      g.lbs += Number(b.net_weight_lbs) || 0
+      g.count += 1
+      balesByReceipt.set(b.gin_receipt_id, g)
+    }
+    let lintLbs = 0, baleCount = 0
+    for (const r of receipts) {
+      const fromBales = balesByReceipt.get(r.id)
+      lintLbs += fromBales && fromBales.lbs > 0 ? fromBales.lbs : Number(r.total_bale_weight) || 0
+      baleCount += fromBales && fromBales.count > 0 ? fromBales.count : Number(r.bales_count) || 0
+    }
+    const cotton = new Map<string, { lintLbs: number; bales: number }>()
+    for (const c of cropsList) if (isCottonCrop(c.name)) cotton.set(c.id, { lintLbs, bales: baleCount })
+    setCottonProd(cotton)
 
     // Crops fully in the bin → use actual production instead of the estimate.
     const cropCompleteKeys = new Set<string>()
@@ -244,8 +286,8 @@ export default function MarketingPage() {
   )
 
   const rows = useMemo(
-    () => (year == null ? [] : computeMarketing({ cropYear: year, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures, harvestCompleteCropIds: harvestCompleteIds })),
-    [year, crops, plantings, contracts, futures, options, assumptions, production, expProdByCrop, currentFutures, harvestCompleteIds],
+    () => (year == null ? [] : computeMarketing({ cropYear: year, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures, harvestCompleteCropIds: harvestCompleteIds, cottonProductionByCrop: cottonProd })),
+    [year, crops, plantings, contracts, futures, options, assumptions, production, expProdByCrop, currentFutures, harvestCompleteIds, cottonProd],
   )
 
   // Actual average yield (dry bushels from loads ÷ planted acres) per crop, used
@@ -255,20 +297,20 @@ export default function MarketingPage() {
     for (const p of plantings) acres.set(p.crop_id, (acres.get(p.crop_id) ?? 0) + Number(p.planted_acres ?? 0))
     const m = new Map<string, { production: number; yield: number | null }>()
     for (const c of crops) {
-      const prod = production.get(c.id) ?? 0
+      // Cotton actuals are lbs of lint from gin receipts; grains are dry bushels
+      // from loads. Same shape either way — the crop's own unit.
+      const prod = isCottonCrop(c.name) ? (cottonProd.get(c.id)?.lintLbs ?? 0) : (production.get(c.id) ?? 0)
       const a = acres.get(c.id) ?? 0
       m.set(c.id, { production: prod, yield: prod > 0 && a > 0 ? Math.round((prod / a) * 10) / 10 : null })
     }
     return m
-  }, [plantings, crops, production])
+  }, [plantings, crops, production, cottonProd])
 
   // Crops shown in the assumptions editor: those with plantings this year.
+  // Cotton is included — its expected_yield is lbs of lint/acre and cost/acre
+  // works the same; the row labels adapt (see AssumptionRow).
   const plantedCropIds = useMemo(() => new Set(plantings.map((p) => p.crop_id)), [plantings])
-  // Cotton is production + hedges only (Cotton module) — physical cotton
-  // marketing isn't tracked yet, and the dashboard's bushel-based math must
-  // never touch a lbs crop. Excluded here with a note in the UI.
-  const plantedCrops = crops.filter((c) => plantedCropIds.has(c.id) && !/cotton/i.test(c.name))
-  const hasCottonPlantings = crops.some((c) => plantedCropIds.has(c.id) && /cotton/i.test(c.name))
+  const plantedCrops = crops.filter((c) => plantedCropIds.has(c.id))
 
   // The only meaningful combined metrics across mixed crops: total acres and
   // total projected profit (mixing corn/soy/wheat production or price is not).
@@ -289,7 +331,7 @@ export default function MarketingPage() {
   const cropMeta = useMemo(() => {
     const m = new Map<string, boolean>()
     for (const r of rows) {
-      const commodity = cropToCommodity(r.cropName)
+      const commodity = cropToHedgeCommodity(r.cropName)
       const cropContracts = contracts.filter((c) => c.crop_id === r.cropId)
       const hasHtaOrBasis = cropContracts.some((c) => c.contract_type === 'hta' || c.contract_type === 'basis')
       const hasFut = commodity ? futures.some((f) => f.commodity === commodity) : false
@@ -303,96 +345,10 @@ export default function MarketingPage() {
     setBasisExpanded((s) => (s.includes(cropId) ? s.filter((x) => x !== cropId) : [...s, cropId]))
   }
 
+  // Export mirrors the cards; the pure builder handles grain ($/bu + bu) and
+  // cotton (cents/lb + lbs) sections - see lib/marketing-export.ts.
   function buildPayload(): ExportPayload {
-    // Mirror the cards: a combined-metrics section, then one section per crop with
-    // all the detail (production / sales / pricing buildup / profitability).
-    const sections: ExportPayload['sections'] = []
-    const KV: ExportPayload['sections'][number]['columns'] = [{ label: 'Item' }, { label: 'Value', align: 'right' }]
-
-    // Value cells are free-form (number + unit), so numbers are formatted through
-    // the shared formatter for consistent commas / $ / decimals.
-    const ac = (n: number) => formatNumber(n, 'acres')
-    const buf = (n: number) => formatNumber(n, 'bu')
-    const usd = (n: number) => formatNumber(n, 'usd0')
-    const price = (n: number) => formatNumber(n, 'price')
-    const yld = (n: number) => formatNumber(n, 'yield')
-
-    sections.push({
-      title: 'Summary',
-      columns: KV,
-      rows: [
-        ['Total acres', ac(combined.acres)],
-        ['Total projected profit', combined.profit != null ? usd(combined.profit) : '—'],
-      ],
-    })
-
-    for (const r of rows) {
-      const adv = cropMeta.get(r.cropId) ?? false
-      const seg = segByCrop.get(r.cropId)
-      const irrAc = seg ? seg.fullIrr + seg.dcIrr : 0
-      const dryAc = seg ? seg.fullDry + seg.dcDry : 0
-      const cropContracts = contracts.filter((c) => c.crop_id === r.cropId)
-      const byType = new Map<string, number>()
-      for (const c of cropContracts) {
-        const t = CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']
-        byType.set(t, (byType.get(t) ?? 0) + Number(c.contracted_bushels ?? 0))
-      }
-      const rows2: Array<Array<string | number | null>> = []
-      const meta2: ('data' | 'subhead' | 'total')[] = []
-      const sub = (t: string) => { rows2.push([t, '']); meta2.push('subhead') }
-      const kv = (k: string, v: string | number | null) => { rows2.push([k, v]); meta2.push('data') }
-      const tot = (k: string, v: string | number | null) => { rows2.push([k, v]); meta2.push('total') }
-      // The standing headline figures lean on assumed pricing whenever some
-      // production isn't fully locked — carry that qualifier into the export.
-      const qual = r.lockedPriceBu + 0.5 < r.totalProduction ? ' (incl. assumed pricing)' : ''
-
-      sub('Production')
-      kv('Planted acres', `${ac(r.acres)}${irrAc > 0 || dryAc > 0 ? ` (irr ${ac(irrAc)} / dry ${ac(dryAc)})` : ''}`)
-      kv('Yield', r.yield != null ? `${yld(r.yield)} bu/ac ${r.yieldLabel}` : '—')
-      kv('Total production', `${buf(r.totalProduction)} bu`)
-
-      sub('Sales')
-      kv('Contracted', `${buf(r.contractedBu)} bu`)
-      kv('Remaining', `${buf(r.remaining)} bu`)
-      for (const [t, b] of byType) kv(t, `${buf(b)} bu`)
-
-      if (adv) {
-        // Block 1 — Average Futures Price Buildup (line-item ledger).
-        sub('Avg Futures Price Buildup')
-        if (r.futuresSources.length > 0) {
-          for (const s of r.futuresSources) kv(s.label, `${buf(s.bushels)} bu @ ${price(s.avgPrice)}`)
-          kv(`Weighted avg futures (${buf(r.futuresPricedBu)} bu)`, r.rawAvgFutures != null ? price(r.rawAvgFutures) : 'N/A')
-          if (r.hedgeRealizedPnl !== 0) kv('Realized hedge P&L / bu', price(r.hedgeAdjPerBu))
-          tot('= Average futures price', r.avgFutures != null ? price(r.avgFutures) : 'N/A')
-        } else {
-          kv('Futures', 'No futures positions — flat cash')
-        }
-        // Block 2 — Basis Buildup (with actual/assumed/blended state).
-        sub('Basis Buildup')
-        if (r.basisLockedBu > 0) kv(`Locked basis (${buf(r.basisLockedBu)} bu)`, r.basisLockedAvg != null ? price(r.basisLockedAvg) : '—')
-        if (r.basisAssumedBu > 0) kv(`Assumed basis (${buf(r.basisAssumedBu)} bu)`, price(r.assumedBasis))
-        tot(r.basisState === 'blended' ? '= Basis' : `= Basis (${r.basisState})`, price(r.avgBasis))
-        tot(`Total avg price${qual}`, r.totalAvgPrice != null ? price(r.totalAvgPrice) : '—')
-        if (r.hedgeRealizedPnl !== 0) kv('Realized hedge P&L (in revenue)', usd(r.hedgeRealizedPnl))
-      } else {
-        sub('Pricing')
-        tot(`Avg price${qual}`, r.totalAvgPrice != null ? price(r.totalAvgPrice) : '—')
-      }
-
-      sub('Profitability')
-      kv('Cost / acre', r.costPerAcre != null ? usd(r.costPerAcre) : '—')
-      kv('Cost / bu', r.costPerBu != null ? price(r.costPerBu) : '—')
-      kv('Revenue / acre', r.revenuePerAcre != null ? usd(r.revenuePerAcre) : '—')
-      kv('Profit / acre', r.profitPerAcre != null ? usd(r.profitPerAcre) : '—')
-      tot('Total profit', r.totalProfit != null ? usd(r.totalProfit) : '—')
-      const be = breakevenOf(r)
-      kv('Breakeven price', be.price != null ? price(be.price) : '—')
-      kv('Breakeven yield', be.yieldPerAcre != null ? `${yld(be.yieldPerAcre)} bu/ac` : '—')
-
-      sections.push({ title: r.cropName, columns: KV, rows: rows2, rowMeta: meta2 })
-    }
-
-    return { title: `Marketing — ${year ?? ''}`, filters: `Crop year: ${year ?? '—'}`, sections, singleSheet: true }
+    return buildMarketingExport({ year, rows, contracts, cropMeta, segByCrop, combined })
   }
 
   async function saveAssumption(cropId: string, patch: Partial<CropAssumption>) {
@@ -500,6 +456,17 @@ export default function MarketingPage() {
            header row plus an expandable 4-column detail grid. */
         <div className="space-y-5 print-area">
           {rows.map((r) => (
+            r.unit === 'lbs' ? (
+              <CottonSection
+                key={`${r.cropId}-${year}`}
+                row={r}
+                detailsOpen={expanded.includes(r.cropId)}
+                onToggleDetails={() => toggleRow(r.cropId)}
+                cropYear={year}
+                onSaveFutures={(v) => saveAssumption(r.cropId, { assumed_futures: v })}
+                onClearAssumptions={() => saveAssumption(r.cropId, { assumed_futures: null, assumed_basis: 0 })}
+              />
+            ) : (
             <CropSection
               key={`${r.cropId}-${year}`}
               row={r}
@@ -513,15 +480,9 @@ export default function MarketingPage() {
               onSaveFutures={(v) => saveAssumption(r.cropId, { assumed_futures: v })}
               onClearAssumptions={() => saveAssumption(r.cropId, { assumed_futures: null, assumed_basis: 0 })}
             />
+            )
           ))}
         </div>
-      )}
-
-      {hasCottonPlantings && (
-        <p className="text-xs text-slate-500 no-print">
-          Cotton is tracked as production + hedges (Cotton module) — physical cotton marketing isn&apos;t tracked
-          yet, so cotton doesn&apos;t appear on this dashboard.
-        </p>
       )}
 
       {/* Assumptions slide-over */}
@@ -877,6 +838,211 @@ function CropSection({
   )
 }
 
+// ---------------------------------------------------------------------------
+// Cotton crop section — lbs of lint and ¢/lb throughout. Production + futures
+// hedges only: no Sold segment and no basis buildup (physical cotton marketing
+// isn't tracked yet, and cotton has no basis concept until it is). The What-If
+// re-prices the unhedged lbs at a scenario ¢/lb against the crop-year CTZ.
+// ---------------------------------------------------------------------------
+function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutures, onClearAssumptions }: {
+  row: MarketingRow
+  detailsOpen: boolean
+  onToggleDetails: () => void
+  cropYear: number | null
+  onSaveFutures: (v: number | null) => void
+  onClearAssumptions: () => void
+}) {
+  const prod = row.totalProduction
+  const be = breakevenOf(row)
+  const nc = cropYear != null ? newCropContract(row.cropName, cropYear) : null
+  const expired = nc != null ? (() => { const now = new Date(); return nc.year * 12 + nc.monthNum < now.getFullYear() * 12 + (now.getMonth() + 1) })() : false
+  const [wfFutures, setWfFutures] = useState(row.assumedFutures != null ? String(row.assumedFutures) : '')
+  const [wfSymbol, setWfSymbol] = useState<string | null>(null)
+  const [wfStale, setWfStale] = useState(false)
+  const [wfNote, setWfNote] = useState<string | null>(null)
+  const [fetching, setFetching] = useState(false)
+  const wfFut = wfFutures.trim() === '' || !Number.isFinite(Number(wfFutures)) ? null : Number(wfFutures)
+  // Advanced-mode scenario: the ¢/lb delta hits exactly the unhedged lbs (the
+  // basis term is structurally 0 for cotton).
+  const scenario = wfFut != null ? scenarioFor(row, wfFut, 0, true) : null
+
+  const headlineAvg = scenario ? scenario.totalAvgPrice : row.totalAvgPrice
+  const headlineRevenueAc = scenario ? scenario.revenuePerAcre : row.revenuePerAcre
+  const headlineProfitAc = scenario ? scenario.profitPerAcre : row.profitPerAcre
+  const headlineTotalProfit = scenario ? scenario.totalProfit : row.totalProfit
+  const headlineProfitTone = headlineTotalProfit == null ? 'text-slate-400' : headlineTotalProfit >= 0 ? 'text-green-700' : 'text-red-700'
+  // Unhedged lbs are always valued at an assumed/market price — flag it.
+  const includesAssumptions = row.unpricedBu > 0.5
+  const markerTitle = `Includes assumed pricing on ${bu(row.unpricedBu)} unhedged lbs (valued at ${row.assumedFutures != null ? 'your assumed price' : 'the current futures estimate'}). Open hedges cover the remaining ${bu(Math.min(row.openHedgeBu, prod))} lbs.`
+  const markSup = includesAssumptions ? <sup className="text-amber-600"> *</sup> : null
+
+  async function useTodaysPrice() {
+    if (!nc || expired) return
+    setFetching(true); setWfNote(null)
+    try {
+      const res = await fetch('/api/market-prices', {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ symbols: [nc.symbol] }),
+      })
+      const json = await res.json().catch(() => null)
+      const p = json?.prices?.[0]
+      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(nc.symbol); setWfStale(!!p.stale); onSaveFutures(Number(p.price)) }
+      else setWfNote('No price available — enter manually.')
+    } catch {
+      setWfNote('Could not fetch — enter manually.')
+    } finally { setFetching(false) }
+  }
+  function commitFutures() {
+    const t = wfFutures.trim()
+    if (t === '') { if (row.assumedFutures != null) onSaveFutures(null); return }
+    const v = Number(t)
+    if (Number.isFinite(v) && v !== (row.assumedFutures ?? null)) onSaveFutures(v)
+  }
+  function clearAssumptions() {
+    setWfFutures(''); setWfSymbol(null); setWfStale(false); setWfNote(null)
+    onClearAssumptions()
+  }
+
+  return (
+    <section className="bg-white rounded-xl shadow avoid-break">
+      <div className="p-4 md:p-5 space-y-3">
+        <div className="flex flex-wrap items-center gap-x-8 gap-y-3">
+          <div>
+            <div className="font-bold text-xl leading-tight">{row.cropName}</div>
+            <div className="text-sm text-slate-500 tabular-nums mt-0.5">
+              {bu(prod)} lbs lint{row.cottonBales != null ? ` · ${bu(row.cottonBales)} bales` : ''}
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] text-slate-500 uppercase tracking-wide">Acres</div>
+            <div className="text-2xl font-bold tabular-nums leading-tight">{bu(row.acres)}</div>
+          </div>
+          <div>
+            <div className="text-[11px] text-slate-500 uppercase tracking-wide">Yield</div>
+            <div className="text-2xl font-bold tabular-nums leading-tight">
+              {row.yield != null
+                ? <>{bu(row.yield)} <span className="text-sm font-normal text-slate-500">lbs lint/ac {row.yieldLabel}</span></>
+                : '—'}
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between sm:justify-end gap-4 lg:gap-8 flex-wrap ml-auto">
+            <div className="text-right">
+              <div className="text-[11px] text-slate-500 uppercase tracking-wide">Avg price</div>
+              <div className="text-2xl font-bold tabular-nums leading-tight">{headlineAvg != null ? cents2(headlineAvg) : '—'}{markSup}</div>
+              {row.openHedgeAvg != null && (
+                <div className="text-xs text-slate-500 mt-0.5">Hedged: <span className="tabular-nums">{cents2(row.openHedgeAvg)}</span></div>
+              )}
+            </div>
+            <div className="text-right">
+              <div className="text-[11px] text-slate-500 uppercase tracking-wide">Profit / acre</div>
+              <div className={`text-2xl font-bold tabular-nums leading-tight ${headlineProfitTone}`}>
+                {headlineProfitAc != null ? usd0(headlineProfitAc) : headlineRevenueAc != null ? 'set cost' : '—'}{markSup}
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-[11px] text-slate-500 uppercase tracking-wide">Total profit</div>
+              <div className={`text-2xl font-bold tabular-nums leading-tight ${headlineProfitTone}`}>{headlineTotalProfit != null ? usd0(headlineTotalProfit) : '—'}{markSup}</div>
+            </div>
+          </div>
+        </div>
+
+        {includesAssumptions && (
+          <div className="flex justify-end -mt-1">
+            <AssumptionBadge title={markerTitle} />
+          </div>
+        )}
+
+        <div className="min-w-0 space-y-1">
+          <PositionBlock title="Hedged" prod={prod} green={row.openHedgeBu} greenLabel="Hedged" grayLabel="Unhedged"
+            avg={row.openHedgeAvg != null ? `avg ${cents2(row.openHedgeAvg)}` : undefined} />
+          <p className="text-xs text-slate-500 italic">
+            Physical cotton marketing not yet tracked — showing production and futures hedges only.
+          </p>
+        </div>
+      </div>
+
+      <button
+        type="button" onClick={onToggleDetails} aria-expanded={detailsOpen}
+        className="no-print w-full flex items-center justify-center gap-1.5 border-t border-slate-100 px-4 py-2 text-sm font-medium text-sky-700 hover:bg-sky-50 rounded-b-xl"
+      >
+        {detailsOpen
+          ? <>▾ Hide details</>
+          : <>▸ Show details <span className="font-normal text-slate-400">— hedge pricing, what-if &amp; profitability</span></>}
+      </button>
+
+      {detailsOpen && (
+        <div className="border-t border-slate-100 p-4 md:p-5 space-y-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-5 text-sm">
+            <DetailSection title="Hedge Pricing (¢/lb)">
+              {row.futuresSources.length > 0 ? (
+                <>
+                  {row.futuresSources.map((s, i) => (
+                    <Row key={i} label={s.label} value={`${bu(s.bushels)} lbs @ ${cents2(s.avgPrice)}`} />
+                  ))}
+                  {row.hedgeRealizedPnl !== 0 && (
+                    <>
+                      <Row label="Realized hedge P&L" value={`${row.hedgeAdjPerBu >= 0 ? '+' : ''}${cents2(row.hedgeAdjPerBu)}/lb`} tone={row.hedgeAdjPerBu > 0 ? 'text-green-700' : row.hedgeAdjPerBu < 0 ? 'text-red-700' : undefined} />
+                      <div className="text-[11px] text-slate-400 leading-snug">{fmtPnl(row.hedgeRealizedPnl)} spread across {bu(prod)} lbs total production</div>
+                    </>
+                  )}
+                </>
+              ) : (
+                <div className="text-slate-400">No open CT hedges.</div>
+              )}
+              {row.unpricedBu > 0 && (
+                <Row label={`Unhedged (${bu(row.unpricedBu)} lbs)`} value={row.unpricedFuturesPrice > 0 ? cents2(row.unpricedFuturesPrice) : '—'} tone="text-amber-700" />
+              )}
+              <div className="border-t border-slate-300 pt-1">
+                <Row label="= Effective avg price" value={headlineAvg != null ? cents2(headlineAvg) : '—'} tone="text-slate-900 font-bold" />
+              </div>
+              {row.hedgeRealizedPnl !== 0 && (
+                <Row label="Realized hedge P&L (in revenue)" value={fmtPnl(row.hedgeRealizedPnl)} tone={row.hedgeRealizedPnl > 0 ? 'text-green-700' : 'text-red-700'} />
+              )}
+            </DetailSection>
+
+            <DetailSection title="Profitability">
+              <Row label="Cost / acre" value={usd(row.costPerAcre)} />
+              <Row label="Cost / lb" value={row.costPerBu != null ? cents2(row.costPerBu) : '—'} />
+              <Row label="Revenue / acre" value={usd(row.revenuePerAcre)} />
+              <Row label="Profit / acre" value={row.profitPerAcre != null ? usd(row.profitPerAcre) : row.revenuePerAcre != null ? 'set cost' : '—'} tone={headlineProfitTone} />
+              <div className="border-t border-slate-300 pt-1">
+                <Row label="= Total profit" value={row.totalProfit != null ? usd(row.totalProfit) : '—'} tone={`font-bold ${headlineProfitTone}`} />
+              </div>
+              <Row label="Breakeven price" value={be.price != null ? `${cents2(be.price)}/lb` : '—'} />
+              <Row label="Breakeven yield" value={be.yieldPerAcre != null ? `${bu(be.yieldPerAcre)} lbs/ac` : '—'} />
+            </DetailSection>
+          </div>
+
+          <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 sm:p-4 no-print text-sm">
+            <div className="flex items-baseline gap-3 mb-3">
+              <div className="font-semibold text-sky-900">What-If on Unhedged Lbs</div>
+              {row.assumedFutures != null && (
+                <button type="button" onClick={clearAssumptions} className="ml-auto text-xs text-slate-500 hover:text-red-600 font-medium">
+                  Clear assumptions
+                </button>
+              )}
+            </div>
+            <div className="space-y-1 lg:max-w-md">
+              <div className="text-xs text-slate-600">Unhedged lbs: <span className="tabular-nums font-medium">{bu(row.unpricedBu)}</span></div>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <input type="number" step="0.01" inputMode="decimal" value={wfFutures} placeholder="¢/lb"
+                  onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }} onBlur={commitFutures}
+                  className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
+                {nc && !expired && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-sky-700 font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
+                {!nc && <span className="text-xs text-slate-400">Enter a price</span>}
+              </div>
+              {nc && expired && <div className="text-xs text-amber-700">Contract expired — enter price manually.</div>}
+              {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{wfSymbol} · {cents2(wfFut)}{wfStale ? ' (cached)' : ''}</div>}
+              {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
+              <div className="text-xs text-slate-400">Assumed ¢/lb — saves automatically; values the unhedged lbs until cleared.</div>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
 // The futures half of Total Avg Price, shown under it the same way as basis: the
 // realized average futures over priced bushels (slate), or — when the crop is
 // entirely unpriced — the assumed futures the user entered (amber, dashed).
@@ -1027,7 +1193,7 @@ function AssumptionsPanel({ crops, year, assumptions, segByCrop, actualByCrop, o
                   <span className="font-semibold flex-1">{c.name}</span>
                   {missing
                     ? <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">needs yield</span>
-                    : <span className="text-xs text-slate-500 tabular-nums">{effYield?.toFixed(1)} bu/ac{a?.cost_per_acre != null ? ` · ${usd0(a.cost_per_acre)}/ac` : ''}{a?.harvest_complete ? ' · harvested' : ''}</span>}
+                    : <span className="text-xs text-slate-500 tabular-nums">{effYield?.toFixed(1)} {isCottonCrop(c.name) ? 'lbs lint/ac' : 'bu/ac'}{a?.cost_per_acre != null ? ` · ${usd0(a.cost_per_acre)}/ac` : ''}{a?.harvest_complete ? ' · harvested' : ''}</span>}
                 </button>
                 {isOpen && (
                   <div className="px-3 pb-3 border-t border-slate-100">
@@ -1123,6 +1289,11 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
 
   const ic = 'rounded border border-slate-300 px-2 py-1 w-20 text-right'
   const cell = 'px-1 py-1'
+  // Cotton assumptions are lbs of lint per acre (and its actuals come from gin
+  // receipts); everything else is bushels. Same fields, the crop's own unit.
+  const lbsUnit = isCottonCrop(crop.name)
+  const yieldUnit = lbsUnit ? 'lbs/ac' : 'bu/ac'
+  const prodUnit = lbsUnit ? 'lbs' : 'bu'
   return (
     <div className="space-y-2 pt-2">
       <label className="text-sm flex items-center gap-1 text-slate-600">
@@ -1144,7 +1315,7 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
           <tr className="text-xs text-slate-500">
             <th className={`${cell} text-left font-normal`}></th>
             <th className={`${cell} text-right font-normal`}>Acres</th>
-            <th className={`${cell} text-right font-normal`}>Yield bu/ac</th>
+            <th className={`${cell} text-right font-normal`}>Yield {yieldUnit}</th>
             <th className={`${cell} text-right font-normal`}>Cost/ac</th>
           </tr>
         </thead>
@@ -1179,9 +1350,9 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
       </table>
       <div className="flex items-center gap-3">
         {harvestDone ? (
-          <span className="text-sm text-slate-600">Actual production: <span className="font-mono font-semibold">{bu(actual!.production)}</span> bu</span>
+          <span className="text-sm text-slate-600">Actual production: <span className="font-mono font-semibold">{bu(actual!.production)}</span> {prodUnit}</span>
         ) : (
-          <span className="text-sm text-slate-600">Expected production: <span className="font-mono font-semibold">{bu(prod)}</span> bu</span>
+          <span className="text-sm text-slate-600">Expected production: <span className="font-mono font-semibold">{bu(prod)}</span> {prodUnit}</span>
         )}
         <button onClick={save} className="ml-auto rounded-lg bg-green-700 text-white px-3 py-1 text-sm font-semibold">Save</button>
       </div>

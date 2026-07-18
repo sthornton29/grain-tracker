@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
 import PlantingsAiImport from '@/components/plantings-ai-import'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { usePersistentState } from '@/lib/use-persistent-state'
 import type { Crop, Farm, Field, FieldPlanting, FieldPlantingVariety } from '@/lib/types'
 
 type VarietyInput = { variety: string; acres: string }
@@ -318,6 +319,9 @@ export default function PlantingsPage() {
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [varieties, setVarieties] = useState<FieldPlantingVariety[]>([])
   const [year, setYear] = useState<number>(currentYear())
+  // Farm filter persists across visits (app filter-persistence pattern); it also
+  // narrows the Field dropdown below.
+  const [farmFilter, setFarmFilter] = usePersistentState<string>('plantings-settings:farm', '')
   const [fieldFilter, setFieldFilter] = useState('')
   const [harvestFilter, setHarvestFilter] = useState<'' | 'fall' | 'spring'>('')
   const [form, setForm] = useState<Form>(empty(currentYear()))
@@ -402,6 +406,7 @@ export default function PlantingsPage() {
   const visible = plantings
     .filter((p) => {
       if (p.season_year !== year) return false
+      if (farmFilter && fieldById.get(p.field_id)?.farm_id !== farmFilter) return false
       if (fieldFilter && p.field_id !== fieldFilter) return false
       if (harvestFilter && cropById.get(p.crop_id)?.harvest_category !== harvestFilter) return false
       if (q) {
@@ -625,10 +630,27 @@ export default function PlantingsPage() {
             placeholder="Or type"
           />
           <label className="text-sm flex items-center gap-2">
+            Farm
+            <select
+              value={farmFilter}
+              onChange={(e) => {
+                const next = e.target.value
+                setFarmFilter(next)
+                // Keep the field filter consistent: clear it when the selected
+                // field isn't on the newly-chosen farm.
+                if (next && fieldFilter && fieldById.get(fieldFilter)?.farm_id !== next) setFieldFilter('')
+              }}
+              className={inputCls}
+            >
+              <option value="">All farms</option>
+              {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          </label>
+          <label className="text-sm flex items-center gap-2">
             Field
             <select value={fieldFilter} onChange={(e) => setFieldFilter(e.target.value)} className={inputCls}>
               <option value="">All fields</option>
-              {fields.map((f) => <option key={f.id} value={f.id}>{fieldLabel(f.id)}</option>)}
+              {fields.filter((f) => !farmFilter || f.farm_id === farmFilter).map((f) => <option key={f.id} value={f.id}>{fieldLabel(f.id)}</option>)}
             </select>
           </label>
           <label className="text-sm flex items-center gap-2">
@@ -671,6 +693,12 @@ export default function PlantingsPage() {
           {sortDir === 'asc' ? '↑' : '↓'}
         </button>
       </div>
+
+      <p className="text-sm text-slate-500">
+        {visible.length} planting{visible.length === 1 ? '' : 's'} · {year}
+        {' · '}{farmFilter ? (farmById.get(farmFilter)?.name ?? 'Farm') : 'All farms'}
+        {harvestFilter ? ` · ${harvestFilter === 'fall' ? 'Fall' : 'Spring'} harvest` : ''}
+      </p>
 
       <div className="overflow-x-auto bg-white rounded-xl shadow">
         <table className="min-w-full text-sm">

@@ -44,7 +44,9 @@ export type NumFmt =
   | 'usd0' // $1,234
   | 'usd2' // $1,234.56
   | 'price' // $4.93 ($/bu, 2 decimals)
+  | 'cents' // 72.65¢ (¢/lb cotton prices, 2 decimals with a cents indicator)
   | 'bu' // 45,000 bushels (0 decimals)
+  | 'lbs' // 412,000 lbs (0 decimals, commas)
   | 'acres' // 1,250.0 (1 decimal)
   | 'yield' // 182.5 bu/ac (1 decimal)
   | 'pct0' // 86%
@@ -126,6 +128,7 @@ export function formatNumber(value: number, fmt?: NumFmt): string {
   switch (fmt) {
     case 'int':
     case 'bu':
+    case 'lbs':
       body = group(a, 0, 0); break
     case 'dec1':
     case 'acres':
@@ -138,6 +141,8 @@ export function formatNumber(value: number, fmt?: NumFmt): string {
     case 'usd2':
     case 'price':
       body = '$' + group(a, 2, 2); break
+    case 'cents':
+      body = group(a, 2, 2) + '¢'; break
     case 'pct0':
       body = group(a, 0, 0) + '%'; break
     case 'pct1':
@@ -155,7 +160,8 @@ export function excelNumFmt(fmt?: NumFmt): string | undefined {
   switch (fmt) {
     case 'text': return undefined
     case 'int':
-    case 'bu': return '#,##0;(#,##0)'
+    case 'bu':
+    case 'lbs': return '#,##0;(#,##0)'
     case 'dec1':
     case 'acres':
     case 'yield': return '#,##0.0;(#,##0.0)'
@@ -163,6 +169,7 @@ export function excelNumFmt(fmt?: NumFmt): string | undefined {
     case 'usd0': return '$#,##0;($#,##0)'
     case 'usd2':
     case 'price': return '$#,##0.00;($#,##0.00)'
+    case 'cents': return '#,##0.00"¢";(#,##0.00"¢")'
     case 'pct0': return '#,##0"%";(#,##0"%")'
     case 'pct1': return '#,##0.0"%";(#,##0.0"%")'
     default: return '#,##0.##;(#,##0.##)' // inference

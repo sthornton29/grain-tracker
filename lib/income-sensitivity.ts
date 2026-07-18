@@ -26,7 +26,7 @@ import {
   computePolicy, policyPremium, scoConfigFrom, ecoConfigFrom,
   type PolicyInputs, type Practice,
 } from '@/lib/crop-insurance'
-import { cropToCommodity } from '@/lib/contracts'
+import { cropToHedgeCommodity } from '@/lib/contracts'
 import { analyzeYields, harvestStatusOf, IN_PROGRESS_THRESHOLD, type FieldCropAgg, type HarvestStatus } from '@/lib/yields'
 import type {
   Contract, Crop, CropAssumption, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco,
@@ -49,13 +49,19 @@ export function axisValues(spec: AxisSpec): number[] {
   return out
 }
 
-// Sensible default increments per crop (futures $/bu and yield bu/ac). Untraded
-// crops get the small-grain defaults.
+// Sensible default increments per crop. Grains: futures $/bu and yield bu/ac.
+// Cotton: the axes are ¢/lb (on CTZ) and lbs of lint/ac, so the steps are
+// cotton-sized — 2¢ price moves and 50-lb yield moves. Untraded crops get the
+// small-grain defaults.
 export function defaultPriceStep(cropName: string | null | undefined): number {
-  return cropToCommodity(cropName) === 'Soybeans' ? 0.4 : 0.2
+  const c = cropToHedgeCommodity(cropName)
+  if (c === 'Cotton') return 2
+  return c === 'Soybeans' ? 0.4 : 0.2
 }
 export function defaultYieldStep(cropName: string | null | undefined): number {
-  return cropToCommodity(cropName) === 'Corn' ? 10 : 5
+  const c = cropToHedgeCommodity(cropName)
+  if (c === 'Cotton') return 50
+  return c === 'Corn' ? 10 : 5
 }
 
 // Index of the axis value closest to `target` (the "you are here" row/column).

@@ -8,7 +8,7 @@
 // yields after harvest. The UI labels them as such.
 
 import { buildContractSymbol, type Commodity } from '@/lib/hedging'
-import { cropToCommodity } from '@/lib/contracts'
+import { cropToHedgeCommodity } from '@/lib/contracts'
 import { DEFAULT_SCO_TRIGGER } from '@/lib/program-config'
 import { computeBushels } from '@/lib/shrink'
 import type {
@@ -93,7 +93,7 @@ export function projectedPriceFromEstimates(
 // The Barchart futures symbol whose current price estimates the harvest price,
 // e.g. Corn 2026 -> "ZCZ26". null when the crop has no traded-futures mapping.
 export function harvestContractSymbol(cropName: string | null | undefined, cropYear: number): string | null {
-  const c = cropToCommodity(cropName)
+  const c = cropToHedgeCommodity(cropName)
   if (!c) return null
   const yy = String(cropYear % 100).padStart(2, '0')
   const sym = buildContractSymbol(c, `${HARVEST_MONTH_ABBR[c]} ${yy}`)
@@ -102,7 +102,7 @@ export function harvestContractSymbol(cropName: string | null | undefined, cropY
 
 // A human label for the harvest contract, e.g. "DEC 26 Corn".
 export function harvestContractLabel(cropName: string | null | undefined, cropYear: number): string | null {
-  const c = cropToCommodity(cropName)
+  const c = cropToHedgeCommodity(cropName)
   if (!c) return null
   const yy = String(cropYear % 100).padStart(2, '0')
   const display = c === 'Chicago Wheat' ? 'Wheat' : c
