@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
+import { isCottonCrop } from '@/lib/marketing'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import ExportBar from '@/components/export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
@@ -98,6 +99,9 @@ export default function SeasonSummaryPage() {
 
   type Agg = {
     cropName: string
+    // Cotton is lbs-native — its production/yield live in the Cotton Yields
+    // section below, never in this table's bushel columns.
+    isCotton: boolean
     fullSeasonAcres: number
     doubleCropAcres: number
     totalAcres: number
@@ -122,6 +126,7 @@ export default function SeasonSummaryPage() {
       const key = p.crop_id
       if (!m.has(key)) m.set(key, {
         cropName,
+        isCotton: isCottonCrop(cropName),
         fullSeasonAcres: 0, doubleCropAcres: 0, totalAcres: 0,
         irrigatedAcres: 0, drylandAcres: 0, dryBu: 0, harvestedAcres: 0,
       })
@@ -170,11 +175,11 @@ export default function SeasonSummaryPage() {
   // Export mirrors the on-screen table (real numbers + shared formatting).
   function buildPayload(): ExportPayload {
     const rows = byCrop.map((r) => {
-      const yld = r.harvestedAcres > 0 ? r.dryBu / r.harvestedAcres : ''
+      const yld = !r.isCotton && r.harvestedAcres > 0 ? r.dryBu / r.harvestedAcres : ''
       return [
-        r.cropName, r.fullSeasonAcres, r.doubleCropAcres, r.totalAcres,
+        r.isCotton ? `${r.cropName} (lbs — see Cotton Yields)` : r.cropName, r.fullSeasonAcres, r.doubleCropAcres, r.totalAcres,
         r.irrigatedAcres > 0 ? r.irrigatedAcres : '', r.drylandAcres > 0 ? r.drylandAcres : '',
-        r.dryBu, yld,
+        r.isCotton ? '' : r.dryBu, yld,
       ]
     })
     rows.push(['Total', totals.fullSeason, totals.doubleCrop, totals.acres, totals.irrigated, totals.dryland, totals.dryBu, ''])
@@ -241,7 +246,7 @@ export default function SeasonSummaryPage() {
                 </thead>
                 <tbody>
                   {byCrop.map((r) => {
-                    const yld = r.harvestedAcres > 0 ? r.dryBu / r.harvestedAcres : null
+                    const yld = !r.isCotton && r.harvestedAcres > 0 ? r.dryBu / r.harvestedAcres : null
                     return (
                       <tr key={r.cropName} className="border-t border-slate-100">
                         <td className={`${textCell} font-semibold`}>{r.cropName}</td>
@@ -250,8 +255,14 @@ export default function SeasonSummaryPage() {
                         <td className={numCell}>{fmt(r.totalAcres, 2)}</td>
                         <td className={numCell}>{r.irrigatedAcres > 0 ? fmt(r.irrigatedAcres, 2) : '—'}</td>
                         <td className={numCell}>{r.drylandAcres > 0 ? fmt(r.drylandAcres, 2) : '—'}</td>
-                        <td className={numCell}>{fmt(r.dryBu, 2)}</td>
-                        <td className={`${numCell} font-semibold`}>{yld != null ? yld.toFixed(1) : '—'}</td>
+                        {r.isCotton ? (
+                          <td colSpan={2} className={`${numCell} text-xs text-slate-400 font-normal`}>lbs of lint — see Cotton Yields below</td>
+                        ) : (
+                          <>
+                            <td className={numCell}>{fmt(r.dryBu, 2)}</td>
+                            <td className={`${numCell} font-semibold`}>{yld != null ? yld.toFixed(1) : '—'}</td>
+                          </>
+                        )}
                       </tr>
                     )
                   })}

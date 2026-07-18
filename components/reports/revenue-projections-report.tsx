@@ -9,7 +9,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, type Planting } from '@/lib/marketing'
+import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, type Planting } from '@/lib/marketing'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { cropToCommodity } from '@/lib/contracts'
 import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
@@ -44,6 +44,8 @@ type LoadRow = {
 }
 
 type SplitRow = { load_id: string; field_id: string; crop_id: string; dry_bushels: number | null }
+type GinReceiptLite = { id: string; crop_year: number; bales_count: number | null; total_bale_weight: number | null }
+type CottonBaleLite = { gin_receipt_id: string; crop_year: number; net_weight_lbs: number }
 
 type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
 
@@ -79,11 +81,16 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   const [arcPayments, setArcPayments] = useState<ArcPlcPayment[]>([])
   const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
 
+  // Cotton actuals (lbs of lint from gin receipts) — same inputs the Marketing
+  // dashboard feeds computeMarketing, so the cotton row matches on both pages.
+  const [ginReceipts, setGinReceipts] = useState<GinReceiptLite[]>([])
+  const [cottonBales, setCottonBales] = useState<CottonBaleLite[]>([])
+
   const [cropYear, setCropYear] = usePersistentState<number | ''>('rev-proj:cropYear', '')
 
   useEffect(() => {
     ;(async () => {
-      const [cr, pl, ct, fp, op, ca, ld, po, sc, ec, hpe, cc, ba, el, apd, apay, ogp, sp] = await Promise.all([
+      const [cr, pl, ct, fp, op, ca, ld, po, sc, ec, hpe, cc, ba, el, apd, apay, ogp, sp, gr, cb] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('field_plantings').select('*'),
         supabase.from('contracts').select('*'),
@@ -102,7 +109,11 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
         supabase.from('arc_plc_payments').select('*'),
         supabase.from('other_government_payments').select('*'),
         supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels'),
+        supabase.from('gin_receipts').select('id, crop_year, bales_count, total_bale_weight'),
+        supabase.from('cotton_bales').select('gin_receipt_id, crop_year, net_weight_lbs'),
       ])
+      setGinReceipts(((gr.data as unknown) as GinReceiptLite[]) || [])
+      setCottonBales(((cb.data as unknown) as CottonBaleLite[]) || [])
       setCrops((cr.data as Crop[]) || [])
       setPlantings((pl.data as FieldPlanting[]) || [])
       setContracts((ct.data as Contract[]) || [])
@@ -216,6 +227,30 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     return m
   }, [plantings, cropYear, liveEstimates])
 
+  // Cotton lbs of lint per cotton crop id (per-bale weights, falling back to the
+  // receipt's total bale weight) — identical derivation to the dashboard's.
+  const cottonProductionByCrop = useMemo(() => {
+    const m = new Map<string, { lintLbs: number; bales: number }>()
+    if (cropYear === '') return m
+    const balesByReceipt = new Map<string, { lbs: number; count: number }>()
+    for (const b of cottonBales) {
+      if (b.crop_year !== cropYear) continue
+      const g = balesByReceipt.get(b.gin_receipt_id) ?? { lbs: 0, count: 0 }
+      g.lbs += Number(b.net_weight_lbs) || 0
+      g.count += 1
+      balesByReceipt.set(b.gin_receipt_id, g)
+    }
+    let lintLbs = 0, baleCount = 0
+    for (const r of ginReceipts) {
+      if (r.crop_year !== cropYear) continue
+      const fromBales = balesByReceipt.get(r.id)
+      lintLbs += fromBales && fromBales.lbs > 0 ? fromBales.lbs : Number(r.total_bale_weight) || 0
+      baleCount += fromBales && fromBales.count > 0 ? fromBales.count : Number(r.bales_count) || 0
+    }
+    for (const c of crops) if (isCottonCrop(c.name)) m.set(c.id, { lintLbs, bales: baleCount })
+    return m
+  }, [cropYear, ginReceipts, cottonBales, crops])
+
   const marketingRows = useMemo(() => {
     if (cropYear === '') return []
     return computeMarketing({
@@ -230,8 +265,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       expectedProductionByCrop: expProdByCrop,
       currentFuturesByCrop,
       harvestCompleteCropIds: harvestCompleteIds,
+      cottonProductionByCrop,
     })
-  }, [cropYear, crops, plantings, contracts, futures, options, assumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds])
+  }, [cropYear, crops, plantings, contracts, futures, options, assumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds, cottonProductionByCrop])
 
   // Resolve a harvest price per crop: final → estimate → projected.
   function harvestPriceFor(cropId: string): { price: number; isFinal: boolean } {
@@ -364,9 +400,12 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
         { label: 'Insurance Proceeds', align: 'right', format: 'usd0' }, { label: 'Govt Payments', align: 'right', format: 'usd0' },
         { label: 'Total Revenue', align: 'right', format: 'usd0' }, { label: 'Revenue/Acre', align: 'right', format: 'usd0' },
       ],
+      // Cotton rows override the bushel-shaped columns per cell: production in
+      // lbs and the crop name carries the unit so mixed tables stay readable.
       rows: rows.map((r) => [
-        r.cropName, Math.round(r.acres), r.yield != null ? Number(r.yield.toFixed(1)) : '',
-        Math.round(r.totalProduction), Math.round(r.cropSalesRevenue), Math.round(r.insuranceProceeds),
+        r.unit === 'lbs' ? `${r.cropName} (lbs lint)` : r.cropName, Math.round(r.acres), r.yield != null ? Number(r.yield.toFixed(1)) : '',
+        r.unit === 'lbs' ? { v: Math.round(r.totalProduction), format: 'lbs' as const } : Math.round(r.totalProduction),
+        Math.round(r.cropSalesRevenue), Math.round(r.insuranceProceeds),
         r.govtPayments, Math.round(r.totalRevenue), r.revenuePerAcre != null ? Math.round(r.revenuePerAcre) : '',
       ]),
       rowMeta: rows.map(() => 'data' as const),
@@ -385,11 +424,13 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
         { label: 'Total Revenue', align: 'right', format: 'usd0' }, { label: 'Profit', align: 'right', format: 'usd0' }, { label: 'Profit/Acre', align: 'right', format: 'usd0' },
         { label: 'Total Avg Price', align: 'right', format: 'price' }, { label: 'Breakeven Price', align: 'right', format: 'price' }, { label: 'Breakeven Yield', align: 'right', format: 'yield' },
       ],
+      // Cotton prices export in ¢/lb (per-cell 'cents' format) — never $/bu.
       rows: rows.map((r) => [
-        r.cropName, r.costPerAcre != null ? Math.round(r.costPerAcre) : '', Math.round(r.totalCost),
+        r.unit === 'lbs' ? `${r.cropName} (¢/lb · lbs)` : r.cropName, r.costPerAcre != null ? Math.round(r.costPerAcre) : '', Math.round(r.totalCost),
         Math.round(r.totalRevenue), r.profit != null ? Math.round(r.profit) : '', r.profitPerAcre != null ? Math.round(r.profitPerAcre) : '',
-        r.totalAvgPrice != null ? Number(r.totalAvgPrice.toFixed(2)) : '',
-        r.breakevenPrice != null ? Number(r.breakevenPrice.toFixed(2)) : '', r.breakevenYield != null ? Number(r.breakevenYield.toFixed(1)) : '',
+        r.totalAvgPrice != null ? (r.unit === 'lbs' ? { v: Number(r.totalAvgPrice.toFixed(2)), format: 'cents' as const } : Number(r.totalAvgPrice.toFixed(2))) : '',
+        r.breakevenPrice != null ? (r.unit === 'lbs' ? { v: Number(r.breakevenPrice.toFixed(2)), format: 'cents' as const } : Number(r.breakevenPrice.toFixed(2))) : '',
+        r.breakevenYield != null ? Number(r.breakevenYield.toFixed(1)) : '',
       ]),
       rowMeta: rows.map(() => 'data' as const),
     }
@@ -500,9 +541,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                   <tr key={r.cropId} className="border-t border-slate-100">
                     <td className="px-2 py-1 font-semibold">{r.cropName}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{bu(r.acres)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{r.yield != null ? `${r.yield.toFixed(1)}` : '—'} <span className="text-xs text-slate-400">{r.yield != null ? r.yieldLabel : ''}</span></td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{bu(r.totalProduction)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums" title={r.avgSalesPrice != null ? `Effective ${price2(r.avgSalesPrice)}/bu over ${bu(r.totalProduction)} bu` : 'No production'}>{usd(r.cropSalesRevenue)}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums">{r.yield != null ? `${r.yield.toFixed(1)}` : '—'} <span className="text-xs text-slate-400">{r.yield != null ? `${r.unit === 'lbs' ? 'lbs/ac ' : ''}${r.yieldLabel}` : ''}</span></td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums">{bu(r.totalProduction)}{r.unit === 'lbs' && <span className="text-xs text-slate-400"> lbs</span>}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums" title={r.avgSalesPrice != null ? `Effective ${r.unit === 'lbs' ? `${r.avgSalesPrice.toFixed(2)}¢/lb` : `${price2(r.avgSalesPrice)}/bu`} over ${bu(r.totalProduction)} ${r.unit}` : 'No production'}>{usd(r.cropSalesRevenue)}</td>
                     <td className={`px-2 py-1 text-right font-mono tabular-nums ${toneText(signedTone(r.insuranceProceeds))}`}>{usd(r.insuranceProceeds)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums" title={`ARC/PLC: ${usd(r.govtArcPlc)} | Conservation/Other (allocated): ${usd(r.govtAllocatedOther)} | Crop-specific other: ${usd(r.govtCropSpecificOther)}`}>{usd(r.govtPayments)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold">{usd(r.totalRevenue)}</td>
@@ -513,7 +554,10 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                   <td className="px-2 py-1">Total</td>
                   <td className="px-2 py-1 text-right font-mono tabular-nums">{bu(totals.acres)}</td>
                   <td />
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{bu(totals.totalProduction)}</td>
+                  <td className="px-2 py-1 text-right font-mono tabular-nums">
+                    {bu(totals.totalProduction)}
+                    {totals.totalProductionLbs > 0 && <span className="text-xs text-slate-400"> bu + {bu(totals.totalProductionLbs)} lbs</span>}
+                  </td>
                   <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.cropSalesRevenue)}</td>
                   <td className={`px-2 py-1 text-right font-mono tabular-nums ${toneText(signedTone(totals.insuranceProceeds))}`}>{usd(totals.insuranceProceeds)}</td>
                   <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.govtPayments)}</td>
@@ -544,9 +588,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.totalRevenue)}</td>
                     <td className={`px-2 py-1 text-right font-mono tabular-nums font-semibold ${r.profit == null ? toneText('muted') : toneText(signedTone(r.profit))}`}>{r.profit != null ? usd(r.profit) : 'no cost'}</td>
                     <td className={`px-2 py-1 text-right font-mono tabular-nums ${r.profitPerAcre == null ? toneText('muted') : toneText(signedTone(r.profitPerAcre))}`}>{usd(r.profitPerAcre)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold" title="The Marketing dashboard's Total Avg Price — breakeven yield = cost/acre ÷ this">{price2(r.totalAvgPrice)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{price2(r.breakevenPrice)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{r.breakevenYield != null ? `${r.breakevenYield.toFixed(1)} bu/ac` : '—'}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold" title="The Marketing dashboard's Total Avg Price — breakeven yield = cost/acre ÷ this">{r.unit === 'lbs' ? (r.totalAvgPrice != null ? `${r.totalAvgPrice.toFixed(2)}¢` : '—') : price2(r.totalAvgPrice)}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums">{r.unit === 'lbs' ? (r.breakevenPrice != null ? `${r.breakevenPrice.toFixed(2)}¢` : '—') : price2(r.breakevenPrice)}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums">{r.breakevenYield != null ? `${r.breakevenYield.toFixed(1)} ${r.unit === 'lbs' ? 'lbs/ac' : 'bu/ac'}` : '—'}</td>
                   </tr>
                 ))}
                 <tr className={`border-t-2 ${grandTotalRowCls}`}>
@@ -567,7 +611,10 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
             Uncontracted bushels valued at: {rows.map((r) => {
               const lbl = harvestLabelFor(r.cropId)
               const mp = r.marketPrice
-              return mp != null ? `${r.cropName} ${price2(mp)}${lbl ? ` (${lbl} + basis)` : ''}` : null
+              if (mp == null) return null
+              // Cotton quotes are ¢/lb on CTZ; no basis concept for cotton.
+              if (r.unit === 'lbs') return `${r.cropName} ${mp.toFixed(2)}¢/lb${lbl ? ` (${lbl})` : ''}`
+              return `${r.cropName} ${price2(mp)}${lbl ? ` (${lbl} + basis)` : ''}`
             }).filter(Boolean).join(' · ') || '—'}
           </p>
         </>

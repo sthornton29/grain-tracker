@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
 import FieldsAiImport from '@/components/fields-ai-import'
 import { buildDoubleCropSet } from '@/lib/plantings'
+import { usePersistentState } from '@/lib/use-persistent-state'
 import type { Crop, Farm, Field, FieldPlanting, County, EntityCounty } from '@/lib/types'
 
 function parseAcres(v: string): number | null {
@@ -54,6 +55,8 @@ export default function FieldsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [q, setQ] = useState('')
+  // Farm filter for the list, persisted like the app's other filters ('' = all).
+  const [farmFilter, setFarmFilter] = usePersistentState<string>('fields-settings:farm', '')
   const [sortKey, setSortKey] = useState<'name' | 'farm' | 'acres' | 'county'>('name')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
 
@@ -289,6 +292,17 @@ export default function FieldsPage() {
           onChange={(e) => setQ(e.target.value)}
           className="rounded-lg border border-slate-300 px-3 py-2 flex-1 min-w-[12rem]"
         />
+        <label className="text-sm flex items-center gap-2">
+          Farm
+          <select
+            value={farmFilter}
+            onChange={(e) => setFarmFilter(e.target.value)}
+            className="rounded-lg border border-slate-300 px-3 py-2"
+          >
+            <option value="">All farms</option>
+            {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </select>
+        </label>
         <select
           value={sortKey}
           onChange={(e) => setSortKey(e.target.value as 'name' | 'farm' | 'acres' | 'county')}
@@ -311,6 +325,7 @@ export default function FieldsPage() {
       {(() => {
         const visible = fields
           .filter((f) => {
+            if (farmFilter && f.farm_id !== farmFilter) return false
             if (!q) return true
             const hay = [
               f.name_or_number,
@@ -331,6 +346,11 @@ export default function FieldsPage() {
             return dir * a.name_or_number.localeCompare(b.name_or_number)
           })
         return (
+      <div className="space-y-2">
+      <p className="text-sm text-slate-500">
+        {visible.length} of {fields.length} field{fields.length === 1 ? '' : 's'}
+        {' · '}{farmFilter ? (farmById.get(farmFilter)?.name ?? 'Farm') : 'All farms'}
+      </p>
       <div className="overflow-x-auto bg-white rounded-xl shadow">
         <table className="min-w-full text-sm">
           <thead className="bg-slate-100 text-slate-700">
@@ -519,6 +539,7 @@ export default function FieldsPage() {
             })}
           </tbody>
         </table>
+      </div>
       </div>
       ) })()}
     </div>

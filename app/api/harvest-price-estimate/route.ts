@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { harvestContractSymbol, harvestContractLabel } from '@/lib/crop-insurance'
+import { normalizeBarchartPrice } from '@/lib/hedging'
 
 export const runtime = 'nodejs'
 export const maxDuration = 30
@@ -101,7 +102,8 @@ export async function POST(req: NextRequest) {
         const raw = r?.lastPrice ?? r?.close ?? r?.settlement
         const cents = typeof raw === 'number' ? raw : Number(raw)
         if (!sym || !Number.isFinite(cents)) continue
-        const price = Math.round((cents / 100) * 1e6) / 1e6 // cents/bu -> $/bu
+        // Grains: cents/bu → $/bu. Cotton (CT…): already ¢/lb — pass through.
+        const price = Math.round(normalizeBarchartPrice(sym, cents) * 1e6) / 1e6
         const price_date = dateFromTimestamp(r?.tradeTimestamp ?? r?.serverTimestamp, today)
         fetched.set(sym, { price, price_date })
         marketUpserts.push({ contract_symbol: sym, price, price_date })

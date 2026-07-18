@@ -24,6 +24,9 @@ export type GovtProceeds = {
 export type RevenueRow = {
   cropId: string
   cropName: string
+  // Mirrors the marketing row: 'bu' (bushels, $/bu) or 'lbs' (cotton lint, ¢/lb).
+  // Quantity fields carry that unit; dollar fields are dollars either way.
+  unit: 'bu' | 'lbs'
   acres: number
   yield: number | null
   yieldLabel: 'Est.' | 'Actual'
@@ -68,7 +71,9 @@ export type RevenueRow = {
 
 export type RevenueTotals = {
   acres: number
+  /** Bushels across grain rows; cotton lbs are totalProductionLbs. */
   totalProduction: number
+  totalProductionLbs: number
   cropSalesRevenue: number
   insuranceProceeds: number
   govtPayments: number
@@ -116,7 +121,10 @@ export function computeRevenueProjections(args: {
     // source of truth — identical to what the Marketing dashboard shows. Kept at
     // FULL precision (the UI rounds at display); nothing rounded is summed below.
     const cropSalesRevenue = m.blendedRevenue
-    const avgSalesPrice = m.totalProduction > 0 ? m.blendedRevenue / m.totalProduction : null
+    // Effective price per unit: $/bu for grains, ¢/lb (×100) for cotton.
+    const avgSalesPrice = m.totalProduction > 0
+      ? (m.blendedRevenue / m.totalProduction) * (m.unit === 'lbs' ? 100 : 1)
+      : null
     const salesPriceSource: RevenueRow['salesPriceSource'] = m.totalProduction > 0 ? 'blended' : null
 
     const ins = insuranceByCrop.get(m.cropId) ?? { netPnl: 0, totalIndemnity: 0, premium: 0 }
@@ -139,13 +147,17 @@ export function computeRevenueProjections(args: {
     // effective price over all production once assumptions blend in), the same
     // figure the dashboard headline shows. The insurance + government safety net is
     // reflected in Total Revenue / Profit above, not folded into breakeven.
-    const beAvg = breakevenAvgPrice(m)
-    const breakevenPrice = costPerAcre != null && m.yield != null && m.yield > 0 ? costPerAcre / m.yield : null
-    const breakevenYield = costPerAcre != null && beAvg != null && beAvg > 0 ? costPerAcre / beAvg : null
+    // Cotton (¢/lb, lbs): the headline avg is the row's effective ¢/lb, breakeven
+    // price is ¢/lb (cost×100 ÷ lbs/ac), breakeven yield lbs/ac against that ¢.
+    const beAvg = m.unit === 'lbs' ? m.totalAvgPrice : breakevenAvgPrice(m)
+    const priceScale = m.unit === 'lbs' ? 100 : 1
+    const breakevenPrice = costPerAcre != null && m.yield != null && m.yield > 0 ? (costPerAcre * priceScale) / m.yield : null
+    const breakevenYield = costPerAcre != null && beAvg != null && beAvg > 0 ? (costPerAcre * priceScale) / beAvg : null
 
     return {
       cropId: m.cropId,
       cropName: m.cropName,
+      unit: m.unit,
       acres: m.acres,
       yield: m.yield,
       yieldLabel: m.yieldLabel,
@@ -193,6 +205,7 @@ export function computeRevenueProjections(args: {
   const totals: RevenueTotals = {
     acres: agg.acres,
     totalProduction: agg.totalProduction,
+    totalProductionLbs: agg.totalProductionLbs,
     cropSalesRevenue,
     insuranceProceeds,
     govtPayments,

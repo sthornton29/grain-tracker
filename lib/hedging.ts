@@ -448,7 +448,8 @@ export function normalizeOptionType(raw: string | null | undefined): OptionType 
 }
 
 // Normalize a commodity name from a brokerage statement to our canonical form.
-// Returns null for commodities we don't track (e.g. COTTON).
+// Cotton (ICE Cotton No. 2, printed "ICE COTTON 2" / "COTTON 2") is tracked;
+// returns null only for commodities we don't trade (e.g. SEED COTTON).
 export function normalizeCommodity(raw: string | null | undefined): Commodity | null {
   if (!raw) return null
   const s = raw.trim().toUpperCase()

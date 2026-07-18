@@ -7,7 +7,11 @@ export type ContractType = 'forward' | 'hta' | 'basis'
 export type PricingStatus = 'fully_priced' | 'awaiting_basis' | 'awaiting_futures'
 
 // Map a crops-table name to the futures commodity whose delivery cycle applies.
-// Crops we don't trade futures on (e.g. Canola) return null.
+// Crops we don't trade futures on (e.g. Canola) return null. Deliberately does
+// NOT map cotton: physical-contract and government-program surfaces (MYA proxy
+// prices, covered commodities) are grain-shaped $/bu flows, and seed-cotton
+// program economics don't follow the CT lint contract. Hedging/marketing
+// surfaces that DO trade ICE Cotton No. 2 use cropToHedgeCommodity instead.
 export function cropToCommodity(cropName: string | null | undefined): Commodity | null {
   const s = (cropName ?? '').trim().toLowerCase()
   if (!s) return null
@@ -15,6 +19,16 @@ export function cropToCommodity(cropName: string | null | undefined): Commodity 
   if (s.includes('soybean') || s === 'beans' || s === 'soy') return 'Soybeans'
   if (s.includes('wheat')) return 'Chicago Wheat'
   return null
+}
+
+// The hedging-surface mapping: same as cropToCommodity, plus Cotton → the ICE
+// Cotton No. 2 (CT) contract, priced in ¢/lb over 50,000-lb contracts. Used by
+// the marketing dashboard, income sensitivity, and harvest-price symbols —
+// anywhere cotton futures genuinely apply. "Seed cotton" stays unmapped.
+export function cropToHedgeCommodity(cropName: string | null | undefined): Commodity | null {
+  const s = (cropName ?? '').trim().toLowerCase()
+  if (s.includes('cotton') && !s.includes('seed')) return 'Cotton'
+  return cropToCommodity(cropName)
 }
 
 const MONTH_ABBR = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']

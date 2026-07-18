@@ -22,10 +22,10 @@ import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates } from '@/lib/yields'
-import { segmentAcresByCrop, expectedProductionFromBreakout } from '@/lib/marketing'
+import { segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop } from '@/lib/marketing'
 import { harvestContractSymbol } from '@/lib/crop-insurance'
-import { cropToCommodity } from '@/lib/contracts'
-import { CONTRACT_SIZE_BU } from '@/lib/hedging'
+import { cropToHedgeCommodity } from '@/lib/contracts'
+import { quantityFor } from '@/lib/hedging'
 import { projectPayments, applyMyaResolution, programYearFor, otherPaymentsInRevenueYear } from '@/lib/government-payments'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import {
@@ -64,6 +64,7 @@ type ViewMode = 'revenue' | 'profit'
 
 const bu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
 const price2 = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+const cents2 = (n: number) => `${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}¢`
 const parseNum = (s: string | undefined | null): number | null => {
   if (s == null || s.trim() === '') return null
   const v = Number(s)
@@ -306,10 +307,11 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       }
 
       const contractedBu = inputs.contracts.reduce((s, c) => s + Number(c.contracted_bushels ?? 0), 0)
-      const commodity = cropToCommodity(crop.name)
+      const commodity = cropToHedgeCommodity(crop.name)
+      // Bushels for grains, lbs for cotton (quantityFor knows each contract size).
       const openHedgeBu = commodity
         ? yearFutures.filter((f) => f.commodity === commodity && f.side === 'short' && f.status === 'open')
-            .reduce((s, f) => s + Number(f.num_contracts) * CONTRACT_SIZE_BU, 0)
+            .reduce((s, f) => s + quantityFor(commodity, Number(f.num_contracts)), 0)
         : 0
 
       // Axis defaults. Price centers on today's live benchmark quote (fallbacks:
@@ -380,15 +382,18 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
     const sections: ExportPayload['sections'] = cropViews
       .filter((v) => v.grid.length > 0)
       .map((v) => {
+        // Cotton axes are ¢/lb × lbs/ac; grains $/bu × bu/ac.
+        const isCotton = isCottonCrop(v.crop.name)
+        const qty = isCotton ? 'lbs' : 'bu'
         const columns = [
-          { label: `${v.symbol ? `${v.symbol} futures` : 'Futures'} $/bu`, align: 'right' as const, format: 'price' as const },
+          { label: `${v.symbol ? `${v.symbol} futures` : 'Futures'} ${isCotton ? '¢/lb' : '$/bu'}`, align: 'right' as const, format: (isCotton ? 'cents' : 'price') as 'cents' | 'price' },
           ...v.yieldValues.map((y) => ({
-            label: `${formatNumber(y, 'yield')} bu/ac${v.split.state === 'complete' ? ' (actual)' : ''}`,
+            label: `${formatNumber(y, 'yield')} ${isCotton ? 'lbs/ac' : 'bu/ac'}${v.split.state === 'complete' ? ' (actual)' : ''}`,
             align: 'right' as const, format: 'usd2' as const,
           })),
         ]
         const regime = v.contractedBu + v.openHedgeBu > 0
-          ? `${formatNumber(v.contractedBu, 'bu')} bu contracted${v.openHedgeBu > 0 ? ` + ${formatNumber(v.openHedgeBu, 'bu')} bu hedged` : ''} at locked prices — scenario price applies to remaining bushels`
+          ? `${formatNumber(v.contractedBu, 'bu')} ${qty} contracted${v.openHedgeBu > 0 ? ` + ${formatNumber(v.openHedgeBu, 'bu')} ${qty} hedged` : ''} at locked prices — scenario price applies to remaining ${isCotton ? 'lbs' : 'bushels'}`
           : 'No contracts — fully price-sensitive'
         const harvestNote = v.split.state === 'partial'
           ? ` · Harvested so far: ${formatNumber(v.split.fixedBu, 'bu')} bu on ${formatNumber(v.split.completedAcres, 'acres')} ac (actual); yield axis applies to the remaining ${formatNumber(v.split.remainingAcres, 'acres')} ac`
@@ -562,9 +567,14 @@ function CropSensitivitySection({
 }) {
   const locked = v.contractedBu + v.openHedgeBu > 0
   const missingCost = mode === 'profit' && v.inputs.assumption?.cost_per_acre == null
+  // Cotton reads in ¢/lb and lbs of lint; grains in $/bu and bushels.
+  const isCotton = isCottonCrop(v.crop.name)
+  const qty = isCotton ? 'lbs' : 'bu'
+  const yUnit = isCotton ? 'lbs/ac' : 'bu/ac'
+  const fmtP = isCotton ? cents2 : price2
   const yieldAxisLabel = v.split.state === 'partial'
-    ? `Yield on remaining ${bu(v.split.remainingAcres)} acres (bu/ac)`
-    : 'Yield (bu/ac)'
+    ? `Yield on remaining ${bu(v.split.remainingAcres)} acres (${yUnit})`
+    : `Yield (${yUnit})`
 
   return (
     <section className="bg-white rounded-xl shadow avoid-break">
@@ -577,12 +587,12 @@ function CropSensitivitySection({
           </div>
           <span className={`text-xs rounded-full px-2.5 py-1 font-semibold ${locked ? 'bg-slate-200 text-slate-700' : 'bg-sky-100 text-sky-800'}`}>
             {locked
-              ? `${bu(v.contractedBu)} bu contracted${v.openHedgeBu > 0 ? ` + ${bu(v.openHedgeBu)} bu hedged` : ''} at locked prices — scenario price applies to remaining bushels`
+              ? `${bu(v.contractedBu)} ${qty} contracted${v.openHedgeBu > 0 ? ` + ${bu(v.openHedgeBu)} ${qty} hedged` : ''} at locked prices — scenario price applies to remaining ${isCotton ? 'lbs' : 'bushels'}`
               : 'No contracts — fully price-sensitive'}
           </span>
           {v.split.state === 'partial' && (
             <span className="text-xs text-slate-500">
-              Harvested so far: <strong className="text-slate-700 tabular-nums">{bu(v.split.fixedBu)} bu</strong> on{' '}
+              Harvested so far: <strong className="text-slate-700 tabular-nums">{bu(v.split.fixedBu)} {qty}</strong> on{' '}
               <strong className="text-slate-700 tabular-nums">{bu(v.split.completedAcres)} acres</strong> (actual)
             </span>
           )}
@@ -634,7 +644,7 @@ function CropSensitivitySection({
               <thead className={theadCls}>
                 <tr>
                   <th className="text-right px-2 py-1 whitespace-nowrap">
-                    {v.symbol ? `${v.symbol} futures` : 'Futures'} $/bu ↓
+                    {v.symbol ? `${v.symbol} futures` : 'Futures'} {isCotton ? '¢/lb' : '$/bu'} ↓
                   </th>
                   {v.yieldValues.map((y, ci) => (
                     <th
@@ -659,7 +669,7 @@ function CropSensitivitySection({
                       className={`px-2 py-1 text-right tabular-nums font-semibold whitespace-nowrap ${ri === v.hereRow ? 'bg-sky-100 text-sky-900' : 'text-slate-600'}`}
                       title={ri === v.hereRow ? 'Closest to the current futures price' : undefined}
                     >
-                      {price2(v.priceValues[ri])}
+                      {fmtP(v.priceValues[ri])}
                     </td>
                     {row.map((cell, ci) => {
                       const val = mode === 'profit' ? cell.profitPerAcre : cell.revenuePerAcre
@@ -669,7 +679,7 @@ function CropSensitivitySection({
                         <td
                           key={ci}
                           className={`px-2 py-1 text-right tabular-nums whitespace-nowrap ${tone} ${here ? 'ring-2 ring-inset ring-sky-500 rounded font-bold' : ci === v.hereCol ? 'bg-sky-50/60' : ''}`}
-                          title={`${price2(cell.price)} × ${cell.scenarioYield.toFixed(1)} bu/ac → ${bu(cell.production)} bu · sales ${formatNumber(cell.cropRevenue, 'usd0')} · ins. net ${formatNumber(cell.insuranceNet, 'usd0')}`}
+                          title={`${fmtP(cell.price)} × ${cell.scenarioYield.toFixed(1)} ${yUnit} → ${bu(cell.production)} ${qty} · sales ${formatNumber(cell.cropRevenue, 'usd0')} · ins. net ${formatNumber(cell.insuranceNet, 'usd0')}`}
                         >
                           {val != null ? formatNumber(val, 'usd2') : '—'}
                         </td>
@@ -685,7 +695,7 @@ function CropSensitivitySection({
         {v.grid.length > 0 && (
           <p className="text-[11px] text-slate-400">
             {mode === 'profit' ? 'Net profit/acre' : 'Revenue/acre'} per scenario.
-            {v.currentPrice != null && ` Highlighted row/column mark today's ${v.symbol ?? ''} price (${price2(v.currentPrice)})${v.expectedYield != null ? ` and the ${v.split.state === 'complete' ? 'actual' : 'expected'} yield (${v.expectedYield.toFixed(1)} bu/ac)` : ''}.`}
+            {v.currentPrice != null && ` Highlighted row/column mark today's ${v.symbol ?? ''} price (${fmtP(v.currentPrice)})${v.expectedYield != null ? ` and the ${v.split.state === 'complete' ? 'actual' : 'expected'} yield (${v.expectedYield.toFixed(1)} ${yUnit})` : ''}.`}
             {' '}Hover a cell for production, sales, and insurance detail.
           </p>
         )}

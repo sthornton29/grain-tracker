@@ -25,6 +25,7 @@ import {
   coercePrice,
   pricesMatch,
   fmtPrice,
+  fmtCommodityPrice,
   fmtPnl,
   fmtCents,
   bushelsFor,
@@ -729,7 +730,7 @@ export default function StatementImport({ entities, existingPositions, existingO
         <div className="space-y-3">
           <p className="text-sm text-slate-600">
             Upload a daily statement PDF (StoneX/FCStone, R.J. O’Brien, or similar), or photograph the pages with your camera. The AI extracts open positions and closed trades for
-            Corn, Soybeans, and Wheat — cotton and other commodities are ignored. You’ll review and assign crop years before anything is saved.
+            Corn, Soybeans, Wheat, and Cotton (ICE Cotton No. 2, in ¢/lb). You’ll review and assign crop years before anything is saved.
             Positions and closed trades you’ve already imported are detected and skipped, so you can upload each new statement without creating duplicates.
           </p>
           <DocumentCapture
@@ -798,7 +799,9 @@ export default function StatementImport({ entities, existingPositions, existingO
                 <div className="overflow-x-auto">
                   <table className="min-w-full text-sm">
                     <thead className="bg-slate-100 text-slate-700">
-                      <tr>{['', 'Status', 'Commodity', 'Month', 'Symbol', 'Side', '#', 'Trade date', 'Price', 'Crop Yr *'].map((h, idx) => <th key={h} className={`text-left px-2 py-2 whitespace-nowrap ${idx === 2 ? STICKY_HEAD_1 : idx === 3 ? STICKY_HEAD_2 : ''}`}>{h}</th>)}</tr>
+                      {/* Crop Yr sits beside Commodity (both sticky) so the two
+                          per-row decisions are in first view without scrolling. */}
+                      <tr>{['', 'Status', 'Commodity', 'Crop Yr *', 'Month', 'Symbol', 'Side', '#', 'Trade date', 'Price'].map((h, idx) => <th key={h} className={`text-left px-2 py-2 whitespace-nowrap ${idx === 2 ? STICKY_HEAD_1 : idx === 3 ? STICKY_HEAD_2 : ''}`}>{h}</th>)}</tr>
                     </thead>
                     <tbody>
                       {openRows.length === 0 && <tr><td colSpan={10} className="px-3 py-6 text-center text-slate-400">No open positions found.</td></tr>}
@@ -815,7 +818,7 @@ export default function StatementImport({ entities, existingPositions, existingO
                               : <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5 whitespace-nowrap">New</span>}
                             {!r.existing && !r.manualMatchId && r.nearMiss && (
                               <div className="mt-1 text-[11px] leading-tight text-amber-700 max-w-[230px]">
-                                Similar existing position: {r.nearMiss.position.num_contracts} @ {fmtPrice(r.nearMiss.position.trade_price)} on{' '}
+                                Similar existing position: {r.nearMiss.position.num_contracts} @ {fmtCommodityPrice(r.commodity, r.nearMiss.position.trade_price)} on{' '}
                                 {r.nearMiss.position.trade_date} ({r.nearMiss.differences.map((d) => d.message).join(', ')})
                               </div>
                             )}
@@ -830,7 +833,7 @@ export default function StatementImport({ entities, existingPositions, existingO
                                   <option value="">Match to existing…</option>
                                   {pairingOptions(r).map((ex) => (
                                     <option key={ex.id} value={ex.id}>
-                                      {ex.side} {ex.num_contracts} @ {fmtPrice(ex.trade_price)} · {ex.trade_date}
+                                      {ex.side} {ex.num_contracts} @ {fmtCommodityPrice(r.commodity, ex.trade_price)} · {ex.trade_date}
                                     </option>
                                   ))}
                                 </select>
@@ -838,7 +841,18 @@ export default function StatementImport({ entities, existingPositions, existingO
                             )}
                           </td>
                           <td className={`px-2 py-1 whitespace-nowrap ${STICKY_CELL_1}`}>{r.commodity}</td>
-                          <td className={`px-2 py-1 whitespace-nowrap ${STICKY_CELL_2}`}>{r.contract_month}</td>
+                          <td
+                            className={`px-2 py-1 sticky left-[130px] z-10 ${!r.existing && !r.manualMatchId && r.include && !r.crop_year ? 'bg-amber-50' : 'bg-white'}`}
+                            style={{ minWidth: 90 }}
+                          >
+                            {r.existing || r.manualMatchId ? <span className="text-slate-400 text-xs">—</span> : (
+                              <select value={r.crop_year} onChange={(e) => setOpen(i, { crop_year: e.target.value })} className={cellInput}>
+                                <option value="">— pick —</option>
+                                {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
+                              </select>
+                            )}
+                          </td>
+                          <td className="px-2 py-1 whitespace-nowrap">{r.contract_month}</td>
                           <td className="px-2 py-1 font-mono whitespace-nowrap">{buildContractSymbol(r.commodity, r.contract_month)}</td>
                           <td className="px-2 py-1" style={{ minWidth: 92 }}>
                             <select value={r.side} onChange={(e) => setOpen(i, { side: e.target.value as Side })} className={cellInput}>
@@ -848,15 +862,7 @@ export default function StatementImport({ entities, existingPositions, existingO
                           </td>
                           <td className="px-2 py-1 text-right">{r.num_contracts}</td>
                           <td className="px-2 py-1 whitespace-nowrap">{r.trade_date}</td>
-                          <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(r.trade_price)}</td>
-                          <td className={`px-2 py-1 ${!r.existing && !r.manualMatchId && r.include && !r.crop_year ? 'bg-amber-50' : ''}`} style={{ minWidth: 90 }}>
-                            {r.existing || r.manualMatchId ? <span className="text-slate-400 text-xs">—</span> : (
-                              <select value={r.crop_year} onChange={(e) => setOpen(i, { crop_year: e.target.value })} className={cellInput}>
-                                <option value="">— pick —</option>
-                                {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
-                              </select>
-                            )}
-                          </td>
+                          <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtCommodityPrice(r.commodity, r.trade_price)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -897,13 +903,15 @@ export default function StatementImport({ entities, existingPositions, existingO
                           </span>
                         )}
                         <span className="text-slate-300">·</span>
-                        <span className="text-xs text-slate-600">Closed {g.close_trade_date} @ <span className="font-mono">{fmtPrice(g.close_price)}</span></span>
+                        <span className="text-xs text-slate-600">Closed {g.close_trade_date} @ <span className="font-mono">{fmtCommodityPrice(g.commodity, g.close_price)}</span></span>
                         <span className="text-xs text-slate-500">· {lots.length} lot{lots.length === 1 ? '' : 's'}</span>
                       </div>
                       <div className="overflow-x-auto">
                         <table className="min-w-full text-sm">
                           <thead className="bg-slate-100 text-slate-700">
-                            <tr>{['', 'Match', '#', 'Open date', 'Open $', 'Close $', 'Realized', 'Crop Yr *'].map((h) => <th key={h} className="text-left px-2 py-1.5 whitespace-nowrap">{h}</th>)}</tr>
+                            {/* Crop Yr beside Match — the one input per lot, in
+                                first view without scrolling. */}
+                            <tr>{['', 'Match', 'Crop Yr *', '#', 'Open date', 'Open $', 'Close $', 'Realized'].map((h) => <th key={h} className="text-left px-2 py-1.5 whitespace-nowrap">{h}</th>)}</tr>
                           </thead>
                           <tbody>
                             {lots.map((l, li) => (
@@ -916,14 +924,6 @@ export default function StatementImport({ entities, existingPositions, existingO
                                     ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">Closes open position</span>
                                     : <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">Import as closed</span>}
                                 </td>
-                                <td className="px-2 py-1 text-right">{l.num_contracts}</td>
-                                <td className="px-2 py-1 whitespace-nowrap">{l.open_trade_date}</td>
-                                <td className="px-2 py-1 font-mono whitespace-nowrap">
-                                  {fmtPrice(l.open_price)}
-                                  {l.fromDb && <span className="ml-1 text-[10px] font-sans text-sky-600" title="Anchored to your recorded entry price">DB</span>}
-                                </td>
-                                <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(g.close_price)}</td>
-                                <td className={`px-2 py-1 font-mono whitespace-nowrap ${l.realized_pnl >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(l.realized_pnl)}</td>
                                 <td className={`px-2 py-1 ${!l.matchedOpenId && !l.alreadyImported && l.include && !l.crop_year ? 'bg-amber-50' : ''}`} style={{ minWidth: 90 }}>
                                   {l.fromDb ? <span className="text-slate-400 text-xs">existing</span> : l.alreadyImported ? <span className="text-slate-400 text-xs">—</span> : (
                                     <select value={l.crop_year} onChange={(e) => setClosedLot(gi, li, { crop_year: e.target.value })} className={cellInput}>
@@ -932,14 +932,21 @@ export default function StatementImport({ entities, existingPositions, existingO
                                     </select>
                                   )}
                                 </td>
+                                <td className="px-2 py-1 text-right">{l.num_contracts}</td>
+                                <td className="px-2 py-1 whitespace-nowrap">{l.open_trade_date}</td>
+                                <td className="px-2 py-1 font-mono whitespace-nowrap">
+                                  {fmtCommodityPrice(g.commodity, l.open_price)}
+                                  {l.fromDb && <span className="ml-1 text-[10px] font-sans text-sky-600" title="Anchored to your recorded entry price">DB</span>}
+                                </td>
+                                <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtCommodityPrice(g.commodity, g.close_price)}</td>
+                                <td className={`px-2 py-1 font-mono whitespace-nowrap ${l.realized_pnl >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(l.realized_pnl)}</td>
                               </tr>
                             ))}
                           </tbody>
                           <tfoot>
                             <tr className="border-t-2 border-slate-200 bg-slate-50">
-                              <td colSpan={6} className="px-2 py-1.5 text-right font-semibold text-slate-700">Group subtotal</td>
+                              <td colSpan={7} className="px-2 py-1.5 text-right font-semibold text-slate-700">Group subtotal</td>
                               <td className={`px-2 py-1.5 font-mono font-semibold whitespace-nowrap ${recon.computedTotal >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(recon.computedTotal)}</td>
-                              <td />
                             </tr>
                           </tfoot>
                         </table>
@@ -990,10 +997,11 @@ export default function StatementImport({ entities, existingPositions, existingO
                               <td className="px-2 py-1 whitespace-nowrap">{r.underlying_contract_month}</td>
                               <td className="px-2 py-1 capitalize">{r.option_type}</td>
                               <td className="px-2 py-1 capitalize">{r.side}</td>
-                              <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(r.strike_price)}</td>
+                              <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtCommodityPrice(r.commodity, r.strike_price)}</td>
                               <td className="px-2 py-1 text-right">{r.num_contracts}</td>
                               <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtCents(r.premium_cents)}</td>
-                              <td className="px-2 py-1 font-mono whitespace-nowrap">${optionPremiumTotal(r.premium_cents, r.num_contracts).toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
+                              {/* Contract size from the commodity spec — cotton options are 50,000 lbs, never the 5,000-bu grain default. */}
+                              <td className="px-2 py-1 font-mono whitespace-nowrap">${optionPremiumTotal(r.premium_cents, r.num_contracts, COMMODITY_SPECS[r.commodity]?.contractSizeBu).toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>
                               <td className={`px-2 py-1 ${!r.existing && r.include && !r.crop_year ? 'bg-amber-50' : ''}`} style={{ minWidth: 90 }}>
                                 {r.existing ? <span className="text-slate-400 text-xs">—</span> : (
                                   <select value={r.crop_year} onChange={(e) => setOpenOption(i, { crop_year: e.target.value })} className={cellInput}>
@@ -1025,7 +1033,7 @@ export default function StatementImport({ entities, existingPositions, existingO
                                 <td className="px-2 py-1 whitespace-nowrap">{r.underlying_contract_month}</td>
                                 <td className="px-2 py-1 capitalize">{r.option_type}</td>
                                 <td className="px-2 py-1 capitalize">{r.side}</td>
-                                <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtPrice(r.strike_price)}</td>
+                                <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtCommodityPrice(r.commodity, r.strike_price)}</td>
                                 <td className="px-2 py-1 text-right">{r.num_contracts}</td>
                                 <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtCents(r.open_premium_cents)}</td>
                                 <td className="px-2 py-1 font-mono whitespace-nowrap">{fmtCents(r.close_premium_cents)}</td>
@@ -1111,7 +1119,7 @@ export default function StatementImport({ entities, existingPositions, existingO
                         <td className="px-2 py-1.5 whitespace-nowrap">{p.contract_month}</td>
                         <td className="px-2 py-1.5 capitalize">{p.side}</td>
                         <td className="px-2 py-1.5 text-right">{p.num_contracts}</td>
-                        <td className="px-2 py-1.5 font-mono whitespace-nowrap">{fmtPrice(p.trade_price)}</td>
+                        <td className="px-2 py-1.5 font-mono whitespace-nowrap">{fmtCommodityPrice(p.commodity, p.trade_price)}</td>
                         <td className="px-2 py-1.5">{p.crop_year}</td>
                         <td className="px-2 py-1.5 whitespace-nowrap text-right">
                           <button type="button" onClick={() => setClosingFut(p)} className="rounded-lg bg-sky-700 text-white px-2.5 py-1 text-xs font-semibold mr-2">Close this position</button>
@@ -1123,7 +1131,7 @@ export default function StatementImport({ entities, existingPositions, existingO
                       <tr key={o.id} className="border-t border-amber-200">
                         <td className="px-2 py-1.5">Option</td>
                         <td className="px-2 py-1.5 whitespace-nowrap">{o.commodity}</td>
-                        <td className="px-2 py-1.5 whitespace-nowrap">{o.underlying_contract_month} {fmtPrice(o.strike_price)} {o.option_type}</td>
+                        <td className="px-2 py-1.5 whitespace-nowrap">{o.underlying_contract_month} {fmtCommodityPrice(o.commodity, o.strike_price)} {o.option_type}</td>
                         <td className="px-2 py-1.5 capitalize">{o.side}</td>
                         <td className="px-2 py-1.5 text-right">{o.num_contracts}</td>
                         <td className="px-2 py-1.5 font-mono whitespace-nowrap">{fmtCents(o.premium_cents)}</td>
