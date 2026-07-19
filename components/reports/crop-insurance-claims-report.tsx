@@ -20,9 +20,11 @@ import { formatNumber, type ExportPayload } from '@/lib/exports'
 import {
   sensitivityTable, harvestContractLabel,
   projectInsuranceIndemnities, resolveHarvestPriceByCrop, actualYieldByCropFromLoads,
-  PLAN_TYPE_SHORT, PRACTICE_LABEL, type PolicyInputs, type ScoConfig, type EcoConfig, type PolicyComputation,
+  PLAN_TYPE_SHORT, PRACTICE_LABEL, isAreaPlan, stackingWarnings, staxArcPlcWarning,
+  type PolicyInputs, type ScoConfig, type EcoConfig, type PolicyComputation,
   type LiveHarvest,
 } from '@/lib/crop-insurance'
+import { CountyAssumptionControl } from '@/components/crop-insurance/county-assumption-editor'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import {
   SummaryCards, EmptyState, fmtUsd, signedTone, toneText,
@@ -30,7 +32,9 @@ import {
 } from '@/components/reports/report-kit'
 import type {
   Crop, County, Entity, CropAssumption, FieldPlanting,
-  CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate, ProgramYearConfig,
+  CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco,
+  CropInsuranceStax, CropInsuranceMco, CountyYieldAssumption,
+  HarvestPriceEstimate, ProgramYearConfig,
 } from '@/lib/types'
 
 type LoadRow = {
@@ -69,6 +73,9 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   const [policies, setPolicies] = useState<CropInsurancePolicy[]>([])
   const [scos, setScos] = useState<CropInsuranceSco[]>([])
   const [ecos, setEcos] = useState<CropInsuranceEco[]>([])
+  const [staxes, setStaxes] = useState<CropInsuranceStax[]>([])
+  const [mcos, setMcos] = useState<CropInsuranceMco[]>([])
+  const [countyAssumptions, setCountyAssumptions] = useState<CountyYieldAssumption[]>([])
   const [priceEstimates, setPriceEstimates] = useState<HarvestPriceEstimate[]>([])
   const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
   // Live Barchart estimate keyed by crop_id (from /api/harvest-price-estimate).
@@ -82,7 +89,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [cr, co, en, ca, pl, ld, po, sc, ec, hpe, pgc] = await Promise.all([
+      const [cr, co, en, ca, pl, ld, po, sc, ec, hpe, pgc, sx, mc, cya] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('counties').select('*').order('state_code').order('name'),
         supabase.from('entities').select('*').order('name'),
@@ -94,6 +101,9 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         supabase.from('crop_insurance_eco').select('*'),
         supabase.from('harvest_price_estimates').select('*').order('price_date', { ascending: false }),
         supabase.from('program_year_config').select('*'),
+        supabase.from('crop_insurance_stax').select('*'),
+        supabase.from('crop_insurance_mco').select('*'),
+        supabase.from('county_yield_assumptions').select('*'),
       ])
       setCrops((cr.data as Crop[]) || [])
       setCounties((co.data as County[]) || [])
@@ -106,6 +116,9 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       setEcos((ec.data as CropInsuranceEco[]) || [])
       setPriceEstimates((hpe.data as HarvestPriceEstimate[]) || [])
       setProgramConfigs((pgc.data as ProgramYearConfig[]) || [])
+      setStaxes((sx.data as CropInsuranceStax[]) || [])
+      setMcos((mc.data as CropInsuranceMco[]) || [])
+      setCountyAssumptions((cya.data as CountyYieldAssumption[]) || [])
       const yrs = (po.data as CropInsurancePolicy[] | null)?.map((p) => p.crop_year) ?? []
       if (yrs.length > 0) setCropYear((cy) => (cy === '' ? Math.max(...yrs) : cy))
       setLoading(false)
@@ -206,7 +219,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     // Single source of truth shared with the Cash Flow safety-net so the two
     // pages' projected indemnity reconciles.
     const projected = projectInsuranceIndemnities({
-      cropYear, policies: yearPolicies, scos, ecos, assumptions, plantings,
+      cropYear, policies: yearPolicies, scos, ecos, staxes, mcos, countyAssumptions, assumptions, plantings,
       actualYieldByCrop, harvestEstimates: priceEstimates, liveHarvestByCrop,
       scoTrigger: programCfg.scoTrigger,
     })
@@ -214,7 +227,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       policy: r.policy, comp: r.comp, harvest: harvestByCrop.get(r.policy.crop_id),
       assumedYield: r.assumedYield, base: r.base, sco: r.sco, eco: r.eco, basePremium: r.basePremium,
     }))
-  }, [cropYear, yearPolicies, scos, ecos, assumptions, plantings, actualYieldByCrop, priceEstimates, liveHarvestByCrop, programCfg, harvestByCrop])
+  }, [cropYear, yearPolicies, scos, ecos, staxes, mcos, countyAssumptions, assumptions, plantings, actualYieldByCrop, priceEstimates, liveHarvestByCrop, programCfg, harvestByCrop])
 
   const totals = useMemo(() => {
     return computed.reduce(
@@ -225,17 +238,18 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         baseIndemnity: a.baseIndemnity + c.comp.base.indemnity,
         scoIndemnity: a.scoIndemnity + (c.comp.sco?.indemnity ?? 0),
         ecoIndemnity: a.ecoIndemnity + (c.comp.eco?.indemnity ?? 0),
+        staxMcoIndemnity: a.staxMcoIndemnity + (c.comp.stax?.indemnity ?? 0) + (c.comp.mco?.indemnity ?? 0),
         totalIndemnity: a.totalIndemnity + c.comp.totalIndemnity,
         premium: a.premium + c.comp.premiumPaid,
         netPnl: a.netPnl + c.comp.netPnl,
       }),
-      { acres: 0, revenueGuarantee: 0, expectedRevenue: 0, baseIndemnity: 0, scoIndemnity: 0, ecoIndemnity: 0, totalIndemnity: 0, premium: 0, netPnl: 0 },
+      { acres: 0, revenueGuarantee: 0, expectedRevenue: 0, baseIndemnity: 0, scoIndemnity: 0, ecoIndemnity: 0, staxMcoIndemnity: 0, totalIndemnity: 0, premium: 0, netPnl: 0 },
     )
   }, [computed])
 
   // Group the (crop-sorted) policies by crop so a crop with both an irrigated and
   // a dryland policy shows a per-crop subtotal under its rows.
-  type CropSub = { acres: number; revenueGuarantee: number; expectedRevenue: number; baseIndemnity: number; scoIndemnity: number; ecoIndemnity: number; totalIndemnity: number; premium: number; netPnl: number }
+  type CropSub = { acres: number; revenueGuarantee: number; expectedRevenue: number; baseIndemnity: number; scoIndemnity: number; ecoIndemnity: number; staxMcoIndemnity: number; totalIndemnity: number; premium: number; netPnl: number }
   const subOf = (rows: Computed[]): CropSub => rows.reduce((a, c) => ({
     acres: a.acres + Number(c.policy.insured_acres),
     revenueGuarantee: a.revenueGuarantee + c.comp.base.revenueGuarantee,
@@ -243,10 +257,11 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     baseIndemnity: a.baseIndemnity + c.comp.base.indemnity,
     scoIndemnity: a.scoIndemnity + (c.comp.sco?.indemnity ?? 0),
     ecoIndemnity: a.ecoIndemnity + (c.comp.eco?.indemnity ?? 0),
+    staxMcoIndemnity: a.staxMcoIndemnity + (c.comp.stax?.indemnity ?? 0) + (c.comp.mco?.indemnity ?? 0),
     totalIndemnity: a.totalIndemnity + c.comp.totalIndemnity,
     premium: a.premium + c.comp.premiumPaid,
     netPnl: a.netPnl + c.comp.netPnl,
-  }), { acres: 0, revenueGuarantee: 0, expectedRevenue: 0, baseIndemnity: 0, scoIndemnity: 0, ecoIndemnity: 0, totalIndemnity: 0, premium: 0, netPnl: 0 })
+  }), { acres: 0, revenueGuarantee: 0, expectedRevenue: 0, baseIndemnity: 0, scoIndemnity: 0, ecoIndemnity: 0, staxMcoIndemnity: 0, totalIndemnity: 0, premium: 0, netPnl: 0 })
   const cropGroups = useMemo(() => {
     const groups: { cropId: string; rows: Computed[] }[] = []
     for (const c of computed) {
@@ -300,15 +315,18 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         { label: 'Assumed Yld', align: 'right', format: 'yield' }, { label: 'Acres', align: 'right', format: 'acres' },
         { label: 'Revenue Guarantee', align: 'right', format: 'usd0' }, { label: 'Expected Revenue', align: 'right', format: 'usd0' },
         { label: 'Base Indemnity', align: 'right', format: 'usd0' }, { label: 'SCO', align: 'right', format: 'usd0' }, { label: 'ECO', align: 'right', format: 'usd0' },
+        { label: 'STAX/MCO', align: 'right', format: 'usd0' },
         { label: 'Total Indemnity', align: 'right', format: 'usd0' }, { label: 'Premium Paid', align: 'right', format: 'usd0' }, { label: 'Net Ins. P&L', align: 'right', format: 'usd0' },
       ],
       rows: computed.map((c) => [
-        cropName(c.policy.crop_id), countyName(c.policy.county_id), PLAN_TYPE_SHORT[c.policy.plan_type],
+        cropName(c.policy.crop_id), countyName(c.policy.county_id),
+        isAreaPlan(c.policy.plan_type) ? `${PLAN_TYPE_SHORT[c.policy.plan_type]} (county-triggered)` : PLAN_TYPE_SHORT[c.policy.plan_type],
         PRACTICE_LABEL[c.policy.practice ?? 'non_irrigated'],
-        Math.round(Number(c.policy.coverage_level) * 100), Number(c.policy.aph_yield), Number(c.policy.projected_price),
-        Number((c.harvest?.price ?? 0).toFixed(4)), Number(c.assumedYield.toFixed(1)), Number(c.policy.insured_acres),
+        Math.round(Number(c.policy.coverage_level) * 100), isAreaPlan(c.policy.plan_type) ? '' : Number(c.policy.aph_yield), Number(c.policy.projected_price),
+        Number((c.harvest?.price ?? 0).toFixed(4)), isAreaPlan(c.policy.plan_type) ? '' : Number(c.assumedYield.toFixed(1)), Number(c.policy.insured_acres),
         Math.round(c.comp.base.revenueGuarantee), Math.round(c.comp.base.expectedRevenue), Math.round(c.comp.base.indemnity),
         Math.round(c.comp.sco?.indemnity ?? 0), Math.round(c.comp.eco?.indemnity ?? 0),
+        Math.round((c.comp.stax?.indemnity ?? 0) + (c.comp.mco?.indemnity ?? 0)),
         Math.round(c.comp.totalIndemnity), Math.round(c.comp.premiumPaid), Math.round(c.comp.netPnl),
       ]),
       rowMeta: computed.map(() => 'data' as const),
@@ -317,7 +335,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     sections[0].rows.push([
       'Total', '', '', '', '', '', '', '', '', Math.round(totals.acres),
       Math.round(totals.revenueGuarantee), Math.round(totals.expectedRevenue), Math.round(totals.baseIndemnity),
-      Math.round(totals.scoIndemnity), Math.round(totals.ecoIndemnity), Math.round(totals.totalIndemnity),
+      Math.round(totals.scoIndemnity), Math.round(totals.ecoIndemnity), Math.round(totals.staxMcoIndemnity), Math.round(totals.totalIndemnity),
       Math.round(totals.premium), Math.round(totals.netPnl),
     ])
     sections[0].rowMeta!.push('total')
@@ -404,6 +422,48 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
 
           <SummaryCards cards={summaryCards} />
 
+          {(() => {
+            const warnings = stackingWarnings({
+              policies: yearPolicies,
+              ecoPolicyIds: new Set(ecos.map((e) => e.policy_id)),
+              staxPolicyIds: new Set(staxes.map((s) => s.policy_id)),
+              mcoPolicyIds: new Set(mcos.map((m) => m.policy_id)),
+              cropName: (id) => cropById.get(id)?.name ?? 'crop',
+            })
+            const hasStax = yearPolicies.some((p) => staxes.some((s) => s.policy_id === p.id))
+            return warnings.length > 0 || hasStax ? (
+              <div className="rounded-lg bg-amber-50 border border-amber-300 px-3 py-2 text-sm text-amber-900 space-y-0.5 no-print">
+                <div className="font-semibold">Stacking review (warnings only — your agent is the authority):</div>
+                {warnings.map((w) => <div key={w.key}>· {w.message}</div>)}
+                {yearPolicies.some((p) => staxes.some((s) => s.policy_id === p.id)) && (
+                  <div>· {staxArcPlcWarning({ staxCount: 1, seedCottonEnrolled: true })}</div>
+                )}
+              </div>
+            ) : null
+          })()}
+
+          {/* Unified county-yield assumptions (045): drives every county-
+              triggered leg (SCO/ECO/STAX/ARP/AYP/MCO). Separate from ARC-CO. */}
+          <div className="bg-white rounded-xl shadow px-4 py-3 no-print space-y-1">
+            <div className="text-sm font-semibold">County yield assumptions (insurance — separate from the ARC-CO expectation)</div>
+            {Array.from(new Map(yearPolicies.map((p) => [`${p.crop_id}|${p.county_id ?? ''}`, p])).values()).map((p) => (
+              <div key={`${p.crop_id}|${p.county_id ?? ''}`} className="flex items-center gap-2 flex-wrap text-sm">
+                <span className="font-medium w-56 truncate">{cropName(p.crop_id)} · {countyName(p.county_id)}</span>
+                <CountyAssumptionControl
+                  cropId={p.crop_id}
+                  countyId={p.county_id}
+                  cropYear={cropYear as number}
+                  assumption={countyAssumptions.find((a) => a.crop_id === p.crop_id && a.crop_year === cropYear && (a.county_id ?? '') === (p.county_id ?? '')) ?? null}
+                  compact
+                  onChanged={async () => {
+                    const { data } = await supabase.from('county_yield_assumptions').select('*')
+                    setCountyAssumptions((data as CountyYieldAssumption[]) || [])
+                  }}
+                />
+              </div>
+            ))}
+          </div>
+
           {/* Summary table */}
           <section className="bg-white rounded-xl shadow p-4 avoid-break overflow-x-auto">
             <h2 className="font-bold text-lg mb-2">Estimated Indemnity by Policy — {cropYear}</h2>
@@ -411,7 +471,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
               <thead className={theadCls}>
                 <tr>
                   {['Crop', 'County', 'Plan', 'Practice', 'Cov', 'APH', 'Proj $', 'Harvest $', 'Assumed Yld', 'Acres',
-                    'Rev. Guarantee', 'Exp. Revenue', 'Base Indemnity', 'SCO', 'ECO', 'Total Indemnity', 'Premium', 'Net Ins. P&L', ''].map((h) => (
+                    'Rev. Guarantee', 'Exp. Revenue', 'Base Indemnity', 'SCO', 'ECO', 'STAX/MCO', 'Total Indemnity', 'Premium', 'Net Ins. P&L', ''].map((h) => (
                     <th key={h} className="text-left px-2 py-1 whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -427,19 +487,29 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                     <tr key={p.id} className="border-t border-slate-100 align-middle">
                       <td className="px-2 py-1 font-semibold whitespace-nowrap">{cropName(p.crop_id)}</td>
                       <td className="px-2 py-1 whitespace-nowrap">{countyName(p.county_id)}</td>
-                      <td className="px-2 py-1">{PLAN_TYPE_SHORT[p.plan_type]}</td>
+                      <td className="px-2 py-1 whitespace-nowrap">
+                        {PLAN_TYPE_SHORT[p.plan_type]}
+                        {isAreaPlan(p.plan_type) && (
+                          <span className="block text-[10px] text-indigo-700 leading-tight" title="Indemnity comes entirely from the estimated county yield/revenue vs the trigger.">
+                            county-triggered — farm yield not used
+                          </span>
+                        )}
+                      </td>
                       <td className="px-2 py-1 whitespace-nowrap">{PRACTICE_LABEL[p.practice ?? 'non_irrigated']}</td>
                       <td className="px-2 py-1 text-right">{Math.round(Number(p.coverage_level) * 100)}%</td>
-                      <td className="px-2 py-1 text-right tabular-nums">{Number(p.aph_yield).toFixed(1)}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">{isAreaPlan(p.plan_type) ? '—' : Number(p.aph_yield).toFixed(1)}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{fmtPrice(p.projected_price)}</td>
                       <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">{harvestLabel(c.harvest)}</td>
-                      <td className="px-2 py-1 text-right tabular-nums">{c.assumedYield.toFixed(1)}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">{isAreaPlan(p.plan_type) ? '—' : c.assumedYield.toFixed(1)}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{bu(Number(p.insured_acres))}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.base.revenueGuarantee)}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.base.expectedRevenue)}</td>
                       <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(c.comp.base.indemnity))}`}>{usd(c.comp.base.indemnity)}</td>
                       <td className={`px-2 py-1 text-right tabular-nums ${c.comp.sco ? toneText(signedTone(c.comp.sco.indemnity)) : toneText('muted')}`}>{c.comp.sco ? usd(c.comp.sco.indemnity) : 'N/A'}</td>
                       <td className={`px-2 py-1 text-right tabular-nums ${c.comp.eco ? toneText(signedTone(c.comp.eco.indemnity)) : toneText('muted')}`}>{c.comp.eco ? usd(c.comp.eco.indemnity) : 'N/A'}</td>
+                      <td className={`px-2 py-1 text-right tabular-nums ${(c.comp.stax || c.comp.mco) ? toneText(signedTone((c.comp.stax?.indemnity ?? 0) + (c.comp.mco?.indemnity ?? 0))) : toneText('muted')}`}>
+                        {(c.comp.stax || c.comp.mco) ? usd((c.comp.stax?.indemnity ?? 0) + (c.comp.mco?.indemnity ?? 0)) : 'N/A'}
+                      </td>
                       <td className={`px-2 py-1 text-right tabular-nums font-semibold ${toneText(signedTone(c.comp.totalIndemnity))}`}>{usd(c.comp.totalIndemnity)}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.premiumPaid)}</td>
                       <td className={`px-2 py-1 text-right tabular-nums font-bold ${pnlClass(c.comp.netPnl, c.comp.premiumPaid)}`}>{usd(c.comp.netPnl)}</td>
@@ -458,6 +528,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                       <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(sub.baseIndemnity))}`}>{usd(sub.baseIndemnity)}</td>
                       <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(sub.scoIndemnity))}`}>{usd(sub.scoIndemnity)}</td>
                       <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(sub.ecoIndemnity))}`}>{usd(sub.ecoIndemnity)}</td>
+                      <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(sub.staxMcoIndemnity))}`}>{usd(sub.staxMcoIndemnity)}</td>
                       <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(sub.totalIndemnity))}`}>{usd(sub.totalIndemnity)}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{usd(sub.premium)}</td>
                       <td className={`px-2 py-1 text-right tabular-nums ${pnlClass(sub.netPnl, sub.premium)}`}>{usd(sub.netPnl)}</td>
@@ -475,6 +546,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                   <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(totals.baseIndemnity))}`}>{usd(totals.baseIndemnity)}</td>
                   <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(totals.scoIndemnity))}`}>{usd(totals.scoIndemnity)}</td>
                   <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(totals.ecoIndemnity))}`}>{usd(totals.ecoIndemnity)}</td>
+                  <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(totals.staxMcoIndemnity))}`}>{usd(totals.staxMcoIndemnity)}</td>
                   <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(totals.totalIndemnity))}`}>{usd(totals.totalIndemnity)}</td>
                   <td className="px-2 py-1 text-right tabular-nums">{usd(totals.premium)}</td>
                   <td className={`px-2 py-1 text-right tabular-nums ${pnlClass(totals.netPnl, totals.premium)}`}>{usd(totals.netPnl)}</td>

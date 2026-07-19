@@ -224,12 +224,32 @@ export type CropInsuranceEcoExtraction = {
   total_premium: number | null
 }
 
+export type CropInsuranceStaxExtraction = {
+  present: boolean | null
+  coverage_range_top: number | null
+  coverage_pct: number | null
+  protection_factor: number | null
+  expected_county_revenue: number | null
+  premium_per_acre: number | null
+  total_premium: number | null
+}
+
+export type CropInsuranceMcoExtraction = {
+  present: boolean | null
+  trigger_level: number | null
+  expected_margin: number | null
+  input_cost_adjustment: number | null
+  expected_county_yield: number | null
+  premium_per_acre: number | null
+  total_premium: number | null
+}
+
 export type CropInsurancePolicyExtraction = {
   crop: string | null
   county: string | null
   state: string | null
   crop_year: number | null
-  plan_type: 'RP' | 'RP_HPE' | 'YP' | null
+  plan_type: 'RP' | 'RP_HPE' | 'YP' | 'ARP' | 'AYP' | null
   // Practice for this line ('irrigated' / 'non_irrigated'); null when the
   // document doesn't distinguish (a single combined line for the crop/county).
   practice: 'irrigated' | 'non_irrigated' | null
@@ -242,8 +262,14 @@ export type CropInsurancePolicyExtraction = {
   total_premium: number | null
   premium_subsidy_pct: number | null
   policy_number: string | null
+  // Area/county figures where shown (ARP/AYP lines; also useful for STAX/MCO).
+  expected_county_yield: number | null
+  expected_county_revenue: number | null
+  protection_factor: number | null
   sco: CropInsuranceScoExtraction | null
   eco: CropInsuranceEcoExtraction | null
+  stax: CropInsuranceStaxExtraction | null
+  mco: CropInsuranceMcoExtraction | null
 }
 
 export type CropInsuranceExtraction = {

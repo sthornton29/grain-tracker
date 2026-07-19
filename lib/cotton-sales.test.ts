@@ -314,6 +314,7 @@ function marketingRowWith(summary: ReturnType<typeof buildCottonPhysicalSummary>
     plantings: [cottonPlanting],
     contracts: [], futures: [], options: [],
     assumptions: [cottonAssumption()],
+    actualProductionByCrop: new Map(),
     currentFuturesByCrop: new Map([['cotton', over.currentCents ?? 70]]),
     cottonPhysicalByCrop: new Map([['cotton', summary]]),
   })[0]

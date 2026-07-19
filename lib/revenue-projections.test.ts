@@ -27,6 +27,7 @@ import type { Contract } from '@/lib/types'
 function mrow(over: Partial<MarketingRow> & Pick<MarketingRow, 'cropId'>): MarketingRow {
   return {
     cropName: over.cropName ?? over.cropId,
+    unit: 'bu', cottonBales: null, cottonPhysical: null,
     acres: 0, yield: null, yieldLabel: 'Est.', totalProduction: 0,
     contractedBu: 0, remaining: 0, avgCashPrice: null, excludedAwaitingBu: 0,
     futuresPricedBu: 0, physicalFuturesBu: 0, physicalFuturesAvg: null,

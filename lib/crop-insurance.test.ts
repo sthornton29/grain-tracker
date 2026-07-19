@@ -3,8 +3,13 @@ import {
   guaranteePriceFor,
   computeIndemnity,
   computeBandIndemnity,
-  estimatedCountyYield,
+  resolveEstimatedCountyYield,
+  countyAssumptionFor,
   computePolicy,
+  computeStaxIndemnity,
+  computeMcoIndemnity,
+  stackingWarnings,
+  staxArcPlcWarning,
   projectedPriceFromEstimates,
   reconcileAcreage,
   acreageTolerance,
@@ -31,6 +36,7 @@ function mkPolicy(over: Partial<CropInsurancePolicy> = {}): CropInsurancePolicy 
     unit_structure: 'enterprise', aph_yield: 100, projected_price: 5, harvest_price: null,
     volatility_factor: null, insured_acres: 100, premium_per_acre: null, total_premium: null,
     premium_subsidy_pct: null, notes: null, covers_all_planted_acres: false, coverage_note: null,
+    expected_county_yield: null, expected_county_revenue: null, protection_factor: null,
     source: 'manual', created_at: '2026-01-01', ...over,
   }
 }
@@ -275,28 +281,65 @@ describe('computeBandIndemnity', () => {
 })
 
 // ---------------------------------------------------------------------------
-// estimatedCountyYield
+// resolveEstimatedCountyYield — the SHARED county assumption (045). Estimated
+// final county yield = RMA expected × (1 + variance/100), or the absolute
+// override; pinned to the RMA final once published; countyScale is the Income
+// Sensitivity "moves with me" factor.
 // ---------------------------------------------------------------------------
-describe('estimatedCountyYield', () => {
-  it('zero assumption leaves the yield unchanged', () => {
-    // 150 * (1 + 0/100) = 150
-    expect(estimatedCountyYield(150, 0)).toBeCloseTo(150, 6)
+describe('resolveEstimatedCountyYield', () => {
+  it('variance: expected × (1 + pct/100)', () => {
+    // 150 × (1 − 10/100) = 135
+    const r = resolveEstimatedCountyYield({ expectedCountyYield: 150, assumption: { variance_pct: -10, county_yield_override: null, rma_final_county_yield: null } })
+    expect(r.estimatedYield).toBeCloseTo(135, 6)
+    expect(r.source).toBe('variance')
+    expect(r.pinned).toBe(false)
   })
 
-  it('negative pct reduces the yield', () => {
-    // 150 * (1 + (-10)/100) = 150 * 0.90 = 135
-    expect(estimatedCountyYield(150, -10)).toBeCloseTo(135, 6)
+  it('no shared row falls back to the DEPRECATED per-endorsement pct, else 0%', () => {
+    expect(resolveEstimatedCountyYield({ expectedCountyYield: 150, fallbackPct: 5 }).estimatedYield).toBeCloseTo(157.5, 6)
+    expect(resolveEstimatedCountyYield({ expectedCountyYield: 150 }).estimatedYield).toBeCloseTo(150, 6)
+    // A shared row WINS over the fallback.
+    expect(resolveEstimatedCountyYield({
+      expectedCountyYield: 150, fallbackPct: 5,
+      assumption: { variance_pct: -10, county_yield_override: null, rma_final_county_yield: null },
+    }).estimatedYield).toBeCloseTo(135, 6)
   })
 
-  it('positive pct raises the yield', () => {
-    // 150 * (1 + 5/100) = 150 * 1.05 = 157.5
-    expect(estimatedCountyYield(150, 5)).toBeCloseTo(157.5, 6)
+  it('absolute override wins over variance and scales with the county mode', () => {
+    const a = { variance_pct: -10, county_yield_override: 140, rma_final_county_yield: null }
+    expect(resolveEstimatedCountyYield({ expectedCountyYield: 150, assumption: a }).estimatedYield).toBeCloseTo(140, 6)
+    expect(resolveEstimatedCountyYield({ expectedCountyYield: 150, assumption: a, countyScale: 0.8 }).estimatedYield).toBeCloseTo(112, 6)
   })
 
-  it('null assumption is treated as 0% (factor 1.0)', () => {
-    // 150 * (1 + 0/100) = 150
-    expect(estimatedCountyYield(150, null)).toBeCloseTo(150, 6)
-    expect(estimatedCountyYield(150, undefined)).toBeCloseTo(150, 6)
+  it('RMA final pins the yield — no variance, no scenario scale', () => {
+    const a = { variance_pct: -10, county_yield_override: 140, rma_final_county_yield: 152 }
+    const r = resolveEstimatedCountyYield({ expectedCountyYield: 150, assumption: a, countyScale: 0.7 })
+    expect(r.estimatedYield).toBeCloseTo(152, 6)
+    expect(r.pinned).toBe(true)
+    expect(r.source).toBe('final')
+  })
+
+  it('countyScale scales the variance estimate ("moves with me")', () => {
+    // standing = 150 × 0.9 = 135; farm 20% below expected → county 135 × 0.8 = 108
+    const r = resolveEstimatedCountyYield({
+      expectedCountyYield: 150,
+      assumption: { variance_pct: -10, county_yield_override: null, rma_final_county_yield: null },
+      countyScale: 0.8,
+    })
+    expect(r.estimatedYield).toBeCloseTo(108, 6)
+  })
+})
+
+describe('countyAssumptionFor', () => {
+  const rows = [
+    { id: '1', crop_id: 'corn', county_id: 'A', crop_year: 2026, variance_pct: -10, county_yield_override: null, rma_final_county_yield: null, notes: null, created_at: '' },
+    { id: '2', crop_id: 'corn', county_id: null, crop_year: 2026, variance_pct: -5, county_yield_override: null, rma_final_county_yield: null, notes: null, created_at: '' },
+  ]
+  it('exact county match wins; null-county default fills; other crops/years miss', () => {
+    expect(countyAssumptionFor(rows, 'corn', 'A', 2026)?.variance_pct).toBe(-10)
+    expect(countyAssumptionFor(rows, 'corn', 'B', 2026)?.variance_pct).toBe(-5)
+    expect(countyAssumptionFor(rows, 'soy', 'A', 2026)).toBeNull()
+    expect(countyAssumptionFor(rows, 'corn', 'A', 2025)).toBeNull()
   })
 })
 
@@ -310,12 +353,12 @@ describe('computePolicy', () => {
     //   base.indemnity = 18,528.00 (from the RP worked example above)
     //
     // SCO: trigger 0.86, lowerLevel = base coverage 0.80 → bandWidth 0.06
-    //   countyYieldAssumptionPct = null → estimatedCountyYield = actualYield = 120
+    //   county variance −20% → estimatedCountyYield = 175 × 0.80 = 140
     //   revenueBased (RP):
     //     expectedCountyRevenue = 175 * 4.62 = 808.50
-    //     actualCountyRevenue   = 120 * 4.00 = 480.00
-    //     ratio = 480 / 808.50 = 0.59369… < 0.86
-    //   paymentFactor = min(0.86 - 0.59369, 0.06) = 0.06 (full band)
+    //     actualCountyRevenue   = 140 * 4.00 = 560.00
+    //     ratio = 560 / 808.50 = 0.69264… < 0.86
+    //   paymentFactor = min(0.86 - 0.69264, 0.06) = 0.06 (full band)
     //   paymentLimit  = 0.06 * 180 * 4.62 * 100 = 4,989.60
     //   sco.indemnity = (0.06/0.06) * 4989.60 = 4,989.60
     //
@@ -337,7 +380,7 @@ describe('computePolicy', () => {
       sco: {
         coverageTrigger: 0.86,
         expectedCountyYield: 175,
-        countyYieldAssumptionPct: null,
+        countyYieldAssumptionPct: -20, // deprecated fallback path (no shared row)
         premiumPerAcre: null,
         totalPremium: 1500,
       },
@@ -852,6 +895,7 @@ function mkUpload(over: Partial<PolicyUploadValues> = {}): PolicyUploadValues {
     coverage_level: '0.80', unit_structure: 'enterprise', aph_yield: '', projected_price: '',
     harvest_price: '', volatility_factor: '', insured_acres: '', premium_per_acre: '',
     total_premium: '', premium_subsidy_pct: '', policy_number: '',
+    expected_county_yield: '', expected_county_revenue: '', protection_factor: '',
     sco_enabled: false, sco_expected_county_yield: '', sco_premium_per_acre: '', sco_total_premium: '',
     eco_enabled: false, eco_trigger_level: '', eco_expected_county_yield: '', eco_premium_per_acre: '', eco_total_premium: '',
     ...over,
@@ -937,5 +981,170 @@ describe('classifyPolicyUpload — Already exists / Update available / New', () 
     )
     expect(fixSco.kind).toBe('update')
     expect(fixSco.diffs).toEqual([{ label: 'SCO county yield', existing: '110', incoming: '118' }])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// STAX / ARP / MCO — area-based plans (045). All county-triggered via the
+// shared assumption; hand-derived numbers.
+// ---------------------------------------------------------------------------
+describe('computeStaxIndemnity', () => {
+  // Expected county revenue $800/ac, top 0.90, band 0.20 (floor 0.70),
+  // protection 1.2, 100 ac. gp = harvest = 4.00.
+  const base: PolicyInputs = {
+    planType: 'RP', coverageLevel: 0.7, aphYield: 0, projectedPrice: 4, harvestPrice: 4,
+    insuredAcres: 100, actualYield: 0,
+  }
+  const stax = { coverageRangeTop: 0.9, coveragePct: 0.2, protectionFactor: 1.2, expectedCountyRevenue: 800, premiumPerAcre: null, totalPremium: null }
+
+  it('above the trigger pays nothing', () => {
+    // est county yield 190 → actual revenue 760 → ratio 0.95 ≥ 0.90
+    const r = computeStaxIndemnity(base, stax, 190)
+    expect(r.indemnity).toBeCloseTo(0, 2)
+  })
+
+  it('mid-band scales linearly', () => {
+    // est 160 → actual 640 → ratio 0.80; paymentFactor = min(0.90−0.80, 0.20) = 0.10
+    // paymentLimit = 0.20 × 800 × 1.2 × 100 = 24,000... wait: 0.2*800=160; ×1.2=192; ×100 = 19,200
+    // indemnity = (0.10/0.20) × 19,200 = 9,600
+    const r = computeStaxIndemnity(base, stax, 160)
+    expect(r.ratio).toBeCloseTo(0.8, 6)
+    expect(r.paymentLimit).toBeCloseTo(19200, 2)
+    expect(r.indemnity).toBeCloseTo(9600, 2)
+  })
+
+  it('at/below the band floor pays the full 20% × protection factor', () => {
+    // est 120 → actual 480 → ratio 0.60 < floor 0.70 → full band 19,200
+    const r = computeStaxIndemnity(base, stax, 120)
+    expect(r.paymentFactor).toBeCloseTo(0.2, 6)
+    expect(r.indemnity).toBeCloseTo(19200, 2)
+  })
+})
+
+describe('ARP — county-triggered, farm yield plays no role', () => {
+  const arpBase: PolicyInputs = {
+    planType: 'ARP', coverageLevel: 0.9, aphYield: 0, projectedPrice: 4, harvestPrice: 4,
+    insuredAcres: 100, actualYield: 50, // farm disaster — must be ignored
+    expectedCountyYield: 200, expectedCountyRevenue: 800, protectionFactor: 1,
+  }
+
+  it('farm loss + county fine (independent mode) pays ZERO', () => {
+    // county at expectation: est = 200 → actual revenue 800 ≥ trigger 720
+    const comp = computePolicy({ base: arpBase, basePremium: 0, sco: null, eco: null, county: { assumption: { variance_pct: 0, county_yield_override: null, rma_final_county_yield: null } } })
+    expect(comp.base.indemnity).toBeCloseTo(0, 2)
+  })
+
+  it('county 20% below expectation pays the revenue shortfall × protection', () => {
+    // est = 200 × 0.8 = 160 → actual 640; trigger = 0.9 × 800 = 720
+    // shortfall 80 × pf 1 × 100 ac = 8,000
+    const comp = computePolicy({ base: arpBase, basePremium: 0, sco: null, eco: null, county: { assumption: { variance_pct: -20, county_yield_override: null, rma_final_county_yield: null } } })
+    expect(comp.base.indemnity).toBeCloseTo(8000, 2)
+    // and the farm's own yield is irrelevant: same result at a bumper farm crop
+    const comp2 = computePolicy({ base: { ...arpBase, actualYield: 260 }, basePremium: 0, sco: null, eco: null, county: { assumption: { variance_pct: -20, county_yield_override: null, rma_final_county_yield: null } } })
+    expect(comp2.base.indemnity).toBeCloseTo(8000, 2)
+  })
+})
+
+describe('computeMcoIndemnity — margin band 0.86 → trigger', () => {
+  // expected margin $200/ac; expected county yield 200 @ gp 4 → expected
+  // revenue 800, expected cost 600. Band 0.86→0.90 (width 0.04), 100 ac.
+  const base: PolicyInputs = {
+    planType: 'RP', coverageLevel: 0.75, aphYield: 0, projectedPrice: 4, harvestPrice: 4,
+    insuredAcres: 100, actualYield: 0,
+  }
+  const mco = { triggerLevel: 0.9, expectedMargin: 200, inputCostAdjustment: 0, expectedCountyYield: 200, premiumPerAcre: null, totalPremium: null }
+
+  it('margin at expectation pays nothing', () => {
+    // est yield 200 → margin 800 − 600 = 200 → ratio 1.0
+    expect(computeMcoIndemnity(base, mco, 200).indemnity).toBeCloseTo(0, 2)
+  })
+
+  it('a collapsed margin pays the full band', () => {
+    // est 176 → revenue 704 → margin 104 → ratio 0.52 < 0.86
+    // paymentLimit = 0.04 × 200 × 100 = 800 → full band
+    const r = computeMcoIndemnity(base, mco, 176)
+    expect(r.ratio).toBeCloseTo(0.52, 6)
+    expect(r.indemnity).toBeCloseTo(800, 2)
+  })
+
+  it('the MCO band does not overlap the SCO band (0.86 top)', () => {
+    // margin ratio 0.88: inside MCO's 0.86–0.90 band → partial payment
+    // (0.02/0.04) × 800 = 400; an SCO county ratio of 0.88 pays nothing.
+    // est yield → margin ratio 0.88: margin 176 → revenue 776 → est = 194
+    const r = computeMcoIndemnity(base, mco, 194)
+    expect(r.ratio).toBeCloseTo(0.88, 6)
+    expect(r.indemnity).toBeCloseTo(400, 2)
+    const scoAt088 = computeBandIndemnity({
+      lowerLevel: 0.75, upperTrigger: 0.86, expectedCountyYield: 200, estimatedCountyYield: 176,
+      guaranteePrice: 4, harvestPrice: 4, aphYield: 180, insuredAcres: 100, revenueBased: false,
+    })
+    expect(scoAt088.ratio).toBeCloseTo(0.88, 6)
+    expect(scoAt088.indemnity).toBeCloseTo(0, 2)
+  })
+
+  it('the input-cost adjustment squeezes the margin', () => {
+    // est 200 → revenue 800; cost 600 + 40 adj → margin 160 → ratio 0.80 < 0.86
+    // full band 800
+    expect(computeMcoIndemnity(base, { ...mco, inputCostAdjustment: 40 }, 200).indemnity).toBeCloseTo(800, 2)
+  })
+})
+
+describe('shared county assumption drives SCO (fallback only without a row)', () => {
+  const base: PolicyInputs = {
+    planType: 'RP', coverageLevel: 0.8, aphYield: 180, projectedPrice: 4.62, harvestPrice: 4,
+    insuredAcres: 100, actualYield: 120,
+  }
+  const sco = { coverageTrigger: 0.86, expectedCountyYield: 175, countyYieldAssumptionPct: -20, premiumPerAcre: null, totalPremium: null }
+
+  it('a shared row (variance 0) overrides the deprecated per-endorsement −20%', () => {
+    // shared 0% → est = 175 → ratio 700/808.5 = 0.8658 ≥ 0.86 → no payment
+    const withRow = computePolicy({ base, basePremium: 0, sco, eco: null, county: { assumption: { variance_pct: 0, county_yield_override: null, rma_final_county_yield: null } } })
+    expect(withRow.sco!.indemnity).toBeCloseTo(0, 2)
+    // without a row the deprecated −20% still applies → full band 4,989.60
+    const without = computePolicy({ base, basePremium: 0, sco, eco: null })
+    expect(without.sco!.indemnity).toBeCloseTo(4989.6, 2)
+  })
+
+  it('the RMA final pins the county yield and flags the computation', () => {
+    const comp = computePolicy({
+      base, basePremium: 0, sco, eco: null,
+      county: { assumption: { variance_pct: -20, county_yield_override: null, rma_final_county_yield: 175 }, scale: 0.5 },
+    })
+    // final 175 → ratio 0.8658 → no payment; the −20% and the 0.5 scale are ignored
+    expect(comp.sco!.indemnity).toBeCloseTo(0, 2)
+    expect(comp.countyPinned).toBe(true)
+  })
+})
+
+describe('stacking warnings (warn, never block)', () => {
+  const pol = (id: string, plan: 'RP' | 'ARP' = 'RP') =>
+    ({ id, crop_id: 'cotton', county_id: 'A', crop_year: 2026, plan_type: plan }) as CropInsurancePolicy
+
+  it('ECO ⊗ ARP/STAX/MCO on the same crop-county-year; MCO ⊗ ARP', () => {
+    const warnings = stackingWarnings({
+      policies: [pol('p1'), pol('p2', 'ARP')],
+      ecoPolicyIds: new Set(['p1']),
+      staxPolicyIds: new Set(['p1']),
+      mcoPolicyIds: new Set(['p1']),
+      cropName: () => 'Cotton',
+    })
+    expect(warnings.some((w) => w.message.includes('ECO'))).toBe(true)
+    expect(warnings.some((w) => w.message.includes('MCO') && w.message.includes('ARP'))).toBe(true)
+  })
+
+  it('SCO stacks freely with ECO/MCO — no warning without ECO conflicts', () => {
+    const warnings = stackingWarnings({
+      policies: [pol('p1')],
+      ecoPolicyIds: new Set(['p1']),
+      staxPolicyIds: new Set(),
+      mcoPolicyIds: new Set(),
+    })
+    expect(warnings).toEqual([])
+  })
+
+  it('STAX ⊗ seed-cotton ARC/PLC enrollment warns; otherwise silent', () => {
+    expect(staxArcPlcWarning({ staxCount: 1, seedCottonEnrolled: true })).toMatch(/STAX/)
+    expect(staxArcPlcWarning({ staxCount: 0, seedCottonEnrolled: true })).toBeNull()
+    expect(staxArcPlcWarning({ staxCount: 2, seedCottonEnrolled: false })).toBeNull()
   })
 })

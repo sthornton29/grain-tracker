@@ -24,13 +24,14 @@
 import { computeMarketing, type Planting } from '@/lib/marketing'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import {
-  computePolicy, policyPremium, scoConfigFrom, ecoConfigFrom,
-  type PolicyInputs, type Practice,
+  computePolicy, policyPremium, scoConfigFrom, ecoConfigFrom, staxConfigFrom, mcoConfigFrom,
+  type PolicyInputs, type Practice, type CountyAssumptionLike,
 } from '@/lib/crop-insurance'
 import { cropToHedgeCommodity } from '@/lib/contracts'
 import { analyzeYields, harvestStatusOf, IN_PROGRESS_THRESHOLD, type FieldCropAgg, type HarvestStatus } from '@/lib/yields'
 import type {
   Contract, Crop, CropAssumption, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco,
+  CropInsuranceStax, CropInsuranceMco,
   FuturesPosition, OptionPosition,
 } from '@/lib/types'
 
@@ -194,6 +195,34 @@ export type CropScenarioInputs = {
    *  cells with a scenario ¢/lb below the loan floor flatten there, mirroring
    *  how the RP floor flattens the insurance downside. */
   cottonPhysical?: CottonPhysicalSummary | null
+  /** STAX/MCO endorsements (045), keyed to this crop's policies. */
+  staxes?: readonly CropInsuranceStax[]
+  mcos?: readonly CropInsuranceMco[]
+  /** The SHARED county-yield assumption row for this crop (045). */
+  countyAssumption?: CountyAssumptionLike | null
+  /** County yield scenario mode:
+   *  - 'independent' (default): the county estimate is CONSTANT across the
+   *    farm-yield axis (RMA expected × (1 + variance)) — the yield axis is the
+   *    FARM's yield, and county-triggered legs vary only down the price axis.
+   *  - 'with_farm' ("county moves with me", widespread-loss scenario): the
+   *    county scales with the cell's blended farm yield, anchored at the axis
+   *    center — scenario county = standing estimate × (blended farm yield ÷
+   *    expected farm yield). Mid-harvest the blend (fixed + scenario ÷ total
+   *    acres) drives the scale, matching how the individual policy blends.
+   *  An RMA FINAL county yield on file pins the county either way. */
+  countyMode?: 'independent' | 'with_farm'
+}
+
+/** The crop's expected blended farm yield (acre-weighted irr/dry breakout,
+ *  else the flat expectation) — the anchor for the "moves with me" scale. */
+export function expectedBlendedYieldFor(inp: Pick<CropScenarioInputs, 'assumption' | 'irrigatedAcres' | 'drylandAcres'>): number | null {
+  const a = inp.assumption
+  const blendedExp = a?.expected_yield != null ? Number(a.expected_yield) : null
+  const yIrr = a?.expected_yield_irr != null ? Number(a.expected_yield_irr) : blendedExp
+  const yDry = a?.expected_yield_dry != null ? Number(a.expected_yield_dry) : blendedExp
+  if (yIrr == null || yDry == null) return blendedExp
+  const totalAc = inp.irrigatedAcres + inp.drylandAcres
+  return totalAc > 0 ? (yIrr * inp.irrigatedAcres + yDry * inp.drylandAcres) / totalAc : blendedExp
 }
 
 export type ScenarioCell = {
@@ -277,6 +306,16 @@ export function computeScenarioCell(
   const insuranceHarvestPrice = inp.finalHarvestPrice ?? scenarioPrice
   const scoBy = new Map(inp.scos.map((s) => [s.policy_id, s]))
   const ecoBy = new Map(inp.ecos.map((e) => [e.policy_id, e]))
+  const staxBy = new Map((inp.staxes ?? []).map((s) => [s.policy_id, s]))
+  const mcoBy = new Map((inp.mcos ?? []).map((m) => [m.policy_id, m]))
+  // County scenario scale: 'with_farm' anchors at the axis center — the county
+  // moves proportionally with the cell's blended farm yield relative to
+  // expected. An RMA final county yield pins the county regardless (the
+  // resolve helper ignores the scale when final), so the scale is moot then.
+  const expectedBlend = expectedBlendedYieldFor(inp)
+  const countyScale = inp.countyMode === 'with_farm' && expectedBlend != null && expectedBlend > 0
+    ? blendedYield / expectedBlend
+    : 1
   let insuranceNet = 0
   for (const p of inp.policies) {
     const practice = (p.practice ?? 'non_irrigated') as Practice
@@ -288,13 +327,19 @@ export function computeScenarioCell(
       harvestPrice: insuranceHarvestPrice,
       insuredAcres: Number(p.insured_acres),
       actualYield: practiceYieldFor(inp, blendedYield, practice),
+      expectedCountyYield: p.expected_county_yield == null ? null : Number(p.expected_county_yield),
+      expectedCountyRevenue: p.expected_county_revenue == null ? null : Number(p.expected_county_revenue),
+      protectionFactor: p.protection_factor == null ? null : Number(p.protection_factor),
     }
     const comp = computePolicy({
       base,
       basePremium: policyPremium(p),
       sco: scoConfigFrom(scoBy.get(p.id)),
       eco: ecoConfigFrom(ecoBy.get(p.id)),
+      stax: staxConfigFrom(staxBy.get(p.id)),
+      mco: mcoConfigFrom(mcoBy.get(p.id)),
       scoTriggerDefault: inp.scoTrigger,
+      county: { assumption: inp.countyAssumption ?? null, scale: countyScale },
     })
     insuranceNet += comp.netPnl
   }

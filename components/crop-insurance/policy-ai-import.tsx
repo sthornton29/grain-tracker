@@ -167,6 +167,23 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
       coverage_level: p.coverage_level != null
         ? snapCoverage(p.coverage_level)
         : existing != null ? snapCoverage(existing.coverage_level) : snapCoverage(null),
+      expected_county_yield: numStr(p.expected_county_yield),
+      expected_county_revenue: numStr(p.expected_county_revenue),
+      protection_factor: numStr(p.protection_factor),
+      stax_enabled: !!p.stax?.present,
+      stax_coverage_range_top: numStr(p.stax?.coverage_range_top) || '0.9',
+      stax_coverage_pct: numStr(p.stax?.coverage_pct) || '0.2',
+      stax_protection_factor: numStr(p.stax?.protection_factor) || '1',
+      stax_expected_county_revenue: numStr(p.stax?.expected_county_revenue),
+      stax_premium_per_acre: numStr(p.stax?.premium_per_acre),
+      stax_total_premium: numStr(p.stax?.total_premium),
+      mco_enabled: !!p.mco?.present,
+      mco_trigger_level: numStr(p.mco?.trigger_level) || '0.9',
+      mco_expected_margin: numStr(p.mco?.expected_margin),
+      mco_input_cost_adjustment: numStr(p.mco?.input_cost_adjustment) || '0',
+      mco_expected_county_yield: numStr(p.mco?.expected_county_yield),
+      mco_premium_per_acre: numStr(p.mco?.premium_per_acre),
+      mco_total_premium: numStr(p.mco?.total_premium),
       unit_structure: p.unit_structure && ['enterprise', 'basic', 'optional'].includes(p.unit_structure)
         ? p.unit_structure
         : existing?.unit_structure ?? 'enterprise',
@@ -292,7 +309,7 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
       let added = 0, updated = 0
       for (const r of toSave) {
         const status = policyStatus(r.form)
-        const { policy, sco, eco } = policyFormToPayloads(r.form, 'document_import')
+        const { policy, sco, eco, stax, mco } = policyFormToPayloads(r.form, 'document_import')
         if (status.kind === 'update' && status.existing) {
           // Preserve-existing: patch only the provided text/number fields; keep
           // the existing plan/entity (part of the match key). Coverage level and
@@ -331,6 +348,14 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
             const { error } = await supabase.from('crop_insurance_eco').upsert({ ...eco, policy_id: status.existing.id }, { onConflict: 'policy_id' })
             if (error) throw new Error(error.message)
           }
+          if (stax) {
+            const { error } = await supabase.from('crop_insurance_stax').upsert({ ...stax, policy_id: status.existing.id }, { onConflict: 'policy_id' })
+            if (error) throw new Error(error.message)
+          }
+          if (mco) {
+            const { error } = await supabase.from('crop_insurance_mco').upsert({ ...mco, policy_id: status.existing.id }, { onConflict: 'policy_id' })
+            if (error) throw new Error(error.message)
+          }
           updated++
         } else {
           // The whole upload belongs to one insured entity — write it onto every
@@ -348,6 +373,14 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
           if (eco) {
             const { error: e3 } = await supabase.from('crop_insurance_eco').insert({ ...eco, policy_id: policyId })
             if (e3) throw new Error(e3.message)
+          }
+          if (stax) {
+            const { error: e4 } = await supabase.from('crop_insurance_stax').insert({ ...stax, policy_id: policyId })
+            if (e4) throw new Error(e4.message)
+          }
+          if (mco) {
+            const { error: e5 } = await supabase.from('crop_insurance_mco').insert({ ...mco, policy_id: policyId })
+            if (e5) throw new Error(e5.message)
           }
           added++
         }

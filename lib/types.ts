@@ -326,7 +326,9 @@ export type CropInsurancePolicy = {
   crop_year: number
   county_id: string | null
   policy_number: string | null
-  plan_type: 'RP' | 'RP_HPE' | 'YP'
+  // RP/RP_HPE/YP are individual (farm-yield) plans; ARP/AYP (045) are AREA
+  // plans — county-triggered, the farm's own yield plays no role.
+  plan_type: 'RP' | 'RP_HPE' | 'YP' | 'ARP' | 'AYP'
   // Irrigated vs dryland. The same crop in a county/year can carry one policy of
   // each practice, with its own APH, coverage, insured acres, and premium.
   practice: 'irrigated' | 'non_irrigated'
@@ -348,6 +350,11 @@ export type CropInsurancePolicy = {
   // the justification (e.g. "confirmed with agent 6/2026").
   covers_all_planted_acres: boolean
   coverage_note: string | null
+  // Area-plan fields (045): RMA expected county yield/revenue as printed on
+  // the policy, and the ARP/AYP protection factor (0.8–1.2).
+  expected_county_yield: number | null
+  expected_county_revenue: number | null
+  protection_factor: number | null
   source: 'manual' | 'document_import'
   created_at: string
 }
@@ -821,5 +828,51 @@ export type AwpWeekly = {
   week_effective: string
   awp_cents: number
   source: 'manual' | 'ai'
+  created_at: string
+}
+
+// ---------- Unified county-yield assumption + area-based plans (045) ----------
+
+// The ONE source for county-triggered insurance math. variance_pct: −10 = "my
+// county typically runs 10% below its RMA expected yield this year" (same
+// semantic as the deprecated per-endorsement county_yield_assumption_pct).
+// Deliberately separate from the ARC-CO expectation (FSA benchmarks).
+export type CountyYieldAssumption = {
+  id: string
+  crop_id: string
+  county_id: string | null
+  crop_year: number
+  variance_pct: number
+  county_yield_override: number | null
+  rma_final_county_yield: number | null // published final: pins everything
+  notes: string | null
+  created_at: string
+}
+
+// STAX endorsement (cotton): band from coverage_range_top down coverage_pct.
+export type CropInsuranceStax = {
+  id: string
+  policy_id: string
+  coverage_range_top: number
+  coverage_pct: number
+  protection_factor: number
+  expected_county_revenue: number | null
+  premium_per_acre: number | null
+  total_premium: number | null
+  notes: string | null
+  created_at: string
+}
+
+// MCO endorsement: margin-triggered band 86% → trigger_level (0.90/0.95).
+export type CropInsuranceMco = {
+  id: string
+  policy_id: string
+  trigger_level: number
+  expected_margin: number | null
+  input_cost_adjustment: number
+  expected_county_yield: number | null
+  premium_per_acre: number | null
+  total_premium: number | null
+  notes: string | null
   created_at: string
 }

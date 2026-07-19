@@ -5,7 +5,7 @@ import {
   type CropScenarioInputs,
 } from '@/lib/income-sensitivity'
 import type { FieldCropAgg } from '@/lib/yields'
-import type { Contract, Crop, CropAssumption, CropInsurancePolicy } from '@/lib/types'
+import type { Contract, Crop, CropAssumption, CropInsurancePolicy, CropInsuranceSco } from '@/lib/types'
 
 // Hand-verified worked examples for the Income Sensitivity grid. Every expected
 // money value is derived from the composed engines' formulas, with the
@@ -56,7 +56,9 @@ function policy(over: Partial<CropInsurancePolicy> = {}): CropInsurancePolicy {
     projected_price: 4.5, harvest_price: null, volatility_factor: null,
     insured_acres: 100, premium_per_acre: null, total_premium: 2000,
     premium_subsidy_pct: null, notes: null,
-    covers_all_planted_acres: false, coverage_note: null, source: 'manual', created_at: '',
+    covers_all_planted_acres: false, coverage_note: null,
+    expected_county_yield: null, expected_county_revenue: null, protection_factor: null,
+    source: 'manual', created_at: '',
     ...over,
   }
 }
@@ -310,5 +312,96 @@ describe('buildScenarioGrid', () => {
     expect(grid[1][2].price).toBe(4.2)
     expect(grid[1][2].scenarioYield).toBe(200)
     expect(grid[1][2].cropRevenue).toBeCloseTo(4.2 * 20000, 6)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// County yield scenario modes (045): independent vs "county moves with me".
+// Fixture: RP cov 0.50 (so the base never pays above 100 bu/ac), APH 200,
+// projected = scenario price = 4.50, 100 ac, zero premiums; SCO trigger 0.86,
+// expected county yield 200; expected farm yield 200.
+// SCO band: lower 0.50, width 0.36; paymentLimit = 0.36 x 200 x 4.5 x 100 = 32,400.
+// ---------------------------------------------------------------------------
+describe('county yield scenario modes', () => {
+  const sco = (over: Partial<CropInsuranceSco> = {}): CropInsuranceSco => ({
+    id: 's1', policy_id: 'p1', coverage_trigger: 0.86, expected_county_yield: 200,
+    county_yield_assumption_pct: null, premium_per_acre: null, total_premium: 0,
+    notes: null, created_at: '', ...over,
+  })
+  const countyPolicy = () => policy({ coverage_level: 0.5, total_premium: 0 })
+  const countyAssumption = (variance: number, final: number | null = null) =>
+    ({ variance_pct: variance, county_yield_override: null, rma_final_county_yield: final })
+
+  it('independent mode holds county indemnities CONSTANT across the yield axis', () => {
+    // variance -20 -> county est 160 -> ratio 0.80; paymentFactor = min(0.86-0.80, 0.36) = 0.06
+    // SCO = (0.06/0.36) x 32,400 = 5,400 at EVERY farm yield (base never pays >=100 bu).
+    const inp = baseInputs({
+      policies: [countyPolicy()], scos: [sco()],
+      countyAssumption: countyAssumption(-20), countyMode: 'independent',
+    })
+    const low = computeScenarioCell(inp, 4.5, 150)
+    const high = computeScenarioCell(inp, 4.5, 220)
+    expect(low.insuranceNet).toBeCloseTo(5400, 2)
+    expect(high.insuranceNet).toBeCloseTo(5400, 2)
+  })
+
+  it('moves-with-me scales the county off the axis center: a 20%-below farm cell implies county 20% below', () => {
+    // Farm 160 (20% below expected 200) -> scale 0.8 -> county est 200 x 0.8 = 160
+    // ratio 0.80 -> SCO 5,400 ... but in independent mode (variance 0) ratio = 1 -> ZERO.
+    const independent = computeScenarioCell(baseInputs({
+      policies: [countyPolicy()], scos: [sco()],
+      countyAssumption: countyAssumption(0), countyMode: 'independent',
+    }), 4.5, 160)
+    const withMe = computeScenarioCell(baseInputs({
+      policies: [countyPolicy()], scos: [sco()],
+      countyAssumption: countyAssumption(0), countyMode: 'with_farm',
+    }), 4.5, 160)
+    expect(independent.insuranceNet).toBeCloseTo(0, 2)
+    expect(withMe.insuranceNet).toBeCloseTo(5400, 2)
+    // At the axis center (farm = expected 200) both modes agree: scale = 1.
+    const centerInd = computeScenarioCell(baseInputs({
+      policies: [countyPolicy()], scos: [sco()], countyAssumption: countyAssumption(0), countyMode: 'independent',
+    }), 4.5, 200)
+    const centerMove = computeScenarioCell(baseInputs({
+      policies: [countyPolicy()], scos: [sco()], countyAssumption: countyAssumption(0), countyMode: 'with_farm',
+    }), 4.5, 200)
+    expect(centerMove.insuranceNet).toBeCloseTo(centerInd.insuranceNet, 2)
+  })
+
+  it('the standing variance anchors moves-with-me: scenario county = standing estimate x (farm / expected)', () => {
+    // variance -10 -> standing 180; farm 160/200 -> scale 0.8 -> county 144
+    // ratio = 144/200 = 0.72 -> paymentFactor min(0.86-0.72, 0.36) = 0.14
+    // SCO = (0.14/0.36) x 32,400 = 12,600
+    const cell = computeScenarioCell(baseInputs({
+      policies: [countyPolicy()], scos: [sco()],
+      countyAssumption: countyAssumption(-10), countyMode: 'with_farm',
+    }), 4.5, 160)
+    expect(cell.insuranceNet).toBeCloseTo(12600, 2)
+  })
+
+  it('mid-harvest: the county scales from the cell BLENDED farm yield (fixed + scenario)', () => {
+    // 8,000 bu fixed + scenario 120 x 50 remaining ac = 14,000 -> blended 140
+    // scale = 140/200 = 0.7 -> county est 140 -> ratio 0.70
+    // paymentFactor = min(0.86-0.70, 0.36) = 0.16 -> SCO = (0.16/0.36) x 32,400 = 14,400
+    const cell = computeScenarioCell(baseInputs({
+      fixedHarvestedBu: 8000, remainingAcres: 50,
+      policies: [countyPolicy()], scos: [sco()],
+      countyAssumption: countyAssumption(0), countyMode: 'with_farm',
+    }), 4.5, 120)
+    expect(cell.insuranceNet).toBeCloseTo(14400, 2)
+  })
+
+  it('an RMA final county yield pins BOTH modes (scenario scale and variance ignored)', () => {
+    // final 190 -> ratio 0.95 -> SCO 0 regardless of mode / variance / farm yield.
+    const ind = computeScenarioCell(baseInputs({
+      policies: [countyPolicy()], scos: [sco()],
+      countyAssumption: countyAssumption(-20, 190), countyMode: 'independent',
+    }), 4.5, 120)
+    const move = computeScenarioCell(baseInputs({
+      policies: [countyPolicy()], scos: [sco()],
+      countyAssumption: countyAssumption(-20, 190), countyMode: 'with_farm',
+    }), 4.5, 120)
+    expect(ind.insuranceNet).toBeCloseTo(0, 2)
+    expect(move.insuranceNet).toBeCloseTo(ind.insuranceNet, 2)
   })
 })

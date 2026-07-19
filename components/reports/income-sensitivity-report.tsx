@@ -25,7 +25,7 @@ import { fieldCropAggregates } from '@/lib/yields'
 import { segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop } from '@/lib/marketing'
 import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
-import { harvestContractSymbol } from '@/lib/crop-insurance'
+import { harvestContractSymbol, countyAssumptionFor, isAreaPlan } from '@/lib/crop-insurance'
 import { cropToHedgeCommodity } from '@/lib/contracts'
 import { quantityFor } from '@/lib/hedging'
 import { projectPayments, applyMyaResolution, programYearFor, otherPaymentsInRevenueYear } from '@/lib/government-payments'
@@ -38,6 +38,7 @@ import {
 import { EmptyState, theadCls, toneText, signedTone } from '@/components/reports/report-kit'
 import { formatNumber, type ExportPayload, type ExportCell } from '@/lib/exports'
 import type {
+  CropInsuranceStax, CropInsuranceMco, CountyYieldAssumption,
   Crop, Contract, CropAssumption, FieldPlanting, FuturesPosition, OptionPosition,
   CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate, ProgramYearConfig,
   CoveredCommodity, FarmBaseAcres, ArcPlcElection, ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment,
@@ -60,7 +61,9 @@ type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
 
 // Per-crop axis overrides, persisted as strings ('' / missing = automatic).
 // Keyed `${cropYear}:${cropId}` inside one localStorage record.
-type AxisCfg = { pc?: string; ps?: string; pn?: string; yc?: string; ys?: string; yn?: string }
+// cm: county yield scenario mode — 'ind' (independent, default) | 'move'
+// ("county moves with me", widespread-loss scenario). Persisted per crop.
+type AxisCfg = { pc?: string; ps?: string; pn?: string; yc?: string; ys?: string; yn?: string; cm?: 'ind' | 'move' }
 
 type ViewMode = 'revenue' | 'profit'
 
@@ -85,6 +88,10 @@ type CropView = {
   actualYield: number | null
   /** RMA final harvest price on file — insurance is pinned to it in every cell. */
   finalHarvestPrice: number | null
+  /** County yield scenario (045). */
+  countyPinned: boolean
+  hasCountyLegs: boolean
+  countyMode: 'independent' | 'with_farm'
   contractedBu: number
   openHedgeBu: number
   priceValues: number[]
@@ -127,6 +134,25 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   // Physical cotton marketing (044): sold/pool/loan facts that lock lbs and
   // floor in-loan cells at the banked CCC loan value.
   const [cottonPhysicalSummary, setCottonPhysicalSummary] = useState<CottonPhysicalSummary | null>(null)
+  // 045: STAX/MCO endorsements + the shared county-yield assumptions.
+  const [staxes, setStaxes] = useState<CropInsuranceStax[]>([])
+  const [mcos, setMcos] = useState<CropInsuranceMco[]>([])
+  const [countyAssumptions, setCountyAssumptions] = useState<CountyYieldAssumption[]>([])
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const [sx, mc, ca] = await Promise.all([
+        supabase.from('crop_insurance_stax').select('*'),
+        supabase.from('crop_insurance_mco').select('*'),
+        supabase.from('county_yield_assumptions').select('*'),
+      ])
+      if (cancelled) return
+      setStaxes((sx.data as CropInsuranceStax[]) || [])
+      setMcos((mc.data as CropInsuranceMco[]) || [])
+      setCountyAssumptions((ca.data as CountyYieldAssumption[]) || [])
+    })()
+    return () => { cancelled = true }
+  }, [supabase])
 
   const [cropYear, setCropYear] = usePersistentState<number | ''>('income-sens:cropYear', '')
 
@@ -315,12 +341,24 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       const policyFinal = cropPolicies.find((p) => p.harvest_price != null)?.harvest_price
       const storedFinal = priceEstimates.find((e) => e.crop_id === cropId && e.crop_year === cropYear && e.price_type === 'harvest_final')
       const finalHarvestPrice = policyFinal != null ? Number(policyFinal) : storedFinal ? Number(storedFinal.price) : null
+      // County yield scenario (045): the shared assumption row for this crop
+      // (first policy's county), the per-crop persisted mode, and the RMA-final
+      // pin that disables both modes.
+      const countyAssumption = countyAssumptionFor(countyAssumptions, cropId, cropPolicies[0]?.county_id ?? null, cropYear)
+      const cfgForCrop = axes[`${cropYear}:${cropId}`] ?? {}
+      const countyPinned = countyAssumption?.rma_final_county_yield != null
+      const countyMode: 'independent' | 'with_farm' = !countyPinned && cfgForCrop.cm === 'move' ? 'with_farm' : 'independent'
+      const hasCountyLegs = cropPolicies.some((p) =>
+        isAreaPlan(p.plan_type) || scos.some((s) => s.policy_id === p.id) || ecos.some((e) => e.policy_id === p.id) ||
+        staxes.some((s) => s.policy_id === p.id) || mcos.some((m) => m.policy_id === p.id))
+
       const inputs: CropScenarioInputs = {
         crop, cropYear, plantedAcres, irrigatedAcres, drylandAcres,
         fixedHarvestedBu: split.fixedBu, remainingAcres: split.remainingAcres,
         contracts: yearContracts.filter((c) => c.crop_id === cropId),
         futures: yearFutures, options: yearOptions,
-        assumption, policies: cropPolicies, scos, ecos,
+        assumption, policies: cropPolicies, scos, ecos, staxes, mcos,
+        countyAssumption, countyMode,
         scoTrigger: programCfg.scoTrigger,
         finalHarvestPrice,
         // Cotton: sold/pool lbs stay locked; in-loan lbs floor at the banked
@@ -374,6 +412,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
         : []
       views.push({
         crop, inputs, split,
+        countyPinned, hasCountyLegs, countyMode,
         symbol: harvestContractSymbol(crop.name, cropYear),
         currentPrice: live,
         expectedYield: split.state === 'complete' ? actualYield : expectedRemaining,
@@ -387,7 +426,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       })
     }
     return views.sort((a, b) => a.crop.name.localeCompare(b.crop.name))
-  }, [cropYear, plantedCropIds, cropById, yearPlantings, contracts, futures, options, assumptions, policies, scos, ecos, priceEstimates, harvestSplit, remainingExpectedYield, liveEstimates, axes, programCfg, includeGov, govPerAcre, cottonPhysicalSummary])
+  }, [cropYear, plantedCropIds, cropById, yearPlantings, contracts, futures, options, assumptions, policies, scos, ecos, staxes, mcos, countyAssumptions, priceEstimates, harvestSplit, remainingExpectedYield, liveEstimates, axes, programCfg, includeGov, govPerAcre, cottonPhysicalSummary])
 
   function setAxis(cropId: string, patch: Partial<AxisCfg>) {
     const key = `${cropYear}:${cropId}`
@@ -442,9 +481,14 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
           rowMeta: ['subhead' as const, ...v.grid.map(() => 'data' as const)],
         }
       })
+    // County scenario mode per crop, carried into the export filter line.
+    const countyLabels = cropViews
+      .filter((v) => v.hasCountyLegs)
+      .map((v) => `${v.crop.name}: ${v.countyPinned ? 'final county yield on file' : v.countyMode === 'with_farm' ? 'moves with farm yield' : 'independent'}`)
+    const countyLabel = countyLabels.length > 0 ? `County: ${countyLabels.join(', ')}` : null
     return {
       title: 'Income Sensitivity',
-      filters: [`Crop year: ${cropYear || '—'}`, `View: ${viewLabel}`, govLabel].join(' · '),
+      filters: [`Crop year: ${cropYear || '—'}`, `View: ${viewLabel}`, govLabel, countyLabel].filter(Boolean).join(' · '),
       // Never export zero sections (exceljs needs at least one sheet).
       sections: sections.length > 0 ? sections : [{ columns: [{ label: 'No sensitivity tables' }], rows: [] }],
       orientation: 'landscape',
@@ -528,6 +572,17 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
                 yield allocated to the policy&apos;s practice. Once the RMA <em>final</em> harvest price is on file it is
                 used in every cell instead (the price axis then moves crop sales only), matching the Claims Monitor.
                 Cells show <em>net</em> insurance P&amp;L (indemnity − premium), the same engine as the Claims Monitor.</p>
+              <p><strong className="text-slate-700">County yield scenario</strong> (per-crop toggle) —
+                <em> County independent</em> (default): the estimated county yield is CONSTANT across the farm-yield
+                axis (RMA expected × (1 + variance assumption)) — the yield axis is YOUR farm&apos;s yield and the county
+                doesn&apos;t necessarily follow it, so county-triggered legs (SCO/ECO/STAX/ARP/AYP/MCO) vary only down the
+                price axis. This honest baseline shows the &quot;county policy may not pay when I have a loss&quot; gap.
+                <em> County moves with me</em> (widespread-loss scenario): the county scales WITH the cell&apos;s blended farm
+                yield, anchored at the axis center — scenario county = standing estimate × (blended farm yield ÷ expected
+                farm yield) — so a farm 20% below expected implies a county 20% below its estimate and the area policies
+                kick in alongside the individual RP floor. Mid-harvest the blend (fixed + scenario ÷ total acres) drives
+                the scale. Once the RMA <em>final</em> county yield is on file, both modes pin to it and the toggle is
+                disabled.</p>
               <p><strong className="text-slate-700">Government payments</strong> (toggle) — government payments shown
                 are those expected to be <strong>received during the {cropYear} crop year</strong> (i.e.,
                 the {programYearFor(cropYear)} program-year ARC/PLC paid in
@@ -651,6 +706,28 @@ function CropSensitivitySection({
               <AxisField label="center" step="1" value={v.cfg.yc ?? ''} placeholder={v.autoYieldCenter != null ? v.autoYieldCenter.toFixed(1) : '—'} onCommit={(s) => onAxisChange({ yc: s })} />
               <AxisField label="step" step="1" value={v.cfg.ys ?? ''} placeholder={v.yieldStep.toFixed(0)} onCommit={(s) => onAxisChange({ ys: s })} />
               <AxisField label="± steps" step="1" value={v.cfg.yn ?? ''} placeholder="5" onCommit={(s) => onAxisChange({ yn: s })} />
+            </div>
+          )}
+          {v.hasCountyLegs && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">County yield scenario</span>
+              {v.countyPinned ? (
+                <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5" title="The RMA final county yield is on file — the county estimate is a fact in every cell; scenario modes are disabled.">
+                  final county yield on file — modes disabled
+                </span>
+              ) : (
+                <>
+                  <label className="flex items-center gap-1 text-xs">
+                    <input type="radio" name={`cm-${v.crop.id}`} checked={v.countyMode === 'independent'} onChange={() => onAxisChange({ cm: 'ind' })} />
+                    County independent
+                  </label>
+                  <label className="flex items-center gap-1 text-xs">
+                    <input type="radio" name={`cm-${v.crop.id}`} checked={v.countyMode === 'with_farm'} onChange={() => onAxisChange({ cm: 'move' })} />
+                    County moves with me
+                  </label>
+                </>
+              )}
+              <span className="text-[11px] text-slate-500">Independent = your loss may be local; Moves with me = county-wide loss scenario.</span>
             </div>
           )}
         </div>
