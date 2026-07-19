@@ -327,3 +327,34 @@ export function planMonthlySaves(args: {
   }
   return out
 }
+
+// ---------- Upland cotton AWP lookup ----------
+// The USDA announces the upland cotton Adjusted World Price every Thursday,
+// effective Friday-Thursday. The AI web-search lookup fetches the CURRENT
+// announcement; the result is confirm-before-save (settings write awp_weekly).
+
+export type AwpLookupResult = {
+  awpCents: number
+  weekEffective: string | null // YYYY-MM-DD (Friday) when the model found it
+  sourceDescription: string | null
+  confidence: 'high' | 'medium' | 'low'
+}
+
+export function normalizeAwpResult(raw: unknown): AwpLookupResult | null {
+  if (raw == null || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  const awp = Number(o.awp_cents_per_lb ?? o.awp_cents ?? o.awp)
+  if (!Number.isFinite(awp) || awp <= 0 || awp >= 200) return null // ¢/lb sanity
+  const week = typeof o.week_effective === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(o.week_effective)
+    ? o.week_effective
+    : null
+  const conf = o.confidence === 'high' || o.confidence === 'medium' || o.confidence === 'low'
+    ? o.confidence
+    : 'low'
+  return {
+    awpCents: Math.round(awp * 100) / 100,
+    weekEffective: week,
+    sourceDescription: typeof o.source === 'string' ? o.source : null,
+    confidence: conf,
+  }
+}

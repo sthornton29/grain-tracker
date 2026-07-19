@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
+import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
+import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { buildMarketingExport } from '@/lib/marketing-export'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { buildDoubleCropSet } from '@/lib/plantings'
@@ -156,6 +158,9 @@ export default function MarketingPage() {
   const [currentFutures, setCurrentFutures] = useState<Map<string, number>>(new Map())
   // Cotton actuals per cotton crop id: lbs of lint + bales, from gin receipts.
   const [cottonProd, setCottonProd] = useState<Map<string, { lintLbs: number; bales: number }>>(new Map())
+  // Physical cotton marketing summary (contracts / CCC loans / LDP / fees) per
+  // cotton crop id — empty until the 044 tables carry data.
+  const [cottonPhysical, setCottonPhysical] = useState<Map<string, CottonPhysicalSummary>>(new Map())
 
   // Expanded crop sections (crop ids) — persisted per crop so a section the user
   // opened is still open when they come back.
@@ -238,6 +243,15 @@ export default function MarketingPage() {
     for (const c of cropsList) if (isCottonCrop(c.name)) cotton.set(c.id, { lintLbs, bales: baleCount })
     setCottonProd(cotton)
 
+    // Physical cotton marketing (sales contracts, CCC loans, LDP, fees — 044).
+    // Missing tables / no data degrade to an empty summary (hedges-only row).
+    try {
+      const physical = await fetchCottonPhysical(supabase, cropYear)
+      const phys = new Map<string, CottonPhysicalSummary>()
+      if (physical.hasData) for (const c of cropsList) if (isCottonCrop(c.name)) phys.set(c.id, physical.summary)
+      setCottonPhysical(phys)
+    } catch { setCottonPhysical(new Map()) }
+
     // Crops fully in the bin → use actual production instead of the estimate.
     const cropCompleteKeys = new Set<string>()
     for (const a of assumptionList) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
@@ -286,8 +300,8 @@ export default function MarketingPage() {
   )
 
   const rows = useMemo(
-    () => (year == null ? [] : computeMarketing({ cropYear: year, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures, harvestCompleteCropIds: harvestCompleteIds, cottonProductionByCrop: cottonProd })),
-    [year, crops, plantings, contracts, futures, options, assumptions, production, expProdByCrop, currentFutures, harvestCompleteIds, cottonProd],
+    () => (year == null ? [] : computeMarketing({ cropYear: year, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures, harvestCompleteCropIds: harvestCompleteIds, cottonProductionByCrop: cottonProd, cottonPhysicalByCrop: cottonPhysical })),
+    [year, crops, plantings, contracts, futures, options, assumptions, production, expProdByCrop, currentFutures, harvestCompleteIds, cottonProd, cottonPhysical],
   )
 
   // Actual average yield (dry bushels from loads ÷ planted acres) per crop, used
@@ -953,11 +967,49 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
         )}
 
         <div className="min-w-0 space-y-1">
-          <PositionBlock title="Hedged" prod={prod} green={row.openHedgeBu} greenLabel="Hedged" grayLabel="Unhedged"
-            avg={row.openHedgeAvg != null ? `avg ${cents2(row.openHedgeAvg)}` : undefined} />
-          <p className="text-xs text-slate-500 italic">
-            Physical cotton marketing not yet tracked — showing production and futures hedges only.
-          </p>
+          {row.cottonPhysical ? (() => {
+            const cp = row.cottonPhysical!
+            const s = cp.summary
+            const committed = s.soldLbs + s.poolLbs + s.inLoanLbs
+            const legend: Array<{ label: string; lbs: number; cls: string; note?: string }> = [
+              { label: 'Sold', lbs: s.soldLbs, cls: 'bg-green-600', note: row.avgCashPrice != null ? `avg ${cents2(row.avgCashPrice)}` : undefined },
+              { label: 'Pool', lbs: s.poolLbs, cls: 'bg-teal-500', note: cp.poolEstimated ? '(pool est.)' : undefined },
+              { label: 'In loan', lbs: s.inLoanLbs, cls: 'bg-indigo-500', note: s.loanFloorCents != null ? `floor ${cents2(s.loanFloorCents)}` : undefined },
+              { label: 'Hedged unsold', lbs: cp.hedgedUnsoldLbs, cls: 'bg-sky-500', note: row.openHedgeAvg != null ? `@ ${cents2(row.openHedgeAvg)}` : undefined },
+              { label: 'Unpriced', lbs: cp.unpricedLbs, cls: 'bg-slate-300' },
+            ]
+            return (
+              <div>
+                <div className="flex items-baseline justify-between mb-1 gap-2">
+                  <span className="text-xs text-slate-500">Marketing position</span>
+                  <span className="text-base font-bold tabular-nums">
+                    {prod > 0 ? `${Math.min(100, (committed / prod) * 100).toFixed(0)}%` : '—'}
+                    <span className="text-xs font-normal text-slate-500 ml-1">sold / pool / loan</span>
+                  </span>
+                </div>
+                <StackedBar height="h-6" segments={legend.map((l) => ({ value: l.lbs, className: l.cls, label: l.lbs > 0 ? bu(l.lbs) : undefined }))} />
+                <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-500 mt-1">
+                  {legend.filter((l) => l.lbs > 0).map((l) => (
+                    <span key={l.label} className="flex items-center gap-1">
+                      <span className={`inline-block w-2.5 h-2.5 rounded-sm ${l.cls}`} />
+                      {l.label} {bu(l.lbs)} lbs{l.note ? <span className="text-slate-400">{l.note}</span> : null}
+                    </span>
+                  ))}
+                  {s.awaitingCallLbs > 0 && (
+                    <span className="text-amber-700">On-call awaiting futures: {bu(s.awaitingCallLbs)} lbs (unpriced until fixed)</span>
+                  )}
+                </div>
+              </div>
+            )
+          })() : (
+            <>
+              <PositionBlock title="Hedged" prod={prod} green={row.openHedgeBu} greenLabel="Hedged" grayLabel="Unhedged"
+                avg={row.openHedgeAvg != null ? `avg ${cents2(row.openHedgeAvg)}` : undefined} />
+              <p className="text-xs text-slate-500 italic">
+                No physical cotton marketing entered yet — production and futures hedges only. Enter sales, loans, and LDP under Cotton → Marketing.
+              </p>
+            </>
+          )}
         </div>
       </div>
 
@@ -972,6 +1024,38 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
 
       {detailsOpen && (
         <div className="border-t border-slate-100 p-4 md:p-5 space-y-5">
+          {row.cottonPhysical && (() => {
+            const cp = row.cottonPhysical!
+            const s = cp.summary
+            return (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-5 text-sm">
+                <DetailSection title="Physical Sales (¢/lb)">
+                  {s.soldSources.length > 0
+                    ? s.soldSources.map((src, i) => <Row key={i} label={src.label} value={`${bu(src.lbs)} lbs @ ${cents2(src.cents)}`} />)
+                    : <div className="text-slate-400">No priced physical sales yet.</div>}
+                  {s.poolLbs > 0 && (
+                    <Row label={`Pool (${bu(s.poolLbs)} lbs)`} value={`${usd0(cp.poolValueDollars)}${cp.poolEstimated ? ' (pool est.)' : ' received'}`} />
+                  )}
+                  {s.inLoanLbs > 0 && (
+                    <Row label={`In CCC loan (${bu(s.inLoanLbs)} lbs)`}
+                      value={`${usd0(cp.inLoanValueDollars)} ${cp.inLoanFloored ? '— at the banked loan floor' : '— at market above the floor'}`} />
+                  )}
+                  {s.awaitingCallLbs > 0 && (
+                    <Row label="On-call awaiting futures" value={`${bu(s.awaitingCallLbs)} lbs excluded from priced`} tone="text-amber-700" />
+                  )}
+                </DetailSection>
+                <DetailSection title="Program $ & Fees">
+                  <Row label={`Program dollars (${s.programLabel})`} value={usd0(s.programDollars)} tone={s.programDollars > 0 ? 'text-green-700' : undefined} />
+                  <Row label="Net fees" value={s.feeDollars !== 0 ? `(${usd0(s.feeDollars)})` : '—'} tone={s.feeDollars > 0 ? 'text-red-700' : undefined} />
+                  <div className="text-[11px] text-slate-400 leading-snug mt-1">
+                    LDP and marketing-loan gains are sale-linked program dollars counted ONCE here in cotton revenue —
+                    they are not in the Government Payments pool, so this page and Revenue Projections stay reconciled.
+                    In-loan lbs are valued at max(banked loan value, market): the CCC loan is the revenue floor.
+                  </div>
+                </DetailSection>
+              </div>
+            )
+          })()}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-5 text-sm">
             <DetailSection title="Hedge Pricing (¢/lb)">
               {row.futuresSources.length > 0 ? (

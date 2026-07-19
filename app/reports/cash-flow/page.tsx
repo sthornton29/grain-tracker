@@ -6,6 +6,9 @@ import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { projectPayments, expectedArcPlcDate, programYearFor, paymentAttributionYear } from '@/lib/government-payments'
 import { projectInsuranceIndemnities, actualYieldByCropFromLoads, type LiveHarvest } from '@/lib/crop-insurance'
+import { cottonCashFlowEvents, type CottonCashEvent } from '@/lib/cotton-sales'
+import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
+import { isCottonCrop } from '@/lib/marketing'
 import { resolveProgramYearConfig } from '@/lib/program-config'
 import ExportBar from '@/components/export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
@@ -106,6 +109,34 @@ export default function CashFlowPage() {
   const [cropId, setCropId] = useState('')
   const [buyerId, setBuyerId] = useState('')
   const [entityId, setEntityId] = useState('')
+
+  // Cotton cash events (044): CCC loan proceeds at entry, redemption payoffs /
+  // equity at outcome, pool payments, priced contract deliveries, LDP, fees.
+  // Only computed for a specific crop year (cotton timing is per-crop-year).
+  const [cottonEvents, setCottonEvents] = useState<CottonCashEvent[]>([])
+  useEffect(() => {
+    if (cropYear === '') { setCottonEvents([]); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const physical = await fetchCottonPhysical(supabase, cropYear)
+        if (cancelled) return
+        if (!physical.hasData) { setCottonEvents([]); return }
+        const inp = physical.inputs
+        const filt = entityId
+          ? {
+              ...inp,
+              contracts: inp.contracts.filter((c) => c.entity_id === entityId),
+              loans: inp.loans.filter((l) => l.entity_id === entityId),
+              ldps: inp.ldps.filter((l) => l.entity_id === entityId),
+              fees: inp.fees.filter((f) => f.entity_id === entityId),
+            }
+          : inp
+        setCottonEvents(cottonCashFlowEvents(filt))
+      } catch { if (!cancelled) setCottonEvents([]) }
+    })()
+    return () => { cancelled = true }
+  }, [cropYear, entityId, supabase])
 
   useEffect(() => {
     ;(async () => {
@@ -474,17 +505,30 @@ export default function CashFlowPage() {
     return buckets
   }, [cropYear, cropId, entityId, elections, baseAcres, commodities, arcPriceData, arcPayments, farmEntity, policies, scos, ecos, harvestEstimates, assumptions, plantings, loads, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments])
 
+  // Cotton events, respecting the crop filter (a non-cotton crop hides them)
+  // and bucketed net per month.
+  const visibleCottonEvents = useMemo(() => {
+    if (cropId && !isCottonCrop(cropById.get(cropId)?.name ?? '')) return []
+    return cottonEvents
+  }, [cottonEvents, cropId, cropById])
+  const cottonMonthly = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const e of visibleCottonEvents) m.set(monthKey(new Date(e.date + 'T00:00:00')), (m.get(monthKey(new Date(e.date + 'T00:00:00'))) ?? 0) + e.amount)
+    return m
+  }, [visibleCottonEvents])
+
   const monthlyRows = useMemo(() => {
-    const keys = [...new Set([...monthly.keys(), ...safetyNet.keys()])].sort()
+    const keys = [...new Set([...monthly.keys(), ...safetyNet.keys(), ...cottonMonthly.keys()])].sort()
     let running = 0
     return keys.map((k) => {
       const b = monthly.get(k) ?? { received: 0, outstanding: 0, projected: 0 }
       const s = safetyNet.get(k) ?? { arcPlc: 0, insurance: 0, other: 0 }
-      const total = b.received + b.outstanding + b.projected + s.arcPlc + s.insurance + s.other
+      const cotton = cottonMonthly.get(k) ?? 0
+      const total = b.received + b.outstanding + b.projected + s.arcPlc + s.insurance + s.other + cotton
       running += total
-      return { key: k, label: monthLabel(k), ...b, ...s, total, cumulative: running }
+      return { key: k, label: monthLabel(k), ...b, ...s, cotton, total, cumulative: running }
     })
-  }, [monthly, safetyNet])
+  }, [monthly, safetyNet, cottonMonthly])
 
   // Safety-net totals across the visible window, for the summary cards.
   const safetyTotals = useMemo(() => {
@@ -517,6 +561,8 @@ export default function CashFlowPage() {
     { label: 'Remaining', value: `$${fmt(summary.remaining)}` },
   ]
 
+  const cottonNet = useMemo(() => visibleCottonEvents.reduce((s, e) => s + e.amount, 0), [visibleCottonEvents])
+
   const safetyCards: SummaryCardData[] = [
     {
       label: cropYear !== '' ? `ARC/PLC (${programYearFor(cropYear)} program year — paid Oct ${cropYear})` : 'ARC/PLC',
@@ -525,6 +571,9 @@ export default function CashFlowPage() {
     { label: 'Crop Insurance', value: `$${fmt(safetyTotals.insurance)}` },
     { label: 'Other Govt', value: `$${fmt(safetyTotals.other)}` },
     { label: 'Total Safety Net', value: `$${fmt(safetyTotals.total)}`, tone: 'favorable' },
+    ...(visibleCottonEvents.length > 0
+      ? [{ label: 'Cotton cash (net — loans, sales, LDP, fees)', value: `$${fmt(cottonNet)}`, tone: 'favorable' as const }]
+      : []),
   ]
 
   // Export mirrors the on-screen monthly forecast + contract detail tables.
@@ -543,10 +592,22 @@ export default function CashFlowPage() {
         { label: 'Received', align: 'right', format: 'usd0' }, { label: 'Outstanding', align: 'right', format: 'usd0' },
         { label: 'Projected', align: 'right', format: 'usd0' }, { label: 'ARC/PLC', align: 'right', format: 'usd0' },
         { label: 'Crop Insurance', align: 'right', format: 'usd0' }, { label: 'Other Govt', align: 'right', format: 'usd0' },
+        { label: 'Cotton (net)', align: 'right', format: 'usd0' },
         { label: 'Month total', align: 'right', format: 'usd0' }, { label: 'Cumulative', align: 'right', format: 'usd0' },
       ],
-      rows: monthlyRows.map((r) => [r.label, r.received, r.outstanding, r.projected, r.arcPlc, r.insurance, r.other, r.total, r.cumulative]),
+      rows: monthlyRows.map((r) => [r.label, r.received, r.outstanding, r.projected, r.arcPlc, r.insurance, r.other, r.cotton, r.total, r.cumulative]),
     }
+
+    const cottonDetail: ExportPayload['sections'][number] | null = visibleCottonEvents.length > 0
+      ? {
+          title: 'Cotton Cash Detail',
+          columns: [
+            { label: 'Date' }, { label: 'Item' },
+            { label: 'Amount', align: 'right', format: 'usd0' }, { label: 'Status' },
+          ],
+          rows: visibleCottonEvents.map((e) => [e.date, e.label, e.amount, e.status]),
+        }
+      : null
 
     const detail: ExportPayload['sections'][number] = {
       title: 'Contract Detail',
@@ -582,7 +643,7 @@ export default function CashFlowPage() {
         { label: 'Remaining', value: formatNumber(summary.remaining, 'usd0') },
         { label: 'Total Safety Net', value: formatNumber(safetyTotals.total, 'usd0'), tone: 'favorable' },
       ],
-      sections: [monthly, detail],
+      sections: cottonDetail ? [monthly, cottonDetail, detail] : [monthly, detail],
     }
   }
 
@@ -658,7 +719,7 @@ export default function CashFlowPage() {
                 <table className="min-w-full text-sm border-collapse">
                   <thead className={theadCls}>
                     <tr>
-                      {['Month', 'Received', 'Outstanding', 'Projected', 'ARC/PLC', 'Crop Insurance', 'Other Govt', 'Month total', 'Cumulative']
+                      {['Month', 'Received', 'Outstanding', 'Projected', 'ARC/PLC', 'Crop Insurance', 'Other Govt', 'Cotton (net)', 'Month total', 'Cumulative']
                         .map((h, i) => <th key={h} className={`${i === 0 ? 'text-left' : 'text-right'} px-3 py-2 whitespace-nowrap font-semibold`}>{h}</th>)}
                     </tr>
                   </thead>
@@ -672,6 +733,7 @@ export default function CashFlowPage() {
                         <td className={`${numCell} text-indigo-700`}>${fmt(r.arcPlc)}</td>
                         <td className={`${numCell} text-purple-700`}>${fmt(r.insurance)}</td>
                         <td className={`${numCell} text-teal-700`}>${fmt(r.other)}</td>
+                        <td className={`${numCell} ${r.cotton < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{r.cotton !== 0 ? `$${fmt(r.cotton)}` : '—'}</td>
                         <td className={numCell}>${fmt(r.total)}</td>
                         <td className={`${numCell} font-semibold`}>${fmt(r.cumulative)}</td>
                       </tr>
@@ -681,6 +743,40 @@ export default function CashFlowPage() {
               </div>
             )}
           </div>
+
+          {visibleCottonEvents.length > 0 && (
+            <div className="bg-white rounded-xl shadow overflow-hidden">
+              <div className="px-4 py-2 border-b border-slate-100 font-semibold">Cotton cash detail</div>
+              <p className="px-4 pt-2 text-xs text-slate-500">
+                Labeled cotton cash lines: CCC loan proceeds land at loan entry, redemption payoffs (outflows) and
+                equity sales at their outcome dates, pool advances/progress on their payment dates, contract proceeds
+                at the delivery window, LDP on its date, and fees as outflows. These roll into the Cotton (net) column above.
+              </p>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead className={theadCls}>
+                    <tr>
+                      {['Date', 'Item', 'Amount', 'Status'].map((h, i) => (
+                        <th key={h} className={`${i === 2 ? 'text-right' : 'text-left'} px-3 py-2 whitespace-nowrap font-semibold`}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleCottonEvents.map((e, i) => (
+                      <tr key={i} className="border-t border-slate-100">
+                        <td className={`${textCell} whitespace-nowrap`}>{e.date}</td>
+                        <td className={textCell}>{e.label}</td>
+                        <td className={`${numCell} ${e.amount < 0 ? 'text-red-700' : 'text-green-700'}`}>${fmt(e.amount)}</td>
+                        <td className={textCell}>
+                          <span className={`text-xs rounded-full px-2 py-0.5 ${e.status === 'received' ? 'bg-green-100 text-green-800' : 'bg-sky-100 text-sky-800'}`}>{e.status}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           <div className="bg-white rounded-xl shadow overflow-hidden">
             <div className="px-4 py-2 border-b border-slate-100 font-semibold">Contract detail</div>

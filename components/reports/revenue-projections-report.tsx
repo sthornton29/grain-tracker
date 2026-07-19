@@ -10,6 +10,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, type Planting } from '@/lib/marketing'
+import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
+import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { cropToCommodity } from '@/lib/contracts'
 import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
@@ -251,6 +253,24 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     return m
   }, [cropYear, ginReceipts, cottonBales, crops])
 
+  // Physical cotton marketing summary (044) — same input the dashboard passes,
+  // so blended revenue stays structurally identical across the two pages.
+  const [cottonPhysical, setCottonPhysical] = useState<Map<string, CottonPhysicalSummary>>(new Map())
+  useEffect(() => {
+    if (cropYear === '' || crops.length === 0) { setCottonPhysical(new Map()); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const physical = await fetchCottonPhysical(supabase, cropYear)
+        if (cancelled) return
+        const m = new Map<string, CottonPhysicalSummary>()
+        if (physical.hasData) for (const c of crops) if (isCottonCrop(c.name)) m.set(c.id, physical.summary)
+        setCottonPhysical(m)
+      } catch { if (!cancelled) setCottonPhysical(new Map()) }
+    })()
+    return () => { cancelled = true }
+  }, [cropYear, crops, supabase])
+
   const marketingRows = useMemo(() => {
     if (cropYear === '') return []
     return computeMarketing({
@@ -266,8 +286,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       currentFuturesByCrop,
       harvestCompleteCropIds: harvestCompleteIds,
       cottonProductionByCrop,
+      cottonPhysicalByCrop: cottonPhysical,
     })
-  }, [cropYear, crops, plantings, contracts, futures, options, assumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds, cottonProductionByCrop])
+  }, [cropYear, crops, plantings, contracts, futures, options, assumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds, cottonProductionByCrop, cottonPhysical])
 
   // Resolve a harvest price per crop: final → estimate → projected.
   function harvestPriceFor(cropId: string): { price: number; isFinal: boolean } {
@@ -496,6 +517,13 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                 Marketing Dashboard: every bushel valued at its own price (flat-cash at cash, futures-priced at futures +
                 basis, open hedges &amp; unpriced bushels at the relevant futures + assumed basis), with realized
                 futures/options P&amp;L counted once. The per-crop and total figures match the dashboard.</p>
+              <p><strong className="text-slate-700">Cotton physical marketing</strong> — a cotton crop&apos;s sales revenue
+                buckets its lbs the same way: sold/priced contract lbs (and equity-sold loan lbs) at their locked ¢/lb,
+                pool lbs at dollars received plus the pool estimate for the rest, in-loan lbs
+                at <strong>max(banked CCC loan value, market)</strong> — the loan is the revenue floor — and held lbs at
+                the market/assumed price, net of cotton fees. <strong>LDP payments and marketing-loan gains are
+                sale-linked program dollars counted once inside cotton sales revenue</strong>, NOT in the government
+                pool below, so nothing is double-counted.</p>
               <p><strong className="text-slate-700">Insurance + government payments</strong> — added here on top of crop
                 sales (insurance = indemnity − premium; government = ARC/PLC + other USDA, allocated by planted acres).
                 Government payments are attributed to the crop year they&apos;re <strong>received</strong> in: for crop

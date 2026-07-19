@@ -4,6 +4,7 @@
 
 import { cropToHedgeCommodity, CONTRACT_TYPE_LABEL, effectiveContractType } from '@/lib/contracts'
 import { CONTRACT_SIZE_BU, quantityFor } from '@/lib/hedging'
+import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import type { Contract, Crop, CropAssumption, FuturesPosition, OptionPosition } from '@/lib/types'
 
 // Crops the dashboard treats as lbs-native cotton (production + CT hedges only;
@@ -23,6 +24,18 @@ export type MarketingRow = {
   unit: 'bu' | 'lbs'
   // Companion figure for lbs rows ("412,000 lbs · 858 bales"); null for grains.
   cottonBales: number | null
+  // Physical cotton marketing valuation (lbs rows with marketing data only):
+  // the Sold / Pool / In-Loan / Hedged-unsold / Unpriced segments the dashboard
+  // renders, with the dollar value assigned to each in blendedRevenue.
+  cottonPhysical: null | {
+    summary: CottonPhysicalSummary
+    poolValueDollars: number
+    poolEstimated: boolean
+    inLoanValueDollars: number
+    inLoanFloored: boolean // banked loan value > market: the floor is binding
+    unpricedLbs: number // held/unallocated production valued at market/assumed
+    hedgedUnsoldLbs: number // open CT shorts covering unpriced lbs
+  }
   acres: number
   yield: number | null
   yieldLabel: 'Est.' | 'Actual'
@@ -201,8 +214,12 @@ export function computeMarketing(args: {
   // Cotton actuals per crop id: lbs of lint (from gin receipts/bales) + bale
   // count. Cotton production never comes from the grain loads map.
   cottonProductionByCrop?: Map<string, { lintLbs: number; bales: number }>
+  // Physical cotton marketing (sales contracts, CCC loans, LDP, fees) per crop
+  // id — lib/cotton-sales.ts buildCottonPhysicalSummary output. Absent = no
+  // physical marketing data (the row behaves as production + hedges only).
+  cottonPhysicalByCrop?: Map<string, CottonPhysicalSummary>
 }): MarketingRow[] {
-  const { cropYear, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop, expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop } = args
+  const { cropYear, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop, expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop, cottonPhysicalByCrop } = args
 
   const cropIdsWithPlantings = new Set(
     plantings.filter((p) => p.season_year === cropYear).map((p) => p.crop_id),
@@ -220,6 +237,7 @@ export function computeMarketing(args: {
       rows.push(computeCottonRow({
         crop, acres, cropYear, futures, options, assumptions,
         expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop,
+        physical: cottonPhysicalByCrop?.get(crop.id) ?? null,
       }))
       continue
     }
@@ -435,7 +453,7 @@ export function computeMarketing(args: {
     const totalProfit = totalCost != null ? blendedRevenue - totalCost : null
 
     rows.push({
-      cropId: crop.id, cropName: crop.name, unit: 'bu', cottonBales: null, acres, yield: yieldVal, yieldLabel, totalProduction,
+      cropId: crop.id, cropName: crop.name, unit: 'bu', cottonBales: null, cottonPhysical: null, acres, yield: yieldVal, yieldLabel, totalProduction,
       contractedBu, remaining, avgCashPrice, excludedAwaitingBu,
       futuresPricedBu, physicalFuturesBu, physicalFuturesAvg, openHedgeBu, openHedgeAvg,
       rawAvgFutures, hedgeRealizedPnl, hedgeAdjPerBu, avgFutures, avgBasis, avgBasisAssumed, assumedBasis, assumedFutures,
@@ -449,14 +467,18 @@ export function computeMarketing(args: {
 }
 
 // ---------------------------------------------------------------------------
-// Cotton: production + CT hedges only, lbs-native (¢/lb). Physical cotton
-// marketing isn't tracked yet, so there is no Sold segment, no basis concept,
-// and no contract buckets — hedged lbs are open short CT contracts × 50,000,
-// unhedged lbs are valued at the current CTZ estimate (or the standing assumed
-// ¢/lb), and revenue is lbs × ¢/lb ÷ 100 plus realized hedge P&L counted once
-// (the engine's standard treatment). Dollar outputs (blendedRevenue, costs,
-// profits) mean exactly what they do for grains, so Revenue Projections and the
-// shared aggregate work unchanged.
+// Cotton: lbs-native (¢/lb). With no physical-marketing data the row is
+// production + CT hedges only. With a CottonPhysicalSummary (lib/cotton-sales)
+// the buckets become: Sold (fixed/spot + on-call-with-futures-fixed at their
+// cash prices + equity-sold loans at banked+equity), Pool (dollars received,
+// remainder at the pool estimate or market — labeled "(pool est.)"), In-Loan
+// (valued at max(banked loan value, market) — the CCC loan is the revenue
+// floor), Hedged-unsold (open CT shorts covering the unpriced remainder at
+// the hedge price), and Unpriced/held at the assumed/CTZ price. Sale-linked
+// program dollars (LDP + realized MLG) are added ONCE here — never in the
+// government pool — and net fees subtract, so the Revenue-Projections −
+// Marketing = insurance + government identity keeps holding. Dollar outputs
+// (blendedRevenue, costs, profits) mean exactly what they do for grains.
 // ---------------------------------------------------------------------------
 function computeCottonRow(args: {
   crop: Crop
@@ -469,8 +491,9 @@ function computeCottonRow(args: {
   currentFuturesByCrop?: Map<string, number>
   harvestCompleteCropIds?: Set<string>
   cottonProductionByCrop?: Map<string, { lintLbs: number; bales: number }>
+  physical?: CottonPhysicalSummary | null
 }): MarketingRow {
-  const { crop, acres, cropYear, futures, options, assumptions, expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop } = args
+  const { crop, acres, cropYear, futures, options, assumptions, expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop, physical } = args
 
   // Yield/production: crop_assumptions.expected_yield is lbs of lint per acre
   // for a cotton crop; actuals come from gin receipts once harvest is complete.
@@ -537,20 +560,49 @@ function computeCottonRow(args: {
   const currentFutures = currentFuturesByCrop?.get(crop.id) ?? null
   const marketFutures = assumedFutures ?? currentFutures // ¢/lb
 
-  const hedgeCovered = Math.max(0, Math.min(openHedgeLbs, totalProduction))
-  const unpricedLbs = Math.max(0, totalProduction - hedgeCovered)
+  // Physical allocation facts (all zero without marketing data — the math then
+  // reduces exactly to the production + hedges row).
+  const soldLbs = physical?.soldLbs ?? 0
+  const soldDollars = physical?.soldDollars ?? 0
+  const poolLbs = physical?.poolLbs ?? 0
+  const inLoanLbs = physical?.inLoanLbs ?? 0
+  const loanFloorCents = physical?.loanFloorCents ?? null
 
-  // Blended revenue: hedged lbs at the average hedge ¢/lb, unhedged lbs at the
-  // market/assumed ¢/lb, ÷ 100 to dollars, + realized hedge P&L once.
-  let blendedRevenue = 0
+  // Unallocated remainder: production not sold, pooled, or in loan (held bales
+  // + not-yet-ginned expected production). Physical facts are never scaled
+  // down — if allocations exceed the estimate, the remainder is simply zero.
+  // Open CT shorts cover the remainder first (Hedged-unsold); what's left is
+  // truly unpriced.
+  const unallocatedLbs = Math.max(0, totalProduction - soldLbs - poolLbs - inLoanLbs)
+  const hedgeCovered = Math.max(0, Math.min(openHedgeLbs, unallocatedLbs))
+  const uncoveredLbs = unallocatedLbs - hedgeCovered
+
+  // Pool value: dollars received so far, with the remainder at the pool's own
+  // per-lb estimate (latest payment equivalence) or the market/assumed price.
+  const poolEstCents = physical?.poolEstCents ?? marketFutures ?? openHedgeAvg ?? 0
+  const poolValueDollars = poolLbs > 0
+    ? Math.max(physical?.poolReceivedDollars ?? 0, (poolLbs * poolEstCents) / 100)
+    : (physical?.poolReceivedDollars ?? 0)
+  const poolEstimated = poolLbs > 0 && poolValueDollars > (physical?.poolReceivedDollars ?? 0)
+
+  // In-loan value: the banked loan value is the revenue FLOOR — market upside
+  // above it counts, downside below it doesn't (redeem-at-AWP economics).
+  const inLoanCents = Math.max(loanFloorCents ?? 0, marketFutures ?? 0)
+  const inLoanValueDollars = (inLoanLbs * inLoanCents) / 100
+  const inLoanFloored = inLoanLbs > 0 && (loanFloorCents ?? 0) >= (marketFutures ?? 0)
+
+  // Blended revenue: each bucket at its own value, realized hedge P&L and
+  // sale-linked program dollars (LDP + MLG) counted once, net fees subtracted.
+  let blendedRevenue = soldDollars + poolValueDollars + inLoanValueDollars
   if (hedgeCovered > 0) blendedRevenue += hedgeCovered * ((openHedgeAvg ?? marketFutures ?? 0) / 100)
-  if (unpricedLbs > 0) blendedRevenue += unpricedLbs * ((marketFutures ?? openHedgeAvg ?? 0) / 100)
-  blendedRevenue = blendedRevenue + hedgeRealizedPnl
+  if (uncoveredLbs > 0) blendedRevenue += uncoveredLbs * ((marketFutures ?? openHedgeAvg ?? 0) / 100)
+  blendedRevenue = blendedRevenue + hedgeRealizedPnl + (physical?.programDollars ?? 0) - (physical?.feeDollars ?? 0)
 
   // Headline price: the effective ¢/lb over all production (revenue-derived),
   // matching how the dashboard header presents it. null with no production.
   const totalAvgPrice = totalProduction > 0 ? round((blendedRevenue * 100) / totalProduction) : null
   const unpricedFuturesPrice = round(marketFutures ?? openHedgeAvg ?? 0)
+  const soldAvgCents = soldLbs > 0 ? round((soldDollars * 100) / soldLbs) : null
 
   const costPerAcre = assumption?.cost_per_acre != null ? Number(assumption.cost_per_acre) : null
   // ¢/lb of lint to grow it (grains use $/bu here) — same field, cotton's unit.
@@ -563,18 +615,23 @@ function computeCottonRow(args: {
   return {
     cropId: crop.id, cropName: crop.name, unit: 'lbs',
     cottonBales: actual.bales > 0 ? actual.bales : null,
+    cottonPhysical: physical
+      ? { summary: physical, poolValueDollars, poolEstimated, inLoanValueDollars, inLoanFloored, unpricedLbs: uncoveredLbs, hedgedUnsoldLbs: hedgeCovered }
+      : null,
     acres, yield: yieldVal, yieldLabel, totalProduction,
-    contractedBu: 0, remaining: totalProduction, avgCashPrice: null, excludedAwaitingBu: 0,
+    // Sold physical lbs behave like contracted grain: locked, price-insensitive.
+    contractedBu: soldLbs, remaining: Math.max(0, totalProduction - soldLbs - poolLbs),
+    avgCashPrice: soldAvgCents, excludedAwaitingBu: physical?.awaitingCallLbs ?? 0,
     futuresPricedBu: openHedgeLbs, physicalFuturesBu: 0, physicalFuturesAvg: null,
     openHedgeBu: openHedgeLbs, openHedgeAvg,
     rawAvgFutures: openHedgeAvg, hedgeRealizedPnl, hedgeAdjPerBu: hedgeAdjPerLb, avgFutures,
-    // No basis concept until physical cotton marketing exists.
+    // No basis concept for cotton (on-call basis is folded into the cash price).
     avgBasis: 0, avgBasisAssumed: true, assumedBasis: 0, assumedFutures,
     basisLockedBu: 0, basisLockedAvg: null, basisAssumedBu: 0, basisState: 'assumed',
-    totalAvgPrice, unpricedBu: unpricedLbs, blendedRevenue, unpricedFuturesPrice,
+    totalAvgPrice, unpricedBu: uncoveredLbs, blendedRevenue, unpricedFuturesPrice,
     costPerAcre, costPerBu: costPerLb, revenuePerAcre, profitPerAcre, totalProfit,
     openFuturesHedgedBu: openHedgeLbs,
-    futuresSources, lockedPriceBu: 0, futuresAssumedBu: unpricedLbs,
+    futuresSources, lockedPriceBu: soldLbs, futuresAssumedBu: uncoveredLbs,
   }
 }
 
