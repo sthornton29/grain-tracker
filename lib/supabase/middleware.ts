@@ -40,11 +40,13 @@ export async function updateSession(request: NextRequest) {
   }
 
   // Gin-operator role guard: gin logins may reach ONLY the Cotton intake
-  // pages. Server-side redirect here; the nav hides everything else and the
-  // RLS policies (042) are the real enforcement underneath.
+  // pages — NOT /cotton/marketing (producer sales/loans/fees; 044 RLS blocks
+  // the data too). Server-side redirect here; the nav hides everything else
+  // and the RLS policies (042/044) are the real enforcement underneath.
   if (user && !isPublic) {
     const ginAllowed =
-      pathname.startsWith('/cotton') || pathname.startsWith('/logout') || pathname.startsWith('/api/parse-document')
+      (pathname.startsWith('/cotton') && !pathname.startsWith('/cotton/marketing')) ||
+      pathname.startsWith('/logout') || pathname.startsWith('/api/parse-document')
     if (!ginAllowed) {
       const { data: profile } = await supabase
         .from('user_profiles')

@@ -677,3 +677,149 @@ export type CottonBaleGrade = {
   source: 'csv_import' | 'manual'
   created_at: string
 }
+
+// ---------- Physical cotton marketing (044) ----------
+// All *_cents fields are ¢/lb (55.00 = 55¢); all totals/amounts are dollars.
+
+export type CottonContractType = 'spot' | 'fixed_price' | 'on_call' | 'pool'
+export type CottonPricingStatus = 'fully_priced' | 'awaiting_futures' | 'pool_open'
+
+export type CottonSalesContract = {
+  id: string
+  entity_id: string | null
+  crop_year: number
+  buyer_id: string | null
+  contract_type: CottonContractType
+  contract_number: string | null
+  contract_date: string | null
+  commitment_basis: 'bales' | 'acres'
+  committed_bales: number | null
+  committed_acres: number | null
+  price_cents_per_lb: number | null
+  basis_cents: number | null
+  futures_month: string | null
+  futures_fixed_cents: number | null
+  futures_fixed_date: string | null
+  pricing_status: CottonPricingStatus
+  delivery_start: string | null
+  delivery_end: string | null
+  notes: string | null
+  created_at: string
+}
+
+export type CottonPoolPayment = {
+  id: string
+  contract_id: string
+  payment_type: 'initial_advance' | 'progress' | 'final_settlement'
+  amount: number
+  cents_per_lb_equivalent: number | null
+  payment_date: string | null
+  status: 'projected' | 'received'
+  notes: string | null
+  created_at: string
+}
+
+export type CccLoanStatus = 'open' | 'redeemed' | 'equity_sold' | 'forfeited'
+
+export type CccLoan = {
+  id: string
+  entity_id: string | null
+  crop_year: number
+  loan_number: string | null
+  entry_date: string
+  maturity_date: string | null
+  loan_rate_base_cents: number
+  principal_total: number
+  pending_classing: boolean
+  status: CccLoanStatus
+  outcome_date: string | null
+  awp_at_outcome_cents: number | null
+  redemption_payoff_total: number | null
+  equity_cents_per_lb: number | null
+  equity_total: number | null
+  mlg_total: number | null
+  interest_paid: number | null
+  storage_charges_paid: number | null
+  buyer_id: string | null
+  notes: string | null
+  created_at: string
+}
+
+export type CccLoanBale = {
+  id: string
+  loan_id: string
+  bale_id: string
+  created_at: string
+}
+
+export type CottonLdpRecord = {
+  id: string
+  entity_id: string | null
+  crop_year: number
+  ldp_date: string
+  awp_cents: number
+  ldp_rate_cents: number
+  total_payment: number
+  status: 'projected' | 'received'
+  notes: string | null
+  created_at: string
+}
+
+export type CottonLdpBale = {
+  id: string
+  ldp_id: string
+  bale_id: string
+  created_at: string
+}
+
+export type CottonDisposition = 'sold_spot' | 'contract_delivery' | 'pool' | 'ccc_loan' | 'held'
+
+export type CottonBaleDisposition = {
+  id: string
+  bale_id: string
+  disposition: CottonDisposition
+  contract_id: string | null
+  loan_id: string | null
+  disposition_date: string | null
+  created_at: string
+}
+
+export type CottonFeeType =
+  | 'warehouse_receiving' | 'storage_monthly' | 'classing' | 'checkoff'
+  | 'loan_interest' | 'loan_servicing' | 'pool_deduction' | 'merchant_fee' | 'other'
+
+export type CottonFee = {
+  id: string
+  entity_id: string | null
+  crop_year: number
+  fee_type: CottonFeeType
+  basis: 'per_bale' | 'per_bale_month' | 'pct_of_value' | 'flat'
+  rate: number | null
+  loan_id: string | null
+  contract_id: string | null
+  amount_total: number
+  status: 'projected' | 'actual'
+  fee_date: string | null
+  notes: string | null
+  created_at: string
+}
+
+export type CottonFeeSchedule = {
+  id: string
+  crop_year: number
+  storage_per_bale_month: number
+  receiving_per_bale: number
+  classing_per_bale: number
+  checkoff_per_bale: number
+  checkoff_supplemental_pct: number
+  loan_interest_apr: number
+  updated_at: string
+}
+
+export type AwpWeekly = {
+  id: string
+  week_effective: string
+  awp_cents: number
+  source: 'manual' | 'ai'
+  created_at: string
+}

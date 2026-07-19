@@ -22,6 +22,7 @@
 //   scenario production = fixed harvested bu + scenario yield × remaining acres
 
 import { computeMarketing, type Planting } from '@/lib/marketing'
+import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import {
   computePolicy, policyPremium, scoConfigFrom, ecoConfigFrom,
   type PolicyInputs, type Practice,
@@ -188,6 +189,11 @@ export type CropScenarioInputs = {
    *  harvest price is a fact, so the price axis moves crop sales only (and
    *  the grid reconciles with the Claims Monitor at the you-are-here cell). */
   finalHarvestPrice?: number | null
+  /** Physical cotton marketing summary (cotton crops only). Sold/pool lbs stay
+   *  locked at their prices; in-loan lbs FLOOR at the banked CCC loan value —
+   *  cells with a scenario ¢/lb below the loan floor flatten there, mirroring
+   *  how the RP floor flattens the insurance downside. */
+  cottonPhysical?: CottonPhysicalSummary | null
 }
 
 export type ScenarioCell = {
@@ -261,6 +267,7 @@ export function computeScenarioCell(
     assumptions: [scenarioAssumption],
     actualProductionByCrop: new Map(),
     expectedProductionByCrop: new Map([[inp.crop.id, production]]),
+    cottonPhysicalByCrop: inp.cottonPhysical ? new Map([[inp.crop.id, inp.cottonPhysical]]) : undefined,
   })[0]
   const cropRevenue = row?.blendedRevenue ?? 0
 

@@ -23,6 +23,8 @@ import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/planting
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates } from '@/lib/yields'
 import { segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop } from '@/lib/marketing'
+import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
+import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { harvestContractSymbol } from '@/lib/crop-insurance'
 import { cropToHedgeCommodity } from '@/lib/contracts'
 import { quantityFor } from '@/lib/hedging'
@@ -122,8 +124,25 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
   // Live discovery-month futures per crop_id.
   const [liveEstimates, setLiveEstimates] = useState<Map<string, number>>(new Map())
+  // Physical cotton marketing (044): sold/pool/loan facts that lock lbs and
+  // floor in-loan cells at the banked CCC loan value.
+  const [cottonPhysicalSummary, setCottonPhysicalSummary] = useState<CottonPhysicalSummary | null>(null)
 
   const [cropYear, setCropYear] = usePersistentState<number | ''>('income-sens:cropYear', '')
+
+  // Fetch the year's physical cotton marketing (tolerates 044 absent → null).
+  useEffect(() => {
+    if (cropYear === '') { setCottonPhysicalSummary(null); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const physical = await fetchCottonPhysical(supabase, cropYear)
+        if (!cancelled) setCottonPhysicalSummary(physical.hasData ? physical.summary : null)
+      } catch { if (!cancelled) setCottonPhysicalSummary(null) }
+    })()
+    return () => { cancelled = true }
+  }, [cropYear, supabase])
+
   const [view, setView] = usePersistentState<ViewMode>('income-sens:view', 'revenue')
   const [includeGov, setIncludeGov] = usePersistentState<boolean>('income-sens:gov', false)
   const [axes, setAxes] = usePersistentState<Record<string, AxisCfg>>('income-sens:axes', {})
@@ -304,9 +323,14 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
         assumption, policies: cropPolicies, scos, ecos,
         scoTrigger: programCfg.scoTrigger,
         finalHarvestPrice,
+        // Cotton: sold/pool lbs stay locked; in-loan lbs floor at the banked
+        // CCC loan value (cells below the floor flatten there).
+        cottonPhysical: isCottonCrop(crop.name) ? cottonPhysicalSummary : null,
       }
 
-      const contractedBu = inputs.contracts.reduce((s, c) => s + Number(c.contracted_bushels ?? 0), 0)
+      const contractedBu = isCottonCrop(crop.name)
+        ? (cottonPhysicalSummary?.soldLbs ?? 0)
+        : inputs.contracts.reduce((s, c) => s + Number(c.contracted_bushels ?? 0), 0)
       const commodity = cropToHedgeCommodity(crop.name)
       // Bushels for grains, lbs for cotton (quantityFor knows each contract size).
       const openHedgeBu = commodity
@@ -363,7 +387,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       })
     }
     return views.sort((a, b) => a.crop.name.localeCompare(b.crop.name))
-  }, [cropYear, plantedCropIds, cropById, yearPlantings, contracts, futures, options, assumptions, policies, scos, ecos, priceEstimates, harvestSplit, remainingExpectedYield, liveEstimates, axes, programCfg, includeGov, govPerAcre])
+  }, [cropYear, plantedCropIds, cropById, yearPlantings, contracts, futures, options, assumptions, policies, scos, ecos, priceEstimates, harvestSplit, remainingExpectedYield, liveEstimates, axes, programCfg, includeGov, govPerAcre, cottonPhysicalSummary])
 
   function setAxis(cropId: string, patch: Partial<AxisCfg>) {
     const key = `${cropYear}:${cropId}`
@@ -604,6 +628,11 @@ function CropSensitivitySection({
           {v.finalHarvestPrice != null && (
             <span className="text-xs rounded-full bg-green-100 text-green-800 px-2.5 py-1" title="Insurance in every cell uses the RMA final; the price axis moves crop sales only.">
               RMA final harvest price {price2(v.finalHarvestPrice)} on file — insurance pinned to it
+            </span>
+          )}
+          {isCotton && v.inputs.cottonPhysical != null && v.inputs.cottonPhysical.loanFloorCents != null && v.inputs.cottonPhysical.inLoanLbs > 0 && (
+            <span className="text-xs rounded-full bg-indigo-100 text-indigo-800 px-2.5 py-1" title="In-loan lbs are valued at max(banked CCC loan value, scenario ¢/lb) — cells below the floor flatten there, like the RP floor.">
+              CCC loan floor {cents2(v.inputs.cottonPhysical.loanFloorCents)} on {bu(v.inputs.cottonPhysical.inLoanLbs)} lbs
             </span>
           )}
         </div>
