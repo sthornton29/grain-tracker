@@ -16,6 +16,7 @@ import { DEFAULT_SCO_TRIGGER, resolveProgramYearConfig } from '@/lib/program-con
 import { fmtPrice } from '@/lib/hedging'
 import type {
   Crop, County, Entity, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco,
+  CropInsuranceStax, CropInsuranceMco,
   HarvestPriceEstimate, ProgramYearConfig,
 } from '@/lib/types'
 
@@ -52,6 +53,26 @@ export type PolicyFormState = {
   eco_county_yield_assumption_pct: string
   eco_premium_per_acre: string
   eco_total_premium: string
+  // Area-plan fields (ARP/AYP) — RMA expected county figures + protection factor.
+  expected_county_yield: string
+  expected_county_revenue: string
+  protection_factor: string
+  // STAX (cotton) endorsement.
+  stax_enabled: boolean
+  stax_coverage_range_top: string
+  stax_coverage_pct: string
+  stax_protection_factor: string
+  stax_expected_county_revenue: string
+  stax_premium_per_acre: string
+  stax_total_premium: string
+  // MCO (margin) endorsement.
+  mco_enabled: boolean
+  mco_trigger_level: string // '0.9' | '0.95'
+  mco_expected_margin: string
+  mco_input_cost_adjustment: string
+  mco_expected_county_yield: string
+  mco_premium_per_acre: string
+  mco_total_premium: string
 }
 
 export const COVERAGE_LEVELS = ['0.50', '0.55', '0.60', '0.65', '0.70', '0.75', '0.80', '0.85'] as const
@@ -89,6 +110,23 @@ export const emptyPolicyForm: PolicyFormState = {
   eco_county_yield_assumption_pct: '0',
   eco_premium_per_acre: '',
   eco_total_premium: '',
+  expected_county_yield: '',
+  expected_county_revenue: '',
+  protection_factor: '',
+  stax_enabled: false,
+  stax_coverage_range_top: '0.9',
+  stax_coverage_pct: '0.2',
+  stax_protection_factor: '1',
+  stax_expected_county_revenue: '',
+  stax_premium_per_acre: '',
+  stax_total_premium: '',
+  mco_enabled: false,
+  mco_trigger_level: '0.9',
+  mco_expected_margin: '',
+  mco_input_cost_adjustment: '0',
+  mco_expected_county_yield: '',
+  mco_premium_per_acre: '',
+  mco_total_premium: '',
 }
 
 const numStr = (n: number | null | undefined) => (n == null || !Number.isFinite(Number(n)) ? '' : String(Number(n)))
@@ -98,7 +136,7 @@ function num(s: string): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-export function policyToForm(p: CropInsurancePolicy, sco?: CropInsuranceSco | null, eco?: CropInsuranceEco | null): PolicyFormState {
+export function policyToForm(p: CropInsurancePolicy, sco?: CropInsuranceSco | null, eco?: CropInsuranceEco | null, stax?: CropInsuranceStax | null, mco?: CropInsuranceMco | null): PolicyFormState {
   return {
     entity_id: p.entity_id ?? '',
     crop_id: p.crop_id,
@@ -132,6 +170,23 @@ export function policyToForm(p: CropInsurancePolicy, sco?: CropInsuranceSco | nu
     eco_county_yield_assumption_pct: eco ? numStr(eco.county_yield_assumption_pct) || '0' : '0',
     eco_premium_per_acre: numStr(eco?.premium_per_acre),
     eco_total_premium: numStr(eco?.total_premium),
+    expected_county_yield: numStr(p.expected_county_yield),
+    expected_county_revenue: numStr(p.expected_county_revenue),
+    protection_factor: numStr(p.protection_factor),
+    stax_enabled: !!stax,
+    stax_coverage_range_top: numStr(stax?.coverage_range_top) || '0.9',
+    stax_coverage_pct: numStr(stax?.coverage_pct) || '0.2',
+    stax_protection_factor: numStr(stax?.protection_factor) || '1',
+    stax_expected_county_revenue: numStr(stax?.expected_county_revenue),
+    stax_premium_per_acre: numStr(stax?.premium_per_acre),
+    stax_total_premium: numStr(stax?.total_premium),
+    mco_enabled: !!mco,
+    mco_trigger_level: numStr(mco?.trigger_level) || '0.9',
+    mco_expected_margin: numStr(mco?.expected_margin),
+    mco_input_cost_adjustment: mco ? numStr(mco.input_cost_adjustment) || '0' : '0',
+    mco_expected_county_yield: numStr(mco?.expected_county_yield),
+    mco_premium_per_acre: numStr(mco?.premium_per_acre),
+    mco_total_premium: numStr(mco?.total_premium),
   }
 }
 
@@ -139,6 +194,8 @@ export type PolicyPayloads = {
   policy: Record<string, unknown>
   sco: Record<string, unknown> | null
   eco: Record<string, unknown> | null
+  stax: Record<string, unknown> | null
+  mco: Record<string, unknown> | null
 }
 
 // Map the form onto insert/update payloads. total_premium is auto-derived from
@@ -170,6 +227,9 @@ export function policyFormToPayloads(form: PolicyFormState, source: 'manual' | '
     covers_all_planted_acres: form.covers_all_planted_acres,
     // Only keep a note when the attestation is on, so an old note can't linger.
     coverage_note: form.covers_all_planted_acres ? (form.coverage_note.trim() || null) : null,
+    expected_county_yield: num(form.expected_county_yield),
+    expected_county_revenue: num(form.expected_county_revenue),
+    protection_factor: num(form.protection_factor),
     source,
   }
 
@@ -196,19 +256,51 @@ export function policyFormToPayloads(form: PolicyFormState, source: 'manual' | '
       }
     : null
 
-  return { policy, sco, eco }
+  const staxPpa = num(form.stax_premium_per_acre)
+  const stax = form.stax_enabled
+    ? {
+        coverage_range_top: num(form.stax_coverage_range_top) ?? 0.9,
+        coverage_pct: num(form.stax_coverage_pct) ?? 0.2,
+        protection_factor: num(form.stax_protection_factor) ?? 1,
+        expected_county_revenue: num(form.stax_expected_county_revenue),
+        premium_per_acre: staxPpa,
+        total_premium: num(form.stax_total_premium) ?? (staxPpa != null ? Math.round(staxPpa * scoAcres * 100) / 100 : null),
+      }
+    : null
+
+  const mcoPpa = num(form.mco_premium_per_acre)
+  const mco = form.mco_enabled
+    ? {
+        trigger_level: num(form.mco_trigger_level) ?? 0.9,
+        expected_margin: num(form.mco_expected_margin),
+        input_cost_adjustment: num(form.mco_input_cost_adjustment) ?? 0,
+        expected_county_yield: num(form.mco_expected_county_yield),
+        premium_per_acre: mcoPpa,
+        total_premium: num(form.mco_total_premium) ?? (mcoPpa != null ? Math.round(mcoPpa * scoAcres * 100) / 100 : null),
+      }
+    : null
+
+  return { policy, sco, eco, stax, mco }
 }
 
 export function validatePolicyForm(form: PolicyFormState, requireEntity = false): string | null {
+  const isArea = form.plan_type === 'ARP' || form.plan_type === 'AYP'
   if (requireEntity && !form.entity_id) return 'Select the entity this policy belongs to.'
   if (!form.crop_id) return 'Pick a crop.'
   if (!form.crop_year || !Number.isFinite(Number(form.crop_year))) return 'Enter a crop year.'
   if ((num(form.coverage_level) ?? 0) <= 0) return 'Pick a coverage level.'
-  if ((num(form.aph_yield) ?? 0) <= 0) return 'Enter the APH yield (bu/ac).'
+  if (!isArea && (num(form.aph_yield) ?? 0) <= 0) return 'Enter the APH yield (bu/ac).'
   if ((num(form.projected_price) ?? 0) <= 0) return 'Enter the projected price ($/bu).'
   if ((num(form.insured_acres) ?? 0) <= 0) return 'Enter insured acres.'
+  if (isArea && (num(form.expected_county_yield) ?? 0) <= 0 && (num(form.expected_county_revenue) ?? 0) <= 0) {
+    return 'ARP/AYP are county-triggered — enter the RMA expected county yield or revenue.'
+  }
   if (form.sco_enabled && (num(form.sco_expected_county_yield) ?? 0) <= 0) return 'Enter the SCO expected county yield.'
   if (form.eco_enabled && (num(form.eco_expected_county_yield) ?? 0) <= 0) return 'Enter the ECO expected county yield.'
+  if (form.stax_enabled && (num(form.stax_expected_county_revenue) ?? 0) <= 0 && (num(form.expected_county_yield) ?? 0) <= 0) {
+    return 'STAX needs the expected county revenue (or the policy expected county yield).'
+  }
+  if (form.mco_enabled && (num(form.mco_expected_margin) ?? 0) <= 0) return 'MCO needs the expected margin ($/ac, from the policy documents).'
   return null
 }
 
@@ -425,6 +517,34 @@ export function PolicyFields({
         )}
       </div>
 
+      {/* Area-plan fields (ARP/AYP) — county-triggered, the farm's yield plays no role. */}
+      {(value.plan_type === 'ARP' || value.plan_type === 'AYP') && (
+        <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3 space-y-3">
+          <div className="font-semibold text-sm text-indigo-900">
+            Area plan — county-triggered (your farm yield is not used)
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <label className={labelCls}>
+              <span className={spanCls}>RMA expected county yield (bu/ac)</span>
+              <input type="number" step="0.1" value={value.expected_county_yield} onChange={(e) => set('expected_county_yield', e.target.value)} className={inputCls} />
+            </label>
+            <label className={labelCls}>
+              <span className={spanCls}>Expected county revenue ($/ac)</span>
+              <input type="number" step="0.01" placeholder="auto: yield × price" value={value.expected_county_revenue} onChange={(e) => set('expected_county_revenue', e.target.value)} className={inputCls} />
+            </label>
+            <label className={labelCls}>
+              <span className={spanCls}>Protection factor (0.8–1.2)</span>
+              <input type="number" step="0.05" placeholder="1.0" value={value.protection_factor} onChange={(e) => set('protection_factor', e.target.value)} className={inputCls} />
+            </label>
+          </div>
+          <p className="text-xs text-slate-500">
+            Indemnity comes entirely from the estimated county {value.plan_type === 'AYP' ? 'yield' : 'revenue'} vs the
+            trigger (coverage × expected). The estimated county yield uses the shared county assumption from Settings /
+            the Claims Monitor.
+          </p>
+        </div>
+      )}
+
       {/* SCO endorsement */}
       <div className="rounded-lg border border-slate-200 p-3 space-y-3">
         <label className="flex items-center gap-2 font-semibold text-sm">
@@ -495,6 +615,89 @@ export function PolicyFields({
         )}
       </div>
 
+      {/* STAX endorsement (upland cotton) */}
+      <div className="rounded-lg border border-slate-200 p-3 space-y-3">
+        <label className="flex items-center gap-2 font-semibold text-sm">
+          <input type="checkbox" checked={value.stax_enabled} onChange={(e) => set('stax_enabled', e.target.checked)} />
+          Add STAX (Stacked Income Protection — cotton)
+        </label>
+        {value.stax_enabled && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            <label className={labelCls}>
+              <span className={spanCls}>Coverage range top</span>
+              <input type="number" step="0.05" value={value.stax_coverage_range_top} onChange={(e) => set('stax_coverage_range_top', e.target.value)} className={inputCls} />
+            </label>
+            <label className={labelCls}>
+              <span className={spanCls}>Coverage % (band depth, ≤ 0.20)</span>
+              <select value={value.stax_coverage_pct} onChange={(e) => set('stax_coverage_pct', e.target.value)} className={inputCls}>
+                {['0.05', '0.10', '0.15', '0.20'].map((v) => <option key={v} value={v}>{Math.round(Number(v) * 100)}%</option>)}
+              </select>
+            </label>
+            <label className={labelCls}>
+              <span className={spanCls}>Protection factor (0.8–1.2)</span>
+              <input type="number" step="0.05" value={value.stax_protection_factor} onChange={(e) => set('stax_protection_factor', e.target.value)} className={inputCls} />
+            </label>
+            <label className={labelCls}>
+              <span className={spanCls}>Expected county revenue ($/ac)</span>
+              <input type="number" step="0.01" value={value.stax_expected_county_revenue} onChange={(e) => set('stax_expected_county_revenue', e.target.value)} className={inputCls} />
+            </label>
+            <label className={labelCls}>
+              <span className={spanCls}>STAX premium / acre ($)</span>
+              <input type="number" step="0.01" value={value.stax_premium_per_acre} onChange={(e) => set('stax_premium_per_acre', e.target.value)} className={inputCls} />
+            </label>
+            <label className={labelCls}>
+              <span className={spanCls}>STAX total premium ($)</span>
+              <input type="number" step="0.01" placeholder="auto from /acre" value={value.stax_total_premium} onChange={(e) => set('stax_total_premium', e.target.value)} className={inputCls} />
+            </label>
+            <p className="text-xs text-slate-500 sm:col-span-2 lg:col-span-3">
+              Pays when the county revenue factor falls below the range top, scaling through the band × protection
+              factor. Note: STAX generally can&apos;t cover acres whose seed-cotton base is enrolled in ARC/PLC.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* MCO endorsement */}
+      <div className="rounded-lg border border-slate-200 p-3 space-y-3">
+        <label className="flex items-center gap-2 font-semibold text-sm">
+          <input type="checkbox" checked={value.mco_enabled} onChange={(e) => set('mco_enabled', e.target.checked)} />
+          Add MCO (Margin Coverage Option)
+        </label>
+        {value.mco_enabled && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            <label className={labelCls}>
+              <span className={spanCls}>Trigger level (band top)</span>
+              <select value={value.mco_trigger_level} onChange={(e) => set('mco_trigger_level', e.target.value)} className={inputCls}>
+                {['0.9', '0.95'].map((v) => <option key={v} value={v}>{Math.round(Number(v) * 100)}%</option>)}
+              </select>
+            </label>
+            <label className={labelCls}>
+              <span className={spanCls}>Expected margin ($/ac, from policy docs)</span>
+              <input type="number" step="0.01" value={value.mco_expected_margin} onChange={(e) => set('mco_expected_margin', e.target.value)} className={inputCls} />
+            </label>
+            <label className={labelCls}>
+              <span className={spanCls}>Input-cost adjustment ($/ac)</span>
+              <input type="number" step="0.01" value={value.mco_input_cost_adjustment} onChange={(e) => set('mco_input_cost_adjustment', e.target.value)} className={inputCls} />
+            </label>
+            <label className={labelCls}>
+              <span className={spanCls}>Expected county yield (bu/ac)</span>
+              <input type="number" step="0.1" value={value.mco_expected_county_yield} onChange={(e) => set('mco_expected_county_yield', e.target.value)} className={inputCls} />
+            </label>
+            <label className={labelCls}>
+              <span className={spanCls}>MCO premium / acre ($)</span>
+              <input type="number" step="0.01" value={value.mco_premium_per_acre} onChange={(e) => set('mco_premium_per_acre', e.target.value)} className={inputCls} />
+            </label>
+            <label className={labelCls}>
+              <span className={spanCls}>MCO total premium ($)</span>
+              <input type="number" step="0.01" placeholder="auto from /acre" value={value.mco_total_premium} onChange={(e) => set('mco_total_premium', e.target.value)} className={inputCls} />
+            </label>
+            <p className="text-xs text-slate-500 sm:col-span-2 lg:col-span-3">
+              Margin band 86% → the trigger. The county-yield side uses the shared county assumption, like SCO/ECO.
+            </p>
+          </div>
+        )}
+      </div>
+
       <PolicyLiveSummary value={value} />
     </div>
   )
@@ -518,7 +721,13 @@ export function PolicyLiveSummary({ value }: { value: PolicyFormState }) {
     const ecoPrem = value.eco_enabled
       ? endorsementPremium({ total_premium: num(value.eco_total_premium), premium_per_acre: num(value.eco_premium_per_acre) }, acres)
       : 0
-    return { gp, revenueGuarantee, totalPremium: basePrem + scoPrem + ecoPrem, perAcre: acres > 0 ? revenueGuarantee / acres : 0 }
+    const staxPrem = value.stax_enabled
+      ? endorsementPremium({ total_premium: num(value.stax_total_premium), premium_per_acre: num(value.stax_premium_per_acre) }, acres)
+      : 0
+    const mcoPrem = value.mco_enabled
+      ? endorsementPremium({ total_premium: num(value.mco_total_premium), premium_per_acre: num(value.mco_premium_per_acre) }, acres)
+      : 0
+    return { gp, revenueGuarantee, totalPremium: basePrem + scoPrem + ecoPrem + staxPrem + mcoPrem, perAcre: acres > 0 ? revenueGuarantee / acres : 0 }
   }, [value])
 
   const usd = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`

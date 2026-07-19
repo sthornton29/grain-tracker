@@ -12,11 +12,13 @@ import {
 } from '@/components/crop-insurance/policy-form'
 import PolicyAiImport from '@/components/crop-insurance/policy-ai-import'
 import CoverageCheck from '@/components/crop-insurance/coverage-check'
-import { PLAN_TYPE_SHORT, PRACTICE_LABEL } from '@/lib/crop-insurance'
+import { PLAN_TYPE_SHORT, PRACTICE_LABEL, isAreaPlan, stackingWarnings } from '@/lib/crop-insurance'
 import { fmtPrice } from '@/lib/hedging'
 import ProjectedPricesEditor from '@/components/crop-insurance/projected-prices-editor'
+import { CountyAssumptionControl } from '@/components/crop-insurance/county-assumption-editor'
 import type {
   Crop, County, Entity, FieldPlanting, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco,
+  CropInsuranceStax, CropInsuranceMco, CountyYieldAssumption,
   HarvestPriceEstimate, ProgramYearConfig,
 } from '@/lib/types'
 
@@ -29,6 +31,9 @@ export default function CropInsuranceSettingsPage() {
   const [policies, setPolicies] = useState<CropInsurancePolicy[]>([])
   const [scos, setScos] = useState<CropInsuranceSco[]>([])
   const [ecos, setEcos] = useState<CropInsuranceEco[]>([])
+  const [staxes, setStaxes] = useState<CropInsuranceStax[]>([])
+  const [mcos, setMcos] = useState<CropInsuranceMco[]>([])
+  const [countyAssumptions, setCountyAssumptions] = useState<CountyYieldAssumption[]>([])
   const [estimates, setEstimates] = useState<HarvestPriceEstimate[]>([])
   const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
 
@@ -40,7 +45,7 @@ export default function CropInsuranceSettingsPage() {
   const [entityFilter, setEntityFilter] = usePersistentState('crop-insurance-settings:entity', '')
 
   async function refresh() {
-    const [cr, co, en, pl, po, sc, ec, hp, pc] = await Promise.all([
+    const [cr, co, en, pl, po, sc, ec, hp, pc, sx, mc, ca] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
       supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('entities').select('*').order('name'),
@@ -50,6 +55,10 @@ export default function CropInsuranceSettingsPage() {
       supabase.from('crop_insurance_eco').select('*'),
       supabase.from('harvest_price_estimates').select('*'),
       supabase.from('program_year_config').select('*').order('crop_year', { ascending: false }),
+      // 045 tables — tolerate the migration not being applied yet.
+      supabase.from('crop_insurance_stax').select('*'),
+      supabase.from('crop_insurance_mco').select('*'),
+      supabase.from('county_yield_assumptions').select('*'),
     ])
     setCrops((cr.data as Crop[]) || [])
     setCounties((co.data as County[]) || [])
@@ -60,6 +69,9 @@ export default function CropInsuranceSettingsPage() {
     setEcos((ec.data as CropInsuranceEco[]) || [])
     setEstimates((hp.data as HarvestPriceEstimate[]) || [])
     setProgramConfigs((pc.data as ProgramYearConfig[]) || [])
+    setStaxes((sx.data as CropInsuranceStax[]) || [])
+    setMcos((mc.data as CropInsuranceMco[]) || [])
+    setCountyAssumptions((ca.data as CountyYieldAssumption[]) || [])
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
@@ -83,19 +95,27 @@ export default function CropInsuranceSettingsPage() {
     }
   }, [cropYearOptions])
 
-  // Write SCO/ECO sub-records for a policy: upsert when enabled, delete when off.
-  async function syncEndorsements(policyId: string, sco: Record<string, unknown> | null, eco: Record<string, unknown> | null) {
-    if (sco) {
-      const { error } = await supabase.from('crop_insurance_sco').upsert({ ...sco, policy_id: policyId }, { onConflict: 'policy_id' })
-      if (error) throw new Error(`SCO: ${error.message}`)
-    } else {
-      await supabase.from('crop_insurance_sco').delete().eq('policy_id', policyId)
-    }
-    if (eco) {
-      const { error } = await supabase.from('crop_insurance_eco').upsert({ ...eco, policy_id: policyId }, { onConflict: 'policy_id' })
-      if (error) throw new Error(`ECO: ${error.message}`)
-    } else {
-      await supabase.from('crop_insurance_eco').delete().eq('policy_id', policyId)
+  // Write endorsement sub-records for a policy: upsert when enabled, delete when off.
+  async function syncEndorsements(
+    policyId: string,
+    sco: Record<string, unknown> | null,
+    eco: Record<string, unknown> | null,
+    stax?: Record<string, unknown> | null,
+    mco?: Record<string, unknown> | null,
+  ) {
+    const pairs: Array<[string, Record<string, unknown> | null | undefined, string]> = [
+      ['crop_insurance_sco', sco, 'SCO'],
+      ['crop_insurance_eco', eco, 'ECO'],
+      ['crop_insurance_stax', stax, 'STAX'],
+      ['crop_insurance_mco', mco, 'MCO'],
+    ]
+    for (const [table, payload, label] of pairs) {
+      if (payload) {
+        const { error } = await supabase.from(table).upsert({ ...payload, policy_id: policyId }, { onConflict: 'policy_id' })
+        if (error) throw new Error(`${label}: ${error.message}`)
+      } else {
+        await supabase.from(table).delete().eq('policy_id', policyId)
+      }
     }
   }
 
@@ -104,11 +124,11 @@ export default function CropInsuranceSettingsPage() {
     const v = validatePolicyForm(form, entities.length > 1)
     if (v) { setErr(v); return }
     setErr(null)
-    const { policy, sco, eco } = policyFormToPayloads(form, 'manual')
+    const { policy, sco, eco, stax, mco } = policyFormToPayloads(form, 'manual')
     const { data, error } = await supabase.from('crop_insurance_policies').insert(policy).select('id').single()
     if (error || !data) { setErr(error?.message ?? 'Insert failed.'); return }
     try {
-      await syncEndorsements((data as { id: string }).id, sco, eco)
+      await syncEndorsements((data as { id: string }).id, sco, eco, stax, mco)
     } catch (e2: any) { setErr(e2?.message ?? 'Saving endorsements failed.'); refresh(); return }
     setForm({ ...emptyPolicyForm, crop_year: form.crop_year, entity_id: form.entity_id })
     setShowAdd(false)
@@ -119,11 +139,11 @@ export default function CropInsuranceSettingsPage() {
     const v = validatePolicyForm(editForm, entities.length > 1)
     if (v) { setErr(v); return }
     setErr(null)
-    const { policy, sco, eco } = policyFormToPayloads(editForm, 'manual')
+    const { policy, sco, eco, stax, mco } = policyFormToPayloads(editForm, 'manual')
     const { error } = await supabase.from('crop_insurance_policies').update(policy).eq('id', id)
     if (error) { setErr(error.message); return }
     try {
-      await syncEndorsements(id, sco, eco)
+      await syncEndorsements(id, sco, eco, stax, mco)
     } catch (e2: any) { setErr(e2?.message ?? 'Saving endorsements failed.'); refresh(); return }
     setEditingId(null)
     refresh()
@@ -136,9 +156,21 @@ export default function CropInsuranceSettingsPage() {
     refresh()
   }
 
+  const staxByPolicy = useMemo(() => new Map(staxes.map((s) => [s.policy_id, s])), [staxes])
+  const mcoByPolicy = useMemo(() => new Map(mcos.map((m) => [m.policy_id, m])), [mcos])
+
+  // Stacking conflicts (warn, never block — the agent is the authority).
+  const conflicts = useMemo(() => stackingWarnings({
+    policies,
+    ecoPolicyIds: new Set(ecos.map((e) => e.policy_id)),
+    staxPolicyIds: new Set(staxes.map((s) => s.policy_id)),
+    mcoPolicyIds: new Set(mcos.map((m) => m.policy_id)),
+    cropName: (id) => cropById.get(id)?.name ?? 'crop',
+  }), [policies, ecos, staxes, mcos, cropById])
+
   function startEdit(p: CropInsurancePolicy) {
     setEditingId(p.id)
-    setEditForm(policyToForm(p, scoByPolicy.get(p.id), ecoByPolicy.get(p.id)))
+    setEditForm(policyToForm(p, scoByPolicy.get(p.id), ecoByPolicy.get(p.id), staxByPolicy.get(p.id), mcoByPolicy.get(p.id)))
     setErr(null)
   }
 
@@ -178,6 +210,39 @@ export default function CropInsuranceSettingsPage() {
         <strong> Dryland</strong> — review and switch any irrigated policies to <strong>Irrigated</strong> so the
         Coverage Check and per-practice indemnity line up.
       </p>
+
+      {conflicts.length > 0 && (
+        <div className="rounded-lg bg-amber-50 border border-amber-300 px-3 py-2 text-sm text-amber-900 space-y-0.5 max-w-3xl">
+          <div className="font-semibold">Stacking review (warnings only — your agent is the authority):</div>
+          {conflicts.map((w) => <div key={w.key}>· {w.message}</div>)}
+        </div>
+      )}
+
+      {/* Unified county-yield assumption (045): ONE source for every county-
+          triggered plan (SCO/ECO/STAX/ARP/AYP/MCO). Separate from ARC-CO. */}
+      <div className="bg-white rounded-xl shadow p-4 space-y-2">
+        <h2 className="font-semibold">County yield assumptions (insurance)</h2>
+        <p className="text-xs text-slate-500 max-w-3xl">
+          &ldquo;My county vs its RMA expected yield this year&rdquo; — drives every county-triggered calculation
+          (SCO/ECO/STAX/ARP/AYP/MCO). This is a <strong>separate assumption from the ARC-CO expectation</strong>:
+          insurance uses RMA expected county yields, ARC uses FSA benchmarks.
+        </p>
+        <div className="space-y-1">
+          {Array.from(new Map(policies.map((p) => [`${p.crop_id}|${p.county_id ?? ''}|${p.crop_year}`, p])).values()).map((p) => (
+            <div key={`${p.crop_id}|${p.county_id ?? ''}|${p.crop_year}`} className="flex items-center gap-2 flex-wrap text-sm">
+              <span className="font-medium w-56 truncate">{cropName(p.crop_id)} · {countyName(p.county_id)} · {p.crop_year}</span>
+              <CountyAssumptionControl
+                cropId={p.crop_id}
+                countyId={p.county_id}
+                cropYear={p.crop_year}
+                assumption={countyAssumptions.find((a) => a.crop_id === p.crop_id && a.crop_year === p.crop_year && (a.county_id ?? '') === (p.county_id ?? '')) ?? null}
+                onChanged={refresh}
+              />
+            </div>
+          ))}
+          {policies.length === 0 && <p className="text-sm text-slate-400">Assumptions appear here once policies exist.</p>}
+        </div>
+      </div>
 
       <EntityFilter entities={entities} value={entityFilter} onChange={setEntityFilter} />
 
@@ -256,6 +321,9 @@ export default function CropInsuranceSettingsPage() {
                       {p.entity_id && <span className="text-xs text-slate-500">· {entityName(p.entity_id)}</span>}
                       {sco && <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">SCO</span>}
                       {eco && <span className="text-xs rounded-full bg-indigo-100 text-indigo-800 px-2 py-0.5">ECO</span>}
+                      {staxByPolicy.get(p.id) && <span className="text-xs rounded-full bg-teal-100 text-teal-800 px-2 py-0.5">STAX</span>}
+                      {mcoByPolicy.get(p.id) && <span className="text-xs rounded-full bg-purple-100 text-purple-800 px-2 py-0.5">MCO</span>}
+                      {isAreaPlan(p.plan_type) && <span className="text-xs rounded-full bg-indigo-100 text-indigo-800 px-2 py-0.5">county-triggered</span>}
                       {p.source === 'document_import' && <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">imported</span>}
                     </div>
                     <div className="text-sm text-slate-500">

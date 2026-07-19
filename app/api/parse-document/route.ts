@@ -335,7 +335,7 @@ For each crop × county × practice line found in the document, extract:
 - county (the county name)
 - state (the state)
 - crop_year (the crop year)
-- plan_type ("RP" for Revenue Protection, "RP_HPE" for Revenue Protection with Harvest Price Exclusion, "YP" for Yield Protection)
+- plan_type ("RP" for Revenue Protection, "RP_HPE" for Revenue Protection with Harvest Price Exclusion, "YP" for Yield Protection, "ARP" for Area Revenue Protection, "AYP" for Area Yield Protection — area/county plans may appear by plan code 04/05/06 or names like "Area Risk Protection")
 - practice ("irrigated" or "non_irrigated"). Practice indicators: "IRR" / "Irrigated" / "IR" = irrigated; "NIRR" / "Non-Irrigated" / "NFAC" / "Dryland" / "Non-Irr" / "DRY" = non_irrigated. If a line clearly shows a practice, set it; if the document does not distinguish practice for this crop/county, use null.
 - coverage_level (as a decimal, e.g., 0.80 for 80%)
 - unit_structure ("enterprise", "basic", or "optional")
@@ -346,6 +346,9 @@ For each crop × county × practice line found in the document, extract:
 - total_premium (total producer premium for this crop/county/practice line)
 - premium_subsidy_pct (the federal subsidy percentage if shown)
 - policy_number (if shown)
+- expected_county_yield (the RMA EXPECTED COUNTY yield if shown — ARP/AYP lines always show it; null otherwise)
+- expected_county_revenue (the expected county revenue $/acre if shown)
+- protection_factor (ARP/AYP/STAX protection factor 0.8-1.2 if shown)
 
 Also check for SCO (Supplemental Coverage Option) endorsements:
 - sco_present (true/false)
@@ -361,6 +364,12 @@ Also check for ECO (Enhanced Coverage Option) endorsements:
 - eco_premium_per_acre (if shown)
 - eco_total_premium (if shown)
 
+Also check for STAX (Stacked Income Protection — upland cotton only; plan name "STAX" or "Stacked Income Protection"):
+- stax_present, coverage_range_top (typically 0.90), coverage_pct (0.05-0.20), protection_factor, expected_county_revenue ($/acre), premiums
+
+Also check for MCO (Margin Coverage Option) endorsements (margin protection bands, 86% to 90/95%):
+- mco_present, trigger_level (0.90 or 0.95), expected_margin ($/acre), input_cost_adjustment, expected_county_yield, premiums
+
 Respond ONLY in JSON with no other text, no markdown backticks:
 {
   "policies": [
@@ -369,7 +378,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
       "county": "string",
       "state": "string",
       "crop_year": number,
-      "plan_type": "RP or RP_HPE or YP",
+      "plan_type": "RP or RP_HPE or YP or ARP or AYP",
       "practice": "irrigated or non_irrigated or null",
       "coverage_level": number,
       "unit_structure": "enterprise or basic or optional",
@@ -380,6 +389,9 @@ Respond ONLY in JSON with no other text, no markdown backticks:
       "total_premium": number or null,
       "premium_subsidy_pct": number or null,
       "policy_number": "string or null",
+      "expected_county_yield": number or null,
+      "expected_county_revenue": number or null,
+      "protection_factor": number or null,
       "sco": {
         "present": true/false,
         "coverage_trigger": number or null,
@@ -390,6 +402,24 @@ Respond ONLY in JSON with no other text, no markdown backticks:
       "eco": {
         "present": true/false,
         "trigger_level": number or null,
+        "expected_county_yield": number or null,
+        "premium_per_acre": number or null,
+        "total_premium": number or null
+      },
+      "stax": {
+        "present": true/false,
+        "coverage_range_top": number or null,
+        "coverage_pct": number or null,
+        "protection_factor": number or null,
+        "expected_county_revenue": number or null,
+        "premium_per_acre": number or null,
+        "total_premium": number or null
+      },
+      "mco": {
+        "present": true/false,
+        "trigger_level": number or null,
+        "expected_margin": number or null,
+        "input_cost_adjustment": number or null,
         "expected_county_yield": number or null,
         "premium_per_acre": number or null,
         "total_premium": number or null

@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { BuyerPicker } from '@/components/buyer-location-pickers'
 import {
   buildCottonPhysicalSummary, computeLoanPrincipal, contractPricedCents,
   dispositionBoard, equityOutcome, ldpRateCents, projectBaleHandlingFees,
@@ -330,23 +331,26 @@ export default function CottonMarketingPage() {
     } catch (e) { fail(e) }
   }
 
-  async function equitySellLoan(loan: CccLoan) {
-    const eqS = prompt(`Equity sale on ${loan.loan_number ?? 'loan'} — equity ¢/lb the merchant pays over the loan:`)
-    if (eqS == null) return
-    const eq = num(eqS)
+  // Equity sale: inline panel (equity ¢/lb + buyer via the shared picker with
+  // inline "Add new buyer…" — same component as the grain contract form).
+  const [equityFor, setEquityFor] = useState<{ loanId: string; cents: string; buyerId: string } | null>(null)
+
+  async function confirmEquitySale() {
+    if (!equityFor) return
+    const loan = loans.find((l) => l.id === equityFor.loanId)
+    if (!loan) return
+    const eq = num(equityFor.cents)
     if (eq == null || eq < 0) { setErr('Enter the equity as plain ¢/lb.'); return }
-    const buyerNm = prompt('Equity purchaser (buyer name, must exist under Settings → Buyers — leave blank to skip):') ?? ''
-    const buyer = buyerNm.trim() ? buyers.find((b) => b.name.toLowerCase() === buyerNm.trim().toLowerCase()) : undefined
-    if (buyerNm.trim() && !buyer) { setErr(`No buyer named “${buyerNm.trim()}” — add them under Settings → Buyers first.`); return }
     const lbsV = loanLbs(loan.id)
     const o = equityOutcome({ principalTotal: Number(loan.principal_total), lbs: lbsV, equityCentsPerLb: eq })
     if (!confirm(`Equity sale at ${cents(eq)}/lb on ${lbs0(lbsV)} lbs:\n\nEquity received: ${usd(o.equityTotal)}\nEffective sale price: ${cents(o.effectiveCentsPerLb)}/lb (loan + equity)\n\nBales are final — the merchant owns them.`)) return
     try {
       const { error } = await supabase.from('ccc_loans').update({
         status: 'equity_sold', outcome_date: todayIso(), equity_cents_per_lb: eq,
-        equity_total: o.equityTotal, buyer_id: buyer?.id ?? null,
+        equity_total: o.equityTotal, buyer_id: equityFor.buyerId || null,
       }).eq('id', loan.id)
       if (error) throw new Error(error.message)
+      setEquityFor(null)
       await done(`Equity sold — ${usd(o.equityTotal)} at an effective ${cents(o.effectiveCentsPerLb)}/lb.`)
     } catch (e) { fail(e) }
   }
@@ -647,10 +651,13 @@ export default function CottonMarketingPage() {
                 <input value={contractForm.contract_number} onChange={(e) => cf('contract_number', e.target.value)} className={inputCls} />
               </label>
               <label className="flex flex-col gap-1">Buyer / merchant / pool
-                <select value={contractForm.buyer_id} onChange={(e) => cf('buyer_id', e.target.value)} className={inputCls}>
-                  <option value="">— buyer —</option>
-                  {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                </select>
+                <BuyerPicker
+                  value={contractForm.buyer_id}
+                  onChange={(id) => cf('buyer_id', id)}
+                  buyers={buyers}
+                  onCreated={(b) => setBuyers((xs) => [...xs, b].sort((a, z) => a.name.localeCompare(z.name)))}
+                  className={inputCls}
+                />
               </label>
               {entities.length > 1 && (
                 <label className="flex flex-col gap-1">Entity
@@ -758,7 +765,7 @@ export default function CottonMarketingPage() {
                         {l.status === 'open' && (
                           <>
                             <button type="button" className="text-green-700 font-semibold" onClick={() => redeemLoan(l)}>Redeem</button>
-                            <button type="button" className="text-teal-700 font-semibold" onClick={() => equitySellLoan(l)}>Equity sale</button>
+                            <button type="button" className="text-teal-700 font-semibold" onClick={() => setEquityFor({ loanId: l.id, cents: '', buyerId: l.buyer_id ?? '' })}>Equity sale</button>
                             <button type="button" className="text-slate-500" onClick={() => forfeitLoan(l)}>Forfeit</button>
                           </>
                         )}
@@ -770,6 +777,42 @@ export default function CottonMarketingPage() {
             </table>
           </div>
         )}
+        {equityFor && (() => {
+          const loan = loans.find((l) => l.id === equityFor.loanId)
+          if (!loan) return null
+          const lbsV = loanLbs(loan.id)
+          const eq = num(equityFor.cents)
+          const preview = eq != null && eq >= 0 ? equityOutcome({ principalTotal: Number(loan.principal_total), lbs: lbsV, equityCentsPerLb: eq }) : null
+          return (
+            <div className="rounded-lg border border-teal-300 bg-teal-50/40 p-3 space-y-2">
+              <div className="font-semibold text-sm">Equity sale — {loan.loan_number ?? 'loan'} ({lbs0(lbsV)} lbs banked at {usd(Number(loan.principal_total))})</div>
+              <div className="flex flex-wrap items-end gap-2 text-xs">
+                <label className="flex flex-col gap-1">Equity (¢/lb over the loan)
+                  <input type="number" step="0.01" value={equityFor.cents}
+                    onChange={(e) => setEquityFor((f) => f && { ...f, cents: e.target.value })} className={inputCls} placeholder="8.00" />
+                </label>
+                <label className="flex flex-col gap-1">Equity purchaser
+                  <BuyerPicker
+                    value={equityFor.buyerId}
+                    onChange={(id) => setEquityFor((f) => f && { ...f, buyerId: id })}
+                    buyers={buyers}
+                    onCreated={(b) => setBuyers((xs) => [...xs, b].sort((a, z) => a.name.localeCompare(z.name)))}
+                    className={inputCls}
+                  />
+                </label>
+                {preview && (
+                  <span className="text-sm tabular-nums pb-1">
+                    → equity <strong>{usd(preview.equityTotal)}</strong> · effective <strong>{cents(preview.effectiveCentsPerLb)}/lb</strong>
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <button type="button" className={btnCls} disabled={eq == null || eq < 0} onClick={confirmEquitySale}>Confirm equity sale</button>
+                <button type="button" className={btnGray} onClick={() => setEquityFor(null)}>Cancel</button>
+              </div>
+            </div>
+          )
+        })()}
         {loanForm && (
           <div className="rounded-lg border border-slate-300 p-3 space-y-2">
             <div className="font-semibold text-sm">New CCC loan — pick the bale group below</div>
