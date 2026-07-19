@@ -92,8 +92,9 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
     ;(async () => {
       try {
         const scopeCol = config.columns.find((c) => c.key === res.scopeKey)
-        const [existingByScopeId, lookupRes] = await Promise.all([
+        const [existingByScopeId, dismissedByScopeId, lookupRes] = await Promise.all([
           res.loadExisting(supabase),
+          res.loadDismissed ? res.loadDismissed(supabase) : Promise.resolve(new Map<string, Set<string>>()),
           scopeCol?.fk
             ? supabase.from(scopeCol.fk.table).select(`id,${scopeCol.fk.matchColumn}`)
             : Promise.resolve({ data: null, error: null }),
@@ -117,7 +118,8 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
         const scopes: ScopePlan[] = [...byScope.values()].map(({ scope, refs }) => {
           const id = scopeId(scope)
           const existing = (id ? existingByScopeId.get(id) : undefined) ?? []
-          return { scope, plan: buildVarietyPlan(refs, existing) }
+          const dismissed = id ? dismissedByScopeId.get(id) : undefined
+          return { scope, plan: buildVarietyPlan(refs, existing, dismissed) }
         })
         setResolution({ scopes, rowScope })
         setDecisions({})

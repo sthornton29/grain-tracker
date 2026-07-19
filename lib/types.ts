@@ -121,6 +121,17 @@ export type FieldPlantingVariety = {
   created_at: string
 }
 
+// A "different varieties — keep both" decision on a suspected-duplicate pair of
+// variety spellings (043). key_a/key_b are varietyKey-normalized, sorted
+// (key_a <= key_b) — see lib/variety-resolution.ts dismissalKey.
+export type VarietyMatchDismissal = {
+  id: string
+  crop_id: string
+  key_a: string
+  key_b: string
+  created_at: string
+}
+
 export type Contract = {
   id: string
   contract_number: string

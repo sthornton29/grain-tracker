@@ -13,10 +13,12 @@ import {
   practiceActualYieldByCrop,
   projectInsuranceIndemnities,
   totalProjectedIndemnity,
+  classifyPolicyUpload,
+  type PolicyUploadValues,
   type PolicyInputs,
   type BandInputs,
 } from '@/lib/crop-insurance'
-import type { HarvestPriceEstimate, CropInsurancePolicy, CropAssumption, FieldPlanting } from '@/lib/types'
+import type { HarvestPriceEstimate, CropInsurancePolicy, CropInsuranceSco, CropAssumption, FieldPlanting } from '@/lib/types'
 
 // ---------------------------------------------------------------------------
 // Fixtures for the shared indemnity projection. Builders fill every field so the
@@ -836,5 +838,104 @@ describe('projectInsuranceIndemnities', () => {
     const claims = totalProjectedIndemnity(projectInsuranceIndemnities({ ...args, globalYieldPct: 0, yieldOverrideByPolicy: new Map(), harvestOverrideByCrop: new Map() }))
     const cashflow = totalProjectedIndemnity(projectInsuranceIndemnities(args))
     expect(claims).toBeCloseTo(cashflow, 2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Policy upload dedupe — classifyPolicyUpload / diffPolicyUpload. The brokerage
+// import pattern: 'exists' (identical -> skipped), 'update' (material field
+// diffs, existing policy patched in place), 'new'. Blanks never diff; SCO/ECO
+// dedupe with their parent (added/corrected, never removed).
+// ---------------------------------------------------------------------------
+function mkUpload(over: Partial<PolicyUploadValues> = {}): PolicyUploadValues {
+  return {
+    coverage_level: '0.80', unit_structure: 'enterprise', aph_yield: '', projected_price: '',
+    harvest_price: '', volatility_factor: '', insured_acres: '', premium_per_acre: '',
+    total_premium: '', premium_subsidy_pct: '', policy_number: '',
+    sco_enabled: false, sco_expected_county_yield: '', sco_premium_per_acre: '', sco_total_premium: '',
+    eco_enabled: false, eco_trigger_level: '', eco_expected_county_yield: '', eco_premium_per_acre: '', eco_total_premium: '',
+    ...over,
+  }
+}
+function mkSco(over: Partial<CropInsuranceSco> = {}): CropInsuranceSco {
+  return {
+    id: 's1', policy_id: 'p1', coverage_trigger: 0.86, expected_county_yield: 110,
+    county_yield_assumption_pct: null, premium_per_acre: 9, total_premium: null,
+    notes: null, created_at: '2026-01-01', ...over,
+  }
+}
+
+describe('classifyPolicyUpload — Already exists / Update available / New', () => {
+  const onFile = mkPolicy({
+    coverage_level: 0.75, aph_yield: 165, insured_acres: 850,
+    premium_per_acre: 12.4, policy_number: 'POL-100',
+  })
+
+  it('no matching policy → new', () => {
+    const s = classifyPolicyUpload(mkUpload(), null)
+    expect(s.kind).toBe('new')
+    expect(s.existing).toBeNull()
+  })
+
+  it('a re-uploaded identical packet classifies exists (skipped) — blanks never diff', () => {
+    // The extraction provided coverage/APH/acres/premium/policy #; everything
+    // else is blank and must not count as a change.
+    const s = classifyPolicyUpload(
+      mkUpload({ coverage_level: '0.75', aph_yield: '165', insured_acres: '850', premium_per_acre: '12.4', policy_number: 'pol-100' }),
+      onFile,
+    )
+    expect(s.kind).toBe('exists')
+    expect(s.diffs).toEqual([])
+  })
+
+  it('a blank extracted field never diffs against a stored value', () => {
+    const s = classifyPolicyUpload(mkUpload({ coverage_level: '0.75' }), onFile)
+    expect(s.kind).toBe('exists')
+  })
+
+  it('each material field flags an update with a field-level diff', () => {
+    const cov = classifyPolicyUpload(mkUpload({ coverage_level: '0.80' }), onFile)
+    expect(cov.kind).toBe('update')
+    expect(cov.diffs).toEqual([{ label: 'Coverage', existing: '75%', incoming: '80%' }])
+
+    const aph = classifyPolicyUpload(mkUpload({ coverage_level: '0.75', aph_yield: '172' }), onFile)
+    expect(aph.kind).toBe('update')
+    expect(aph.diffs).toEqual([{ label: 'APH yield', existing: '165', incoming: '172' }])
+
+    const acres = classifyPolicyUpload(mkUpload({ coverage_level: '0.75', insured_acres: '900' }), onFile)
+    expect(acres.diffs).toEqual([{ label: 'Insured acres', existing: '850', incoming: '900' }])
+
+    const prem = classifyPolicyUpload(mkUpload({ coverage_level: '0.75', premium_per_acre: '13.1' }), onFile)
+    expect(prem.diffs).toEqual([{ label: 'Premium/ac', existing: '12.4', incoming: '13.1' }])
+  })
+
+  it('a stored null diffs against a provided value (shown as —)', () => {
+    const s = classifyPolicyUpload(mkUpload({ coverage_level: '0.75', total_premium: '5100' }), onFile)
+    expect(s.diffs).toEqual([{ label: 'Total premium', existing: '—', incoming: '5100' }])
+  })
+
+  it('SCO dedupes with its parent: absent-from-upload is not a diff; new-on-upload is', () => {
+    // Packet without the SCO page: the policy on file keeps its SCO, no update.
+    const noSco = classifyPolicyUpload(mkUpload({ coverage_level: '0.75' }), onFile, mkSco())
+    expect(noSco.kind).toBe('exists')
+    // Upload carries an SCO the app lacks → update, "added".
+    const addSco = classifyPolicyUpload(mkUpload({ coverage_level: '0.75', sco_enabled: true }), onFile, null)
+    expect(addSco.kind).toBe('update')
+    expect(addSco.diffs).toEqual([{ label: 'SCO', existing: 'none', incoming: 'added' }])
+    // Upload SCO matching the one on file → still exists.
+    const sameSco = classifyPolicyUpload(
+      mkUpload({ coverage_level: '0.75', sco_enabled: true, sco_expected_county_yield: '110', sco_premium_per_acre: '9' }),
+      onFile,
+      mkSco(),
+    )
+    expect(sameSco.kind).toBe('exists')
+    // Upload SCO correcting the county yield → update with the endorsement diff.
+    const fixSco = classifyPolicyUpload(
+      mkUpload({ coverage_level: '0.75', sco_enabled: true, sco_expected_county_yield: '118' }),
+      onFile,
+      mkSco(),
+    )
+    expect(fixSco.kind).toBe('update')
+    expect(fixSco.diffs).toEqual([{ label: 'SCO county yield', existing: '110', incoming: '118' }])
   })
 })
