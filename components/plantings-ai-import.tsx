@@ -16,6 +16,7 @@ import {
   type VarietyPlan,
   type VarietyPlanItem,
 } from '@/lib/variety-resolution'
+import { classifyPlantingRow, varietyAdditions, type PlantingRowClass } from '@/lib/planting-import'
 import type { Crop, Field, FieldPlanting } from '@/lib/types'
 
 type Props = {
@@ -24,6 +25,13 @@ type Props = {
   existingPlantings: FieldPlanting[]
   /** Distinct existing variety names per crop id (the resolution catalog). */
   existingVarietiesByCrop: Map<string, string[]>
+  /** Current variety names per planting id — drives the Update classification
+   *  (a row whose variety isn't on the planting yet is an Update, not
+   *  Unchanged) and the added-on-save set. */
+  existingVarietiesByPlanting: Map<string, string[]>
+  /** "Keep both" dismissals per crop id (dismissalKey sets) — a dismissed pair
+   *  never re-prompts as a possible match. */
+  dismissedPairsByCrop: Map<string, Set<string>>
   defaultYear: number
   fieldLabel: (id: string) => string
   onImported: () => void
@@ -62,7 +70,7 @@ function rowReady(r: Row): boolean {
   return true
 }
 
-export default function PlantingsAiImport({ fields, crops, existingPlantings, existingVarietiesByCrop, defaultYear, fieldLabel, onImported }: Props) {
+export default function PlantingsAiImport({ fields, crops, existingPlantings, existingVarietiesByCrop, existingVarietiesByPlanting, dismissedPairsByCrop, defaultYear, fieldLabel, onImported }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [source, setSource] = useState<DocumentSource | null>(null)
   const [stage, setStage] = useState<string | null>(null)
@@ -74,9 +82,11 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, ex
   // covers every row mentioning that variety for that crop.
   const [varietyDecisions, setVarietyDecisions] = useState<Record<string, VarietyDecision>>({})
 
-  // Per-crop resolution of every extracted variety against the crop's existing
-  // names, with within-file collapse: format variants across rows share one
-  // plan item, so a new variety is created once under its first-seen spelling.
+  // Per-crop resolution of EVERY extracted variety against the crop's existing
+  // names — regardless of the row's New/Update/Unchanged classification — with
+  // within-file collapse: format variants across rows share one plan item, so a
+  // new variety is created once under its first-seen spelling. "Keep both"
+  // dismissals silence their pairs.
   const varietyPlans = useMemo(() => {
     const refsByCrop = new Map<string, VarietyNameRef[]>()
     rows.forEach((r, i) => {
@@ -90,10 +100,10 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, ex
     })
     const plans = new Map<string, VarietyPlan>()
     for (const [cropId, refs] of refsByCrop) {
-      plans.set(cropId, buildVarietyPlan(refs, existingVarietiesByCrop.get(cropId) ?? []))
+      plans.set(cropId, buildVarietyPlan(refs, existingVarietiesByCrop.get(cropId) ?? [], dismissedPairsByCrop.get(cropId)))
     }
     return plans
-  }, [rows, existingVarietiesByCrop])
+  }, [rows, existingVarietiesByCrop, dismissedPairsByCrop])
 
   function varietyItemFor(cropId: string, name: string): VarietyPlanItem | null {
     if (!cropId || !name.trim()) return null
@@ -128,20 +138,37 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, ex
     [existingPlantings],
   )
 
-  // Classify a row vs existing plantings. Only values the row actually has count
-  // toward "changed" (preserve-existing): a blank field is never a change.
-  function rowStatus(r: Row): { kind: 'new' | 'update' | 'unchanged'; existingId: string | null } {
-    if (!r.field_id || !r.crop_id || !r.season_year) return { kind: 'new', existingId: null }
+  // Classify a row vs existing plantings — scalars AND varieties (a row whose
+  // variety the planting doesn't carry yet is an Update, never Unchanged; only
+  // values the row actually has count toward "changed"). Variety names compare
+  // by resolved name where decided, raw spelling otherwise — the key-based
+  // comparison is stable either way.
+  function rowStatus(r: Row): PlantingRowClass & { existingId: string | null } {
+    if (!r.field_id || !r.crop_id || !r.season_year) {
+      return { kind: 'new', scalarChanged: false, varietyAdds: [], existingId: null }
+    }
     const existing = existingByKey.get(`${r.field_id}|${r.crop_id}|${r.season_year}`)
-    if (!existing) return { kind: 'new', existingId: null }
-    const planted = num(r.planted_acres)
-    const irr = num(r.irrigated_acres)
-    const changed =
-      (planted != null && planted !== Number(existing.planted_acres)) ||
-      (irr != null && irr !== (Number(existing.irrigated_acres) || 0)) ||
-      (r.planting_date !== '' && r.planting_date !== (existing.planting_date ?? '')) ||
-      (r.notes.trim() !== '' && r.notes.trim() !== (existing.notes ?? ''))
-    return { kind: changed ? 'update' : 'unchanged', existingId: existing.id }
+    const cls = classifyPlantingRow(
+      {
+        planted_acres: num(r.planted_acres),
+        irrigated_acres: num(r.irrigated_acres),
+        planting_date: r.planting_date,
+        notes: r.notes,
+        varietyNames: r.varieties
+          .filter((v) => v.variety.trim())
+          .map((v) => finalVarietyName(r.crop_id, v.variety) ?? v.variety.trim()),
+      },
+      existing
+        ? {
+            planted_acres: Number(existing.planted_acres),
+            irrigated_acres: Number(existing.irrigated_acres) || 0,
+            planting_date: existing.planting_date ?? null,
+            notes: existing.notes ?? null,
+            varietyNames: existingVarietiesByPlanting.get(existing.id) ?? [],
+          }
+        : null,
+    )
+    return { ...cls, existingId: existing?.id ?? null }
   }
 
   async function onSource(src: DocumentSource) {
@@ -246,17 +273,13 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, ex
     setVarietyDecisions({})
   }
 
-  // Updates never touch varieties, so an unresolved possible match only blocks
-  // rows that would insert varieties (new plantings).
+  // Both new AND update rows write varieties now, so an unresolved possible
+  // match blocks any row that carries one.
   const toSave = rows.filter(
-    (r) =>
-      r.include &&
-      rowReady(r) &&
-      rowStatus(r).kind !== 'unchanged' &&
-      (rowStatus(r).kind !== 'new' || rowVarietiesResolved(r)),
+    (r) => r.include && rowReady(r) && rowStatus(r).kind !== 'unchanged' && rowVarietiesResolved(r),
   )
   const varietyBlocked = rows.filter(
-    (r) => r.include && rowReady(r) && rowStatus(r).kind === 'new' && !rowVarietiesResolved(r),
+    (r) => r.include && rowReady(r) && rowStatus(r).kind !== 'unchanged' && !rowVarietiesResolved(r),
   ).length
 
   async function saveAll() {
@@ -310,7 +333,9 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, ex
     }
 
     // Updates: patch only the provided, changed scalar fields of the matched
-    // planting (preserve-existing); varieties on existing plantings are untouched.
+    // planting (preserve-existing) AND add any upload varieties the planting
+    // doesn't carry yet (resolved names; existing variety rows are never
+    // modified or removed).
     let updated = 0
     for (const r of updateRows) {
       const existing = existingByKey.get(`${r.field_id}|${r.crop_id}|${r.season_year}`)
@@ -325,10 +350,31 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, ex
       if (planted != null || irrProvided) patch.dryland_acres = Math.max(0, effPlanted - irr)
       if (r.planting_date !== '') patch.planting_date = r.planting_date
       if (r.notes.trim() !== '') patch.notes = r.notes.trim()
-      if (Object.keys(patch).length === 0) continue
-      const { error } = await supabase.from('field_plantings').update(patch).eq('id', existing.id)
-      if (error) { setSaving(false); setErr(`Added ${added}, updated ${updated}; failed on a row: ${error.message}`); onImported(); return }
-      updated++
+      if (Object.keys(patch).length > 0) {
+        const { error } = await supabase.from('field_plantings').update(patch).eq('id', existing.id)
+        if (error) { setSaving(false); setErr(`Added ${added}, updated ${updated}; failed on a row: ${error.message}`); onImported(); return }
+      }
+      // Missing varieties (by normalized key, resolved names) — coalesce the
+      // row's mentions per resolved name so two format variants land once.
+      const resolved = new Map<string, { variety: string; acres: number }>()
+      for (const v of r.varieties) {
+        if (!v.variety.trim()) continue
+        const name = finalVarietyName(r.crop_id, v.variety) ?? v.variety.trim()
+        const prior = resolved.get(name)
+        if (prior) prior.acres += num(v.acres) ?? 0
+        else resolved.set(name, { variety: name, acres: num(v.acres) ?? 0 })
+      }
+      const adds = varietyAdditions([...resolved.keys()], existingVarietiesByPlanting.get(existing.id) ?? [])
+      const varietyInserts = adds.map((name) => ({
+        planting_id: existing.id,
+        variety: name,
+        acres: resolved.get(name)?.acres ?? 0,
+      }))
+      if (varietyInserts.length > 0) {
+        const { error: vErr } = await supabase.from('field_planting_varieties').insert(varietyInserts)
+        if (vErr) { setSaving(false); setErr(`Added ${added}, updated ${updated}; a variety failed to save: ${vErr.message}`); onImported(); return }
+      }
+      if (Object.keys(patch).length > 0 || varietyInserts.length > 0) updated++
     }
 
     setSaving(false)
@@ -340,18 +386,31 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, ex
   }
 
   // Resolution badge + controls under a variety input: matched shows the
-  // canonical spelling it links to, a possible match demands a choice (use the
-  // existing name or create as new — never guessed), new announces creation.
+  // canonical spelling it links to — and, on a row matched to an existing
+  // planting, whether it's already on that planting or will be ADDED to it —
+  // a possible match demands a choice (use the existing name or create as new —
+  // never guessed), new announces creation.
   function varietyBadge(r: Row, v: RowVariety) {
     const item = varietyItemFor(r.crop_id, v.variety)
     if (!item) return null
     const dk = `${r.crop_id}|${item.key}`
     const d = varietyDecisions[dk]
+    // Is this variety already on the matched planting (by normalized key)?
+    const existingId = existingByKey.get(`${r.field_id}|${r.crop_id}|${r.season_year}`)?.id ?? null
+    const onPlanting = existingId != null &&
+      (existingVarietiesByPlanting.get(existingId) ?? []).some((n) => varietyKey(n) === item.key)
+    const addNote = existingId != null && !onPlanting
+      ? <span className="text-sky-700"> — will be added to this planting</span>
+      : null
     if (item.resolution.status === 'matched') {
       const same = item.resolution.canonical === v.variety.trim()
       return (
         <div className="text-xs text-green-700">
-          ✓ {same ? 'Existing variety' : <>Matched existing: <span className="font-semibold">{item.resolution.canonical}</span></>}
+          ✓ {onPlanting
+            ? 'Already on this planting'
+            : same
+              ? <>Existing variety{addNote}</>
+              : <>Matched existing: <span className="font-semibold">{item.resolution.canonical}</span>{addNote}</>}
         </div>
       )
     }
@@ -446,7 +505,7 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, ex
                   const ready = rowReady(r)
                   const status = rowStatus(r)
                   const unchanged = status.kind === 'unchanged'
-                  const needsVarietyReview = ready && status.kind === 'new' && !rowVarietiesResolved(r)
+                  const needsVarietyReview = ready && status.kind !== 'unchanged' && !rowVarietiesResolved(r)
                   return (
                     <tr key={i} className={`border-t border-slate-100 align-top ${unchanged ? 'opacity-60' : ''}`}>
                       <td className="px-2 py-1">

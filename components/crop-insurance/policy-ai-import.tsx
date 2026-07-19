@@ -15,19 +15,25 @@ import DocumentCapture, { type DocumentSource } from '@/components/document-capt
 import SourcePreview from '@/components/source-preview'
 import {
   PLAN_TYPES, PLAN_TYPE_SHORT, PRACTICES, PRACTICE_LABEL, projectedPriceFromEstimates, resolveUploadEntityId,
-  type PlanType, type Practice,
+  classifyPolicyUpload, type PolicyUploadStatus, type PlanType, type Practice,
 } from '@/lib/crop-insurance'
 import { DEFAULT_SCO_TRIGGER, resolveProgramYearConfig } from '@/lib/program-config'
 import {
   COVERAGE_LEVELS, emptyPolicyForm, policyFormToPayloads, type PolicyFormState, PolicyLiveSummary,
 } from '@/components/crop-insurance/policy-form'
-import type { Crop, County, Entity, CropInsurancePolicy, HarvestPriceEstimate, ProgramYearConfig } from '@/lib/types'
+import type {
+  Crop, County, Entity, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco,
+  HarvestPriceEstimate, ProgramYearConfig,
+} from '@/lib/types'
 
 type Props = {
   crops: Crop[]
   counties: County[]
   entities: Entity[]
   existingPolicies: CropInsurancePolicy[]
+  // Existing endorsements — dedupe alongside their parent policy.
+  existingScos?: CropInsuranceSco[]
+  existingEcos?: CropInsuranceEco[]
   defaultYear: number
   defaultEntityId: string
   // RMA projected prices and per-year program parameters (fetched by the page).
@@ -40,6 +46,10 @@ type Row = {
   form: PolicyFormState
   raw_crop: string | null
   raw_county: string | null
+  // Whether the EXTRACTION provided these (vs seeded defaults/existing values) —
+  // lets a later entity pick re-seed them from the newly-matched policy.
+  raw_coverage_provided: boolean
+  raw_unit_provided: boolean
   include: boolean
 }
 
@@ -66,7 +76,7 @@ function dedupKey(entity_id: string, crop_id: string, county_id: string, year: s
   return `${entity_id}|${crop_id}|${county_id}|${year}|${plan}|${practice}`
 }
 
-export default function PolicyAiImport({ crops, counties, entities, existingPolicies, defaultYear, defaultEntityId, projectedEstimates = [], programConfigs = [], onImported }: Props) {
+export default function PolicyAiImport({ crops, counties, entities, existingPolicies, existingScos = [], existingEcos = [], defaultYear, defaultEntityId, projectedEstimates = [], programConfigs = [], onImported }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [source, setSource] = useState<DocumentSource | null>(null)
   const [stage, setStage] = useState<string | null>(null)
@@ -87,11 +97,27 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
       [dedupKey(p.entity_id ?? '', p.crop_id, p.county_id ?? '', String(p.crop_year), p.plan_type, p.practice ?? 'non_irrigated'), p] as const)),
     [existingPolicies],
   )
+  const scoByPolicy = useMemo(() => new Map(existingScos.map((s) => [s.policy_id, s])), [existingScos])
+  const ecoByPolicy = useMemo(() => new Map(existingEcos.map((e) => [e.policy_id, e])), [existingEcos])
 
-  // Apply a chosen entity to every reviewed row (the whole upload is one entity).
+  // Apply a chosen entity to every reviewed row (the whole upload is one
+  // entity). The dedup match key includes the entity, so re-seed the values the
+  // extraction didn't provide (coverage/unit/attestation) from the policy the
+  // row NOW matches — otherwise a late entity pick would diff seeded defaults
+  // against the stored policy and flag false updates.
   function applyImportEntity(id: string) {
     setImportEntityId(id)
-    setRows((rs) => rs.map((r) => ({ ...r, form: { ...r.form, entity_id: id } })))
+    setRows((rs) => rs.map((r) => {
+      const existing = existingByKey.get(dedupKey(id, r.form.crop_id, r.form.county_id, r.form.crop_year, r.form.plan_type, r.form.practice)) ?? null
+      const patch: Partial<PolicyFormState> = { entity_id: id }
+      if (existing) {
+        if (!r.raw_coverage_provided) patch.coverage_level = snapCoverage(existing.coverage_level)
+        if (!r.raw_unit_provided) patch.unit_structure = existing.unit_structure
+        patch.covers_all_planted_acres = existing.covers_all_planted_acres
+        patch.coverage_note = existing.coverage_note ?? ''
+      }
+      return { ...r, form: { ...r.form, ...patch } }
+    }))
   }
 
   // Entities load asynchronously on the page, so the useState seed above can be
@@ -105,7 +131,7 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entities, defaultEntityId, importEntityId])
 
-  function extractionToForm(p: CropInsurancePolicyExtraction): { form: PolicyFormState; raw_crop: string | null; raw_county: string | null } {
+  function extractionToForm(p: CropInsurancePolicyExtraction): { form: PolicyFormState; raw_crop: string | null; raw_county: string | null; raw_coverage_provided: boolean; raw_unit_provided: boolean } {
     const crop = findBestMatch(p.crop, crops, (c) => c.name)
     const county = findBestMatch(
       [p.county, p.state].filter(Boolean).join(' '),
@@ -121,9 +147,11 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
     const sco = p.sco
     const eco = p.eco
     const practice: Practice = p.practice === 'irrigated' ? 'irrigated' : 'non_irrigated'
-    // Seed the "covers all planted acres" attestation from a matching existing
-    // policy so a re-import reflects (and doesn't silently wipe) what's on file;
-    // a brand-new policy defaults to unattested.
+    // Seed the "covers all planted acres" attestation — and any value the
+    // extraction did NOT provide (coverage level, unit structure) — from a
+    // matching existing policy, so a re-import reflects what's on file instead
+    // of flagging a default-vs-stored false difference. A brand-new policy
+    // defaults to unattested / 80% / enterprise.
     const existing = existingByKey.get(dedupKey(importEntityId, crop?.id ?? '', county?.id ?? '', year, plan, practice)) ?? null
     const form: PolicyFormState = {
       ...emptyPolicyForm,
@@ -136,8 +164,12 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
       practice,
       covers_all_planted_acres: existing?.covers_all_planted_acres ?? false,
       coverage_note: existing?.coverage_note ?? '',
-      coverage_level: snapCoverage(p.coverage_level),
-      unit_structure: p.unit_structure && ['enterprise', 'basic', 'optional'].includes(p.unit_structure) ? p.unit_structure : 'enterprise',
+      coverage_level: p.coverage_level != null
+        ? snapCoverage(p.coverage_level)
+        : existing != null ? snapCoverage(existing.coverage_level) : snapCoverage(null),
+      unit_structure: p.unit_structure && ['enterprise', 'basic', 'optional'].includes(p.unit_structure)
+        ? p.unit_structure
+        : existing?.unit_structure ?? 'enterprise',
       aph_yield: numStr(p.aph_yield),
       projected_price: numStr(projected),
       insured_acres: numStr(p.insured_acres),
@@ -155,28 +187,29 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
       eco_premium_per_acre: numStr(eco?.premium_per_acre),
       eco_total_premium: numStr(eco?.total_premium),
     }
-    return { form, raw_crop: p.crop, raw_county: [p.county, p.state].filter(Boolean).join(', ') || null }
+    return {
+      form,
+      raw_crop: p.crop,
+      raw_county: [p.county, p.state].filter(Boolean).join(', ') || null,
+      raw_coverage_provided: p.coverage_level != null,
+      raw_unit_provided: !!(p.unit_structure && ['enterprise', 'basic', 'optional'].includes(p.unit_structure)),
+    }
   }
 
-  // Classify a row vs existing policies. Compares the text/number fields the
-  // form actually has (preserve-existing): blanks never count as a change.
-  function policyStatus(form: PolicyFormState): { kind: 'new' | 'update' | 'unchanged'; existing: CropInsurancePolicy | null } {
-    if (!form.crop_id || !form.crop_year) return { kind: 'new', existing: null }
+  // Classify a row vs existing policies (entity+crop+county+year+practice+plan
+  // match key) — 'exists' (identical, skipped) / 'update' (material diffs, the
+  // EXISTING policy is patched in place, never duplicated) / 'new'. The pure
+  // logic + field-level diffs live in lib/crop-insurance.ts
+  // (classifyPolicyUpload); SCO/ECO endorsements dedupe with their parent.
+  function policyStatus(form: PolicyFormState): PolicyUploadStatus {
+    if (!form.crop_id || !form.crop_year) return { kind: 'new', existing: null, diffs: [] }
     const existing = existingByKey.get(dedupKey(form.entity_id, form.crop_id, form.county_id, form.crop_year, form.plan_type, form.practice)) ?? null
-    if (!existing) return { kind: 'new', existing: null }
-    const sameNum = (s: string, v: number | null) => s.trim() === '' || (Number.isFinite(Number(s)) && v != null && Math.abs(Number(s) - Number(v)) < 1e-9)
-    const sameStr = (s: string, v: string | null) => s.trim() === '' || s.trim().toLowerCase() === (v ?? '').trim().toLowerCase()
-    const unchanged =
-      sameNum(form.aph_yield, existing.aph_yield) &&
-      sameNum(form.projected_price, existing.projected_price) &&
-      sameNum(form.harvest_price, existing.harvest_price) &&
-      sameNum(form.insured_acres, existing.insured_acres) &&
-      sameNum(form.premium_per_acre, existing.premium_per_acre) &&
-      sameNum(form.total_premium, existing.total_premium) &&
-      sameNum(form.premium_subsidy_pct, existing.premium_subsidy_pct) &&
-      sameNum(form.volatility_factor, existing.volatility_factor) &&
-      sameStr(form.policy_number, existing.policy_number)
-    return { kind: unchanged ? 'unchanged' : 'update', existing }
+    return classifyPolicyUpload(
+      form,
+      existing,
+      existing ? scoByPolicy.get(existing.id) : null,
+      existing ? ecoByPolicy.get(existing.id) : null,
+    )
   }
 
   async function onSource(src: DocumentSource) {
@@ -205,8 +238,10 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
         return
       }
       const next: Row[] = extracted.map((p) => {
-        const { form, raw_crop, raw_county } = extractionToForm(p)
-        return { form, raw_crop, raw_county, include: policyStatus(form).kind !== 'unchanged' }
+        const { form, raw_crop, raw_county, raw_coverage_provided, raw_unit_provided } = extractionToForm(p)
+        // Already-existing policies start unchecked (skipped); new rows and
+        // available updates start checked.
+        return { form, raw_crop, raw_county, raw_coverage_provided, raw_unit_provided, include: policyStatus(form).kind !== 'exists' }
       })
       setRows(next)
       setBanner(`AI extracted ${next.length} polic${next.length === 1 ? 'y' : 'ies'}. Review and edit before saving.`)
@@ -228,7 +263,19 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
     setSource(null); setRows([]); setBanner(null); setErr(null)
   }
 
-  const toSave = rows.filter((r) => r.include && r.form.crop_id && r.form.crop_year && policyStatus(r.form).kind !== 'unchanged')
+  const toSave = rows.filter((r) => r.include && r.form.crop_id && r.form.crop_year && policyStatus(r.form).kind !== 'exists')
+
+  // Summary counts for the footer ("X already exist · Y updates · Z new").
+  const statusCounts = rows.reduce(
+    (t, r) => {
+      const k = policyStatus(r.form).kind
+      if (k === 'exists') t.exists++
+      else if (k === 'update') t.updates++
+      else t.added++
+      return t
+    },
+    { exists: 0, updates: 0, added: 0 },
+  )
 
   async function saveAll() {
     setErr(null)
@@ -248,11 +295,16 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
         const { policy, sco, eco } = policyFormToPayloads(r.form, 'document_import')
         if (status.kind === 'update' && status.existing) {
           // Preserve-existing: patch only the provided text/number fields; keep
-          // existing plan/coverage/unit/entity. Endorsements are added/refreshed
-          // when present but never removed.
+          // the existing plan/entity (part of the match key). Coverage level and
+          // unit structure ARE patched — they're material corrections, and the
+          // form seeded them from the existing policy when the extraction
+          // lacked them, so an unchanged value is a no-op. Endorsements are
+          // added/refreshed when present but never removed.
           const f = r.form
           const patch: Record<string, unknown> = {}
           const setNum = (k: string, s: string) => { if (s.trim() !== '' && Number.isFinite(Number(s))) patch[k] = Number(s) }
+          setNum('coverage_level', f.coverage_level)
+          if (f.unit_structure) patch.unit_structure = f.unit_structure
           setNum('aph_yield', f.aph_yield)
           setNum('projected_price', f.projected_price)
           setNum('harvest_price', f.harvest_price)
@@ -323,7 +375,10 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
       <p className="text-sm text-slate-500">
         Photograph or upload a crop-insurance coverage summary, premium billing statement, or confirmation. Each
         crop/county policy becomes an editable row matched to your crops and counties, with SCO/ECO endorsements
-        carried over. Duplicates are flagged so you don’t re-import a policy you already have.
+        carried over. Each row is checked against the policies on file: unchanged ones are marked
+        “Already exists” and skipped, corrections show as “Update available” with the exact field
+        changes (the existing policy is updated, never duplicated), and only genuinely new
+        policies import as new — so re-uploading a full policy packet is safe.
       </p>
 
       <DocumentCapture onSource={onSource} busy={stage != null} stageLabel={stage} pdfLabel="Upload Policy PDF or Photo (AI)" />
@@ -356,19 +411,38 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
             )}
             {rows.map((r, i) => {
               const status = policyStatus(r.form)
-              const unchanged = status.kind === 'unchanged'
+              const exists = status.kind === 'exists'
               const planCov = `${PLAN_TYPE_SHORT[r.form.plan_type]} · ${PRACTICE_LABEL[r.form.practice]} · ${Math.round(Number(r.form.coverage_level) * 100)}%`
               return (
-              <div key={i} className={`rounded-lg border p-3 space-y-2 ${unchanged ? 'border-slate-200 opacity-70' : 'border-slate-300'}`}>
+              <div key={i} className={`rounded-lg border p-3 space-y-2 ${exists ? 'border-slate-200 opacity-70' : 'border-slate-300'}`}>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <input type="checkbox" checked={r.include} disabled={unchanged} onChange={(e) => setRows((rs) => rs.map((x, j) => (i === j ? { ...x, include: e.target.checked } : x)))} />
-                  {unchanged
-                    ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Unchanged · {planCov}</span>
+                  <input type="checkbox" checked={r.include} disabled={exists} onChange={(e) => setRows((rs) => rs.map((x, j) => (i === j ? { ...x, include: e.target.checked } : x)))} />
+                  {exists
+                    ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Already exists · {planCov}</span>
                     : status.kind === 'update'
-                      ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">Update · {planCov}</span>
+                      ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">Update available · {planCov}</span>
                       : <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">New · {planCov}</span>}
                   <button type="button" onClick={() => removeRow(i)} className="ml-auto text-red-600 text-sm">✕ Remove</button>
                 </div>
+                {exists && status.existing && (
+                  <div className="text-xs text-slate-500 rounded bg-slate-50 border border-slate-200 px-2 py-1">
+                    Matches the policy on file — APH {status.existing.aph_yield}, {status.existing.insured_acres} ac
+                    {status.existing.premium_per_acre != null && <>, ${status.existing.premium_per_acre}/ac premium</>}
+                    {status.existing.policy_number && <>, #{status.existing.policy_number}</>}. Nothing to import.
+                  </div>
+                )}
+                {status.kind === 'update' && (
+                  <div className="text-xs rounded bg-sky-50 border border-sky-200 px-2 py-1 space-y-0.5">
+                    <div className="font-semibold text-sky-900">Checking this row updates the existing policy (existing → extracted):</div>
+                    <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                      {status.diffs.map((d) => (
+                        <span key={d.label} className="whitespace-nowrap text-sky-800">
+                          {d.label}: <span className="line-through text-slate-500">{d.existing}</span> → <span className="font-semibold">{d.incoming}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                   <label className="text-xs flex flex-col gap-1">
                     <span className="text-slate-500">Crop</span>
@@ -470,7 +544,12 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
       {rows.length > 0 && (
         <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3">
           <div className="text-sm text-slate-600 flex-1">
-            <span className="font-semibold text-green-700">{toSave.length}</span> ready to save · {rows.length} total
+            <span className="font-semibold text-slate-700">{statusCounts.exists}</span> already exist ·{' '}
+            <span className="font-semibold text-sky-700">{statusCounts.updates}</span> update{statusCounts.updates === 1 ? '' : 's'} ·{' '}
+            <span className="font-semibold text-green-700">{statusCounts.added}</span> new
+            <span className="block text-xs text-slate-500">
+              <span className="font-semibold text-green-700">{toSave.length}</span> checked to save · {rows.length} extracted — nothing is written until Save All
+            </span>
           </div>
           <button type="button" onClick={saveAll} disabled={saving || toSave.length === 0}
             className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50">

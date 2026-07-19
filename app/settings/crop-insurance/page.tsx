@@ -201,6 +201,8 @@ export default function CropInsuranceSettingsPage() {
         counties={counties}
         entities={entities}
         existingPolicies={policies}
+        existingScos={scos}
+        existingEcos={ecos}
         defaultYear={cropYearOptions[0] ?? new Date().getFullYear()}
         defaultEntityId={entityFilter || form.entity_id}
         projectedEstimates={estimates}

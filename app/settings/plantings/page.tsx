@@ -6,7 +6,8 @@ import CsvImport from '@/components/csv-import'
 import PlantingsAiImport from '@/components/plantings-ai-import'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
-import type { Crop, Farm, Field, FieldPlanting, FieldPlantingVariety } from '@/lib/types'
+import { dismissalKey } from '@/lib/variety-resolution'
+import type { Crop, Farm, Field, FieldPlanting, FieldPlantingVariety, VarietyMatchDismissal } from '@/lib/types'
 
 type VarietyInput = { variety: string; acres: string }
 
@@ -318,6 +319,7 @@ export default function PlantingsPage() {
   const [crops, setCrops] = useState<Crop[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [varieties, setVarieties] = useState<FieldPlantingVariety[]>([])
+  const [dismissals, setDismissals] = useState<VarietyMatchDismissal[]>([])
   const [year, setYear] = useState<number>(currentYear())
   // Farm filter persists across visits (app filter-persistence pattern); it also
   // narrows the Field dropdown below.
@@ -333,18 +335,21 @@ export default function PlantingsPage() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
 
   async function refresh() {
-    const [fa, fi, cr, pl, vv] = await Promise.all([
+    const [fa, fi, cr, pl, vv, dm] = await Promise.all([
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*').order('season_year', { ascending: false }),
       supabase.from('field_planting_varieties').select('*').order('variety'),
+      // "Keep both" decisions — tolerate a missing table (043 not applied yet).
+      supabase.from('variety_match_dismissals').select('*'),
     ])
     setFarms((fa.data as Farm[]) || [])
     setFields((fi.data as Field[]) || [])
     setCrops((cr.data as Crop[]) || [])
     setPlantings((pl.data as FieldPlanting[]) || [])
     setVarieties((vv.data as FieldPlantingVariety[]) || [])
+    setDismissals((dm.data as VarietyMatchDismissal[]) || [])
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
@@ -367,6 +372,25 @@ export default function PlantingsPage() {
     }
     return m
   }, [varieties])
+
+  // Variety NAMES per planting id (drives the AI import's Update classification).
+  const varietyNamesByPlanting = useMemo(() => {
+    const m = new Map<string, string[]>()
+    for (const [pid, list] of varietiesByPlanting) m.set(pid, list.map((v) => v.variety))
+    return m
+  }, [varietiesByPlanting])
+
+  // "Keep both" dismissal pairs per crop id, for import-time possible-match
+  // suppression (dismissalKey format — key_a|key_b, already stored sorted).
+  const dismissedPairsByCrop = useMemo(() => {
+    const m = new Map<string, Set<string>>()
+    for (const d of dismissals) {
+      const set = m.get(d.crop_id) ?? new Set<string>()
+      set.add(dismissalKey(d.key_a, d.key_b))
+      m.set(d.crop_id, set)
+    }
+    return m
+  }, [dismissals])
 
   // Distinct previously-used variety names per crop, for the variety datalist.
   const varietyOptionsByCrop = useMemo(() => {
@@ -585,6 +609,7 @@ export default function PlantingsPage() {
             scopeKey: 'crop_id',
             noun: 'variety',
             loadExisting: async () => varietyOptionsByCrop,
+            loadDismissed: async () => dismissedPairsByCrop,
           },
         }}
         onImported={refresh}
@@ -595,6 +620,8 @@ export default function PlantingsPage() {
         crops={crops}
         existingPlantings={plantings}
         existingVarietiesByCrop={varietyOptionsByCrop}
+        existingVarietiesByPlanting={varietyNamesByPlanting}
+        dismissedPairsByCrop={dismissedPairsByCrop}
         defaultYear={year}
         fieldLabel={fieldLabel}
         onImported={refresh}

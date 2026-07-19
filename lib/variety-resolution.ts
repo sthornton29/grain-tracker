@@ -6,11 +6,16 @@
 //
 //   - Format variants ("DG 3644 B3XF" / "DG3644B3XF" / "dg 3644-b3xf") are the
 //     SAME variety: auto-link to the stored spelling.
-//   - Close-but-different names are flagged as a possible match and the user
-//     decides. Never auto-merge on similarity — variety names are dense with
-//     meaning ("DG 3644" and "DG 3646" are different products).
-//   - Genuinely new names are created on save (their first spelling becomes
-//     the canonical one).
+//   - Brand-prefix variants of the SAME product ("68-35" vs "DK 68-35") are
+//     flagged as a possible match and the user decides. Never auto-merge.
+//   - Everything else is a different product. Seed names are
+//     [brand prefix][number][trait tail] and the number+tail IS the product
+//     identity — "DK 65-95" vs "DK 68-35", "47XF2" vs "47XF6", "DP 2131" vs
+//     "DP 2239" are all distinct and must NEVER be offered as merge/match
+//     candidates, no matter how close they look character-wise.
+//
+// A "keep both" decision (variety_match_dismissals) permanently silences a
+// candidate pair for its crop — both here and on the cleanup page.
 //
 // Everything in this file is pure so it can be unit-tested and reused by the
 // duplicate-cleanup screen in Settings → Varieties.
@@ -22,51 +27,31 @@ export function varietyKey(name: string | null | undefined): string {
   return name.toUpperCase().replace(/\s+/g, ' ').trim().replace(/[\s\-.]/g, '')
 }
 
-export function editDistance(a: string, b: string): number {
-  if (a === b) return 0
-  const m = a.length
-  const n = b.length
-  if (m === 0) return n
-  if (n === 0) return m
-  let prev: number[] = Array.from({ length: n + 1 }, (_, j) => j)
-  for (let i = 1; i <= m; i++) {
-    const cur: number[] = [i]
-    for (let j = 1; j <= n; j++) {
-      cur[j] = Math.min(
-        prev[j] + 1,
-        cur[j - 1] + 1,
-        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
-      )
-    }
-    prev = cur
-  }
-  return prev[n]
-}
-
-const NEAR_EDIT_DISTANCE = 2
-// Substring/tail rules need some substance to compare on; a 1-3 char fragment
-// would flag against half the catalog.
-const MIN_FRAGMENT_LEN = 4
-
 /** The portion of a key from its first digit on ("DYNAGRO3644B3XF" → "3644B3XF").
- *  Seed names carry their identity in the number+trait tail; the letters in
- *  front are usually just the brand, spelled long or short. */
-function digitTail(key: string): string {
+ *  Everything before the first digit is the brand prefix (spelled long or
+ *  short); everything from the first digit on — numbers AND trait letters — is
+ *  the product identity. Empty for digitless names. */
+export function numericCore(key: string): string {
   const m = key.match(/\d.*$/)
   return m ? m[0] : ''
 }
 
-/** Are two DIFFERENT normalized keys close enough to flag as a possible match?
- *  (Equal keys are an exact match, handled before this.) */
+/** Are two DIFFERENT normalized keys the same product spelled differently?
+ *  (Equal keys are an exact match, handled before this.) True ONLY when the
+ *  numeric cores are identical — i.e. the full normalized strings differ in
+ *  nothing but the presence/spelling of the alpha brand prefix. Any difference
+ *  in a digit or trait letter means different products: never a candidate. */
 export function keysNear(a: string, b: string): boolean {
   if (!a || !b || a === b) return false
-  const shorter = a.length <= b.length ? a : b
-  const longer = a.length <= b.length ? b : a
-  if (shorter.length >= MIN_FRAGMENT_LEN && longer.includes(shorter)) return true
-  const ta = digitTail(a)
-  if (ta.length >= MIN_FRAGMENT_LEN && ta === digitTail(b)) return true
-  if (Math.abs(a.length - b.length) > NEAR_EDIT_DISTANCE) return false
-  return editDistance(a, b) <= NEAR_EDIT_DISTANCE
+  const core = numericCore(a)
+  return core !== '' && core === numericCore(b)
+}
+
+/** Order-insensitive identity for a candidate pair of normalized keys — the
+ *  value stored in variety_match_dismissals (key_a <= key_b) and checked by
+ *  both the cleanup page and import-time flagging. */
+export function dismissalKey(a: string, b: string): string {
+  return a <= b ? `${a}|${b}` : `${b}|${a}`
 }
 
 export type VarietyResolution =
@@ -74,13 +59,22 @@ export type VarietyResolution =
   | { status: 'possible'; candidates: string[] }
   | { status: 'new' }
 
-/** Resolve one incoming name against the crop's existing variety names. */
-export function resolveVarietyName(raw: string, existingNames: string[]): VarietyResolution {
+/** Resolve one incoming name against the crop's existing variety names.
+ *  `dismissed` holds dismissalKey() pairs the user has declared "different
+ *  varieties" — those candidates are never offered again. */
+export function resolveVarietyName(
+  raw: string,
+  existingNames: string[],
+  dismissed?: ReadonlySet<string>,
+): VarietyResolution {
   const key = varietyKey(raw)
   if (!key) return { status: 'new' }
   const exact = existingNames.find((n) => varietyKey(n) === key)
   if (exact !== undefined) return { status: 'matched', canonical: exact }
-  const candidates = existingNames.filter((n) => keysNear(key, varietyKey(n)))
+  const candidates = existingNames.filter((n) => {
+    const nk = varietyKey(n)
+    return keysNear(key, nk) && !dismissed?.has(dismissalKey(key, nk))
+  })
   if (candidates.length > 0) return { status: 'possible', candidates }
   return { status: 'new' }
 }
@@ -109,7 +103,11 @@ export type VarietyPlan = {
 
 /** Group an import's variety mentions by normalized key (within-file collapse),
  *  then resolve each group once against the crop's existing names. */
-export function buildVarietyPlan(refs: VarietyNameRef[], existingNames: string[]): VarietyPlan {
+export function buildVarietyPlan(
+  refs: VarietyNameRef[],
+  existingNames: string[],
+  dismissed?: ReadonlySet<string>,
+): VarietyPlan {
   const items: VarietyPlanItem[] = []
   const byKey = new Map<string, VarietyPlanItem>()
   for (const ref of refs) {
@@ -118,7 +116,7 @@ export function buildVarietyPlan(refs: VarietyNameRef[], existingNames: string[]
     if (!key) continue
     let item = byKey.get(key)
     if (!item) {
-      item = { key, name, spellings: [name], rowIndexes: [], resolution: resolveVarietyName(name, existingNames) }
+      item = { key, name, spellings: [name], rowIndexes: [], resolution: resolveVarietyName(name, existingNames, dismissed) }
       byKey.set(key, item)
       items.push(item)
     } else if (!item.spellings.includes(name)) {
@@ -158,32 +156,40 @@ export function resolvedName(item: VarietyPlanItem, decision?: VarietyDecision):
 
 export type VarietyUsage = { name: string; plantings: number }
 
-/** Suspected duplicate groups within one crop: names whose keys are equal or
- *  near each other, clustered transitively. Groups of one are dropped. Each
- *  group is sorted most-used first (the natural canonical pick), and groups
- *  are sorted by total usage. */
-export function findSimilarVarietyGroups(usages: VarietyUsage[]): VarietyUsage[][] {
+export type VarietyPair = {
+  /** More-used spelling first — the natural survivor default. */
+  a: VarietyUsage
+  b: VarietyUsage
+  /** True when the two spellings normalize to the SAME key (pure format
+   *  variants); false for brand-prefix variants (same numeric core). */
+  exact: boolean
+}
+
+/** Suspected duplicate PAIRS within one crop: two stored spellings whose keys
+ *  are equal (format variants) or share an identical numeric core (brand-prefix
+ *  variants). Each pair is its own decision — there is no transitive grouping.
+ *  Pairs the user already dismissed ("different varieties — keep both") are
+ *  excluded. Sorted by combined usage, most-used first. */
+export function findSimilarVarietyPairs(
+  usages: VarietyUsage[],
+  dismissed?: ReadonlySet<string>,
+): VarietyPair[] {
   const keys = usages.map((u) => varietyKey(u.name))
-  const parent = usages.map((_, i) => i)
-  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])))
-  const union = (i: number, j: number) => { parent[find(i)] = find(j) }
+  const pairs: VarietyPair[] = []
   for (let i = 0; i < usages.length; i++) {
     for (let j = i + 1; j < usages.length; j++) {
-      if (keys[i] === keys[j] || keysNear(keys[i], keys[j])) union(i, j)
+      if (!keys[i] || !keys[j]) continue
+      const exact = keys[i] === keys[j]
+      if (!exact && !keysNear(keys[i], keys[j])) continue
+      if (dismissed?.has(dismissalKey(keys[i], keys[j]))) continue
+      const [a, b] =
+        usages[j].plantings > usages[i].plantings ? [usages[j], usages[i]] : [usages[i], usages[j]]
+      pairs.push({ a, b, exact })
     }
   }
-  const groups = new Map<number, VarietyUsage[]>()
-  for (let i = 0; i < usages.length; i++) {
-    const root = find(i)
-    const list = groups.get(root) ?? []
-    list.push(usages[i])
-    groups.set(root, list)
-  }
-  const total = (g: VarietyUsage[]) => g.reduce((s, u) => s + u.plantings, 0)
-  return [...groups.values()]
-    .filter((g) => g.length > 1)
-    .map((g) => [...g].sort((a, b) => b.plantings - a.plantings || a.name.localeCompare(b.name)))
-    .sort((a, b) => total(b) - total(a))
+  return pairs.sort(
+    (x, y) => (y.a.plantings + y.b.plantings) - (x.a.plantings + x.b.plantings) || x.a.name.localeCompare(y.a.name),
+  )
 }
 
 export type VarietyRowRef = {
@@ -203,10 +209,10 @@ export type VarietyMergePlan = {
   affectedPlantings: number
 }
 
-/** Plan a merge of a duplicate group's field_planting_varieties rows into one
- *  canonical name. Every planting keeps exactly one row (preferring one that
- *  already carries the canonical spelling), with acres/bushels summed across
- *  the planting's rows in the group. */
+/** Plan a merge of a confirmed duplicate pair's field_planting_varieties rows
+ *  into one canonical name. Every planting keeps exactly one row (preferring
+ *  one that already carries the canonical spelling), with acres/bushels summed
+ *  across the planting's rows in the group. */
 export function buildVarietyMergePlan(rows: VarietyRowRef[], canonical: string): VarietyMergePlan {
   const byPlanting = new Map<string, VarietyRowRef[]>()
   for (const r of rows) {

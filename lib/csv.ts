@@ -134,6 +134,9 @@ export type ChildResolution = {
   noun: string
   /** Existing names keyed by the scope column's FK id. */
   loadExisting: (supabase: SupabaseClient) => Promise<Map<string, string[]>>
+  /** Optional "keep both" dismissals keyed by the scope FK id — sets of
+   *  dismissalKey() pairs that must never re-flag as possible matches. */
+  loadDismissed?: (supabase: SupabaseClient) => Promise<Map<string, Set<string>>>
 }
 
 export type ImportConfig = {

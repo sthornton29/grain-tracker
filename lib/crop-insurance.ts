@@ -406,6 +406,110 @@ export function resolveUploadEntityId(args: {
   return args.fallback || null
 }
 
+// ---------- Policy upload dedupe (Already exists / Update available / New) ----------
+//
+// Classifies one extracted policy row against the existing policy matched on
+// entity + crop + county + crop_year + practice + plan_type, the brokerage-
+// statement-import pattern:
+//   - 'exists': every provided value matches → skip (unchecked, not imported).
+//   - 'update': a material field differs → the EXISTING policy is updated in
+//     place (never duplicated); `diffs` lists each change for the review UI.
+//   - 'new': no match → insert.
+// Preserve-existing: a blank extracted value never counts as a difference and
+// never overwrites. Endorsements dedupe with their parent: an upload can add
+// or correct an SCO/ECO (1:1 upsert on the policy) but never removes one, and
+// an endorsement absent from the upload is not a difference.
+
+export type PolicyUploadValues = {
+  coverage_level: string
+  unit_structure: string
+  aph_yield: string
+  projected_price: string
+  harvest_price: string
+  volatility_factor: string
+  insured_acres: string
+  premium_per_acre: string
+  total_premium: string
+  premium_subsidy_pct: string
+  policy_number: string
+  sco_enabled: boolean
+  sco_expected_county_yield: string
+  sco_premium_per_acre: string
+  sco_total_premium: string
+  eco_enabled: boolean
+  eco_trigger_level: string
+  eco_expected_county_yield: string
+  eco_premium_per_acre: string
+  eco_total_premium: string
+}
+
+export type PolicyFieldDiff = { label: string; existing: string; incoming: string }
+
+export function diffPolicyUpload(
+  form: PolicyUploadValues,
+  existing: CropInsurancePolicy,
+  existingSco?: CropInsuranceSco | null,
+  existingEco?: CropInsuranceEco | null,
+): PolicyFieldDiff[] {
+  const diffs: PolicyFieldDiff[] = []
+  const pct = (v: number) => `${Math.round(v * 100)}%`
+  const numDiff = (label: string, s: string, v: number | null | undefined, fmt: (n: number) => string = String) => {
+    if (s.trim() === '' || !Number.isFinite(Number(s))) return // blank never diffs
+    const n = Number(s)
+    if (v != null && Math.abs(n - Number(v)) < 1e-9) return
+    diffs.push({ label, existing: v == null ? '—' : fmt(Number(v)), incoming: fmt(n) })
+  }
+  const strDiff = (label: string, s: string, v: string | null | undefined) => {
+    if (s.trim() === '') return
+    if (s.trim().toLowerCase() === (v ?? '').trim().toLowerCase()) return
+    diffs.push({ label, existing: v?.trim() || '—', incoming: s.trim() })
+  }
+  numDiff('Coverage', form.coverage_level, existing.coverage_level, pct)
+  strDiff('Unit structure', form.unit_structure, existing.unit_structure)
+  numDiff('APH yield', form.aph_yield, existing.aph_yield)
+  numDiff('Projected price', form.projected_price, existing.projected_price)
+  numDiff('Harvest price', form.harvest_price, existing.harvest_price)
+  numDiff('Volatility', form.volatility_factor, existing.volatility_factor)
+  numDiff('Insured acres', form.insured_acres, existing.insured_acres)
+  numDiff('Premium/ac', form.premium_per_acre, existing.premium_per_acre)
+  numDiff('Total premium', form.total_premium, existing.total_premium)
+  numDiff('Subsidy %', form.premium_subsidy_pct, existing.premium_subsidy_pct)
+  strDiff('Policy #', form.policy_number, existing.policy_number)
+  if (form.sco_enabled) {
+    if (!existingSco) diffs.push({ label: 'SCO', existing: 'none', incoming: 'added' })
+    else {
+      numDiff('SCO county yield', form.sco_expected_county_yield, existingSco.expected_county_yield)
+      numDiff('SCO premium/ac', form.sco_premium_per_acre, existingSco.premium_per_acre)
+      numDiff('SCO total premium', form.sco_total_premium, existingSco.total_premium)
+    }
+  }
+  if (form.eco_enabled) {
+    if (!existingEco) diffs.push({ label: 'ECO', existing: 'none', incoming: 'added' })
+    else {
+      numDiff('ECO trigger', form.eco_trigger_level, existingEco.eco_trigger_level, pct)
+      numDiff('ECO county yield', form.eco_expected_county_yield, existingEco.expected_county_yield)
+      numDiff('ECO premium/ac', form.eco_premium_per_acre, existingEco.premium_per_acre)
+      numDiff('ECO total premium', form.eco_total_premium, existingEco.total_premium)
+    }
+  }
+  return diffs
+}
+
+export type PolicyUploadStatus =
+  | { kind: 'new'; existing: null; diffs: PolicyFieldDiff[] }
+  | { kind: 'exists' | 'update'; existing: CropInsurancePolicy; diffs: PolicyFieldDiff[] }
+
+export function classifyPolicyUpload(
+  form: PolicyUploadValues,
+  existing: CropInsurancePolicy | null,
+  existingSco?: CropInsuranceSco | null,
+  existingEco?: CropInsuranceEco | null,
+): PolicyUploadStatus {
+  if (!existing) return { kind: 'new', existing: null, diffs: [] }
+  const diffs = diffPolicyUpload(form, existing, existingSco, existingEco)
+  return { kind: diffs.length === 0 ? 'exists' : 'update', existing, diffs }
+}
+
 // ---------- Acreage coverage check (reconcile insured vs planted) ----------
 //
 // Verifies that every planted acre is covered by a policy at the correct
