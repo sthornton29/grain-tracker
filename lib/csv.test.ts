@@ -836,6 +836,95 @@ describe('runImport — defaults, enums, derived, children, ignoreRowIfOnly', ()
     ])
   })
 
+  // ---- Sync mode adds missing child rows to MATCHED parents (the "CSV upload
+  // doesn't update varieties on existing plantings" bug). ----
+  const childConfig: ImportConfig = {
+    tableName: 'plantings',
+    columns: [
+      { key: 'name', required: true },
+      { key: 'notes' },
+      {
+        key: 'varieties',
+        child: {
+          table: 'planting_varieties',
+          valueColumn: 'variety',
+          parentKey: 'planting_id',
+          splitOn: ',;',
+          amountColumn: 'acres',
+        },
+      },
+    ],
+    uniqueKey: 'name',
+  }
+  const childHeaders = ['name', 'notes', 'varieties']
+  const seeded = () => makeFakeClient({
+    plantings: [{ id: 'p-1', name: 'North', notes: null }],
+    planting_varieties: [{ id: 'v-1', planting_id: 'p-1', variety: 'P2089', acres: 70 }],
+  })
+
+  it('sync ADDS a missing variety to a matched planting — identical scalars are an update, not unchanged', async () => {
+    const { client, inserted, updates } = seeded()
+    const res = await runImport(
+      client, childConfig,
+      [['North', '', 'DKC65-95:30']],
+      childHeaders, autoMapHeaders(childHeaders, childConfig.columns),
+      { mode: 'sync' },
+    )
+    expect(res.unchanged).toBe(0)
+    expect(res.updated).toBe(1)
+    expect(res.failed).toEqual([])
+    // Variety-only change: no parent patch is written, just the child row.
+    expect(updates).toEqual([])
+    expect(inserted.planting_varieties).toEqual([
+      { planting_id: 'p-1', variety: 'DKC65-95', acres: 30 },
+    ])
+  })
+
+  it('sync never duplicates a variety already on the planting (matched via the resolution transform)', async () => {
+    const { client, inserted } = seeded()
+    const res = await runImport(
+      client, childConfig,
+      [['North', '', 'p 2089:70']],
+      childHeaders, autoMapHeaders(childHeaders, childConfig.columns),
+      {
+        mode: 'sync',
+        childValueTransform: (columnKey, value) =>
+          columnKey === 'varieties' && value.replace(/[\s\-.]/g, '').toUpperCase() === 'P2089' ? 'P2089' : value,
+      },
+    )
+    expect(res.unchanged).toBe(1)
+    expect(res.updated).toBe(0)
+    expect(inserted.planting_varieties).toBeUndefined()
+  })
+
+  it('sync applies a scalar patch AND the variety add together, counted as one update', async () => {
+    const { client, inserted, updates } = seeded()
+    const res = await runImport(
+      client, childConfig,
+      [['North', 'replanted west end', 'DKC65-95:30']],
+      childHeaders, autoMapHeaders(childHeaders, childConfig.columns),
+      { mode: 'sync' },
+    )
+    expect(res.updated).toBe(1)
+    expect(updates).toEqual([{ table: 'plantings', patch: { notes: 'replanted west end' }, id: 'p-1' }])
+    expect(inserted.planting_varieties).toEqual([
+      { planting_id: 'p-1', variety: 'DKC65-95', acres: 30 },
+    ])
+  })
+
+  it('add mode still never touches existing rows, even when the file carries new varieties', async () => {
+    const { client, inserted, updates } = seeded()
+    const res = await runImport(
+      client, childConfig,
+      [['North', '', 'DKC65-95:30']],
+      childHeaders, autoMapHeaders(childHeaders, childConfig.columns),
+      { mode: 'add' },
+    )
+    expect(res.skipped).toBe(1)
+    expect(updates).toEqual([])
+    expect(inserted.planting_varieties).toBeUndefined()
+  })
+
   it('extractChildValues reports each row’s child names with its alias-canonicalized scope', () => {
     const config: ImportConfig = {
       tableName: 'plantings',

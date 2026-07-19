@@ -360,15 +360,35 @@ export async function runImport(
   const existingByKey = new Map<string, AnyRow>()
   for (const r of existing) existingByKey.set(uniqueKeys.map((k) => normValue(r[k])).join('|'), r)
 
+  // Existing child rows per child table, grouped by parent id — so sync mode
+  // can ADD child values a matched row doesn't carry yet (e.g. a variety the
+  // planting is missing). Existing child rows are never modified or removed.
+  const existingChildrenByParent = new Map<string, Map<string, AnyRow[]>>()
+  for (const col of config.columns) {
+    const ch = col.child
+    if (!ch || existingChildrenByParent.has(ch.table)) continue
+    const res = await supabase.from(ch.table).select('*')
+    if (res.error) throw new Error(`Could not read ${ch.table}: ${res.error.message}`)
+    const byParent = new Map<string, AnyRow[]>()
+    for (const r of ((res.data as unknown) as AnyRow[]) || []) {
+      const pid = String(r[ch.parentKey] ?? '')
+      if (!pid) continue
+      const list = byParent.get(pid) ?? []
+      list.push(r)
+      byParent.set(pid, list)
+    }
+    existingChildrenByParent.set(ch.table, byParent)
+  }
+
   const headerIndex = new Map<string, number>()
   headers.forEach((h, i) => headerIndex.set(h, i))
 
-  type ChildValue = { table: string; parentKey: string; row: AnyRow }
+  type ChildValue = { table: string; parentKey: string; valueColumn: string; row: AnyRow }
   const failed: ImportResult['failed'] = []
   const toInsert: AnyRow[] = []
   const toInsertChildren: ChildValue[][] = []
   const toInsertCsvRow: number[] = []
-  const toUpdate: Array<{ id: string; patch: AnyRow; rowIndex: number }> = []
+  const toUpdate: Array<{ id: string; patch: AnyRow; rowIndex: number; childAdds: ChildValue[] }> = []
   const seenKeys = new Set<string>()
   let skipped = 0
   let unchanged = 0
@@ -456,7 +476,7 @@ export async function runImport(
               }
             }
             for (const childRow of byValue.values()) {
-              children.push({ table: child.table, parentKey: child.parentKey, row: childRow })
+              children.push({ table: child.table, parentKey: child.parentKey, valueColumn: child.valueColumn, row: childRow })
             }
           } else {
             payload[col.key] = v
@@ -483,11 +503,20 @@ export async function runImport(
           if (uniqueKeys.includes(key)) continue
           if (normValue(payload[key]) !== normValue(existingRow[key])) patch[key] = payload[key]
         }
-        if (Object.keys(patch).length === 0) { unchanged++; continue }
+        // Child values (varieties) the matched row doesn't already carry are
+        // ADDED on sync — a row identical except for its child values is an
+        // update, never "unchanged". Values compare post-resolution (the
+        // transform already mapped format variants onto stored spellings), so
+        // an already-present variety never duplicates.
+        const childAdds = children.filter((ch) => {
+          const have = existingChildrenByParent.get(ch.table)?.get(String(existingRow.id)) ?? []
+          return !have.some((h) => normValue(h[ch.valueColumn]) === normValue(ch.row[ch.valueColumn]))
+        })
+        if (Object.keys(patch).length === 0 && childAdds.length === 0) { unchanged++; continue }
         // Recompute derived columns from the existing row overlaid with the
         // changes, so e.g. dryland tracks a changed planted/irrigated.
-        if (config.derive) Object.assign(patch, config.derive({ ...existingRow, ...patch }))
-        toUpdate.push({ id: String(existingRow.id), patch, rowIndex: i })
+        if (Object.keys(patch).length > 0 && config.derive) Object.assign(patch, config.derive({ ...existingRow, ...patch }))
+        toUpdate.push({ id: String(existingRow.id), patch, rowIndex: i, childAdds })
         continue
       }
 
@@ -541,12 +570,20 @@ export async function runImport(
     }
   }
 
-  // ---- Updates (sync mode): patch only the changed columns of matched rows. ----
+  // ---- Updates (sync mode): patch changed columns and add missing child
+  // rows (a variety-only change carries an empty patch — children still land). ----
   let updated = 0
   for (const u of toUpdate) {
-    const { error } = await supabase.from(config.tableName).update(u.patch).eq('id', u.id)
-    if (error) failed.push({ rowIndex: u.rowIndex, reason: error.message })
-    else updated++
+    if (Object.keys(u.patch).length > 0) {
+      const { error } = await supabase.from(config.tableName).update(u.patch).eq('id', u.id)
+      if (error) { failed.push({ rowIndex: u.rowIndex, reason: error.message }); continue }
+    }
+    let ok = true
+    for (const ch of u.childAdds) {
+      const { error: cErr } = await supabase.from(ch.table).insert({ [ch.parentKey]: u.id, ...ch.row })
+      if (cErr) { failed.push({ rowIndex: u.rowIndex, reason: `${ch.table}: ${cErr.message}` }); ok = false }
+    }
+    if (ok) updated++
   }
 
   return { added, updated, unchanged, skipped, failed }

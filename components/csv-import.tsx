@@ -427,7 +427,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
                     onChange={(e) => setMode(e.target.value as ImportMode)}
                     className="rounded-lg border border-slate-300 px-2 py-1"
                   >
-                    <option value="sync">Update changed fields</option>
+                    <option value="sync">Update changed fields{config.columns.some((c) => c.child) ? ` + add new ${config.resolution?.noun ?? 'child'}s` : ''}</option>
                     <option value="add">Skip (leave it unchanged)</option>
                   </select>
                 </label>
