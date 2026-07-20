@@ -468,7 +468,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
   ]
 }`
 
-type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt'
+type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document'
 
 
 const COTTON_TICKET_PROMPT = `This document contains cotton MODULE/LOAD weight tickets (a gin's "Module List" or seed cotton weight tickets). Multi-page PDFs contain ONE LOAD PER PAGE - extract every load from every page.
@@ -502,6 +502,86 @@ const GIN_RECEIPT_PROMPT = `This is a STATEMENT OF GINNING from a cotton gin (a 
 Respond ONLY in JSON, no other text, no markdown fences:
 {"gin_name": "...", "gin_address": null, "gin_phone": null, "receipt_number": "...", "receipt_date": "YYYY-MM-DD or null", "producer": "...", "farm_number": "... or null", "farm_name": "... or null", "field": "... or null", "crop_year": number or null, "modules_count": number or null, "total_seed_cotton_weight": number or null, "bales_count": number or null, "total_bale_weight": number or null, "avg_bale_weight": number or null, "seed_lbs": number or null, "lint_turnout_pct": number or null, "lint_lbs_per_bale": number or null, "loads": [...], "bales": [...]}`
 
+// ---------------------------------------------------------------------------
+// Cotton marketing documents — ONE upload point classifies the document AND
+// extracts the category-specific fields in the same call. On low confidence
+// the UI asks the user to pick the category and re-parses with that category's
+// focused prompt (COTTON_MARKETING_CATEGORY_PROMPTS below, selected via the
+// request's `category` field). All prices are ¢/lb here (marketing convention);
+// dollars are plain dollar amounts.
+// ---------------------------------------------------------------------------
+
+// Per-category extraction field definitions, shared verbatim between the
+// classify-and-extract prompt and each focused re-extract prompt so the two
+// paths always emit the same shape.
+const COTTON_MARKETING_FIELDS: Record<string, string> = {
+  sales_contract: `"extracted" fields for sales_contract (a cotton sales/purchase contract or pool agreement between the producer and a merchant/coop):
+- contract_type: "spot" (immediate sale), "fixed_price" (forward at a fixed ¢/lb), "on_call" (basis contract against a futures month, price fixed later), or "pool" (seasonal pool / marketing pool agreement)
+- buyer (the merchant/buyer/coop name), contract_number, contract_date (YYYY-MM-DD), crop_year
+- committed_bales (number) or committed_acres (number) — whichever the contract commits
+- price_cents_per_lb (spot/fixed price in ¢/lb, e.g. 74.25 — convert $/lb to ¢/lb by multiplying by 100)
+- basis_cents (on-call basis in ¢/lb, may be negative, e.g. -2.50), futures_month (e.g. "DEC 26")
+- delivery_start, delivery_end (YYYY-MM-DD), notes`,
+  pool_payment: `"extracted" fields for pool_payment (a pool advance / progress payment / final settlement notice from a marketing pool):
+- buyer (the pool/coop name), contract_number (the pool contract/account number if shown)
+- payment_type: "initial_advance", "progress", or "final_settlement"
+- amount (total dollars of this payment), cents_per_lb_equivalent (¢/lb if stated), payment_date (YYYY-MM-DD), crop_year`,
+  ccc_loan: `"extracted" fields for ccc_loan (a CCC/marketing assistance loan schedule or receipt from FSA or the loan servicing agent):
+- loan_number (exactly as printed), entry_date (YYYY-MM-DD), maturity_date (YYYY-MM-DD, if shown)
+- loan_rate_base_cents (the base loan rate in ¢/lb, e.g. 55.00), principal_total (total loan amount in dollars)
+- crop_year
+- bale_pbis: EVERY bale/PBI number in the document's bale list, as strings, exactly as printed. The list may span many pages — do not truncate or summarize; extract every row.`,
+  ldp_notice: `"extracted" fields for ldp_notice (a Loan Deficiency Payment application/notice from FSA):
+- ldp_date (YYYY-MM-DD), awp_cents (the Adjusted World Price in ¢/lb), ldp_rate_cents (the LDP rate in ¢/lb), total_payment (dollars), crop_year
+- bale_pbis: EVERY bale/PBI number listed, as strings, exactly as printed — the full list, never truncated.`,
+  equity_sale: `"extracted" fields for equity_sale (a confirmation of selling the equity in loan cotton to a merchant):
+- loan_number (the CCC loan the equity was sold on), buyer (the merchant buying the equity)
+- equity_cents_per_lb (the equity in ¢/lb over the loan), equity_total (dollars, if shown), sale_date (YYYY-MM-DD), crop_year`,
+  storage_invoice: `"extracted" fields for storage_invoice (a warehouse/storage/receiving/fee invoice for stored cotton):
+- invoice_number, fee_type: one of "warehouse_receiving", "storage_monthly", "classing", "checkoff", "loan_interest", "loan_servicing", "pool_deduction", "merchant_fee", "other" (best fit for the main charge)
+- amount_total (total dollars invoiced), fee_date (invoice date, YYYY-MM-DD), bales_count (bales billed, if shown)
+- loan_number (if the invoice references a CCC loan), notes (a one-line description of the charge), crop_year`,
+  bale_list: `"extracted" fields for bale_list (a gin or merchant recap sheet whose substance is a long column of bale/PBI numbers):
+- bale_pbis: EVERY bale/PBI number, as strings, exactly as printed. The list may span many pages — extract every row, never truncate.`,
+}
+
+const COTTON_MARKETING_JSON_SHAPE = `Respond ONLY in JSON, no other text, no markdown fences:
+{"document_category": "sales_contract" | "pool_payment" | "ccc_loan" | "ldp_notice" | "equity_sale" | "storage_invoice" | "bale_list", "confidence": "high" | "medium" | "low", "extracted": { ...the category's fields, null for anything not shown... }}`
+
+const COTTON_MARKETING_PROMPT = `This is a document from a cotton producer's MARKETING file. First classify it as exactly one of these categories, then extract that category's fields:
+
+1. sales_contract — a sales/purchase contract with a merchant or a pool agreement (spot, fixed price, on-call/basis, or pool)
+2. pool_payment — a pool advance, progress payment, or final settlement notice
+3. ccc_loan — a CCC/marketing assistance loan schedule or receipt (FSA or loan servicing agent; carries a loan number, a bale list, and principal)
+4. ldp_notice — a Loan Deficiency Payment application/notice (AWP, LDP rate, bales)
+5. equity_sale — a confirmation of selling loan-cotton equity to a merchant
+6. storage_invoice — a warehouse/storage/receiving or other fee invoice
+7. bale_list — a recap sheet that is essentially just a long list of bale/PBI numbers
+
+Set "confidence" to "high" only when the document unambiguously fits one category; "medium" when it mostly fits; "low" when you are guessing — the user will be asked to pick the category on low confidence.
+
+${Object.values(COTTON_MARKETING_FIELDS).join('\n\n')}
+
+All ¢/lb prices are plain numbers like 74.25 (convert $/lb by ×100). All dates are YYYY-MM-DD. Use null for anything the document does not show.
+
+${COTTON_MARKETING_JSON_SHAPE}`
+
+// Focused re-extract prompts, one per category (used when the user picks the
+// category after a low-confidence classification).
+const COTTON_MARKETING_CATEGORY_PROMPTS: Record<string, string> = Object.fromEntries(
+  Object.entries(COTTON_MARKETING_FIELDS).map(([category, fields]) => [
+    category,
+    `This is a cotton marketing document the user has identified as: ${category}. Extract that category's fields.
+
+${fields}
+
+All ¢/lb prices are plain numbers like 74.25 (convert $/lb by ×100). All dates are YYYY-MM-DD. Use null for anything the document does not show.
+
+Respond ONLY in JSON, no other text, no markdown fences:
+{"document_category": "${category}", "confidence": "high" | "medium" | "low", "extracted": { ...the fields above, null when absent... }}`,
+  ]),
+)
+
 const PROMPTS: Record<DocumentType, string> = {
   settlement: SETTLEMENT_PROMPT,
   tickets: TICKETS_PROMPT,
@@ -513,6 +593,7 @@ const PROMPTS: Record<DocumentType, string> = {
   fsa_base_acres: FSA_BASE_ACRES_PROMPT,
   cotton_weight_ticket: COTTON_TICKET_PROMPT,
   gin_receipt: GIN_RECEIPT_PROMPT,
+  cotton_marketing_document: COTTON_MARKETING_PROMPT,
 }
 
 type ParseBody = {
@@ -520,6 +601,9 @@ type ParseBody = {
   pdf_url?: unknown
   images?: unknown
   document_type?: unknown
+  // cotton_marketing_document only: a user-picked category selects the focused
+  // re-extract prompt instead of classify-and-extract.
+  category?: unknown
 }
 
 type ImageInput = { media_type: string; data: string }
@@ -613,7 +697,14 @@ export async function POST(req: NextRequest) {
     return badRequest('pdf_url, pdf_base64, or images is required.')
   }
 
-  const prompt = PROMPTS[docType]
+  let prompt = PROMPTS[docType]
+  if (docType === 'cotton_marketing_document' && typeof body.category === 'string') {
+    const focused = COTTON_MARKETING_CATEGORY_PROMPTS[body.category]
+    if (!focused) {
+      return badRequest('category must be one of: ' + Object.keys(COTTON_MARKETING_CATEGORY_PROMPTS).join(', ') + '.')
+    }
+    prompt = focused
+  }
 
   const client = new Anthropic({ apiKey })
 

@@ -8,6 +8,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/client'
+import type { CottonMarketingCategory, CottonMarketingExtraction } from '@/lib/cotton-doc-import'
 
 export const MAX_PDF_BYTES = 20 * 1024 * 1024
 export const PDF_BUCKET = 'documents'
@@ -32,7 +33,7 @@ export function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt'
+export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document'
 
 export type SettlementExtraction = {
   buyer_name: string | null
@@ -314,10 +315,12 @@ export async function parseDocument(input: File | ParseImage[], documentType: 'c
 export async function parseDocument(input: File | ParseImage[], documentType: 'fsa_base_acres'): Promise<FsaBaseAcresExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'cotton_weight_ticket'): Promise<CottonLoadsExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'gin_receipt'): Promise<GinReceiptExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'cotton_marketing_document', opts?: { category?: CottonMarketingCategory }): Promise<CottonMarketingExtraction>
 export async function parseDocument(
   input: File | ParseImage[],
   documentType: DocumentType,
-): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonLoadsExtraction | GinReceiptExtraction> {
+  opts?: { category?: CottonMarketingCategory },
+): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonLoadsExtraction | GinReceiptExtraction | CottonMarketingExtraction> {
   // Build the request body. Photos are compressed small enough to inline as
   // base64. A PDF, however, is uploaded to storage first and sent as a URL:
   // Vercel rejects serverless request bodies over 4.5 MB with a 413, well below
@@ -338,6 +341,7 @@ export async function parseDocument(
     payload = { document_type: documentType, pdf_url: publicUrl }
     cleanup = () => { void supabase.storage.from(PDF_BUCKET).remove([path]).then(() => {}, () => {}) }
   }
+  if (opts?.category) payload.category = opts.category
   try {
     const res = await fetch('/api/parse-document', {
       method: 'POST',
@@ -352,7 +356,7 @@ export async function parseDocument(
     if (!body || typeof body !== 'object' || !('data' in body)) {
       throw new Error('Malformed response from server.')
     }
-    return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction
+    return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonMarketingExtraction
   } finally {
     cleanup?.()
   }
