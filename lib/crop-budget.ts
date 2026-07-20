@@ -11,7 +11,7 @@
 
 import { buildContractSymbol, type Commodity } from '@/lib/hedging'
 import { cropToHedgeCommodity } from '@/lib/contracts'
-import type { BudgetLine, CropInsurancePolicy } from '@/lib/types'
+import type { BudgetLine, CropAssumption, CropInsurancePolicy } from '@/lib/types'
 
 const r2 = (n: number) => Math.round(n * 100) / 100
 
@@ -51,18 +51,30 @@ export function budgetContractLabel(cropName: string | null | undefined, budgetY
 
 // ---------- Assumption seeds ----------
 
-export type AphSeed = { yield: number; policyCount: number; cropYear: number }
+export type BudgetPractice = 'irrigated' | 'non_irrigated' | null // null = blended
+export type BudgetCropping = 'full_season' | 'double_crop' | null // null = full season
+
+export type AphSeed = { yield: number; policyCount: number; cropYear: number; practice: BudgetPractice }
+
+// practice widened to nullable: the TS type says non-null but older DB rows
+// can carry null — the app convention (missing = dryland) applies here too.
+type AphPolicy = Pick<CropInsurancePolicy, 'crop_id' | 'crop_year' | 'aph_yield' | 'insured_acres' | 'plan_type'> &
+  { practice: CropInsurancePolicy['practice'] | null }
 
 /** Acre-weighted average APH across the MOST RECENT crop year's policies for
- *  a crop (all counties/practices; area plans carry no APH and are skipped).
+ *  a crop (area plans carry no APH and are skipped). With a practice, only
+ *  that practice's policies weigh in (a policy without one counts as dryland,
+ *  the app convention); blended (null) weights across all practices.
  *  100 ac @ 180 + 50 ac @ 170 → (180×100 + 170×50) ÷ 150 = 176.7. */
 export function aphWeightedYield(
-  policies: ReadonlyArray<Pick<CropInsurancePolicy, 'crop_id' | 'crop_year' | 'aph_yield' | 'insured_acres' | 'plan_type'>>,
+  policies: ReadonlyArray<AphPolicy>,
   cropId: string,
+  practice: BudgetPractice = null,
 ): AphSeed | null {
   const mine = policies.filter((p) =>
     p.crop_id === cropId && p.plan_type !== 'ARP' && p.plan_type !== 'AYP' &&
-    Number(p.aph_yield) > 0 && Number(p.insured_acres) > 0)
+    Number(p.aph_yield) > 0 && Number(p.insured_acres) > 0 &&
+    (practice == null || (p.practice ?? 'non_irrigated') === practice))
   if (mine.length === 0) return null
   const latestYear = Math.max(...mine.map((p) => p.crop_year))
   const latest = mine.filter((p) => p.crop_year === latestYear)
@@ -72,7 +84,86 @@ export function aphWeightedYield(
     acres += Number(p.insured_acres)
     weighted += Number(p.aph_yield) * Number(p.insured_acres)
   }
-  return { yield: Math.round((weighted / acres) * 10) / 10, policyCount: latest.length, cropYear: latestYear }
+  return { yield: Math.round((weighted / acres) * 10) / 10, policyCount: latest.length, cropYear: latestYear, practice }
+}
+
+export type BudgetSeeds = {
+  yield: number | null
+  /** 'aph' carries the weighting detail for the derivation chip. */
+  yieldSource: 'aph' | 'expected' | 'expected_dc' | null
+  aph: AphSeed | null
+  cost: number | null
+  costSource: 'assumption' | 'assumption_dc' | null
+}
+
+type AssumptionSeedFields = Pick<CropAssumption,
+  'expected_yield' | 'expected_yield_irr' | 'expected_yield_dry' | 'expected_yield_dc_irr' | 'expected_yield_dc_dry' |
+  'cost_per_acre' | 'cost_per_acre_irr' | 'cost_per_acre_dry' | 'cost_per_acre_dc_irr' | 'cost_per_acre_dc_dry'>
+
+const numOr = (v: number | null | undefined): number | null => (v == null ? null : Number(v))
+
+/** Practice/cropping-aware seeds for one budget line.
+ *  Full season: yield = practice-filtered APH (blended = all practices), else
+ *  the assumption's per-practice expected (else blended expected); cost = the
+ *  per-practice cost (else blended).
+ *  Double crop: APH never seeds (it reflects full-season history, not DC) —
+ *  yield/cost come from the assumption's DC breakouts for the practice
+ *  (blended DC prefers dryland, the common DC practice), else blank. */
+export function budgetSeeds(args: {
+  policies: ReadonlyArray<AphPolicy>
+  assumption: AssumptionSeedFields | null | undefined
+  cropId: string
+  practice: BudgetPractice
+  cropping: BudgetCropping
+}): BudgetSeeds {
+  const a = args.assumption
+  if (args.cropping === 'double_crop') {
+    const dcYield = args.practice === 'irrigated'
+      ? numOr(a?.expected_yield_dc_irr)
+      : args.practice === 'non_irrigated'
+        ? numOr(a?.expected_yield_dc_dry)
+        : numOr(a?.expected_yield_dc_dry) ?? numOr(a?.expected_yield_dc_irr)
+    const dcCost = args.practice === 'irrigated'
+      ? numOr(a?.cost_per_acre_dc_irr)
+      : args.practice === 'non_irrigated'
+        ? numOr(a?.cost_per_acre_dc_dry)
+        : numOr(a?.cost_per_acre_dc_dry) ?? numOr(a?.cost_per_acre_dc_irr)
+    return {
+      yield: dcYield, yieldSource: dcYield != null ? 'expected_dc' : null, aph: null,
+      cost: dcCost, costSource: dcCost != null ? 'assumption_dc' : null,
+    }
+  }
+  const aph = aphWeightedYield(args.policies, args.cropId, args.practice)
+  const expected = args.practice === 'irrigated'
+    ? numOr(a?.expected_yield_irr) ?? numOr(a?.expected_yield)
+    : args.practice === 'non_irrigated'
+      ? numOr(a?.expected_yield_dry) ?? numOr(a?.expected_yield)
+      : numOr(a?.expected_yield)
+  const cost = args.practice === 'irrigated'
+    ? numOr(a?.cost_per_acre_irr) ?? numOr(a?.cost_per_acre)
+    : args.practice === 'non_irrigated'
+      ? numOr(a?.cost_per_acre_dry) ?? numOr(a?.cost_per_acre)
+      : numOr(a?.cost_per_acre)
+  return {
+    yield: aph?.yield ?? expected,
+    yieldSource: aph != null ? 'aph' : expected != null ? 'expected' : null,
+    aph,
+    cost,
+    costSource: cost != null ? 'assumption' : null,
+  }
+}
+
+export const BUDGET_PRACTICE_LABEL: Record<'irrigated' | 'non_irrigated', string> = {
+  irrigated: 'Irrigated', non_irrigated: 'Dryland',
+}
+
+/** "Irrigated · Double-crop" designation suffix for a line, '' when blended
+ *  full-season. */
+export function lineDesignation(l: { practice: BudgetPractice; cropping: BudgetCropping }): string {
+  const parts: string[] = []
+  if (l.practice) parts.push(BUDGET_PRACTICE_LABEL[l.practice])
+  if (l.cropping === 'double_crop') parts.push('Double-crop')
+  return parts.join(' · ')
 }
 
 // ---------- Budget line math ----------
@@ -160,9 +251,11 @@ export function scenarioTotals(rows: ReadonlyArray<{ acres: number | null; math:
 }
 
 export type ScenarioCompareRow = {
-  key: string // cropId|label
+  key: string // cropId|label|practice|cropping
   cropId: string
   label: string | null
+  practice: BudgetPractice
+  cropping: BudgetCropping
   aAcres: number | null
   bAcres: number | null
   aProfit: number | null
@@ -171,18 +264,26 @@ export type ScenarioCompareRow = {
   profitDelta: number | null
 }
 
-/** Per-crop(+label) side-by-side of two scenarios: acres and total profit with
- *  deltas (b − a). Lines present in only one scenario show with the other side
+type CompareInput = {
+  cropId: string
+  label: string | null
+  practice?: BudgetPractice
+  cropping?: BudgetCropping
+  acres: number | null
+  totalProfit: number | null
+}
+
+/** Per-crop(+label+practice+cropping) side-by-side of two scenarios: acres and
+ *  total profit with deltas (b − a). "Corn irrigated" and "Corn dryland" stay
+ *  separate rows. Lines present in only one scenario show with the other side
  *  null (delta treats a missing side as 0). */
-export function compareScenarios(
-  a: ReadonlyArray<{ cropId: string; label: string | null; acres: number | null; totalProfit: number | null }>,
-  b: ReadonlyArray<{ cropId: string; label: string | null; acres: number | null; totalProfit: number | null }>,
-): ScenarioCompareRow[] {
-  const key = (x: { cropId: string; label: string | null }) => `${x.cropId}|${(x.label ?? '').trim().toLowerCase()}`
+export function compareScenarios(a: ReadonlyArray<CompareInput>, b: ReadonlyArray<CompareInput>): ScenarioCompareRow[] {
+  const key = (x: CompareInput) =>
+    `${x.cropId}|${(x.label ?? '').trim().toLowerCase()}|${x.practice ?? ''}|${x.cropping === 'double_crop' ? 'dc' : ''}`
   const rows = new Map<string, ScenarioCompareRow>()
   for (const x of a) {
     rows.set(key(x), {
-      key: key(x), cropId: x.cropId, label: x.label,
+      key: key(x), cropId: x.cropId, label: x.label, practice: x.practice ?? null, cropping: x.cropping ?? null,
       aAcres: x.acres, bAcres: null, aProfit: x.totalProfit, bProfit: null,
       acresDelta: null, profitDelta: null,
     })
@@ -192,7 +293,7 @@ export function compareScenarios(
     if (cur) { cur.bAcres = x.acres; cur.bProfit = x.totalProfit }
     else {
       rows.set(key(x), {
-        key: key(x), cropId: x.cropId, label: x.label,
+        key: key(x), cropId: x.cropId, label: x.label, practice: x.practice ?? null, cropping: x.cropping ?? null,
         aAcres: null, bAcres: x.acres, aProfit: null, bProfit: x.totalProfit,
         acresDelta: null, profitDelta: null,
       })
@@ -249,6 +350,8 @@ export function duplicateLinesFor(
       scenario_id: newScenarioId,
       crop_id: l.crop_id,
       label: l.label,
+      practice: l.practice,
+      cropping: l.cropping,
       acres: l.acres,
       yield_per_acre: l.yield_per_acre,
       price_mode: l.price_mode,

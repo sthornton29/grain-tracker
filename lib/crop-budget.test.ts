@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import {
-  aphWeightedYield, budgetLineMath, buildBudgetMatrix, scenarioTotals,
+  aphWeightedYield, budgetLineMath, budgetSeeds, buildBudgetMatrix, scenarioTotals,
   compareScenarios, duplicateLinesFor, budgetContractSymbol, budgetContractLabel,
+  lineDesignation,
   type BudgetLineInput,
 } from '@/lib/crop-budget'
 import { axisValues } from '@/lib/income-sensitivity'
@@ -9,15 +10,16 @@ import type { BudgetLine, CropInsurancePolicy } from '@/lib/types'
 
 // Hand-verified worked examples — every expected number derived on paper.
 
-const pol = (over: Partial<CropInsurancePolicy>): Pick<CropInsurancePolicy, 'crop_id' | 'crop_year' | 'aph_yield' | 'insured_acres' | 'plan_type'> => ({
-  crop_id: 'corn', crop_year: 2026, aph_yield: 180, insured_acres: 100, plan_type: 'RP', ...over,
+type PolFixture = Pick<CropInsurancePolicy, 'crop_id' | 'crop_year' | 'aph_yield' | 'insured_acres' | 'plan_type'> & { practice: CropInsurancePolicy['practice'] | null }
+const pol = (over: Partial<PolFixture>): PolFixture => ({
+  crop_id: 'corn', crop_year: 2026, aph_yield: 180, insured_acres: 100, plan_type: 'RP', practice: 'non_irrigated', ...over,
 })
 
 describe('aphWeightedYield — acre-weighted APH seed from the most recent year', () => {
   it('two policies 100 ac @ 180 + 50 ac @ 170 → 176.7', () => {
     // (180×100 + 170×50) ÷ 150 = 26,500 ÷ 150 = 176.666… → 176.7
     const seed = aphWeightedYield([pol({}), pol({ aph_yield: 170, insured_acres: 50 })], 'corn')
-    expect(seed).toEqual({ yield: 176.7, policyCount: 2, cropYear: 2026 })
+    expect(seed).toEqual({ yield: 176.7, policyCount: 2, cropYear: 2026, practice: null })
   })
 
   it('only the MOST RECENT crop year weighs in', () => {
@@ -25,13 +27,103 @@ describe('aphWeightedYield — acre-weighted APH seed from the most recent year'
       pol({ crop_year: 2025, aph_yield: 150 }),
       pol({ crop_year: 2026, aph_yield: 180 }),
     ], 'corn')
-    expect(seed).toEqual({ yield: 180, policyCount: 1, cropYear: 2026 })
+    expect(seed).toEqual({ yield: 180, policyCount: 1, cropYear: 2026, practice: null })
   })
 
   it('area plans (no APH) and other crops are skipped; none → null', () => {
     expect(aphWeightedYield([pol({ plan_type: 'ARP' })], 'corn')).toBeNull()
     expect(aphWeightedYield([pol({ crop_id: 'soy' })], 'corn')).toBeNull()
     expect(aphWeightedYield([], 'corn')).toBeNull()
+  })
+
+  it('a practice filters the weighting: irrigated policies only (missing practice = dryland)', () => {
+    const mixed = [
+      pol({ practice: 'irrigated', aph_yield: 210, insured_acres: 100 }),
+      pol({ practice: 'irrigated', aph_yield: 200, insured_acres: 100 }),
+      pol({ practice: null, aph_yield: 150, insured_acres: 300 }), // counts as dryland
+    ]
+    expect(aphWeightedYield(mixed, 'corn', 'irrigated')).toEqual({ yield: 205, policyCount: 2, cropYear: 2026, practice: 'irrigated' })
+    expect(aphWeightedYield(mixed, 'corn', 'non_irrigated')).toEqual({ yield: 150, policyCount: 1, cropYear: 2026, practice: 'non_irrigated' })
+    // Blended keeps weighting across everything: (210+200)×100 + 150×300 = 86,000 ÷ 500 = 172.
+    expect(aphWeightedYield(mixed, 'corn', null)!.yield).toBe(172)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Practice / double-crop breakout seeds (049)
+// ---------------------------------------------------------------------------
+
+const seedAssumption = {
+  expected_yield: 190, expected_yield_irr: 220, expected_yield_dry: 165,
+  expected_yield_dc_irr: 55, expected_yield_dc_dry: 42,
+  cost_per_acre: 750, cost_per_acre_irr: 880, cost_per_acre_dry: 640,
+  cost_per_acre_dc_irr: 420, cost_per_acre_dc_dry: 360,
+}
+
+describe('budgetSeeds — practice/cropping-aware defaults', () => {
+  const seedPolicies = [
+    pol({ practice: 'irrigated', aph_yield: 210, insured_acres: 100 }),
+    pol({ practice: 'non_irrigated', aph_yield: 150, insured_acres: 300 }),
+  ]
+
+  it('full-season irrigated: practice-filtered APH + irrigated cost', () => {
+    const s = budgetSeeds({ policies: seedPolicies, assumption: seedAssumption, cropId: 'corn', practice: 'irrigated', cropping: null })
+    expect(s.yield).toBe(210)
+    expect(s.yieldSource).toBe('aph')
+    expect(s.aph).toMatchObject({ policyCount: 1, practice: 'irrigated' })
+    expect(s.cost).toBe(880)
+  })
+
+  it('no policies for the practice → the per-practice expected yield', () => {
+    const s = budgetSeeds({ policies: [], assumption: seedAssumption, cropId: 'corn', practice: 'non_irrigated', cropping: null })
+    expect(s.yield).toBe(165)
+    expect(s.yieldSource).toBe('expected')
+    expect(s.cost).toBe(640)
+  })
+
+  it('double-crop NEVER seeds from APH — the DC yield/cost breakouts drive it', () => {
+    const s = budgetSeeds({ policies: seedPolicies, assumption: seedAssumption, cropId: 'corn', practice: 'non_irrigated', cropping: 'double_crop' })
+    expect(s.yield).toBe(42) // dc_dry — not the 150 dryland APH
+    expect(s.yieldSource).toBe('expected_dc')
+    expect(s.aph).toBeNull()
+    expect(s.cost).toBe(360)
+    expect(s.costSource).toBe('assumption_dc')
+    // Blended DC prefers dryland (the common DC practice).
+    expect(budgetSeeds({ policies: seedPolicies, assumption: seedAssumption, cropId: 'corn', practice: null, cropping: 'double_crop' }).yield).toBe(42)
+  })
+
+  it('double-crop with no DC breakouts on file stays blank (no misleading APH)', () => {
+    const s = budgetSeeds({
+      policies: seedPolicies,
+      assumption: { ...seedAssumption, expected_yield_dc_irr: null, expected_yield_dc_dry: null, cost_per_acre_dc_irr: null, cost_per_acre_dc_dry: null },
+      cropId: 'corn', practice: null, cropping: 'double_crop',
+    })
+    expect(s.yield).toBeNull()
+    expect(s.cost).toBeNull()
+  })
+})
+
+describe('breakout designation & comparison separation', () => {
+  it('lineDesignation reads naturally', () => {
+    expect(lineDesignation({ practice: 'irrigated', cropping: 'double_crop' })).toBe('Irrigated · Double-crop')
+    expect(lineDesignation({ practice: 'non_irrigated', cropping: null })).toBe('Dryland')
+    expect(lineDesignation({ practice: null, cropping: null })).toBe('')
+  })
+
+  it('compareScenarios keeps irrigated and dryland lines of the same crop separate', () => {
+    const a = [
+      { cropId: 'corn', label: null, practice: 'irrigated' as const, cropping: null, acres: 600, totalProfit: 120_000 },
+      { cropId: 'corn', label: null, practice: 'non_irrigated' as const, cropping: null, acres: 400, totalProfit: 30_000 },
+    ]
+    const b = [
+      { cropId: 'corn', label: null, practice: 'irrigated' as const, cropping: null, acres: 800, totalProfit: 160_000 },
+    ]
+    const rows = compareScenarios(a, b)
+    expect(rows).toHaveLength(2)
+    const irr = rows.find((r) => r.practice === 'irrigated')!
+    const dry = rows.find((r) => r.practice === 'non_irrigated')!
+    expect(irr).toMatchObject({ acresDelta: 200, profitDelta: 40_000 })
+    expect(dry).toMatchObject({ bAcres: null, acresDelta: -400, profitDelta: -30_000 })
   })
 })
 
@@ -151,23 +243,24 @@ describe('scenarioTotals & compareScenarios', () => {
 
 describe('scenario duplication & isolation', () => {
   const line = (over: Partial<BudgetLine>): BudgetLine => ({
-    id: 'l1', scenario_id: 's1', crop_id: 'corn', label: null, acres: 500,
-    yield_per_acre: 200, price_mode: 'live', manual_price: null, basis: -0.25,
+    id: 'l1', scenario_id: 's1', crop_id: 'corn', label: null, practice: null, cropping: null,
+    acres: 500, yield_per_acre: 200, price_mode: 'live', manual_price: null, basis: -0.25,
     cost_per_acre: 750, sort_order: 0, created_at: '',
     ...over,
   })
 
   it('duplicateLinesFor copies every value intact onto the new scenario, order preserved', () => {
     const copies = duplicateLinesFor([
-      line({ id: 'l2', sort_order: 1, crop_id: 'soy', label: 'DC behind wheat', manual_price: 11.1, price_mode: 'manual' }),
+      line({ id: 'l2', sort_order: 1, crop_id: 'soy', label: 'DC behind wheat', manual_price: 11.1, price_mode: 'manual', practice: 'irrigated', cropping: 'double_crop' }),
       line({ id: 'l1', sort_order: 0 }),
     ], 's2')
     expect(copies).toHaveLength(2)
     expect(copies[0]).toEqual({
-      scenario_id: 's2', crop_id: 'corn', label: null, acres: 500, yield_per_acre: 200,
+      scenario_id: 's2', crop_id: 'corn', label: null, practice: null, cropping: null,
+      acres: 500, yield_per_acre: 200,
       price_mode: 'live', manual_price: null, basis: -0.25, cost_per_acre: 750, sort_order: 0,
     })
-    expect(copies[1]).toMatchObject({ scenario_id: 's2', crop_id: 'soy', label: 'DC behind wheat', manual_price: 11.1 })
+    expect(copies[1]).toMatchObject({ scenario_id: 's2', crop_id: 'soy', label: 'DC behind wheat', manual_price: 11.1, practice: 'irrigated', cropping: 'double_crop' })
     // Fresh identity: no id/created_at carried over.
     expect('id' in copies[0]).toBe(false)
   })

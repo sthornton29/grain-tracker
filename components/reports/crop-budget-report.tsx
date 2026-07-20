@@ -20,9 +20,10 @@ import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { formatCottonPrice, parseCottonPriceInput, fmtPrice } from '@/lib/hedging'
 import {
-  aphWeightedYield, budgetContractLabel, budgetContractSymbol, budgetLineMath,
-  buildBudgetMatrix, compareScenarios, duplicateLinesFor, isCottonName, scenarioTotals,
-  type BudgetLineMath,
+  budgetContractLabel, budgetContractSymbol, budgetLineMath, budgetSeeds,
+  buildBudgetMatrix, compareScenarios, duplicateLinesFor, isCottonName,
+  lineDesignation, scenarioTotals, BUDGET_PRACTICE_LABEL,
+  type BudgetLineMath, type BudgetSeeds,
 } from '@/lib/crop-budget'
 import { axisValues, closestIndex, defaultPriceStep, defaultYieldStep } from '@/lib/income-sensitivity'
 import { EmptyState, theadCls, toneText, signedTone, grandTotalRowCls } from '@/components/reports/report-kit'
@@ -129,6 +130,10 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const cropName = (id: string) => cropById.get(id)?.name ?? '—'
+  const lineName = (l: BudgetLine) => {
+    const d = lineDesignation(l)
+    return `${cropName(l.crop_id)}${d ? ` — ${d}` : ''}${l.label ? ` (${l.label})` : ''}`
+  }
 
   const scenario = scenarios.find((s) => s.id === scenarioId) ?? scenarios[0] ?? null
   useEffect(() => {
@@ -195,8 +200,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
     live: LivePrice | null
     math: BudgetLineMath
     usedManualFallback: boolean
-    yieldSeed: ReturnType<typeof aphWeightedYield>
-    costSeed: number | null
+    seeds: BudgetSeeds
   }
 
   const rowFor = useCallback((l: BudgetLine, budgetYear: number): Row => {
@@ -215,8 +219,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
     const assumption = assumptions.find((a) => a.crop_id === l.crop_id && a.crop_year === currentCropYear)
     return {
       line: l, crop, isCotton, symbol, live, math, usedManualFallback,
-      yieldSeed: aphWeightedYield(policies, l.crop_id),
-      costSeed: assumption?.cost_per_acre != null ? Number(assumption.cost_per_acre) : null,
+      seeds: budgetSeeds({ policies, assumption, cropId: l.crop_id, practice: l.practice, cropping: l.cropping }),
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cropById, livePrices, policies, assumptions, currentCropYear])
@@ -313,30 +316,55 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
   // ---------- line CRUD (seeded defaults; sandbox-only writes) ----------
 
   const [addCropId, setAddCropId] = useState('')
+  const [addPractice, setAddPractice] = useState<'' | 'irrigated' | 'non_irrigated'>('')
+  const [addCropping, setAddCropping] = useState<'' | 'double_crop'>('')
+  const addCropIsDc = cropById.get(addCropId)?.double_crop === true
 
   async function addLine() {
     if (!scenario || !addCropId) return
     const crop = cropById.get(addCropId)
     const assumption = assumptions.find((a) => a.crop_id === addCropId && a.crop_year === currentCropYear)
-    const seed = aphWeightedYield(policies, addCropId)
-    const expected = assumption?.expected_yield != null ? Number(assumption.expected_yield) : null
+    const practice = addPractice || null
+    const cropping = addCropIsDc && addCropping === 'double_crop' ? 'double_crop' as const : null
+    const seeds = budgetSeeds({ policies, assumption, cropId: addCropId, practice, cropping })
     try {
       const { error } = await supabase.from('budget_lines').insert({
         scenario_id: scenario.id,
         crop_id: addCropId,
         label: null,
+        practice,
+        cropping,
         acres: null, // the user's core input
-        yield_per_acre: seed?.yield ?? expected,
+        yield_per_acre: seeds.yield,
         price_mode: budgetContractSymbol(crop?.name, scenario.budget_crop_year) ? 'live' : 'manual',
         manual_price: null,
         basis: assumption?.assumed_basis != null ? Number(assumption.assumed_basis) : 0,
-        cost_per_acre: assumption?.cost_per_acre != null ? Number(assumption.cost_per_acre) : null,
+        cost_per_acre: seeds.cost,
         sort_order: scenarioLines.length,
       })
       if (error) throw new Error(error.message)
-      setAddCropId('')
+      setAddCropId(''); setAddPractice(''); setAddCropping('')
       await refresh()
     } catch (e) { fail(e) }
+  }
+
+  // Changing a line's practice/cropping re-seeds yield and cost ONLY where the
+  // current value is still the old seed (or blank) — typed-in numbers survive.
+  async function setLineBreakout(r: Row, patch: { practice?: BudgetLine['practice']; cropping?: BudgetLine['cropping'] }) {
+    const l = r.line
+    const assumption = assumptions.find((a) => a.crop_id === l.crop_id && a.crop_year === currentCropYear)
+    const next = budgetSeeds({
+      policies, assumption, cropId: l.crop_id,
+      practice: 'practice' in patch ? patch.practice ?? null : l.practice,
+      cropping: 'cropping' in patch ? patch.cropping ?? null : l.cropping,
+    })
+    const yieldUntouched = l.yield_per_acre == null || (r.seeds.yield != null && Math.abs(Number(l.yield_per_acre) - r.seeds.yield) < 1e-9)
+    const costUntouched = l.cost_per_acre == null || (r.seeds.cost != null && Math.abs(Number(l.cost_per_acre) - r.seeds.cost) < 1e-9)
+    await patchLine(l.id, {
+      ...patch,
+      ...(yieldUntouched ? { yield_per_acre: next.yield } : {}),
+      ...(costUntouched ? { cost_per_acre: next.cost } : {}),
+    })
   }
 
   async function patchLine(id: string, patch: Partial<BudgetLine>) {
@@ -388,7 +416,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
       ],
       rows: [
         ...rows.map((r): ExportCell[] => [
-          `${cropName(r.line.crop_id)}${r.line.label ? ` (${r.line.label})` : ''}`,
+          lineName(r.line),
           r.line.acres ?? '',
           r.line.yield_per_acre ?? '',
           r.math.effectivePrice != null ? { v: r.isCotton ? r.math.effectivePrice : r.math.effectivePrice, format: r.isCotton ? 'cents' as const : 'price' as const } : '',
@@ -406,7 +434,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
       const grid = matrixGridFor(r)
       if (!grid) continue
       sections.push({
-        title: `${cropName(r.line.crop_id)}${r.line.label ? ` (${r.line.label})` : ''} — price × yield ${matrixView === 'profit' ? 'profit' : 'revenue'}/ac`,
+        title: `${lineName(r.line)} — price × yield ${matrixView === 'profit' ? 'profit' : 'revenue'}/ac`,
         columns: [
           { label: `Price ${r.isCotton ? '$/lb' : '$/bu'}`, align: 'right', format: r.isCotton ? 'cents' : 'price' },
           ...grid.yieldValues.map((y) => ({ label: `${formatNumber(y, 'yield')} ${r.isCotton ? 'lbs/ac' : 'bu/ac'}`, align: 'right' as const, format: 'usd2' as const })),
@@ -585,12 +613,35 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
               <tbody>
                 {rows.map((r, i) => {
                   const l = r.line
-                  const yieldIsSeed = r.yieldSeed != null && l.yield_per_acre != null && Math.abs(Number(l.yield_per_acre) - r.yieldSeed.yield) < 1e-9
-                  const costIsSeed = r.costSeed != null && l.cost_per_acre != null && Math.abs(Number(l.cost_per_acre) - r.costSeed) < 1e-9
+                  const yieldIsSeed = r.seeds.yield != null && l.yield_per_acre != null && Math.abs(Number(l.yield_per_acre) - r.seeds.yield) < 1e-9
+                  const costIsSeed = r.seeds.cost != null && l.cost_per_acre != null && Math.abs(Number(l.cost_per_acre) - r.seeds.cost) < 1e-9
+                  const isDcCrop = r.crop?.double_crop === true
                   return (
                     <tr key={l.id} className="border-t border-slate-100 align-middle">
                       <td className="px-2 py-1.5 whitespace-nowrap">
                         <div className="font-semibold">{cropName(l.crop_id)}</div>
+                        <div className="flex items-center gap-1 mt-0.5 no-print">
+                          <select
+                            value={l.practice ?? ''} title="Irrigated / dryland breakout — re-seeds untouched yield & cost"
+                            onChange={(e) => void setLineBreakout(r, { practice: (e.target.value || null) as BudgetLine['practice'] })}
+                            className="rounded border border-slate-200 px-1 py-0.5 text-[11px] bg-white text-slate-600"
+                          >
+                            <option value="">Blended</option>
+                            <option value="irrigated">Irrigated</option>
+                            <option value="non_irrigated">Dryland</option>
+                          </select>
+                          {isDcCrop && (
+                            <select
+                              value={l.cropping === 'double_crop' ? 'double_crop' : ''} title="Full-season / double-crop — DC seeds from the DC yield & cost breakouts"
+                              onChange={(e) => void setLineBreakout(r, { cropping: e.target.value === 'double_crop' ? 'double_crop' : null })}
+                              className="rounded border border-slate-200 px-1 py-0.5 text-[11px] bg-white text-slate-600"
+                            >
+                              <option value="">Full-season</option>
+                              <option value="double_crop">Double-crop</option>
+                            </select>
+                          )}
+                        </div>
+                        {lineDesignation(l) && <div className="text-[10px] text-slate-500 print-only hidden">{lineDesignation(l)}</div>}
                         <CellInput
                           value={l.label ?? ''} width="w-36"
                           placeholder="label (optional)"
@@ -604,8 +655,12 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
                         <CellInput value={l.yield_per_acre != null ? String(l.yield_per_acre) : ''} placeholder={r.isCotton ? 'lbs/ac' : 'bu/ac'} onCommit={(s) => patchLine(l.id, { yield_per_acre: numOrNull(s) })} width="w-20" />
                         {yieldIsSeed && (
                           <span className="ml-1 text-[10px] rounded-full bg-slate-100 text-slate-500 px-1.5 py-0.5 cursor-help"
-                            title={`APH ${r.yieldSeed!.yield} — weighted from ${r.yieldSeed!.policyCount} ${r.yieldSeed!.cropYear} ${r.yieldSeed!.policyCount === 1 ? 'policy' : 'policies'}`}>
-                            APH
+                            title={r.seeds.yieldSource === 'aph' && r.seeds.aph
+                              ? `APH ${r.seeds.aph.yield} — weighted from ${r.seeds.aph.policyCount} ${r.seeds.aph.cropYear}${l.practice ? ` ${BUDGET_PRACTICE_LABEL[l.practice].toLowerCase()}` : ''} ${r.seeds.aph.policyCount === 1 ? 'policy' : 'policies'}`
+                              : r.seeds.yieldSource === 'expected_dc'
+                                ? `Seeded from your ${currentCropYear} double-crop expected yield${l.practice ? ` (${BUDGET_PRACTICE_LABEL[l.practice].toLowerCase()})` : ''}`
+                                : `Seeded from your ${currentCropYear} expected yield${l.practice ? ` (${BUDGET_PRACTICE_LABEL[l.practice].toLowerCase()})` : ''}`}>
+                            {r.seeds.yieldSource === 'aph' ? 'APH' : r.seeds.yieldSource === 'expected_dc' ? 'DC exp.' : 'expected'}
                           </span>
                         )}
                       </td>
@@ -654,8 +709,9 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
                       <td className="px-2 py-1.5 whitespace-nowrap">
                         <CellInput value={l.cost_per_acre != null ? String(l.cost_per_acre) : ''} placeholder="$/ac" onCommit={(s) => patchLine(l.id, { cost_per_acre: numOrNull(s) })} width="w-20" />
                         {costIsSeed && (
-                          <span className="ml-1 text-[10px] rounded-full bg-slate-100 text-slate-500 px-1.5 py-0.5 cursor-help" title={`Seeded from your ${currentCropYear} cost/acre — edit freely, the budget never writes back.`}>
-                            from {currentCropYear}
+                          <span className="ml-1 text-[10px] rounded-full bg-slate-100 text-slate-500 px-1.5 py-0.5 cursor-help"
+                            title={`Seeded from your ${currentCropYear}${r.seeds.costSource === 'assumption_dc' ? ' double-crop' : ''}${l.practice ? ` ${BUDGET_PRACTICE_LABEL[l.practice].toLowerCase()}` : ''} cost/acre — edit freely, the budget never writes back.`}>
+                            from {currentCropYear}{r.seeds.costSource === 'assumption_dc' ? ' DC' : ''}
                           </span>
                         )}
                       </td>
@@ -693,10 +749,21 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
                 {referenceAcres > 0 && <> of ~{acres0(referenceAcres)} (your fields&apos; total — context only, not enforced; double-crop legitimately overlaps)</>}
               </span>
               <span className="ml-auto no-print flex items-center gap-2">
-                <select value={addCropId} onChange={(e) => setAddCropId(e.target.value)} className="rounded border border-slate-300 px-2 py-1 bg-white">
+                <select value={addCropId} onChange={(e) => { setAddCropId(e.target.value); setAddCropping('') }} className="rounded border border-slate-300 px-2 py-1 bg-white">
                   <option value="">— add a crop line —</option>
                   {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                 </select>
+                <select value={addPractice} onChange={(e) => setAddPractice(e.target.value as typeof addPractice)} className="rounded border border-slate-300 px-2 py-1 bg-white" title="Irrigated / dryland breakout — seeds practice-specific APH and cost">
+                  <option value="">Blended</option>
+                  <option value="irrigated">Irrigated</option>
+                  <option value="non_irrigated">Dryland</option>
+                </select>
+                {addCropIsDc && (
+                  <select value={addCropping} onChange={(e) => setAddCropping(e.target.value as typeof addCropping)} className="rounded border border-slate-300 px-2 py-1 bg-white" title="This crop is designated double-crop — a DC line seeds from your DC yield/cost breakouts">
+                    <option value="">Full-season</option>
+                    <option value="double_crop">Double-crop</option>
+                  </select>
+                )}
                 <button type="button" className={btnCls} disabled={!addCropId} onClick={addLine}>Add line</button>
               </span>
             </div>
@@ -708,9 +775,9 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
             if (!other) return null
             const otherRows = lines.filter((l) => l.scenario_id === other.id).map((l) => {
               const r = rowFor(l, other.budget_crop_year)
-              return { cropId: l.crop_id, label: l.label, acres: l.acres, totalProfit: r.math.totalProfit }
+              return { cropId: l.crop_id, label: l.label, practice: l.practice, cropping: l.cropping, acres: l.acres, totalProfit: r.math.totalProfit }
             })
-            const mineRows = rows.map((r) => ({ cropId: r.line.crop_id, label: r.line.label, acres: r.line.acres, totalProfit: r.math.totalProfit }))
+            const mineRows = rows.map((r) => ({ cropId: r.line.crop_id, label: r.line.label, practice: r.line.practice, cropping: r.line.cropping, acres: r.line.acres, totalProfit: r.math.totalProfit }))
             const cmp = compareScenarios(mineRows, otherRows)
             const otherTotals = totalsByScenario.get(other.id)
             return (
@@ -731,7 +798,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
                   <tbody>
                     {cmp.map((c) => (
                       <tr key={c.key} className="border-t border-slate-100 tabular-nums">
-                        <td className="px-2 py-1">{cropName(c.cropId)}{c.label ? ` (${c.label})` : ''}</td>
+                        <td className="px-2 py-1">{cropName(c.cropId)}{lineDesignation(c) ? ` — ${lineDesignation(c)}` : ''}{c.label ? ` (${c.label})` : ''}</td>
                         <td className="px-2 py-1 text-right">{c.aAcres != null ? acres0(c.aAcres) : '—'}</td>
                         <td className="px-2 py-1 text-right">{c.bAcres != null ? acres0(c.bAcres) : '—'}</td>
                         <td className={`px-2 py-1 text-right ${c.acresDelta! > 0 ? 'text-green-700' : c.acresDelta! < 0 ? 'text-red-700' : 'text-slate-400'}`}>{c.acresDelta! > 0 ? '+' : ''}{acres0(c.acresDelta!)}</td>
@@ -778,7 +845,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
             return (
               <details key={r.line.id} className="bg-white rounded-xl shadow avoid-break">
                 <summary className="cursor-pointer select-none px-4 py-3 flex flex-wrap items-baseline gap-x-4 gap-y-1">
-                  <span className="font-semibold">{cropName(r.line.crop_id)}{r.line.label ? ` (${r.line.label})` : ''}</span>
+                  <span className="font-semibold">{lineName(r.line)}</span>
                   <span className="text-sm text-slate-500 tabular-nums">
                     breakeven price <strong className="text-slate-700">{fmtPriceFor(r.isCotton, r.math.breakevenPrice)}</strong> at {r.line.yield_per_acre ?? '—'} {r.isCotton ? 'lbs' : 'bu'}/ac
                     {' '}· breakeven yield <strong className="text-slate-700">{r.math.breakevenYield != null ? r.math.breakevenYield.toLocaleString(undefined, { maximumFractionDigits: 0 }) : '—'} {r.isCotton ? 'lbs' : 'bu'}/ac</strong> at {fmtPriceFor(r.isCotton, r.math.effectivePrice)}
