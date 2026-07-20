@@ -452,11 +452,17 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
             ) : null
           })()}
 
-          {/* Unified county-yield assumptions (045): drives every county-
-              triggered leg (SCO/ECO/STAX/ARP/AYP/MCO). Separate from ARC-CO. */}
+          {/* Unified county-yield assumptions (differential, 047): drives every
+              county-triggered leg (SCO/ECO/STAX/ARP/AYP/MCO). Separate from
+              ARC-CO. Estimated county yield = your expected/actual yield minus
+              the differential. */}
           <div className="bg-white rounded-xl shadow px-4 py-3 no-print space-y-1">
-            <div className="text-sm font-semibold">County yield assumptions (insurance — separate from the ARC-CO expectation)</div>
-            {Array.from(new Map(yearPolicies.map((p) => [`${p.crop_id}|${p.county_id ?? ''}`, p])).values()).map((p) => (
+            <div className="text-sm font-semibold">My yield vs county (insurance — separate from the ARC-CO expectation)</div>
+            <p className="text-xs text-slate-500">Estimated county yield = your expected/actual yield minus this differential.</p>
+            {Array.from(new Map(yearPolicies.map((p) => [`${p.crop_id}|${p.county_id ?? ''}`, p])).values()).map((p) => {
+              const rep = computed.find((c) => c.policy.crop_id === p.crop_id && (c.policy.county_id ?? '') === (p.county_id ?? ''))
+              const isCottonCropRow = /cotton/i.test(cropById.get(p.crop_id)?.name ?? '')
+              return (
               <div key={`${p.crop_id}|${p.county_id ?? ''}`} className="flex items-center gap-2 flex-wrap text-sm">
                 <span className="font-medium w-56 truncate">{cropName(p.crop_id)} · {countyName(p.county_id)}</span>
                 <CountyAssumptionControl
@@ -464,6 +470,8 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                   countyId={p.county_id}
                   cropYear={cropYear as number}
                   assumption={countyAssumptions.find((a) => a.crop_id === p.crop_id && a.crop_year === cropYear && (a.county_id ?? '') === (p.county_id ?? '')) ?? null}
+                  farmYield={rep?.assumedYield ?? null}
+                  yieldUnit={isCottonCropRow ? 'lbs/ac' : 'bu/ac'}
                   compact
                   onChanged={async () => {
                     const { data } = await supabase.from('county_yield_assumptions').select('*')
@@ -471,7 +479,8 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                   }}
                 />
               </div>
-            ))}
+              )
+            })}
           </div>
 
           {/* Summary table */}
@@ -656,9 +665,7 @@ function PolicyDetail({
           {comp.sco && sco && (
             <div>
               <div className="font-semibold mb-1">SCO band ({Math.round(cov * 100)}% → {Math.round(Number(sco.coverage_trigger) * 100)}%)</div>
-              <Line label="Expected county yield" value={`${Number(sco.expected_county_yield).toFixed(1)} bu/ac`} />
-              <Line label="County vs your yield" value={`${Number(sco.county_yield_assumption_pct ?? 0)}%`} />
-              <Line label="Est. county yield" value={`${(assumedYield * (1 + Number(sco.county_yield_assumption_pct ?? 0) / 100)).toFixed(1)} bu/ac`} />
+              <Line label="RMA expected county yield" value={`${Number(sco.expected_county_yield).toFixed(1)} bu/ac (reference)`} />
               <Line label="County ratio" value={`${(comp.sco.ratio * 100).toFixed(1)}%`} />
               <Line label="Payment factor" value={comp.sco.paymentFactor.toFixed(4)} />
               <Line label="Band payment limit" value={usd2(comp.sco.paymentLimit)} />
@@ -668,9 +675,7 @@ function PolicyDetail({
           {comp.eco && eco && (
             <div>
               <div className="font-semibold mb-1">ECO band (86% → {Math.round(Number(eco.eco_trigger_level) * 100)}%)</div>
-              <Line label="Expected county yield" value={`${Number(eco.expected_county_yield).toFixed(1)} bu/ac`} />
-              <Line label="County vs your yield" value={`${Number(eco.county_yield_assumption_pct ?? 0)}%`} />
-              <Line label="Est. county yield" value={`${(assumedYield * (1 + Number(eco.county_yield_assumption_pct ?? 0) / 100)).toFixed(1)} bu/ac`} />
+              <Line label="RMA expected county yield" value={`${Number(eco.expected_county_yield).toFixed(1)} bu/ac (reference)`} />
               <Line label="County ratio" value={`${(comp.eco.ratio * 100).toFixed(1)}%`} />
               <Line label="Payment factor" value={comp.eco.paymentFactor.toFixed(4)} />
               <Line label="Band payment limit" value={usd2(comp.eco.paymentLimit)} />

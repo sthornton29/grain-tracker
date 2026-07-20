@@ -191,7 +191,7 @@ describe('cotton futures (ICE Cotton No. 2)', () => {
     expect(quantityFor('Cotton', 10)).toBe(500000)
     expect(fmtQuantity('Cotton', 10)).toBe('500,000 lbs')
     expect(fmtQuantity('Corn', 5)).toBe('25,000 bu')
-    expect(fmtCommodityPrice('Cotton', 72.65)).toBe('72.65¢')
+    expect(fmtCommodityPrice('Cotton', 72.65)).toBe('$0.7265')
     expect(fmtCommodityPrice('Corn', 4.9325)).toBe('$4.9325')
   })
   it('P&L: 10 short DEC 26 CT @ 72.65¢ closed @ 68.00¢', () => {

@@ -9,7 +9,7 @@ import { buildMarketingExport } from '@/lib/marketing-export'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { cropToHedgeCommodity } from '@/lib/contracts'
-import { fmtPnl, buildContractSymbol } from '@/lib/hedging'
+import { fmtPnl, buildContractSymbol, formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { StackedBar } from '@/components/reports/report-kit'
 import ExportBar from '@/components/export-bar'
@@ -42,8 +42,8 @@ type PlantingRow = {
 }
 
 const bu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
-// Cotton ¢/lb price, 2 decimals ("72.65¢").
-const cents2 = (n: number | null | undefined) => (n == null ? '—' : `${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}¢`)
+// Cotton price display: ¢/lb-stored, shown as $/lb (72.65 → $0.7265).
+const cents2 = (n: number | null | undefined) => formatCottonPrice(n)
 const usd = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
 const usd0 = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`)
 const round2 = (n: number) => Math.round(n * 100) / 100
@@ -875,7 +875,8 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
   const [wfStale, setWfStale] = useState(false)
   const [wfNote, setWfNote] = useState<string | null>(null)
   const [fetching, setFetching] = useState(false)
-  const wfFut = wfFutures.trim() === '' || !Number.isFinite(Number(wfFutures)) ? null : Number(wfFutures)
+  // Dollar-style entry (0.70) and legacy cents (70.00) both land as ¢/lb.
+  const wfFut = parseCottonPriceInput(wfFutures)
   // Advanced-mode scenario: the ¢/lb delta hits exactly the unhedged lbs (the
   // basis term is structurally 0 for cotton).
   const scenario = wfFut != null ? scenarioFor(row, wfFut, 0, true) : null
@@ -908,8 +909,8 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
   function commitFutures() {
     const t = wfFutures.trim()
     if (t === '') { if (row.assumedFutures != null) onSaveFutures(null); return }
-    const v = Number(t)
-    if (Number.isFinite(v) && v !== (row.assumedFutures ?? null)) onSaveFutures(v)
+    const v = parseCottonPriceInput(t) // stored ¢/lb; accepts 0.70 or 70.00
+    if (v != null && v !== (row.assumedFutures ?? null)) onSaveFutures(v)
   }
   function clearAssumptions() {
     setWfFutures(''); setWfSymbol(null); setWfStale(false); setWfNote(null)
@@ -1029,7 +1030,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
             const s = cp.summary
             return (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-5 text-sm">
-                <DetailSection title="Physical Sales (¢/lb)">
+                <DetailSection title="Physical Sales ($/lb)">
                   {s.soldSources.length > 0
                     ? s.soldSources.map((src, i) => <Row key={i} label={src.label} value={`${bu(src.lbs)} lbs @ ${cents2(src.cents)}`} />)
                     : <div className="text-slate-400">No priced physical sales yet.</div>}
@@ -1057,7 +1058,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
             )
           })()}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-5 text-sm">
-            <DetailSection title="Hedge Pricing (¢/lb)">
+            <DetailSection title="Hedge Pricing ($/lb)">
               {row.futuresSources.length > 0 ? (
                 <>
                   {row.futuresSources.map((s, i) => (
@@ -1109,7 +1110,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
             <div className="space-y-1 lg:max-w-md">
               <div className="text-xs text-slate-600">Unhedged lbs: <span className="tabular-nums font-medium">{bu(row.unpricedBu)}</span></div>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <input type="number" step="0.01" inputMode="decimal" value={wfFutures} placeholder="¢/lb"
+                <input type="text" inputMode="decimal" value={wfFutures} placeholder="$/lb e.g. 0.7000"
                   onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }} onBlur={commitFutures}
                   className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
                 {nc && !expired && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-sky-700 font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
@@ -1118,7 +1119,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
               {nc && expired && <div className="text-xs text-amber-700">Contract expired — enter price manually.</div>}
               {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{wfSymbol} · {cents2(wfFut)}{wfStale ? ' (cached)' : ''}</div>}
               {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
-              <div className="text-xs text-slate-400">Assumed ¢/lb — saves automatically; values the unhedged lbs until cleared.</div>
+              <div className="text-xs text-slate-400">Assumed $/lb — saves automatically; values the unhedged lbs until cleared.</div>
             </div>
           </div>
         </div>

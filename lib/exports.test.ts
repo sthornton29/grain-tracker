@@ -215,3 +215,23 @@ describe('exportToExcel — grouped sections render without throwing', () => {
     await expect(exportToExcel({ title: '2026 Production Report', filters: '2026 crop', sections: [section] })).resolves.toBeUndefined()
   })
 })
+
+// ---------------------------------------------------------------------------
+// Cotton $/lb rendering in exports — 'cents' carries ¢-stored values shown as $
+// ---------------------------------------------------------------------------
+describe("'cents' format — ¢-stored cotton prices render $/lb", () => {
+  it('formatNumber: 72.65 → $0.7265 (4 decimals)', () => {
+    expect(formatNumber(72.65, 'cents')).toBe('$0.7265')
+    expect(formatNumber(70, 'cents')).toBe('$0.7000')
+  })
+  it('excelNumFmt is a 4-decimal $ format (values are written ÷100)', () => {
+    expect(excelNumFmt('cents')).toBe('$#,##0.0000;($#,##0.0000)')
+  })
+  it('a mixed grain + cotton payload renders $/bu and $/lb side by side', () => {
+    // Grain price column stays $4.93; cotton price column shows $0.7265.
+    expect(formatNumber(4.93, 'price')).toBe('$4.93')
+    expect(formatNumber(72.65, 'cents')).toBe('$0.7265')
+    // Negative (a cotton basis) parenthesizes like every other export number.
+    expect(formatNumber(-2.5, 'cents')).toBe('($0.0250)')
+  })
+})

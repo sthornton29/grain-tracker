@@ -24,6 +24,7 @@ import DocumentCapture, { type DocumentSource } from '@/components/document-capt
 import { BuyerPicker } from '@/components/buyer-location-pickers'
 import { parseDocument } from '@/lib/pdf-upload'
 import { findBestMatch } from '@/lib/fuzzy'
+import { formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
 import { computeLoanPrincipal, equityOutcome, ldpRateCents } from '@/lib/cotton-sales'
 import {
   COTTON_MARKETING_CATEGORIES, COTTON_MARKETING_CATEGORY_LABEL, partitionBaleAssignment,
@@ -41,10 +42,13 @@ const btnCls = 'rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semi
 const btnGray = 'rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50'
 const lbs0 = (n: number) => Math.round(n).toLocaleString()
 const usd = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-const cents = (n: number) => `${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}¢`
+// ¢/lb-stored prices display as $/lb through the shared formatter.
+const cents = (n: number) => formatCottonPrice(n)
 const todayIso = () => new Date().toISOString().slice(0, 10)
 const num = (s: string): number | null => { const n = Number(s); return s.trim() !== '' && Number.isFinite(n) ? n : null }
 const str = (v: unknown): string => (v == null ? '' : String(v))
+// Prefill a ¢-extracted price as a dollars string for the $/lb inputs.
+const dollarsStr = (cents: unknown): string => (cents == null || !Number.isFinite(Number(cents)) ? '' : (Number(cents) / 100).toFixed(4))
 const DEFAULT_LOAN_RATE = 55 // matches the marketing page's editable default
 
 function addMonthsIso(dateIso: string, months: number): string {
@@ -201,8 +205,8 @@ function ContractReview({ supabase, extracted: x, buyers, contracts, entities, c
     commitment_basis: (x.committed_acres != null && x.committed_bales == null ? 'acres' : 'bales') as 'bales' | 'acres',
     committed_bales: str(x.committed_bales),
     committed_acres: str(x.committed_acres),
-    price_cents_per_lb: str(x.price_cents_per_lb),
-    basis_cents: str(x.basis_cents),
+    price_cents_per_lb: dollarsStr(x.price_cents_per_lb),
+    basis_cents: dollarsStr(x.basis_cents),
     futures_month: str(x.futures_month) || 'DEC 26',
     delivery_start: str(x.delivery_start),
     delivery_end: str(x.delivery_end),
@@ -224,8 +228,8 @@ function ContractReview({ supabase, extracted: x, buyers, contracts, entities, c
       contract_date: f.contract_date || null, commitment_basis: f.commitment_basis,
       committed_bales: f.commitment_basis === 'bales' ? num(f.committed_bales) : null,
       committed_acres: f.commitment_basis === 'acres' ? num(f.committed_acres) : null,
-      price_cents_per_lb: f.contract_type === 'spot' || f.contract_type === 'fixed_price' ? num(f.price_cents_per_lb) : null,
-      basis_cents: f.contract_type === 'on_call' ? num(f.basis_cents) : null,
+      price_cents_per_lb: f.contract_type === 'spot' || f.contract_type === 'fixed_price' ? parseCottonPriceInput(f.price_cents_per_lb) : null,
+      basis_cents: f.contract_type === 'on_call' ? parseCottonPriceInput(f.basis_cents, { centsThreshold: 0.25 }) : null,
       futures_month: f.contract_type === 'on_call' ? (f.futures_month.trim() || null) : null,
       pricing_status: f.contract_type === 'pool' ? 'pool_open' : f.contract_type === 'on_call' ? 'awaiting_futures' : 'fully_priced',
       delivery_start: f.delivery_start || null, delivery_end: f.delivery_end || null, notes: f.notes.trim() || null,
@@ -291,14 +295,14 @@ function ContractReview({ supabase, extracted: x, buyers, contracts, entities, c
           </label>
         )}
         {(f.contract_type === 'spot' || f.contract_type === 'fixed_price') && (
-          <label className="flex flex-col gap-1">Price (¢/lb)
-            <input type="number" step="0.01" value={f.price_cents_per_lb} onChange={(e) => set('price_cents_per_lb', e.target.value)} className={inputCls} />
+          <label className="flex flex-col gap-1">Price ($/lb)
+            <input type="text" inputMode="decimal" value={f.price_cents_per_lb} onChange={(e) => set('price_cents_per_lb', e.target.value)} className={inputCls} placeholder="0.7400" />
           </label>
         )}
         {f.contract_type === 'on_call' && (
           <>
-            <label className="flex flex-col gap-1">Basis (¢/lb, +/-)
-              <input type="number" step="0.01" value={f.basis_cents} onChange={(e) => set('basis_cents', e.target.value)} className={inputCls} />
+            <label className="flex flex-col gap-1">Basis ($/lb, +/-)
+              <input type="text" inputMode="decimal" value={f.basis_cents} onChange={(e) => set('basis_cents', e.target.value)} className={inputCls} placeholder="-0.0250" />
             </label>
             <label className="flex flex-col gap-1">Futures month
               <input value={f.futures_month} onChange={(e) => set('futures_month', e.target.value)} className={inputCls} />
@@ -337,7 +341,7 @@ function PoolPaymentReview({ supabase, extracted: x, buyers, contracts, onDone, 
     contract_id: preselected?.id ?? (poolContracts.length === 1 ? poolContracts[0].id : ''),
     payment_type: (x.payment_type ?? 'progress') as 'initial_advance' | 'progress' | 'final_settlement',
     amount: str(x.amount),
-    cents_per_lb_equivalent: str(x.cents_per_lb_equivalent),
+    cents_per_lb_equivalent: dollarsStr(x.cents_per_lb_equivalent),
     payment_date: str(x.payment_date) || todayIso(),
   }))
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((s) => ({ ...s, [k]: v }))
@@ -350,7 +354,7 @@ function PoolPaymentReview({ supabase, extracted: x, buyers, contracts, onDone, 
     try {
       const { error } = await supabase.from('cotton_pool_payments').insert({
         contract_id: f.contract_id, payment_type: f.payment_type, amount,
-        cents_per_lb_equivalent: num(f.cents_per_lb_equivalent), payment_date: f.payment_date || null, status: 'received',
+        cents_per_lb_equivalent: parseCottonPriceInput(f.cents_per_lb_equivalent), payment_date: f.payment_date || null, status: 'received',
       })
       if (error) throw new Error(error.message)
       await onDone(`Pool ${f.payment_type.replace('_', ' ')} of ${usd(amount)} recorded.`)
@@ -379,8 +383,8 @@ function PoolPaymentReview({ supabase, extracted: x, buyers, contracts, onDone, 
         <label className="flex flex-col gap-1">Amount ($)
           <input type="number" step="0.01" value={f.amount} onChange={(e) => set('amount', e.target.value)} className={inputCls} />
         </label>
-        <label className="flex flex-col gap-1">¢/lb equivalent
-          <input type="number" step="0.01" value={f.cents_per_lb_equivalent} onChange={(e) => set('cents_per_lb_equivalent', e.target.value)} className={inputCls} />
+        <label className="flex flex-col gap-1">$/lb equivalent
+          <input type="text" inputMode="decimal" value={f.cents_per_lb_equivalent} onChange={(e) => set('cents_per_lb_equivalent', e.target.value)} className={inputCls} placeholder="0.6500" />
         </label>
         <label className="flex flex-col gap-1">Date
           <input type="date" value={f.payment_date} onChange={(e) => set('payment_date', e.target.value)} className={inputCls} />
@@ -426,7 +430,7 @@ function LoanReview({ supabase, extracted: x, loans, bales, gradeByBale, disposi
     loan_number: str(x.loan_number),
     entry_date: str(x.entry_date) || todayIso(),
     maturity_date: str(x.maturity_date),
-    rate: str(x.loan_rate_base_cents) || String(DEFAULT_LOAN_RATE),
+    rate: dollarsStr(x.loan_rate_base_cents) || (DEFAULT_LOAN_RATE / 100).toFixed(4),
     entity_id: singleEntityId ?? '',
   }))
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((s) => ({ ...s, [k]: v }))
@@ -450,13 +454,13 @@ function LoanReview({ supabase, extracted: x, loans, bales, gradeByBale, disposi
       net_weight_lbs: m.lbs,
       loan_value_cents_per_lb: gradeByBale.get(m.baleId)?.loan_value_cents_per_lb ?? null,
     })),
-    num(f.rate) ?? DEFAULT_LOAN_RATE,
+    parseCottonPriceInput(f.rate) ?? DEFAULT_LOAN_RATE,
   ), [partition, gradeByBale, f.rate])
 
   async function save() {
     if (partition.matchedCount === 0) { onErr('No assignable bales matched — nothing to save.'); return }
     if (closedDuplicate) { onErr(`Loan ${closedDuplicate.loan_number} is already ${closedDuplicate.status.replace('_', ' ')} — not saved twice.`); return }
-    const rate = num(f.rate) ?? DEFAULT_LOAN_RATE
+    const rate = parseCottonPriceInput(f.rate) ?? DEFAULT_LOAN_RATE
     const summaryLine = `${partition.matchedCount} bales · ${lbs0(partition.matchedLbs)} lbs · computed principal ${usd(principal.principalTotal)}` +
       (x.principal_total != null ? `\nDocument states principal ${usd(Number(x.principal_total))}` : '')
     try {
@@ -517,8 +521,8 @@ function LoanReview({ supabase, extracted: x, loans, bales, gradeByBale, disposi
         <label className="flex flex-col gap-1">Maturity (blank = entry + 9 mo)
           <input type="date" value={f.maturity_date} onChange={(e) => set('maturity_date', e.target.value)} className={inputCls} />
         </label>
-        <label className="flex flex-col gap-1">Base loan rate (¢/lb)
-          <input type="number" step="0.01" value={f.rate} onChange={(e) => set('rate', e.target.value)} className={inputCls} />
+        <label className="flex flex-col gap-1">Base loan rate ($/lb)
+          <input type="text" inputMode="decimal" value={f.rate} onChange={(e) => set('rate', e.target.value)} className={inputCls} placeholder="0.5500" />
         </label>
         {entities.length > 1 && !existing && (
           <label className="flex flex-col gap-1">Entity
@@ -552,8 +556,8 @@ function LoanReview({ supabase, extracted: x, loans, bales, gradeByBale, disposi
 function LdpReview({ supabase, extracted: x, bales, dispositionByBale, loanedBaleIds, ldpBaleIds, latestAwpCents, cropYear, singleEntityId, onDone, onErr }: PanelProps & { extracted: LdpNoticeExtract }) {
   const [f, setF] = useState(() => ({
     ldp_date: str(x.ldp_date) || todayIso(),
-    awp_cents: str(x.awp_cents) || (latestAwpCents != null ? String(latestAwpCents) : ''),
-    rate: str(x.ldp_rate_cents),
+    awp_cents: dollarsStr(x.awp_cents) || (latestAwpCents != null ? (latestAwpCents / 100).toFixed(4) : ''),
+    rate: dollarsStr(x.ldp_rate_cents),
   }))
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((s) => ({ ...s, [k]: v }))
 
@@ -561,13 +565,14 @@ function LdpReview({ supabase, extracted: x, bales, dispositionByBale, loanedBal
     tokens: (x.bale_pbis ?? []).map(String), bales, dispositionByBale, loanedBaleIds, ldpBaleIds, target: 'ldp',
   }), [x.bale_pbis, bales, dispositionByBale, loanedBaleIds, ldpBaleIds])
 
-  const awpV = num(f.awp_cents)
-  const rate = num(f.rate) ?? (awpV != null ? ldpRateCents(DEFAULT_LOAN_RATE, awpV) : null)
+  const awpV = parseCottonPriceInput(f.awp_cents)
+  // The LDP rate is small (0–15¢) — the guard threshold drops to 0.25.
+  const rate = parseCottonPriceInput(f.rate, { centsThreshold: 0.25 }) ?? (awpV != null ? ldpRateCents(DEFAULT_LOAN_RATE, awpV) : null)
   const computedTotal = rate != null ? Math.round(((rate * partition.matchedLbs) / 100) * 100) / 100 : null
 
   async function save() {
     if (partition.matchedCount === 0) { onErr('No LDP-eligible bales matched — nothing to save.'); return }
-    if (awpV == null || rate == null) { onErr('Enter the AWP (¢/lb).'); return }
+    if (awpV == null || rate == null) { onErr('Enter the AWP ($/lb, e.g. 0.5143).'); return }
     if (rate <= 0) { onErr(`AWP ${cents(awpV)} is at/above the loan rate — no LDP is payable.`); return }
     const total = x.total_payment != null ? Number(x.total_payment) : computedTotal ?? 0
     if (!confirm(`Record LDP:\n\n${partition.matchedCount} bales · ${lbs0(partition.matchedLbs)} lbs\nRate ${cents(rate)}/lb → ${usd(computedTotal ?? 0)} computed${x.total_payment != null ? `\nDocument states ${usd(Number(x.total_payment))} (saved)` : ''}\n\nThese bales become CCC-loan-INELIGIBLE.`)) return
@@ -590,11 +595,11 @@ function LdpReview({ supabase, extracted: x, bales, dispositionByBale, loanedBal
         <label className="flex flex-col gap-1">LDP date
           <input type="date" value={f.ldp_date} onChange={(e) => set('ldp_date', e.target.value)} className={inputCls} />
         </label>
-        <label className="flex flex-col gap-1">AWP (¢/lb)
-          <input type="number" step="0.01" value={f.awp_cents} onChange={(e) => set('awp_cents', e.target.value)} className={inputCls} />
+        <label className="flex flex-col gap-1">AWP ($/lb)
+          <input type="text" inputMode="decimal" value={f.awp_cents} onChange={(e) => set('awp_cents', e.target.value)} className={inputCls} placeholder="0.5143" />
         </label>
-        <label className="flex flex-col gap-1">LDP rate (¢/lb, blank = loan rate − AWP)
-          <input type="number" step="0.01" value={f.rate} onChange={(e) => set('rate', e.target.value)} className={inputCls} />
+        <label className="flex flex-col gap-1">LDP rate ($/lb, blank = loan rate − AWP)
+          <input type="text" inputMode="decimal" value={f.rate} onChange={(e) => set('rate', e.target.value)} className={inputCls} placeholder="0.0360" />
         </label>
       </div>
       <PartitionSummary p={partition} targetLabel="LDP" />
@@ -618,20 +623,20 @@ function EquityReview({ supabase, extracted: x, loans, buyers, loanLbsFor, onBuy
   const matchedBuyer = useMemo(() => findBestMatch(x.buyer, buyers, (b) => b.name), [x.buyer, buyers])
   const [f, setF] = useState(() => ({
     loan_id: matchedLoan?.id ?? (openLoans.length === 1 ? openLoans[0].id : ''),
-    cents: str(x.equity_cents_per_lb),
+    cents: dollarsStr(x.equity_cents_per_lb),
     buyer_id: matchedBuyer?.id ?? '',
     date: str(x.sale_date) || todayIso(),
   }))
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((s) => ({ ...s, [k]: v }))
 
   const loan = openLoans.find((l) => l.id === f.loan_id) ?? null
-  const eq = num(f.cents)
+  const eq = parseCottonPriceInput(f.cents, { centsThreshold: 0.25 })
   const preview = loan && eq != null && eq >= 0
     ? equityOutcome({ principalTotal: Number(loan.principal_total), lbs: loanLbsFor(loan.id), equityCentsPerLb: eq })
     : null
 
   async function save() {
-    if (!loan || eq == null || eq < 0) { onErr('Pick the loan and enter the equity ¢/lb.'); return }
+    if (!loan || eq == null || eq < 0) { onErr('Pick the loan and enter the equity ($/lb, e.g. 0.0800).'); return }
     const o = equityOutcome({ principalTotal: Number(loan.principal_total), lbs: loanLbsFor(loan.id), equityCentsPerLb: eq })
     if (!confirm(`Equity sale on ${loan.loan_number ?? 'loan'} at ${cents(eq)}/lb:\n\nEquity received: ${usd(o.equityTotal)}\nEffective sale price: ${cents(o.effectiveCentsPerLb)}/lb (loan + equity)\n\nBales are final — the merchant owns them.`)) return
     try {
@@ -655,8 +660,8 @@ function EquityReview({ supabase, extracted: x, loans, buyers, loanLbsFor, onBuy
             {openLoans.map((l) => <option key={l.id} value={l.id}>{l.loan_number ?? l.entry_date} — {usd(Number(l.principal_total))}</option>)}
           </select>
         </label>
-        <label className="flex flex-col gap-1">Equity (¢/lb over the loan)
-          <input type="number" step="0.01" value={f.cents} onChange={(e) => set('cents', e.target.value)} className={inputCls} />
+        <label className="flex flex-col gap-1">Equity ($/lb over the loan)
+          <input type="text" inputMode="decimal" value={f.cents} onChange={(e) => set('cents', e.target.value)} className={inputCls} placeholder="0.0800" />
         </label>
         <label className="flex flex-col gap-1">Equity purchaser
           <BuyerPicker value={f.buyer_id} onChange={(id) => set('buyer_id', id)} buyers={buyers} onCreated={onBuyerCreated} className={inputCls} />

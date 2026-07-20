@@ -730,7 +730,7 @@ export default function StatementImport({ entities, existingPositions, existingO
         <div className="space-y-3">
           <p className="text-sm text-slate-600">
             Upload a daily statement PDF (StoneX/FCStone, R.J. O’Brien, or similar), or photograph the pages with your camera. The AI extracts open positions and closed trades for
-            Corn, Soybeans, Wheat, and Cotton (ICE Cotton No. 2, in ¢/lb). You’ll review and assign crop years before anything is saved.
+            Corn, Soybeans, Wheat, and Cotton (ICE Cotton No. 2 — statements print ¢/lb like 72.65; the app displays $0.7265/lb). You’ll review and assign crop years before anything is saved.
             Positions and closed trades you’ve already imported are detected and skipped, so you can upload each new statement without creating duplicates.
           </p>
           <DocumentCapture

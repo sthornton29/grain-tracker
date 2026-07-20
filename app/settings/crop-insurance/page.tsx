@@ -221,11 +221,12 @@ export default function CropInsuranceSettingsPage() {
       {/* Unified county-yield assumption (045): ONE source for every county-
           triggered plan (SCO/ECO/STAX/ARP/AYP/MCO). Separate from ARC-CO. */}
       <div className="bg-white rounded-xl shadow p-4 space-y-2">
-        <h2 className="font-semibold">County yield assumptions (insurance)</h2>
+        <h2 className="font-semibold">My yield vs county (insurance)</h2>
         <p className="text-xs text-slate-500 max-w-3xl">
-          &ldquo;My county vs its RMA expected yield this year&rdquo; — drives every county-triggered calculation
-          (SCO/ECO/STAX/ARP/AYP/MCO). This is a <strong>separate assumption from the ARC-CO expectation</strong>:
-          insurance uses RMA expected county yields, ARC uses FSA benchmarks.
+          The stable relationship between your yields and the county average — &ldquo;I typically run 15 bu/ac better
+          than the county&rdquo;. Estimated county yield = your expected/actual yield minus this differential; it drives
+          every county-triggered calculation (SCO/ECO/STAX/ARP/AYP/MCO). This is a
+          <strong> separate assumption from the ARC-CO expectation</strong>: ARC uses FSA benchmarks.
         </p>
         <div className="space-y-1">
           {Array.from(new Map(policies.map((p) => [`${p.crop_id}|${p.county_id ?? ''}|${p.crop_year}`, p])).values()).map((p) => (
@@ -236,6 +237,7 @@ export default function CropInsuranceSettingsPage() {
                 countyId={p.county_id}
                 cropYear={p.crop_year}
                 assumption={countyAssumptions.find((a) => a.crop_id === p.crop_id && a.crop_year === p.crop_year && (a.county_id ?? '') === (p.county_id ?? '')) ?? null}
+                yieldUnit={/cotton/i.test(cropName(p.crop_id)) ? 'lbs/ac' : 'bu/ac'}
                 onChanged={refresh}
               />
             </div>

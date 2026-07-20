@@ -197,14 +197,15 @@ describe('reconciliation identity holds with a cotton crop present', () => {
 })
 
 describe('unit-aware export formats', () => {
-  it("formatNumber renders 'cents' with a ¢ indicator and 'lbs' with commas", () => {
-    expect(formatNumber(72.65, 'cents')).toBe('72.65¢')
+  it("formatNumber renders 'cents' (¢-stored) as $/lb with 4 decimals; 'lbs' with commas", () => {
+    expect(formatNumber(72.65, 'cents')).toBe('$0.7265')
+    expect(formatNumber(70, 'cents')).toBe('$0.7000')
     expect(formatNumber(412_000, 'lbs')).toBe('412,000')
-    expect(excelNumFmt('cents')).toContain('¢')
+    expect(excelNumFmt('cents')).toBe('$#,##0.0000;($#,##0.0000)')
     expect(excelNumFmt('lbs')).toBe('#,##0;(#,##0)')
   })
 
-  it('a mixed grain + cotton marketing export renders ¢/lb + lbs beside $/bu + bu', () => {
+  it('a mixed grain + cotton marketing export renders $/lb + lbs beside $/bu + bu', () => {
     const corn = crop('corn', 'Corn')
     const rows = computeMarketing({
       cropYear: CY, crops: [cottonCrop, corn],
@@ -228,7 +229,7 @@ describe('unit-aware export formats', () => {
 
     const cotton = flat('Cotton')
     expect(cotton).toContain('600,000 lbs')
-    expect(cotton).toContain('500,000 lbs @ 72.65¢')
+    expect(cotton).toContain('500,000 lbs @ $0.7265')
     expect(cotton).toContain('lbs lint/ac')
     expect(cotton).toContain('Physical cotton marketing not yet tracked')
     expect(cotton).not.toMatch(/\$\d+\.\d{2}\/bu/)

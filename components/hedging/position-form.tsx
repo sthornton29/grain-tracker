@@ -9,6 +9,7 @@ import {
   buildContractSymbol,
   contractMonthOptions,
   parsePrice,
+  parseCottonPriceInput,
   bushelsFor,
   contractUnit,
   fmtCommodityPrice,
@@ -53,7 +54,9 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
   const [err, setErr] = useState<string | null>(null)
 
   const monthOptions = useMemo(() => contractMonthOptions(commodity), [commodity])
-  const parsedPrice = parsePrice(tradePriceInput)
+  // Cotton stores ¢/lb but accepts dollar-style entry (0.7265) as well as
+  // legacy cents (72.65) via the smart-magnitude guard.
+  const parsedPrice = commodity === 'Cotton' ? parseCottonPriceInput(tradePriceInput) : parsePrice(tradePriceInput)
   const n = Number(numContracts)
   const symbol = contractMonth ? buildContractSymbol(commodity, contractMonth) : ''
   const sizeBu = COMMODITY_SPECS[commodity]?.contractSizeBu ?? 5000
@@ -181,7 +184,7 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
             />
           </label>
           <label className={labelCls}>
-            Trade Price ({contractUnit(commodity) === 'lbs' ? '¢/lb — plain decimal, e.g. 72.65' : '$/bu'})
+            Trade Price ({contractUnit(commodity) === 'lbs' ? '$/lb — e.g. 0.7265 (legacy 72.65 also works)' : '$/bu'})
             <input
               type="text"
               inputMode="decimal"

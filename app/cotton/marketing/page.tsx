@@ -3,12 +3,15 @@
 // Cotton Marketing — physical cotton: sales contracts (spot / fixed / on-call /
 // pool), CCC loans (per-bale principal from classing values), LDP, fees, AWP,
 // and the bale-disposition board ("where is my cotton"). Producer-only (gin
-// operators never see this page). All prices are ¢/lb; weights are lbs of lint.
+// operators never see this page). Prices are STORED in ¢/lb and DISPLAYED as
+// $/lb; price inputs accept dollar-style entry (0.7425) and legacy cents
+// (74.25) via the smart-magnitude guard. Weights are lbs of lint.
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { BuyerPicker } from '@/components/buyer-location-pickers'
+import { formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
 import MarketingDocImport from '@/components/cotton/marketing-doc-import'
 import BaleFileAssign from '@/components/cotton/bale-file-assign'
 import {
@@ -28,7 +31,8 @@ const btnCls = 'rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semi
 const btnGray = 'rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50'
 const lbs0 = (n: number) => Math.round(n).toLocaleString()
 const usd = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-const cents = (n: number) => `${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}¢`
+// ¢/lb-stored prices display as $/lb through the shared formatter.
+const cents = (n: number) => formatCottonPrice(n)
 const todayIso = () => new Date().toISOString().slice(0, 10)
 const num = (s: string): number | null => { const n = Number(s); return s.trim() !== '' && Number.isFinite(n) ? n : null }
 
@@ -181,8 +185,9 @@ export default function CottonMarketingPage() {
       contract_date: f.contract_date || null, commitment_basis: f.commitment_basis,
       committed_bales: f.commitment_basis === 'bales' ? num(f.committed_bales) : null,
       committed_acres: f.commitment_basis === 'acres' ? num(f.committed_acres) : null,
-      price_cents_per_lb: f.contract_type === 'spot' || f.contract_type === 'fixed_price' ? num(f.price_cents_per_lb) : null,
-      basis_cents: f.contract_type === 'on_call' ? num(f.basis_cents) : null,
+      price_cents_per_lb: f.contract_type === 'spot' || f.contract_type === 'fixed_price' ? parseCottonPriceInput(f.price_cents_per_lb) : null,
+      // Basis is small either way (-2.50¢ vs -$0.025): the guard threshold drops to 0.25.
+      basis_cents: f.contract_type === 'on_call' ? parseCottonPriceInput(f.basis_cents, { centsThreshold: 0.25 }) : null,
       futures_month: f.contract_type === 'on_call' ? (f.futures_month.trim() || null) : null,
       pricing_status: f.contract_type === 'pool' ? 'pool_open' : f.contract_type === 'on_call' ? 'awaiting_futures' : 'fully_priced',
       delivery_start: f.delivery_start || null, delivery_end: f.delivery_end || null, notes: f.notes.trim() || null,
@@ -205,10 +210,10 @@ export default function CottonMarketingPage() {
   }
 
   async function fixFutures(c: CottonSalesContract) {
-    const s = prompt(`Fix the futures leg for ${c.contract_number ?? 'this on-call contract'} (${c.futures_month ?? '—'}).\nEnter the fixed futures price in ¢/lb (e.g. 74.50):`)
+    const s = prompt(`Fix the futures leg for ${c.contract_number ?? 'this on-call contract'} (${c.futures_month ?? '—'}).\nEnter the fixed futures price in $/lb (e.g. 0.7450 — legacy 74.50 also works):`)
     if (s == null) return
-    const v = num(s)
-    if (v == null || v <= 0) { setErr('Enter the fixed futures price as plain ¢/lb, e.g. 74.50'); return }
+    const v = parseCottonPriceInput(s)
+    if (v == null || v <= 0) { setErr('Enter the fixed futures price in $/lb, e.g. 0.7450'); return }
     try {
       const { error } = await supabase.from('cotton_sales_contracts')
         .update({ futures_fixed_cents: v, futures_fixed_date: todayIso(), pricing_status: 'fully_priced' }).eq('id', c.id)
@@ -235,7 +240,7 @@ export default function CottonMarketingPage() {
     const type = (prompt("Type: 'initial_advance' | 'progress' | 'final_settlement'", 'progress') ?? '').trim()
     if (!['initial_advance', 'progress', 'final_settlement'].includes(type)) { setErr('Unknown pool payment type.'); return }
     const date = (prompt('Payment date (YYYY-MM-DD):', todayIso()) ?? '').trim()
-    const perLb = num(prompt('¢/lb equivalent (optional — running total per lb):') ?? '')
+    const perLb = parseCottonPriceInput(prompt('$/lb equivalent (optional — running total per lb, e.g. 0.6500):') ?? '')
     try {
       const { error } = await supabase.from('cotton_pool_payments').insert({
         contract_id: contractId, payment_type: type, amount, payment_date: date || null,
@@ -274,13 +279,13 @@ export default function CottonMarketingPage() {
         net_weight_lbs: Number(baleById.get(id)?.net_weight_lbs ?? 0),
         loan_value_cents_per_lb: gradeByBale.get(id)?.loan_value_cents_per_lb ?? null,
       })),
-      num(loanForm.rate) ?? DEFAULT_LOAN_RATE,
+      parseCottonPriceInput(loanForm.rate) ?? DEFAULT_LOAN_RATE,
     )
   }, [loanForm, picked, baleById, gradeByBale])
 
   async function saveLoan() {
     if (!loanForm || picked.size === 0 || !loanPrincipalPreview) return
-    const rate = num(loanForm.rate) ?? DEFAULT_LOAN_RATE
+    const rate = parseCottonPriceInput(loanForm.rate) ?? DEFAULT_LOAN_RATE
     try {
       const { data, error } = await supabase.from('ccc_loans').insert({
         entity_id: loanForm.entity_id || null, crop_year: cropYear,
@@ -321,10 +326,10 @@ export default function CottonMarketingPage() {
   }
 
   async function redeemLoan(loan: CccLoan) {
-    const awpS = prompt(`Redeem ${loan.loan_number ?? 'loan'} — enter the AWP (¢/lb) at redemption:`, latestAwp ? String(latestAwp.awp_cents) : '')
+    const awpS = prompt(`Redeem ${loan.loan_number ?? 'loan'} — enter the AWP ($/lb) at redemption:`, latestAwp ? (Number(latestAwp.awp_cents) / 100).toFixed(4) : '')
     if (awpS == null) return
-    const awpV = num(awpS)
-    if (awpV == null || awpV <= 0) { setErr('Enter the AWP as plain ¢/lb.'); return }
+    const awpV = parseCottonPriceInput(awpS)
+    if (awpV == null || awpV <= 0) { setErr('Enter the AWP in $/lb, e.g. 0.5143.'); return }
     const lbsV = loanLbs(loan.id)
     const o = redemptionOutcome({ principalTotal: Number(loan.principal_total), lbs: lbsV, loanRateBaseCents: Number(loan.loan_rate_base_cents), awpCents: awpV })
     if (!confirm(`Redeem at AWP ${cents(awpV)}:\n\nPayoff: ${usd(o.payoffTotal)}\nMarketing loan gain: ${usd(o.mlgTotal)} (${cents(o.mlgRateCents)}/lb${o.mlgTotal > 0 ? ', interest waived' : ''})\n\nBales return to Held.`)) return
@@ -347,8 +352,8 @@ export default function CottonMarketingPage() {
     if (!equityFor) return
     const loan = loans.find((l) => l.id === equityFor.loanId)
     if (!loan) return
-    const eq = num(equityFor.cents)
-    if (eq == null || eq < 0) { setErr('Enter the equity as plain ¢/lb.'); return }
+    const eq = parseCottonPriceInput(equityFor.cents, { centsThreshold: 0.25 })
+    if (eq == null || eq < 0) { setErr('Enter the equity in $/lb, e.g. 0.0800.'); return }
     const lbsV = loanLbs(loan.id)
     const o = equityOutcome({ principalTotal: Number(loan.principal_total), lbs: lbsV, equityCentsPerLb: eq })
     if (!confirm(`Equity sale at ${cents(eq)}/lb on ${lbs0(lbsV)} lbs:\n\nEquity received: ${usd(o.equityTotal)}\nEffective sale price: ${cents(o.effectiveCentsPerLb)}/lb (loan + equity)\n\nBales are final — the merchant owns them.`)) return
@@ -376,10 +381,10 @@ export default function CottonMarketingPage() {
   async function saveLdp() {
     if (picked.size === 0) return
     const rate = ldpRateCents(DEFAULT_LOAN_RATE, Number(latestAwp?.awp_cents ?? DEFAULT_LOAN_RATE))
-    const awpS = prompt(`LDP on ${picked.size} bales (${lbs0(pickedLbs)} lbs).\nAWP (¢/lb):`, latestAwp ? String(latestAwp.awp_cents) : '')
+    const awpS = prompt(`LDP on ${picked.size} bales (${lbs0(pickedLbs)} lbs).\nAWP ($/lb):`, latestAwp ? (Number(latestAwp.awp_cents) / 100).toFixed(4) : '')
     if (awpS == null) return
-    const awpV = num(awpS)
-    if (awpV == null || awpV <= 0) { setErr('Enter the AWP as plain ¢/lb.'); return }
+    const awpV = parseCottonPriceInput(awpS)
+    if (awpV == null || awpV <= 0) { setErr('Enter the AWP in $/lb, e.g. 0.5143.'); return }
     const r = ldpRateCents(DEFAULT_LOAN_RATE, awpV)
     void rate
     const total = Math.round(((r * pickedLbs) / 100) * 100) / 100
@@ -656,7 +661,7 @@ export default function CottonMarketingPage() {
                           id: c.id, entity_id: c.entity_id ?? '', buyer_id: c.buyer_id ?? '', contract_type: c.contract_type,
                           contract_number: c.contract_number ?? '', contract_date: c.contract_date ?? '', commitment_basis: c.commitment_basis,
                           committed_bales: c.committed_bales != null ? String(c.committed_bales) : '', committed_acres: c.committed_acres != null ? String(c.committed_acres) : '',
-                          price_cents_per_lb: c.price_cents_per_lb != null ? String(c.price_cents_per_lb) : '', basis_cents: c.basis_cents != null ? String(c.basis_cents) : '',
+                          price_cents_per_lb: c.price_cents_per_lb != null ? (Number(c.price_cents_per_lb) / 100).toFixed(4) : '', basis_cents: c.basis_cents != null ? (Number(c.basis_cents) / 100).toFixed(4) : '',
                           futures_month: c.futures_month ?? 'DEC 26', delivery_start: c.delivery_start ?? '', delivery_end: c.delivery_end ?? '', notes: c.notes ?? '',
                         })}>Edit</button>
                         <button type="button" className="text-red-600" onClick={() => deleteContract(c)}>Delete</button>
@@ -715,14 +720,14 @@ export default function CottonMarketingPage() {
                 </label>
               )}
               {(contractForm.contract_type === 'spot' || contractForm.contract_type === 'fixed_price') && (
-                <label className="flex flex-col gap-1">Price (¢/lb)
-                  <input type="number" step="0.01" value={contractForm.price_cents_per_lb} onChange={(e) => cf('price_cents_per_lb', e.target.value)} className={inputCls} placeholder="74.00" />
+                <label className="flex flex-col gap-1">Price ($/lb)
+                  <input type="text" inputMode="decimal" value={contractForm.price_cents_per_lb} onChange={(e) => cf('price_cents_per_lb', e.target.value)} className={inputCls} placeholder="0.7400" />
                 </label>
               )}
               {contractForm.contract_type === 'on_call' && (
                 <>
-                  <label className="flex flex-col gap-1">Basis (¢/lb, +/-)
-                    <input type="number" step="0.01" value={contractForm.basis_cents} onChange={(e) => cf('basis_cents', e.target.value)} className={inputCls} placeholder="-2.50" />
+                  <label className="flex flex-col gap-1">Basis ($/lb, +/-)
+                    <input type="text" inputMode="decimal" value={contractForm.basis_cents} onChange={(e) => cf('basis_cents', e.target.value)} className={inputCls} placeholder="-0.0250" />
                   </label>
                   <label className="flex flex-col gap-1">Futures month
                     <input value={contractForm.futures_month} onChange={(e) => cf('futures_month', e.target.value)} className={inputCls} placeholder="DEC 26" />
@@ -811,15 +816,15 @@ export default function CottonMarketingPage() {
           const loan = loans.find((l) => l.id === equityFor.loanId)
           if (!loan) return null
           const lbsV = loanLbs(loan.id)
-          const eq = num(equityFor.cents)
+          const eq = parseCottonPriceInput(equityFor.cents, { centsThreshold: 0.25 })
           const preview = eq != null && eq >= 0 ? equityOutcome({ principalTotal: Number(loan.principal_total), lbs: lbsV, equityCentsPerLb: eq }) : null
           return (
             <div className="rounded-lg border border-teal-300 bg-teal-50/40 p-3 space-y-2">
               <div className="font-semibold text-sm">Equity sale — {loan.loan_number ?? 'loan'} ({lbs0(lbsV)} lbs banked at {usd(Number(loan.principal_total))})</div>
               <div className="flex flex-wrap items-end gap-2 text-xs">
-                <label className="flex flex-col gap-1">Equity (¢/lb over the loan)
-                  <input type="number" step="0.01" value={equityFor.cents}
-                    onChange={(e) => setEquityFor((f) => f && { ...f, cents: e.target.value })} className={inputCls} placeholder="8.00" />
+                <label className="flex flex-col gap-1">Equity ($/lb over the loan)
+                  <input type="text" inputMode="decimal" value={equityFor.cents}
+                    onChange={(e) => setEquityFor((f) => f && { ...f, cents: e.target.value })} className={inputCls} placeholder="0.0800" />
                 </label>
                 <label className="flex flex-col gap-1">Equity purchaser
                   <BuyerPicker
@@ -853,8 +858,8 @@ export default function CottonMarketingPage() {
               <label className="flex flex-col gap-1">Entry date
                 <input type="date" value={loanForm.entry_date} onChange={(e) => setLoanForm((f) => f && { ...f, entry_date: e.target.value })} className={inputCls} />
               </label>
-              <label className="flex flex-col gap-1">Base loan rate (¢/lb)
-                <input type="number" step="0.01" value={loanForm.rate} onChange={(e) => setLoanForm((f) => f && { ...f, rate: e.target.value })} className={inputCls} />
+              <label className="flex flex-col gap-1">Base loan rate ($/lb)
+                <input type="text" inputMode="decimal" value={loanForm.rate} onChange={(e) => setLoanForm((f) => f && { ...f, rate: e.target.value })} className={inputCls} placeholder="0.5500" />
               </label>
               {entities.length > 1 && (
                 <label className="flex flex-col gap-1">Entity
@@ -871,7 +876,7 @@ export default function CottonMarketingPage() {
                 {loanPrincipalPreview.pendingClassing && <span className="text-amber-700"> — some bales unclassed: base rate used, recompute after grades import</span>}
               </p>
             )}
-            <p className="text-xs text-slate-500">Maturity defaults to entry + 9 months. Per-bale principal = classing loan value ¢/lb × net lbs (509 lbs @ 55.1¢ → $280.46).</p>
+            <p className="text-xs text-slate-500">Maturity defaults to entry + 9 months. Per-bale principal = classing loan value × net lbs (509 lbs @ $0.5510/lb → $280.46).</p>
             <div className="flex gap-2">
               <button type="button" className={btnCls} disabled={picked.size === 0} onClick={saveLoan}>Enter loan ({picked.size} bales)</button>
               <button type="button" className={btnGray} onClick={() => { setLoanForm(null); setPickFor(null); setPicked(new Set()) }}>Cancel</button>
@@ -1035,11 +1040,11 @@ export default function CottonMarketingPage() {
           <label className="flex flex-col gap-1">Week effective (Friday)
             <input type="date" value={awpManual.week} onChange={(e) => setAwpManual((s) => ({ ...s, week: e.target.value }))} className={inputCls} />
           </label>
-          <label className="flex flex-col gap-1">AWP (¢/lb)
-            <input type="number" step="0.01" value={awpManual.cents} onChange={(e) => setAwpManual((s) => ({ ...s, cents: e.target.value }))} className={inputCls} placeholder="51.43" />
+          <label className="flex flex-col gap-1">AWP ($/lb)
+            <input type="text" inputMode="decimal" value={awpManual.cents} onChange={(e) => setAwpManual((s) => ({ ...s, cents: e.target.value }))} className={inputCls} placeholder="0.5143" />
           </label>
-          <button type="button" className={btnCls} disabled={!awpManual.week || num(awpManual.cents) == null}
-            onClick={() => { const v = num(awpManual.cents); if (v != null) { saveAwp(awpManual.week, v, 'manual'); setAwpManual({ week: '', cents: '' }) } }}>
+          <button type="button" className={btnCls} disabled={!awpManual.week || parseCottonPriceInput(awpManual.cents) == null}
+            onClick={() => { const v = parseCottonPriceInput(awpManual.cents); if (v != null) { saveAwp(awpManual.week, v, 'manual'); setAwpManual({ week: '', cents: '' }) } }}>
             Add
           </button>
           {latestAwp && (

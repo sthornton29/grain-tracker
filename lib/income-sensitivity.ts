@@ -201,15 +201,16 @@ export type CropScenarioInputs = {
   mcos?: readonly CropInsuranceMco[]
   /** The SHARED county-yield assumption row for this crop (045). */
   countyAssumption?: CountyAssumptionLike | null
-  /** County yield scenario mode:
+  /** County yield scenario mode (differential semantics, 047):
    *  - 'independent' (default): the county estimate is CONSTANT across the
-   *    farm-yield axis (RMA expected × (1 + variance)) — the yield axis is the
-   *    FARM's yield, and county-triggered legs vary only down the price axis.
+   *    farm-yield axis — expected farm yield − differential — the yield axis
+   *    is the FARM's yield, and county-triggered legs vary only down the
+   *    price axis.
    *  - 'with_farm' ("county moves with me", widespread-loss scenario): the
-   *    county scales with the cell's blended farm yield, anchored at the axis
-   *    center — scenario county = standing estimate × (blended farm yield ÷
-   *    expected farm yield). Mid-harvest the blend (fixed + scenario ÷ total
-   *    acres) drives the scale, matching how the individual policy blends.
+   *    county = the cell's scenario blended farm yield − differential — the
+   *    stable my-farm-vs-county relationship is preserved as the farm yield
+   *    moves. Mid-harvest the blend (fixed + scenario ÷ total acres) is the
+   *    basis, matching how the individual policy blends.
    *  An RMA FINAL county yield on file pins the county either way. */
   countyMode?: 'independent' | 'with_farm'
 }
@@ -316,14 +317,16 @@ export function computeScenarioCell(
   const ecoBy = new Map(inp.ecos.map((e) => [e.policy_id, e]))
   const staxBy = new Map((inp.staxes ?? []).map((s) => [s.policy_id, s]))
   const mcoBy = new Map((inp.mcos ?? []).map((m) => [m.policy_id, m]))
-  // County scenario scale: 'with_farm' anchors at the axis center — the county
-  // moves proportionally with the cell's blended farm yield relative to
-  // expected. An RMA final county yield pins the county regardless (the
-  // resolve helper ignores the scale when final), so the scale is moot then.
+  // County scenario basis (differential semantics): the estimated county yield
+  // is farm-yield-basis − differential. 'independent' (default) holds the
+  // basis at the EXPECTED farm yield, so the county is constant across the
+  // farm-yield axis; 'with_farm' uses the cell's blended farm yield — the
+  // differential (the stable my-farm-vs-county relationship) is preserved as
+  // the farm yield moves. An RMA final county yield pins the county either way.
   const expectedBlend = expectedBlendedYieldFor(inp)
-  const countyScale = inp.countyMode === 'with_farm' && expectedBlend != null && expectedBlend > 0
-    ? blendedYield / expectedBlend
-    : 1
+  const countyFarmBasis = inp.countyMode === 'with_farm'
+    ? blendedYield
+    : expectedBlend ?? blendedYield
   let insuranceNet = 0
   let insuranceWarning: string | null = null
   for (const p of inp.policies) {
@@ -348,7 +351,7 @@ export function computeScenarioCell(
       stax: staxConfigFrom(staxBy.get(p.id)),
       mco: mcoConfigFrom(mcoBy.get(p.id)),
       scoTriggerDefault: inp.scoTrigger,
-      county: { assumption: inp.countyAssumption ?? null, scale: countyScale },
+      county: { assumption: inp.countyAssumption ?? null, farmYieldBasis: countyFarmBasis },
     })
     insuranceNet += comp.netPnl
     if (insuranceWarning == null && comp.warnings.length > 0) insuranceWarning = comp.warnings[0]

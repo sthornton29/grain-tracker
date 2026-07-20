@@ -1,6 +1,6 @@
 'use client'
 
-import { COMMODITIES, type Commodity, contractMonthSortKey, fmtPrice } from '@/lib/hedging'
+import { COMMODITIES, type Commodity, contractMonthSortKey, fmtCommodityPrice } from '@/lib/hedging'
 import type { FuturesPosition } from '@/lib/types'
 
 export type PriceInfo = { price: number | null; price_date: string | null; stale: boolean }
@@ -60,7 +60,7 @@ export default function PriceBoard({
                       <li key={symbol} className="flex justify-between text-sm">
                         <span className="font-mono text-slate-600">{symbol}</span>
                         <span className="font-mono">
-                          {info?.price != null ? fmtPrice(info.price) : '—'}
+                          {info?.price != null ? fmtCommodityPrice(c, info.price) : '—'}
                           {info?.stale && <span className="text-amber-600 text-xs ml-1" title={`as of ${info.price_date}`}>*</span>}
                         </span>
                       </li>

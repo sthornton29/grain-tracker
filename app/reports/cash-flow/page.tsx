@@ -132,11 +132,27 @@ export default function CashFlowPage() {
               fees: inp.fees.filter((f) => f.entity_id === entityId),
             }
           : inp
-        setCottonEvents(cottonCashFlowEvents(filt))
+        // Live CT futures (¢/lb) so on-call contracts awaiting futures can book
+        // basis + current futures as a labeled estimate instead of vanishing.
+        let currentFuturesCents: number | null = null
+        const cottonCrop = crops.find((c) => isCottonCrop(c.name))
+        if (cottonCrop && filt.contracts.some((c) => c.contract_type === 'on_call' && c.futures_fixed_cents == null)) {
+          try {
+            const res = await fetch('/api/harvest-price-estimate', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ crop_year: cropYear, crops: [{ crop_id: cottonCrop.id, crop_name: cottonCrop.name }] }),
+            })
+            const json = await res.json().catch(() => null)
+            const price = json?.estimates?.[0]?.price
+            if (price != null && Number.isFinite(Number(price))) currentFuturesCents = Number(price)
+          } catch { /* no quote — the on-call estimate is simply omitted */ }
+        }
+        if (cancelled) return
+        setCottonEvents(cottonCashFlowEvents(filt, { currentFuturesCents }))
       } catch { if (!cancelled) setCottonEvents([]) }
     })()
     return () => { cancelled = true }
-  }, [cropYear, entityId, supabase])
+  }, [cropYear, entityId, supabase, crops])
 
   useEffect(() => {
     ;(async () => {

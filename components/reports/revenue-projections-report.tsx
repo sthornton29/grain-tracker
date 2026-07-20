@@ -20,6 +20,7 @@ import {
   computePolicy, harvestContractLabel, policyPremium, resolveHarvestPriceByCrop,
   type PolicyInputs, type ScoConfig, type EcoConfig,
 } from '@/lib/crop-insurance'
+import { formatCottonPrice } from '@/lib/hedging'
 import { projectPayments, applyMyaResolution, programYearFor, otherPaymentsInRevenueYear } from '@/lib/government-payments'
 import { computeRevenueProjections, type InsuranceProceeds, type GovtProceeds } from '@/lib/revenue-projections'
 import {
@@ -462,9 +463,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
         { label: 'Total Revenue', align: 'right', format: 'usd0' }, { label: 'Profit', align: 'right', format: 'usd0' }, { label: 'Profit/Acre', align: 'right', format: 'usd0' },
         { label: 'Total Avg Price', align: 'right', format: 'price' }, { label: 'Breakeven Price', align: 'right', format: 'price' }, { label: 'Breakeven Yield', align: 'right', format: 'yield' },
       ],
-      // Cotton prices export in ¢/lb (per-cell 'cents' format) — never $/bu.
+      // Cotton prices export as $/lb (per-cell 'cents' format ÷100) — never $/bu.
       rows: rows.map((r) => [
-        r.unit === 'lbs' ? `${r.cropName} (¢/lb · lbs)` : r.cropName, r.costPerAcre != null ? Math.round(r.costPerAcre) : '', Math.round(r.totalCost),
+        r.unit === 'lbs' ? `${r.cropName} ($/lb · lbs)` : r.cropName, r.costPerAcre != null ? Math.round(r.costPerAcre) : '', Math.round(r.totalCost),
         Math.round(r.totalRevenue), r.profit != null ? Math.round(r.profit) : '', r.profitPerAcre != null ? Math.round(r.profitPerAcre) : '',
         r.totalAvgPrice != null ? (r.unit === 'lbs' ? { v: Number(r.totalAvgPrice.toFixed(2)), format: 'cents' as const } : Number(r.totalAvgPrice.toFixed(2))) : '',
         r.breakevenPrice != null ? (r.unit === 'lbs' ? { v: Number(r.breakevenPrice.toFixed(2)), format: 'cents' as const } : Number(r.breakevenPrice.toFixed(2))) : '',
@@ -535,7 +536,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                 basis, open hedges &amp; unpriced bushels at the relevant futures + assumed basis), with realized
                 futures/options P&amp;L counted once. The per-crop and total figures match the dashboard.</p>
               <p><strong className="text-slate-700">Cotton physical marketing</strong> — a cotton crop&apos;s sales revenue
-                buckets its lbs the same way: sold/priced contract lbs (and equity-sold loan lbs) at their locked ¢/lb,
+                buckets its lbs the same way: sold/priced contract lbs (and equity-sold loan lbs) at their locked $/lb,
                 pool lbs at dollars received plus the pool estimate for the rest, in-loan lbs
                 at <strong>max(banked CCC loan value, market)</strong> — the loan is the revenue floor — and held lbs at
                 the market/assumed price, net of cotton fees. <strong>LDP payments and marketing-loan gains are
@@ -588,7 +589,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{bu(r.acres)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{r.yield != null ? `${r.yield.toFixed(1)}` : '—'} <span className="text-xs text-slate-400">{r.yield != null ? `${r.unit === 'lbs' ? 'lbs/ac ' : ''}${r.yieldLabel}` : ''}</span></td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{bu(r.totalProduction)}{r.unit === 'lbs' && <span className="text-xs text-slate-400"> lbs</span>}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums" title={r.avgSalesPrice != null ? `Effective ${r.unit === 'lbs' ? `${r.avgSalesPrice.toFixed(2)}¢/lb` : `${price2(r.avgSalesPrice)}/bu`} over ${bu(r.totalProduction)} ${r.unit}` : 'No production'}>{usd(r.cropSalesRevenue)}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums" title={r.avgSalesPrice != null ? `Effective ${r.unit === 'lbs' ? formatCottonPrice(r.avgSalesPrice, { perLb: true }) : `${price2(r.avgSalesPrice)}/bu`} over ${bu(r.totalProduction)} ${r.unit}` : 'No production'}>{usd(r.cropSalesRevenue)}</td>
                     <td className={`px-2 py-1 text-right font-mono tabular-nums ${toneText(signedTone(r.insuranceProceeds))}`}>{usd(r.insuranceProceeds)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums" title={`ARC/PLC: ${usd(r.govtArcPlc)} | Conservation/Other (allocated): ${usd(r.govtAllocatedOther)} | Crop-specific other: ${usd(r.govtCropSpecificOther)}`}>{usd(r.govtPayments)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold">{usd(r.totalRevenue)}</td>
@@ -633,8 +634,8 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.totalRevenue)}</td>
                     <td className={`px-2 py-1 text-right font-mono tabular-nums font-semibold ${r.profit == null ? toneText('muted') : toneText(signedTone(r.profit))}`}>{r.profit != null ? usd(r.profit) : 'no cost'}</td>
                     <td className={`px-2 py-1 text-right font-mono tabular-nums ${r.profitPerAcre == null ? toneText('muted') : toneText(signedTone(r.profitPerAcre))}`}>{usd(r.profitPerAcre)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold" title="The Marketing dashboard's Total Avg Price — breakeven yield = cost/acre ÷ this">{r.unit === 'lbs' ? (r.totalAvgPrice != null ? `${r.totalAvgPrice.toFixed(2)}¢` : '—') : price2(r.totalAvgPrice)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{r.unit === 'lbs' ? (r.breakevenPrice != null ? `${r.breakevenPrice.toFixed(2)}¢` : '—') : price2(r.breakevenPrice)}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold" title="The Marketing dashboard's Total Avg Price — breakeven yield = cost/acre ÷ this">{r.unit === 'lbs' ? (r.totalAvgPrice != null ? formatCottonPrice(r.totalAvgPrice) : '—') : price2(r.totalAvgPrice)}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums">{r.unit === 'lbs' ? (r.breakevenPrice != null ? formatCottonPrice(r.breakevenPrice) : '—') : price2(r.breakevenPrice)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{r.breakevenYield != null ? `${r.breakevenYield.toFixed(1)} ${r.unit === 'lbs' ? 'lbs/ac' : 'bu/ac'}` : '—'}</td>
                   </tr>
                 ))}
@@ -658,7 +659,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
               const mp = r.marketPrice
               if (mp == null) return null
               // Cotton quotes are ¢/lb on CTZ; no basis concept for cotton.
-              if (r.unit === 'lbs') return `${r.cropName} ${mp.toFixed(2)}¢/lb${lbl ? ` (${lbl})` : ''}`
+              if (r.unit === 'lbs') return `${r.cropName} ${formatCottonPrice(mp, { perLb: true })}${lbl ? ` (${lbl})` : ''}`
               return `${r.cropName} ${price2(mp)}${lbl ? ` (${lbl} + basis)` : ''}`
             }).filter(Boolean).join(' · ') || '—'}
           </p>

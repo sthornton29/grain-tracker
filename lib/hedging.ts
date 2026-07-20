@@ -55,10 +55,39 @@ export function normalizeBarchartPrice(symbol: string, raw: number): number {
   return Math.round((raw / 100) * 1e6) / 1e6
 }
 
-// Price display: grains in $/bu; cotton in ¢/lb as quoted (72.65¢).
+// ---------- Cotton $/lb display convention ----------
+//
+// Cotton TRADES in ¢/lb and every stored cotton price stays in ¢ (72.65 —
+// no schema change), but everyone THINKS in dollars, so cotton prices DISPLAY
+// as $/lb through this one formatter: 72.65 → "$0.7265" (4 decimals — ¢
+// quotes carry 2, so ÷100 needs 4 to stay lossless). Grain $/bu untouched.
+export function formatCottonPrice(cents: number | null | undefined, opts?: { perLb?: boolean }): string {
+  if (cents == null || !Number.isFinite(Number(cents))) return '—'
+  const sign = Number(cents) < 0 ? '-' : ''
+  const body = `$${Math.abs(Number(cents) / 100).toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`
+  return `${sign}${body}${opts?.perLb ? '/lb' : ''}`
+}
+
+// Smart-magnitude parse for cotton price INPUTS: users may type dollar-style
+// (0.7265) or legacy cents (72.65) — both land as the same stored ¢/lb.
+// |value| above the threshold reads as ¢ and passes through; at or below it
+// reads as $/lb and converts ×100. The default threshold 5 suits outright
+// prices/AWP/loan rates ($/lb ≈ 0.40–1.50 vs ¢ ≈ 40–150); pass a smaller
+// threshold (e.g. 0.25) for small-magnitude figures like basis, where legacy
+// ¢ entries (−2.50) and $ entries (−0.025) both stay below 5.
+export function parseCottonPriceInput(s: string | null | undefined, opts?: { centsThreshold?: number }): number | null {
+  if (s == null || s.trim() === '') return null
+  const v = Number(s)
+  if (!Number.isFinite(v)) return null
+  const threshold = opts?.centsThreshold ?? 5
+  const cents = Math.abs(v) > threshold ? v : v * 100
+  return Math.round(cents * 1e4) / 1e4
+}
+
+// Price display: grains in $/bu; cotton in $/lb (stored ¢ ÷ 100, 4 decimals).
 export function fmtCommodityPrice(commodity: Commodity | string | null | undefined, n: number | null | undefined): string {
   if (n == null) return '—'
-  if (commodity === 'Cotton') return `${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}¢`
+  if (commodity === 'Cotton') return formatCottonPrice(n)
   return fmtPrice(n)
 }
 

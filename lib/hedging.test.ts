@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   parsePrice,
+  fmtCommodityPrice,
+  fmtPrice,
+  formatCottonPrice,
+  parseCottonPriceInput,
   roundPrice,
   parseFractional,
   bushelsFor,
@@ -684,5 +688,51 @@ describe('normalizeCommodity', () => {
     expect(normalizeCommodity('SEED COTTON')).toBeNull()
     expect(normalizeCommodity('RICE')).toBeNull()
     expect(normalizeCommodity(null)).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Cotton $/lb display + smart-magnitude input (storage stays ¢/lb)
+// ---------------------------------------------------------------------------
+describe('formatCottonPrice — ¢-stored, $/lb displayed', () => {
+  it('72.65¢ → $0.7265; 70 → $0.7000; suffix on request', () => {
+    expect(formatCottonPrice(72.65)).toBe('$0.7265')
+    expect(formatCottonPrice(70)).toBe('$0.7000')
+    expect(formatCottonPrice(70, { perLb: true })).toBe('$0.7000/lb')
+  })
+  it('negative basis renders with a leading minus', () => {
+    expect(formatCottonPrice(-2.5)).toBe('-$0.0250')
+  })
+  it('null/NaN → em dash', () => {
+    expect(formatCottonPrice(null)).toBe('—')
+    expect(formatCottonPrice(Number.NaN)).toBe('—')
+  })
+  it('fmtCommodityPrice routes cotton through the $/lb formatter, grains unchanged', () => {
+    expect(fmtCommodityPrice('Cotton', 72.65)).toBe('$0.7265')
+    expect(fmtCommodityPrice('Corn', 4.9325)).toBe(fmtPrice(4.9325))
+  })
+})
+
+describe('parseCottonPriceInput — dollar-style AND legacy cents land as the same ¢', () => {
+  it('0.7265 and 72.65 both store as 72.65¢', () => {
+    expect(parseCottonPriceInput('0.7265')).toBe(72.65)
+    expect(parseCottonPriceInput('72.65')).toBe(72.65)
+  })
+  it('boundary: values > 5 are ¢, ≤ 5 are $/lb', () => {
+    expect(parseCottonPriceInput('5')).toBe(500) // $5/lb is absurd but ≤5 reads as $
+    expect(parseCottonPriceInput('5.01')).toBe(5.01) // just above → ¢
+    expect(parseCottonPriceInput('1.5')).toBe(150)
+  })
+  it('small-magnitude figures (basis, LDP rate, equity) use the 0.25 threshold', () => {
+    expect(parseCottonPriceInput('-2.50', { centsThreshold: 0.25 })).toBe(-2.5) // legacy ¢ basis
+    expect(parseCottonPriceInput('-0.025', { centsThreshold: 0.25 })).toBe(-2.5) // $ basis
+    expect(parseCottonPriceInput('3.60', { centsThreshold: 0.25 })).toBe(3.6) // legacy ¢ LDP rate
+    expect(parseCottonPriceInput('0.036', { centsThreshold: 0.25 })).toBe(3.6) // $ LDP rate
+  })
+  it('blank / non-numeric → null', () => {
+    expect(parseCottonPriceInput('')).toBeNull()
+    expect(parseCottonPriceInput('  ')).toBeNull()
+    expect(parseCottonPriceInput('abc')).toBeNull()
+    expect(parseCottonPriceInput(null)).toBeNull()
   })
 })

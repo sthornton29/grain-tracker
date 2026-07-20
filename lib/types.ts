@@ -831,18 +831,23 @@ export type AwpWeekly = {
   created_at: string
 }
 
-// ---------- Unified county-yield assumption + area-based plans (045) ----------
+// ---------- Unified county-yield assumption + area-based plans (045/047) ----------
 
-// The ONE source for county-triggered insurance math. variance_pct: −10 = "my
-// county typically runs 10% below its RMA expected yield this year" (same
-// semantic as the deprecated per-endorsement county_yield_assumption_pct).
+// The ONE source for county-triggered insurance math. Differential semantics
+// (047): yield_differential = "my yields run this much ABOVE the county", in
+// the crop's own yield unit; estimated county = farm yield − differential.
 // Deliberately separate from the ARC-CO expectation (FSA benchmarks).
 export type CountyYieldAssumption = {
   id: string
   crop_id: string
   county_id: string | null
   crop_year: number
+  /** DEPRECATED (pre-047): county vs RMA expected, %. Kept in the DB for
+   *  history; no longer drives any estimate. */
   variance_pct: number
+  /** "My yields run this much ABOVE the county", in the crop's yield unit
+   *  (bu/ac grains, lbs/ac cotton). Estimated county = farm yield − this. */
+  yield_differential: number | null
   county_yield_override: number | null
   rma_final_county_yield: number | null // published final: pins everything
   notes: string | null
