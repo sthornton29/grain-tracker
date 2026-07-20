@@ -18,6 +18,7 @@ import {
   practiceActualYieldByCrop,
   projectInsuranceIndemnities,
   totalProjectedIndemnity,
+  centsToInsuranceDollars,
   classifyPolicyUpload,
   type PolicyUploadValues,
   type PolicyInputs,
@@ -1146,5 +1147,139 @@ describe('stacking warnings (warn, never block)', () => {
     expect(staxArcPlcWarning({ staxCount: 1, seedCottonEnrolled: true })).toMatch(/STAX/)
     expect(staxArcPlcWarning({ staxCount: 0, seedCottonEnrolled: true })).toBeNull()
     expect(staxArcPlcWarning({ staxCount: 2, seedCottonEnrolled: false })).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Cotton price units (¢/lb vs $/lb) — the boundary conversion, the hand-
+// verified RP example from the unit-mismatch incident, and the sanity guard.
+// ---------------------------------------------------------------------------
+
+describe('centsToInsuranceDollars — the ¢/lb → $/lb boundary', () => {
+  it('divides cotton futures prices by 100', () => {
+    expect(centsToInsuranceDollars('Cotton', 68)).toBeCloseTo(0.68, 10)
+    expect(centsToInsuranceDollars('Upland Cotton', 45)).toBeCloseTo(0.45, 10)
+  })
+  it('passes grain prices through unchanged', () => {
+    expect(centsToInsuranceDollars('Corn', 4.5)).toBe(4.5)
+    expect(centsToInsuranceDollars('Soybeans', 11.09)).toBe(11.09)
+    expect(centsToInsuranceDollars(null, 5)).toBe(5)
+  })
+  it('does not treat seed cotton (no traded future) as cotton', () => {
+    expect(centsToInsuranceDollars('Seed Cotton', 12)).toBe(12)
+  })
+})
+
+describe('cotton RP — hand-verified $/lb example', () => {
+  // APH 1,200 lbs, coverage 75%, projected 0.68 $/lb, harvest scenario 0.45 $/lb
+  // (45¢ converted at the boundary), actual 1,082 lbs/ac, 1 acre:
+  //   guarantee = 1,200 × 0.75 × max(0.68, 0.45) = 612.00
+  //   actual    = 1,082 × 0.45                   = 486.90
+  //   indemnity = 612.00 − 486.90                = 125.10
+  it('pays $125.10/ac — not thousands', () => {
+    const r = computeIndemnity({
+      planType: 'RP', coverageLevel: 0.75, aphYield: 1200,
+      projectedPrice: 0.68, harvestPrice: centsToInsuranceDollars('Cotton', 45),
+      insuredAcres: 1, actualYield: 1082,
+    })
+    expect(r.guaranteePrice).toBeCloseTo(0.68, 6)
+    expect(r.revenueGuarantee).toBeCloseTo(612, 2)
+    expect(r.expectedRevenue).toBeCloseTo(486.9, 2)
+    expect(r.indemnity).toBeCloseTo(125.1, 2)
+  })
+
+  it('a grains case is unchanged by the boundary helper', () => {
+    // Corn RP: APH 200, 80%, projected 4.50, harvest 4.00, actual 170, 1 ac:
+    // guarantee = 200 × 0.8 × 4.50 = 720; actual = 170 × 4.00 = 680 → 40.
+    const r = computeIndemnity({
+      planType: 'RP', coverageLevel: 0.8, aphYield: 200,
+      projectedPrice: 4.5, harvestPrice: centsToInsuranceDollars('Corn', 4),
+      insuredAcres: 1, actualYield: 170,
+    })
+    expect(r.revenueGuarantee).toBeCloseTo(720, 2)
+    expect(r.indemnity).toBeCloseTo(40, 2)
+  })
+})
+
+describe('computePolicy sanity guard — flags a ¢/lb leak, never blocks', () => {
+  const cottonBase: PolicyInputs = {
+    planType: 'RP', coverageLevel: 0.75, aphYield: 1200,
+    projectedPrice: 0.68, harvestPrice: 0.45, insuredAcres: 100, actualYield: 1082,
+  }
+
+  it('clean cotton math carries no warnings', () => {
+    const comp = computePolicy({ base: cottonBase, basePremium: 0, sco: null, eco: null })
+    expect(comp.warnings).toEqual([])
+    expect(comp.base.indemnity).toBeCloseTo(12510, 2) // 125.10/ac × 100 ac
+  })
+
+  it('fires on a deliberately mis-unit harvest price (¢ where $ expected)', () => {
+    const comp = computePolicy({
+      base: { ...cottonBase, harvestPrice: 45 }, // ¢ leaked through
+      basePremium: 0, sco: null, eco: null,
+    })
+    expect(comp.warnings.length).toBeGreaterThan(0)
+    expect(comp.warnings[0]).toMatch(/price units/)
+  })
+
+  it('fires on a ¢-stored projected price (guarantee/acre implausible)', () => {
+    const comp = computePolicy({
+      base: { ...cottonBase, projectedPrice: 68 }, // ¢-stored projected
+      basePremium: 0, sco: null, eco: null,
+    })
+    expect(comp.warnings.length).toBeGreaterThan(0)
+  })
+
+  it('stays silent on normal grain math', () => {
+    const comp = computePolicy({
+      base: { planType: 'RP', coverageLevel: 0.8, aphYield: 200, projectedPrice: 4.5, harvestPrice: 4, insuredAcres: 100, actualYield: 170 },
+      basePremium: 2000, sco: null, eco: null,
+    })
+    expect(comp.warnings).toEqual([])
+  })
+})
+
+describe('resolveHarvestPriceByCrop — cotton futures sources convert to $/lb', () => {
+  const cottonPolicy = mkPolicy({ id: 'pc', crop_id: 'cotton', projected_price: 0.68, aph_yield: 1200 })
+  const crops = [{ id: 'cotton', name: 'Cotton' }, { id: 'corn', name: 'Corn' }]
+  const base = { cropIds: ['cotton'], cropYear: 2026, policies: [cottonPolicy], estimates: [] as HarvestPriceEstimate[], crops }
+
+  it('live CT quote (¢/lb) → $/lb', () => {
+    const m = resolveHarvestPriceByCrop({
+      ...base,
+      liveByCrop: new Map([['cotton', { price: 67.5, stale: false, priceDate: '2026-10-01' }]]),
+    })
+    expect(m.get('cotton')).toMatchObject({ price: 0.675, source: 'estimate' })
+  })
+
+  it('stored harvest_estimate (Barchart mirror, ¢/lb) → $/lb', () => {
+    const m = resolveHarvestPriceByCrop({
+      ...base,
+      estimates: [mkEstimate({ crop_id: 'cotton', price_type: 'harvest_estimate', price: 62 })],
+    })
+    expect(m.get('cotton')!.price).toBeCloseTo(0.62, 6)
+  })
+
+  it('RMA-native sources (harvest_final, policy harvest_price, projected) pass through', () => {
+    const viaFinal = resolveHarvestPriceByCrop({
+      ...base,
+      estimates: [mkEstimate({ crop_id: 'cotton', price_type: 'harvest_final', price: 0.62 })],
+    })
+    expect(viaFinal.get('cotton')).toMatchObject({ price: 0.62, source: 'final' })
+    const viaPolicy = resolveHarvestPriceByCrop({
+      ...base,
+      policies: [mkPolicy({ ...cottonPolicy, harvest_price: 0.59 })],
+    })
+    expect(viaPolicy.get('cotton')!.price).toBeCloseTo(0.59, 6)
+    const viaProjected = resolveHarvestPriceByCrop(base)
+    expect(viaProjected.get('cotton')).toMatchObject({ price: 0.68, source: 'projected' })
+  })
+
+  it('grains are untouched with crops supplied', () => {
+    const m = resolveHarvestPriceByCrop({
+      cropIds: ['corn'], cropYear: 2026, policies: [mkPolicy()], estimates: [], crops,
+      liveByCrop: new Map([['corn', { price: 4.2, stale: false, priceDate: '2026-10-01' }]]),
+    })
+    expect(m.get('corn')!.price).toBe(4.2)
   })
 })

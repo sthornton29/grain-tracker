@@ -738,6 +738,16 @@ function CropSensitivitySection({
           </p>
         )}
 
+        {(() => {
+          const w = v.grid.flat().find((c) => c.insuranceWarning)?.insuranceWarning
+          return w ? (
+            <p className="text-xs font-semibold text-red-700">
+              ⚠ {w} Insurance dollars in this table are unreliable until the policy&apos;s price is corrected
+              (cotton insurance prices are $/lb, e.g. 0.68 — not ¢/lb).
+            </p>
+          ) : null
+        })()}
+
         {v.grid.length === 0 ? (
           <p className="text-sm text-amber-700">
             {v.priceValues.length === 0

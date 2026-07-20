@@ -13,6 +13,7 @@ import {
   endorsementPremium, type PlanType, type UnitStructure, type Practice,
 } from '@/lib/crop-insurance'
 import { DEFAULT_SCO_TRIGGER, resolveProgramYearConfig } from '@/lib/program-config'
+import { cropToHedgeCommodity } from '@/lib/contracts'
 import { fmtPrice } from '@/lib/hedging'
 import type {
   Crop, County, Entity, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco,
@@ -290,7 +291,7 @@ export function validatePolicyForm(form: PolicyFormState, requireEntity = false)
   if (!form.crop_year || !Number.isFinite(Number(form.crop_year))) return 'Enter a crop year.'
   if ((num(form.coverage_level) ?? 0) <= 0) return 'Pick a coverage level.'
   if (!isArea && (num(form.aph_yield) ?? 0) <= 0) return 'Enter the APH yield (bu/ac).'
-  if ((num(form.projected_price) ?? 0) <= 0) return 'Enter the projected price ($/bu).'
+  if ((num(form.projected_price) ?? 0) <= 0) return 'Enter the projected price ($/bu grains, $/lb cotton).'
   if ((num(form.insured_acres) ?? 0) <= 0) return 'Enter insured acres.'
   if (isArea && (num(form.expected_county_yield) ?? 0) <= 0 && (num(form.expected_county_revenue) ?? 0) <= 0) {
     return 'ARP/AYP are county-triggered — enter the RMA expected county yield or revenue.'
@@ -326,6 +327,14 @@ export function PolicyFields({
   projectedEstimates?: HarvestPriceEstimate[]
   programConfigs?: ProgramYearConfig[]
 }) {
+  // Insurance prices are stored in the policy's NATIVE $ unit — $/bu grains,
+  // $/lb cotton (RMA publishes cotton at e.g. 0.68, never ¢/lb). The labels
+  // and the looks-like-cents hint below keep cotton entries in dollars.
+  const isCotton = cropToHedgeCommodity(crops.find((c) => c.id === value.crop_id)?.name) === 'Cotton'
+  const priceUnit = isCotton ? '$/lb' : '$/bu'
+  const yieldUnit = isCotton ? 'lbs/ac' : 'bu/ac'
+  const looksLikeCents = (s: string) => isCotton && Number(s) > 5
+
   function set<K extends keyof PolicyFormState>(key: K, v: PolicyFormState[K]) {
     onChange({ ...value, [key]: v })
   }
@@ -448,16 +457,22 @@ export function PolicyFields({
           </select>
         </label>
         <label className={labelCls}>
-          <span className={spanCls}>APH yield (bu/ac) *</span>
+          <span className={spanCls}>APH yield ({yieldUnit}) *</span>
           <input type="number" step="0.1" min="0" inputMode="decimal" value={value.aph_yield} onChange={(e) => set('aph_yield', e.target.value)} className={inputCls} />
         </label>
         <label className={labelCls}>
-          <span className={spanCls}>Projected price ($/bu) *</span>
+          <span className={spanCls}>Projected price ({priceUnit}) *</span>
           <input type="number" step="0.01" min="0" inputMode="decimal" value={value.projected_price} onChange={(e) => set('projected_price', e.target.value)} className={inputCls} />
+          {looksLikeCents(value.projected_price) && (
+            <span className="text-xs text-red-600">Looks like ¢/lb — cotton insurance prices are $/lb (e.g. 0.68).</span>
+          )}
         </label>
         <label className={labelCls}>
-          <span className={spanCls}>Harvest price ($/bu)</span>
+          <span className={spanCls}>Harvest price ({priceUnit})</span>
           <input type="number" step="0.01" min="0" inputMode="decimal" placeholder="set in Oct" value={value.harvest_price} onChange={(e) => set('harvest_price', e.target.value)} className={inputCls} />
+          {looksLikeCents(value.harvest_price) && (
+            <span className="text-xs text-red-600">Looks like ¢/lb — cotton insurance prices are $/lb (e.g. 0.68).</span>
+          )}
         </label>
         <label className={labelCls}>
           <span className={spanCls}>Insured acres *</span>

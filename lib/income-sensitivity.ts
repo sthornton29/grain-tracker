@@ -25,6 +25,7 @@ import { computeMarketing, type Planting } from '@/lib/marketing'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import {
   computePolicy, policyPremium, scoConfigFrom, ecoConfigFrom, staxConfigFrom, mcoConfigFrom,
+  centsToInsuranceDollars,
   type PolicyInputs, type Practice, type CountyAssumptionLike,
 } from '@/lib/crop-insurance'
 import { cropToHedgeCommodity } from '@/lib/contracts'
@@ -240,6 +241,9 @@ export type ScenarioCell = {
   revenuePerAcre: number
   /** revenuePerAcre − cost/acre; null when no cost is set. */
   profitPerAcre: number | null
+  /** computePolicy sanity-guard warning (¢/$ unit leak) from any policy in
+   *  this cell; the report surfaces it once per crop section. */
+  insuranceWarning: string | null
 }
 
 // Practice-level scenario yield: the blended yield allocated proportionally to
@@ -303,7 +307,11 @@ export function computeScenarioCell(
   // Insurance: every policy re-run at the scenario harvest price (the RMA
   // final instead, once on file) and the cell's practice-allocated yield, net
   // of premium. No indemnity math lives here.
-  const insuranceHarvestPrice = inp.finalHarvestPrice ?? scenarioPrice
+  //
+  // UNITS: the cotton scenario axis is ¢/lb (the CT futures convention) but
+  // insurance math runs in the policy's native $/lb, so the scenario price
+  // converts at this boundary. finalHarvestPrice is RMA-native ($/lb) already.
+  const insuranceHarvestPrice = inp.finalHarvestPrice ?? centsToInsuranceDollars(inp.crop.name, scenarioPrice)
   const scoBy = new Map(inp.scos.map((s) => [s.policy_id, s]))
   const ecoBy = new Map(inp.ecos.map((e) => [e.policy_id, e]))
   const staxBy = new Map((inp.staxes ?? []).map((s) => [s.policy_id, s]))
@@ -317,6 +325,7 @@ export function computeScenarioCell(
     ? blendedYield / expectedBlend
     : 1
   let insuranceNet = 0
+  let insuranceWarning: string | null = null
   for (const p of inp.policies) {
     const practice = (p.practice ?? 'non_irrigated') as Practice
     const base: PolicyInputs = {
@@ -342,6 +351,7 @@ export function computeScenarioCell(
       county: { assumption: inp.countyAssumption ?? null, scale: countyScale },
     })
     insuranceNet += comp.netPnl
+    if (insuranceWarning == null && comp.warnings.length > 0) insuranceWarning = comp.warnings[0]
   }
 
   const govPerAcre = opts?.govPerAcre ?? 0
@@ -356,6 +366,7 @@ export function computeScenarioCell(
     insuranceNet,
     revenuePerAcre,
     profitPerAcre: costPerAcre != null ? revenuePerAcre - costPerAcre : null,
+    insuranceWarning,
   }
 }
 

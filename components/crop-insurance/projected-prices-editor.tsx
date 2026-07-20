@@ -112,7 +112,7 @@ export default function ProjectedPricesEditor({
                       placeholder="—"
                       className={inputCls}
                     />
-                    <span className="text-slate-400 text-sm">/bu</span>
+                    <span className="text-slate-400 text-sm">{/cotton/i.test(c.name) ? '/lb' : '/bu'}</span>
                   </div>
                   <button
                     type="button"

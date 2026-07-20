@@ -339,8 +339,8 @@ For each crop × county × practice line found in the document, extract:
 - practice ("irrigated" or "non_irrigated"). Practice indicators: "IRR" / "Irrigated" / "IR" = irrigated; "NIRR" / "Non-Irrigated" / "NFAC" / "Dryland" / "Non-Irr" / "DRY" = non_irrigated. If a line clearly shows a practice, set it; if the document does not distinguish practice for this crop/county, use null.
 - coverage_level (as a decimal, e.g., 0.80 for 80%)
 - unit_structure ("enterprise", "basic", or "optional")
-- aph_yield (the APH or approved yield in bushels per acre — PER PRACTICE, the value on this line)
-- projected_price (the spring/projected price per bushel — shared across practices for the crop)
+- aph_yield (the APH or approved yield PER PRACTICE, the value on this line — bushels per acre for grains, POUNDS of lint per acre for cotton, e.g. 1200)
+- projected_price (the spring/projected price in DOLLARS per unit — $ per bushel for grains, $ per POUND for cotton. RMA cotton prices are dollars like 0.68; NEVER report a cotton price in cents (68.00) — if the document prints cents per pound, divide by 100)
 - insured_acres (insured acres for THIS practice line)
 - premium_per_acre (the producer-paid premium per acre for this line, after subsidy)
 - total_premium (total producer premium for this crop/county/practice line)
