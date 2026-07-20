@@ -405,3 +405,71 @@ describe('county yield scenario modes', () => {
     expect(move.insuranceNet).toBeCloseTo(ind.insuranceNet, 2)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Cotton — the ¢/lb scenario axis must convert to $/lb at the insurance
+// boundary. Regression for the inverted-table incident (huge indemnities at
+// low yields when the ¢ axis leaked into $-unit policy math).
+// ---------------------------------------------------------------------------
+
+describe('computeScenarioCell — cotton ¢/lb axis vs $/lb policy math', () => {
+  const cotton: Crop = {
+    id: 'cotton', name: 'Cotton', base_moisture_pct: 0, base_lb_per_bushel: 0,
+    harvest_category: 'fall', double_crop: false,
+  } as Crop
+
+  // 100 acres, APH 1,200 lbs, RP 75%, projected 0.68 $/lb, no premium so
+  // insuranceNet is the raw indemnity. The scenario axis is ¢/lb (45…95).
+  const cottonInputs = baseInputs({
+    crop: cotton,
+    assumption: assumption({ crop_id: 'cotton', expected_yield: 1200, cost_per_acre: 500, assumed_basis: 0 }),
+    policies: [policy({
+      id: 'pc', crop_id: 'cotton', aph_yield: 1200, coverage_level: 0.75,
+      projected_price: 0.68, insured_acres: 100, total_premium: 0,
+    })],
+  })
+
+  it('the RP floor at 45¢ pays the hand-verified $125.10/ac at 1,082 lbs', () => {
+    const cell = computeScenarioCell(cottonInputs, 45, 1082)
+    // guarantee 1,200 × 0.75 × 0.68 = 612; actual 1,082 × 0.45 = 486.90;
+    // indemnity 125.10/ac × 100 ac = 12,510 (premium 0).
+    expect(cell.insuranceNet).toBeCloseTo(12510, 0)
+    expect(cell.insuranceWarning).toBeNull()
+  })
+
+  it('profit increases with yield at a fixed 45¢ — the floor flattens, never inverts', () => {
+    const yields = [932, 1082, 1232, 1332, 1482]
+    const cells = yields.map((y) => computeScenarioCell(cottonInputs, 45, y))
+    for (let i = 1; i < cells.length; i++) {
+      expect(cells[i].profitPerAcre!).toBeGreaterThanOrEqual(cells[i - 1].profitPerAcre! - 1e-6)
+    }
+    // And the indemnity magnitude stays in policy range — never thousands/acre.
+    for (const c of cells) expect(c.insuranceNet / 100).toBeLessThan(2500)
+  })
+
+  it('the center cell (68¢ × APH yield) pays no indemnity', () => {
+    const cell = computeScenarioCell(cottonInputs, 68, 1200)
+    // guarantee 612 vs actual 1,200 × 0.68 = 816 → 0.
+    expect(cell.insuranceNet).toBeCloseTo(0, 6)
+  })
+
+  it('a ¢-stored projected price is flagged by the sanity guard, not silently rendered', () => {
+    const bad = {
+      ...cottonInputs,
+      policies: [policy({
+        id: 'pc', crop_id: 'cotton', aph_yield: 1200, coverage_level: 0.75,
+        projected_price: 68, insured_acres: 100, total_premium: 0, // ¢ mis-stored
+      })],
+    }
+    const cell = computeScenarioCell(bad, 45, 1082)
+    expect(cell.insuranceWarning).toMatch(/price units/)
+  })
+
+  it('an RMA final harvest price ($/lb) pins insurance in every cell without conversion', () => {
+    const withFinal = { ...cottonInputs, finalHarvestPrice: 0.45 }
+    const low = computeScenarioCell(withFinal, 45, 1082)
+    const high = computeScenarioCell(withFinal, 95, 1082)
+    expect(low.insuranceNet).toBeCloseTo(high.insuranceNet, 2)
+    expect(low.insuranceNet).toBeCloseTo(12510, 0)
+  })
+})

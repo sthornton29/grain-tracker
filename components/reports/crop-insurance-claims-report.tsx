@@ -198,13 +198,13 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   // resolves the same way — this just adds the futures-contract label.
   const harvestByCrop = useMemo(() => {
     if (cropYear === '') return new Map<string, HarvestInfo>()
-    const resolved = resolveHarvestPriceByCrop({ cropIds: reportCropIds, cropYear, policies: yearPolicies, estimates: priceEstimates, liveByCrop: liveHarvestByCrop })
+    const resolved = resolveHarvestPriceByCrop({ cropIds: reportCropIds, cropYear, policies: yearPolicies, estimates: priceEstimates, liveByCrop: liveHarvestByCrop, crops })
     const m = new Map<string, HarvestInfo>()
     for (const [cropId, h] of resolved) {
       m.set(cropId, { price: h.price, isFinal: h.source === 'final', label: harvestContractLabel(cropById.get(cropId)?.name, cropYear), source: h.source, stale: h.stale, priceDate: h.priceDate })
     }
     return m
-  }, [reportCropIds, cropYear, yearPolicies, priceEstimates, liveHarvestByCrop, cropById])
+  }, [reportCropIds, cropYear, yearPolicies, priceEstimates, liveHarvestByCrop, cropById, crops])
 
   // Per-year program parameters (SCO trigger), with most-recent-year fallback.
   const programCfg = useMemo(
@@ -220,14 +220,14 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     // pages' projected indemnity reconciles.
     const projected = projectInsuranceIndemnities({
       cropYear, policies: yearPolicies, scos, ecos, staxes, mcos, countyAssumptions, assumptions, plantings,
-      actualYieldByCrop, harvestEstimates: priceEstimates, liveHarvestByCrop,
+      actualYieldByCrop, harvestEstimates: priceEstimates, liveHarvestByCrop, crops,
       scoTrigger: programCfg.scoTrigger,
     })
     return projected.map((r) => ({
       policy: r.policy, comp: r.comp, harvest: harvestByCrop.get(r.policy.crop_id),
       assumedYield: r.assumedYield, base: r.base, sco: r.sco, eco: r.eco, basePremium: r.basePremium,
     }))
-  }, [cropYear, yearPolicies, scos, ecos, staxes, mcos, countyAssumptions, assumptions, plantings, actualYieldByCrop, priceEstimates, liveHarvestByCrop, programCfg, harvestByCrop])
+  }, [cropYear, yearPolicies, scos, ecos, staxes, mcos, countyAssumptions, assumptions, plantings, actualYieldByCrop, priceEstimates, liveHarvestByCrop, crops, programCfg, harvestByCrop])
 
   const totals = useMemo(() => {
     return computed.reduce(
@@ -422,6 +422,16 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
 
           <SummaryCards cards={summaryCards} />
 
+          {computed.some((c) => c.comp.warnings.length > 0) && (
+            <div className="rounded-lg bg-red-50 border border-red-300 px-3 py-2 text-sm text-red-900">
+              <strong>Check price units:</strong> the computed indemnity on{' '}
+              {computed.filter((c) => c.comp.warnings.length > 0).map((c) => `${cropName(c.policy.crop_id)} (${countyName(c.policy.county_id)})`).join(', ')}{' '}
+              is implausibly large — this usually means a ¢/lb price is stored where the policy expects $/lb
+              (cotton insurance prices are dollars, e.g. 0.68). Review the policy&apos;s projected/harvest price
+              under Settings → Crop Insurance.
+            </div>
+          )}
+
           {(() => {
             const warnings = stackingWarnings({
               policies: yearPolicies,
@@ -510,7 +520,12 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                       <td className={`px-2 py-1 text-right tabular-nums ${(c.comp.stax || c.comp.mco) ? toneText(signedTone((c.comp.stax?.indemnity ?? 0) + (c.comp.mco?.indemnity ?? 0))) : toneText('muted')}`}>
                         {(c.comp.stax || c.comp.mco) ? usd((c.comp.stax?.indemnity ?? 0) + (c.comp.mco?.indemnity ?? 0)) : 'N/A'}
                       </td>
-                      <td className={`px-2 py-1 text-right tabular-nums font-semibold ${toneText(signedTone(c.comp.totalIndemnity))}`}>{usd(c.comp.totalIndemnity)}</td>
+                      <td className={`px-2 py-1 text-right tabular-nums font-semibold ${c.comp.warnings.length > 0 ? 'text-red-700' : toneText(signedTone(c.comp.totalIndemnity))}`}>
+                        {c.comp.warnings.length > 0 && (
+                          <span title={c.comp.warnings.join(' ')} className="mr-1 cursor-help">⚠</span>
+                        )}
+                        {usd(c.comp.totalIndemnity)}
+                      </td>
                       <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.premiumPaid)}</td>
                       <td className={`px-2 py-1 text-right tabular-nums font-bold ${pnlClass(c.comp.netPnl, c.comp.premiumPaid)}`}>{usd(c.comp.netPnl)}</td>
                       <td className="px-2 py-1 no-print">

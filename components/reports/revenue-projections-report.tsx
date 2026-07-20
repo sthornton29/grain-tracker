@@ -17,7 +17,7 @@ import { cropToCommodity } from '@/lib/contracts'
 import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import {
-  computePolicy, harvestContractLabel, policyPremium,
+  computePolicy, harvestContractLabel, policyPremium, resolveHarvestPriceByCrop,
   type PolicyInputs, type ScoConfig, type EcoConfig,
 } from '@/lib/crop-insurance'
 import { projectPayments, applyMyaResolution, programYearFor, otherPaymentsInRevenueYear } from '@/lib/government-payments'
@@ -290,18 +290,21 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     })
   }, [cropYear, crops, plantings, contracts, futures, options, assumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds, cottonProductionByCrop, cottonPhysical])
 
-  // Resolve a harvest price per crop: final → estimate → projected.
-  function harvestPriceFor(cropId: string): { price: number; isFinal: boolean } {
+  // Resolve a harvest price per crop for the MARKET path: final → estimate →
+  // projected. `source` distinguishes RMA-native prices ($/lb for cotton:
+  // 'final'/'projected') from futures-derived ones (¢/lb: 'estimate') so the
+  // caller can keep the cotton market price in ¢/lb.
+  function harvestPriceFor(cropId: string): { price: number; isFinal: boolean; source: 'final' | 'estimate' | 'projected' } {
     const pols = policies.filter((p) => p.crop_id === cropId && p.crop_year === cropYear)
     const policyFinal = pols.find((p) => p.harvest_price != null)?.harvest_price
     const storedFinal = priceEstimates.find((e) => e.crop_id === cropId && e.crop_year === cropYear && e.price_type === 'harvest_final')
-    if (policyFinal != null || storedFinal) return { price: Number(policyFinal ?? storedFinal!.price), isFinal: true }
+    if (policyFinal != null || storedFinal) return { price: Number(policyFinal ?? storedFinal!.price), isFinal: true, source: 'final' }
     const live = liveEstimates.get(cropId)
-    if (live != null) return { price: live, isFinal: false }
+    if (live != null) return { price: live, isFinal: false, source: 'estimate' }
     const storedEst = priceEstimates.find((e) => e.crop_id === cropId && e.crop_year === cropYear && e.price_type === 'harvest_estimate')
-    if (storedEst) return { price: Number(storedEst.price), isFinal: false }
+    if (storedEst) return { price: Number(storedEst.price), isFinal: false, source: 'estimate' }
     const avgProjected = pols.length > 0 ? pols.reduce((s, p) => s + Number(p.projected_price), 0) / pols.length : 0
-    return { price: avgProjected, isFinal: false }
+    return { price: avgProjected, isFinal: false, source: 'projected' }
   }
 
   // Net insurance proceeds by crop, using each crop's marketing yield as the
@@ -312,8 +315,19 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     const scoBy = new Map(scos.map((s) => [s.policy_id, s]))
     const ecoBy = new Map(ecos.map((e) => [e.policy_id, e]))
     const yieldByCrop = new Map(marketingRows.map((r) => [r.cropId, r.yield]))
-    for (const p of policies.filter((x) => x.crop_year === cropYear)) {
-      const harvest = harvestPriceFor(p.crop_id).price
+    const yearPols = policies.filter((x) => x.crop_year === cropYear)
+    // Insurance math runs in the policy's native $ unit ($/lb cotton) — the
+    // shared resolver converts futures-derived ¢/lb sources at the boundary.
+    const insuranceHarvest = resolveHarvestPriceByCrop({
+      cropIds: Array.from(new Set(yearPols.map((x) => x.crop_id))),
+      cropYear,
+      policies: yearPols,
+      estimates: priceEstimates,
+      liveByCrop: new Map(Array.from(liveEstimates, ([id, price]) => [id, { price, stale: false, priceDate: null }])),
+      crops,
+    })
+    for (const p of yearPols) {
+      const harvest = insuranceHarvest.get(p.crop_id)?.price ?? Number(p.projected_price)
       const assumedYield = yieldByCrop.get(p.crop_id) ?? Number(p.aph_yield)
       const base: PolicyInputs = {
         planType: p.plan_type,
@@ -348,14 +362,17 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       m.set(p.crop_id, cur)
     }
     return m
-  }, [policies, scos, ecos, cropYear, marketingRows, liveEstimates, priceEstimates])
+  }, [policies, scos, ecos, cropYear, marketingRows, liveEstimates, priceEstimates, crops])
 
-  // Current market cash price by crop: harvest price + average basis.
+  // Current market cash price by crop: harvest price + average basis. Cotton
+  // marketing prices are ¢/lb — RMA-native sources (final/projected, $/lb)
+  // scale ×100 so the cotton market price never mixes units with the ¢ basis.
   const marketPriceByCrop = useMemo(() => {
     const m = new Map<string, number>()
     for (const r of marketingRows) {
       const h = harvestPriceFor(r.cropId)
-      if (h.price > 0) m.set(r.cropId, h.price + (r.avgBasis ?? 0))
+      const hp = r.unit === 'lbs' && h.source !== 'estimate' ? h.price * 100 : h.price
+      if (hp > 0) m.set(r.cropId, hp + (r.avgBasis ?? 0))
       else if (r.avgCashPrice != null) m.set(r.cropId, r.avgCashPrice)
     }
     return m

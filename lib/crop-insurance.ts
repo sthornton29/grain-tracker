@@ -87,6 +87,27 @@ function round6(n: number): number {
   return Math.round(n * 1e6) / 1e6
 }
 
+// ---------- Price-unit boundary (cotton ¢/lb vs $/lb) ----------
+//
+// ALL insurance math in this file runs in the policy's NATIVE $ per unit:
+// $/bu for grains, $/lb for cotton (RMA publishes cotton projected/harvest
+// prices in dollars, e.g. 0.68). The app-wide cotton FUTURES convention (CT
+// quotes, the Income Sensitivity price axis, the marketing engine) is ¢/lb
+// (e.g. 68.00). Every futures-derived cotton price must convert HERE — at the
+// boundary, through this one helper — before entering computePolicy /
+// computeIndemnity / the county-band legs. Never scatter ad-hoc ÷100s.
+export function centsToInsuranceDollars(cropName: string | null | undefined, price: number): number {
+  return cropToHedgeCommodity(cropName) === 'Cotton' ? price / 100 : price
+}
+
+// Plausibility ceiling for the computePolicy sanity guard: no real MPCI
+// revenue guarantee approaches $3,000/acre and no real indemnity approaches
+// $2,500/acre — a breach means a ¢/lb value leaked into $-unit math (≈100×).
+export const MAX_PLAUSIBLE_GUARANTEE_PER_ACRE = 3000
+export const MAX_PLAUSIBLE_INDEMNITY_PER_ACRE = 2500
+export const UNIT_MISMATCH_WARNING =
+  'Implausible indemnity — check price units on this policy (¢/lb vs $/lb).'
+
 // The RMA projected (spring) price for a crop + crop year, read from the
 // harvest_price_estimates table (price_type = 'projected'). RMA announces these
 // each February; the operator enters/edits them under Settings → Crop Insurance.
@@ -521,6 +542,11 @@ export type PolicyComputation = {
   // True when the shared county assumption carries an RMA FINAL county yield —
   // scenario modes must not move the county estimate.
   countyPinned: boolean
+  // Sanity-guard flags (never blocks the math): a per-acre guarantee or
+  // indemnity beyond any real policy's range, or a guarantee price ≫ the
+  // projected price — the signature of a ¢/lb value in $-unit math. The UI
+  // surfaces these instead of silently rendering absurd dollars.
+  warnings: string[]
 }
 
 export type ScoConfig = {
@@ -638,6 +664,26 @@ export function computePolicy(args: {
     (staxResult?.indemnity ?? 0) + (mcoResult?.indemnity ?? 0),
   )
   const premiumPaid = round2(args.basePremium + scoPremium + ecoPremium + staxPremium + mcoPremium)
+
+  // Sanity guard: catch a ¢/lb price leaking into $-unit math (inflates
+  // guarantees ~100×). Warn, never block — estimates keep rendering, flagged.
+  const warnings: string[] = []
+  const acres = Number(args.base.insuredAcres)
+  if (acres > 0) {
+    const guaranteePerAcre = base.revenueGuarantee / acres
+    const indemnityPerAcre = totalIndemnity / acres
+    const gpRatio = args.base.projectedPrice > 0
+      ? guaranteePriceFor(args.base.planType, args.base.projectedPrice, args.base.harvestPrice) / args.base.projectedPrice
+      : 1
+    if (
+      guaranteePerAcre > MAX_PLAUSIBLE_GUARANTEE_PER_ACRE ||
+      indemnityPerAcre > MAX_PLAUSIBLE_INDEMNITY_PER_ACRE ||
+      gpRatio > 3
+    ) {
+      warnings.push(UNIT_MISMATCH_WARNING)
+    }
+  }
+
   return {
     base,
     sco: scoResult,
@@ -648,6 +694,7 @@ export function computePolicy(args: {
     premiumPaid,
     netPnl: round2(totalIndemnity - premiumPaid),
     countyPinned,
+    warnings,
   }
 }
 
@@ -1047,15 +1094,26 @@ export function actualYieldByCropFromLoads(args: {
 // Resolve the harvest price per crop: final → live Barchart estimate → most
 // recent stored harvest_estimate → average projected. `estimates` must be sorted
 // most-recent first (both callers order by price_date desc).
+//
+// Units: the result is in the policy's NATIVE $ per unit ($/bu, $/lb cotton).
+// Futures-DERIVED sources — the live CT quote and the stored 'harvest_estimate'
+// rows the /api/harvest-price-estimate route mirrors from Barchart — arrive in
+// ¢/lb for cotton and convert here; RMA-native sources (policy harvest_price,
+// 'harvest_final', projected) are already $/lb. `crops` supplies the id→name
+// mapping the conversion needs; omitting it skips conversion (grains-only
+// callers/tests), and the computePolicy sanity guard backstops any miss.
 export function resolveHarvestPriceByCrop(args: {
   cropIds: readonly string[]
   cropYear: number
   policies: readonly CropInsurancePolicy[]
   estimates: readonly HarvestPriceEstimate[]
   liveByCrop?: ReadonlyMap<string, LiveHarvest>
+  crops?: ReadonlyArray<Pick<Crop, 'id' | 'name'>>
 }): Map<string, HarvestResolution> {
+  const nameById = new Map((args.crops ?? []).map((c) => [c.id, c.name]))
   const m = new Map<string, HarvestResolution>()
   for (const cropId of args.cropIds) {
+    const cropName = nameById.get(cropId)
     const pols = args.policies.filter((p) => p.crop_id === cropId && p.crop_year === args.cropYear)
     const avgProjected = pols.length > 0 ? pols.reduce((s, p) => s + Number(p.projected_price), 0) / pols.length : 0
     const policyFinal = pols.find((p) => p.harvest_price != null)?.harvest_price
@@ -1065,9 +1123,9 @@ export function resolveHarvestPriceByCrop(args: {
       continue
     }
     const live = args.liveByCrop?.get(cropId)
-    if (live) { m.set(cropId, { price: live.price, source: 'estimate', stale: live.stale, priceDate: live.priceDate }); continue }
+    if (live) { m.set(cropId, { price: centsToInsuranceDollars(cropName, live.price), source: 'estimate', stale: live.stale, priceDate: live.priceDate }); continue }
     const storedEst = args.estimates.find((e) => e.crop_id === cropId && e.crop_year === args.cropYear && e.price_type === 'harvest_estimate')
-    if (storedEst) { m.set(cropId, { price: Number(storedEst.price), source: 'estimate', stale: true, priceDate: storedEst.price_date }); continue }
+    if (storedEst) { m.set(cropId, { price: centsToInsuranceDollars(cropName, Number(storedEst.price)), source: 'estimate', stale: true, priceDate: storedEst.price_date }); continue }
     m.set(cropId, { price: avgProjected, source: 'projected', stale: false, priceDate: null })
   }
   return m
@@ -1187,10 +1245,15 @@ export function projectInsuranceIndemnities(args: {
   actualYieldByCrop: ReadonlyMap<string, number>
   harvestEstimates: readonly HarvestPriceEstimate[]
   liveHarvestByCrop?: ReadonlyMap<string, LiveHarvest>
+  // id→name for the ¢/lb→$/lb cotton conversion on futures-derived prices;
+  // pass it whenever cotton policies can be present.
+  crops?: ReadonlyArray<Pick<Crop, 'id' | 'name'>>
   scoTrigger?: number
   // Optional what-if levers (Claims Monitor); omit for the plain projection.
   globalYieldPct?: number
   yieldOverrideByPolicy?: ReadonlyMap<string, number>
+  // Harvest-price override in the policy's NATIVE unit ($/bu, $/lb cotton) —
+  // a UI collecting cotton ¢/lb must convert via centsToInsuranceDollars first.
   harvestOverrideByCrop?: ReadonlyMap<string, number>
   // 045: STAX/MCO endorsements + the shared county-yield assumption rows.
   staxes?: readonly CropInsuranceStax[]
@@ -1200,7 +1263,7 @@ export function projectInsuranceIndemnities(args: {
   const yearPolicies = args.policies.filter((p) => p.crop_year === args.cropYear)
   const cropIds = Array.from(new Set(yearPolicies.map((p) => p.crop_id)))
   const harvestByCrop = resolveHarvestPriceByCrop({
-    cropIds, cropYear: args.cropYear, policies: yearPolicies, estimates: args.harvestEstimates, liveByCrop: args.liveHarvestByCrop,
+    cropIds, cropYear: args.cropYear, policies: yearPolicies, estimates: args.harvestEstimates, liveByCrop: args.liveHarvestByCrop, crops: args.crops,
   })
   const practiceActual = practiceActualYieldByCrop(args.plantings, args.cropYear)
   const scoBy = new Map(args.scos.map((s) => [s.policy_id, s]))

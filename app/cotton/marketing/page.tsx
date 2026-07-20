@@ -9,6 +9,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { BuyerPicker } from '@/components/buyer-location-pickers'
+import MarketingDocImport from '@/components/cotton/marketing-doc-import'
+import BaleFileAssign from '@/components/cotton/bale-file-assign'
 import {
   buildCottonPhysicalSummary, computeLoanPrincipal, contractPricedCents,
   dispositionBoard, equityOutcome, ldpRateCents, projectBaleHandlingFees,
@@ -127,6 +129,12 @@ export default function CottonMarketingPage() {
   const summary = useMemo(() => buildCottonPhysicalSummary(inputs), [inputs])
 
   const dispByBale = useMemo(() => new Map(dispositions.map((d) => [d.bale_id, d])), [dispositions])
+  // Disposition KIND per bale (missing row = held) — the shape the doc-import
+  // and file-assign partitions consume.
+  const dispositionKindByBale = useMemo(
+    () => new Map<string, CottonDisposition>(dispositions.map((d) => [d.bale_id, d.disposition])),
+    [dispositions],
+  )
   const loanedBaleIds = useMemo(() => new Set(loanBales.map((x) => x.bale_id)), [loanBales])
   const ldpBaleIds = useMemo(() => new Set(ldpBales.map((x) => x.bale_id)), [ldpBales])
   const heldBales = useMemo(
@@ -528,6 +536,28 @@ export default function CottonMarketingPage() {
       {err && <p className="text-sm text-red-600">{err}</p>}
       {!loaded && <p className="text-sm text-slate-400">Loading…</p>}
 
+      {/* ---- AI document intake: contracts, pool payments, CCC loans, LDP,
+              equity confirmations, storage invoices ---- */}
+      {loaded && (
+        <MarketingDocImport
+          cropYear={cropYear}
+          entities={entities}
+          buyers={buyers}
+          contracts={contracts}
+          loans={loans}
+          bales={bales}
+          gradeByBale={gradeByBale}
+          dispositionByBale={dispositionKindByBale}
+          loanedBaleIds={loanedBaleIds}
+          ldpBaleIds={ldpBaleIds}
+          fees={fees}
+          latestAwpCents={latestAwp ? Number(latestAwp.awp_cents) : null}
+          loanLbsFor={loanLbs}
+          onBuyerCreated={(b) => setBuyers((xs) => [...xs, b].sort((a, z) => a.name.localeCompare(z.name)))}
+          onSaved={done}
+        />
+      )}
+
       {/* ---- Disposition board ---- */}
       <div className="bg-white rounded-xl shadow p-4 space-y-3">
         <h2 className="font-semibold">Bale disposition — where is my cotton</h2>
@@ -901,6 +931,17 @@ export default function CottonMarketingPage() {
             )}
           </div>
           <p className="text-xs text-slate-500">Held bales only{pickFor.kind !== 'contract' ? ' — bales that ever took a loan or LDP are excluded (mutually exclusive programs)' : ''}. Filter by gin receipt to pick a farm/field group.</p>
+          {/* Bulk assignment: a CSV/text bale list or an AI-read recap sheet
+              fills the same picked set — the confirmed save below stays the
+              single batch write. */}
+          <BaleFileAssign
+            target={pickFor.kind}
+            bales={bales}
+            dispositionByBale={dispositionKindByBale}
+            loanedBaleIds={loanedBaleIds}
+            ldpBaleIds={ldpBaleIds}
+            onAddMatches={(ids) => setPicked((s) => new Set([...s, ...ids]))}
+          />
           <div className="overflow-x-auto max-h-72 overflow-y-auto rounded border border-slate-100">
             <table className="min-w-full text-xs">
               <thead className="bg-slate-50 text-slate-600 sticky top-0"><tr>{['', 'PBI #', 'Lbs', 'Loan value', 'Receipt'].map((h) => <th key={h} className="text-left px-2 py-1.5">{h}</th>)}</tr></thead>

@@ -485,6 +485,7 @@ export default function CashFlowPage() {
         actualYieldByCrop: actualYieldByCropFromLoads({ loads, plantings, crops, cropYear: yr }),
         harvestEstimates,
         liveHarvestByCrop: liveHarvestByYear.get(yr),
+        crops,
         scoTrigger: resolveProgramYearConfig(yr, programConfigs).scoTrigger,
       })
       const total = projected.reduce((s, r) => s + r.comp.totalIndemnity, 0)
