@@ -876,7 +876,7 @@ export default function CottonMarketingPage() {
                 {loanPrincipalPreview.pendingClassing && <span className="text-amber-700"> — some bales unclassed: base rate used, recompute after grades import</span>}
               </p>
             )}
-            <p className="text-xs text-slate-500">Maturity defaults to entry + 9 months. Per-bale principal = classing loan value ¢/lb × net lbs (509 lbs @ 55.1¢ → $280.46).</p>
+            <p className="text-xs text-slate-500">Maturity defaults to entry + 9 months. Per-bale principal = classing loan value × net lbs (509 lbs @ $0.5510/lb → $280.46).</p>
             <div className="flex gap-2">
               <button type="button" className={btnCls} disabled={picked.size === 0} onClick={saveLoan}>Enter loan ({picked.size} bales)</button>
               <button type="button" className={btnGray} onClick={() => { setLoanForm(null); setPickFor(null); setPicked(new Set()) }}>Cancel</button>

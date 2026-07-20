@@ -572,7 +572,7 @@ function LdpReview({ supabase, extracted: x, bales, dispositionByBale, loanedBal
 
   async function save() {
     if (partition.matchedCount === 0) { onErr('No LDP-eligible bales matched — nothing to save.'); return }
-    if (awpV == null || rate == null) { onErr('Enter the AWP (¢/lb).'); return }
+    if (awpV == null || rate == null) { onErr('Enter the AWP ($/lb, e.g. 0.5143).'); return }
     if (rate <= 0) { onErr(`AWP ${cents(awpV)} is at/above the loan rate — no LDP is payable.`); return }
     const total = x.total_payment != null ? Number(x.total_payment) : computedTotal ?? 0
     if (!confirm(`Record LDP:\n\n${partition.matchedCount} bales · ${lbs0(partition.matchedLbs)} lbs\nRate ${cents(rate)}/lb → ${usd(computedTotal ?? 0)} computed${x.total_payment != null ? `\nDocument states ${usd(Number(x.total_payment))} (saved)` : ''}\n\nThese bales become CCC-loan-INELIGIBLE.`)) return
@@ -636,7 +636,7 @@ function EquityReview({ supabase, extracted: x, loans, buyers, loanLbsFor, onBuy
     : null
 
   async function save() {
-    if (!loan || eq == null || eq < 0) { onErr('Pick the loan and enter the equity ¢/lb.'); return }
+    if (!loan || eq == null || eq < 0) { onErr('Pick the loan and enter the equity ($/lb, e.g. 0.0800).'); return }
     const o = equityOutcome({ principalTotal: Number(loan.principal_total), lbs: loanLbsFor(loan.id), equityCentsPerLb: eq })
     if (!confirm(`Equity sale on ${loan.loan_number ?? 'loan'} at ${cents(eq)}/lb:\n\nEquity received: ${usd(o.equityTotal)}\nEffective sale price: ${cents(o.effectiveCentsPerLb)}/lb (loan + equity)\n\nBales are final — the merchant owns them.`)) return
     try {
