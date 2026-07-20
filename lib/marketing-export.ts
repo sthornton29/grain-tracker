@@ -1,6 +1,6 @@
 // The Marketing dashboard's export payload, extracted pure so the mixed
 // grain + cotton unit formatting is unit-testable: grain sections stay $/bu +
-// bushels; cotton sections render ¢/lb + lbs of lint (with bales as a
+// bushels; cotton sections render $/lb + lbs of lint (with bales as a
 // companion figure) and skip the grain-shaped basis/sales blocks entirely.
 
 import { CONTRACT_TYPE_LABEL } from '@/lib/contracts'
@@ -49,7 +49,7 @@ export function buildMarketingExport(args: {
     const dryAc = seg ? seg.fullDry + seg.dcDry : 0
 
     if (r.unit === 'lbs') {
-      // ---- Cotton: lbs of lint + ¢/lb; production and futures hedges only. ----
+      // ---- Cotton: lbs of lint + $/lb display; production and futures hedges only. ----
       sub('Production')
       kv('Planted acres', `${ac(r.acres)}${irrAc > 0 || dryAc > 0 ? ` (irr ${ac(irrAc)} / dry ${ac(dryAc)})` : ''}`)
       kv('Yield', r.yield != null ? `${yld(r.yield)} lbs lint/ac ${r.yieldLabel}` : '—')

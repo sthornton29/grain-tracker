@@ -27,7 +27,7 @@ import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { harvestContractSymbol, countyAssumptionFor, isAreaPlan } from '@/lib/crop-insurance'
 import { cropToHedgeCommodity } from '@/lib/contracts'
-import { quantityFor } from '@/lib/hedging'
+import { quantityFor, formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
 import { projectPayments, applyMyaResolution, programYearFor, otherPaymentsInRevenueYear } from '@/lib/government-payments'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import {
@@ -69,7 +69,8 @@ type ViewMode = 'revenue' | 'profit'
 
 const bu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
 const price2 = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-const cents2 = (n: number) => `${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}¢`
+// ¢/lb-stored cotton prices display as $/lb.
+const cents2 = (n: number) => formatCottonPrice(n)
 const parseNum = (s: string | undefined | null): number | null => {
   if (s == null || s.trim() === '') return null
   const v = Number(s)
@@ -445,11 +446,11 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
     const sections: ExportPayload['sections'] = cropViews
       .filter((v) => v.grid.length > 0)
       .map((v) => {
-        // Cotton axes are ¢/lb × lbs/ac; grains $/bu × bu/ac.
+        // Cotton axes display $/lb × lbs/ac (¢ stored); grains $/bu × bu/ac.
         const isCotton = isCottonCrop(v.crop.name)
         const qty = isCotton ? 'lbs' : 'bu'
         const columns = [
-          { label: `${v.symbol ? `${v.symbol} futures` : 'Futures'} ${isCotton ? '¢/lb' : '$/bu'}`, align: 'right' as const, format: (isCotton ? 'cents' : 'price') as 'cents' | 'price' },
+          { label: `${v.symbol ? `${v.symbol} futures` : 'Futures'} ${isCotton ? '$/lb' : '$/bu'}`, align: 'right' as const, format: (isCotton ? 'cents' : 'price') as 'cents' | 'price' },
           ...v.yieldValues.map((y) => ({
             label: `${formatNumber(y, 'yield')} ${isCotton ? 'lbs/ac' : 'bu/ac'}${v.split.state === 'complete' ? ' (actual)' : ''}`,
             align: 'right' as const, format: 'usd2' as const,
@@ -611,21 +612,42 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   )
 }
 
+// Cotton axis cfg strings persist in ¢ (unchanged from older sessions); the
+// inputs read/write $/lb. Legacy ¢ typed directly (70, or a 2-¢ step) still
+// lands right via the magnitude guard.
+function centsCfgToDollars(cfg: string | undefined): string {
+  if (cfg == null || cfg.trim() === '') return ''
+  const v = Number(cfg)
+  return Number.isFinite(v) ? String(v / 100) : ''
+}
+function dollarsToCentsCfg(entered: string, centsThreshold: number): string {
+  if (entered.trim() === '') return ''
+  const cents = parseCottonPriceInput(entered, { centsThreshold })
+  return cents == null ? '' : String(cents)
+}
+
 // Module-scope so the input keeps its identity (and focus) across re-renders.
 // Commits on blur/Enter (app convention), not per keystroke — every commit
 // recomputes the scenario grids, so typing must stay local.
-function AxisField({ label, value, placeholder, onCommit, step }: {
-  label: string; value: string; placeholder: string; onCommit: (s: string) => void; step?: string
+function AxisField({ label, value, placeholder, onCommit }: {
+  label: string; value: string; placeholder: string; onCommit: (s: string) => void
 }) {
   const [draft, setDraft] = useState(value)
   useEffect(() => { setDraft(value) }, [value])
+  // Plain typing, no native spinner arrows. An entry that isn't a number
+  // reverts to the last committed value instead of poisoning the axis.
+  const commit = () => {
+    if (draft === value) return
+    if (draft.trim() !== '' && !Number.isFinite(Number(draft))) { setDraft(value); return }
+    onCommit(draft)
+  }
   return (
     <label className="flex items-center gap-1 text-xs text-slate-500">
       {label}
       <input
-        type="number" step={step ?? 'any'} value={draft} placeholder={placeholder}
+        type="text" inputMode="decimal" value={draft} placeholder={placeholder}
         onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => { if (draft !== value) onCommit(draft) }}
+        onBlur={commit}
         onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
         className="w-20 rounded border border-slate-300 px-2 py-1 text-right tabular-nums text-sm"
       />
@@ -647,7 +669,7 @@ function CropSensitivitySection({
 }) {
   const locked = v.contractedBu + v.openHedgeBu > 0
   const missingCost = mode === 'profit' && v.inputs.assumption?.cost_per_acre == null
-  // Cotton reads in ¢/lb and lbs of lint; grains in $/bu and bushels.
+  // Cotton displays $/lb (¢ stored internally) and lbs of lint; grains $/bu and bushels.
   const isCotton = isCottonCrop(v.crop.name)
   const qty = isCotton ? 'lbs' : 'bu'
   const yUnit = isCotton ? 'lbs/ac' : 'bu/ac'
@@ -687,26 +709,39 @@ function CropSensitivitySection({
             </span>
           )}
           {isCotton && v.inputs.cottonPhysical != null && v.inputs.cottonPhysical.loanFloorCents != null && v.inputs.cottonPhysical.inLoanLbs > 0 && (
-            <span className="text-xs rounded-full bg-indigo-100 text-indigo-800 px-2.5 py-1" title="In-loan lbs are valued at max(banked CCC loan value, scenario ¢/lb) — cells below the floor flatten there, like the RP floor.">
+            <span className="text-xs rounded-full bg-indigo-100 text-indigo-800 px-2.5 py-1" title="In-loan lbs are valued at max(banked CCC loan value, scenario price) — cells below the floor flatten there, like the RP floor.">
               CCC loan floor {cents2(v.inputs.cottonPhysical.loanFloorCents)} on {bu(v.inputs.cottonPhysical.inLoanLbs)} lbs
             </span>
           )}
         </div>
 
-        {/* Axis controls */}
+        {/* Axis controls. Cotton price fields read and accept $/lb (0.70 /
+            0.02 — legacy ¢ entries like 70 still work via the magnitude
+            guard); the persisted cfg strings stay in ¢ so existing saved axes
+            keep working unchanged. */}
         <div className="flex flex-wrap gap-x-6 gap-y-2 no-print">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Price axis</span>
-            <AxisField label="center" step="0.01" value={v.cfg.pc ?? ''} placeholder={v.autoPriceCenter != null ? v.autoPriceCenter.toFixed(2) : '—'} onCommit={(s) => onAxisChange({ pc: s })} />
-            <AxisField label="step" step="0.05" value={v.cfg.ps ?? ''} placeholder={v.priceStep.toFixed(2)} onCommit={(s) => onAxisChange({ ps: s })} />
-            <AxisField label="± steps" step="1" value={v.cfg.pn ?? ''} placeholder="5" onCommit={(s) => onAxisChange({ pn: s })} />
+            <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Price axis{isCotton ? ' ($/lb)' : ' ($/bu)'}</span>
+            <AxisField
+              label="center"
+              value={isCotton ? centsCfgToDollars(v.cfg.pc) : v.cfg.pc ?? ''}
+              placeholder={v.autoPriceCenter != null ? (isCotton ? (v.autoPriceCenter / 100).toFixed(2) : v.autoPriceCenter.toFixed(2)) : '—'}
+              onCommit={(s) => onAxisChange({ pc: isCotton ? dollarsToCentsCfg(s, 5) : s })}
+            />
+            <AxisField
+              label="step"
+              value={isCotton ? centsCfgToDollars(v.cfg.ps) : v.cfg.ps ?? ''}
+              placeholder={isCotton ? (v.priceStep / 100).toFixed(2) : v.priceStep.toFixed(2)}
+              onCommit={(s) => onAxisChange({ ps: isCotton ? dollarsToCentsCfg(s, 0.25) : s })}
+            />
+            <AxisField label="± steps" value={v.cfg.pn ?? ''} placeholder="5" onCommit={(s) => onAxisChange({ pn: s })} />
           </div>
           {v.split.state !== 'complete' && (
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Yield axis</span>
-              <AxisField label="center" step="1" value={v.cfg.yc ?? ''} placeholder={v.autoYieldCenter != null ? v.autoYieldCenter.toFixed(1) : '—'} onCommit={(s) => onAxisChange({ yc: s })} />
-              <AxisField label="step" step="1" value={v.cfg.ys ?? ''} placeholder={v.yieldStep.toFixed(0)} onCommit={(s) => onAxisChange({ ys: s })} />
-              <AxisField label="± steps" step="1" value={v.cfg.yn ?? ''} placeholder="5" onCommit={(s) => onAxisChange({ yn: s })} />
+              <AxisField label="center" value={v.cfg.yc ?? ''} placeholder={v.autoYieldCenter != null ? v.autoYieldCenter.toFixed(1) : '—'} onCommit={(s) => onAxisChange({ yc: s })} />
+              <AxisField label="step" value={v.cfg.ys ?? ''} placeholder={v.yieldStep.toFixed(0)} onCommit={(s) => onAxisChange({ ys: s })} />
+              <AxisField label="± steps" value={v.cfg.yn ?? ''} placeholder="5" onCommit={(s) => onAxisChange({ yn: s })} />
             </div>
           )}
           {v.hasCountyLegs && (
@@ -761,7 +796,7 @@ function CropSensitivitySection({
               <thead className={theadCls}>
                 <tr>
                   <th className="text-right px-2 py-1 whitespace-nowrap">
-                    {v.symbol ? `${v.symbol} futures` : 'Futures'} {isCotton ? '¢/lb' : '$/bu'} ↓
+                    {v.symbol ? `${v.symbol} futures` : 'Futures'} {isCotton ? '$/lb' : '$/bu'} ↓
                   </th>
                   {v.yieldValues.map((y, ci) => (
                     <th

@@ -121,14 +121,14 @@ export default function BaleQualityReport({ onPayloadChange }: Props) {
       summary: [
         { label: 'Bales', value: String(totals.bales) },
         { label: 'Lint lbs', value: totals.lintLbs.toLocaleString() },
-        { label: 'Avg Loan ¢/lb', value: avgLoan(totals.loanValue, totals.loanLbs)?.toFixed(1) ?? '—' },
+        { label: 'Avg Loan $/lb', value: (() => { const a = avgLoan(totals.loanValue, totals.loanLbs); return a != null ? `$${(a / 100).toFixed(4)}` : '—' })() },
       ],
       sections: [{
         title: 'Bale Quality by Field',
         columns: [
           { label: 'Entity' }, { label: 'Farm' }, { label: 'Field' },
           { label: 'Bales', align: 'right', format: 'int' }, { label: 'Lint lbs', align: 'right', format: 'int' },
-          { label: 'Classed', align: 'right', format: 'int' }, { label: 'Avg Loan ¢/lb', align: 'right', format: 'dec2' },
+          { label: 'Classed', align: 'right', format: 'int' }, { label: 'Avg Loan $/lb', align: 'right', format: 'cents' },
           { label: 'Color Grades' }, { label: 'Staple' }, { label: 'Mic' }, { label: 'Strength' },
         ],
         rows: [
@@ -160,7 +160,7 @@ export default function BaleQualityReport({ onPayloadChange }: Props) {
         <div className="bg-white rounded-xl shadow overflow-x-auto">
           <table className="min-w-full text-sm border-collapse">
             <thead className={theadCls}>
-              <tr>{['Entity', 'Farm', 'Field', 'Bales', 'Lint lbs', 'Classed', 'Avg Loan ¢/lb', 'Color Grades', 'Staple', 'Mic', 'Strength'].map((h, i) => <th key={h} className={`${i >= 3 && i <= 6 ? 'text-right' : 'text-left'} px-2 py-1.5 whitespace-nowrap`}>{h}</th>)}</tr>
+              <tr>{['Entity', 'Farm', 'Field', 'Bales', 'Lint lbs', 'Classed', 'Avg Loan $/lb', 'Color Grades', 'Staple', 'Mic', 'Strength'].map((h, i) => <th key={h} className={`${i >= 3 && i <= 6 ? 'text-right' : 'text-left'} px-2 py-1.5 whitespace-nowrap`}>{h}</th>)}</tr>
             </thead>
             <tbody>
               {rows.map((r) => (
@@ -171,7 +171,7 @@ export default function BaleQualityReport({ onPayloadChange }: Props) {
                   <td className="px-2 py-1.5 text-right">{r.bales}</td>
                   <td className="px-2 py-1.5 text-right font-mono">{Math.round(r.lintLbs).toLocaleString()}</td>
                   <td className="px-2 py-1.5 text-right">{r.classed}</td>
-                  <td className="px-2 py-1.5 text-right font-semibold">{avgLoan(r.loanValue, r.loanLbs)?.toFixed(1) ?? '—'}</td>
+                  <td className="px-2 py-1.5 text-right font-semibold">{(() => { const a = avgLoan(r.loanValue, r.loanLbs); return a != null ? `$${(a / 100).toFixed(4)}` : '—' })()}</td>
                   <td className="px-2 py-1.5 text-xs">{colorDist(r.colors) || '—'}</td>
                   <td className="px-2 py-1.5 text-xs whitespace-nowrap">{r.staple.length ? dist(r.staple, STAPLE_RANGES) : '—'}</td>
                   <td className="px-2 py-1.5 text-xs whitespace-nowrap">{r.mic.length ? dist(r.mic, MIC_RANGES) : '—'}</td>
@@ -183,7 +183,7 @@ export default function BaleQualityReport({ onPayloadChange }: Props) {
                 <td className="px-2 py-1.5 text-right">{totals.bales}</td>
                 <td className="px-2 py-1.5 text-right font-mono">{Math.round(totals.lintLbs).toLocaleString()}</td>
                 <td className="px-2 py-1.5 text-right">{totals.classed}</td>
-                <td className="px-2 py-1.5 text-right">{avgLoan(totals.loanValue, totals.loanLbs)?.toFixed(1) ?? '—'}</td>
+                <td className="px-2 py-1.5 text-right">{(() => { const a = avgLoan(totals.loanValue, totals.loanLbs); return a != null ? `$${(a / 100).toFixed(4)}` : '—' })()}</td>
                 <td className="px-2 py-1.5 text-xs" colSpan={4}>{colorDist(totals.colors)}</td>
               </tr>
             </tbody>

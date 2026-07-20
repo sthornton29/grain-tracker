@@ -288,7 +288,7 @@ export function buildCottonPhysicalSummary(inputs: CottonPhysicalInputs): Cotton
     soldLbs += lbs
     soldDollars += (cents * lbs) / 100
     const label = c.contract_type === 'on_call'
-      ? `On-call ${c.contract_number ?? ''} (basis ${c.basis_cents}¢ + ${c.futures_fixed_cents}¢)`.trim()
+      ? `On-call ${c.contract_number ?? ''} (basis $${(Number(c.basis_cents) / 100).toFixed(4)} + $${(Number(c.futures_fixed_cents) / 100).toFixed(4)})`.trim()
       : `${c.contract_type === 'spot' ? 'Spot' : 'Fixed'} ${c.contract_number ?? ''}`.trim()
     soldSources.push({ label, lbs, cents })
   }

@@ -120,7 +120,7 @@ export default function CottonBalesPage() {
             </div>
             <div className="overflow-x-auto max-h-72 overflow-y-auto">
               <table className="min-w-full text-xs">
-                <thead className="text-slate-500 sticky top-0 bg-white"><tr>{['PBI #', 'NetWt', 'Gr', 'St', 'Mic', 'Str', 'Loan ¢/lb', 'Status'].map((h) => <th key={h} className="text-left px-1 py-1">{h}</th>)}</tr></thead>
+                <thead className="text-slate-500 sticky top-0 bg-white"><tr>{['PBI #', 'NetWt', 'Gr', 'St', 'Mic', 'Str', 'Loan $/lb', 'Status'].map((h) => <th key={h} className="text-left px-1 py-1">{h}</th>)}</tr></thead>
                 <tbody>
                   {preview.matched.map(({ row, weightMismatch }, i) => (
                     <tr key={`m${i}`} className="border-t border-slate-100">
@@ -130,7 +130,7 @@ export default function CottonBalesPage() {
                       <td className="px-1 py-0.5">{fmt(row.staple_32nds, 0)}</td>
                       <td className="px-1 py-0.5">{fmt(row.micronaire, 1)}</td>
                       <td className="px-1 py-0.5">{fmt(row.strength_g_tex, 1)}</td>
-                      <td className="px-1 py-0.5 text-right">{fmt(row.loan_value_cents_per_lb, 1)}</td>
+                      <td className="px-1 py-0.5 text-right">{row.loan_value_cents_per_lb != null ? `$${(Number(row.loan_value_cents_per_lb) / 100).toFixed(4)}` : '—'}</td>
                       <td className="px-1 py-0.5">{weightMismatch ? <span className="text-red-700">NetWt differs &gt;1% from the receipt bale</span> : <span className="text-green-700">ok</span>}</td>
                     </tr>
                   ))}
@@ -161,7 +161,7 @@ export default function CottonBalesPage() {
       <div className="bg-white rounded-xl shadow overflow-x-auto">
         <div className="px-3 pt-3 text-sm text-slate-500">{yearBales.length} bales · {gradedCount} classed</div>
         <table className="min-w-full text-sm">
-          <thead className="bg-slate-100 text-slate-700"><tr>{['PBI #', 'Farm', 'Field', 'Net lbs', 'Gr', 'Lf', 'St', 'Mic', 'Str', 'Cgr', 'Loan ¢/lb', 'Loan $'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+          <thead className="bg-slate-100 text-slate-700"><tr>{['PBI #', 'Farm', 'Field', 'Net lbs', 'Gr', 'Lf', 'St', 'Mic', 'Str', 'Cgr', 'Loan $/lb', 'Loan $'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
           <tbody>
             {yearBales.length === 0 && <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">No {cropYear} bales yet — they come from gin receipts.</td></tr>}
             {yearBales.map((b) => {
@@ -179,7 +179,7 @@ export default function CottonBalesPage() {
                   <td className="px-3 py-1.5">{fmt(g?.micronaire, 1)}</td>
                   <td className="px-3 py-1.5">{fmt(g?.strength_g_tex, 1)}</td>
                   <td className="px-3 py-1.5">{g?.composite_grade ?? '—'}</td>
-                  <td className="px-3 py-1.5 text-right">{fmt(g?.loan_value_cents_per_lb, 1)}</td>
+                  <td className="px-3 py-1.5 text-right">{g?.loan_value_cents_per_lb != null ? `$${(Number(g.loan_value_cents_per_lb) / 100).toFixed(4)}` : '—'}</td>
                   <td className="px-3 py-1.5 text-right">{g?.loan_value_total != null ? `$${Number(g.loan_value_total).toFixed(2)}` : '—'}</td>
                 </tr>
               )

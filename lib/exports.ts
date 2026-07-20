@@ -44,7 +44,7 @@ export type NumFmt =
   | 'usd0' // $1,234
   | 'usd2' // $1,234.56
   | 'price' // $4.93 ($/bu, 2 decimals)
-  | 'cents' // 72.65¢ (¢/lb cotton prices, 2 decimals with a cents indicator)
+  | 'cents' // a ¢/lb-STORED cotton price displayed as $/lb: 72.65 → $0.7265
   | 'bu' // 45,000 bushels (0 decimals)
   | 'lbs' // 412,000 lbs (0 decimals, commas)
   | 'acres' // 1,250.0 (1 decimal)
@@ -141,8 +141,8 @@ export function formatNumber(value: number, fmt?: NumFmt): string {
     case 'usd2':
     case 'price':
       body = '$' + group(a, 2, 2); break
-    case 'cents':
-      body = group(a, 2, 2) + '¢'; break
+    case 'cents': // a ¢/lb-stored cotton price, DISPLAYED as $/lb (÷100, 4dp)
+      body = '$' + group(a / 100, 4, 4); break
     case 'pct0':
       body = group(a, 0, 0) + '%'; break
     case 'pct1':
@@ -169,7 +169,7 @@ export function excelNumFmt(fmt?: NumFmt): string | undefined {
     case 'usd0': return '$#,##0;($#,##0)'
     case 'usd2':
     case 'price': return '$#,##0.00;($#,##0.00)'
-    case 'cents': return '#,##0.00"¢";(#,##0.00"¢")'
+    case 'cents': return '$#,##0.0000;($#,##0.0000)'
     case 'pct0': return '#,##0"%";(#,##0"%")'
     case 'pct1': return '#,##0.0"%";(#,##0.0"%")'
     default: return '#,##0.##;(#,##0.##)' // inference
@@ -301,9 +301,13 @@ function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSectio
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SUBHEAD_FILL_ARGB } }
       return
     }
-    const values = row.map((cell) => {
-      const { raw } = normCell(cell)
-      if (typeof raw === 'number') return raw // REAL number; numFmt applied below
+    const values = row.map((cell, i) => {
+      const { raw, format } = normCell(cell)
+      const fmt = format ?? section.columns[i]?.format
+      // 'cents' carries ¢/lb-stored cotton prices displayed as $/lb: the REAL
+      // number written to the sheet is the $ value (÷100) so the $ numFmt and
+      // any user math read correctly.
+      if (typeof raw === 'number') return fmt === 'cents' ? raw / 100 : raw
       return raw ?? ''
     })
     const r = ws.addRow(values)

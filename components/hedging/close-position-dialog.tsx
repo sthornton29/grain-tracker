@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { Modal } from './position-form'
 import { contractUnit, fmtCommodityPrice, pnlSizeFor,
   parsePrice,
+  parseCottonPriceInput,
   realizedPnl,
   bushelsFor,
   fmtPrice,
@@ -41,7 +42,7 @@ export default function ClosePositionDialog({ position, onClose, onSaved }: Prop
 
   // P&L size per 1.00 of price (cotton is quoted in cents/lb -> size / 100).
   const sizeBu = pnlSizeFor(position.commodity)
-  const closePrice = parsePrice(closePriceInput)
+  const closePrice = position.commodity === 'Cotton' ? parseCottonPriceInput(closePriceInput) : parsePrice(closePriceInput)
   const qtyNum = Number(qty)
   const partial = Number.isInteger(qtyNum) && qtyNum > 0 && qtyNum < position.num_contracts
   const closeComm = parsePrice(closeCommission) ?? 0
@@ -157,7 +158,7 @@ export default function ClosePositionDialog({ position, onClose, onSaved }: Prop
             </span>
           </label>
           <label className={labelCls}>
-            Close Price ({contractUnit(position.commodity) === 'lbs' ? '¢/lb — plain decimal, e.g. 68.00' : '$/bu'})
+            Close Price ({contractUnit(position.commodity) === 'lbs' ? '$/lb — e.g. 0.6800 (legacy 68.00 also works)' : '$/bu'})
             <input
               type="text"
               inputMode="decimal"
