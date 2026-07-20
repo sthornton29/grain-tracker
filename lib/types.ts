@@ -898,11 +898,15 @@ export type BudgetScenario = {
 
 // One crop line in a scenario. Prices: $/bu grains; cotton STORED ¢/lb
 // (displayed $/lb). basis adds to the futures (or manual) price.
+// practice/cropping (049): optional irrigated/dryland and full-season/
+// double-crop breakout — null = blended / full season.
 export type BudgetLine = {
   id: string
   scenario_id: string
   crop_id: string
   label: string | null
+  practice: 'irrigated' | 'non_irrigated' | null
+  cropping: 'full_season' | 'double_crop' | null
   acres: number | null
   yield_per_acre: number | null
   price_mode: 'live' | 'manual'
