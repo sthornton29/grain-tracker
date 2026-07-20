@@ -435,12 +435,15 @@ function LoanReview({ supabase, extracted: x, loans, bales, gradeByBale, disposi
     tokens: (x.bale_pbis ?? []).map(String), bales, dispositionByBale, loanedBaleIds, ldpBaleIds, target: 'loan',
   }), [x.bale_pbis, bales, dispositionByBale, loanedBaleIds, ldpBaleIds])
 
-  // Dedupe on loan_number: the document for an existing loan ADDS its clean
-  // matched bales to that loan instead of creating a duplicate.
-  const existing = useMemo(() => {
+  // Dedupe on loan_number: the document for an existing OPEN loan ADDS its
+  // clean matched bales to that loan instead of creating a duplicate. A CLOSED
+  // loan with the same number blocks the save outright (likely a re-upload).
+  const sameNumber = useMemo(() => {
     const n = f.loan_number.trim().toLowerCase()
     return n === '' ? null : loans.find((l) => (l.loan_number ?? '').trim().toLowerCase() === n) ?? null
   }, [f.loan_number, loans])
+  const existing = sameNumber?.status === 'open' ? sameNumber : null
+  const closedDuplicate = sameNumber != null && sameNumber.status !== 'open' ? sameNumber : null
 
   const principal = useMemo(() => computeLoanPrincipal(
     partition.matched.map((m) => ({
@@ -452,6 +455,7 @@ function LoanReview({ supabase, extracted: x, loans, bales, gradeByBale, disposi
 
   async function save() {
     if (partition.matchedCount === 0) { onErr('No assignable bales matched — nothing to save.'); return }
+    if (closedDuplicate) { onErr(`Loan ${closedDuplicate.loan_number} is already ${closedDuplicate.status.replace('_', ' ')} — not saved twice.`); return }
     const rate = num(f.rate) ?? DEFAULT_LOAN_RATE
     const summaryLine = `${partition.matchedCount} bales · ${lbs0(partition.matchedLbs)} lbs · computed principal ${usd(principal.principalTotal)}` +
       (x.principal_total != null ? `\nDocument states principal ${usd(Number(x.principal_total))}` : '')
@@ -498,7 +502,10 @@ function LoanReview({ supabase, extracted: x, loans, bales, gradeByBale, disposi
     <div className="rounded-lg border border-slate-300 p-3 space-y-2">
       <div className="font-semibold text-sm">CCC loan — review &amp; save</div>
       {existing && (
-        <p className="text-xs text-amber-700">Loan #{existing.loan_number} already exists ({existing.status}) — saving <strong>adds the matched bales to it</strong> and recomputes the principal; no duplicate loan is created.</p>
+        <p className="text-xs text-amber-700">Loan #{existing.loan_number} already exists (open) — saving <strong>adds the matched bales to it</strong> and recomputes the principal; no duplicate loan is created.</p>
+      )}
+      {closedDuplicate && (
+        <p className="text-xs text-red-700">Loan #{closedDuplicate.loan_number} is already on file and {closedDuplicate.status.replace('_', ' ')} — this looks like a re-upload; saving is blocked. Change the loan # if this really is a different loan.</p>
       )}
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
         <label className="flex flex-col gap-1">Loan #
@@ -532,7 +539,7 @@ function LoanReview({ supabase, extracted: x, loans, bales, gradeByBale, disposi
           )}
         </p>
       )}
-      <button type="button" className={btnCls} disabled={partition.matchedCount === 0} onClick={save}>
+      <button type="button" className={btnCls} disabled={partition.matchedCount === 0 || closedDuplicate != null} onClick={save}>
         {existing ? `Add ${partition.matchedCount} bales to loan ${existing.loan_number}` : `Enter loan (${partition.matchedCount} bales)`}
       </button>
     </div>
