@@ -572,17 +572,18 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
                 yield allocated to the policy&apos;s practice. Once the RMA <em>final</em> harvest price is on file it is
                 used in every cell instead (the price axis then moves crop sales only), matching the Claims Monitor.
                 Cells show <em>net</em> insurance P&amp;L (indemnity − premium), the same engine as the Claims Monitor.</p>
-              <p><strong className="text-slate-700">County yield scenario</strong> (per-crop toggle) —
-                <em> County independent</em> (default): the estimated county yield is CONSTANT across the farm-yield
-                axis (RMA expected × (1 + variance assumption)) — the yield axis is YOUR farm&apos;s yield and the county
-                doesn&apos;t necessarily follow it, so county-triggered legs (SCO/ECO/STAX/ARP/AYP/MCO) vary only down the
-                price axis. This honest baseline shows the &quot;county policy may not pay when I have a loss&quot; gap.
-                <em> County moves with me</em> (widespread-loss scenario): the county scales WITH the cell&apos;s blended farm
-                yield, anchored at the axis center — scenario county = standing estimate × (blended farm yield ÷ expected
-                farm yield) — so a farm 20% below expected implies a county 20% below its estimate and the area policies
-                kick in alongside the individual RP floor. Mid-harvest the blend (fixed + scenario ÷ total acres) drives
-                the scale. Once the RMA <em>final</em> county yield is on file, both modes pin to it and the toggle is
-                disabled.</p>
+              <p><strong className="text-slate-700">County yield scenario</strong> (per-crop toggle) — the county
+                estimate comes from your <em>my-yield-vs-county differential</em> (&quot;I typically run 15 bu/ac better
+                than the county&quot;): estimated county yield = farm yield − differential.
+                <em> County independent</em> (default): the county is CONSTANT across the farm-yield axis (your
+                EXPECTED yield − differential) — the yield axis is YOUR farm&apos;s yield and the county doesn&apos;t
+                necessarily follow it, so county-triggered legs (SCO/ECO/STAX/ARP/AYP/MCO) vary only down the price
+                axis. This honest baseline shows the &quot;county policy may not pay when I have a loss&quot; gap.
+                <em> County moves with me</em> (widespread-loss scenario): the county = the cell&apos;s scenario blended
+                farm yield − differential — the stable relationship is preserved as the farm yield moves, so a farm
+                35 bu below expected implies a county 35 bu below its estimate and the area policies kick in alongside
+                the individual RP floor. Mid-harvest the blend (fixed + scenario ÷ total acres) is the basis. Once the
+                RMA <em>final</em> county yield is on file, both modes pin to it and the toggle is disabled.</p>
               <p><strong className="text-slate-700">Government payments</strong> (toggle) — government payments shown
                 are those expected to be <strong>received during the {cropYear} crop year</strong> (i.e.,
                 the {programYearFor(cropYear)} program-year ARC/PLC paid in

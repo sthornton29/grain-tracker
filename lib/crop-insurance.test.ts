@@ -23,8 +23,9 @@ import {
   type PolicyUploadValues,
   type PolicyInputs,
   type BandInputs,
+  type CountyAssumptionLike,
 } from '@/lib/crop-insurance'
-import type { HarvestPriceEstimate, CropInsurancePolicy, CropInsuranceSco, CropAssumption, FieldPlanting } from '@/lib/types'
+import type { HarvestPriceEstimate, CropInsurancePolicy, CropInsuranceSco, CropAssumption, FieldPlanting, CountyYieldAssumption } from '@/lib/types'
 
 // ---------------------------------------------------------------------------
 // Fixtures for the shared indemnity projection. Builders fill every field so the
@@ -282,63 +283,99 @@ describe('computeBandIndemnity', () => {
 })
 
 // ---------------------------------------------------------------------------
-// resolveEstimatedCountyYield — the SHARED county assumption (045). Estimated
-// final county yield = RMA expected × (1 + variance/100), or the absolute
-// override; pinned to the RMA final once published; countyScale is the Income
-// Sensitivity "moves with me" factor.
+// resolveEstimatedCountyYield — the SHARED county assumption (differential,
+// 047). Estimated county yield = the farm's own yield basis − differential
+// ("my yields run this much ABOVE the county"), or the absolute override;
+// pinned to the RMA final once published. RMA expected is reference-only
+// (the last-resort estimate when no differential can apply).
 // ---------------------------------------------------------------------------
-describe('resolveEstimatedCountyYield', () => {
-  it('variance: expected × (1 + pct/100)', () => {
-    // 150 × (1 − 10/100) = 135
-    const r = resolveEstimatedCountyYield({ expectedCountyYield: 150, assumption: { variance_pct: -10, county_yield_override: null, rma_final_county_yield: null } })
-    expect(r.estimatedYield).toBeCloseTo(135, 6)
-    expect(r.source).toBe('variance')
+const diffAssumption = (over: Partial<CountyAssumptionLike> = {}): CountyAssumptionLike => ({
+  yield_differential: null, county_yield_override: null, rma_final_county_yield: null, ...over,
+})
+
+describe('resolveEstimatedCountyYield — differential semantics', () => {
+  it('farm 185 − differential 15 → county estimate 170', () => {
+    const r = resolveEstimatedCountyYield({
+      expectedCountyYield: 150,
+      assumption: diffAssumption({ yield_differential: 15 }),
+      farmYieldBasis: 185,
+    })
+    expect(r.estimatedYield).toBeCloseTo(170, 6)
+    expect(r.source).toBe('differential')
+    expect(r.differential).toBe(15)
     expect(r.pinned).toBe(false)
   })
 
-  it('no shared row falls back to the DEPRECATED per-endorsement pct, else 0%', () => {
-    expect(resolveEstimatedCountyYield({ expectedCountyYield: 150, fallbackPct: 5 }).estimatedYield).toBeCloseTo(157.5, 6)
+  it('cotton in lbs: farm 1,275 − differential 75 → county 1,200', () => {
+    const r = resolveEstimatedCountyYield({
+      expectedCountyYield: 1150,
+      assumption: diffAssumption({ yield_differential: 75 }),
+      farmYieldBasis: 1275,
+    })
+    expect(r.estimatedYield).toBeCloseTo(1200, 6)
+  })
+
+  it('a negative differential ("I run below the county") adds to the farm yield', () => {
+    const r = resolveEstimatedCountyYield({
+      expectedCountyYield: 150,
+      assumption: diffAssumption({ yield_differential: -10 }),
+      farmYieldBasis: 160,
+    })
+    expect(r.estimatedYield).toBeCloseTo(170, 6)
+  })
+
+  it('no differential (or no farm basis) → RMA expected as the last resort', () => {
     expect(resolveEstimatedCountyYield({ expectedCountyYield: 150 }).estimatedYield).toBeCloseTo(150, 6)
-    // A shared row WINS over the fallback.
+    expect(resolveEstimatedCountyYield({ expectedCountyYield: 150 }).source).toBe('expected')
+    // A differential without a farm basis cannot apply.
+    expect(resolveEstimatedCountyYield({
+      expectedCountyYield: 150, assumption: diffAssumption({ yield_differential: 15 }),
+    }).estimatedYield).toBeCloseTo(150, 6)
+  })
+
+  it('DEPRECATED per-endorsement pct still works as the fallback when no shared row exists', () => {
+    expect(resolveEstimatedCountyYield({ expectedCountyYield: 150, fallbackPct: 5 }).estimatedYield).toBeCloseTo(157.5, 6)
+    // A shared differential row WINS over the fallback.
     expect(resolveEstimatedCountyYield({
       expectedCountyYield: 150, fallbackPct: 5,
-      assumption: { variance_pct: -10, county_yield_override: null, rma_final_county_yield: null },
-    }).estimatedYield).toBeCloseTo(135, 6)
+      assumption: diffAssumption({ yield_differential: 15 }), farmYieldBasis: 185,
+    }).estimatedYield).toBeCloseTo(170, 6)
   })
 
-  it('absolute override wins over variance and scales with the county mode', () => {
-    const a = { variance_pct: -10, county_yield_override: 140, rma_final_county_yield: null }
-    expect(resolveEstimatedCountyYield({ expectedCountyYield: 150, assumption: a }).estimatedYield).toBeCloseTo(140, 6)
-    expect(resolveEstimatedCountyYield({ expectedCountyYield: 150, assumption: a, countyScale: 0.8 }).estimatedYield).toBeCloseTo(112, 6)
+  it('absolute override wins over the differential (and does not move with the farm)', () => {
+    const a = diffAssumption({ yield_differential: 15, county_yield_override: 140 })
+    expect(resolveEstimatedCountyYield({ expectedCountyYield: 150, assumption: a, farmYieldBasis: 185 }).estimatedYield).toBeCloseTo(140, 6)
+    expect(resolveEstimatedCountyYield({ expectedCountyYield: 150, assumption: a, farmYieldBasis: 120 }).estimatedYield).toBeCloseTo(140, 6)
   })
 
-  it('RMA final pins the yield — no variance, no scenario scale', () => {
-    const a = { variance_pct: -10, county_yield_override: 140, rma_final_county_yield: 152 }
-    const r = resolveEstimatedCountyYield({ expectedCountyYield: 150, assumption: a, countyScale: 0.7 })
+  it('RMA final pins the yield over everything', () => {
+    const a = diffAssumption({ yield_differential: 15, county_yield_override: 140, rma_final_county_yield: 152 })
+    const r = resolveEstimatedCountyYield({ expectedCountyYield: 150, assumption: a, farmYieldBasis: 185 })
     expect(r.estimatedYield).toBeCloseTo(152, 6)
     expect(r.pinned).toBe(true)
     expect(r.source).toBe('final')
   })
 
-  it('countyScale scales the variance estimate ("moves with me")', () => {
-    // standing = 150 × 0.9 = 135; farm 20% below expected → county 135 × 0.8 = 108
-    const r = resolveEstimatedCountyYield({
-      expectedCountyYield: 150,
-      assumption: { variance_pct: -10, county_yield_override: null, rma_final_county_yield: null },
-      countyScale: 0.8,
-    })
-    expect(r.estimatedYield).toBeCloseTo(108, 6)
+  it('never goes below zero', () => {
+    expect(resolveEstimatedCountyYield({
+      expectedCountyYield: 150, assumption: diffAssumption({ yield_differential: 50 }), farmYieldBasis: 30,
+    }).estimatedYield).toBe(0)
   })
 })
 
 describe('countyAssumptionFor', () => {
+  const mkRow = (over: Partial<CountyYieldAssumption>): CountyYieldAssumption => ({
+    id: '1', crop_id: 'corn', county_id: 'A', crop_year: 2026, variance_pct: 0,
+    yield_differential: null, county_yield_override: null, rma_final_county_yield: null, notes: null, created_at: '',
+    ...over,
+  })
   const rows = [
-    { id: '1', crop_id: 'corn', county_id: 'A', crop_year: 2026, variance_pct: -10, county_yield_override: null, rma_final_county_yield: null, notes: null, created_at: '' },
-    { id: '2', crop_id: 'corn', county_id: null, crop_year: 2026, variance_pct: -5, county_yield_override: null, rma_final_county_yield: null, notes: null, created_at: '' },
+    mkRow({ id: '1', county_id: 'A', yield_differential: 15 }),
+    mkRow({ id: '2', county_id: null, yield_differential: 5 }),
   ]
   it('exact county match wins; null-county default fills; other crops/years miss', () => {
-    expect(countyAssumptionFor(rows, 'corn', 'A', 2026)?.variance_pct).toBe(-10)
-    expect(countyAssumptionFor(rows, 'corn', 'B', 2026)?.variance_pct).toBe(-5)
+    expect(countyAssumptionFor(rows, 'corn', 'A', 2026)?.yield_differential).toBe(15)
+    expect(countyAssumptionFor(rows, 'corn', 'B', 2026)?.yield_differential).toBe(5)
     expect(countyAssumptionFor(rows, 'soy', 'A', 2026)).toBeNull()
     expect(countyAssumptionFor(rows, 'corn', 'A', 2025)).toBeNull()
   })
@@ -1029,19 +1066,21 @@ describe('ARP — county-triggered, farm yield plays no role', () => {
     expectedCountyYield: 200, expectedCountyRevenue: 800, protectionFactor: 1,
   }
 
-  it('farm loss + county fine (independent mode) pays ZERO', () => {
-    // county at expectation: est = 200 → actual revenue 800 ≥ trigger 720
-    const comp = computePolicy({ base: arpBase, basePremium: 0, sco: null, eco: null, county: { assumption: { variance_pct: 0, county_yield_override: null, rma_final_county_yield: null } } })
+  it('farm loss + county fine (no assumption row → RMA expected) pays ZERO', () => {
+    // county at expectation: est = 200 → actual revenue 800 ≥ trigger 720.
+    // The farm's 50 bu disaster plays no role in the ARP indemnity itself.
+    const comp = computePolicy({ base: arpBase, basePremium: 0, sco: null, eco: null, county: { assumption: null, farmYieldBasis: 200 } })
     expect(comp.base.indemnity).toBeCloseTo(0, 2)
   })
 
-  it('county 20% below expectation pays the revenue shortfall × protection', () => {
-    // est = 200 × 0.8 = 160 → actual 640; trigger = 0.9 × 800 = 720
+  it('the differential puts the county 40 bu under the farm basis → revenue shortfall × protection', () => {
+    // farm basis 200 − differential 40 → est 160 → actual 640; trigger = 0.9 × 800 = 720
     // shortfall 80 × pf 1 × 100 ac = 8,000
-    const comp = computePolicy({ base: arpBase, basePremium: 0, sco: null, eco: null, county: { assumption: { variance_pct: -20, county_yield_override: null, rma_final_county_yield: null } } })
+    const a = { yield_differential: 40, county_yield_override: null, rma_final_county_yield: null }
+    const comp = computePolicy({ base: arpBase, basePremium: 0, sco: null, eco: null, county: { assumption: a, farmYieldBasis: 200 } })
     expect(comp.base.indemnity).toBeCloseTo(8000, 2)
-    // and the farm's own yield is irrelevant: same result at a bumper farm crop
-    const comp2 = computePolicy({ base: { ...arpBase, actualYield: 260 }, basePremium: 0, sco: null, eco: null, county: { assumption: { variance_pct: -20, county_yield_override: null, rma_final_county_yield: null } } })
+    // With the SAME county basis, the policy's own actualYield stays irrelevant.
+    const comp2 = computePolicy({ base: { ...arpBase, actualYield: 260 }, basePremium: 0, sco: null, eco: null, county: { assumption: a, farmYieldBasis: 200 } })
     expect(comp2.base.indemnity).toBeCloseTo(8000, 2)
   })
 })
@@ -1097,9 +1136,11 @@ describe('shared county assumption drives SCO (fallback only without a row)', ()
   }
   const sco = { coverageTrigger: 0.86, expectedCountyYield: 175, countyYieldAssumptionPct: -20, premiumPerAcre: null, totalPremium: null }
 
-  it('a shared row (variance 0) overrides the deprecated per-endorsement −20%', () => {
-    // shared 0% → est = 175 → ratio 700/808.5 = 0.8658 ≥ 0.86 → no payment
-    const withRow = computePolicy({ base, basePremium: 0, sco, eco: null, county: { assumption: { variance_pct: 0, county_yield_override: null, rma_final_county_yield: null } } })
+  it('a shared differential row overrides the deprecated per-endorsement −20%', () => {
+    // farm basis = the policy's actualYield 120; differential −55 ("I run 55
+    // under the county") → est = 120 + 55 = 175 → ratio 700/808.5 = 0.8658 ≥
+    // 0.86 → no payment.
+    const withRow = computePolicy({ base, basePremium: 0, sco, eco: null, county: { assumption: { yield_differential: -55, county_yield_override: null, rma_final_county_yield: null } } })
     expect(withRow.sco!.indemnity).toBeCloseTo(0, 2)
     // without a row the deprecated −20% still applies → full band 4,989.60
     const without = computePolicy({ base, basePremium: 0, sco, eco: null })
@@ -1109,9 +1150,9 @@ describe('shared county assumption drives SCO (fallback only without a row)', ()
   it('the RMA final pins the county yield and flags the computation', () => {
     const comp = computePolicy({
       base, basePremium: 0, sco, eco: null,
-      county: { assumption: { variance_pct: -20, county_yield_override: null, rma_final_county_yield: 175 }, scale: 0.5 },
+      county: { assumption: { yield_differential: 100, county_yield_override: null, rma_final_county_yield: 175 }, farmYieldBasis: 120 },
     })
-    // final 175 → ratio 0.8658 → no payment; the −20% and the 0.5 scale are ignored
+    // final 175 → ratio 0.8658 → no payment; the differential is ignored
     expect(comp.sco!.indemnity).toBeCloseTo(0, 2)
     expect(comp.countyPinned).toBe(true)
   })
