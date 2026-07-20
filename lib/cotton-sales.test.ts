@@ -400,15 +400,79 @@ describe('cottonCashFlowEvents', () => {
     expect(events[2].status).toBe('projected')
   })
 
-  it('priced contract proceeds land at the delivery window end as projected', () => {
+  it('priced contract proceeds SPREAD across the remaining delivery window (grain convention)', () => {
+    // 5,000 lbs @ 74¢ = $3,700 across Dec 2026 + Jan 2027 → $1,850/month.
     const bales = tenBales('s')
     const events = cottonCashFlowEvents(emptyInputs({
       bales,
       dispositions: bales.map((b) => disp(b.id, 'contract_delivery', { contract_id: 'c1' })),
       contracts: [contract({ delivery_start: '2026-12-01', delivery_end: '2027-01-31' })],
-    }))
+    }), { today: '2026-11-15' })
+    expect(events).toHaveLength(2)
+    expect(events[0]).toMatchObject({ date: '2026-12-01', amount: 1_850, status: 'projected' })
+    expect(events[1]).toMatchObject({ date: '2027-01-01', amount: 1_850, status: 'projected' })
+  })
+
+  it('mid-window, only the REMAINING months carry the projection', () => {
+    const bales = tenBales('s')
+    const events = cottonCashFlowEvents(emptyInputs({
+      bales,
+      dispositions: bales.map((b) => disp(b.id, 'contract_delivery', { contract_id: 'c1' })),
+      contracts: [contract({ delivery_start: '2026-12-01', delivery_end: '2027-01-31' })],
+    }), { today: '2027-01-10' })
     expect(events).toHaveLength(1)
-    expect(events[0]).toMatchObject({ date: '2027-01-31', amount: 3_700, status: 'projected' })
+    expect(events[0]).toMatchObject({ date: '2027-01-10', amount: 3_700 })
+  })
+
+  it('on-call awaiting futures books basis + CURRENT futures, labeled as an estimate', () => {
+    // basis −2.50 + current futures 72.50 = 70¢ × 5,000 lbs = $3,500.
+    const bales = tenBales('s')
+    const base = emptyInputs({
+      bales,
+      dispositions: bales.map((b) => disp(b.id, 'contract_delivery', { contract_id: 'c1' })),
+      contracts: [contract({
+        contract_type: 'on_call', price_cents_per_lb: null, basis_cents: -2.5,
+        futures_month: 'DEC 26', pricing_status: 'awaiting_futures',
+        delivery_start: '2026-12-01', delivery_end: '2026-12-31',
+      })],
+    })
+    const events = cottonCashFlowEvents(base, { today: '2026-11-15', currentFuturesCents: 72.5 })
+    expect(events).toHaveLength(1)
+    expect(events[0].label).toMatch(/est\. basis \+ current futures/)
+    expect(events[0]).toMatchObject({ date: '2026-12-01', amount: 3_500, status: 'projected' })
+    // Without a live quote there is nothing defensible to book.
+    expect(cottonCashFlowEvents(base, { today: '2026-11-15' })).toHaveLength(0)
+  })
+
+  it('pool contracts book their projected REMAINING value net of ledger payments', () => {
+    // 5,000 pool lbs at the latest 65¢/lb equivalent = $3,250 est.; $1,500
+    // advance already on the ledger → $1,750 remaining (spread), plus the
+    // advance's own dated event.
+    const bales = tenBales('s')
+    const events = cottonCashFlowEvents(emptyInputs({
+      bales,
+      dispositions: bales.map((b) => disp(b.id, 'pool', { contract_id: 'c1' })),
+      contracts: [contract({
+        contract_type: 'pool', price_cents_per_lb: null, pricing_status: 'pool_open',
+        delivery_start: '2027-02-01', delivery_end: '2027-02-28',
+      })],
+      poolPayments: [{ id: 'p1', contract_id: 'c1', payment_type: 'initial_advance', amount: 1_500, cents_per_lb_equivalent: 65, payment_date: '2026-11-05', status: 'received', notes: null, created_at: '' }],
+    }), { today: '2026-11-15' })
+    const remaining = events.find((e) => /remaining/.test(e.label))
+    expect(remaining).toMatchObject({ date: '2027-02-01', amount: 1_750, status: 'projected' })
+    expect(events.find((e) => e.label === 'Pool initial advance')).toMatchObject({ amount: 1_500, status: 'received' })
+  })
+
+  it('a priced contract with NO delivery window lands in the current month, labeled undated', () => {
+    const bales = tenBales('s')
+    const events = cottonCashFlowEvents(emptyInputs({
+      bales,
+      dispositions: bales.map((b) => disp(b.id, 'contract_delivery', { contract_id: 'c1' })),
+      contracts: [contract({ delivery_start: null, delivery_end: null })],
+    }), { today: '2026-11-15' })
+    expect(events).toHaveLength(1)
+    expect(events[0].label).toMatch(/undated — no delivery window/)
+    expect(events[0]).toMatchObject({ date: '2026-11-15', amount: 3_700, status: 'projected' })
   })
 })
 

@@ -389,16 +389,41 @@ export type CottonCashEvent = {
   status: 'received' | 'projected'
 }
 
+// Inclusive YYYY-MM month keys between two ISO dates.
+function monthKeysBetween(fromIso: string, toIso: string): string[] {
+  const out: string[] = []
+  let [y, m] = [Number(fromIso.slice(0, 4)), Number(fromIso.slice(5, 7))]
+  const endKey = toIso.slice(0, 7)
+  for (let i = 0; i < 240; i++) {
+    const key = `${y}-${String(m).padStart(2, '0')}`
+    out.push(key)
+    if (key >= endKey) break
+    m++; if (m > 12) { m = 1; y++ }
+  }
+  return out
+}
+
 /** Dated cotton cash events for the Cash Flow report. Loan principal lands at
  *  entry (the big fall inflow); redemption payoff is an OUTFLOW at outcome;
- *  equity lands at outcome; pool payments on their dates; priced contract
- *  proceeds at the delivery window's end (projected); LDP at ldp_date; fees
- *  as outflows on their dates. */
-export function cottonCashFlowEvents(inputs: CottonPhysicalInputs): CottonCashEvent[] {
+ *  equity lands at outcome; pool payments on their dates; LDP at ldp_date;
+ *  fees as outflows on their dates. Contract proceeds match the GRAIN
+ *  projected-revenue convention: SPREAD evenly across the remaining months of
+ *  the delivery window (max(today, delivery_start) → delivery_end) rather than
+ *  a single window-end spike. Nothing is silently dropped:
+ *   - fully-priced contracts book their proceeds across the window;
+ *   - on-call awaiting futures books basis + CURRENT futures, labeled (est.);
+ *   - pool contracts book their projected REMAINING value (latest ¢/lb
+ *     equivalent × lbs − payments already on the ledger);
+ *   - contracts with no delivery window land in the current month, labeled
+ *     (undated). */
+export function cottonCashFlowEvents(
+  inputs: CottonPhysicalInputs,
+  opts?: { today?: string; currentFuturesCents?: number | null },
+): CottonCashEvent[] {
   const { contracts, poolPayments, loans, ldps, fees, bales, dispositions } = inputs
+  const today = opts?.today ?? new Date().toISOString().slice(0, 10)
+  const currentFuturesCents = opts?.currentFuturesCents ?? null
   const events: CottonCashEvent[] = []
-  const summary = buildCottonPhysicalSummary(inputs) // for contract lbs reuse
-  void summary
   const baleById = new Map(bales.map((b) => [b.id, b]))
   const lbsByContract = new Map<string, number>()
   for (const d of dispositions) {
@@ -408,6 +433,27 @@ export function cottonCashFlowEvents(inputs: CottonPhysicalInputs): CottonCashEv
   }
   const totalLbs = bales.reduce((s, b) => s + Number(b.net_weight_lbs), 0)
   const avgBaleLbs = bales.length > 0 ? totalLbs / bales.length : STANDARD_BALE_LBS
+
+  // Spread a projected contract total across the remaining delivery window,
+  // mirroring the grain convention; no window at all → current month (undated).
+  const spreadContract = (c: CottonSalesContract, total: number, label: string) => {
+    if (!(total > 0)) return
+    if (!c.delivery_start && !c.delivery_end) {
+      events.push({ date: today, label: `${label} (undated — no delivery window)`, amount: r2(total), status: 'projected' })
+      return
+    }
+    const startIso = c.delivery_start && c.delivery_start > today ? c.delivery_start : today
+    if (!c.delivery_end || c.delivery_end < startIso) {
+      // Start-only window, or the window has passed — everything lands now.
+      events.push({ date: today, label, amount: r2(total), status: 'projected' })
+      return
+    }
+    const months = monthKeysBetween(startIso, c.delivery_end)
+    const per = total / months.length
+    for (const m of months) {
+      events.push({ date: m === today.slice(0, 7) ? today : `${m}-01`, label, amount: r2(per), status: 'projected' })
+    }
+  }
 
   for (const loan of loans) {
     events.push({
@@ -444,20 +490,51 @@ export function cottonCashFlowEvents(inputs: CottonPhysicalInputs): CottonCashEv
     })
   }
 
+  const contractLbsOf = (c: CottonSalesContract): number => {
+    const assigned = lbsByContract.get(c.id) ?? 0
+    if (assigned > 0) return assigned
+    return c.commitment_basis === 'bales' && c.committed_bales != null ? Number(c.committed_bales) * avgBaleLbs : 0
+  }
+
   for (const c of contracts) {
     if (c.contract_type === 'pool') continue
+    const lbs = contractLbsOf(c)
+    if (lbs <= 0) continue // acres-basis with no bales assigned: no lbs to value yet
     const cents = contractPricedCents(c)
-    if (cents == null) continue
-    const lbs = lbsByContract.get(c.id) ?? (c.commitment_basis === 'bales' && c.committed_bales != null ? Number(c.committed_bales) * avgBaleLbs : 0)
+    if (cents != null) {
+      spreadContract(c, (cents * lbs) / 100, `Cotton contract ${c.contract_number ?? ''} delivery`.trim())
+    } else if (c.contract_type === 'on_call' && c.basis_cents != null && currentFuturesCents != null) {
+      // Awaiting futures: value at basis + TODAY's futures, clearly an estimate.
+      const est = Number(c.basis_cents) + currentFuturesCents
+      if (est > 0) {
+        spreadContract(c, (est * lbs) / 100, `Cotton on-call ${c.contract_number ?? ''} (est. basis + current futures)`.trim())
+      }
+    }
+    // A spot/fixed contract with no price on file has nothing valuable to book.
+  }
+
+  // Pool contracts: the projected REMAINING value — lbs × the pool's latest
+  // ¢/lb equivalent, minus every payment already on the ledger (received AND
+  // dated projected payments, which appear as their own events below).
+  for (const c of contracts.filter((x) => x.contract_type === 'pool')) {
+    const lbs = contractLbsOf(c)
     if (lbs <= 0) continue
-    const date = c.delivery_end ?? c.delivery_start ?? c.contract_date
-    if (!date) continue
-    events.push({
-      date,
-      label: `Cotton contract ${c.contract_number ?? ''} delivery`.trim(),
-      amount: r2((cents * lbs) / 100),
-      status: 'projected',
-    })
+    let estCents: number | null = null
+    let latestDate = ''
+    let paid = 0
+    for (const p of poolPayments) {
+      if (p.contract_id !== c.id) continue
+      paid += Number(p.amount)
+      if (p.cents_per_lb_equivalent != null && (p.payment_date ?? '') >= latestDate) {
+        latestDate = p.payment_date ?? ''
+        estCents = Number(p.cents_per_lb_equivalent)
+      }
+    }
+    if (estCents == null) continue // no running ¢/lb estimate yet — nothing to project
+    const remaining = (estCents * lbs) / 100 - paid
+    if (remaining > 0) {
+      spreadContract(c, remaining, `Pool ${c.contract_number ?? ''} remaining (est.)`.trim())
+    }
   }
 
   for (const l of ldps) {
