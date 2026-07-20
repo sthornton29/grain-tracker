@@ -881,3 +881,34 @@ export type CropInsuranceMco = {
   notes: string | null
   created_at: string
 }
+
+// ---------- Crop Budget Planner (048) ----------
+
+// A pre-season budgeting scenario — a SANDBOX allocation for a budget crop
+// year. Never writes to crop_assumptions or any actuals.
+export type BudgetScenario = {
+  id: string
+  name: string
+  budget_crop_year: number
+  entity_id: string | null // null = whole operation
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+// One crop line in a scenario. Prices: $/bu grains; cotton STORED ¢/lb
+// (displayed $/lb). basis adds to the futures (or manual) price.
+export type BudgetLine = {
+  id: string
+  scenario_id: string
+  crop_id: string
+  label: string | null
+  acres: number | null
+  yield_per_acre: number | null
+  price_mode: 'live' | 'manual'
+  manual_price: number | null
+  basis: number | null
+  cost_per_acre: number | null
+  sort_order: number
+  created_at: string
+}
