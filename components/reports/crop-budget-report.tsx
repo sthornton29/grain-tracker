@@ -76,7 +76,9 @@ type MatrixGrid = {
 // crop needs the distinction; plain Irrigated/Dryland otherwise.
 function keyLabel(key: BreakoutKey | 'overall', isDc: boolean): string {
   if (key === 'overall') return 'Overall'
-  if (isDc) return BREAKOUT_LABEL[key]
+  // A DC row always carries its full label — even on a crop no longer
+  // designated double-crop (legacy lines surface rather than mislabel).
+  if (isDc || key === 'dc_irr' || key === 'dc_dry') return BREAKOUT_LABEL[key]
   return key === 'fs_irr' ? BUDGET_PRACTICE_LABEL.irrigated : BUDGET_PRACTICE_LABEL.non_irrigated
 }
 
