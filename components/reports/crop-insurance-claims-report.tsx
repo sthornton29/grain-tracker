@@ -291,6 +291,26 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   const cropName = (id: string) => cropById.get(id)?.name ?? '—'
   const countyName = (id: string | null) => (id ? (countyById.get(id) ? `${countyById.get(id)!.name}, ${countyById.get(id)!.state_code}` : '—') : 'No county')
 
+  // A paying SCO/ECO leg is never mysterious: label WHY the county triggered —
+  // the estimated county yield used, the ratio vs the trigger, and where the
+  // estimate came from (differential / override / RMA final / RMA expected).
+  const COUNTY_SOURCE_NOTE: Record<string, string> = {
+    differential: 'your differential',
+    override: 'county override',
+    final: 'RMA final',
+    expected: 'RMA expected — no differential set',
+  }
+  function countyLegNote(band: { indemnity: number; ratio: number; estimatedCountyYield?: number; countySource?: string } | null, trigger: number | null) {
+    if (!band || band.indemnity <= 0) return null
+    return (
+      <span className="block text-[10px] text-indigo-700 leading-tight whitespace-nowrap">
+        county-triggered: est. {band.estimatedCountyYield?.toFixed(1) ?? '—'} · ratio {(band.ratio * 100).toFixed(1)}%
+        {trigger != null ? ` < ${Math.round(trigger * 100)}%` : ''}
+        {band.countySource ? ` (${COUNTY_SOURCE_NOTE[band.countySource] ?? band.countySource})` : ''}
+      </span>
+    )
+  }
+
   function harvestLabel(info: HarvestInfo | undefined): string {
     if (!info) return '—'
     if (info.isFinal) return `${fmtPrice(info.price)} (final)`
@@ -524,8 +544,14 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                       <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.base.revenueGuarantee)}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.base.expectedRevenue)}</td>
                       <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(c.comp.base.indemnity))}`}>{usd(c.comp.base.indemnity)}</td>
-                      <td className={`px-2 py-1 text-right tabular-nums ${c.comp.sco ? toneText(signedTone(c.comp.sco.indemnity)) : toneText('muted')}`}>{c.comp.sco ? usd(c.comp.sco.indemnity) : 'N/A'}</td>
-                      <td className={`px-2 py-1 text-right tabular-nums ${c.comp.eco ? toneText(signedTone(c.comp.eco.indemnity)) : toneText('muted')}`}>{c.comp.eco ? usd(c.comp.eco.indemnity) : 'N/A'}</td>
+                      <td className={`px-2 py-1 text-right tabular-nums ${c.comp.sco ? toneText(signedTone(c.comp.sco.indemnity)) : toneText('muted')}`}>
+                        {c.comp.sco ? usd(c.comp.sco.indemnity) : 'N/A'}
+                        {countyLegNote(c.comp.sco, scoByPolicy.get(p.id) ? Number(scoByPolicy.get(p.id)!.coverage_trigger) : null)}
+                      </td>
+                      <td className={`px-2 py-1 text-right tabular-nums ${c.comp.eco ? toneText(signedTone(c.comp.eco.indemnity)) : toneText('muted')}`}>
+                        {c.comp.eco ? usd(c.comp.eco.indemnity) : 'N/A'}
+                        {countyLegNote(c.comp.eco, ecoByPolicy.get(p.id) ? Number(ecoByPolicy.get(p.id)!.eco_trigger_level) : null)}
+                      </td>
                       <td className={`px-2 py-1 text-right tabular-nums ${(c.comp.stax || c.comp.mco) ? toneText(signedTone((c.comp.stax?.indemnity ?? 0) + (c.comp.mco?.indemnity ?? 0))) : toneText('muted')}`}>
                         {(c.comp.stax || c.comp.mco) ? usd((c.comp.stax?.indemnity ?? 0) + (c.comp.mco?.indemnity ?? 0)) : 'N/A'}
                       </td>
@@ -666,6 +692,7 @@ function PolicyDetail({
             <div>
               <div className="font-semibold mb-1">SCO band ({Math.round(cov * 100)}% → {Math.round(Number(sco.coverage_trigger) * 100)}%)</div>
               <Line label="RMA expected county yield" value={`${Number(sco.expected_county_yield).toFixed(1)} bu/ac (reference)`} />
+              <Line label="Estimated county yield" value={`${comp.sco.estimatedCountyYield?.toFixed(1) ?? '—'} (${comp.sco.countySource ?? '—'})`} />
               <Line label="County ratio" value={`${(comp.sco.ratio * 100).toFixed(1)}%`} />
               <Line label="Payment factor" value={comp.sco.paymentFactor.toFixed(4)} />
               <Line label="Band payment limit" value={usd2(comp.sco.paymentLimit)} />
@@ -676,6 +703,7 @@ function PolicyDetail({
             <div>
               <div className="font-semibold mb-1">ECO band (86% → {Math.round(Number(eco.eco_trigger_level) * 100)}%)</div>
               <Line label="RMA expected county yield" value={`${Number(eco.expected_county_yield).toFixed(1)} bu/ac (reference)`} />
+              <Line label="Estimated county yield" value={`${comp.eco.estimatedCountyYield?.toFixed(1) ?? '—'} (${comp.eco.countySource ?? '—'})`} />
               <Line label="County ratio" value={`${(comp.eco.ratio * 100).toFixed(1)}%`} />
               <Line label="Payment factor" value={comp.eco.paymentFactor.toFixed(4)} />
               <Line label="Band payment limit" value={usd2(comp.eco.paymentLimit)} />
