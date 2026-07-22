@@ -338,6 +338,83 @@ export function buildBudgetMatrix(args: {
   )
 }
 
+// ---------- Blended (by-crop) display view ----------
+
+export type BlendInput = {
+  practice: BudgetPractice
+  cropping: BudgetCropping
+  label: string | null
+  acres: number | null
+  yield_per_acre: number | null
+  cost_per_acre: number | null
+  /** The line's computed effective price in the STORED unit ($/bu, ¢/lb
+   *  cotton); null when the line has no price yet. */
+  effectivePrice?: number | null
+}
+
+export type BlendedLine = {
+  acres: number | null
+  /** Acre-weighted, kept at 4-decimal precision so blended totals match the
+   *  sum of the underlying lines exactly — round only at display. */
+  yieldPerAcre: number | null
+  costPerAcre: number | null
+  effectivePrice: number | null
+  /** "800 irr + 450 dry" — the underlying lines, for the blended header.
+   *  '' for a single-line group (the blend is a pass-through). */
+  composition: string
+}
+
+const shortDesignation = (l: Pick<BlendInput, 'practice' | 'cropping' | 'label'>): string => {
+  const bits: string[] = []
+  if (l.practice === 'irrigated') bits.push('irr')
+  else if (l.practice === 'non_irrigated') bits.push('dry')
+  if (l.cropping === 'double_crop') bits.push('dc')
+  if (bits.length === 0 && !l.label) bits.push('blended')
+  if (l.label) bits.push(`(${l.label})`)
+  return bits.join(' ')
+}
+
+/** DISPLAY-TIME blend of one crop's budget lines into a single virtual line:
+ *  acres summed, yield/cost/price acre-weighted across the lines that carry
+ *  both acres and a value. The underlying lines are untouched — switching the
+ *  view back restores them. A single-line group passes through verbatim
+ *  (composition ''), so the toggle changes nothing for a one-line crop.
+ *  800 ac @ 195 + 450 ac @ 168 → 1,250 ac @ 185.28 (displayed 185.3). */
+export function blendBudgetLines(lines: ReadonlyArray<BlendInput>): BlendedLine {
+  if (lines.length === 1) {
+    const l = lines[0]
+    return {
+      acres: l.acres != null ? Number(l.acres) : null,
+      yieldPerAcre: l.yield_per_acre != null ? Number(l.yield_per_acre) : null,
+      costPerAcre: l.cost_per_acre != null ? Number(l.cost_per_acre) : null,
+      effectivePrice: l.effectivePrice ?? null,
+      composition: '',
+    }
+  }
+  let acres: number | null = null
+  for (const l of lines) if (l.acres != null) acres = (acres ?? 0) + Number(l.acres)
+  const weighted = (get: (l: BlendInput) => number | null | undefined): number | null => {
+    let num = 0
+    let den = 0
+    for (const l of lines) {
+      const v = get(l)
+      const a = l.acres != null ? Number(l.acres) : null
+      if (v != null && a != null && a > 0) { num += Number(v) * a; den += a }
+    }
+    return den > 0 ? r2fine(num / den) : null
+  }
+  const composition = lines
+    .map((l) => `${l.acres != null ? Number(l.acres).toLocaleString(undefined, { maximumFractionDigits: 0 }) : '—'} ${shortDesignation(l)}`.trim())
+    .join(' + ')
+  return {
+    acres,
+    yieldPerAcre: weighted((l) => l.yield_per_acre),
+    costPerAcre: weighted((l) => l.cost_per_acre),
+    effectivePrice: weighted((l) => l.effectivePrice),
+    composition,
+  }
+}
+
 /** Copies for the "Duplicate scenario" workflow: same crops/values, fresh
  *  identity, targeted at the new scenario. Pure — the caller inserts. */
 export function duplicateLinesFor(
