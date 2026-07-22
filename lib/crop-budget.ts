@@ -214,7 +214,187 @@ export function budgetLineMath(line: BudgetLineInput, livePrice: number | null, 
 }
 const r2fine = (n: number) => Math.round(n * 1e4) / 1e4
 
-// ---------- Scenario totals & comparison ----------
+// ---------- Breakout grid (scenario-less redesign) ----------
+//
+// The Assumptions panel mirrors the Marketing Dashboard editor: per crop, an
+// Overall row plus up to four fixed breakout rows (Full-season/Double-crop ×
+// Irrigated/Dryland; DC rows only for crops designated double-crop). The grid
+// maps onto budget_lines — the Overall row is the practice-null/cropping-null
+// line (the blended fallback), each breakout row is the line for that
+// practice × cropping. A blank breakout yield/cost cell falls back to the
+// Overall row, the marketing-editor semantics. Output rows are the breakout
+// lines with acres > 0, else the Overall line alone.
+
+export type BreakoutKey = 'fs_irr' | 'fs_dry' | 'dc_irr' | 'dc_dry'
+export const BREAKOUT_ORDER: readonly BreakoutKey[] = ['fs_irr', 'fs_dry', 'dc_irr', 'dc_dry']
+export const BREAKOUT_LABEL: Record<BreakoutKey, string> = {
+  fs_irr: 'Full-season · Irrigated',
+  fs_dry: 'Full-season · Dryland',
+  dc_irr: 'Double-crop · Irrigated',
+  dc_dry: 'Double-crop · Dryland',
+}
+
+/** The rows a crop's grid offers: non-DC crops get the two full-season rows
+ *  (labeled plain Irrigated/Dryland by the UI), DC-designated crops all four. */
+export function breakoutKeysFor(isDoubleCropCrop: boolean): readonly BreakoutKey[] {
+  return isDoubleCropCrop ? BREAKOUT_ORDER : (['fs_irr', 'fs_dry'] as const)
+}
+
+export function breakoutFields(key: BreakoutKey): { practice: 'irrigated' | 'non_irrigated'; cropping: 'double_crop' | null } {
+  return {
+    practice: key === 'fs_irr' || key === 'dc_irr' ? 'irrigated' : 'non_irrigated',
+    cropping: key === 'dc_irr' || key === 'dc_dry' ? 'double_crop' : null,
+  }
+}
+
+/** Which grid row a stored line belongs to. Blended full-season → 'overall';
+ *  a legacy blended double-crop line folds to dc_dry (the common DC practice,
+ *  matching the seed convention). */
+export function breakoutKeyOf(line: { practice: BudgetPractice; cropping: BudgetCropping }): BreakoutKey | 'overall' {
+  if (line.cropping === 'double_crop') return line.practice === 'irrigated' ? 'dc_irr' : 'dc_dry'
+  if (line.practice === 'irrigated') return 'fs_irr'
+  if (line.practice === 'non_irrigated') return 'fs_dry'
+  return 'overall'
+}
+
+type GridLine = Pick<BudgetLine, 'id' | 'practice' | 'cropping' | 'acres' | 'yield_per_acre' | 'cost_per_acre'>
+
+export type CropBudgetGrid<L extends GridLine = GridLine> = {
+  overall: L | null
+  byKey: Partial<Record<BreakoutKey, L>>
+}
+
+/** One crop's lines → the grid. First line per cell wins; duplicates for the
+ *  same cell (shouldn't exist) are ignored. */
+export function gridFromLines<L extends GridLine>(lines: readonly L[]): CropBudgetGrid<L> {
+  const g: CropBudgetGrid<L> = { overall: null, byKey: {} }
+  for (const l of lines) {
+    const k = breakoutKeyOf(l)
+    if (k === 'overall') g.overall = g.overall ?? l
+    else g.byKey[k] = g.byKey[k] ?? l
+  }
+  return g
+}
+
+export type EffectiveBudgetRow<L extends GridLine = GridLine> = {
+  key: BreakoutKey | 'overall'
+  line: L
+  acres: number | null
+  /** The line's own value, else inherited from the Overall row. */
+  yieldPerAcre: number | null
+  costPerAcre: number | null
+  inheritedYield: boolean
+  inheritedCost: boolean
+}
+
+/** The rows that actually drive output/totals: every breakout line with
+ *  acres > 0 (blank yield/cost inheriting the Overall row), else the Overall
+ *  line alone. `keys` bounds which breakout cells are considered — pass the
+ *  union of the crop's designated keys and any keys present in the data so a
+ *  legacy line never silently drops out. */
+export function effectiveBudgetRows<L extends GridLine>(
+  grid: CropBudgetGrid<L>,
+  keys: readonly BreakoutKey[],
+): EffectiveBudgetRow<L>[] {
+  const o = grid.overall
+  const active = keys
+    .map((k) => ({ key: k as BreakoutKey | 'overall', line: grid.byKey[k] }))
+    .filter((x): x is { key: BreakoutKey; line: L } => x.line != null && Number(x.line.acres ?? 0) > 0)
+  if (active.length === 0) {
+    if (!o) return []
+    return [{
+      key: 'overall', line: o,
+      acres: o.acres != null ? Number(o.acres) : null,
+      yieldPerAcre: o.yield_per_acre != null ? Number(o.yield_per_acre) : null,
+      costPerAcre: o.cost_per_acre != null ? Number(o.cost_per_acre) : null,
+      inheritedYield: false, inheritedCost: false,
+    }]
+  }
+  return active.map(({ key, line }) => {
+    const ownYield = line.yield_per_acre != null ? Number(line.yield_per_acre) : null
+    const ownCost = line.cost_per_acre != null ? Number(line.cost_per_acre) : null
+    const fallYield = o?.yield_per_acre != null ? Number(o.yield_per_acre) : null
+    const fallCost = o?.cost_per_acre != null ? Number(o.cost_per_acre) : null
+    return {
+      key, line,
+      acres: Number(line.acres),
+      yieldPerAcre: ownYield ?? fallYield,
+      costPerAcre: ownCost ?? fallCost,
+      inheritedYield: ownYield == null && fallYield != null,
+      inheritedCost: ownCost == null && fallCost != null,
+    }
+  })
+}
+
+export type GridCellField = 'acres' | 'yield' | 'cost'
+const GRID_FIELD_COL: Record<GridCellField, 'acres' | 'yield_per_acre' | 'cost_per_acre'> = {
+  acres: 'acres', yield: 'yield_per_acre', cost: 'cost_per_acre',
+}
+
+export type GridCellPlan =
+  | { op: 'noop' }
+  | { op: 'update'; id: string; patch: Partial<Pick<BudgetLine, 'acres' | 'yield_per_acre' | 'cost_per_acre'>> }
+  | { op: 'insert'; values: Pick<BudgetLine, 'practice' | 'cropping' | 'acres' | 'yield_per_acre' | 'cost_per_acre'> }
+
+/** Commit one grid cell. An existing line updates in place; typing into an
+ *  empty row inserts its line with the OTHER fields taken from the seeds
+ *  (yield/cost) so the row starts on its derivation chips. */
+export function gridCellPlan(args: {
+  existing: GridLine | null
+  key: BreakoutKey | 'overall'
+  field: GridCellField
+  value: number | null
+  seeds: Pick<BudgetSeeds, 'yield' | 'cost'>
+}): GridCellPlan {
+  const col = GRID_FIELD_COL[args.field]
+  if (args.existing) {
+    const cur = args.existing[col]
+    const same = (cur == null && args.value == null) ||
+      (cur != null && args.value != null && Math.abs(Number(cur) - args.value) < 1e-9)
+    return same ? { op: 'noop' } : { op: 'update', id: args.existing.id, patch: { [col]: args.value } }
+  }
+  if (args.value == null) return { op: 'noop' }
+  const fields = args.key === 'overall' ? { practice: null, cropping: null } : breakoutFields(args.key)
+  return {
+    op: 'insert',
+    values: {
+      practice: fields.practice,
+      cropping: fields.cropping,
+      acres: args.field === 'acres' ? args.value : null,
+      yield_per_acre: args.field === 'yield' ? args.value : args.seeds.yield,
+      cost_per_acre: args.field === 'cost' ? args.value : args.seeds.cost,
+    },
+  }
+}
+
+// ---------- Futures price edit-in-place ----------
+
+/** Typing over the live futures number switches the crop to manual mode; the
+ *  ↻ control restores the quote (price_mode 'live'). Same underlying
+ *  price_mode/manual_price fields as before — this just decides the patch.
+ *  `value` is in the STORED unit (¢/lb cotton). Returns null for a no-change
+ *  commit (blank while live, or re-typing the live quote verbatim). */
+export function priceEditPatch(args: {
+  value: number | null // parsed input, stored unit; null = blank
+  currentMode: 'live' | 'manual'
+  livePrice: number | null
+}): Partial<Pick<BudgetLine, 'price_mode' | 'manual_price'>> | null {
+  if (args.value == null) {
+    // Blanking the price returns the crop to the live quote.
+    return args.currentMode === 'live' ? null : { price_mode: 'live' }
+  }
+  if (args.currentMode === 'live' && args.livePrice != null && Math.abs(args.value - args.livePrice) < 1e-9) {
+    return null // typed the quote back — still live
+  }
+  return { price_mode: 'manual', manual_price: args.value }
+}
+
+/** The ↻ "use live price" control. */
+export function livePricePatch(): Partial<Pick<BudgetLine, 'price_mode'>> {
+  return { price_mode: 'live' }
+}
+
+// ---------- Scenario totals ----------
 
 export type ScenarioTotals = {
   totalAcres: number
@@ -248,62 +428,6 @@ export function scenarioTotals(rows: ReadonlyArray<{ acres: number | null; math:
     weightedProfitPerAcre: profitAcres > 0 ? r2(totalProfit / profitAcres) : null,
     incompleteLines,
   }
-}
-
-export type ScenarioCompareRow = {
-  key: string // cropId|label|practice|cropping
-  cropId: string
-  label: string | null
-  practice: BudgetPractice
-  cropping: BudgetCropping
-  aAcres: number | null
-  bAcres: number | null
-  aProfit: number | null
-  bProfit: number | null
-  acresDelta: number | null
-  profitDelta: number | null
-}
-
-type CompareInput = {
-  cropId: string
-  label: string | null
-  practice?: BudgetPractice
-  cropping?: BudgetCropping
-  acres: number | null
-  totalProfit: number | null
-}
-
-/** Per-crop(+label+practice+cropping) side-by-side of two scenarios: acres and
- *  total profit with deltas (b − a). "Corn irrigated" and "Corn dryland" stay
- *  separate rows. Lines present in only one scenario show with the other side
- *  null (delta treats a missing side as 0). */
-export function compareScenarios(a: ReadonlyArray<CompareInput>, b: ReadonlyArray<CompareInput>): ScenarioCompareRow[] {
-  const key = (x: CompareInput) =>
-    `${x.cropId}|${(x.label ?? '').trim().toLowerCase()}|${x.practice ?? ''}|${x.cropping === 'double_crop' ? 'dc' : ''}`
-  const rows = new Map<string, ScenarioCompareRow>()
-  for (const x of a) {
-    rows.set(key(x), {
-      key: key(x), cropId: x.cropId, label: x.label, practice: x.practice ?? null, cropping: x.cropping ?? null,
-      aAcres: x.acres, bAcres: null, aProfit: x.totalProfit, bProfit: null,
-      acresDelta: null, profitDelta: null,
-    })
-  }
-  for (const x of b) {
-    const cur = rows.get(key(x))
-    if (cur) { cur.bAcres = x.acres; cur.bProfit = x.totalProfit }
-    else {
-      rows.set(key(x), {
-        key: key(x), cropId: x.cropId, label: x.label, practice: x.practice ?? null, cropping: x.cropping ?? null,
-        aAcres: null, bAcres: x.acres, aProfit: null, bProfit: x.totalProfit,
-        acresDelta: null, profitDelta: null,
-      })
-    }
-  }
-  for (const r of rows.values()) {
-    r.acresDelta = r2((r.bAcres ?? 0) - (r.aAcres ?? 0))
-    r.profitDelta = r2((r.bProfit ?? 0) - (r.aProfit ?? 0))
-  }
-  return Array.from(rows.values())
 }
 
 // ---------- The per-line price × yield matrix ----------
@@ -415,26 +539,3 @@ export function blendBudgetLines(lines: ReadonlyArray<BlendInput>): BlendedLine 
   }
 }
 
-/** Copies for the "Duplicate scenario" workflow: same crops/values, fresh
- *  identity, targeted at the new scenario. Pure — the caller inserts. */
-export function duplicateLinesFor(
-  lines: readonly BudgetLine[],
-  newScenarioId: string,
-): Array<Omit<BudgetLine, 'id' | 'created_at'>> {
-  return [...lines]
-    .sort((a, b) => a.sort_order - b.sort_order)
-    .map((l) => ({
-      scenario_id: newScenarioId,
-      crop_id: l.crop_id,
-      label: l.label,
-      practice: l.practice,
-      cropping: l.cropping,
-      acres: l.acres,
-      yield_per_acre: l.yield_per_acre,
-      price_mode: l.price_mode,
-      manual_price: l.manual_price,
-      basis: l.basis,
-      cost_per_acre: l.cost_per_acre,
-      sort_order: l.sort_order,
-    }))
-}

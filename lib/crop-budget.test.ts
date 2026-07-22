@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   aphWeightedYield, budgetLineMath, budgetSeeds, buildBudgetMatrix, scenarioTotals,
-  compareScenarios, duplicateLinesFor, budgetContractSymbol, budgetContractLabel,
+  budgetContractSymbol, budgetContractLabel,
   lineDesignation, blendBudgetLines,
+  breakoutFields, breakoutKeyOf, breakoutKeysFor, effectiveBudgetRows, gridCellPlan,
+  gridFromLines, priceEditPatch, livePricePatch,
   type BudgetLineInput,
 } from '@/lib/crop-budget'
 import { axisValues } from '@/lib/income-sensitivity'
@@ -103,27 +105,11 @@ describe('budgetSeeds — practice/cropping-aware defaults', () => {
   })
 })
 
-describe('breakout designation & comparison separation', () => {
+describe('breakout designation', () => {
   it('lineDesignation reads naturally', () => {
     expect(lineDesignation({ practice: 'irrigated', cropping: 'double_crop' })).toBe('Irrigated · Double-crop')
     expect(lineDesignation({ practice: 'non_irrigated', cropping: null })).toBe('Dryland')
     expect(lineDesignation({ practice: null, cropping: null })).toBe('')
-  })
-
-  it('compareScenarios keeps irrigated and dryland lines of the same crop separate', () => {
-    const a = [
-      { cropId: 'corn', label: null, practice: 'irrigated' as const, cropping: null, acres: 600, totalProfit: 120_000 },
-      { cropId: 'corn', label: null, practice: 'non_irrigated' as const, cropping: null, acres: 400, totalProfit: 30_000 },
-    ]
-    const b = [
-      { cropId: 'corn', label: null, practice: 'irrigated' as const, cropping: null, acres: 800, totalProfit: 160_000 },
-    ]
-    const rows = compareScenarios(a, b)
-    expect(rows).toHaveLength(2)
-    const irr = rows.find((r) => r.practice === 'irrigated')!
-    const dry = rows.find((r) => r.practice === 'non_irrigated')!
-    expect(irr).toMatchObject({ acresDelta: 200, profitDelta: 40_000 })
-    expect(dry).toMatchObject({ bAcres: null, acresDelta: -400, profitDelta: -30_000 })
   })
 })
 
@@ -199,7 +185,7 @@ describe('buildBudgetMatrix — pure budget math, no insurance, no caps', () => 
   })
 })
 
-describe('scenarioTotals & compareScenarios', () => {
+describe('scenarioTotals', () => {
   const mkMath = (acres: number | null, profitPerAcre: number | null, revenuePerAcre = 0) => ({
     acres,
     math: budgetLineMath(
@@ -224,53 +210,176 @@ describe('scenarioTotals & compareScenarios', () => {
     expect(t.incompleteLines).toBe(1)
   })
 
-  it('comparison deltas per crop, including lines present on one side only', () => {
-    const a = [
-      { cropId: 'corn', label: null, acres: 1000, totalProfit: 150_000 },
-      { cropId: 'soy', label: null, acres: 800, totalProfit: 96_000 },
-    ]
-    const b = [
-      { cropId: 'corn', label: null, acres: 1400, totalProfit: 210_000 },
-      { cropId: 'wheat', label: null, acres: 400, totalProfit: 20_000 },
-    ]
-    const rows = compareScenarios(a, b)
-    const byId = new Map(rows.map((r) => [r.cropId, r]))
-    expect(byId.get('corn')).toMatchObject({ acresDelta: 400, profitDelta: 60_000 })
-    expect(byId.get('soy')).toMatchObject({ aAcres: 800, bAcres: null, acresDelta: -800, profitDelta: -96_000 })
-    expect(byId.get('wheat')).toMatchObject({ aAcres: null, bAcres: 400, acresDelta: 400, profitDelta: 20_000 })
-  })
 })
 
-describe('scenario duplication & isolation', () => {
-  const line = (over: Partial<BudgetLine>): BudgetLine => ({
-    id: 'l1', scenario_id: 's1', crop_id: 'corn', label: null, practice: null, cropping: null,
-    acres: 500, yield_per_acre: 200, price_mode: 'live', manual_price: null, basis: -0.25,
-    cost_per_acre: 750, sort_order: 0, created_at: '',
-    ...over,
-  })
+const line = (over: Partial<BudgetLine>): BudgetLine => ({
+  id: 'l1', scenario_id: 's1', crop_id: 'corn', label: null, practice: null, cropping: null,
+  acres: 500, yield_per_acre: 200, price_mode: 'live', manual_price: null, basis: -0.25,
+  cost_per_acre: 750, sort_order: 0, created_at: '',
+  ...over,
+})
 
-  it('duplicateLinesFor copies every value intact onto the new scenario, order preserved', () => {
-    const copies = duplicateLinesFor([
-      line({ id: 'l2', sort_order: 1, crop_id: 'soy', label: 'DC behind wheat', manual_price: 11.1, price_mode: 'manual', practice: 'irrigated', cropping: 'double_crop' }),
-      line({ id: 'l1', sort_order: 0 }),
-    ], 's2')
-    expect(copies).toHaveLength(2)
-    expect(copies[0]).toEqual({
-      scenario_id: 's2', crop_id: 'corn', label: null, practice: null, cropping: null,
-      acres: 500, yield_per_acre: 200,
-      price_mode: 'live', manual_price: null, basis: -0.25, cost_per_acre: 750, sort_order: 0,
-    })
-    expect(copies[1]).toMatchObject({ scenario_id: 's2', crop_id: 'soy', label: 'DC behind wheat', manual_price: 11.1, practice: 'irrigated', cropping: 'double_crop' })
-    // Fresh identity: no id/created_at carried over.
-    expect('id' in copies[0]).toBe(false)
-  })
-
-  it('isolation: budget math never touches a crop_assumptions-shaped object', async () => {
+describe('sandbox isolation', () => {
+  it('budget math never touches a crop_assumptions-shaped object', async () => {
     // The engine's entire input surface is the line + a live quote — there is
     // no code path that accepts or returns crop_assumptions. This test pins
     // the module's exports so a future "helpful" write-through gets noticed.
     const mod = await import('@/lib/crop-budget')
     expect(Object.keys(mod).some((k) => /assumption|save|write|upsert/i.test(k))).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Breakout grid ↔ budget_lines mapping (scenario-less redesign)
+// ---------------------------------------------------------------------------
+
+describe('grid ↔ lines mapping', () => {
+  it('breakoutKeyOf classifies every practice × cropping combination (and the legacy folds)', () => {
+    expect(breakoutKeyOf({ practice: null, cropping: null })).toBe('overall')
+    expect(breakoutKeyOf({ practice: 'irrigated', cropping: null })).toBe('fs_irr')
+    expect(breakoutKeyOf({ practice: 'non_irrigated', cropping: 'full_season' })).toBe('fs_dry')
+    expect(breakoutKeyOf({ practice: 'irrigated', cropping: 'double_crop' })).toBe('dc_irr')
+    expect(breakoutKeyOf({ practice: 'non_irrigated', cropping: 'double_crop' })).toBe('dc_dry')
+    // Legacy blended double-crop folds to dc_dry (the common DC practice).
+    expect(breakoutKeyOf({ practice: null, cropping: 'double_crop' })).toBe('dc_dry')
+  })
+
+  it('breakoutFields round-trips through breakoutKeyOf', () => {
+    for (const k of ['fs_irr', 'fs_dry', 'dc_irr', 'dc_dry'] as const) {
+      expect(breakoutKeyOf(breakoutFields(k))).toBe(k)
+    }
+  })
+
+  it('non-DC crops offer the two full-season rows; DC crops all four', () => {
+    expect(breakoutKeysFor(false)).toEqual(['fs_irr', 'fs_dry'])
+    expect(breakoutKeysFor(true)).toEqual(['fs_irr', 'fs_dry', 'dc_irr', 'dc_dry'])
+  })
+
+  it('gridFromLines slots each line into its cell', () => {
+    const g = gridFromLines([
+      line({ id: 'o' }),
+      line({ id: 'i', practice: 'irrigated' }),
+      line({ id: 'dd', practice: 'non_irrigated', cropping: 'double_crop' }),
+    ])
+    expect(g.overall?.id).toBe('o')
+    expect(g.byKey.fs_irr?.id).toBe('i')
+    expect(g.byKey.dc_dry?.id).toBe('dd')
+    expect(g.byKey.fs_dry).toBeUndefined()
+  })
+
+  it('breakout rows with acres drive the output; blank cells inherit the Overall row', () => {
+    const g = gridFromLines([
+      line({ id: 'o', acres: null, yield_per_acre: 190, cost_per_acre: 750 }),
+      line({ id: 'i', practice: 'irrigated', acres: 800, yield_per_acre: 220, cost_per_acre: null }),
+      line({ id: 'd', practice: 'non_irrigated', acres: 450, yield_per_acre: null, cost_per_acre: 640 }),
+    ])
+    const rows = effectiveBudgetRows(g, breakoutKeysFor(false))
+    expect(rows).toHaveLength(2)
+    const irr = rows.find((r) => r.key === 'fs_irr')!
+    const dry = rows.find((r) => r.key === 'fs_dry')!
+    // Own values win; blanks fall back to Overall.
+    expect(irr).toMatchObject({ acres: 800, yieldPerAcre: 220, costPerAcre: 750, inheritedYield: false, inheritedCost: true })
+    expect(dry).toMatchObject({ acres: 450, yieldPerAcre: 190, costPerAcre: 640, inheritedYield: true, inheritedCost: false })
+  })
+
+  it('with no breakout acres the Overall line alone is the budget line', () => {
+    const g = gridFromLines([
+      line({ id: 'o', acres: 1200, yield_per_acre: 190, cost_per_acre: 750 }),
+      line({ id: 'i', practice: 'irrigated', acres: null, yield_per_acre: 220 }),
+    ])
+    const rows = effectiveBudgetRows(g, breakoutKeysFor(false))
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ key: 'overall', acres: 1200, yieldPerAcre: 190, costPerAcre: 750 })
+  })
+
+  it('a legacy breakout key outside the DC designation still surfaces when passed in keys', () => {
+    const g = gridFromLines([line({ id: 'dc', practice: 'non_irrigated', cropping: 'double_crop', acres: 300 })])
+    expect(effectiveBudgetRows(g, ['fs_irr', 'fs_dry'])).toHaveLength(0) // dropped without the key…
+    expect(effectiveBudgetRows(g, ['fs_irr', 'fs_dry', 'dc_dry'])).toHaveLength(1) // …kept with it
+  })
+
+  it('gridCellPlan: updates in place, inserts a seeded line on first entry, noops on no change', () => {
+    const existing = line({ id: 'i', practice: 'irrigated', acres: 800 })
+    expect(gridCellPlan({ existing, key: 'fs_irr', field: 'acres', value: 800, seeds: { yield: 210, cost: 880 } }))
+      .toEqual({ op: 'noop' })
+    expect(gridCellPlan({ existing, key: 'fs_irr', field: 'yield', value: 215, seeds: { yield: 210, cost: 880 } }))
+      .toEqual({ op: 'update', id: 'i', patch: { yield_per_acre: 215 } })
+    // First entry into an empty row: the typed field takes the value, the
+    // other assumption fields start on their seeds (derivation chips).
+    expect(gridCellPlan({ existing: null, key: 'dc_dry', field: 'acres', value: 300, seeds: { yield: 42, cost: 360 } }))
+      .toEqual({
+        op: 'insert',
+        values: { practice: 'non_irrigated', cropping: 'double_crop', acres: 300, yield_per_acre: 42, cost_per_acre: 360 },
+      })
+    // Clearing a cell that never existed writes nothing.
+    expect(gridCellPlan({ existing: null, key: 'fs_dry', field: 'yield', value: null, seeds: { yield: null, cost: null } }))
+      .toEqual({ op: 'noop' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Futures price edit-in-place (live ↔ manual on the same fields)
+// ---------------------------------------------------------------------------
+
+describe('priceEditPatch — typing over the live quote flips to manual', () => {
+  it('typing a different number switches the crop to manual at that price', () => {
+    expect(priceEditPatch({ value: 4.9, currentMode: 'live', livePrice: 4.75 }))
+      .toEqual({ price_mode: 'manual', manual_price: 4.9 })
+  })
+  it('re-typing the live quote verbatim stays live (no accidental flip)', () => {
+    expect(priceEditPatch({ value: 4.75, currentMode: 'live', livePrice: 4.75 })).toBeNull()
+  })
+  it('blanking the price restores the live quote; blank while live is a noop', () => {
+    expect(priceEditPatch({ value: null, currentMode: 'manual', livePrice: 4.75 })).toEqual({ price_mode: 'live' })
+    expect(priceEditPatch({ value: null, currentMode: 'live', livePrice: 4.75 })).toBeNull()
+  })
+  it('editing a manual price keeps manual mode; ↻ restores live', () => {
+    expect(priceEditPatch({ value: 5.1, currentMode: 'manual', livePrice: 4.75 }))
+      .toEqual({ price_mode: 'manual', manual_price: 5.1 })
+    expect(livePricePatch()).toEqual({ price_mode: 'live' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// INVARIANT: dropping scenario management changed no math. The effective rows
+// run through the SAME budgetLineMath/blendBudgetLines as the old per-line
+// path — a plain line and its effective row produce identical numbers, and
+// the blend still foots exactly to the broken-out sum.
+// ---------------------------------------------------------------------------
+
+describe('invariant: scenario-less restructure preserves line math and blends', () => {
+  it('an Overall-only crop computes exactly like the old single blended line', () => {
+    const l = line({ acres: 500, yield_per_acre: 200, cost_per_acre: 750, basis: -0.25 })
+    const [row] = effectiveBudgetRows(gridFromLines([l]), breakoutKeysFor(false))
+    const direct = budgetLineMath(l, 4.75, false)
+    const viaGrid = budgetLineMath({
+      acres: row.acres, yield_per_acre: row.yieldPerAcre, price_mode: l.price_mode,
+      manual_price: l.manual_price, basis: l.basis, cost_per_acre: row.costPerAcre,
+    }, 4.75, false)
+    expect(viaGrid).toEqual(direct)
+  })
+
+  it('broken-out rows still foot to the blended section exactly', () => {
+    const g = gridFromLines([
+      line({ id: 'i', practice: 'irrigated', acres: 800, yield_per_acre: 195, cost_per_acre: 780, price_mode: 'manual', manual_price: 4.5, basis: 0 }),
+      line({ id: 'd', practice: 'non_irrigated', acres: 450, yield_per_acre: 168, cost_per_acre: 600, price_mode: 'manual', manual_price: 4.5, basis: 0 }),
+    ])
+    const rows = effectiveBudgetRows(g, breakoutKeysFor(false))
+    const maths = rows.map((r) => budgetLineMath({
+      acres: r.acres, yield_per_acre: r.yieldPerAcre, price_mode: 'manual',
+      manual_price: 4.5, basis: 0, cost_per_acre: r.costPerAcre,
+    }, null, false))
+    const b = blendBudgetLines(rows.map((r, i) => ({
+      practice: r.line.practice, cropping: r.line.cropping, label: null,
+      acres: r.acres, yield_per_acre: r.yieldPerAcre, cost_per_acre: r.costPerAcre,
+      effectivePrice: maths[i].effectivePrice,
+    })))
+    const blended = budgetLineMath({
+      acres: b.acres, yield_per_acre: b.yieldPerAcre, price_mode: 'manual',
+      manual_price: b.effectivePrice, basis: 0, cost_per_acre: b.costPerAcre,
+    }, null, false)
+    expect(maths[0].totalProfit! + maths[1].totalProfit!).toBe(148200)
+    expect(blended.totalProfit).toBe(148200)
   })
 })
 

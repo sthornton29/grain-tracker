@@ -344,14 +344,12 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       const sco: ScoConfig | null = scoRow ? {
         coverageTrigger: Number(scoRow.coverage_trigger),
         expectedCountyYield: Number(scoRow.expected_county_yield),
-        countyYieldAssumptionPct: scoRow.county_yield_assumption_pct == null ? 0 : Number(scoRow.county_yield_assumption_pct),
         premiumPerAcre: scoRow.premium_per_acre == null ? null : Number(scoRow.premium_per_acre),
         totalPremium: scoRow.total_premium == null ? null : Number(scoRow.total_premium),
       } : null
       const eco: EcoConfig | null = ecoRow ? {
         ecoTriggerLevel: Number(ecoRow.eco_trigger_level),
         expectedCountyYield: Number(ecoRow.expected_county_yield),
-        countyYieldAssumptionPct: ecoRow.county_yield_assumption_pct == null ? 0 : Number(ecoRow.county_yield_assumption_pct),
         premiumPerAcre: ecoRow.premium_per_acre == null ? null : Number(ecoRow.premium_per_acre),
         totalPremium: ecoRow.total_premium == null ? null : Number(ecoRow.total_premium),
       } : null

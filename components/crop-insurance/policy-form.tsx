@@ -577,10 +577,6 @@ export function PolicyFields({
               <input type="number" step="0.1" value={value.sco_expected_county_yield} onChange={(e) => set('sco_expected_county_yield', e.target.value)} className={inputCls} />
             </label>
             <label className={labelCls}>
-              <span className={spanCls}>County yield vs yours (%)</span>
-              <input type="number" step="1" value={value.sco_county_yield_assumption_pct} onChange={(e) => set('sco_county_yield_assumption_pct', e.target.value)} className={inputCls} />
-            </label>
-            <label className={labelCls}>
               <span className={spanCls}>SCO premium / acre ($)</span>
               <input type="number" step="0.01" value={value.sco_premium_per_acre} onChange={(e) => set('sco_premium_per_acre', e.target.value)} className={inputCls} />
             </label>
@@ -589,8 +585,8 @@ export function PolicyFields({
               <input type="number" step="0.01" placeholder="auto from /acre" value={value.sco_total_premium} onChange={(e) => set('sco_total_premium', e.target.value)} className={inputCls} />
             </label>
             <p className="text-xs text-slate-500 sm:col-span-2 lg:col-span-3">
-              County yield vs yours: how the county average typically compares to your operation. If county
-              yields are typically 10% lower than yours, enter <strong>-10</strong>.
+              The estimated county yield comes from the shared &ldquo;My yield vs county&rdquo; differential at the
+              top of this page — one assumption drives every county-triggered leg (SCO/ECO/STAX/ARP/AYP/MCO).
             </p>
           </div>
         )}
@@ -613,10 +609,6 @@ export function PolicyFields({
             <label className={labelCls}>
               <span className={spanCls}>Expected county yield (bu/ac)</span>
               <input type="number" step="0.1" value={value.eco_expected_county_yield} onChange={(e) => set('eco_expected_county_yield', e.target.value)} className={inputCls} />
-            </label>
-            <label className={labelCls}>
-              <span className={spanCls}>County yield vs yours (%)</span>
-              <input type="number" step="1" value={value.eco_county_yield_assumption_pct} onChange={(e) => set('eco_county_yield_assumption_pct', e.target.value)} className={inputCls} />
             </label>
             <label className={labelCls}>
               <span className={spanCls}>ECO premium / acre ($)</span>

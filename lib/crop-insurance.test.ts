@@ -333,13 +333,12 @@ describe('resolveEstimatedCountyYield — differential semantics', () => {
     }).estimatedYield).toBeCloseTo(150, 6)
   })
 
-  it('DEPRECATED per-endorsement pct still works as the fallback when no shared row exists', () => {
-    expect(resolveEstimatedCountyYield({ expectedCountyYield: 150, fallbackPct: 5 }).estimatedYield).toBeCloseTo(157.5, 6)
-    // A shared differential row WINS over the fallback.
-    expect(resolveEstimatedCountyYield({
-      expectedCountyYield: 150, fallbackPct: 5,
-      assumption: diffAssumption({ yield_differential: 15 }), farmYieldBasis: 185,
-    }).estimatedYield).toBeCloseTo(170, 6)
+  it('the legacy per-endorsement variance fallback is GONE — no row means RMA expected, nothing else', () => {
+    // (Regression for the "impossible corn indemnity": a stale legacy pct used
+    // to depress the estimate and pay SCO/ECO with nothing wrong.)
+    const r = resolveEstimatedCountyYield({ expectedCountyYield: 150 })
+    expect(r.estimatedYield).toBeCloseTo(150, 6)
+    expect(r.source).toBe('expected')
   })
 
   it('absolute override wins over the differential (and does not move with the farm)', () => {
@@ -391,7 +390,7 @@ describe('computePolicy', () => {
     //   base.indemnity = 18,528.00 (from the RP worked example above)
     //
     // SCO: trigger 0.86, lowerLevel = base coverage 0.80 → bandWidth 0.06
-    //   county variance −20% → estimatedCountyYield = 175 × 0.80 = 140
+    //   shared county override 140 → estimatedCountyYield = 140
     //   revenueBased (RP):
     //     expectedCountyRevenue = 175 * 4.62 = 808.50
     //     actualCountyRevenue   = 140 * 4.00 = 560.00
@@ -418,16 +417,19 @@ describe('computePolicy', () => {
       sco: {
         coverageTrigger: 0.86,
         expectedCountyYield: 175,
-        countyYieldAssumptionPct: -20, // deprecated fallback path (no shared row)
         premiumPerAcre: null,
         totalPremium: 1500,
       },
       eco: null,
+      county: { assumption: { yield_differential: null, county_yield_override: 140, rma_final_county_yield: null } },
     })
 
     expect(comp.base.indemnity).toBeCloseTo(18528.0, 2)
     expect(comp.sco).not.toBeNull()
     expect(comp.sco!.indemnity).toBeCloseTo(4989.6, 2)
+    // Provenance the UI shows on paying county legs:
+    expect(comp.sco!.estimatedCountyYield).toBeCloseTo(140, 2)
+    expect(comp.sco!.countySource).toBe('override')
     expect(comp.eco).toBeNull()
     expect(comp.totalIndemnity).toBeCloseTo(23517.6, 2)
     expect(comp.premiumPaid).toBeCloseTo(9500.0, 2)
@@ -453,7 +455,6 @@ describe('computePolicy', () => {
       sco: {
         coverageTrigger: 0.86,
         expectedCountyYield: 175,
-        countyYieldAssumptionPct: null,
         premiumPerAcre: 12,
         totalPremium: null,
       },
@@ -1129,22 +1130,26 @@ describe('computeMcoIndemnity — margin band 0.86 → trigger', () => {
   })
 })
 
-describe('shared county assumption drives SCO (fallback only without a row)', () => {
+describe('shared county assumption drives SCO (RMA expected when no row)', () => {
   const base: PolicyInputs = {
     planType: 'RP', coverageLevel: 0.8, aphYield: 180, projectedPrice: 4.62, harvestPrice: 4,
     insuredAcres: 100, actualYield: 120,
   }
-  const sco = { coverageTrigger: 0.86, expectedCountyYield: 175, countyYieldAssumptionPct: -20, premiumPerAcre: null, totalPremium: null }
+  const sco = { coverageTrigger: 0.86, expectedCountyYield: 175, premiumPerAcre: null, totalPremium: null }
 
-  it('a shared differential row overrides the deprecated per-endorsement −20%', () => {
+  it('a shared differential row sets the county estimate from the farm basis', () => {
     // farm basis = the policy's actualYield 120; differential −55 ("I run 55
     // under the county") → est = 120 + 55 = 175 → ratio 700/808.5 = 0.8658 ≥
     // 0.86 → no payment.
     const withRow = computePolicy({ base, basePremium: 0, sco, eco: null, county: { assumption: { yield_differential: -55, county_yield_override: null, rma_final_county_yield: null } } })
     expect(withRow.sco!.indemnity).toBeCloseTo(0, 2)
-    // without a row the deprecated −20% still applies → full band 4,989.60
+    expect(withRow.sco!.countySource).toBe('differential')
+    // Without a row the estimate is the RMA expected itself; at harvest 4 vs
+    // gp 4.62 the county revenue ratio is 4/4.62 = 0.8658 ≥ 0.86 → no payment
+    // (the old −20% legacy fallback would have paid the full band here).
     const without = computePolicy({ base, basePremium: 0, sco, eco: null })
-    expect(without.sco!.indemnity).toBeCloseTo(4989.6, 2)
+    expect(without.sco!.indemnity).toBeCloseTo(0, 2)
+    expect(without.sco!.countySource).toBe('expected')
   })
 
   it('the RMA final pins the county yield and flags the computation', () => {
@@ -1322,5 +1327,55 @@ describe('resolveHarvestPriceByCrop — cotton futures sources convert to $/lb',
       liveByCrop: new Map([['corn', { price: 4.2, stale: false, priceDate: '2026-10-01' }]]),
     })
     expect(m.get('corn')!.price).toBe(4.2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// INVARIANT (the "impossible corn indemnity" guard): for any farm-based
+// (non-area) policy, actual yield ≥ APH AND harvest ≥ projected ⟹ the base
+// indemnity is exactly $0. guarantee = APH × cov × max(proj, harvest) <
+// actual × harvest whenever cov < 1 — a payment in that state means an
+// upstream input (county estimate, harvest resolution, units) is wrong.
+// ---------------------------------------------------------------------------
+describe('invariant: yield ≥ APH and harvest ≥ projected ⟹ base indemnity = 0 (non-area plans)', () => {
+  it('holds for RP / RP-HPE / YP across coverage levels, crops, and price gaps', () => {
+    const yields: Array<[number, number]> = [[180, 180], [180, 195], [58, 60.2], [1200, 1350]]
+    const prices: Array<[number, number]> = [[4.62, 4.62], [4.62, 4.9], [11.2, 12.4], [0.68, 0.71]]
+    for (const planType of ['RP', 'RP_HPE', 'YP'] as const) {
+      for (const coverageLevel of [0.5, 0.65, 0.75, 0.8, 0.85]) {
+        for (const [aphYield, actualYield] of yields) {
+          for (const [projectedPrice, harvestPrice] of prices) {
+            const r = computeIndemnity({
+              planType, coverageLevel, aphYield, projectedPrice, harvestPrice,
+              insuredAcres: 250, actualYield,
+            })
+            expect(r.indemnity).toBe(0)
+          }
+        }
+      }
+    }
+  })
+
+  it('corn RP worked example: yield above APH + harvest above projected pays nothing anywhere', () => {
+    // APH 195, cov 80%, projected 4.62, harvest 4.85, actual 205, 100 ac:
+    //   guarantee = 195 × 0.80 × 4.85 × 100 = 75,660
+    //   actual    = 205 × 4.85 × 100        = 99,425 → base $0
+    // With NO shared county row, SCO/ECO estimate = RMA expected, so the county
+    // revenue ratio is harvest/gp = 1 ≥ every trigger → county legs $0 too.
+    const comp = computePolicy({
+      base: {
+        planType: 'RP', coverageLevel: 0.8, aphYield: 195, projectedPrice: 4.62,
+        harvestPrice: 4.85, insuredAcres: 100, actualYield: 205,
+      },
+      basePremium: 5000,
+      sco: { coverageTrigger: 0.86, expectedCountyYield: 190, premiumPerAcre: 10, totalPremium: null },
+      eco: { ecoTriggerLevel: 0.95, expectedCountyYield: 190, premiumPerAcre: 8, totalPremium: null },
+    })
+    expect(comp.base.indemnity).toBe(0)
+    expect(comp.base.revenueGuarantee).toBeCloseTo(75660, 2)
+    expect(comp.base.expectedRevenue).toBeCloseTo(99425, 2)
+    expect(comp.sco!.indemnity).toBe(0)
+    expect(comp.eco!.indemnity).toBe(0)
+    expect(comp.totalIndemnity).toBe(0)
   })
 })

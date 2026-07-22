@@ -306,6 +306,11 @@ export type BandResult = {
   paymentLimit: number
   indemnity: number
   bandWidth: number
+  // Provenance for the UI (a county-leg payment must never be mysterious):
+  // the estimated county yield the ratio was computed from, and how it was
+  // resolved (differential / override / final / RMA expected).
+  estimatedCountyYield?: number
+  countySource?: CountyEstimate['source']
 }
 
 // Generic area-band indemnity, shared by SCO and ECO. The band pays from the
@@ -336,6 +341,7 @@ export function computeBandIndemnity(inp: BandInputs): BandResult {
     paymentLimit: round2(paymentLimit),
     indemnity: round2(indemnity),
     bandWidth: round6(bandWidth),
+    estimatedCountyYield: round2(inp.estimatedCountyYield),
   }
 }
 
@@ -360,19 +366,22 @@ export type CountyAssumptionLike = Pick<CountyYieldAssumption, 'yield_differenti
 export type CountyEstimate = {
   estimatedYield: number
   pinned: boolean // RMA final on file: scenario modes must not move it
-  source: 'final' | 'override' | 'differential' | 'variance' | 'expected'
+  source: 'final' | 'override' | 'differential' | 'expected'
   differential: number | null
 }
 
+// The old per-endorsement county_yield_assumption_pct fallback ('variance')
+// was REMOVED here: deprecated since 045 "for one release", it let a stale
+// legacy percentage silently depress the county estimate and pay SCO/ECO in
+// years where nothing was wrong. With no usable assumption the estimate now
+// equals the RMA expected county yield — which by construction pays $0 on the
+// county legs whenever harvest ≥ projected.
 export function resolveEstimatedCountyYield(args: {
   expectedCountyYield: number
   assumption?: CountyAssumptionLike | null
   /** The farm's own yield basis: expected/actual yield (per-practice blend as
    *  applicable) — or the scenario blended yield in "county moves with me". */
   farmYieldBasis?: number | null
-  /** DEPRECATED fallback: the old per-endorsement county_yield_assumption_pct
-   *  (used only when no shared-table row exists). */
-  fallbackPct?: number | null
 }): CountyEstimate {
   const a = args.assumption
   if (a?.rma_final_county_yield != null) {
@@ -388,14 +397,6 @@ export function resolveEstimatedCountyYield(args: {
       pinned: false,
       source: 'differential',
       differential: diff,
-    }
-  }
-  if (args.fallbackPct != null && args.fallbackPct !== 0) {
-    return {
-      estimatedYield: args.expectedCountyYield * (1 + Number(args.fallbackPct) / 100),
-      pinned: false,
-      source: 'variance',
-      differential: null,
     }
   }
   return { estimatedYield: args.expectedCountyYield, pinned: false, source: 'expected', differential: null }
@@ -417,8 +418,6 @@ export function countyAssumptionFor(
 
 export type ScoEcoInputs = {
   expectedCountyYield: number
-  /** DEPRECATED per-endorsement fallback (shared table wins). */
-  countyYieldAssumptionPct: number | null
   trigger: number // SCO: 0.86; ECO: 0.90/0.95
   lowerLevel: number // SCO: policy coverage level; ECO: 0.86
   assumption?: CountyAssumptionLike | null
@@ -427,26 +426,29 @@ export type ScoEcoInputs = {
 }
 
 // SCO indemnity: the estimated county yield comes from the SHARED county
-// assumption (farm yield basis − differential), the override, or the final.
+// assumption (farm yield basis − differential), the override, or the final —
+// else the RMA expected county yield (no legacy variance fallback).
 export function computeScoIndemnity(base: PolicyInputs, sco: ScoEcoInputs): BandResult {
   const gp = guaranteePriceFor(base.planType, base.projectedPrice, base.harvestPrice)
   const est = resolveEstimatedCountyYield({
     expectedCountyYield: sco.expectedCountyYield,
     assumption: sco.assumption,
-    fallbackPct: sco.countyYieldAssumptionPct,
     farmYieldBasis: sco.farmYieldBasis ?? base.actualYield,
   })
-  return computeBandIndemnity({
-    lowerLevel: sco.lowerLevel,
-    upperTrigger: sco.trigger,
-    expectedCountyYield: sco.expectedCountyYield,
-    estimatedCountyYield: est.estimatedYield,
-    guaranteePrice: gp,
-    harvestPrice: base.harvestPrice,
-    aphYield: base.aphYield,
-    insuredAcres: base.insuredAcres,
-    revenueBased: base.planType !== 'YP',
-  })
+  return {
+    ...computeBandIndemnity({
+      lowerLevel: sco.lowerLevel,
+      upperTrigger: sco.trigger,
+      expectedCountyYield: sco.expectedCountyYield,
+      estimatedCountyYield: est.estimatedYield,
+      guaranteePrice: gp,
+      harvestPrice: base.harvestPrice,
+      aphYield: base.aphYield,
+      insuredAcres: base.insuredAcres,
+      revenueBased: base.planType !== 'YP',
+    }),
+    countySource: est.source,
+  }
 }
 
 // ECO indemnity. The ECO band always starts at the SCO trigger (0.86)
@@ -456,20 +458,22 @@ export function computeEcoIndemnity(base: PolicyInputs, eco: ScoEcoInputs): Band
   const est = resolveEstimatedCountyYield({
     expectedCountyYield: eco.expectedCountyYield,
     assumption: eco.assumption,
-    fallbackPct: eco.countyYieldAssumptionPct,
     farmYieldBasis: eco.farmYieldBasis ?? base.actualYield,
   })
-  return computeBandIndemnity({
-    lowerLevel: eco.lowerLevel,
-    upperTrigger: eco.trigger,
-    expectedCountyYield: eco.expectedCountyYield,
-    estimatedCountyYield: est.estimatedYield,
-    guaranteePrice: gp,
-    harvestPrice: base.harvestPrice,
-    aphYield: base.aphYield,
-    insuredAcres: base.insuredAcres,
-    revenueBased: base.planType !== 'YP',
-  })
+  return {
+    ...computeBandIndemnity({
+      lowerLevel: eco.lowerLevel,
+      upperTrigger: eco.trigger,
+      expectedCountyYield: eco.expectedCountyYield,
+      estimatedCountyYield: est.estimatedYield,
+      guaranteePrice: gp,
+      harvestPrice: base.harvestPrice,
+      aphYield: base.aphYield,
+      insuredAcres: base.insuredAcres,
+      revenueBased: base.planType !== 'YP',
+    }),
+    countySource: est.source,
+  }
 }
 
 // ---------- STAX (cotton) & MCO (margin) endorsement bands ----------
@@ -572,14 +576,12 @@ export type PolicyComputation = {
 export type ScoConfig = {
   coverageTrigger: number
   expectedCountyYield: number
-  countyYieldAssumptionPct: number | null
   premiumPerAcre: number | null
   totalPremium: number | null
 }
 export type EcoConfig = {
   ecoTriggerLevel: number
   expectedCountyYield: number
-  countyYieldAssumptionPct: number | null
   premiumPerAcre: number | null
   totalPremium: number | null
 }
@@ -626,7 +628,6 @@ export function computePolicy(args: {
   if (args.sco) {
     scoResult = computeScoIndemnity(args.base, {
       expectedCountyYield: args.sco.expectedCountyYield,
-      countyYieldAssumptionPct: args.sco.countyYieldAssumptionPct,
       trigger: args.sco.coverageTrigger,
       lowerLevel: args.base.coverageLevel,
       assumption,
@@ -643,7 +644,6 @@ export function computePolicy(args: {
   if (args.eco) {
     ecoResult = computeEcoIndemnity(args.base, {
       expectedCountyYield: args.eco.expectedCountyYield,
-      countyYieldAssumptionPct: args.eco.countyYieldAssumptionPct,
       trigger: args.eco.ecoTriggerLevel,
       lowerLevel: args.sco?.coverageTrigger ?? args.scoTriggerDefault ?? DEFAULT_SCO_TRIGGER,
       assumption,
@@ -663,7 +663,7 @@ export function computePolicy(args: {
       ? Number(args.base.expectedCountyYield)
       : gp > 0 && args.stax.expectedCountyRevenue != null ? Number(args.stax.expectedCountyRevenue) / gp : 0
     const est = resolveEstimatedCountyYield({ expectedCountyYield: expYield, assumption, farmYieldBasis })
-    staxResult = computeStaxIndemnity({ ...args.base, expectedCountyYield: expYield }, args.stax, est.estimatedYield)
+    staxResult = { ...computeStaxIndemnity({ ...args.base, expectedCountyYield: expYield }, args.stax, est.estimatedYield), estimatedCountyYield: round2(est.estimatedYield), countySource: est.source }
     staxPremium = endorsementPremium(
       { total_premium: args.stax.totalPremium, premium_per_acre: args.stax.premiumPerAcre },
       args.base.insuredAcres,
@@ -675,7 +675,7 @@ export function computePolicy(args: {
   if (args.mco) {
     const expYield = Number(args.mco.expectedCountyYield ?? args.base.expectedCountyYield ?? 0)
     const est = resolveEstimatedCountyYield({ expectedCountyYield: expYield, assumption, farmYieldBasis })
-    mcoResult = computeMcoIndemnity(args.base, args.mco, est.estimatedYield)
+    mcoResult = { ...computeMcoIndemnity(args.base, args.mco, est.estimatedYield), estimatedCountyYield: round2(est.estimatedYield), countySource: est.source }
     mcoPremium = endorsementPremium(
       { total_premium: args.mco.totalPremium, premium_per_acre: args.mco.premiumPerAcre },
       args.base.insuredAcres,
@@ -1174,7 +1174,6 @@ export function scoConfigFrom(s: CropInsuranceSco | undefined): ScoConfig | null
   return {
     coverageTrigger: Number(s.coverage_trigger),
     expectedCountyYield: Number(s.expected_county_yield),
-    countyYieldAssumptionPct: s.county_yield_assumption_pct == null ? 0 : Number(s.county_yield_assumption_pct),
     premiumPerAcre: s.premium_per_acre == null ? null : Number(s.premium_per_acre),
     totalPremium: s.total_premium == null ? null : Number(s.total_premium),
   }
@@ -1184,7 +1183,6 @@ export function ecoConfigFrom(e: CropInsuranceEco | undefined): EcoConfig | null
   return {
     ecoTriggerLevel: Number(e.eco_trigger_level),
     expectedCountyYield: Number(e.expected_county_yield),
-    countyYieldAssumptionPct: e.county_yield_assumption_pct == null ? 0 : Number(e.county_yield_assumption_pct),
     premiumPerAcre: e.premium_per_acre == null ? null : Number(e.premium_per_acre),
     totalPremium: e.total_premium == null ? null : Number(e.total_premium),
   }
