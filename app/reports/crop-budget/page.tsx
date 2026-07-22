@@ -19,9 +19,9 @@ export default function CropBudgetPage() {
       </div>
       <p className="text-sm text-slate-600 no-print max-w-3xl">
         Pre-season budgeting for next crop year: build whole-farm allocation scenarios (acres × yield × price × cost →
-        profit), duplicate a plan to explore alternatives, and open a simple price × yield matrix per crop. Budgets are
-        a sandbox — nothing here touches your marketing assumptions or actuals. For the in-season picture with
-        contracts and insurance, see{' '}
+        profit), duplicate a plan to explore alternatives, and read each crop&apos;s price × yield matrix. Assumptions are
+        edited in the slide-over panel; budgets are a sandbox — nothing here touches your marketing assumptions or
+        actuals. For the in-season picture with contracts and insurance, see{' '}
         <Link href="/reports/income-sensitivity" className="text-sky-700 underline">Income Sensitivity →</Link>
       </p>
       <CropBudgetReport onPayloadChange={handlePayload} />

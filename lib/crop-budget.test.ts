@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   aphWeightedYield, budgetLineMath, budgetSeeds, buildBudgetMatrix, scenarioTotals,
   compareScenarios, duplicateLinesFor, budgetContractSymbol, budgetContractLabel,
-  lineDesignation,
+  lineDesignation, blendBudgetLines,
   type BudgetLineInput,
 } from '@/lib/crop-budget'
 import { axisValues } from '@/lib/income-sensitivity'
@@ -285,5 +285,68 @@ describe('budgetContractSymbol — the budget-year NEW-CROP benchmark', () => {
   it('labels read naturally', () => {
     expect(budgetContractLabel('Corn', 2027)).toBe('DEC 27 Corn')
     expect(budgetContractLabel('Wheat', 2027)).toBe('JUL 27 Wheat')
+  })
+})
+
+describe('blendBudgetLines — display-time by-crop blend', () => {
+  const irr = {
+    practice: 'irrigated' as const, cropping: null, label: null,
+    acres: 800, yield_per_acre: 195, cost_per_acre: 780, effectivePrice: 4.5,
+  }
+  const dry = {
+    practice: 'non_irrigated' as const, cropping: null, label: null,
+    acres: 450, yield_per_acre: 168, cost_per_acre: 600, effectivePrice: 4.5,
+  }
+
+  it('800 ac @ 195 + 450 ac @ 168 → 1,250 ac @ 185.28 (displays 185.3), cost acre-weighted likewise', () => {
+    // yield: (195×800 + 168×450) ÷ 1,250 = 231,600 ÷ 1,250 = 185.28
+    // cost:  (780×800 + 600×450) ÷ 1,250 = 894,000 ÷ 1,250 = 715.20
+    const b = blendBudgetLines([irr, dry])
+    expect(b.acres).toBe(1250)
+    expect(b.yieldPerAcre).toBe(185.28)
+    expect(Math.round(b.yieldPerAcre! * 10) / 10).toBe(185.3) // the displayed 1-dec figure
+    expect(b.costPerAcre).toBe(715.2)
+    expect(b.effectivePrice).toBe(4.5) // identical on both lines — the shared contract
+  })
+
+  it('blended totals are identical to the sum of the broken-out lines', () => {
+    // Broken out: (4.50×195−780)×800 = 97.50×800 = 78,000; (4.50×168−600)×450 = 156×450 = 70,200 → 148,200.
+    // Blended: (4.50×185.28−715.20)×1,250 = 118.56×1,250 = 148,200. Exactly equal — weighting preserves totals.
+    const mkLine = (l: { acres: number; yield_per_acre: number; cost_per_acre: number; effectivePrice: number }): BudgetLineInput => ({
+      acres: l.acres, yield_per_acre: l.yield_per_acre, price_mode: 'manual',
+      manual_price: l.effectivePrice, basis: 0, cost_per_acre: l.cost_per_acre,
+    })
+    const brokenOut = [irr, dry].map((l) => budgetLineMath(mkLine(l), null, false).totalProfit!)
+    const b = blendBudgetLines([irr, dry])
+    const blended = budgetLineMath({
+      acres: b.acres, yield_per_acre: b.yieldPerAcre, price_mode: 'manual',
+      manual_price: b.effectivePrice, basis: 0, cost_per_acre: b.costPerAcre,
+    }, null, false).totalProfit!
+    expect(brokenOut[0] + brokenOut[1]).toBe(148200)
+    expect(blended).toBe(148200)
+  })
+
+  it('a single-line crop passes through unchanged (the toggle is a no-op)', () => {
+    const b = blendBudgetLines([irr])
+    expect(b).toEqual({ acres: 800, yieldPerAcre: 195, costPerAcre: 780, effectivePrice: 4.5, composition: '' })
+  })
+
+  it('composition string names the underlying lines', () => {
+    expect(blendBudgetLines([irr, dry]).composition).toBe('800 irr + 450 dry')
+    expect(blendBudgetLines([
+      irr,
+      { ...dry, cropping: 'double_crop' as const, label: 'behind wheat' },
+    ]).composition).toBe('800 irr + 450 dry dc (behind wheat)')
+    expect(blendBudgetLines([
+      { ...irr, practice: null },
+      { ...dry, practice: null, acres: 450 },
+    ]).composition).toBe('800 blended + 450 blended')
+  })
+
+  it('lines without acres are excluded from the weighting but named in the composition', () => {
+    const b = blendBudgetLines([irr, { ...dry, acres: null }])
+    expect(b.acres).toBe(800)
+    expect(b.yieldPerAcre).toBe(195) // only the irr line weighs in
+    expect(b.composition).toBe('800 irr + — dry')
   })
 })
