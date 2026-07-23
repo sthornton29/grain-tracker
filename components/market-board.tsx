@@ -11,7 +11,7 @@ export default function MarketBoard({ quotes, asOf, available }: { quotes: Publi
       <div className="flex items-center justify-between mb-2">
         <h2 className="font-semibold text-slate-800 flex items-center gap-1.5">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/brand/logo-mark.svg" alt="" className="h-4 w-4" />
+          <img src="/brand/logo-mark.png" alt="" className="h-4 w-4" />
           <span className="text-brand-dark">Turnrow</span>
           <span className="text-slate-400 font-normal">·</span>
           <span>Grain Futures</span>

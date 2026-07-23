@@ -55,9 +55,8 @@ export default function ResetPasswordPage() {
   return (
     <div className="min-h-[85vh] flex items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-4">
-        <div className="flex flex-col items-center gap-2 pt-2">
-          <img src="/brand/logo-mark.svg" alt="Turnrow" className="h-16 w-16" />
-          <div className="font-display font-bold tracking-[0.3em] text-brand-dark text-xl">TURNROW</div>
+        <div className="flex justify-center pt-2">
+          <img src="/brand/logo-lockup.png" alt="Turnrow" className="h-12 w-auto" />
         </div>
 
         {done ? (

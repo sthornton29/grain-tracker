@@ -17,10 +17,9 @@ export default function Nav({ cottonEnabled = false, role = 'owner' }: { cottonE
       <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-2 overflow-x-auto">
         <Link
           href={role === 'gin' ? '/cotton/loads' : '/'}
-          className="flex items-center gap-2 whitespace-nowrap mr-4"
+          className="flex items-center whitespace-nowrap mr-4"
         >
-          <img src="/brand/logo-mark-white.svg" alt="" className="h-6 w-6" />
-          <span className="font-display font-bold tracking-[0.22em] text-sm">TURNROW</span>
+          <img src="/brand/logo-lockup-white.png" alt="Turnrow" className="h-6 w-auto" />
         </Link>
         <div className="flex gap-1 flex-1">
           {links.map((l) => {
