@@ -470,7 +470,6 @@ Extracted rows are fuzzy-matched (`lib/fuzzy.ts`) to existing reference data and
 
 ## 6. Known issues & partially-built features
 
-- **Migration 047 is NOT applied to production yet** (verified 2026-07-22 via a REST schema probe: `county_yield_assumptions.yield_differential` → 42703, while the 048/049 columns exist). Until Stuart runs `supabase/047_county_yield_differential.sql` in the Supabase SQL editor, every county-differential save fails (the editor shows the actionable "run migration 047" message and, since the save-plan rewrite, no longer destroys the existing row on failure). Apply 047, then re-enter/verify the differentials.
 - **Options pricing is "future-ready," not finished** — `/api/options-prices` always degrades to manual entry today (see §5). Functional fallback, but the live path is unproven.
 - **Stale comment** in `lib/revenue-projections.ts:5` calls government payments "a placeholder until that section is built." That section **is** built and wired in (`projectPayments` → `revenue-projections-report.tsx`). Comment only; not a missing feature.
 - **Excel styling** — the shared exporter now uses **exceljs** (real number formats, bold/frozen headers, fills), so the old SheetJS no-styling limitation is gone. The legacy `lib/crop-insurance-export.ts` was removed; the Production Report goes through the shared `lib/exports.ts` layer.
