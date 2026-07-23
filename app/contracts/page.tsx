@@ -376,7 +376,7 @@ export default async function ContractsPage({
       <div className="flex items-end gap-3 flex-wrap">
         <Link
           href="/settings/contracts"
-          className="rounded-lg bg-green-700 text-white px-3 py-2 text-sm font-semibold"
+          className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold"
         >
           New Contract
         </Link>
@@ -501,7 +501,7 @@ export default async function ContractsPage({
                 <tr key={c.id} className="border-t border-slate-100">
                   <td className="px-3 py-2 font-semibold">
                     <ContractFlagIcon variant={flag} />
-                    <Link href={`/contracts/${c.id}`} className="text-sky-700 hover:underline">
+                    <Link href={`/contracts/${c.id}`} className="text-brand-deep hover:underline">
                       {c.contract_number}
                     </Link>
                     {isDup && (

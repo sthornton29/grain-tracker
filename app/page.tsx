@@ -1,25 +1,32 @@
 import Link from 'next/link'
+import { createClient } from '@/lib/supabase/server'
+import { navLinksFor } from '@/lib/nav-links'
 
-export default function Home() {
-  const tiles = [
-    { href: '/loads/new', label: 'New Load', sub: 'Record a truck load', color: 'bg-green-700' },
-    { href: '/loads', label: 'Loads', sub: 'Search, edit, export', color: 'bg-slate-700' },
-    { href: '/inventory', label: 'Bin Inventory', sub: 'Bushels on hand', color: 'bg-amber-700' },
-    { href: '/contracts', label: 'Contracts', sub: 'Delivered vs contracted', color: 'bg-sky-700' },
-    { href: '/settlements', label: 'Settlements', sub: 'Upload & reconcile payments', color: 'bg-teal-700' },
-    { href: '/reports/cash-flow', label: 'Cash Flow', sub: 'Monthly revenue forecast', color: 'bg-indigo-700' },
-    { href: '/yields', label: 'Yields', sub: 'Bushels per acre by field', color: 'bg-emerald-700' },
-    { href: '/reports/season', label: 'Season Summary', sub: 'Acres + yield by crop', color: 'bg-lime-700' },
-    { href: '/reports', label: 'Reports', sub: 'Yields by landowner, share rent', color: 'bg-rose-700' },
-    { href: '/settings', label: 'Settings', sub: 'Entities, farms, plantings…', color: 'bg-slate-500' },
-  ]
+// Landing page: quick-action tiles that MIRROR the top nav exactly — same
+// items, same order, same labels — both rendered from lib/nav-links.ts so
+// they cannot drift (cotton tab included when the module is on; the gin role
+// gets its restricted set, though middleware routes gin users to /cotton).
+export default async function Home() {
+  const supabase = createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  let cottonEnabled = false
+  let role: 'owner' | 'gin' = 'owner'
+  if (user) {
+    const [settings, profile] = await Promise.all([
+      supabase.from('app_settings').select('cotton_module_enabled').eq('id', 1).maybeSingle(),
+      supabase.from('user_profiles').select('role').eq('user_id', user.id).maybeSingle(),
+    ])
+    cottonEnabled = Boolean((settings.data as { cotton_module_enabled?: boolean } | null)?.cotton_module_enabled)
+    role = ((profile.data as { role?: string } | null)?.role === 'gin' ? 'gin' : 'owner')
+  }
+  const tiles = navLinksFor({ cottonEnabled: cottonEnabled || role === 'gin', role })
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4">
       {tiles.map((t) => (
         <Link
           key={t.href}
           href={t.href}
-          className={`${t.color} text-white rounded-2xl p-6 shadow hover:opacity-95`}
+          className={`${t.tileColor} text-white rounded-2xl p-6 shadow hover:opacity-95`}
         >
           <div className="text-xl font-bold">{t.label}</div>
           <div className="text-sm opacity-90">{t.sub}</div>

@@ -4,6 +4,11 @@
 // Supabase; the plan is NEVER delete-then-insert, so a failed write (e.g. the
 // 047 column missing) can no longer destroy the existing row. One row per
 // crop × county × crop_year; blank inputs on all three fields clear the row.
+//
+// The control RE-FETCHES the current row by key before planning (a cached
+// `assumption` prop can be stale — the row may have been created from the
+// other surface), and a 23505 insert collision re-fetches + re-plans into an
+// update rather than surfacing an error (isUniqueViolation).
 
 import type { CountyYieldAssumption } from '@/lib/types'
 
@@ -109,4 +114,12 @@ export function saveErrorMessage(err: { code?: string | null; message?: string |
     return 'Not saved — the database is missing migration 047 (yield_differential). Run supabase/047_county_yield_differential.sql in the Supabase SQL editor, then retry.'
   }
   return err?.message || 'Save failed.'
+}
+
+/** A 23505 on the crop × county × crop_year unique key: the row already
+ *  exists (created from the other surface, or a stale cached prop chose
+ *  insert). NOT a real failure — the caller re-fetches the fresh row and
+ *  re-plans, which lands on 'update' (or 'noop'), and no error is shown. */
+export function isUniqueViolation(err: { code?: string | null; message?: string | null } | null | undefined): boolean {
+  return err?.code === '23505' || /duplicate key value/i.test(err?.message ?? '')
 }

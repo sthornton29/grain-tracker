@@ -281,7 +281,7 @@ function FormFields({
         <button
           type="button"
           onClick={addVariety}
-          className="text-sm text-sky-700"
+          className="text-sm text-brand-deep"
         >
           + Add variety
         </button>
@@ -632,7 +632,7 @@ export default function PlantingsPage() {
         <FormFields value={form} onChange={setForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} varietyOptionsByCrop={varietyOptionsByCrop} />
         <button
           disabled={formInvalid(form)}
-          className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50"
+          className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50"
         >
           Add
         </button>
@@ -794,7 +794,7 @@ export default function PlantingsPage() {
                               notes: p.notes ?? '',
                             })
                           }}
-                          className="text-sky-700"
+                          className="text-brand-deep"
                         >Edit</button>
                       </td>
                       <td className="px-3 py-2"><button onClick={() => remove(p.id)} className="text-red-600">Delete</button></td>

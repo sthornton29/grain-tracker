@@ -1080,7 +1080,7 @@ export default function YieldsPage() {
                               <button
                                 type="button"
                                 onClick={() => openVarAlloc(p)}
-                                className="text-sky-700 text-sm whitespace-nowrap"
+                                className="text-brand-deep text-sm whitespace-nowrap"
                               >{allocated ? 'Edit allocation' : 'Allocate bushels'}</button>
                             )}
                           </td>
@@ -1116,7 +1116,7 @@ export default function YieldsPage() {
                                     type="button"
                                     disabled={varAllocSaving || !varAllocValid(vs, r.dryBu)}
                                     onClick={() => saveVarAlloc(p, r.dryBu)}
-                                    className="rounded-lg bg-green-700 text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                                    className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
                                   >Save</button>
                                   <button
                                     type="button"
@@ -1241,7 +1241,7 @@ export default function YieldsPage() {
                               type="button"
                               disabled={savingOverride}
                               onClick={() => setInclusionOverride(p, true)}
-                              className="text-sky-700 text-xs underline disabled:opacity-50 no-print"
+                              className="text-brand-deep text-xs underline disabled:opacity-50 no-print"
                             >Count anyway</button>
                           )}
                           {overridden && (
@@ -1297,7 +1297,7 @@ export default function YieldsPage() {
                               <button
                                 type="button"
                                 onClick={() => openBreakout(p)}
-                                className="text-sky-700 text-sm whitespace-nowrap no-print"
+                                className="text-brand-deep text-sm whitespace-nowrap no-print"
                               >
                                 {p.yield_breakout_entered ? 'Edit breakout' : 'Allocate irr/dry'}
                               </button>
@@ -1346,7 +1346,7 @@ export default function YieldsPage() {
                               type="button"
                               disabled={breakoutSaving || !breakoutSumValid(r.dryBu)}
                               onClick={() => saveBreakout(p, r.dryBu)}
-                              className="rounded-lg bg-green-700 text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                              className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
                             >Save</button>
                             <button
                               type="button"

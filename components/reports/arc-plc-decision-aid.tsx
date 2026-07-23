@@ -470,7 +470,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
                               onClick={() => electAllForCommodity(s, 'ARC_CO')}
                               disabled={s.arcElected === s.farms}
                               title={s.arcElected === s.farms ? 'Every farm is already ARC-CO' : `Set ARC-CO on all ${s.farms} farms`}
-                              className={`px-2 py-1 border-l border-slate-300 disabled:opacity-40 ${s.verdict === 'ARC' ? 'bg-green-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                              className={`px-2 py-1 border-l border-slate-300 disabled:opacity-40 ${s.verdict === 'ARC' ? 'bg-brand hover:bg-brand-deep text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
                             >All ARC-CO</button>
                           </span>
                         </td>
@@ -565,8 +565,8 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
                       </td>
                       <td className="px-2 py-1"><span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{ELECTION_LABEL[r.election]}</span></td>
                       <td className="px-2 py-1 no-print whitespace-nowrap">
-                        <button onClick={() => setElection(r.base.farm_id, r.base.commodity_id, 'PLC')} className="text-xs text-sky-700 mr-2">Elect PLC</button>
-                        <button onClick={() => setElection(r.base.farm_id, r.base.commodity_id, 'ARC_CO')} className="text-xs text-sky-700 mr-2">Elect ARC-CO</button>
+                        <button onClick={() => setElection(r.base.farm_id, r.base.commodity_id, 'PLC')} className="text-xs text-brand-deep mr-2">Elect PLC</button>
+                        <button onClick={() => setElection(r.base.farm_id, r.base.commodity_id, 'ARC_CO')} className="text-xs text-brand-deep mr-2">Elect ARC-CO</button>
                         <button onClick={() => setDetailRow(detailRow === r.base.id ? null : r.base.id)} className="text-xs text-slate-500 underline">
                           {detailRow === r.base.id ? 'hide' : 'drivers'}
                         </button>

@@ -21,8 +21,8 @@ export default function CropInsuranceClaimsPage() {
         Estimated indemnity for each RP / RP-HPE / YP policy (with SCO and ECO endorsements) at your current
         per-practice yields and the running harvest-price estimate, netted against premium paid. For price and yield
         scenarios, use the{' '}
-        <Link href="/reports/income-sensitivity" className="text-sky-700 underline">Income Sensitivity Report →</Link>{' '}
-        <Link href="/settings/crop-insurance" className="text-sky-700 underline">Manage policies →</Link>
+        <Link href="/reports/income-sensitivity" className="text-brand-deep underline">Income Sensitivity Report →</Link>{' '}
+        <Link href="/settings/crop-insurance" className="text-brand-deep underline">Manage policies →</Link>
       </p>
       <CropInsuranceClaimsReport onPayloadChange={handlePayload} />
     </div>

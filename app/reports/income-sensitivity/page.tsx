@@ -21,7 +21,7 @@ export default function IncomeSensitivityPage() {
         One futures-price × yield table per crop: revenue or net profit per acre in every scenario. Contracted bushels
         stay at their locked prices, harvested bushels are fixed facts, crop insurance re-runs net of premium in every
         cell, and government payments can be layered on as a flat $/acre.{' '}
-        <Link href="/reports/crop-insurance-claims" className="text-sky-700 underline">Claims Monitor →</Link>
+        <Link href="/reports/crop-insurance-claims" className="text-brand-deep underline">Claims Monitor →</Link>
       </p>
       <IncomeSensitivityReport onPayloadChange={handlePayload} />
     </div>

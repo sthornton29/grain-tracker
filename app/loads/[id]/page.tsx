@@ -271,7 +271,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
         </div>
         <div className="flex gap-2 flex-wrap no-print">
           <Link href="/loads" className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Back</Link>
-          <Link href={`/loads/${load.id}/edit`} className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold text-sky-700">Edit</Link>
+          <Link href={`/loads/${load.id}/edit`} className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold text-brand-deep">Edit</Link>
           <DeleteLoadButton loadId={load.id} />
           <LoadPdfBar payload={payload} />
         </div>
@@ -333,7 +333,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
             {load.contract.delivery_location?.name && <Def label="Delivery location" value={load.contract.delivery_location.name} />}
           </dl>
           <div className="px-4 pb-3 no-print">
-            <Link href={`/contracts/${load.contract.id}`} className="text-sky-700 text-sm font-semibold">View contract →</Link>
+            <Link href={`/contracts/${load.contract.id}`} className="text-brand-deep text-sm font-semibold">View contract →</Link>
           </div>
         </Section>
       )}
@@ -353,7 +353,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
               <span className="text-sm text-slate-600">More than one load shares this ticket number, so we can&apos;t be sure which load this settlement paid. Open the settlement to confirm the match.</span>
             </div>
             {paymentLine?.settlement && (
-              <Link href={`/settlements/${paymentLine.settlement.id}`} className="text-sky-700 text-sm font-semibold no-print">
+              <Link href={`/settlements/${paymentLine.settlement.id}`} className="text-brand-deep text-sm font-semibold no-print">
                 View settlement {paymentLine.settlement.settlement_number ? `#${paymentLine.settlement.settlement_number}` : ''} →
               </Link>
             )}
@@ -377,7 +377,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
               </span>
             </div>
             {paymentLine?.settlement && (
-              <Link href={`/settlements/${paymentLine.settlement.id}`} className="text-sky-700 text-sm font-semibold no-print">View settlement →</Link>
+              <Link href={`/settlements/${paymentLine.settlement.id}`} className="text-brand-deep text-sm font-semibold no-print">View settlement →</Link>
             )}
           </div>
         )}

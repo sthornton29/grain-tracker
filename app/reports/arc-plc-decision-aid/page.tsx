@@ -20,7 +20,7 @@ export default function ArcPlcDecisionAidPage() {
       <p className="text-sm text-slate-600 no-print max-w-3xl">
         Compare projected PLC vs ARC-CO payments per farm and commodity before electing. Slide the MYA assumption to
         see how PLC moves, then set your election.{' '}
-        <Link href="/settings/government-payments" className="text-sky-700 underline">Manage base acres &amp; prices →</Link>
+        <Link href="/settings/government-payments" className="text-brand-deep underline">Manage base acres &amp; prices →</Link>
       </p>
       <ArcPlcDecisionAid onPayloadChange={handlePayload} />
     </div>

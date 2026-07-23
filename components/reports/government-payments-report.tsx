@@ -650,7 +650,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
                     <td className="px-2 py-1 text-right font-mono font-semibold tabular-nums">{usd(r.arcPlcTotal)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.other)}</td>
                     <td className="px-2 py-1 text-right font-mono font-bold tabular-nums">{usd(r.total)}</td>
-                    <td className="px-2 py-1 no-print"><button onClick={() => toggle(r.farm.id)} className="text-sky-700 text-xs">{expanded.has(r.farm.id) ? 'Hide' : 'Detail'}</button></td>
+                    <td className="px-2 py-1 no-print"><button onClick={() => toggle(r.farm.id)} className="text-brand-deep text-xs">{expanded.has(r.farm.id) ? 'Hide' : 'Detail'}</button></td>
                   </tr>
                 ))}
                 <tr className={grandTotalRowCls}>

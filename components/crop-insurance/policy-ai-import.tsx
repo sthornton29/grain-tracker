@@ -578,14 +578,14 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
         <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3">
           <div className="text-sm text-slate-600 flex-1">
             <span className="font-semibold text-slate-700">{statusCounts.exists}</span> already exist ·{' '}
-            <span className="font-semibold text-sky-700">{statusCounts.updates}</span> update{statusCounts.updates === 1 ? '' : 's'} ·{' '}
+            <span className="font-semibold text-brand-deep">{statusCounts.updates}</span> update{statusCounts.updates === 1 ? '' : 's'} ·{' '}
             <span className="font-semibold text-green-700">{statusCounts.added}</span> new
             <span className="block text-xs text-slate-500">
               <span className="font-semibold text-green-700">{toSave.length}</span> checked to save · {rows.length} extracted — nothing is written until Save All
             </span>
           </div>
           <button type="button" onClick={saveAll} disabled={saving || toSave.length === 0}
-            className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50">
+            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
             {saving ? 'Saving…' : `Save All (${toSave.length})`}
           </button>
         </div>

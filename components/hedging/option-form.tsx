@@ -148,7 +148,7 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
             <div className="mt-1 flex gap-2">
               {(['put', 'call'] as const).map((t) => (
                 <button key={t} type="button" onClick={() => onTypeChange(t)}
-                  className={`flex-1 py-2 rounded-lg border capitalize ${optionType === t ? 'bg-green-700 text-white border-green-700' : 'bg-white border-slate-300'}`}>
+                  className={`flex-1 py-2 rounded-lg border capitalize ${optionType === t ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white border-slate-300'}`}>
                   {t}
                 </button>
               ))}
@@ -159,7 +159,7 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
             <div className="mt-1 flex gap-2">
               {(['buy', 'sell'] as const).map((s) => (
                 <button key={s} type="button" onClick={() => setSide(s)}
-                  className={`flex-1 py-2 rounded-lg border capitalize ${side === s ? 'bg-green-700 text-white border-green-700' : 'bg-white border-slate-300'}`}>
+                  className={`flex-1 py-2 rounded-lg border capitalize ${side === s ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white border-slate-300'}`}>
                   {s}
                 </button>
               ))}
@@ -241,7 +241,7 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
         {err && <p className="text-sm text-red-600">{err}</p>}
 
         <div className="flex gap-2">
-          <button type="submit" disabled={busy} className="flex-1 rounded-xl bg-green-700 text-white font-semibold py-3 disabled:opacity-60">
+          <button type="submit" disabled={busy} className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-3 disabled:opacity-60">
             {busy ? 'Saving…' : editing ? 'Update Option' : 'Save Option'}
           </button>
           <button type="button" onClick={onClose} className="rounded-xl bg-white border border-slate-300 px-4 py-3">Cancel</button>

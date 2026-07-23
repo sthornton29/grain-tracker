@@ -625,7 +625,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
               type="button"
               onClick={() => applyTypeChange({ from_type: t })}
               className={`flex-1 py-2 rounded-lg border ${
-                form.from_type === t ? 'bg-green-700 text-white border-green-700' : 'bg-white'
+                form.from_type === t ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white'
               }`}
             >
               {t === 'field' ? 'Field' : 'Bin'}
@@ -664,7 +664,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                     key={m}
                     type="button"
                     onClick={() => setSplitEntryMode(m)}
-                    className={`px-3 py-2 text-sm ${splitEntryMode === m ? 'bg-green-700 text-white' : 'bg-white'}`}
+                    className={`px-3 py-2 text-sm ${splitEntryMode === m ? 'bg-brand hover:bg-brand-deep text-white' : 'bg-white'}`}
                   >
                     {m === 'weight' ? 'By weight' : 'By percentage'}
                   </button>
@@ -800,7 +800,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
               type="button"
               onClick={() => applyTypeChange({ to_type: t })}
               className={`flex-1 py-2 rounded-lg border ${
-                form.to_type === t ? 'bg-green-700 text-white border-green-700' : 'bg-white'
+                form.to_type === t ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white'
               }`}
             >
               {t === 'bin' ? 'Bin' : 'Buyer'}
@@ -968,7 +968,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         <button
           type="submit"
           disabled={busy}
-          className="flex-1 rounded-xl bg-green-700 text-white font-semibold py-4 shadow disabled:opacity-60"
+          className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-4 shadow disabled:opacity-60"
         >
           {busy ? 'Saving…' : mode === 'create' ? 'Save Load' : 'Update Load'}
         </button>

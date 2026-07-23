@@ -217,7 +217,7 @@ export default function ClosePositionDialog({ position, onClose, onSaved }: Prop
         {err && <p className="text-sm text-red-600">{err}</p>}
 
         <div className="flex gap-2">
-          <button type="submit" disabled={busy} className="flex-1 rounded-xl bg-green-700 text-white font-semibold py-3 disabled:opacity-60">
+          <button type="submit" disabled={busy} className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-3 disabled:opacity-60">
             {busy ? 'Saving…' : partial ? `Close ${qtyNum} Contract${qtyNum === 1 ? '' : 's'}` : 'Close Position'}
           </button>
           <button type="button" onClick={onClose} className="rounded-xl bg-white border border-slate-300 px-4 py-3">

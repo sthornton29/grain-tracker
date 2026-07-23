@@ -607,7 +607,7 @@ function AddBaseAcreForm({ farms, commodities, onSave }: { farms: Farm[]; commod
       <input type="number" step="0.01" placeholder="Base acres" value={acres} onChange={(e) => setAcres(e.target.value)} className={`${inputCls} w-28`} />
       <input type="number" step="0.1" placeholder="PLC yield" value={yld} onChange={(e) => setYld(e.target.value)} className={`${inputCls} w-28`} />
       <button onClick={() => { if (farm && commodity) { onSave(farm, commodity, num(acres) ?? 0, num(yld) ?? 0); setFarm(''); setCommodity(''); setAcres(''); setYld('') } }}
-        className="rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold">Add</button>
+        className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold">Add</button>
     </div>
   )
 }
@@ -866,7 +866,7 @@ function AddBenchmarkForm({ commodities, counties, existing, preferredCountyIds,
       <button
         onClick={() => { if (commodity && !dup && !needsCounty) { onAdd({ commodity_id: commodity, county: countyRec?.name ?? null, county_id: countyRec?.id ?? null, benchmark_price: null, benchmark_yield: null }); setCommodity(''); setPick(''); setStateCode(''); setCountyId('') } }}
         disabled={!commodity || dup || needsCounty}
-        className="rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50"
+        className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50"
       >Add row</button>
       {dup && <span className="text-xs text-amber-700">That commodity × county row already exists.</span>}
       {needsCounty && !dup && <span className="text-xs text-amber-700">Pick the state and county (or choose “All counties” for the default row).</span>}
@@ -1100,7 +1100,7 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
       <button
         onClick={() => retryTarget && fsaFileLookup(retryTarget)}
         disabled={looking}
-        className="rounded-lg bg-green-800 text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
+        className="rounded-lg bg-brand hover:bg-brand-deep text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
       >{looking ? 'Looking up…' : 'Retry FSA lookup'}</button>
       <button
         onClick={() => retryTarget && aiLookup(retryTarget)}
@@ -1136,7 +1136,7 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
             title={countyRec
               ? 'County yield from FSA’s published benchmark workbook + the seeded national price — you confirm before anything saves.'
               : ambiguousLegacy ? 'State unknown — re-add this row as “County, ST” first.' : 'The lookup needs a county + state — add county rows for yields.'}
-            className="rounded-lg bg-green-800 text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
+            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
           >
             {looking ? 'Looking up…' : 'FSA lookup'}
           </button>
@@ -1187,7 +1187,7 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
                   )}
                 </span>
                 <span className="text-xs text-slate-500 flex-1 min-w-[200px]">{fileResult.source_description}</span>
-                <button onClick={confirmFile} className="rounded-lg bg-green-700 text-white px-3 py-1 text-xs font-semibold">Confirm &amp; save</button>
+                <button onClick={confirmFile} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1 text-xs font-semibold">Confirm &amp; save</button>
                 <button onClick={() => aiLookup(usedTarget ?? undefined)} disabled={looking} className="text-xs text-violet-700 underline">AI web search instead</button>
                 <button onClick={() => setFileResult(null)} className="text-xs text-slate-500 underline">dismiss</button>
               </div>
@@ -1216,7 +1216,7 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
               </span>
               <span className="text-xs text-slate-500 flex-1 min-w-[200px]">{aiResult.source_description}</span>
               {(aiResult.benchmark_yield != null || aiResult.benchmark_price != null) && aiResult.confidence === 'high' ? (
-                <button onClick={confirmAi} className="rounded-lg bg-green-700 text-white px-3 py-1 text-xs font-semibold">Confirm &amp; save</button>
+                <button onClick={confirmAi} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1 text-xs font-semibold">Confirm &amp; save</button>
               ) : (
                 <span className="text-xs text-amber-800">
                   {aiResult.benchmark_yield == null && aiResult.benchmark_price == null
@@ -1280,7 +1280,7 @@ function AddOtherPaymentForm({ entities, crops, farms, cropYear, defaultEntityId
       <select value={status} onChange={(e) => setStatus(e.target.value as 'projected' | 'confirmed' | 'received')} className={inputCls}>
         <option value="projected">Projected</option><option value="confirmed">Confirmed</option><option value="received">Received</option>
       </select>
-      <button onClick={add} className="rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold">Add</button>
+      <button onClick={add} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold">Add</button>
       <p className="w-full text-xs text-slate-500 mt-1">
         <strong>Year</strong> = the crop year the payment is <em>received</em> in (the payment year). For
         program-linked payments paid the fall after the program year (ARC/PLC-style), enter the payment year — the

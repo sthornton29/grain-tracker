@@ -16,8 +16,13 @@ export default function PrintHeader() {
     setToday(new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }))
   }, [])
   return (
-    <div className="hidden print:flex items-baseline justify-between border-b border-slate-300 pb-1 mb-3 text-xs text-slate-500">
-      <span className="font-semibold text-slate-700">Turnrow Farm</span>
+    <div className="hidden print:flex items-center justify-between border-b border-slate-300 pb-1 mb-3 text-xs text-slate-500">
+      <span className="flex items-center gap-1.5 font-semibold text-slate-700">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src="/brand/logo-mark.svg" alt="" className="h-4 w-4" />
+        <span className="tracking-[0.18em]">TURNROW</span>
+        <span className="font-normal text-slate-400">· Turnrow Farm</span>
+      </span>
       {today && <span>Generated {today}</span>}
     </div>
   )

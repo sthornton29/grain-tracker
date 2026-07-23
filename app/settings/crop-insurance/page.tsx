@@ -289,7 +289,7 @@ export default function CropInsuranceSettingsPage() {
         {showAdd && (
           <form onSubmit={add} className="space-y-3">
             <PolicyFields value={form} onChange={setForm} crops={crops} counties={counties} entities={entities} cropYearOptions={cropYearOptions} projectedEstimates={estimates} programConfigs={programConfigs} />
-            <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add Policy</button>
+            <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Policy</button>
           </form>
         )}
       </div>
@@ -336,7 +336,7 @@ export default function CropInsuranceSettingsPage() {
                       {p.total_premium != null && <> · premium ${Number(p.total_premium).toLocaleString()}</>}
                     </div>
                   </div>
-                  <button onClick={() => startEdit(p)} className="text-sky-700">Edit</button>
+                  <button onClick={() => startEdit(p)} className="text-brand-deep">Edit</button>
                   <button onClick={() => remove(p.id)} className="text-red-600">Delete</button>
                 </div>
               )}

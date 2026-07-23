@@ -694,7 +694,7 @@ function CropSection({
             <div className="space-y-1.5">
               <PositionBlock title="Futures-priced" prod={prod} green={row.futuresPricedBu} greenLabel="Priced" grayLabel="Unpriced"
                 avg={row.avgFutures != null ? `avg ${price2(row.avgFutures)}` : undefined} />
-              <button type="button" onClick={onToggleBasis} className="text-xs text-sky-700 font-medium no-print">
+              <button type="button" onClick={onToggleBasis} className="text-xs text-brand-deep font-medium no-print">
                 {basisOpen ? '▾ Hide basis' : '▸ Show basis'}
               </button>
               {basisOpen && (
@@ -709,7 +709,7 @@ function CropSection({
       {/* Details toggle — a full-width labeled bar, hard to miss */}
       <button
         type="button" onClick={onToggleDetails} aria-expanded={detailsOpen}
-        className="no-print w-full flex items-center justify-center gap-1.5 border-t border-slate-100 px-4 py-2 text-sm font-medium text-sky-700 hover:bg-sky-50 rounded-b-xl"
+        className="no-print w-full flex items-center justify-center gap-1.5 border-t border-slate-100 px-4 py-2 text-sm font-medium text-brand-deep hover:bg-sky-50 rounded-b-xl"
       >
         {detailsOpen
           ? <>▾ Hide details</>
@@ -773,7 +773,7 @@ function CropSection({
                   <div className="flex justify-between gap-3">
                     <dt className="text-slate-500">
                       Assumed basis
-                      <button type="button" onClick={focusBasisInput} className="no-print ml-1.5 text-sky-700 hover:text-sky-900" title="Edit the assumed basis (in What-If)" aria-label="Edit the assumed basis">✎</button>
+                      <button type="button" onClick={focusBasisInput} className="no-print ml-1.5 text-brand-deep hover:text-sky-900" title="Edit the assumed basis (in What-If)" aria-label="Edit the assumed basis">✎</button>
                     </dt>
                     <dd className="tabular-nums text-amber-700">{bu(row.basisAssumedBu)} bu @ {basis2(row.assumedBasis)}</dd>
                   </div>
@@ -824,7 +824,7 @@ function CropSection({
                   <input type="number" step="0.01" inputMode="decimal" value={wfFutures} placeholder={advanced ? 'futures $/bu' : '$/bu'}
                     onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }} onBlur={commitFutures}
                     className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
-                  {nc && !expired && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-sky-700 font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
+                  {nc && !expired && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-brand-deep font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
                   {!nc && <span className="text-xs text-slate-400">{advanced ? 'No futures contract' : 'Enter a price'}</span>}
                 </div>
                 {nc && expired && <div className="text-xs text-amber-700">Contract expired — enter price manually.</div>}
@@ -1016,7 +1016,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
 
       <button
         type="button" onClick={onToggleDetails} aria-expanded={detailsOpen}
-        className="no-print w-full flex items-center justify-center gap-1.5 border-t border-slate-100 px-4 py-2 text-sm font-medium text-sky-700 hover:bg-sky-50 rounded-b-xl"
+        className="no-print w-full flex items-center justify-center gap-1.5 border-t border-slate-100 px-4 py-2 text-sm font-medium text-brand-deep hover:bg-sky-50 rounded-b-xl"
       >
         {detailsOpen
           ? <>▾ Hide details</>
@@ -1113,7 +1113,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
                 <input type="text" inputMode="decimal" value={wfFutures} placeholder="$/lb e.g. 0.7000"
                   onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }} onBlur={commitFutures}
                   className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
-                {nc && !expired && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-sky-700 font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
+                {nc && !expired && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-brand-deep font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
                 {!nc && <span className="text-xs text-slate-400">Enter a price</span>}
               </div>
               {nc && expired && <div className="text-xs text-amber-700">Contract expired — enter price manually.</div>}
@@ -1439,7 +1439,7 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
         ) : (
           <span className="text-sm text-slate-600">Expected production: <span className="font-mono font-semibold">{bu(prod)}</span> {prodUnit}</span>
         )}
-        <button onClick={save} className="ml-auto rounded-lg bg-green-700 text-white px-3 py-1 text-sm font-semibold">Save</button>
+        <button onClick={save} className="ml-auto rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1 text-sm font-semibold">Save</button>
       </div>
     </div>
   )

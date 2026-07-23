@@ -127,7 +127,7 @@ export default function LandownerPicker({
                 <button
                   type="submit"
                   disabled={busy}
-                  className="rounded-lg bg-green-700 text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                  className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
                 >
                   {busy ? 'Saving…' : 'Add Landowner'}
                 </button>

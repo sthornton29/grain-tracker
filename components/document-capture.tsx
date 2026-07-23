@@ -107,7 +107,7 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
   }
 
   const btnBase = 'rounded-lg px-3 py-2 text-sm font-semibold disabled:opacity-50'
-  const primary = `${btnBase} bg-green-700 text-white`
+  const primary = `${btnBase} bg-brand hover:bg-brand-deep text-white`
   const secondary = `${btnBase} bg-white border border-slate-300 text-slate-700`
 
   return (

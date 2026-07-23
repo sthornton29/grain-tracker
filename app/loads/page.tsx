@@ -453,7 +453,7 @@ export default function LoadsPage() {
         <h1 className="text-2xl font-bold flex-1">Loads</h1>
         <Link href="/loads/unpaid" className="rounded-lg bg-white border border-slate-300 px-4 py-2 text-sm">Unpaid</Link>
         <Link href="/loads/import" className="rounded-lg bg-white border border-slate-300 px-4 py-2 text-sm">Import CSV</Link>
-        <Link href="/loads/new" className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">+ New Load</Link>
+        <Link href="/loads/new" className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">+ New Load</Link>
         <button onClick={exportCsv} className="rounded-lg bg-white border border-slate-300 px-4 py-2">Export CSV</button>
         {filtered.length > 0 && <ExportBar buildPayload={buildPayload} />}
       </div>

@@ -1166,7 +1166,7 @@ export default function StatementImport({ entities, existingPositions, existingO
                 <div className="text-xs text-red-700 mt-0.5">⚠ A closed group’s computed total doesn’t match the statement — see the Closed Trades tab.</div>
               )}
             </div>
-            <button type="button" onClick={save} disabled={saving} className="rounded-xl bg-green-700 text-white font-semibold py-2.5 px-5 disabled:opacity-60">
+            <button type="button" onClick={save} disabled={saving} className="rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-2.5 px-5 disabled:opacity-60">
               {saving ? 'Saving…' : 'Save Import'}
             </button>
             <button type="button" onClick={onClose} className="rounded-xl bg-white border border-slate-300 px-4 py-2.5 text-sm">Cancel</button>

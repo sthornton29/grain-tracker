@@ -722,7 +722,7 @@ export default function CashFlowPage() {
             <p className="px-4 py-2 text-xs text-slate-500 leading-relaxed border-b border-slate-100">
               <span className="font-semibold text-green-700">Received</span> — cash already collected on settled loads, in the settlement&rsquo;s month.{' '}
               <span className="font-semibold text-amber-700">Outstanding</span> — grain you&rsquo;ve <em>delivered but not yet been paid for</em>, valued at the contract price and shown in the current month as money still owed to you.{' '}
-              <span className="font-semibold text-sky-700">Projected</span> — contracted bushels <em>not yet delivered</em>, valued at the contract price and spread across the remaining delivery window (future income you still expect). Completed contracts add nothing to Projected.
+              <span className="font-semibold text-brand-deep">Projected</span> — contracted bushels <em>not yet delivered</em>, valued at the contract price and spread across the remaining delivery window (future income you still expect). Completed contracts add nothing to Projected.
             </p>
             {monthlyRows.length === 0 ? (
               <EmptyState
@@ -746,7 +746,7 @@ export default function CashFlowPage() {
                         <td className={`${textCell} font-semibold`}>{r.label}</td>
                         <td className={`${numCell} text-green-700`}>${fmt(r.received)}</td>
                         <td className={`${numCell} text-amber-700`}>${fmt(r.outstanding)}</td>
-                        <td className={`${numCell} text-sky-700`}>${fmt(r.projected)}</td>
+                        <td className={`${numCell} text-brand-deep`}>${fmt(r.projected)}</td>
                         <td className={`${numCell} text-indigo-700`}>${fmt(r.arcPlc)}</td>
                         <td className={`${numCell} text-purple-700`}>${fmt(r.insurance)}</td>
                         <td className={`${numCell} text-teal-700`}>${fmt(r.other)}</td>
@@ -845,7 +845,7 @@ export default function CashFlowPage() {
                           <td className={numCell}>${fmt(value)}</td>
                           <td className={`${numCell} text-green-700`}>${fmt(agg.revenueReceived)}</td>
                           <td className={`${numCell} text-amber-700`}>${fmt(outstanding)}</td>
-                          <td className={`${numCell} text-sky-700`}>${fmt(unearned)}</td>
+                          <td className={`${numCell} text-brand-deep`}>${fmt(unearned)}</td>
                         </tr>
                       )
                     })}

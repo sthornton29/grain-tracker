@@ -241,13 +241,13 @@ export function ContractFields({
         <div className="mt-1 grid grid-cols-3 gap-2">
           {([['forward', 'Forward'], ['hta', 'HTA'], ['basis', 'Basis']] as const).map(([t, label]) => (
             <button key={t} type="button" onClick={() => setType(t)}
-              className={`py-2 rounded-lg border text-sm font-semibold ${f.contract_type === t ? 'bg-green-700 text-white border-green-700' : 'bg-white border-slate-300'}`}>
+              className={`py-2 rounded-lg border text-sm font-semibold ${f.contract_type === t ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white border-slate-300'}`}>
               {label}
             </button>
           ))}
         </div>
-        {f.contract_type === 'hta' && <p className="text-xs text-sky-700 mt-1">Hedge-to-Arrive: lock in futures price now, set basis later.</p>}
-        {f.contract_type === 'basis' && <p className="text-xs text-sky-700 mt-1">Basis contract: lock in basis now, set futures price later.</p>}
+        {f.contract_type === 'hta' && <p className="text-xs text-brand-deep mt-1">Hedge-to-Arrive: lock in futures price now, set basis later.</p>}
+        {f.contract_type === 'basis' && <p className="text-xs text-brand-deep mt-1">Basis contract: lock in basis now, set futures price later.</p>}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

@@ -570,7 +570,7 @@ export default function CropInsuranceReport() {
                     onClick={() => setCropIds((prev) => (prev.includes(c.id) ? prev.filter((x) => x !== c.id) : [...prev, c.id]))}
                     className={
                       on
-                        ? 'rounded-full bg-green-700 text-white px-3 py-1.5 text-xs font-semibold'
+                        ? 'rounded-full bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-xs font-semibold'
                         : 'rounded-full bg-white border border-slate-300 text-slate-700 px-3 py-1.5 text-xs'
                     }
                   >
@@ -591,7 +591,7 @@ export default function CropInsuranceReport() {
             type="button"
             onClick={onExportExcel}
             disabled={cropYear === '' || isBlocked || detailSheets.length === 0 || exporting != null}
-            className="rounded-lg bg-green-700 text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
           >
             {exporting === 'xlsx' ? 'Exporting…' : 'Export Excel'}
           </button>

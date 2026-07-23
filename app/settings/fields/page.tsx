@@ -268,7 +268,7 @@ export default function FieldsPage() {
           </label>
           <button
             disabled={addInvalid}
-            className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold self-end disabled:opacity-50"
+            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold self-end disabled:opacity-50"
           >
             Add
           </button>
@@ -488,7 +488,7 @@ export default function FieldsPage() {
                               setEditAcres(f.total_acres != null ? String(f.total_acres) : '')
                               setEditIrrigated(Number(f.irrigated_acres) > 0 ? String(f.irrigated_acres) : '')
                             }}
-                            className="text-sky-700 mr-3"
+                            className="text-brand-deep mr-3"
                           >Edit</button>
                           <button onClick={() => remove(f.id)} className="text-red-600">Delete</button>
                         </td>
@@ -501,7 +501,7 @@ export default function FieldsPage() {
                         {fieldPlantings.length === 0 ? (
                           <p className="text-sm text-slate-400">
                             No plantings recorded.{' '}
-                            <Link href="/settings/plantings" className="text-sky-700 underline">Add one</Link>.
+                            <Link href="/settings/plantings" className="text-brand-deep underline">Add one</Link>.
                           </p>
                         ) : (
                           <table className="w-full text-sm">

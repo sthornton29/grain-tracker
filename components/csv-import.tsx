@@ -272,7 +272,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
             <button
               type="button"
               onClick={() => (config.template ? downloadExcelTemplate(config) : downloadTemplate(config))}
-              className="text-sm text-sky-700 underline mt-2"
+              className="text-sm text-brand-deep underline mt-2"
             >
               {config.template ? 'Download Excel template' : 'Download template CSV'}
             </button>
@@ -319,7 +319,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
                       <span className={`font-semibold ${resolutionTotals.possible > 0 ? 'text-amber-700' : 'text-slate-500'}`}>{resolutionTotals.possible}</span>
                       {' '}possible match{resolutionTotals.possible === 1 ? '' : 'es'}{resolutionTotals.possible > 0 ? ' need review' : ''}
                       {' · '}
-                      <span className="font-semibold text-sky-700">{resolutionTotals.created}</span> new {config.resolution.noun}
+                      <span className="font-semibold text-brand-deep">{resolutionTotals.created}</span> new {config.resolution.noun}
                       {resolutionTotals.created === 1 ? '' : config.resolution.noun.endsWith('y') ? '' : 's'} will be created
                     </p>
                   )}
@@ -435,7 +435,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
                   type="button"
                   onClick={doImport}
                   disabled={busy || !requiredOk || rows.length === 0 || !resolutionReady}
-                  className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50"
+                  className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50"
                 >
                   {busy ? 'Importing…' : `Import ${rows.length} row${rows.length === 1 ? '' : 's'}`}
                 </button>
@@ -449,7 +449,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
           {result && (
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm space-y-1">
               <div><span className="font-semibold text-green-700">{result.added}</span> added</div>
-              {result.updated > 0 && <div><span className="font-semibold text-sky-700">{result.updated}</span> updated</div>}
+              {result.updated > 0 && <div><span className="font-semibold text-brand-deep">{result.updated}</span> updated</div>}
               {result.unchanged > 0 && <div><span className="font-semibold text-slate-600">{result.unchanged}</span> unchanged</div>}
               {result.skipped > 0 && <div><span className="font-semibold text-slate-600">{result.skipped}</span> skipped</div>}
               {result.failed.length > 0 && (
@@ -466,7 +466,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
                     <button
                       type="button"
                       onClick={() => setShowAllFailures(true)}
-                      className="text-xs text-sky-700 underline mt-1"
+                      className="text-xs text-brand-deep underline mt-1"
                     >
                       Show all {result.failed.length}
                     </button>

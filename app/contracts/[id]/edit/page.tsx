@@ -79,7 +79,7 @@ export default function EditContractPage() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3 flex-wrap">
-        <Link href={`/contracts/${id}`} className="text-sm text-sky-700">← Back to contract</Link>
+        <Link href={`/contracts/${id}`} className="text-sm text-brand-deep">← Back to contract</Link>
         <h1 className="text-2xl font-bold flex-1">Edit contract</h1>
       </div>
 
@@ -89,7 +89,7 @@ export default function EditContractPage() {
           onLocationCreated={(l) => setLocations((xs) => [...xs, l].sort((a, z) => a.name.localeCompare(z.name)))} />
         {err && <p className="text-sm text-red-600">{err}</p>}
         <div className="flex gap-2 pt-2">
-          <button type="submit" disabled={saving} className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50">
+          <button type="submit" disabled={saving} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
             {saving ? 'Saving…' : 'Save'}
           </button>
           <Link href={`/contracts/${id}`} className="rounded-lg border border-slate-300 px-4 py-2 font-semibold">Cancel</Link>

@@ -121,7 +121,7 @@ export default function LandownersPage() {
           <input value={add.address} onChange={(e) => setAdd((d) => ({ ...d, address: e.target.value }))} placeholder="Address" className={inputCls} />
           <input value={add.notes} onChange={(e) => setAdd((d) => ({ ...d, notes: e.target.value }))} placeholder="Notes" className={`${inputCls} sm:col-span-2`} />
         </div>
-        <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add Landowner</button>
+        <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Landowner</button>
       </form>
 
       {err && <p className="text-sm text-red-600">{err}</p>}
@@ -154,7 +154,7 @@ export default function LandownersPage() {
                     <input value={edit.notes} onChange={(e) => setEdit((d) => ({ ...d, notes: e.target.value }))} className={`${inputCls} sm:col-span-2`} placeholder="Notes" />
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={() => save(l.id)} className="rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold">Save</button>
+                    <button onClick={() => save(l.id)} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold">Save</button>
                     <button onClick={() => setEditingId(null)} className="text-slate-600 text-sm">Cancel</button>
                   </div>
                 </div>
@@ -174,7 +174,7 @@ export default function LandownersPage() {
                         : <>Farms: {linked.map((f) => f.name).join(', ')}</>}
                     </div>
                   </div>
-                  <button onClick={() => startEdit(l)} className="text-sky-700 text-sm">Edit</button>
+                  <button onClick={() => startEdit(l)} className="text-brand-deep text-sm">Edit</button>
                   <button onClick={() => remove(l)} className="text-red-600 text-sm" disabled={linked.length > 0} title={linked.length > 0 ? 'Unassign farms first' : ''}>Delete</button>
                 </div>
               )}

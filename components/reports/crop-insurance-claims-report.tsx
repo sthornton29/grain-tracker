@@ -20,11 +20,16 @@ import { formatNumber, type ExportPayload } from '@/lib/exports'
 import {
   sensitivityTable, harvestContractLabel,
   projectInsuranceIndemnities, resolveHarvestPriceByCrop, actualYieldByCropFromLoads,
+  countyAssumptionFor, practiceActualYieldByCrop,
   PLAN_TYPE_SHORT, PRACTICE_LABEL, isAreaPlan, stackingWarnings, staxArcPlcWarning,
   type PolicyInputs, type ScoConfig, type EcoConfig, type PolicyComputation,
-  type LiveHarvest,
+  type LiveHarvest, type Practice,
 } from '@/lib/crop-insurance'
 import { CountyAssumptionControl } from '@/components/crop-insurance/county-assumption-editor'
+import {
+  auditPolicyIndemnities, auditYieldBasis, compareAudit, auditInvariants,
+  type AuditResult, type AuditComparison, type InvariantCheck, type YieldBasisAudit,
+} from '@/lib/crop-insurance-audit'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import {
   SummaryCards, EmptyState, fmtUsd, signedTone, toneText,
@@ -86,6 +91,14 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   const [entityId, setEntityId] = usePersistentState('ci-claims:entityId', '')
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
+  // Hidden audit mode (?audit=1): every row's full calculation chain plus an
+  // INDEPENDENT re-computation (lib/crop-insurance-audit.ts) with per-leg
+  // disagreement flags (> $1/acre) and the standing invariants.
+  const [auditMode, setAuditMode] = useState(false)
+  useEffect(() => {
+    try { setAuditMode(new URLSearchParams(window.location.search).get('audit') === '1') } catch { /* SSR */ }
+  }, [])
 
   useEffect(() => {
     ;(async () => {
@@ -272,6 +285,90 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     return groups
   }, [computed])
 
+  // ---------- audit mode: independent re-computation per row ----------
+
+  const staxByPolicy = useMemo(() => new Map(staxes.map((s) => [s.policy_id, s])), [staxes])
+  const mcoByPolicy = useMemo(() => new Map(mcos.map((m) => [m.policy_id, m])), [mcos])
+
+  type AuditRow = {
+    c: Computed
+    yieldBasis: YieldBasisAudit
+    audit: AuditResult
+    cmp: AuditComparison
+    invariants: InvariantCheck[]
+  }
+  const auditRows: AuditRow[] = useMemo(() => {
+    if (!auditMode || cropYear === '') return []
+    const practiceActual = practiceActualYieldByCrop(plantings, cropYear)
+    return computed.map((c) => {
+      const p = c.policy
+      const practice = (p.practice ?? 'non_irrigated') as Practice
+      const a = assumptions.find((x) => x.crop_id === p.crop_id && x.crop_year === cropYear)
+      const pols = yearPolicies.filter((x) => x.crop_id === p.crop_id)
+      const meanAph = pols.length ? pols.reduce((s, x) => s + Number(x.aph_yield), 0) / pols.length : 0
+      const yieldBasis = auditYieldBasis({
+        practice,
+        practiceActualYield: practiceActual.get(`${p.crop_id}|${practice}`) ?? null,
+        expectedYieldIrr: a?.expected_yield_irr != null ? Number(a.expected_yield_irr) : null,
+        expectedYieldDry: a?.expected_yield_dry != null ? Number(a.expected_yield_dry) : null,
+        expectedYieldBlended: a?.expected_yield != null ? Number(a.expected_yield) : null,
+        harvestComplete: !!a?.harvest_complete,
+        actualCropYield: actualYieldByCrop.get(p.crop_id) ?? null,
+        meanAph,
+      })
+      const assumption = countyAssumptionFor(countyAssumptions, p.crop_id, p.county_id, cropYear)
+      const scoRow = scoByPolicy.get(p.id)
+      const ecoRow = ecoByPolicy.get(p.id)
+      const staxRow = staxByPolicy.get(p.id)
+      const mcoRow = mcoByPolicy.get(p.id)
+      const audit = auditPolicyIndemnities({
+        planType: p.plan_type,
+        coverageLevel: Number(p.coverage_level),
+        aphYield: Number(p.aph_yield),
+        projectedPrice: Number(p.projected_price),
+        harvestPrice: c.base.harvestPrice,
+        insuredAcres: Number(p.insured_acres),
+        actualYield: c.assumedYield,
+        expectedCountyYield: p.expected_county_yield == null ? null : Number(p.expected_county_yield),
+        expectedCountyRevenue: p.expected_county_revenue == null ? null : Number(p.expected_county_revenue),
+        protectionFactor: p.protection_factor == null ? null : Number(p.protection_factor),
+        county: {
+          final: assumption?.rma_final_county_yield == null ? null : Number(assumption.rma_final_county_yield),
+          override: assumption?.county_yield_override == null ? null : Number(assumption.county_yield_override),
+          differential: assumption?.yield_differential == null ? null : Number(assumption.yield_differential),
+          farmBasis: c.assumedYield,
+        },
+        sco: scoRow ? { trigger: Number(scoRow.coverage_trigger), lower: Number(p.coverage_level), expectedCountyYield: Number(scoRow.expected_county_yield) } : null,
+        eco: ecoRow ? { trigger: Number(ecoRow.eco_trigger_level), lower: scoRow ? Number(scoRow.coverage_trigger) : programCfg.scoTrigger, expectedCountyYield: Number(ecoRow.expected_county_yield) } : null,
+        stax: staxRow ? { coverageRangeTop: Number(staxRow.coverage_range_top), coveragePct: Number(staxRow.coverage_pct), protectionFactor: Number(staxRow.protection_factor), expectedCountyRevenue: staxRow.expected_county_revenue == null ? null : Number(staxRow.expected_county_revenue) } : null,
+        mco: mcoRow ? { triggerLevel: Number(mcoRow.trigger_level), expectedMargin: mcoRow.expected_margin == null ? null : Number(mcoRow.expected_margin), inputCostAdjustment: Number(mcoRow.input_cost_adjustment ?? 0), expectedCountyYield: mcoRow.expected_county_yield == null ? null : Number(mcoRow.expected_county_yield) } : null,
+      })
+      const cmp = compareAudit({
+        production: {
+          base: c.comp.base.indemnity,
+          sco: c.comp.sco?.indemnity ?? null,
+          eco: c.comp.eco?.indemnity ?? null,
+          stax: c.comp.stax?.indemnity ?? null,
+          mco: c.comp.mco?.indemnity ?? null,
+          total: c.comp.totalIndemnity,
+        },
+        audit,
+        insuredAcres: Number(p.insured_acres),
+      })
+      const invariants = auditInvariants({
+        planType: p.plan_type,
+        aphYield: Number(p.aph_yield),
+        actualYield: c.assumedYield,
+        projectedPrice: Number(p.projected_price),
+        harvestPrice: c.base.harvestPrice,
+        baseIndemnity: c.comp.base.indemnity,
+        isCotton: /cotton/i.test(cropById.get(p.crop_id)?.name ?? ''),
+        countyLegSources: [c.comp.sco, c.comp.eco, c.comp.stax, c.comp.mco].filter((b) => b != null).map((b) => b!.countySource),
+      })
+      return { c, yieldBasis, audit, cmp, invariants }
+    })
+  }, [auditMode, computed, cropYear, plantings, assumptions, yearPolicies, actualYieldByCrop, countyAssumptions, scoByPolicy, ecoByPolicy, staxByPolicy, mcoByPolicy, programCfg, cropById])
+
   // Headline summary cards from the already-computed totals (no new math).
   const summaryCards: SummaryCardData[] = useMemo(() => [
     { label: 'Total Indemnity', value: fmtUsd(totals.totalIndemnity), tone: totals.totalIndemnity > 0 ? 'favorable' : 'muted' },
@@ -359,6 +456,48 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       Math.round(totals.premium), Math.round(totals.netPnl),
     ])
     sections[0].rowMeta!.push('total')
+    if (auditMode && auditRows.length > 0) {
+      sections.push({
+        title: 'Audit — independent re-computation (production vs audit per leg; flag > $1/acre)',
+        columns: [
+          { label: 'Crop' }, { label: 'County' }, { label: 'Plan' }, { label: 'Practice' },
+          { label: 'Cov', align: 'right', format: 'pct0' }, { label: 'APH', align: 'right', format: 'yield' },
+          { label: 'Proj $', align: 'right', format: 'price' }, { label: 'Harvest $', align: 'right', format: 'price' }, { label: 'Harvest src' },
+          { label: 'Yield basis', align: 'right', format: 'yield' }, { label: 'Yield src' },
+          { label: 'County est', align: 'right', format: 'yield' }, { label: 'County src' },
+          { label: 'Guarantee', align: 'right', format: 'usd0' }, { label: 'Exp revenue', align: 'right', format: 'usd0' },
+          { label: 'Base prod', align: 'right', format: 'usd0' }, { label: 'Base audit', align: 'right', format: 'usd0' },
+          { label: 'SCO prod', align: 'right', format: 'usd0' }, { label: 'SCO audit', align: 'right', format: 'usd0' },
+          { label: 'ECO prod', align: 'right', format: 'usd0' }, { label: 'ECO audit', align: 'right', format: 'usd0' },
+          { label: 'STAX prod', align: 'right', format: 'usd0' }, { label: 'STAX audit', align: 'right', format: 'usd0' },
+          { label: 'MCO prod', align: 'right', format: 'usd0' }, { label: 'MCO audit', align: 'right', format: 'usd0' },
+          { label: 'Total prod', align: 'right', format: 'usd0' }, { label: 'Total audit', align: 'right', format: 'usd0' },
+          { label: 'Premium', align: 'right', format: 'usd0' }, { label: 'Max Δ/ac', align: 'right', format: 'usd2' },
+          { label: 'Invariants' }, { label: 'Status' },
+        ],
+        rows: auditRows.map(({ c, yieldBasis, audit, cmp, invariants }) => {
+          const p = c.policy
+          const flagged = cmp.flagged || invariants.some((i) => i.status === 'fail')
+          return [
+            cropName(p.crop_id), countyName(p.county_id), PLAN_TYPE_SHORT[p.plan_type], PRACTICE_LABEL[p.practice ?? 'non_irrigated'],
+            Math.round(Number(p.coverage_level) * 100), isAreaPlan(p.plan_type) ? '' : Number(p.aph_yield),
+            Number(p.projected_price), Number(c.base.harvestPrice.toFixed(4)), `${c.harvest?.source ?? 'projected'}${c.harvest?.stale ? ' (cached)' : ''}`,
+            Number(c.assumedYield.toFixed(1)), yieldBasis.source,
+            audit.countyEstimate ? Number(audit.countyEstimate.value.toFixed(1)) : '', audit.countyEstimate?.source ?? '',
+            Math.round(c.comp.base.revenueGuarantee), Math.round(c.comp.base.expectedRevenue),
+            Math.round(c.comp.base.indemnity), Math.round(audit.base),
+            c.comp.sco ? Math.round(c.comp.sco.indemnity) : '', audit.sco != null ? Math.round(audit.sco) : '',
+            c.comp.eco ? Math.round(c.comp.eco.indemnity) : '', audit.eco != null ? Math.round(audit.eco) : '',
+            c.comp.stax ? Math.round(c.comp.stax.indemnity) : '', audit.stax != null ? Math.round(audit.stax) : '',
+            c.comp.mco ? Math.round(c.comp.mco.indemnity) : '', audit.mco != null ? Math.round(audit.mco) : '',
+            Math.round(c.comp.totalIndemnity), Math.round(audit.total),
+            Math.round(c.comp.premiumPaid), Number(cmp.maxDeltaPerAcre.toFixed(2)),
+            invariants.map((i, ix) => `[${ix + 1}]${i.status}`).join(' '),
+            { v: flagged ? 'FLAG' : 'OK', tone: flagged ? 'unfavorable' as const : 'favorable' as const },
+          ]
+        }),
+      })
+    }
     return {
       title: 'Crop Insurance Claims Monitor',
       filters,
@@ -376,7 +515,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [computed, totals, cropYear, entityId, onPayloadChange])
+  }, [computed, totals, cropYear, entityId, onPayloadChange, auditMode, auditRows])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
 
@@ -564,7 +703,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                       <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.premiumPaid)}</td>
                       <td className={`px-2 py-1 text-right tabular-nums font-bold ${pnlClass(c.comp.netPnl, c.comp.premiumPaid)}`}>{usd(c.comp.netPnl)}</td>
                       <td className="px-2 py-1 no-print">
-                        <button onClick={() => toggle(p.id)} className="text-sky-700 text-xs whitespace-nowrap">{expanded.has(p.id) ? 'Hide' : 'Detail'}</button>
+                        <button onClick={() => toggle(p.id)} className="text-brand-deep text-xs whitespace-nowrap">{expanded.has(p.id) ? 'Hide' : 'Detail'}</button>
                       </td>
                     </tr>
                   )
@@ -610,6 +749,103 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
               <span className="text-amber-600"> amber</span> = near breakeven.
             </p>
           </section>
+
+          {/* ---------- AUDIT (?audit=1): independent re-computation ---------- */}
+          {auditMode && auditRows.length > 0 && (() => {
+            const yieldSrcLabel: Record<YieldBasisAudit['source'], string> = {
+              actual_practice: 'actual · practice breakout',
+              expected_practice: 'expected · per-practice',
+              expected_blended: 'expected · blended',
+              actual_crop: 'actual · crop loads',
+              mean_aph: 'mean APH',
+            }
+            const legCell = (prod: number | null, aud: number | null, acres: number) => {
+              if (prod == null && aud == null) return <td className="px-2 py-1 text-right text-slate-300">N/A</td>
+              const delta = Math.abs((prod ?? 0) - (aud ?? 0)) / (acres > 0 ? acres : 1)
+              return (
+                <td className={`px-2 py-1 text-right tabular-nums whitespace-nowrap ${delta > 1 ? 'bg-red-50 text-red-700 font-semibold' : ''}`}>
+                  {usd(prod ?? 0)} <span className="text-slate-400">/</span> {usd(aud ?? 0)}
+                </td>
+              )
+            }
+            const invIcon = (i: InvariantCheck) => i.status === 'pass' ? '✓' : i.status === 'fail' ? '✗' : '–'
+            return (
+              <section className="bg-white rounded-xl shadow p-4 avoid-break overflow-x-auto space-y-2">
+                <h2 className="font-bold text-lg">Audit — independent re-computation ({cropYear})</h2>
+                <p className="text-xs text-slate-500 max-w-4xl">
+                  Every policy × practice row recomputed by a second, freshly-written implementation of the
+                  RP/YP/SCO/ECO/STAX/ARP/MCO formulas (<code>lib/crop-insurance-audit.ts</code>) — production first,
+                  audit second in each leg cell. A leg turns red when the two disagree by more than $1/acre.
+                  Invariants per row: [1] base $0 whenever yield ≥ APH and harvest ≥ projected · [2] every county leg
+                  labeled with its estimate source · [3] cotton prices in $/lb.
+                </p>
+                <table className="min-w-full text-xs border-collapse">
+                  <thead className={theadCls}>
+                    <tr>
+                      {['Crop', 'County', 'Plan', 'Practice', 'Cov', 'APH', 'Proj $', 'Harvest $ (source)', 'Yield basis (source)',
+                        'County est. (source)', 'Guarantee $', 'Exp. revenue $', 'Base (prod/audit)', 'SCO', 'ECO', 'STAX', 'MCO',
+                        'Total', 'Premium', 'Max Δ/ac', 'Invariants', 'Status'].map((h) => (
+                        <th key={h} className="text-left px-2 py-1 whitespace-nowrap">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditRows.map(({ c, yieldBasis, audit, cmp, invariants }) => {
+                      const p = c.policy
+                      const acres = Number(p.insured_acres)
+                      return (
+                        <tr key={p.id} className="border-t border-slate-100 align-middle">
+                          <td className="px-2 py-1 font-semibold whitespace-nowrap">{cropName(p.crop_id)}</td>
+                          <td className="px-2 py-1 whitespace-nowrap">{countyName(p.county_id)}</td>
+                          <td className="px-2 py-1">{PLAN_TYPE_SHORT[p.plan_type]}</td>
+                          <td className="px-2 py-1">{PRACTICE_LABEL[p.practice ?? 'non_irrigated']}</td>
+                          <td className="px-2 py-1 text-right">{Math.round(Number(p.coverage_level) * 100)}%</td>
+                          <td className="px-2 py-1 text-right tabular-nums">{isAreaPlan(p.plan_type) ? '—' : Number(p.aph_yield).toFixed(1)}</td>
+                          <td className="px-2 py-1 text-right tabular-nums">{fmtPrice(p.projected_price)}</td>
+                          <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">
+                            {fmtPrice(c.base.harvestPrice)} <span className="text-slate-400">({c.harvest?.source ?? 'projected'}{c.harvest?.stale ? ', cached' : ''})</span>
+                          </td>
+                          <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">
+                            {c.assumedYield.toFixed(1)} <span className="text-slate-400">({yieldSrcLabel[yieldBasis.source]}{Math.abs(yieldBasis.value - c.assumedYield) > 0.05 ? ` · audit ${yieldBasis.value.toFixed(1)}` : ''})</span>
+                          </td>
+                          <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">
+                            {audit.countyEstimate ? <>{audit.countyEstimate.value.toFixed(1)} <span className="text-slate-400">({audit.countyEstimate.source})</span></> : '—'}
+                          </td>
+                          <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.base.revenueGuarantee)}</td>
+                          <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.base.expectedRevenue)}</td>
+                          {legCell(c.comp.base.indemnity, audit.base, acres)}
+                          {legCell(c.comp.sco?.indemnity ?? null, audit.sco, acres)}
+                          {legCell(c.comp.eco?.indemnity ?? null, audit.eco, acres)}
+                          {legCell(c.comp.stax?.indemnity ?? null, audit.stax, acres)}
+                          {legCell(c.comp.mco?.indemnity ?? null, audit.mco, acres)}
+                          {legCell(c.comp.totalIndemnity, audit.total, acres)}
+                          <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.premiumPaid)}</td>
+                          <td className={`px-2 py-1 text-right tabular-nums ${cmp.flagged ? 'text-red-700 font-bold' : 'text-slate-500'}`}>
+                            ${cmp.maxDeltaPerAcre.toFixed(2)}
+                          </td>
+                          <td className="px-2 py-1 whitespace-nowrap" title={invariants.map((i) => `${i.name}: ${i.status} — ${i.note}`).join('\n')}>
+                            {invariants.map((i, ix) => (
+                              <span key={ix} className={`mr-1 ${i.status === 'fail' ? 'text-red-700 font-bold' : i.status === 'pass' ? 'text-green-700' : 'text-slate-300'}`}>
+                                [{ix + 1}]{invIcon(i)}
+                              </span>
+                            ))}
+                          </td>
+                          <td className={`px-2 py-1 font-bold ${cmp.flagged || invariants.some((i) => i.status === 'fail') ? 'text-red-700' : 'text-green-700'}`}>
+                            {cmp.flagged || invariants.some((i) => i.status === 'fail') ? 'FLAG' : 'OK'}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+                <p className="text-xs text-slate-500">
+                  {auditRows.filter((r) => r.cmp.flagged || r.invariants.some((i) => i.status === 'fail')).length === 0
+                    ? 'All rows reconcile within $1/acre and every invariant holds.'
+                    : `${auditRows.filter((r) => r.cmp.flagged || r.invariants.some((i) => i.status === 'fail')).length} row(s) flagged — reconcile before trusting the estimates.`}
+                </p>
+              </section>
+            )
+          })()}
 
           {/* Per-policy detail */}
           {computed.filter((c) => expanded.has(c.policy.id)).map((c) => (

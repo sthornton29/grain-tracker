@@ -94,7 +94,7 @@ export default function CropsEditor() {
           <input type="checkbox" checked={dc} onChange={(e) => setDc(e.target.checked)} />
           Double-crop
         </label>
-        <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add</button>
+        <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add</button>
       </form>
 
       {err && <p className="text-sm text-red-600">{err}</p>}
@@ -136,7 +136,7 @@ export default function CropsEditor() {
                 </label>
                 <button
                   onClick={() => { setEditingId(r.id); setEditingName(r.name) }}
-                  className="text-sky-700"
+                  className="text-brand-deep"
                 >Edit</button>
                 <button onClick={() => remove(r.id)} className="text-red-600">Delete</button>
               </>

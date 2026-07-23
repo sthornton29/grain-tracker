@@ -17,6 +17,12 @@ export default async function LoginPage({
   return (
     <div className="min-h-[85vh] flex items-center justify-center p-4">
       <div className="w-full max-w-sm space-y-4">
+        {/* Brand lockup: mark + spaced-caps wordmark, centered above the card. */}
+        <div className="flex flex-col items-center gap-2 pt-2">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/brand/logo-mark.svg" alt="Turnrow" className="h-16 w-16" />
+          <div className="font-display font-bold tracking-[0.3em] text-brand-dark text-xl">TURNROW</div>
+        </div>
         <LoginForm next={next} />
         <MarketBoard quotes={board.quotes} asOf={board.asOf} available={board.available} />
       </div>

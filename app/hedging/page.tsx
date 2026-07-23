@@ -322,7 +322,7 @@ export default function HedgingPage() {
         <button onClick={() => setShowImport(true)} className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold">
           Import Brokerage Statement
         </button>
-        <button onClick={() => setShowNew(true)} className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">
+        <button onClick={() => setShowNew(true)} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">
           + New Position
         </button>
       </div>
@@ -468,7 +468,7 @@ export default function HedgingPage() {
                               <td className={`px-3 py-2 text-right font-mono ${u == null ? 'text-slate-400' : u >= 0 ? 'text-green-700' : 'text-red-700'}`}>{u == null ? '—' : fmtPnl(u)}</td>
                               <td className="px-3 py-2">{p.crop_year}</td>
                               <td className="px-3 py-2 whitespace-nowrap">
-                                <button onClick={() => setCloseTarget(p)} className="text-sky-700 mr-2">Close</button>
+                                <button onClick={() => setCloseTarget(p)} className="text-brand-deep mr-2">Close</button>
                                 <button onClick={() => setEditTarget(p)} className="text-slate-600 mr-2">Edit</button>
                                 <button onClick={() => deletePosition(p)} className="text-red-600">Delete</button>
                               </td>
@@ -552,7 +552,7 @@ export default function HedgingPage() {
                 Grouped by commodity, then underlying month.{optionPriceNote ? ' Live pricing unavailable — use “Update” to enter current premiums.' : ''}
               </p>
             </div>
-            <button onClick={() => setShowNewOption(true)} className="rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold">+ New Option</button>
+            <button onClick={() => setShowNewOption(true)} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold">+ New Option</button>
           </div>
           {openOptions.length === 0 ? (
             <Empty>No open options for these filters.</Empty>
@@ -588,7 +588,7 @@ export default function HedgingPage() {
                               <td className={`px-3 py-2 text-right font-mono ${u == null ? 'text-slate-400' : u >= 0 ? 'text-green-700' : 'text-red-700'}`}>{u == null ? 'N/A' : fmtPnl(u)}</td>
                               <td className="px-3 py-2">{o.crop_year}</td>
                               <td className="px-3 py-2 whitespace-nowrap">
-                                <button onClick={() => setCloseOptionTarget(o)} className="text-sky-700 mr-2">Close</button>
+                                <button onClick={() => setCloseOptionTarget(o)} className="text-brand-deep mr-2">Close</button>
                                 <button onClick={() => updateOptionValue(o)} className="text-slate-600 mr-2">Update</button>
                                 <button onClick={() => setEditOption(o)} className="text-slate-600 mr-2">Edit</button>
                                 <button onClick={() => deleteOption(o)} className="text-red-600">Delete</button>

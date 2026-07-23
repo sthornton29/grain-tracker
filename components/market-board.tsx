@@ -8,8 +8,14 @@ import type { PublicQuote } from '@/lib/barchart-quotes'
 export default function MarketBoard({ quotes, asOf, available }: { quotes: PublicQuote[]; asOf: string | null; available: boolean }) {
   return (
     <div className="w-full bg-white rounded-2xl shadow p-4">
-      <div className="flex items-baseline justify-between mb-2">
-        <h2 className="font-semibold text-slate-800">Grain Futures</h2>
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="font-semibold text-slate-800 flex items-center gap-1.5">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/brand/logo-mark.svg" alt="" className="h-4 w-4" />
+          <span className="text-brand-dark">Turnrow</span>
+          <span className="text-slate-400 font-normal">·</span>
+          <span>Grain Futures</span>
+        </h2>
         <span className="text-xs text-slate-400">{asOf ? `As of ${asOf}` : 'Delayed'}</span>
       </div>
       <table className="w-full text-sm">
