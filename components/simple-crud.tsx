@@ -63,7 +63,7 @@ export default function SimpleCrud({ title, table, labelColumn, placeholder }: P
           placeholder={placeholder ?? `Add ${title.toLowerCase()}`}
           className="flex-1 rounded-lg border border-slate-300 px-3 py-2"
         />
-        <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add</button>
+        <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add</button>
       </form>
 
       {err && <p className="text-sm text-red-600">{err}</p>}
@@ -88,7 +88,7 @@ export default function SimpleCrud({ title, table, labelColumn, placeholder }: P
                 <span className="flex-1">{r[labelColumn]}</span>
                 <button
                   onClick={() => { setEditingId(r.id); setEditingValue(r[labelColumn]) }}
-                  className="text-sky-700"
+                  className="text-brand-deep"
                 >Edit</button>
                 <button onClick={() => remove(r.id)} className="text-red-600">Delete</button>
               </>

@@ -212,7 +212,7 @@ export default function ContractsSettingsPage() {
         <ContractFields value={form} onChange={setForm} buyers={buyers} crops={crops} locations={locations} entities={entities} cropYearOptions={cropYearOptions}
           onBuyerCreated={(b) => setBuyers((xs) => [...xs, b].sort((a, z) => a.name.localeCompare(z.name)))}
           onLocationCreated={(l) => setLocations((xs) => [...xs, l].sort((a, z) => a.name.localeCompare(z.name)))} />
-        <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add Contract</button>
+        <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Contract</button>
       </form>
 
       {err && <p className="text-sm text-red-600">{err}</p>}
@@ -303,7 +303,7 @@ export default function ContractsSettingsPage() {
                   </div>
                   {c.notes && <div className="text-xs text-slate-400">{c.notes}</div>}
                 </div>
-                <button onClick={() => { setEditingId(c.id); setEditForm(contractToForm(c)) }} className="text-sky-700">Edit</button>
+                <button onClick={() => { setEditingId(c.id); setEditForm(contractToForm(c)) }} className="text-brand-deep">Edit</button>
                 <button onClick={() => remove(c.id)} className="text-red-600">Delete</button>
               </div>
             )}

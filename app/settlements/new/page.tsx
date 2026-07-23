@@ -457,7 +457,7 @@ export default function NewSettlementPage() {
             type="button"
             onClick={save}
             disabled={saving || rows.length === 0 || !buyerId}
-            className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50"
+            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50"
           >
             {saving ? 'Saving…' : 'Save Settlement'}
           </button>

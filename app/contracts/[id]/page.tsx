@@ -272,7 +272,7 @@ export default async function ContractDetailPage({ params }: { params: { id: str
   return (
     <div className="space-y-4 print:space-y-2">
       <div className="flex items-center gap-3 flex-wrap print:hidden">
-        <Link href="/contracts" className="text-sm text-sky-700">← Back to contracts</Link>
+        <Link href="/contracts" className="text-sm text-brand-deep">← Back to contracts</Link>
         <div className="flex-1" />
         <StaticExportBar payload={contractExportPayload} />
         <ContractActions

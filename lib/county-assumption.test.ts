@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseYieldInput, planAssumptionSave, applySavePlan, saveErrorMessage, type AssumptionDraft } from '@/lib/county-assumption'
+import { parseYieldInput, planAssumptionSave, applySavePlan, saveErrorMessage, isUniqueViolation, type AssumptionDraft } from '@/lib/county-assumption'
 import { countyAssumptionFor } from '@/lib/crop-insurance'
 import type { CountyYieldAssumption } from '@/lib/types'
 
@@ -79,5 +79,29 @@ describe('saveErrorMessage', () => {
     expect(saveErrorMessage({ code: '42703', message: 'column county_yield_assumptions.yield_differential does not exist' }))
       .toMatch(/047/)
     expect(saveErrorMessage({ message: 'boom' })).toBe('boom')
+  })
+})
+
+describe('insert collision (stale cached row) resolves as an update — no error', () => {
+  it('stale null existing plans an insert; on 23505 the fresh row re-plans to an update onto the SAME row', () => {
+    // The row already exists (created from the Claims Monitor, say) but this
+    // surface's cached prop was still null → the naive plan is an insert.
+    const fresh = row({ id: 'r9', yield_differential: 12 })
+    const stale = planAssumptionSave({ existing: null, ...key, draft: draft({ diff: '20' }) })
+    expect(stale.kind).toBe('insert')
+    // The DB rejects it on the crop × county × crop_year unique key…
+    expect(isUniqueViolation({ code: '23505', message: 'duplicate key value violates unique constraint "county_yield_assumptions_key"' })).toBe(true)
+    // …and re-planning against the freshly-fetched row lands on a clean update.
+    const replan = planAssumptionSave({ existing: fresh, ...key, draft: draft({ diff: '20' }) })
+    expect(replan.kind).toBe('update')
+    const db = applySavePlan([fresh], replan)
+    expect(db).toHaveLength(1)
+    expect(db[0].id).toBe('r9') // same row — no duplicate, no destroy/recreate
+    expect(db[0].yield_differential).toBe(20)
+  })
+
+  it('real failures are NOT treated as collisions', () => {
+    expect(isUniqueViolation({ code: '42703', message: 'column yield_differential does not exist' })).toBe(false)
+    expect(isUniqueViolation({ message: 'network error' })).toBe(false)
   })
 })

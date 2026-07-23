@@ -193,7 +193,7 @@ export default function EntitiesPage() {
           />
         </div>
         <div className="flex justify-end">
-          <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add Entity</button>
+          <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Entity</button>
         </div>
       </form>
 
@@ -261,7 +261,7 @@ export default function EntitiesPage() {
                       )}
                     </div>
                   </div>
-                  <button onClick={() => startEdit(e)} className="text-sky-700">Edit</button>
+                  <button onClick={() => startEdit(e)} className="text-brand-deep">Edit</button>
                   <button onClick={() => remove(e.id)} className="text-red-600">Delete</button>
                 </div>
               )}
@@ -359,7 +359,7 @@ function CountyMultiPicker({
               <button
                 type="button"
                 onClick={() => removeCounty(c.id)}
-                className="text-sky-700 hover:text-red-600 font-bold"
+                className="text-brand-deep hover:text-red-600 font-bold"
                 aria-label={`Remove ${c.name}`}
               >
                 ×

@@ -84,7 +84,7 @@ export default function SettlementPdfPanel({ settlementId, currentUrl }: Props) 
             href={currentUrl}
             target="_blank"
             rel="noreferrer"
-            className="text-sm rounded-lg bg-green-700 text-white px-3 py-2"
+            className="text-sm rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2"
           >
             View settlement PDF ↗
           </a>
@@ -112,7 +112,7 @@ export default function SettlementPdfPanel({ settlementId, currentUrl }: Props) 
             type="button"
             onClick={() => inputRef.current?.click()}
             disabled={busy != null}
-            className="text-sm rounded-lg bg-green-700 text-white px-3 py-2 disabled:opacity-50"
+            className="text-sm rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 disabled:opacity-50"
           >
             {busy === 'upload' ? 'Uploading…' : 'Attach Settlement PDF'}
           </button>

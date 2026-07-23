@@ -139,7 +139,7 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
                 type="button"
                 onClick={() => setSide(s)}
                 className={`flex-1 py-2 rounded-lg border capitalize ${
-                  side === s ? 'bg-green-700 text-white border-green-700' : 'bg-white border-slate-300'
+                  side === s ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white border-slate-300'
                 }`}
               >
                 {s}
@@ -241,7 +241,7 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
           <button
             type="submit"
             disabled={busy}
-            className="flex-1 rounded-xl bg-green-700 text-white font-semibold py-3 disabled:opacity-60"
+            className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-3 disabled:opacity-60"
           >
             {busy ? 'Saving…' : editing ? 'Update Position' : 'Save Position'}
           </button>

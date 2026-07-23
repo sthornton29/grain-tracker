@@ -400,7 +400,7 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, ex
     const onPlanting = existingId != null &&
       (existingVarietiesByPlanting.get(existingId) ?? []).some((n) => varietyKey(n) === item.key)
     const addNote = existingId != null && !onPlanting
-      ? <span className="text-sky-700"> — will be added to this planting</span>
+      ? <span className="text-brand-deep"> — will be added to this planting</span>
       : null
     if (item.resolution.status === 'matched') {
       const same = item.resolution.canonical === v.variety.trim()
@@ -417,7 +417,7 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, ex
     if (item.resolution.status === 'new') {
       const saveAs = resolvedName(item, d) ?? item.name
       return (
-        <div className="text-xs text-sky-700">
+        <div className="text-xs text-brand-deep">
           New — will be created{saveAs !== v.variety.trim() && <> as “{saveAs}”</>}
         </div>
       )
@@ -583,7 +583,7 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, ex
                               {varietyBadge(r, v)}
                             </div>
                           ))}
-                          <button type="button" onClick={() => addVariety(i)} className="text-xs text-sky-700">
+                          <button type="button" onClick={() => addVariety(i)} className="text-xs text-brand-deep">
                             + Add variety
                           </button>
                         </div>
@@ -620,7 +620,7 @@ export default function PlantingsAiImport({ fields, crops, existingPlantings, ex
             )}
           </div>
           <button type="button" onClick={saveAll} disabled={saving || toSave.length === 0}
-            className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50">
+            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
             {saving ? 'Saving…' : `Save All (${toSave.length})`}
           </button>
         </div>

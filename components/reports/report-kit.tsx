@@ -163,7 +163,7 @@ export function EmptyState({
       <p className="text-slate-600 font-medium">{message}</p>
       {hint && <p className="text-sm text-slate-400 mt-1">{hint}</p>}
       {linkHref && linkLabel && (
-        <a href={linkHref} className="inline-block mt-3 text-sky-700 font-semibold hover:underline">
+        <a href={linkHref} className="inline-block mt-3 text-brand-deep font-semibold hover:underline">
           {linkLabel} →
         </a>
       )}

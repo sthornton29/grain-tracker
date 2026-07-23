@@ -1,17 +1,24 @@
 import type { Metadata, Viewport } from 'next'
+import { Montserrat } from 'next/font/google'
 import './globals.css'
 import Nav from '@/components/nav'
 import PwaRegister from '@/components/pwa-register'
 import { createClient } from '@/lib/supabase/server'
 
+// Turnrow display face: a clean geometric sans in the spirit of the wordmark
+// (headings + nav wordmark; the body stays on the system stack for
+// readability). Exposed as --font-display; globals.css applies it to
+// headings, Tailwind as `font-display`.
+const display = Montserrat({ subsets: ['latin'], weight: ['600', '700'], variable: '--font-display' })
+
 export const metadata: Metadata = {
-  title: 'Turnrow Grain',
-  description: 'Track grain truck loads',
+  title: 'Turnrow',
+  description: 'Turnrow — farm operations for Turnrow Farm',
   manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'default',
-    title: 'Turnrow Grain',
+    title: 'Turnrow',
   },
   icons: {
     apple: '/icons/icon-192.png',
@@ -22,7 +29,7 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   maximumScale: 1,
-  themeColor: '#15803d',
+  themeColor: '#0B4A24',
 }
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
@@ -42,7 +49,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   }
 
   return (
-    <html lang="en">
+    <html lang="en" className={display.variable}>
       <body className="min-h-screen">
         <PwaRegister />
         {user ? <Nav cottonEnabled={cottonEnabled || role === 'gin'} role={role} /> : null}

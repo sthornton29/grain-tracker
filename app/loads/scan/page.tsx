@@ -563,7 +563,7 @@ export default function ScanTicketsPage() {
                               key={typ}
                               type="button"
                               onClick={() => updateRow(i, { from_type: typ })}
-                              className={`flex-1 text-xs px-2 py-1 rounded border ${r.from_type === typ ? 'bg-green-700 text-white border-green-700' : 'bg-white border-slate-300'}`}
+                              className={`flex-1 text-xs px-2 py-1 rounded border ${r.from_type === typ ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white border-slate-300'}`}
                             >
                               {typ === 'field' ? 'Field' : 'Bin'}
                             </button>
@@ -592,7 +592,7 @@ export default function ScanTicketsPage() {
                               key={typ}
                               type="button"
                               onClick={() => updateRow(i, { to_type: typ })}
-                              className={`flex-1 text-xs px-2 py-1 rounded border ${r.to_type === typ ? 'bg-green-700 text-white border-green-700' : 'bg-white border-slate-300'}`}
+                              className={`flex-1 text-xs px-2 py-1 rounded border ${r.to_type === typ ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white border-slate-300'}`}
                             >
                               {typ === 'bin' ? 'Bin' : 'Buyer'}
                             </button>
@@ -661,7 +661,7 @@ export default function ScanTicketsPage() {
             type="button"
             onClick={saveAll}
             disabled={saving || readyCount === 0 || !cropYear}
-            className="rounded-xl bg-green-700 text-white font-semibold py-3 px-5 disabled:opacity-50"
+            className="rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-3 px-5 disabled:opacity-50"
           >
             {saving ? 'Saving…' : `Save All Loads (${readyCount})`}
           </button>

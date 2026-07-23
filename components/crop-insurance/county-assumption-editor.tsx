@@ -17,7 +17,7 @@
 
 import { useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { planAssumptionSave, saveErrorMessage } from '@/lib/county-assumption'
+import { isUniqueViolation, planAssumptionSave, saveErrorMessage, type SavePlan } from '@/lib/county-assumption'
 import type { CountyYieldAssumption } from '@/lib/types'
 
 export function CountyAssumptionControl({ cropId, countyId, cropYear, assumption, farmYield, yieldUnit = 'bu/ac', compact = false, onChanged }: {
@@ -64,22 +64,45 @@ export function CountyAssumptionControl({ cropId, countyId, cropYear, assumption
     ? `Your yield ${Number(farmYield).toFixed(1)} − ${differential.toFixed(1)} = county est. ${Math.max(0, Number(farmYield) - differential).toFixed(1)}`
     : null
 
+  // The row CURRENTLY in the table for this crop × county × year — fetched at
+  // save time because the `assumption` prop can be stale (the row may have
+  // been created from the other surface, or by a prior blur the parent hasn't
+  // reloaded yet). Falls back to the prop if the read fails.
+  async function fetchExisting(): Promise<CountyYieldAssumption | null> {
+    let q = supabase.from('county_yield_assumptions').select('*')
+      .eq('crop_id', cropId).eq('crop_year', cropYear)
+    q = countyId == null ? q.is('county_id', null) : q.eq('county_id', countyId)
+    const { data, error } = await q.limit(1)
+    if (error) return latest.current.assumption
+    return ((data?.[0] as CountyYieldAssumption) ?? null)
+  }
+
+  async function execute(plan: SavePlan) {
+    const t = supabase.from('county_yield_assumptions')
+    return plan.kind === 'delete' ? t.delete().eq('id', plan.id)
+      : plan.kind === 'update' ? t.update(plan.patch).eq('id', plan.id)
+      : plan.kind === 'insert' ? t.insert(plan.row)
+      : Promise.resolve({ error: null })
+  }
+
   // Serialized so a rapid blur → blur never runs two writes concurrently; the
-  // plan is recomputed at execution time against the freshest row.
+  // plan is computed against the FRESH row (never a cached id), and an insert
+  // that still collides (23505 race) re-fetches and resolves as an update —
+  // the error banner appears only for real failures.
   function saveOnBlur() {
     chain.current = chain.current.then(async () => {
-      const { assumption: a, diff: d, abs: o, finalYld: f } = latest.current
-      const plan = planAssumptionSave({
-        existing: a, cropId, countyId, cropYear,
-        draft: { diff: d, abs: o, final: f },
-      })
+      const { diff: d, abs: o, finalYld: f } = latest.current
+      const draft = { diff: d, abs: o, final: f }
+      const existing = await fetchExisting()
+      const plan = planAssumptionSave({ existing, cropId, countyId, cropYear, draft })
       if (plan.kind === 'noop') return
       setErr(null)
-      const t = supabase.from('county_yield_assumptions')
-      const { error } =
-        plan.kind === 'delete' ? await t.delete().eq('id', plan.id)
-        : plan.kind === 'update' ? await t.update(plan.patch).eq('id', plan.id)
-        : await t.insert(plan.row)
+      let { error } = await execute(plan)
+      if (error && plan.kind === 'insert' && isUniqueViolation(error)) {
+        const fresh = await fetchExisting()
+        const replan = planAssumptionSave({ existing: fresh, cropId, countyId, cropYear, draft })
+        ;({ error } = await execute(replan))
+      }
       if (error) { setErr(saveErrorMessage(error)); return }
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
@@ -93,7 +116,7 @@ export function CountyAssumptionControl({ cropId, countyId, cropYear, assumption
         <span className="text-slate-500">My yield vs county:</span>
         <span className="font-semibold tabular-nums">{label}</span>
         {derivation && <span className="text-slate-400 tabular-nums">· {derivation}</span>}
-        <button type="button" className="text-sky-700 underline decoration-dotted"
+        <button type="button" className="text-brand-deep underline decoration-dotted"
           onClick={() => {
             setDiff(assumption?.yield_differential != null ? String(assumption.yield_differential) : '')
             setAbs(assumption?.county_yield_override != null ? String(assumption.county_yield_override) : '')
@@ -121,7 +144,7 @@ export function CountyAssumptionControl({ cropId, countyId, cropYear, assumption
         <input type="text" inputMode="decimal" value={finalYld} onChange={(e) => setFinalYld(e.target.value)} onBlur={saveOnBlur} placeholder="—"
           className="rounded border border-slate-300 px-1.5 py-0.5 w-24 bg-white" />
       </label>
-      <button type="button" onClick={() => { saveOnBlur(); setEditing(false) }} className="rounded bg-green-700 text-white px-2 py-1 font-semibold">Done</button>
+      <button type="button" onClick={() => { saveOnBlur(); setEditing(false) }} className="rounded bg-brand hover:bg-brand-deep text-white px-2 py-1 font-semibold">Done</button>
       {saved && <span className="text-green-700 font-semibold self-center">saved ✓</span>}
       {err && <span className="text-red-600 max-w-[28rem] self-center">{err}</span>}
       <span className="text-slate-400 max-w-[28rem]">

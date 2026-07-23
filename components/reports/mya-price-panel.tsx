@@ -444,7 +444,7 @@ export default function MyaPricePanel({
                               <button
                                 onClick={() => saveConfirmedMonths(c)}
                                 disabled={busy}
-                                className="rounded-lg bg-green-700 text-white px-3 py-1 text-xs font-semibold disabled:opacity-50"
+                                className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1 text-xs font-semibold disabled:opacity-50"
                               >
                                 Confirm &amp; save {confirmCount} month{confirmCount === 1 ? '' : 's'}
                               </button>
@@ -654,7 +654,7 @@ export default function MyaPricePanel({
                                   <button
                                     onClick={() => saveConfirmedMonths(c)}
                                     disabled={busy || confirmCount === 0}
-                                    className="rounded-lg bg-green-700 text-white px-3 py-1 text-xs font-semibold disabled:opacity-50"
+                                    className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1 text-xs font-semibold disabled:opacity-50"
                                   >
                                     Save {confirmCount} confirmed month{confirmCount === 1 ? '' : 's'}
                                   </button>

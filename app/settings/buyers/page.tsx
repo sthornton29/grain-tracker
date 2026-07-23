@@ -137,7 +137,7 @@ export default function BuyersPage() {
           placeholder="Buyer name"
           className={inputCls}
         />
-        <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add Buyer</button>
+        <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Buyer</button>
       </form>
 
       {err && <p className="text-sm text-red-600">{err}</p>}
@@ -176,7 +176,7 @@ export default function BuyersPage() {
                   </button>
                   <button
                     onClick={() => { setEditingBuyerId(b.id); setEditBuyerName(b.name) }}
-                    className="text-sky-700"
+                    className="text-brand-deep"
                   >Edit</button>
                   <button onClick={() => removeBuyer(b.id)} className="text-red-600">Delete</button>
                 </div>
@@ -200,7 +200,7 @@ export default function BuyersPage() {
                       placeholder="Address (optional)"
                       className={inputCls}
                     />
-                    <button className="rounded-lg bg-green-700 text-white px-3 py-2 font-semibold text-sm">
+                    <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 font-semibold text-sm">
                       Add location
                     </button>
                   </form>
@@ -235,7 +235,7 @@ export default function BuyersPage() {
                               </div>
                               <button
                                 onClick={() => { setEditingLocId(l.id); setEditLocForm({ name: l.name, address: l.address ?? '' }) }}
-                                className="text-sky-700 text-sm"
+                                className="text-brand-deep text-sm"
                               >Edit</button>
                               <button onClick={() => removeLoc(l.id)} className="text-red-600 text-sm">Delete</button>
                             </div>

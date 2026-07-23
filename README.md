@@ -1,6 +1,8 @@
-# Grain Tracker
+# Turnrow
 
-Next.js + Supabase app for tracking grain truck loads. Mobile-friendly, PWA-installable.
+Next.js + Supabase farm-operations app for Turnrow Farm (formerly "Grain Tracker" — the repo,
+database, and env names keep the old identifiers; the rename is display-layer only).
+Mobile-friendly, PWA-installable. Brand assets live in `public/brand/`.
 
 ## Setup
 

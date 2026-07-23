@@ -50,7 +50,7 @@ import type { BudgetLine, BudgetScenario, Crop, CropAssumption, CropInsurancePol
 
 type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
 
-const btnCls = 'rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50'
+const btnCls = 'rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50'
 const acres0 = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
 const usd0 = (n: number | null | undefined) =>
   n == null ? '—' : `${n < 0 ? '(' : ''}$${Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}${n < 0 ? ')' : ''}`
@@ -825,7 +825,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
               <p><strong className="text-slate-700">The matrices are pure price × yield</strong> — profit/acre =
                 (price + basis) × yield − cost. No contracts, no harvest facts, no insurance floors, no government
                 payments: pre-season, nothing is locked. For the in-season version with all of that machinery, use the{' '}
-                <Link href="/reports/income-sensitivity" className="text-sky-700 underline">Income Sensitivity Report</Link>.</p>
+                <Link href="/reports/income-sensitivity" className="text-brand-deep underline">Income Sensitivity Report</Link>.</p>
               <p><strong className="text-slate-700">Budgets are a sandbox</strong> — they live in their own tables and
                 never write to the marketing assumptions or any actuals. <strong className="text-slate-700">Reference
                 acreage</strong> is the sum of your fields&apos; total acres, context only — double-crop acres
@@ -1197,9 +1197,9 @@ function CropAssumptionCard({
                   width="w-20"
                 />
                 {liveMode && card.symbol ? (
-                  <button type="button" className="text-xs text-sky-700" title="Refresh this quote" onClick={() => onRefreshQuote(card.symbol!)}>↻</button>
+                  <button type="button" className="text-xs text-brand-deep" title="Refresh this quote" onClick={() => onRefreshQuote(card.symbol!)}>↻</button>
                 ) : !liveMode ? (
-                  <button type="button" className="text-xs text-sky-700" title="Use the live quote" onClick={() => onUseLive(card)}>↻ live</button>
+                  <button type="button" className="text-xs text-brand-deep" title="Use the live quote" onClick={() => onUseLive(card)}>↻ live</button>
                 ) : null}
               </div>
               {liveMode && card.live == null && (

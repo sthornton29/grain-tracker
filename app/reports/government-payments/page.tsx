@@ -20,7 +20,7 @@ export default function GovernmentPaymentsReportPage() {
       <p className="text-sm text-slate-600 no-print max-w-3xl">
         Projected ARC/PLC payments per farm and commodity plus other USDA payments, with per-entity payment-limit
         tracking.{' '}
-        <Link href="/settings/government-payments" className="text-sky-700 underline">Manage base acres &amp; elections →</Link>
+        <Link href="/settings/government-payments" className="text-brand-deep underline">Manage base acres &amp; elections →</Link>
       </p>
       <GovernmentPaymentsReport onPayloadChange={handlePayload} />
     </div>

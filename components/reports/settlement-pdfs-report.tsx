@@ -227,7 +227,7 @@ export default function SettlementPdfsReport() {
             type="button"
             onClick={onDownload}
             disabled={busy || withPdf.length === 0}
-            className="rounded-lg bg-green-700 text-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
+            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
           >
             {busy
               ? progress
@@ -290,13 +290,13 @@ export default function SettlementPdfsReport() {
                       <td className="px-3 py-2 text-right">{e.matchingLineCount}</td>
                       <td className="px-3 py-2">
                         {e.source_pdf_url ? (
-                          <a href={e.source_pdf_url} target="_blank" rel="noreferrer" className="text-sky-700">View ↗</a>
+                          <a href={e.source_pdf_url} target="_blank" rel="noreferrer" className="text-brand-deep">View ↗</a>
                         ) : (
                           <span className="text-amber-800 font-semibold">Missing</span>
                         )}
                       </td>
                       <td className="px-3 py-2">
-                        <Link href={`/settlements/${e.id}`} className="text-sky-700">Open →</Link>
+                        <Link href={`/settlements/${e.id}`} className="text-brand-deep">Open →</Link>
                       </td>
                     </tr>
                   ))}

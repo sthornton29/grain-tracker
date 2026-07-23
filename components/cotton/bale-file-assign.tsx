@@ -19,7 +19,7 @@ import {
 import type { CottonDisposition } from '@/lib/types'
 
 const btnGray = 'rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50'
-const btnCls = 'rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50'
+const btnCls = 'rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50'
 const lbs0 = (n: number) => Math.round(n).toLocaleString()
 
 type Props = {
@@ -118,7 +118,7 @@ export default function BaleFileAssign({ target, bales, dispositionByBale, loane
           </div>
 
           {partition.matchedCount > 0 && (
-            <button type="button" className="text-xs text-sky-700" onClick={() => setShowMatched((s) => !s)}>
+            <button type="button" className="text-xs text-brand-deep" onClick={() => setShowMatched((s) => !s)}>
               {showMatched ? 'Hide matched bales' : 'Show matched bales'}
             </button>
           )}

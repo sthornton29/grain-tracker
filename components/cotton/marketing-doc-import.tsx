@@ -38,7 +38,7 @@ import type {
 } from '@/lib/types'
 
 const inputCls = 'rounded-lg border border-slate-300 px-2 py-1.5 text-sm bg-white'
-const btnCls = 'rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50'
+const btnCls = 'rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50'
 const btnGray = 'rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50'
 const lbs0 = (n: number) => Math.round(n).toLocaleString()
 const usd = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`

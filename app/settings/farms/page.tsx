@@ -253,7 +253,7 @@ export default function FarmsPage() {
             placeholder="FSA #"
             className={inputCls}
           />
-          <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add</button>
+          <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add</button>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_160px] gap-2 items-center">
           <LandownerPicker
@@ -463,7 +463,7 @@ export default function FarmsPage() {
                       f.landlord_share_percentage != null ? String(f.landlord_share_percentage) : '',
                     )
                   }}
-                  className="text-sky-700"
+                  className="text-brand-deep"
                 >Edit</button>
                 <button onClick={() => remove(f.id)} className="text-red-600">Delete</button>
               </div>

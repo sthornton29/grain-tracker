@@ -131,7 +131,7 @@ export default function BeginningInventoryButton({ binId, binName, crops, defaul
           type="button"
           onClick={save}
           disabled={busy}
-          className="text-xs rounded-lg bg-green-700 text-white font-semibold px-3 py-1 disabled:opacity-50"
+          className="text-xs rounded-lg bg-brand hover:bg-brand-deep text-white font-semibold px-3 py-1 disabled:opacity-50"
         >
           {busy ? 'Saving…' : 'Save'}
         </button>

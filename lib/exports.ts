@@ -253,7 +253,7 @@ function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSectio
     ws.addRow([payload.title])
     ws.lastRow.font = { bold: true, size: 14 }
     if (payload.filters) { ws.addRow([payload.filters]); ws.lastRow.font = { color: { argb: 'FF64748B' } } }
-    ws.addRow([`Generated ${new Date().toLocaleString()}`])
+    ws.addRow([`Turnrow · Generated ${new Date().toLocaleString()}`])
     ws.lastRow.font = { color: { argb: 'FF94A3B8' }, size: 9 }
     ws.addRow([])
   }
@@ -371,7 +371,7 @@ export async function exportToExcel(payload: ExportPayload): Promise<void> {
     const ws = addSheet('Summary', 'Summary')
     ws.addRow([payload.title]); ws.lastRow.font = { bold: true, size: 14 }
     if (payload.filters) { ws.addRow([payload.filters]); ws.lastRow.font = { color: { argb: 'FF64748B' } } }
-    ws.addRow([`Generated ${new Date().toLocaleString()}`]); ws.lastRow.font = { color: { argb: 'FF94A3B8' }, size: 9 }
+    ws.addRow([`Turnrow · Generated ${new Date().toLocaleString()}`]); ws.lastRow.font = { color: { argb: 'FF94A3B8' }, size: 9 }
     ws.addRow([])
     if (payload.summary?.length) {
       const hr = ws.addRow(['Metric', 'Value'])
@@ -420,6 +420,25 @@ export function pdfSafe(s: string): string {
     .replace(/≈/g, '~')
 }
 
+// The brand mark for PDF headers, as a data URL (jsPDF addImage input).
+// Browser-only; returns null on any failure so exports never block on it.
+async function brandMarkDataUrl(): Promise<string | null> {
+  if (typeof window === 'undefined') return null
+  try {
+    const res = await fetch('/brand/logo-mark.png')
+    if (!res.ok) return null
+    const blob = await res.blob()
+    return await new Promise<string | null>((resolve) => {
+      const r = new FileReader()
+      r.onload = () => resolve(typeof r.result === 'string' ? r.result : null)
+      r.onerror = () => resolve(null)
+      r.readAsDataURL(blob)
+    })
+  } catch {
+    return null
+  }
+}
+
 export async function exportToPdf(payload: ExportPayload): Promise<void> {
   const [{ default: JsPDF }, autoTableMod] = await Promise.all([import('jspdf'), import('jspdf-autotable')])
   const autoTable = (autoTableMod as { default: unknown }).default ?? autoTableMod
@@ -429,14 +448,28 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
   const pageHeight = doc.internal.pageSize.getHeight()
   const today = new Date().toLocaleString()
 
-  doc.setFontSize(16)
-  doc.text(pdfSafe(payload.title), 40, 40)
-  doc.setFontSize(10)
-  doc.setTextColor(110)
-  doc.text(`Generated ${today}`, pageWidth - 40, 40, { align: 'right' })
+  // Turnrow brand header: the mark + spaced-caps wordmark above the report
+  // title — these are lender-facing documents. Fetch failure (offline, asset
+  // missing) silently falls back to the wordmark alone.
+  const mark = await brandMarkDataUrl()
+  if (mark) {
+    try { doc.addImage(mark, 'PNG', 40, 22, 18, 18) } catch { /* wordmark-only */ }
+  }
+  doc.setFontSize(9)
+  doc.setFont('helvetica', 'bold')
+  doc.setTextColor(11, 74, 36) // brand forest
+  doc.text('TURNROW', mark ? 64 : 40, 34, { charSpace: 2.5 })
+  doc.setFont('helvetica', 'normal')
   doc.setTextColor(0)
 
-  let cursorY = 60
+  doc.setFontSize(16)
+  doc.text(pdfSafe(payload.title), 40, 58)
+  doc.setFontSize(10)
+  doc.setTextColor(110)
+  doc.text(`Generated ${today}`, pageWidth - 40, 34, { align: 'right' })
+  doc.setTextColor(0)
+
+  let cursorY = 76
   if (payload.filters) {
     doc.setFontSize(10)
     doc.setTextColor(90)

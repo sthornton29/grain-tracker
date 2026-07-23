@@ -265,7 +265,7 @@ export default function FieldsAiImport({ farms, existingFields, onImported }: Pr
             <span className="font-semibold text-green-700">{toSave.length}</span> ready to save · {rows.length} total
           </div>
           <button type="button" onClick={saveAll} disabled={saving || toSave.length === 0}
-            className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50">
+            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
             {saving ? 'Saving…' : `Save All (${toSave.length})`}
           </button>
         </div>

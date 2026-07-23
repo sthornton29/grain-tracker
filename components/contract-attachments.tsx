@@ -93,7 +93,7 @@ export default function ContractAttachments({ contractId }: { contractId: string
           type="button"
           onClick={() => inputRef.current?.click()}
           disabled={busy}
-          className="text-sm rounded-lg bg-green-700 text-white px-3 py-2 disabled:opacity-50"
+          className="text-sm rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 disabled:opacity-50"
         >
           {busy ? 'Uploading…' : '+ Attach PDF or photo'}
         </button>
@@ -120,7 +120,7 @@ export default function ContractAttachments({ contractId }: { contractId: string
                 )}
               </a>
               <div className="flex-1 min-w-0">
-                <a href={a.file_url} target="_blank" rel="noreferrer" className="block text-sm text-sky-700 truncate" title={a.file_name}>{a.file_name}</a>
+                <a href={a.file_url} target="_blank" rel="noreferrer" className="block text-sm text-brand-deep truncate" title={a.file_name}>{a.file_name}</a>
                 <div className="text-xs text-slate-500">{formatSize(a.file_size)}</div>
                 <button type="button" onClick={() => onDelete(a)} className="mt-1 text-xs text-red-600">Remove</button>
               </div>

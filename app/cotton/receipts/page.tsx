@@ -268,7 +268,7 @@ export default function GinReceiptsPage() {
               </div>
             )}
             <div className="flex gap-2">
-              <button onClick={saveExtracted} disabled={saving} className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50">
+              <button onClick={saveExtracted} disabled={saving} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
                 {saving ? 'Saving…' : 'Save receipt + bales'}
               </button>
               <button onClick={() => { setX(null); setSource(null) }} className="rounded-lg bg-white border border-slate-300 px-4 py-2">Discard</button>
@@ -301,7 +301,7 @@ export default function GinReceiptsPage() {
           <input type="number" placeholder="Lint lbs" value={m.balewt} onChange={(e) => setM({ ...m, balewt: e.target.value })} className={inputCls} />
           <input type="number" placeholder="Cottonseed lbs" value={m.seedlbs} onChange={(e) => setM({ ...m, seedlbs: e.target.value })} className={inputCls} />
         </div>
-        <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add Receipt</button>
+        <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Receipt</button>
       </form>
 
       {err && <p className="text-sm text-red-600">{err}</p>}

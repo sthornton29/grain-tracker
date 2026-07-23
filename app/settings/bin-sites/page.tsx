@@ -323,7 +323,7 @@ export default function BinSitesPage() {
           className={inputCls + ' w-full'}
         />
         <div className="flex justify-end">
-          <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add Site</button>
+          <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Site</button>
         </div>
       </form>
 
@@ -417,7 +417,7 @@ export default function BinSitesPage() {
                           notes: s.notes ?? '',
                         })
                       }}
-                      className="text-sky-700"
+                      className="text-brand-deep"
                     >Edit</button>
                     <button onClick={() => removeSite(s.id)} className="text-red-600">Delete</button>
                   </div>
@@ -441,7 +441,7 @@ export default function BinSitesPage() {
                           <option value="">— crop (optional) —</option>
                           {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                         </select>
-                        <button className="rounded-lg bg-green-700 text-white px-3 py-2 font-semibold text-sm">
+                        <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 font-semibold text-sm">
                           Add bin
                         </button>
                       </form>
@@ -501,7 +501,7 @@ export default function BinSitesPage() {
                                         siteId: b.bin_site_id ?? s.id,
                                       })
                                     }}
-                                    className="text-sky-700 text-sm"
+                                    className="text-brand-deep text-sm"
                                   >Edit</button>
                                   <button onClick={() => removeBin(b.id)} className="text-red-600 text-sm">Delete</button>
                                 </div>

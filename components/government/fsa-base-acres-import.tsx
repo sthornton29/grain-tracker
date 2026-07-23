@@ -396,13 +396,13 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
                                   {c.raw_name && <option value={NEW_COMMODITY}>➕ Add “{c.raw_name}” as new</option>}
                                 </select>
                                 {!c.commodity_id && !c.createName && c.raw_name && <div className="text-amber-700">AI: “{c.raw_name}”</div>}
-                                {c.createName && <div className="text-sky-700">new commodity — set its reference price after saving</div>}
+                                {c.createName && <div className="text-brand-deep">new commodity — set its reference price after saving</div>}
                                 {dup && <div className="text-slate-400">updates existing</div>}
                               </>
                             )}
                             {c.merged_from.length > 1 && (
                               <details className="mt-0.5">
-                                <summary className="cursor-pointer text-sky-700">merged from {c.merged_from.length} lines</summary>
+                                <summary className="cursor-pointer text-brand-deep">merged from {c.merged_from.length} lines</summary>
                                 <ul className="mt-0.5 list-disc pl-4 text-slate-500">
                                   {c.merged_from.map((s, k) => (
                                     <li key={k}>{s.base_acres || '?'} ac{s.plc_yield ? ` @ ${s.plc_yield} yield` : ''}{s.raw_name ? ` — ${s.raw_name}` : ''}</li>
@@ -446,7 +446,7 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
       {rows.length > 0 && (
         <div className="flex justify-end border-t border-slate-100 pt-3">
           <button type="button" onClick={saveAll} disabled={saving}
-            className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50">
+            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
             {saving ? 'Saving…' : 'Save Base Acres'}
           </button>
         </div>

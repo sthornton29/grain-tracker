@@ -27,7 +27,7 @@ import type {
 } from '@/lib/types'
 
 const inputCls = 'rounded-lg border border-slate-300 px-2 py-1.5 text-sm bg-white'
-const btnCls = 'rounded-lg bg-green-700 text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50'
+const btnCls = 'rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50'
 const btnGray = 'rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50'
 const lbs0 = (n: number) => Math.round(n).toLocaleString()
 const usd = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -654,9 +654,9 @@ export default function CottonMarketingPage() {
                           <button type="button" className="text-green-700 font-semibold" onClick={() => fixFutures(c)}>Fix futures</button>
                         )}
                         {c.contract_type === 'pool' && (
-                          <button type="button" className="text-sky-700" onClick={() => addPoolPayment(c.id)}>+ Payment</button>
+                          <button type="button" className="text-brand-deep" onClick={() => addPoolPayment(c.id)}>+ Payment</button>
                         )}
-                        <button type="button" className="text-sky-700" onClick={() => { setPickFor({ kind: 'contract', id: c.id }); setPicked(new Set()) }}>Assign bales</button>
+                        <button type="button" className="text-brand-deep" onClick={() => { setPickFor({ kind: 'contract', id: c.id }); setPicked(new Set()) }}>Assign bales</button>
                         <button type="button" className="text-slate-600" onClick={() => setContractForm({
                           id: c.id, entity_id: c.entity_id ?? '', buyer_id: c.buyer_id ?? '', contract_type: c.contract_type,
                           contract_number: c.contract_number ?? '', contract_date: c.contract_date ?? '', commitment_basis: c.commitment_basis,

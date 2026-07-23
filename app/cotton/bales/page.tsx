@@ -146,7 +146,7 @@ export default function CottonBalesPage() {
               </table>
             </div>
             <div className="flex gap-2">
-              <button onClick={saveGrades} disabled={saving || preview.matched.length === 0} className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50">
+              <button onClick={saveGrades} disabled={saving || preview.matched.length === 0} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
                 {saving ? 'Saving…' : `Save ${preview.matched.length} matched grades`}
               </button>
               <button onClick={() => setPreview(null)} className="rounded-lg bg-white border border-slate-300 px-4 py-2">Cancel</button>

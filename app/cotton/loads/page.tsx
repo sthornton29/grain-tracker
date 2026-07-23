@@ -253,7 +253,7 @@ export default function CottonLoadsPage() {
                 </tbody>
               </table>
             </div>
-            <button onClick={saveAiRows} disabled={saving} className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50">
+            <button onClick={saveAiRows} disabled={saving} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
               {saving ? 'Saving…' : `Save ${aiRows.filter((r) => r.include).length} loads`}
             </button>
           </>
@@ -292,7 +292,7 @@ export default function CottonLoadsPage() {
         {num(draft.gross_weight) != null && num(draft.tare_weight) != null && (
           <p className="text-sm text-slate-500">Net: <b>{lbs(num(draft.gross_weight)! - num(draft.tare_weight)!)}</b> lbs seed cotton</p>
         )}
-        <button className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">Add Load</button>
+        <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Load</button>
       </form>
 
       {err && <p className="text-sm text-red-600">{err}</p>}

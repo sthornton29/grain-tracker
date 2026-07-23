@@ -97,7 +97,7 @@ export default function UsersModulesPage() {
             <option value="gin">gin (Cotton intake only)</option>
             <option value="owner">owner (full access)</option>
           </select>
-          <button type="submit" disabled={busy} className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50">
+          <button type="submit" disabled={busy} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
             Assign role
           </button>
         </form>

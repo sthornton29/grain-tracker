@@ -203,7 +203,7 @@ export default function CloseOptionDialog({ position, onClose, onSaved }: Props)
           <div className="mt-1 grid grid-cols-3 gap-2">
             {scenarios.map((s) => (
               <button key={s.key} type="button" onClick={() => setScenario(s.key)}
-                className={`py-2 rounded-lg border text-sm ${scenario === s.key ? 'bg-green-700 text-white border-green-700' : 'bg-white border-slate-300'}`}>
+                className={`py-2 rounded-lg border text-sm ${scenario === s.key ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white border-slate-300'}`}>
                 {s.label}
               </button>
             ))}
@@ -263,7 +263,7 @@ export default function CloseOptionDialog({ position, onClose, onSaved }: Props)
         {err && <p className="text-sm text-red-600">{err}</p>}
 
         <div className="flex gap-2">
-          <button type="submit" disabled={busy} className="flex-1 rounded-xl bg-green-700 text-white font-semibold py-3 disabled:opacity-60">
+          <button type="submit" disabled={busy} className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-3 disabled:opacity-60">
             {busy ? 'Saving…' : scenario === 'exercise' ? 'Exercise Option' : partial ? `Close ${qtyNum} Contract${qtyNum === 1 ? '' : 's'}` : 'Close Option'}
           </button>
           <button type="button" onClick={onClose} className="rounded-xl bg-white border border-slate-300 px-4 py-3">Cancel</button>

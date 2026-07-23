@@ -297,7 +297,7 @@ export default function SettlementsListPage() {
       <div className="flex items-end gap-3 flex-wrap">
         <h1 className="text-2xl font-bold flex-1">Settlements</h1>
         {filtered.length > 0 && <ExportBar buildPayload={buildPayload} />}
-        <Link href="/settlements/new" className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold">+ New Settlement</Link>
+        <Link href="/settlements/new" className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">+ New Settlement</Link>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -396,7 +396,7 @@ export default function SettlementsListPage() {
                         href={r.source_pdf_url}
                         target="_blank"
                         rel="noreferrer"
-                        className="text-sky-700"
+                        className="text-brand-deep"
                       >
                         View ↗
                       </a>
@@ -404,7 +404,7 @@ export default function SettlementsListPage() {
                       <span className="text-slate-300">—</span>
                     )}
                   </td>
-                  <td className="px-3 py-2"><Link href={`/settlements/${r.id}`} className="text-sky-700">Review →</Link></td>
+                  <td className="px-3 py-2"><Link href={`/settlements/${r.id}`} className="text-brand-deep">Review →</Link></td>
                 </tr>
               )
             })}

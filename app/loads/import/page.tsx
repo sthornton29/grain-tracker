@@ -433,7 +433,7 @@ export default function LoadsImportPage() {
               type="button"
               onClick={doImport}
               disabled={busy || totals.ok === 0}
-              className="rounded-lg bg-green-700 text-white px-4 py-2 font-semibold disabled:opacity-50"
+              className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50"
             >
               {busy ? 'Importing…' : `Import ${totals.ok} load${totals.ok === 1 ? '' : 's'}`}
             </button>
@@ -466,7 +466,7 @@ export default function LoadsImportPage() {
                 <button
                   type="button"
                   onClick={() => setShowAllFailures(true)}
-                  className="text-xs text-sky-700 underline mt-1"
+                  className="text-xs text-brand-deep underline mt-1"
                 >
                   Show all {result.failed.length}
                 </button>
