@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import CropsEditor from '@/components/crops-editor'
+import CropYearSalesStatus from '@/components/crop-year-sales-status'
 import CsvImport from '@/components/csv-import'
 
 export default function Page() {
@@ -22,6 +23,7 @@ export default function Page() {
         onImported={() => setNonce((n) => n + 1)}
       />
       <CropsEditor key={nonce} />
+      <CropYearSalesStatus />
     </div>
   )
 }
