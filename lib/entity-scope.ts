@@ -7,9 +7,18 @@
 //   * acreage / plantings / production — fields on farms with farms.entity_id =
 //     the selected entity (and their loads/yields, via the field-keyed
 //     aggregates);
-//   * crop insurance policies, contracts, futures/options — rows whose OWN
-//     entity_id matches (rows with no entity_id drop out under a filter, the
-//     same strict rule the Contracts page and Hedging Summary already use);
+//   * crop insurance policies — rows whose OWN entity_id matches (policies are
+//     genuinely carried per entity);
+//   * contracts / futures / options — via attribution() below. Grain contracts
+//     are NOT reliably entity-keyed in this operation (the contract form's
+//     entity is optional and most rows are null), so a null-entity contract is
+//     OPERATION-LEVEL: it prices the operation's grain, and under an entity
+//     filter it attributes pro-rata by the entity's share of that crop's
+//     planted acres for the contract's crop year (same bushel prices — only
+//     the bushels scale). A contract that DOES carry an entity_id counts
+//     wholly toward that entity and never enters the pro-rata pool. Dropping
+//     null-entity rows (the old strict rule) zeroed out every filtered
+//     entity's sales while production stayed — huge false losses;
 //   * government payments — ARC/PLC by the farm's entity; other USDA payments
 //     by their farm's entity when farm-linked, else their own entity_id (the
 //     Payment Tracker's attribution).
@@ -23,7 +32,32 @@
 // With entityId === '' (All entities) every filter is the identity function, so
 // the unfiltered numbers are structurally guaranteed to match today's.
 
+import { cropToHedgeCommodity } from '@/lib/contracts'
 import type { CottonPhysicalInputs } from '@/lib/cotton-sales'
+
+// Attribution of marketing positions (contracts / futures / options) to an
+// entity. Built from the plantings + crops the caller already has:
+//   * a row whose entity_id matches the scope counts WHOLE;
+//   * a row keyed to a DIFFERENT entity is dropped;
+//   * a null-entity row is operation-level and scales by the entity's share of
+//     the crop's (or hedge commodity's) planted acres for that crop year —
+//     prices per bushel are untouched, so the entity view shows the same avg
+//     price / buildup as the all-entities report, and the per-entity bushels
+//     sum back to the operation total.
+// With no active filter every method is an exact pass-through.
+export type EntityAttribution = {
+  /** Entity share (0..1) of a crop's planted acres for a crop year. */
+  shareForCrop(cropId: string | null, cropYear: number | null): number
+  /** Same, aggregated across the crops that hedge in this commodity. */
+  shareForCommodity(commodity: string | null, cropYear: number | null): number
+  /** The factor a contract's bushels/dollars carry under this filter:
+   *  1 (own entity or unfiltered), 0 (other entity / no acreage), or the
+   *  pro-rata acre share (operation-level row). */
+  shareForContract(c: { entity_id: string | null; crop_id: string | null; crop_year: number | null }): number
+  contracts<T extends { entity_id: string | null; crop_id: string | null; crop_year: number | null; contracted_bushels: number | string }>(rows: readonly T[]): T[]
+  futures<T extends { entity_id: string | null; commodity: string; crop_year: number; num_contracts: number; realized_pnl: number | null; commission: number }>(rows: readonly T[]): T[]
+  options<T extends { entity_id: string | null; commodity: string; crop_year: number; num_contracts: number; realized_pnl: number | null; premium_total: number }>(rows: readonly T[]): T[]
+}
 
 export type EntityScope = {
   entityId: string
@@ -35,9 +69,17 @@ export type EntityScope = {
   farmIds: ReadonlySet<string> | null
   /** Field-keyed rows (plantings, load splits): keep the entity's fields. */
   plantings<T extends { field_id: string }>(rows: readonly T[]): T[]
-  /** Entity-keyed rows (contracts, futures, options, insurance policies,
-   *  cotton marketing rows): strict entity_id match. */
+  /** Strictly entity-keyed rows (insurance policies, cotton marketing rows):
+   *  own entity_id match. NOT for grain contracts/futures/options — those are
+   *  often operation-level (null entity) and go through attribution(). */
   byEntity<T extends { entity_id: string | null }>(rows: readonly T[]): T[]
+  /** Marketing-position attribution (contracts / futures / options) — see
+   *  EntityAttribution. Pass the SAME plantings/crops the report computes
+   *  acreage from, so shares line up with the acres on screen. */
+  attribution(args: {
+    plantings: ReadonlyArray<{ field_id: string; crop_id: string; season_year: number; planted_acres: number | string | null }>
+    crops: ReadonlyArray<{ id: string; name: string }>
+  }): EntityAttribution
   /** Farm-keyed rows (base acres, elections, stored ARC/PLC payments). */
   byFarm<T extends { farm_id: string }>(rows: readonly T[]): T[]
   /** True when the farm belongs to the entity (projected-payment filtering). */
@@ -73,6 +115,95 @@ export function buildEntityScope(args: {
   const farmInEntity = (farmId: string | null | undefined): boolean =>
     !active || (farmId != null && farmIds!.has(farmId))
 
+  function attribution(args: {
+    plantings: ReadonlyArray<{ field_id: string; crop_id: string; season_year: number; planted_acres: number | string | null }>
+    crops: ReadonlyArray<{ id: string; name: string }>
+  }): EntityAttribution {
+    // Acres per crop|year and commodity|year — total vs on the entity's fields.
+    const totalByCrop = new Map<string, number>()
+    const mineByCrop = new Map<string, number>()
+    const totalByCommodity = new Map<string, number>()
+    const mineByCommodity = new Map<string, number>()
+    if (active) {
+      const commodityByCrop = new Map(args.crops.map((c) => [c.id, cropToHedgeCommodity(c.name)]))
+      for (const p of args.plantings) {
+        const acres = Number(p.planted_acres ?? 0) || 0
+        if (acres <= 0) continue
+        const cropKey = `${p.crop_id}|${p.season_year}`
+        totalByCrop.set(cropKey, (totalByCrop.get(cropKey) ?? 0) + acres)
+        const commodity = commodityByCrop.get(p.crop_id)
+        const commodityKey = commodity ? `${commodity}|${p.season_year}` : null
+        if (commodityKey) totalByCommodity.set(commodityKey, (totalByCommodity.get(commodityKey) ?? 0) + acres)
+        if (fieldIds!.has(p.field_id)) {
+          mineByCrop.set(cropKey, (mineByCrop.get(cropKey) ?? 0) + acres)
+          if (commodityKey) mineByCommodity.set(commodityKey, (mineByCommodity.get(commodityKey) ?? 0) + acres)
+        }
+      }
+    }
+    const shareOf = (mine: Map<string, number>, total: Map<string, number>, key: string | null): number => {
+      if (!active) return 1
+      if (key == null) return 0
+      const t = total.get(key) ?? 0
+      return t > 0 ? (mine.get(key) ?? 0) / t : 0
+    }
+    const shareForCrop = (cropId: string | null, cropYear: number | null) =>
+      shareOf(mineByCrop, totalByCrop, cropId != null && cropYear != null ? `${cropId}|${cropYear}` : null)
+    const shareForCommodity = (commodity: string | null, cropYear: number | null) =>
+      shareOf(mineByCommodity, totalByCommodity, commodity != null && cropYear != null ? `${commodity}|${cropYear}` : null)
+    // Explicitly-keyed rows: whole for the own entity, gone for another's.
+    // Operation-level (null entity) rows: the pro-rata acre share.
+    const factor = (rowEntity: string | null, share: () => number): number => {
+      if (!active) return 1
+      if (rowEntity != null) return rowEntity === entityId ? 1 : 0
+      return share()
+    }
+    return {
+      shareForCrop,
+      shareForCommodity,
+      shareForContract: (c) => factor(c.entity_id, () => shareForCrop(c.crop_id, c.crop_year)),
+      contracts: (rows) => {
+        if (!active) return [...rows]
+        const out: typeof rows[number][] = []
+        for (const c of rows) {
+          const f = factor(c.entity_id, () => shareForCrop(c.crop_id, c.crop_year))
+          if (f <= 0) continue
+          out.push(f === 1 ? c : { ...c, contracted_bushels: Number(c.contracted_bushels ?? 0) * f })
+        }
+        return out
+      },
+      futures: (rows) => {
+        if (!active) return [...rows]
+        const out: typeof rows[number][] = []
+        for (const p of rows) {
+          const f = factor(p.entity_id, () => shareForCommodity(p.commodity, p.crop_year))
+          if (f <= 0) continue
+          out.push(f === 1 ? p : {
+            ...p,
+            num_contracts: Number(p.num_contracts) * f,
+            realized_pnl: p.realized_pnl != null ? Number(p.realized_pnl) * f : null,
+            commission: Number(p.commission ?? 0) * f,
+          })
+        }
+        return out
+      },
+      options: (rows) => {
+        if (!active) return [...rows]
+        const out: typeof rows[number][] = []
+        for (const o of rows) {
+          const f = factor(o.entity_id, () => shareForCommodity(o.commodity, o.crop_year))
+          if (f <= 0) continue
+          out.push(f === 1 ? o : {
+            ...o,
+            num_contracts: Number(o.num_contracts) * f,
+            realized_pnl: o.realized_pnl != null ? Number(o.realized_pnl) * f : null,
+            premium_total: Number(o.premium_total ?? 0) * f,
+          })
+        }
+        return out
+      },
+    }
+  }
+
   return {
     entityId,
     active,
@@ -80,6 +211,7 @@ export function buildEntityScope(args: {
     farmIds,
     plantings: (rows) => (active ? rows.filter((r) => fieldIds!.has(r.field_id)) : [...rows]),
     byEntity: (rows) => (active ? rows.filter((r) => r.entity_id === entityId) : [...rows]),
+    attribution,
     byFarm: (rows) => (active ? rows.filter((r) => farmIds!.has(r.farm_id)) : [...rows]),
     farmInEntity,
     otherPayments: (rows) =>

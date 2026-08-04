@@ -250,9 +250,12 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   const scope = useMemo(() => buildEntityScope({ entityId, farms, fields }), [entityId, farms, fields])
   const entityName = entityId ? entities.find((e) => e.id === entityId)?.name ?? null : null
   const scopedPlantings = useMemo(() => scope.plantings(plantings), [scope, plantings])
-  const scopedContracts = useMemo(() => scope.byEntity(contracts), [scope, contracts])
-  const scopedFutures = useMemo(() => scope.byEntity(futures), [scope, futures])
-  const scopedOptions = useMemo(() => scope.byEntity(options), [scope, options])
+  // Contracts/hedges attribute (entity-keyed → whole; operation-level → the
+  // entity's acre share of the crop), so filtered sales don't vanish.
+  const attribution = useMemo(() => scope.attribution({ plantings, crops }), [scope, plantings, crops])
+  const scopedContracts = useMemo(() => attribution.contracts(contracts), [attribution, contracts])
+  const scopedFutures = useMemo(() => attribution.futures(futures), [attribution, futures])
+  const scopedOptions = useMemo(() => attribution.options(options), [attribution, options])
   const scopedPolicies = useMemo(() => scope.byEntity(policies), [scope, policies])
   const cottonPhysicalSummary = useMemo(() => {
     if (!cottonPhysicalRaw) return null

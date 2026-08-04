@@ -263,14 +263,18 @@ export default function MarketingPage() {
     return () => { cancelled = true }
   }, [year, crops, plantings])
 
-  // Shared entity scoping: acres/production/contracts/positions narrow to the
-  // selected entity; the operation-wide assumptions apply to them unchanged.
+  // Shared entity scoping: acres/production narrow to the selected entity's
+  // fields; the operation-wide assumptions apply to them unchanged. Contracts
+  // and hedges attribute through scope.attribution — entity-keyed rows go to
+  // their entity, operation-level (null-entity) rows pro-rate by the entity's
+  // acre share of the crop, so a filtered entity keeps its sales.
   const scope = useMemo(() => buildEntityScope({ entityId, farms, fields }), [entityId, farms, fields])
   const entityName = entityId ? entities.find((e) => e.id === entityId)?.name ?? null : null
   const scopedPlantings = useMemo(() => scope.plantings(plantings), [scope, plantings])
-  const scopedContracts = useMemo(() => scope.byEntity(contracts), [scope, contracts])
-  const scopedFutures = useMemo(() => scope.byEntity(futures), [scope, futures])
-  const scopedOptions = useMemo(() => scope.byEntity(options), [scope, options])
+  const attribution = useMemo(() => scope.attribution({ plantings, crops }), [scope, plantings, crops])
+  const scopedContracts = useMemo(() => attribution.contracts(contracts), [attribution, contracts])
+  const scopedFutures = useMemo(() => attribution.futures(futures), [attribution, futures])
+  const scopedOptions = useMemo(() => attribution.options(options), [attribution, options])
 
   // Acres per crop split into full-season/double-crop × irrigated/dryland, and
   // the broken-out expected production used by the dashboard.

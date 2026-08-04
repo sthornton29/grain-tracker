@@ -7,9 +7,12 @@ import type { CropAssumption } from '@/lib/types'
 // The shared entity-scoping layer used by Season Summary, Marketing, Revenue
 // Projections, Income Sensitivity, and Cash Flow. Key invariants:
 //   * acreage/production narrow via fields → farms → entity;
-//   * entity-keyed rows (contracts, futures, policies) match strictly on their
-//     own entity_id (null-entity rows drop out under a filter — same rule as
-//     the Contracts page / Hedging Summary);
+//   * insurance policies match strictly on their own entity_id;
+//   * contracts/futures/options attribute via scope.attribution(): a row keyed
+//     to the entity counts WHOLE, a row keyed to another entity drops, and an
+//     operation-level (null-entity) row pro-rates by the entity's acre share
+//     of the crop — it must NEVER simply vanish (the strict-drop regression
+//     showed filtered entities with full production and zero sales);
 //   * other USDA payments attribute farm-first (farm's entity), else entity_id;
 //   * the OPERATION-WIDE assumptions are never scoped — they apply to the
 //     narrowed acres unchanged (no per-entity assumption store);
@@ -51,7 +54,7 @@ describe('buildEntityScope', () => {
     expect(scopeAll().plantings(plantings)).toEqual(plantings)
   })
 
-  it('entity-keyed rows (contracts / futures / policies) match strictly on entity_id', () => {
+  it('strictly entity-keyed rows (insurance policies) match on entity_id', () => {
     const rows = [
       { id: 'c1', entity_id: 'E1' }, { id: 'c2', entity_id: 'E2' }, { id: 'c3', entity_id: null },
     ]
@@ -125,6 +128,75 @@ describe('buildEntityScope', () => {
     expect(scoped.fees).toEqual([])
     expect(scoped.bales).toBe(inputs.bales) // production rows ride along
     expect(scopeAll().cottonInputs(inputs)).toBe(inputs)
+  })
+
+  describe('attribution (contracts / futures / options)', () => {
+    // E1 farms 60% of the corn acres, E2 40%; only E2 grows canola.
+    const plantings = [
+      { field_id: 'A', crop_id: 'corn', season_year: 2026, planted_acres: 600 },
+      { field_id: 'B', crop_id: 'corn', season_year: 2026, planted_acres: 400 },
+      { field_id: 'B', crop_id: 'canola', season_year: 2026, planted_acres: 800 },
+    ]
+    const crops = [{ id: 'corn', name: 'Corn' }, { id: 'canola', name: 'Canola' }]
+    const attrE1 = () => scopeE1().attribution({ plantings, crops })
+    const attrE2 = () => buildEntityScope({ entityId: 'E2', farms, fields }).attribution({ plantings, crops })
+    const attrAll = () => scopeAll().attribution({ plantings, crops })
+
+    it('acre shares per crop and crop year', () => {
+      expect(attrE1().shareForCrop('corn', 2026)).toBeCloseTo(0.6, 9)
+      expect(attrE2().shareForCrop('corn', 2026)).toBeCloseTo(0.4, 9)
+      expect(attrE1().shareForCrop('canola', 2026)).toBe(0)
+      expect(attrE2().shareForCrop('canola', 2026)).toBe(1)
+      expect(attrE1().shareForCrop('corn', 2025)).toBe(0)   // no acres that year
+      expect(attrAll().shareForCrop('corn', 2026)).toBe(1)  // unfiltered: whole
+    })
+
+    it('null-entity contracts pro-rate by acre share; entity-keyed go whole to their entity', () => {
+      const rows = [
+        { id: 'op', entity_id: null, crop_id: 'corn', crop_year: 2026, contracted_bushels: 30000 },
+        { id: 'mine', entity_id: 'E1', crop_id: 'corn', crop_year: 2026, contracted_bushels: 5000 },
+        { id: 'theirs', entity_id: 'E2', crop_id: 'corn', crop_year: 2026, contracted_bushels: 7000 },
+      ]
+      const e1 = attrE1().contracts(rows)
+      expect(e1.map((c) => c.id).sort()).toEqual(['mine', 'op'])
+      expect(e1.find((c) => c.id === 'op')!.contracted_bushels).toBeCloseTo(18000, 6)
+      expect(e1.find((c) => c.id === 'mine')!.contracted_bushels).toBe(5000)
+      const e2 = attrE2().contracts(rows)
+      expect(e2.find((c) => c.id === 'op')!.contracted_bushels).toBeCloseTo(12000, 6)
+      // Sum of entity shares of the operation-level contract = the whole.
+      expect(18000 + 12000).toBe(30000)
+      // Unfiltered: exact pass-through.
+      expect(attrAll().contracts(rows)).toEqual(rows)
+    })
+
+    it('a contract for a crop the entity doesn’t grow drops; no acreage at all → share 0', () => {
+      const rows = [{ id: 'can', entity_id: null, crop_id: 'canola', crop_year: 2026, contracted_bushels: 12000 }]
+      expect(attrE1().contracts(rows)).toEqual([])
+      expect(attrE2().contracts(rows)[0].contracted_bushels).toBe(12000)
+    })
+
+    it('null-entity futures/options scale contracts, P&L, and commission by the commodity’s acre share', () => {
+      const futures = [{
+        id: 'f1', entity_id: null, commodity: 'Corn', crop_year: 2026,
+        num_contracts: 2, realized_pnl: 5000, commission: 100,
+      }]
+      const e1 = attrE1().futures(futures)[0]
+      expect(e1.num_contracts).toBeCloseTo(1.2, 9)
+      expect(e1.realized_pnl).toBeCloseTo(3000, 6)
+      expect(e1.commission).toBeCloseTo(60, 6)
+      const e2 = attrE2().futures(futures)[0]
+      expect(e1.num_contracts + e2.num_contracts).toBeCloseTo(2, 9)
+      expect(e1.realized_pnl! + e2.realized_pnl!).toBeCloseTo(5000, 6)
+
+      const options = [{
+        id: 'o1', entity_id: null, commodity: 'Corn', crop_year: 2026,
+        num_contracts: 1, realized_pnl: -800, premium_total: 1200,
+      }]
+      const oE1 = attrE1().options(options)[0]
+      expect(oE1.num_contracts).toBeCloseTo(0.6, 9)
+      expect(oE1.realized_pnl).toBeCloseTo(-480, 6)
+      expect(oE1.premium_total).toBeCloseTo(720, 6)
+    })
   })
 
   it('operation-wide assumptions flow down: one dryland yield applied to each entity’s dryland acres', () => {
