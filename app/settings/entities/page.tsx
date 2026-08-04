@@ -5,8 +5,9 @@ import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
 import type { Entity, County, EntityCounty } from '@/lib/types'
 
-type Form = { name: string; notes: string; persons: string }
-const empty: Form = { name: '', notes: '', persons: '1' }
+type Role = 'farming' | 'marketing_agent'
+type Form = { name: string; notes: string; persons: string; role: Role }
+const empty: Form = { name: '', notes: '', persons: '1', role: 'farming' }
 
 function parsePersons(raw: string): number | null {
   const n = Number(raw)
@@ -39,6 +40,9 @@ export default function EntitiesPage() {
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
   const countyById = useMemo(() => new Map(counties.map((c) => [c.id, c])), [counties])
+  // entity_role arrives with migration 051 — before it, hide the role UI and
+  // save without the column so nothing breaks.
+  const roleSupported = rows.length === 0 || 'entity_role' in rows[0]
   const entityCountyIds = useMemo(() => {
     const m = new Map<string, string[]>()
     for (const ec of entityCounties) {
@@ -78,9 +82,11 @@ export default function EntitiesPage() {
     }
     const persons = parsePersons(form.persons)
     if (persons == null) { setErr('Payment-limit persons must be a whole number of at least 1.'); return }
+    const payload: Record<string, unknown> = { name: form.name.trim(), notes: form.notes.trim() || null, payment_limit_persons: persons }
+    if (roleSupported) payload.entity_role = form.role
     const { data, error } = await supabase
       .from('entities')
-      .insert({ name: form.name.trim(), notes: form.notes.trim() || null, payment_limit_persons: persons })
+      .insert(payload)
       .select('id')
       .single()
     if (error) { setErr(error.message); return }
@@ -100,11 +106,13 @@ export default function EntitiesPage() {
     }
     const persons = parsePersons(editForm.persons)
     if (persons == null) { setErr('Payment-limit persons must be a whole number of at least 1.'); return }
-    const { error } = await supabase.from('entities').update({
+    const payload: Record<string, unknown> = {
       name: editForm.name.trim(),
       notes: editForm.notes.trim() || null,
       payment_limit_persons: persons,
-    }).eq('id', id)
+    }
+    if (roleSupported) payload.entity_role = editForm.role
+    const { error } = await supabase.from('entities').update(payload).eq('id', id)
     if (error) { setErr(error.message); return }
     try {
       await syncEntityCounties(id, editCountyIds)
@@ -123,7 +131,10 @@ export default function EntitiesPage() {
 
   function startEdit(e: Entity) {
     setEditingId(e.id)
-    setEditForm({ name: e.name, notes: e.notes ?? '', persons: String(e.payment_limit_persons ?? 1) })
+    setEditForm({
+      name: e.name, notes: e.notes ?? '', persons: String(e.payment_limit_persons ?? 1),
+      role: e.entity_role === 'marketing_agent' ? 'marketing_agent' : 'farming',
+    })
     setEditCountyIds(new Set(entityCountyIds.get(e.id) ?? []))
   }
 
@@ -184,6 +195,7 @@ export default function EntitiesPage() {
             per-person limit (Program Parameters). Set once; edit if the entity&apos;s structure changes.
           </span>
         </label>
+        {roleSupported && <RolePicker value={form.role} onChange={(role) => setForm({ ...form, role })} />}
         <div>
           <div className="text-sm font-semibold mb-1">Counties <span className="text-red-600">*</span></div>
           <CountyMultiPicker
@@ -196,6 +208,14 @@ export default function EntitiesPage() {
           <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Entity</button>
         </div>
       </form>
+
+      {!roleSupported && (
+        <p className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">
+          Entity roles (farming vs marketing agent) need migration <code>051_entity_role.sql</code> — run it in the
+          Supabase SQL editor, then mark the marketing entity so its contracts and hedges flow down to the farming
+          entities in the entity-filtered reports.
+        </p>
+      )}
 
       {err && <p className="text-sm text-red-600">{err}</p>}
 
@@ -230,6 +250,7 @@ export default function EntitiesPage() {
                     />
                     <span className="text-slate-500">× the program year&apos;s per-person limit = the entity&apos;s total ARC/PLC cap.</span>
                   </label>
+                  {roleSupported && <RolePicker value={editForm.role} onChange={(role) => setEditForm({ ...editForm, role })} />}
                   <div>
                     <div className="text-sm font-semibold mb-1">Counties <span className="text-red-600">*</span></div>
                     <CountyMultiPicker
@@ -246,7 +267,14 @@ export default function EntitiesPage() {
               ) : (
                 <div className="flex items-start gap-2 flex-wrap">
                   <div className="flex-1 min-w-0">
-                    <div className="font-semibold">{e.name}</div>
+                    <div className="font-semibold">
+                      {e.name}
+                      {e.entity_role === 'marketing_agent' && (
+                        <span className="ml-2 rounded-full bg-violet-100 text-violet-800 text-xs font-medium px-2 py-0.5 align-middle" title="Markets on behalf of the farming entities — its contracts/hedges flow down by acre share in the entity-filtered reports">
+                          marketing agent
+                        </span>
+                      )}
+                    </div>
                     {e.notes && <div className="text-sm text-slate-500">{e.notes}</div>}
                     <div className="text-sm text-slate-500">
                       Payment limit: {e.payment_limit_persons ?? 1} person{(e.payment_limit_persons ?? 1) === 1 ? '' : 's'} × the program year&apos;s per-person limit
@@ -270,6 +298,27 @@ export default function EntitiesPage() {
         })}
       </ul>
     </div>
+  )
+}
+
+function RolePicker({ value, onChange }: { value: Role; onChange: (r: Role) => void }) {
+  return (
+    <label className="text-sm flex items-center gap-2 flex-wrap">
+      <span className="font-semibold">Role</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as Role)}
+        className="rounded-lg border border-slate-300 px-3 py-2 bg-white"
+      >
+        <option value="farming">Farming entity</option>
+        <option value="marketing_agent">Marketing agent</option>
+      </select>
+      <span className="text-slate-500">
+        A marketing agent (e.g. Turnrow) holds the contracts and hedge account on behalf of the farming entities and
+        shifts the income down — in the entity-filtered reports its marketing flows to each farming entity by that
+        entity&apos;s acre share of the crop. A farming entity that markets in its own name keeps those contracts whole.
+      </span>
+    </label>
   )
 }
 

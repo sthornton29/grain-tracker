@@ -268,7 +268,7 @@ export default function MarketingPage() {
   // and hedges attribute through scope.attribution — entity-keyed rows go to
   // their entity, operation-level (null-entity) rows pro-rate by the entity's
   // acre share of the crop, so a filtered entity keeps its sales.
-  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields }), [entityId, farms, fields])
+  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields, entities }), [entityId, farms, fields, entities])
   const entityName = entityId ? entities.find((e) => e.id === entityId)?.name ?? null : null
   const scopedPlantings = useMemo(() => scope.plantings(plantings), [scope, plantings])
   const attribution = useMemo(() => scope.attribution({ plantings, crops }), [scope, plantings, crops])

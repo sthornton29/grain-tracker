@@ -7,7 +7,7 @@
 > programs. **Not a SaaS product** — single-tenant, used on iPads in trucks by a
 > small team, so the UX favors fast capture and forgiving data entry.
 >
-> _Snapshot date: 2026-08-03. Schema at migration `050`._
+> _Snapshot date: 2026-08-04. Schema at migration `051` (051 pending manual apply in the Supabase SQL editor)._
 
 ---
 
@@ -119,7 +119,7 @@ Operational Reports**. Items marked `external` point back to standalone pages wi
 
 | Route | Manages |
 | --- | --- |
-| `/settings/entities` | Farming legal entities + their county assignments (`entity_counties`) + **payment-limit persons** (`entities.payment_limit_persons`, 041) — the FSA eligible-persons count, set ONCE per entity (not annually); total ARC/PLC limit = persons × the program year's per-person limit from Program Parameters. |
+| `/settings/entities` | Legal entities + their county assignments (`entity_counties`) + **payment-limit persons** (`entities.payment_limit_persons`, 041) — the FSA eligible-persons count, set ONCE per entity (not annually); total ARC/PLC limit = persons × the program year's per-person limit from Program Parameters. **Role** (051): Farming entity vs **Marketing agent** (Turnrow) — an agent's contracts/hedges flow down to the farming entities by acre share in the entity-filtered reports; hidden with a run-migration note until 051 is applied. |
 | `/settings/landowners` | Landowners (name/phone/email/address); shows their farms. |
 | `/settings/farms` | Farms: entity (required), county (scoped to entity), FSA #, landowner, **share-rent flag + landlord share %**. CSV import. Delete cascades to fields. |
 | `/settings/fields` | Fields: total/irrigated acres (derived dryland), county; expandable plantings; CSV + **AI import** (`<FieldsAiImport>`). Persisted **Farm filter** + an "N of M fields" count line. Delete cascades to plantings. |
@@ -224,13 +224,14 @@ Coverage Check attestation that suppresses acre-mismatch flags for a combination
 - `047` — **county yield DIFFERENTIAL**: `county_yield_assumptions.yield_differential` (absolute, in the crop's own unit — "my yields run this much ABOVE the county"; estimated county = the farm's own yield basis − differential). Backfilled where a non-zero variance AND both the farm expected yield and an RMA expected county yield exist (`differential = expected_farm_yield − RMA expected × (1 + variance/100)`), else NULL for re-entry; `variance_pct` stays in place, **deprecated and unread**. Override/final precedence unchanged.
 - `048` — **Crop Budget Planner**: `budget_scenarios` + `budget_lines` — a pre-season budgeting SANDBOX that never writes `crop_assumptions` or any actuals table. RLS: permissive + RESTRICTIVE gin block (financial planning is producer-only, like the 044 tables).
 - `049` — budget-line breakout: nullable `budget_lines.practice` (`irrigated`/`non_irrigated`; null = blended) + `cropping` (`full_season`/`double_crop`; null = full season) — they drive practice-aware assumption SEEDS only; the line math is unchanged.
+- `051` — **entity role**: `entities.entity_role` (`farming` default / `marketing_agent`). A marketing agent (Turnrow) holds the contracts + hedge account on behalf of the farming entities and shifts the income down: in the reports' entity filter its rows flow DOWN pro-rata by each farming entity's acre share of the crop (`lib/entity-scope.ts` `attribution()`), exactly like null-entity rows; a farming entity's own-name contracts stay wholly its own. UI degrades gracefully until applied (Settings → Entities hides the role picker and shows a run-051 note).
 - `050` — **partner API support**: `updated_at` + the shared `set_updated_at` trigger added to every table the partner API serves (`farms`, `fields`, `entities`, `field_plantings`, `settlements`, `settlement_lines`, `futures_positions`, `options_positions`, `gin_receipts`, `cotton_bales` — loads had it since 001; backfill = migration time, so a consumer's first delta-sync sees everything once); new **`crop_year_sales_status`** (crop_id × crop_year unique, `physical_sales_complete` flag + notes) — the manual "physical sales complete" toggle behind Settings → Crops and `/api/partner/v1/crop-year-status`. RLS: permissive + gin-blocked.
 
 ### Tables (grouped) — purpose & key columns
 
 **Org & land**
 
-- **`entities`** — legal entities (LLCs/partnerships). `name` (unique), `notes`, **`payment_limit_persons`** (041 — FSA eligible persons, entity-level: total ARC/PLC limit = persons × the program year's per-person limit).
+- **`entities`** — legal entities (LLCs/partnerships). `name` (unique), `notes`, **`payment_limit_persons`** (041 — FSA eligible persons, entity-level: total ARC/PLC limit = persons × the program year's per-person limit), **`entity_role`** (051 — `farming` default / `marketing_agent`: agent-held contracts/hedges flow down pro-rata in the entity-filtered reports).
 - **`landowners`** — third-party owners of rented ground. name/phone/email/address/notes.
 - **`farms`** — `name`, `entity_id`→entities, `fsa_number`, `county_id`→counties, `landowner_id`→landowners, `is_share_rent`, `landlord_share_percentage` (0–100, required when share-rent).
 - **`fields`** — `farm_id`→farms (cascade), `name_or_number`, `total_acres`, `county_id`, `irrigated_acres`, **`dryland_acres` (trigger-derived = total − irrigated)**.

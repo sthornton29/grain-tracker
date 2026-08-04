@@ -9,16 +9,18 @@
 //     aggregates);
 //   * crop insurance policies — rows whose OWN entity_id matches (policies are
 //     genuinely carried per entity);
-//   * contracts / futures / options — via attribution() below. Grain contracts
-//     are NOT reliably entity-keyed in this operation (the contract form's
-//     entity is optional and most rows are null), so a null-entity contract is
-//     OPERATION-LEVEL: it prices the operation's grain, and under an entity
-//     filter it attributes pro-rata by the entity's share of that crop's
-//     planted acres for the contract's crop year (same bushel prices — only
-//     the bushels scale). A contract that DOES carry an entity_id counts
-//     wholly toward that entity and never enters the pro-rata pool. Dropping
-//     null-entity rows (the old strict rule) zeroed out every filtered
-//     entity's sales while production stayed — huge false losses;
+//   * contracts / futures / options — via attribution() below. In this
+//     operation the MARKETING AGENT entity (Turnrow, entities.entity_role =
+//     'marketing_agent', 051) holds the contracts and the hedge account and
+//     markets on behalf of the farming entities; the income then shifts down.
+//     So a row held by a marketing agent — or carrying no entity at all — is
+//     marketing FOR the operation: under an entity filter it attributes
+//     pro-rata by the entity's share of that crop's planted acres for the
+//     contract's crop year (same bushel prices — only the bushels and realized
+//     hedge P&L scale). A row keyed to a FARMING entity is own-name marketing
+//     and counts wholly toward that entity. Dropping agent/null rows (the old
+//     strict rule) zeroed out every filtered entity's sales while production
+//     stayed — huge false losses;
 //   * government payments — ARC/PLC by the farm's entity; other USDA payments
 //     by their farm's entity when farm-linked, else their own entity_id (the
 //     Payment Tracker's attribution).
@@ -37,13 +39,17 @@ import type { CottonPhysicalInputs } from '@/lib/cotton-sales'
 
 // Attribution of marketing positions (contracts / futures / options) to an
 // entity. Built from the plantings + crops the caller already has:
-//   * a row whose entity_id matches the scope counts WHOLE;
-//   * a row keyed to a DIFFERENT entity is dropped;
-//   * a null-entity row is operation-level and scales by the entity's share of
-//     the crop's (or hedge commodity's) planted acres for that crop year —
+//   * a row keyed to a FARMING entity that matches the scope counts WHOLE
+//     (own-name marketing); keyed to a different farming entity, it drops;
+//   * a row held by a MARKETING-AGENT entity (entity_role='marketing_agent',
+//     e.g. Turnrow, who markets for the farming entities and shifts the income
+//     down) — or carrying no entity at all — scales by the entity's share of
+//     the crop's (or hedge commodity's) planted acres for that crop year:
 //     prices per bushel are untouched, so the entity view shows the same avg
 //     price / buildup as the all-entities report, and the per-entity bushels
-//     sum back to the operation total.
+//     and realized hedge P&L sum back to the operation total. (Filtering to
+//     the agent itself shows only its own farmed acres' share — normally none:
+//     the income has been shifted down.)
 // With no active filter every method is an exact pass-through.
 export type EntityAttribution = {
   /** Entity share (0..1) of a crop's planted acres for a crop year. */
@@ -100,9 +106,14 @@ export function buildEntityScope(args: {
   entityId: string
   farms: ReadonlyArray<{ id: string; entity_id: string | null }>
   fields?: ReadonlyArray<{ id: string; farm_id: string | null }>
+  /** Pass the entities list so marketing-agent rows (entity_role, 051) flow
+   *  down through attribution(). Optional — without it only null-entity rows
+   *  are treated as operation-level. */
+  entities?: ReadonlyArray<{ id: string; entity_role?: string | null }>
 }): EntityScope {
-  const { entityId, farms, fields = [] } = args
+  const { entityId, farms, fields = [], entities = [] } = args
   const active = entityId !== ''
+  const agentIds = new Set(entities.filter((e) => e.entity_role === 'marketing_agent').map((e) => e.id))
 
   const farmEntity = new Map(farms.map((f) => [f.id, f.entity_id]))
   const farmIds = active
@@ -150,12 +161,13 @@ export function buildEntityScope(args: {
       shareOf(mineByCrop, totalByCrop, cropId != null && cropYear != null ? `${cropId}|${cropYear}` : null)
     const shareForCommodity = (commodity: string | null, cropYear: number | null) =>
       shareOf(mineByCommodity, totalByCommodity, commodity != null && cropYear != null ? `${commodity}|${cropYear}` : null)
-    // Explicitly-keyed rows: whole for the own entity, gone for another's.
-    // Operation-level (null entity) rows: the pro-rata acre share.
+    // Farming-entity-keyed rows (own-name marketing): whole for the own
+    // entity, gone for another's. Marketing-agent-held and null-entity rows
+    // market FOR the operation: the pro-rata acre share.
     const factor = (rowEntity: string | null, share: () => number): number => {
       if (!active) return 1
-      if (rowEntity != null) return rowEntity === entityId ? 1 : 0
-      return share()
+      if (rowEntity == null || agentIds.has(rowEntity)) return share()
+      return rowEntity === entityId ? 1 : 0
     }
     return {
       shareForCrop,
