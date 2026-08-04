@@ -247,7 +247,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   // Shared entity scoping — the same layer Marketing / Revenue Projections
   // apply, so the pages agree on what "entity selected" means. Assumptions and
   // axis defaults are operation-wide and flow down unchanged.
-  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields }), [entityId, farms, fields])
+  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields, entities }), [entityId, farms, fields, entities])
   const entityName = entityId ? entities.find((e) => e.id === entityId)?.name ?? null : null
   const scopedPlantings = useMemo(() => scope.plantings(plantings), [scope, plantings])
   // Contracts/hedges attribute (entity-keyed → whole; operation-level → the

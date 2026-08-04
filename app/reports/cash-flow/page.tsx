@@ -231,7 +231,7 @@ export default function CashFlowPage() {
   // entity, other USDA payments by farm-then-entity attribution, and contracts
   // through the shared attribution (entity-keyed → whole; operation-level →
   // the entity's acre share of the crop, so its sales don't vanish).
-  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields }), [entityId, farms, fields])
+  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields, entities }), [entityId, farms, fields, entities])
   const scopedPolicies = useMemo(() => scope.byEntity(policies), [scope, policies])
   const attribution = useMemo(() => scope.attribution({ plantings, crops }), [scope, plantings, crops])
 

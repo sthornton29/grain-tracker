@@ -166,7 +166,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   // Shared entity scoping — the SAME layer the Marketing dashboard applies, so
   // the reconciliation identity (RevProj profit − Marketing profit = insurance
   // + government) survives an entity filter.
-  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields }), [entityId, farms, fields])
+  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields, entities }), [entityId, farms, fields, entities])
   const entityName = entityId ? entities.find((e) => e.id === entityId)?.name ?? null : null
   const scopedPlantings = useMemo(() => scope.plantings(plantings), [scope, plantings])
   // Contracts/hedges attribute (entity-keyed → whole; operation-level → the

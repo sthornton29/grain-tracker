@@ -219,18 +219,25 @@ describe('Revenue Projections ↔ Marketing dashboard reconciliation', () => {
 })
 
 // The five entity-filtered reports all scope through lib/entity-scope BEFORE
-// the shared computeMarketing/aggregateMarketing layer. Contracts and hedges
-// in this operation are mostly OPERATION-LEVEL (null entity_id — the contract
-// form's entity is optional), so they attribute pro-rata by the entity's acre
-// share of the crop; an entity-keyed row counts wholly toward its entity. The
+// the shared computeMarketing/aggregateMarketing layer. In this operation the
+// MARKETING AGENT entity (Turnrow, entity_role='marketing_agent') holds the
+// contracts and the hedge account and markets on behalf of the farming
+// entities — the income shifts down. So agent-held (and null-entity) rows
+// attribute pro-rata by the entity's acre share of the crop; a row keyed to a
+// FARMING entity is own-name marketing and counts wholly toward it. The
 // identity must keep holding per entity; '' (All entities) must reproduce the
 // unfiltered numbers exactly; and the per-entity views must SUM back to the
-// all-entities report (the regression: strict entity_id scoping dropped every
-// null-entity contract, showing filtered entities with full production and
-// zero sales).
+// all-entities report (the regression: strict entity_id scoping dropped the
+// marketing rows, showing filtered entities with full production and zero
+// sales).
 describe('reconciliation under an entity filter (shared attribution)', () => {
-  // Two entities à la the real operation: TSF and VCF. Corn is planted by
-  // both (TSF 600 ac / VCF 400 ac); canola ONLY by VCF (800 ac).
+  // The real shape: TRW is the marketing agent (no farms of its own); TSF and
+  // VCF farm. Corn is planted by both (TSF 600 ac / VCF 400 ac); canola ONLY
+  // by VCF (800 ac).
+  const entities = [
+    { id: 'TSF', entity_role: 'farming' }, { id: 'VCF', entity_role: 'farming' },
+    { id: 'TRW', entity_role: 'marketing_agent' },
+  ]
   const farms = [{ id: 'F-TSF', entity_id: 'TSF' }, { id: 'F-VCF', entity_id: 'VCF' }]
   const fields = [{ id: 'A', farm_id: 'F-TSF' }, { id: 'B', farm_id: 'F-VCF' }, { id: 'C', farm_id: 'F-VCF' }]
   const crops = [crop('corn', 'Corn'), crop('canola', 'Canola')]
@@ -239,10 +246,10 @@ describe('reconciliation under an entity filter (shared attribution)', () => {
     { field_id: 'B', crop_id: 'corn', season_year: CY, planted_acres: 400 },
     { field_id: 'C', crop_id: 'canola', season_year: CY, planted_acres: 800 },
   ]
-  // Operation-level (null-entity) forwards — the shape that used to vanish —
-  // plus one contract explicitly keyed to TSF.
+  // The agent's corn forward + a null-entity canola forward (both flow down —
+  // the shapes that used to vanish) + one own-name contract keyed to TSF.
   const allContracts: Contract[] = [
-    contract({ crop_id: 'corn', contract_type: 'forward', contracted_bushels: 30000, cash_price: 4.9 }),
+    contract({ crop_id: 'corn', entity_id: 'TRW', contract_type: 'forward', contracted_bushels: 30000, cash_price: 4.9 }),
     contract({ crop_id: 'canola', contract_type: 'forward', contracted_bushels: 12000, cash_price: 11.25 }),
     contract({ crop_id: 'corn', entity_id: 'TSF', contract_type: 'forward', contracted_bushels: 5000, cash_price: 5.1 }),
   ]
@@ -255,7 +262,7 @@ describe('reconciliation under an entity filter (shared attribution)', () => {
   const currentFuturesByCrop = new Map([['corn', 4.5]])
 
   function marketingFor(entityId: string) {
-    const scope = buildEntityScope({ entityId, farms, fields })
+    const scope = buildEntityScope({ entityId, farms, fields, entities })
     const attribution = scope.attribution({ plantings: allPlantings, crops })
     const plantings: Planting[] = scope.plantings(allPlantings)
     const contracts = attribution.contracts(allContracts)
@@ -269,8 +276,8 @@ describe('reconciliation under an entity filter (shared attribution)', () => {
   }
 
   it('a filtered entity KEEPS its sales: VCF canola prices its forward, TSF corn attributes its share', () => {
-    // VCF holds ALL canola acres → the operation-level 12,000 bu @ 11.25
-    // forward attributes to VCF in full — NOT 0 bu / $0.
+    // VCF holds ALL canola acres → the 12,000 bu @ 11.25 forward attributes
+    // to VCF in full — NOT 0 bu / $0.
     const vcf = marketingFor('VCF').rows
     const vcfCanola = vcf.find((r) => r.cropId === 'canola')!
     expect(vcfCanola.contractedBu).toBeCloseTo(12000, 6)
@@ -278,19 +285,22 @@ describe('reconciliation under an entity filter (shared attribution)', () => {
     expect(vcfCanola.totalAvgPrice).toBeCloseTo(11.25, 6)
     expect(vcfCanola.blendedRevenue).toBeGreaterThan(0)
 
-    // TSF has 60% of corn acres → 60% of the 30,000 bu operation-level corn
-    // forward (18,000) plus its OWN 5,000 bu entity-keyed contract in full.
+    // TSF has 60% of corn acres → 60% of the AGENT's 30,000 bu corn forward
+    // (18,000) plus its OWN 5,000 bu own-name contract in full.
     const tsfCorn = marketingFor('TSF').rows.find((r) => r.cropId === 'corn')!
     expect(tsfCorn.contractedBu).toBeCloseTo(18000 + 5000, 6)
     // Same per-bushel prices as the all-entities report — nothing repriced.
     // Blended: 18,000×4.90 + 5,000×5.10 + 85,000 unpriced × 4.50 = 496,200.
     expect(tsfCorn.totalProduction).toBeCloseTo(108000, 2)
     expect(tsfCorn.blendedRevenue).toBeCloseTo(18000 * 4.9 + 5000 * 5.1 + 85000 * 4.5, 2)
-    // VCF corn: 40% of the operation-level forward, none of TSF's own.
+    // VCF corn: 40% of the agent's forward, none of TSF's own-name contract.
     const vcfCorn = vcf.find((r) => r.cropId === 'corn')!
     expect(vcfCorn.contractedBu).toBeCloseTo(12000, 6)
     // TSF has no canola acres → no canola row (and no canola contract share).
     expect(marketingFor('TSF').rows.some((r) => r.cropId === 'canola')).toBe(false)
+    // The agent itself farms nothing — its filtered view is empty (all of its
+    // marketing income has been shifted down to the farming entities).
+    expect(marketingFor('TRW').rows).toEqual([])
   })
 
   it('sum of every entity’s aggregate === the all-entities aggregate (acres, contracted bu, production, crop sales)', () => {

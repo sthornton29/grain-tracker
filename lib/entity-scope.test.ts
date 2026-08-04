@@ -175,6 +175,37 @@ describe('buildEntityScope', () => {
       expect(attrE2().contracts(rows)[0].contracted_bushels).toBe(12000)
     })
 
+    it('marketing-agent-held rows flow DOWN to farming entities like operation-level rows', () => {
+      // Turnrow-style setup: TRW is the marketing agent (holds the contracts
+      // and the hedge account, income shifted down); E1/E2 farm. E2 also has
+      // an own-name contract, which stays wholly its own.
+      const entities = [
+        { id: 'E1', entity_role: 'farming' }, { id: 'E2', entity_role: 'farming' },
+        { id: 'TRW', entity_role: 'marketing_agent' },
+      ]
+      const attr = (entityId: string) =>
+        buildEntityScope({ entityId, farms, fields, entities }).attribution({ plantings, crops })
+      const rows = [
+        { id: 'agent', entity_id: 'TRW', crop_id: 'corn', crop_year: 2026, contracted_bushels: 30000 },
+        { id: 'own', entity_id: 'E2', crop_id: 'corn', crop_year: 2026, contracted_bushels: 7000 },
+      ]
+      // E1 (60% of corn acres): 60% of the agent's 30,000 bu; none of E2's own.
+      const e1 = attr('E1').contracts(rows)
+      expect(e1.map((c) => c.id)).toEqual(['agent'])
+      expect(e1[0].contracted_bushels).toBeCloseTo(18000, 6)
+      // E2: 40% of the agent's contract + its own-name 7,000 bu whole.
+      const e2 = attr('E2').contracts(rows)
+      expect(e2.find((c) => c.id === 'agent')!.contracted_bushels).toBeCloseTo(12000, 6)
+      expect(e2.find((c) => c.id === 'own')!.contracted_bushels).toBe(7000)
+      // The agent farms nothing → its own filtered view keeps none of it
+      // (the income has been shifted down to the farming entities).
+      expect(attr('TRW').contracts(rows)).toEqual([])
+      // Agent-held hedge account: realized P&L flows down by the same share.
+      const futs = [{ id: 'f', entity_id: 'TRW', commodity: 'Corn', crop_year: 2026, num_contracts: 2, realized_pnl: 5000, commission: 100 }]
+      expect(attr('E1').futures(futs)[0].realized_pnl).toBeCloseTo(3000, 6)
+      expect(attr('E2').futures(futs)[0].realized_pnl).toBeCloseTo(2000, 6)
+    })
+
     it('null-entity futures/options scale contracts, P&L, and commission by the commodity’s acre share', () => {
       const futures = [{
         id: 'f1', entity_id: null, commodity: 'Corn', crop_year: 2026,

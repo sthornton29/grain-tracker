@@ -5,6 +5,11 @@ export type Entity = {
   // Eligible persons for FSA payment limits (entity-level, set once): total
   // ARC/PLC limit = this × the program year's per-person limit.
   payment_limit_persons: number
+  // 051: 'farming' (default) operates farms and keeps its own-name marketing;
+  // 'marketing_agent' (e.g. Turnrow) markets on behalf of the farming
+  // entities — its contracts/hedges flow down pro-rata by acre share in the
+  // entity-filtered reports. Optional so code degrades before the migration.
+  entity_role?: 'farming' | 'marketing_agent' | null
 }
 export type Landowner = {
   id: string
