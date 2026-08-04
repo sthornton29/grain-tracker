@@ -109,25 +109,54 @@ describe('buildEntityScope', () => {
     expect(scopeAll().ginReceipts(rows)).toEqual(rows)
   })
 
-  it('cotton physical inputs narrow their four entity-keyed row sets', () => {
+  describe('cotton physical marketing attribution', () => {
+    // Cotton acres: E1 300 / E2 200 (60% / 40%); TRW is the marketing agent.
+    const entities = [
+      { id: 'E1', entity_role: 'farming' }, { id: 'E2', entity_role: 'farming' },
+      { id: 'TRW', entity_role: 'marketing_agent' },
+    ]
+    const cottonPlantings = [
+      { field_id: 'A', crop_id: 'cotton', season_year: 2026, planted_acres: 300 },
+      { field_id: 'B', crop_id: 'cotton', season_year: 2026, planted_acres: 200 },
+    ]
+    const cottonCrops = [{ id: 'cotton', name: 'Cotton' }]
+    const attrFor = (entityId: string) =>
+      buildEntityScope({ entityId, farms, fields, entities }).attribution({ plantings: cottonPlantings, crops: cottonCrops })
+    // Agent-held LDP + an own-name fee for E2; loans/contracts empty.
     const inputs = {
       cropYear: 2026,
-      bales: [{ id: 'bale1' }],
-      gradesByBale: new Map(),
-      dispositions: [],
-      contracts: [{ id: 'sc1', entity_id: 'E1' }, { id: 'sc2', entity_id: 'E2' }],
-      poolPayments: [],
-      loans: [{ id: 'l1', entity_id: 'E2' }],
-      ldps: [{ id: 'ldp1', entity_id: 'E1' }],
-      fees: [{ id: 'fee1', entity_id: null }],
+      bales: [], gradesByBale: new Map(), dispositions: [],
+      contracts: [], poolPayments: [], loans: [], loanBales: [],
+      ldps: [{ id: 'ldp1', entity_id: 'TRW', total_payment: 1000 }],
+      fees: [{ id: 'fee1', entity_id: 'E2', fee_type: 'checkoff', loan_id: null, contract_id: null, amount_total: 200, status: 'actual' }],
     } as unknown as CottonPhysicalInputs
-    const scoped = scopeE1().cottonInputs(inputs)
-    expect(scoped.contracts.map((c) => c.id)).toEqual(['sc1'])
-    expect(scoped.loans).toEqual([])
-    expect(scoped.ldps.map((l) => l.id)).toEqual(['ldp1'])
-    expect(scoped.fees).toEqual([])
-    expect(scoped.bales).toBe(inputs.bales) // production rows ride along
-    expect(scopeAll().cottonInputs(inputs)).toBe(inputs)
+
+    it('agent-held rows flow down by the cotton acre share; own-name rows stay whole', () => {
+      const e1 = attrFor('E1').cottonSummary(inputs)!
+      expect(e1.programDollars).toBeCloseTo(600, 2)   // 60% of the agent's $1,000 LDP
+      expect(e1.feeDollars).toBe(0)                   // E2's own-name fee is not E1's
+      const e2 = attrFor('E2').cottonSummary(inputs)!
+      expect(e2.programDollars).toBeCloseTo(400, 2)   // 40% share
+      expect(e2.feeDollars).toBeCloseTo(200, 2)       // own-name fee whole
+      // Entities partition the whole.
+      expect(e1.programDollars + e2.programDollars).toBeCloseTo(1000, 2)
+      // The agent farms nothing → its own view keeps none of it.
+      expect(attrFor('TRW').cottonSummary(inputs)).toBeNull()
+    })
+
+    it('unfiltered summary equals the plain build; partition routes pool payments with their contract', () => {
+      const all = attrFor('').cottonSummary(inputs)!
+      expect(all.programDollars).toBeCloseTo(1000, 2)
+      expect(all.feeDollars).toBeCloseTo(200, 2)
+      const withPool = {
+        ...inputs,
+        contracts: [{ id: 'pc', entity_id: 'TRW', contract_type: 'pool', commitment_basis: 'bales', committed_bales: null }],
+        poolPayments: [{ id: 'pp', contract_id: 'pc', amount: 500, status: 'received', payment_date: '2026-11-01', payment_type: 'advance', cents_per_lb_equivalent: null }],
+      } as unknown as CottonPhysicalInputs
+      const { own, flow } = attrFor('E1').cottonPartition(withPool)
+      expect(own.poolPayments).toEqual([])            // the pool contract is agent-held…
+      expect(flow.poolPayments.length).toBe(1)        // …so its payments ride with the flow group
+    })
   })
 
   describe('attribution (contracts / futures / options)', () => {

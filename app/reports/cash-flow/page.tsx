@@ -126,13 +126,19 @@ export default function CashFlowPage() {
         const physical = await fetchCottonPhysical(supabase, cropYear)
         if (cancelled) return
         if (!physical.hasData) { setCottonEvents([]); return }
-        // Shared entity scoping (same rule as the other reports).
-        const filt = buildEntityScope({ entityId, farms }).cottonInputs(physical.inputs)
+        // Shared attribution (same rule as the other reports): own-name rows
+        // whole, marketing-agent/null rows flow down at the cotton acre share.
+        const { own, flow, flowShare, hasData } = buildEntityScope({ entityId, farms, fields, entities })
+          .attribution({ plantings, crops })
+          .cottonPartition(physical.inputs)
+        if (!hasData) { setCottonEvents([]); return }
         // Live CT futures (¢/lb) so on-call contracts awaiting futures can book
         // basis + current futures as a labeled estimate instead of vanishing.
         let currentFuturesCents: number | null = null
         const cottonCrop = crops.find((c) => isCottonCrop(c.name))
-        if (cottonCrop && filt.contracts.some((c) => c.contract_type === 'on_call' && c.futures_fixed_cents == null)) {
+        const needsQuote = [...own.contracts, ...(flowShare > 0 ? flow.contracts : [])]
+          .some((c) => c.contract_type === 'on_call' && c.futures_fixed_cents == null)
+        if (cottonCrop && needsQuote) {
           try {
             const res = await fetch('/api/harvest-price-estimate', {
               method: 'POST', headers: { 'content-type': 'application/json' },
@@ -144,11 +150,18 @@ export default function CashFlowPage() {
           } catch { /* no quote — the on-call estimate is simply omitted */ }
         }
         if (cancelled) return
-        setCottonEvents(cottonCashFlowEvents(filt, { currentFuturesCents }))
+        const events = [
+          ...cottonCashFlowEvents(own, { currentFuturesCents }),
+          ...(flowShare > 0
+            ? cottonCashFlowEvents(flow, { currentFuturesCents }).map((e) =>
+                flowShare === 1 ? e : { ...e, amount: Math.round(e.amount * flowShare * 100) / 100 })
+            : []),
+        ].sort((a, b) => a.date.localeCompare(b.date))
+        setCottonEvents(events)
       } catch { if (!cancelled) setCottonEvents([]) }
     })()
     return () => { cancelled = true }
-  }, [cropYear, entityId, supabase, crops, farms])
+  }, [cropYear, entityId, supabase, crops, farms, fields, entities, plantings])
 
   useEffect(() => {
     ;(async () => {

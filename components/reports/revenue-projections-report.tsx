@@ -11,7 +11,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, type Planting } from '@/lib/marketing'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
-import { buildCottonPhysicalSummary, type CottonPhysicalSummary } from '@/lib/cotton-sales'
+import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
@@ -304,13 +304,13 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   const cottonPhysical = useMemo(() => {
     const m = new Map<string, CottonPhysicalSummary>()
     if (!cottonPhysicalRaw) return m
-    const inputs = scope.cottonInputs(cottonPhysicalRaw.inputs)
-    const hasData = inputs.contracts.length > 0 || inputs.loans.length > 0 || inputs.ldps.length > 0 || inputs.fees.length > 0
-    if (!hasData) return m
-    const summary = scope.active ? buildCottonPhysicalSummary(inputs) : cottonPhysicalRaw.summary
+    // Own-name rows whole; marketing-agent/null rows flow down at the
+    // entity's cotton acre share — same attribution as grain.
+    const summary = attribution.cottonSummary(cottonPhysicalRaw.inputs)
+    if (!summary) return m
     for (const c of crops) if (isCottonCrop(c.name)) m.set(c.id, summary)
     return m
-  }, [cottonPhysicalRaw, scope, crops])
+  }, [cottonPhysicalRaw, attribution, crops])
 
   const marketingRows = useMemo(() => {
     if (cropYear === '') return []

@@ -35,7 +35,7 @@
 // the unfiltered numbers are structurally guaranteed to match today's.
 
 import { cropToHedgeCommodity } from '@/lib/contracts'
-import type { CottonPhysicalInputs } from '@/lib/cotton-sales'
+import { buildCottonPhysicalSummary, type CottonPhysicalInputs, type CottonPhysicalSummary, type DispositionBoard } from '@/lib/cotton-sales'
 
 // Attribution of marketing positions (contracts / futures / options) to an
 // entity. Built from the plantings + crops the caller already has:
@@ -63,6 +63,85 @@ export type EntityAttribution = {
   contracts<T extends { entity_id: string | null; crop_id: string | null; crop_year: number | null; contracted_bushels: number | string }>(rows: readonly T[]): T[]
   futures<T extends { entity_id: string | null; commodity: string; crop_year: number; num_contracts: number; realized_pnl: number | null; commission: number }>(rows: readonly T[]): T[]
   options<T extends { entity_id: string | null; commodity: string; crop_year: number; num_contracts: number; realized_pnl: number | null; premium_total: number }>(rows: readonly T[]): T[]
+  /** Physical-cotton marketing rows (044) partitioned for this entity:
+   *  `own` = rows keyed to the entity (own-name marketing, count whole);
+   *  `flow` = marketing-agent-held and null-entity rows, which flow down at
+   *  `flowShare` (the entity's share of the cotton acres). Pool payments and
+   *  loan-bale links follow their contract/loan; bales/dispositions ride along
+   *  in both groups (contract lbs resolve through them). Unfiltered: own is
+   *  empty, flow is everything at share 1. */
+  cottonPartition(inputs: CottonPhysicalInputs): {
+    own: CottonPhysicalInputs; flow: CottonPhysicalInputs; flowShare: number; hasData: boolean
+  }
+  /** The entity's physical-cotton summary: own-name rows whole + the
+   *  agent/null rows' summary scaled by the acre share, merged (¢/lb prices
+   *  untouched; lbs and dollars scale). Held bales are unallocated production
+   *  and always attribute by the acre share. Null when no marketing data
+   *  survives the filter. */
+  cottonSummary(inputs: CottonPhysicalInputs): CottonPhysicalSummary | null
+}
+
+const r2 = (n: number) => Math.round(n * 100) / 100
+
+function scaleBoard(b: DispositionBoard, f: number): DispositionBoard {
+  if (f === 1) return b
+  const byDisposition = {} as DispositionBoard['byDisposition']
+  for (const key of Object.keys(b.byDisposition) as Array<keyof DispositionBoard['byDisposition']>) {
+    const v = b.byDisposition[key]
+    byDisposition[key] = { bales: v.bales * f, lbs: v.lbs * f }
+  }
+  return { byDisposition, totalBales: b.totalBales * f, totalLbs: b.totalLbs * f }
+}
+
+// Scale a summary's lbs/dollar magnitudes by the entity's share; ¢/lb price
+// fields are per-unit and stay put (loanFloorCents is banked ÷ lbs — invariant).
+function scaleCottonSummary(s: CottonPhysicalSummary, f: number): CottonPhysicalSummary {
+  if (f === 1) return s
+  return {
+    ...s,
+    soldLbs: r2(s.soldLbs * f),
+    soldDollars: r2(s.soldDollars * f),
+    soldSources: s.soldSources.map((x) => ({ ...x, lbs: r2(x.lbs * f) })),
+    awaitingCallLbs: r2(s.awaitingCallLbs * f),
+    poolLbs: r2(s.poolLbs * f),
+    poolReceivedDollars: r2(s.poolReceivedDollars * f),
+    inLoanLbs: r2(s.inLoanLbs * f),
+    loanBankedDollars: r2(s.loanBankedDollars * f),
+    heldLbs: r2(s.heldLbs * f),
+    programDollars: r2(s.programDollars * f),
+    feeDollars: r2(s.feeDollars * f),
+    board: scaleBoard(s.board, f),
+  }
+}
+
+// Merge an own-name summary with the (already-scaled) flow-down summary.
+// Additive fields add; loanFloorCents re-derives from the combined loan
+// position; poolEstCents blends lbs-weighted when both sides carry one.
+function mergeCottonSummaries(a: CottonPhysicalSummary, b: CottonPhysicalSummary): CottonPhysicalSummary {
+  const inLoanLbs = r2(a.inLoanLbs + b.inLoanLbs)
+  const loanBankedDollars = r2(a.loanBankedDollars + b.loanBankedDollars)
+  const poolEstCents = a.poolEstCents != null && b.poolEstCents != null
+    ? (a.poolLbs + b.poolLbs > 0
+      ? r2((a.poolEstCents * a.poolLbs + b.poolEstCents * b.poolLbs) / (a.poolLbs + b.poolLbs))
+      : a.poolEstCents)
+    : a.poolEstCents ?? b.poolEstCents
+  return {
+    soldLbs: r2(a.soldLbs + b.soldLbs),
+    soldDollars: r2(a.soldDollars + b.soldDollars),
+    soldSources: [...a.soldSources, ...b.soldSources],
+    awaitingCallLbs: r2(a.awaitingCallLbs + b.awaitingCallLbs),
+    poolLbs: r2(a.poolLbs + b.poolLbs),
+    poolReceivedDollars: r2(a.poolReceivedDollars + b.poolReceivedDollars),
+    poolEstCents,
+    inLoanLbs,
+    loanBankedDollars,
+    loanFloorCents: inLoanLbs > 0 ? r2((loanBankedDollars * 100) / inLoanLbs) : null,
+    heldLbs: b.heldLbs, // held bales attribute by acre share — the flow side's
+    board: b.board,     // (both sides see the same bales; adding would double-count)
+    programDollars: r2(a.programDollars + b.programDollars),
+    programLabel: [a.programLabel, b.programLabel].filter((l, i, arr) => l && arr.indexOf(l) === i).join(' + ') || 'LDP/MLG',
+    feeDollars: r2(a.feeDollars + b.feeDollars),
+  }
 }
 
 export type EntityScope = {
@@ -75,9 +154,9 @@ export type EntityScope = {
   farmIds: ReadonlySet<string> | null
   /** Field-keyed rows (plantings, load splits): keep the entity's fields. */
   plantings<T extends { field_id: string }>(rows: readonly T[]): T[]
-  /** Strictly entity-keyed rows (insurance policies, cotton marketing rows):
-   *  own entity_id match. NOT for grain contracts/futures/options — those are
-   *  often operation-level (null entity) and go through attribution(). */
+  /** Strictly entity-keyed rows (insurance policies): own entity_id match.
+   *  NOT for contracts/futures/options or cotton marketing rows — those are
+   *  often agent-held or operation-level and go through attribution(). */
   byEntity<T extends { entity_id: string | null }>(rows: readonly T[]): T[]
   /** Marketing-position attribution (contracts / futures / options) — see
    *  EntityAttribution. Pass the SAME plantings/crops the report computes
@@ -97,9 +176,6 @@ export type EntityScope = {
   fieldAgg<V>(agg: ReadonlyMap<string, V>): Map<string, V>
   /** Gin receipts: own entity_id, else farm's entity, else field→farm entity. */
   ginReceipts<T extends { entity_id: string | null; farm_id: string | null; field_id: string | null }>(rows: readonly T[]): T[]
-  /** Physical-cotton marketing inputs: the four entity-keyed row sets narrow;
-   *  bales/grades/dispositions ride along (they scope via the receipts above). */
-  cottonInputs(inputs: CottonPhysicalInputs): CottonPhysicalInputs
 }
 
 export function buildEntityScope(args: {
@@ -169,10 +245,64 @@ export function buildEntityScope(args: {
       if (rowEntity == null || agentIds.has(rowEntity)) return share()
       return rowEntity === entityId ? 1 : 0
     }
+    // ---- Physical cotton (044): own-name rows whole, agent/null rows at the
+    //      cotton acre share. See cottonPartition/cottonSummary on the type. ----
+    const cottonPartition = (inputs: CottonPhysicalInputs) => {
+      const sub = (
+        contracts: CottonPhysicalInputs['contracts'],
+        loans: CottonPhysicalInputs['loans'],
+        ldps: CottonPhysicalInputs['ldps'],
+        fees: CottonPhysicalInputs['fees'],
+      ): CottonPhysicalInputs => {
+        const contractIds = new Set(contracts.map((x) => x.id))
+        const loanIds = new Set(loans.map((x) => x.id))
+        return {
+          ...inputs, contracts, loans, ldps, fees,
+          poolPayments: inputs.poolPayments.filter((p) => contractIds.has(p.contract_id)),
+          loanBales: inputs.loanBales.filter((lb) => loanIds.has(lb.loan_id)),
+        }
+      }
+      const countRows = (i: CottonPhysicalInputs) => i.contracts.length + i.loans.length + i.ldps.length + i.fees.length
+      if (!active) {
+        const flow = sub(inputs.contracts, inputs.loans, inputs.ldps, inputs.fees)
+        return { own: sub([], [], [], []), flow, flowShare: 1, hasData: countRows(flow) > 0 }
+      }
+      const split = <T extends { entity_id: string | null }>(rows: readonly T[]) => {
+        const own: T[] = [], flow: T[] = []
+        for (const r of rows) {
+          if (r.entity_id == null || agentIds.has(r.entity_id)) flow.push(r)
+          else if (r.entity_id === entityId) own.push(r)
+        }
+        return { own, flow }
+      }
+      const c = split(inputs.contracts), l = split(inputs.loans), d = split(inputs.ldps), f = split(inputs.fees)
+      const flowShare = shareForCommodity('Cotton', inputs.cropYear)
+      const own = sub(c.own, l.own, d.own, f.own)
+      const flow = sub(c.flow, l.flow, d.flow, f.flow)
+      return { own, flow, flowShare, hasData: countRows(own) > 0 || (flowShare > 0 && countRows(flow) > 0) }
+    }
+    const cottonSummary = (inputs: CottonPhysicalInputs): CottonPhysicalSummary | null => {
+      const { own, flow, flowShare, hasData } = cottonPartition(inputs)
+      if (!hasData) return null
+      const countRows = (i: CottonPhysicalInputs) => i.contracts.length + i.loans.length + i.ldps.length + i.fees.length
+      const flowSummary = flowShare > 0 && countRows(flow) > 0
+        ? scaleCottonSummary(buildCottonPhysicalSummary(flow), flowShare)
+        : null
+      const ownSummary = countRows(own) > 0 ? buildCottonPhysicalSummary(own) : null
+      if (ownSummary && flowSummary) return mergeCottonSummaries(ownSummary, flowSummary)
+      if (flowSummary) return flowSummary
+      // Own-name only: marketing rows count whole, but held bales are
+      // unallocated PRODUCTION — they still attribute by the acre share.
+      const share = active ? shareForCommodity('Cotton', inputs.cropYear) : 1
+      return { ...ownSummary!, heldLbs: r2(ownSummary!.heldLbs * share), board: scaleBoard(ownSummary!.board, share) }
+    }
+
     return {
       shareForCrop,
       shareForCommodity,
       shareForContract: (c) => factor(c.entity_id, () => shareForCrop(c.crop_id, c.crop_year)),
+      cottonPartition,
+      cottonSummary,
       contracts: (rows) => {
         if (!active) return [...rows]
         const out: typeof rows[number][] = []
@@ -245,15 +375,5 @@ export function buildEntityScope(args: {
             return false
           })
         : [...rows],
-    cottonInputs: (inputs) =>
-      active
-        ? {
-            ...inputs,
-            contracts: inputs.contracts.filter((c) => c.entity_id === entityId),
-            loans: inputs.loans.filter((l) => l.entity_id === entityId),
-            ldps: inputs.ldps.filter((l) => l.entity_id === entityId),
-            fees: inputs.fees.filter((f) => f.entity_id === entityId),
-          }
-        : inputs,
   }
 }

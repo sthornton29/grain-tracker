@@ -24,7 +24,7 @@ import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates } from '@/lib/yields'
 import { segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop } from '@/lib/marketing'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
-import { buildCottonPhysicalSummary, type CottonPhysicalSummary } from '@/lib/cotton-sales'
+import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
 import { harvestContractSymbol, countyAssumptionFor, isAreaPlan } from '@/lib/crop-insurance'
@@ -257,13 +257,12 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   const scopedFutures = useMemo(() => attribution.futures(futures), [attribution, futures])
   const scopedOptions = useMemo(() => attribution.options(options), [attribution, options])
   const scopedPolicies = useMemo(() => scope.byEntity(policies), [scope, policies])
-  const cottonPhysicalSummary = useMemo(() => {
-    if (!cottonPhysicalRaw) return null
-    const inputs = scope.cottonInputs(cottonPhysicalRaw.inputs)
-    const hasData = inputs.contracts.length > 0 || inputs.loans.length > 0 || inputs.ldps.length > 0 || inputs.fees.length > 0
-    if (!hasData) return null
-    return scope.active ? buildCottonPhysicalSummary(inputs) : cottonPhysicalRaw.summary
-  }, [cottonPhysicalRaw, scope])
+  // Own-name rows whole; marketing-agent/null rows flow down at the entity's
+  // cotton acre share — same attribution as grain.
+  const cottonPhysicalSummary = useMemo(
+    () => (cottonPhysicalRaw ? attribution.cottonSummary(cottonPhysicalRaw.inputs) : null),
+    [cottonPhysicalRaw, attribution],
+  )
 
   const yearPlantings = useMemo(
     () => scopedPlantings.filter((p) => p.season_year === cropYear),

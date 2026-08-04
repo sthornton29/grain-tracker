@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
-import { buildCottonPhysicalSummary, type CottonPhysicalSummary } from '@/lib/cotton-sales'
+import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
 import { buildMarketingExport } from '@/lib/marketing-export'
@@ -335,18 +335,17 @@ export default function MarketingPage() {
     return cotton
   }, [scope, ginReceipts, cottonBales, crops])
 
-  // Physical cotton marketing summary per cotton crop id — rebuilt from the
-  // entity-scoped inputs when a filter is active.
+  // Physical cotton marketing summary per cotton crop id — attributed to the
+  // entity filter: own-name rows whole, marketing-agent/null rows flow down at
+  // the entity's cotton acre share (Turnrow markets the cotton too).
   const cottonPhysical = useMemo(() => {
     const m = new Map<string, CottonPhysicalSummary>()
     if (!cottonPhysicalRaw) return m
-    const inputs = scope.cottonInputs(cottonPhysicalRaw.inputs)
-    const hasData = inputs.contracts.length > 0 || inputs.loans.length > 0 || inputs.ldps.length > 0 || inputs.fees.length > 0
-    if (!hasData) return m
-    const summary = scope.active ? buildCottonPhysicalSummary(inputs) : cottonPhysicalRaw.summary
+    const summary = attribution.cottonSummary(cottonPhysicalRaw.inputs)
+    if (!summary) return m
     for (const c of crops) if (isCottonCrop(c.name)) m.set(c.id, summary)
     return m
-  }, [cottonPhysicalRaw, scope, crops])
+  }, [cottonPhysicalRaw, attribution, crops])
 
   const rows = useMemo(
     () => (year == null ? [] : computeMarketing({ cropYear: year, crops, plantings: scopedPlantings, contracts: scopedContracts, futures: scopedFutures, options: scopedOptions, assumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures, harvestCompleteCropIds: harvestCompleteIds, cottonProductionByCrop: cottonProd, cottonPhysicalByCrop: cottonPhysical })),
