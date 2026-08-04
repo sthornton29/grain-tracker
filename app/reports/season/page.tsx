@@ -7,6 +7,8 @@ import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
 import { isCottonCrop } from '@/lib/marketing'
+import { buildEntityScope } from '@/lib/entity-scope'
+import EntityFilter from '@/components/entity-filter'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import ExportBar from '@/components/export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
@@ -19,7 +21,7 @@ import {
   grandTotalRowCls,
   type SummaryCardData,
 } from '@/components/reports/report-kit'
-import type { Crop, FieldPlanting, LoadSplit } from '@/lib/types'
+import type { Crop, Entity, FieldPlanting, LoadSplit } from '@/lib/types'
 
 type LoadRow = {
   id: string
@@ -41,27 +43,42 @@ export default function SeasonSummaryPage() {
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
+  const [entities, setEntities] = useState<Entity[]>([])
+  const [farms, setFarms] = useState<Array<{ id: string; entity_id: string | null }>>([])
+  const [fields, setFields] = useState<Array<{ id: string; farm_id: string | null }>>([])
   const [loading, setLoading] = useState(true)
-  // Filter persists across visits (see usePersistentState).
+  // Filters persist across visits (see usePersistentState).
   const [year, setYear] = usePersistentState<number>('season:year', currentYear())
+  const [entityId, setEntityId] = usePersistentState('season:entity', '')
 
   async function refresh() {
     setLoading(true)
-    const [cr, pl, lo, sp] = await Promise.all([
+    const [cr, pl, lo, sp, en, fa, fi] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
       supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id'),
       supabase.from('load_splits').select('*'),
+      supabase.from('entities').select('*').order('name'),
+      supabase.from('farms').select('id, entity_id'),
+      supabase.from('fields').select('id, farm_id'),
     ])
     setCrops((cr.data as Crop[]) || [])
     setPlantings((pl.data as FieldPlanting[]) || [])
     setLoads((lo.data as LoadRow[]) || [])
     setSplits((sp.data as LoadSplit[]) || [])
+    setEntities((en.data as Entity[]) || [])
+    setFarms((fa.data as Array<{ id: string; entity_id: string | null }>) || [])
+    setFields((fi.data as Array<{ id: string; farm_id: string | null }>) || [])
     setLoading(false)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
+
+  // Shared entity scoping — acreage/production narrow to the entity's fields;
+  // the season's assumptions and shared rules are untouched.
+  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields }), [entityId, farms, fields])
+  const entityName = entityId ? entities.find((e) => e.id === entityId)?.name ?? null : null
 
   const distinctYears = useMemo(() => {
     const s = new Set<number>([currentYear()])
@@ -69,7 +86,7 @@ export default function SeasonSummaryPage() {
     return [...s].sort((a, b) => b - a)
   }, [plantings])
 
-  const yearPlantings = plantings.filter((p) => p.season_year === year)
+  const yearPlantings = scope.plantings(plantings.filter((p) => p.season_year === year))
 
   // Dry bushels + most-recent load date per field+crop+year (shared rules),
   // scoped to the selected season year.
@@ -95,7 +112,7 @@ export default function SeasonSummaryPage() {
       }
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ), [plantings, aggByKey, year])
+  ), [plantings, aggByKey, year, scope])
 
   type Agg = {
     cropName: string
@@ -145,7 +162,7 @@ export default function SeasonSummaryPage() {
     }
     return [...m.values()].sort((a, b) => a.cropName.localeCompare(b.cropName))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [yearPlantings, cropById, aggByKey, yieldAnalysis, doubleCropIds])
+  }, [yearPlantings, cropById, aggByKey, yieldAnalysis, doubleCropIds, scope])
 
   const totals = byCrop.reduce(
     (acc, r) => {
@@ -185,7 +202,7 @@ export default function SeasonSummaryPage() {
     rows.push(['Total', totals.fullSeason, totals.doubleCrop, totals.acres, totals.irrigated, totals.dryland, totals.dryBu, ''])
     return {
       title: 'Season Summary',
-      filters: `Season: ${year}`,
+      filters: `Season: ${year}${entityName ? ` · Entity: ${entityName}` : ''}`,
       summary: [
         { label: 'Crops planted', value: formatNumber(byCrop.length, 'int') },
         { label: 'Total acres', value: formatNumber(totals.acres, 'acres') },
@@ -209,7 +226,10 @@ export default function SeasonSummaryPage() {
   return (
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold flex-1">Season Summary</h1>
+        <h1 className="text-2xl font-bold flex-1">
+          Season Summary
+          {entityName && <span className="ml-2 text-base font-semibold text-slate-500">— {entityName}</span>}
+        </h1>
         <label className="text-sm flex items-center gap-2">
           Season
           <select value={year} onChange={(e) => setYear(Number(e.target.value))} className={inputCls}>
@@ -217,6 +237,7 @@ export default function SeasonSummaryPage() {
             {!distinctYears.includes(year) && <option value={year}>{year}</option>}
           </select>
         </label>
+        <EntityFilter entities={entities} value={entityId} onChange={setEntityId} className="no-print" />
         {!loading && byCrop.length > 0 && <ExportBar buildPayload={buildPayload} />}
       </div>
 
@@ -283,7 +304,7 @@ export default function SeasonSummaryPage() {
         </>
       )}
       {/* Cotton module (feature-flagged): lint lbs/acre from gin receipts. */}
-      <CottonYieldsSection year={year} />
+      <CottonYieldsSection year={year} entityId={entityId} />
     </div>
   )
 }

@@ -10,8 +10,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, type Planting } from '@/lib/marketing'
-import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
-import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
+import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
+import { buildCottonPhysicalSummary, type CottonPhysicalSummary } from '@/lib/cotton-sales'
+import { buildEntityScope } from '@/lib/entity-scope'
+import EntityFilter from '@/components/entity-filter'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { cropToCommodity } from '@/lib/contracts'
 import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
@@ -29,7 +31,7 @@ import {
 } from '@/components/reports/report-kit'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
 import type {
-  Crop, Contract, CropAssumption, FieldPlanting, FuturesPosition, OptionPosition,
+  Crop, Contract, CropAssumption, Entity, FieldPlanting, FuturesPosition, OptionPosition,
   CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate,
   CoveredCommodity, FarmBaseAcres, ArcPlcElection, ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment,
 } from '@/lib/types'
@@ -47,7 +49,10 @@ type LoadRow = {
 }
 
 type SplitRow = { load_id: string; field_id: string; crop_id: string; dry_bushels: number | null }
-type GinReceiptLite = { id: string; crop_year: number; bales_count: number | null; total_bale_weight: number | null }
+type GinReceiptLite = {
+  id: string; crop_year: number; bales_count: number | null; total_bale_weight: number | null
+  entity_id: string | null; farm_id: string | null; field_id: string | null
+}
 type CottonBaleLite = { gin_receipt_id: string; crop_year: number; net_weight_lbs: number }
 
 type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
@@ -90,10 +95,16 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   const [cottonBales, setCottonBales] = useState<CottonBaleLite[]>([])
 
   const [cropYear, setCropYear] = usePersistentState<number | ''>('rev-proj:cropYear', '')
+  // Entity filter (shared scoping — see lib/entity-scope.ts). The operation-wide
+  // assumptions flow down unchanged; only acres/production/policies/payments narrow.
+  const [entityId, setEntityId] = usePersistentState('rev-proj:entity', '')
+  const [entities, setEntities] = useState<Entity[]>([])
+  const [farms, setFarms] = useState<Array<{ id: string; entity_id: string | null }>>([])
+  const [fields, setFields] = useState<Array<{ id: string; farm_id: string | null }>>([])
 
   useEffect(() => {
     ;(async () => {
-      const [cr, pl, ct, fp, op, ca, ld, po, sc, ec, hpe, cc, ba, el, apd, apay, ogp, sp, gr, cb] = await Promise.all([
+      const [cr, pl, ct, fp, op, ca, ld, po, sc, ec, hpe, cc, ba, el, apd, apay, ogp, sp, gr, cb, en, fa, fi] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('field_plantings').select('*'),
         supabase.from('contracts').select('*'),
@@ -112,9 +123,15 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
         supabase.from('arc_plc_payments').select('*'),
         supabase.from('other_government_payments').select('*'),
         supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels'),
-        supabase.from('gin_receipts').select('id, crop_year, bales_count, total_bale_weight'),
+        supabase.from('gin_receipts').select('id, crop_year, bales_count, total_bale_weight, entity_id, farm_id, field_id'),
         supabase.from('cotton_bales').select('gin_receipt_id, crop_year, net_weight_lbs'),
+        supabase.from('entities').select('*').order('name'),
+        supabase.from('farms').select('id, entity_id'),
+        supabase.from('fields').select('id, farm_id'),
       ])
+      setEntities((en.data as Entity[]) || [])
+      setFarms((fa.data as Array<{ id: string; entity_id: string | null }>) || [])
+      setFields((fi.data as Array<{ id: string; farm_id: string | null }>) || [])
       setGinReceipts(((gr.data as unknown) as GinReceiptLite[]) || [])
       setCottonBales(((cb.data as unknown) as CottonBaleLite[]) || [])
       setCrops((cr.data as Crop[]) || [])
@@ -146,14 +163,25 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
 
+  // Shared entity scoping — the SAME layer the Marketing dashboard applies, so
+  // the reconciliation identity (RevProj profit − Marketing profit = insurance
+  // + government) survives an entity filter.
+  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields }), [entityId, farms, fields])
+  const entityName = entityId ? entities.find((e) => e.id === entityId)?.name ?? null : null
+  const scopedPlantings = useMemo(() => scope.plantings(plantings), [scope, plantings])
+  const scopedContracts = useMemo(() => scope.byEntity(contracts), [scope, contracts])
+  const scopedFutures = useMemo(() => scope.byEntity(futures), [scope, futures])
+  const scopedOptions = useMemo(() => scope.byEntity(options), [scope, options])
+
   // Broken-out expected production (irr/dry × full/double-crop), computed exactly
   // like the Marketing dashboard so computeMarketing yields identical per-crop
-  // production — and therefore identical blended revenue — on both pages.
+  // production — and therefore identical blended revenue — on both pages. The
+  // operation-wide assumptions apply to the (scoped) acres unchanged.
   const doubleCropIds = useMemo(() => buildDoubleCropSet(plantings, cropById), [plantings, cropById])
   const expProdByCrop = useMemo(() => {
     if (cropYear === '') return new Map<string, number>()
-    return expectedProductionFromBreakout(segmentAcresByCrop(plantings, cropYear, doubleCropIds), assumptions, cropYear)
-  }, [plantings, cropYear, doubleCropIds, assumptions])
+    return expectedProductionFromBreakout(segmentAcresByCrop(scopedPlantings, cropYear, doubleCropIds), assumptions, cropYear)
+  }, [scopedPlantings, cropYear, doubleCropIds, assumptions])
 
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings([...plantings.map((p) => p.season_year), ...policies.map((p) => p.crop_year)], cropYear === '' ? null : cropYear),
@@ -189,11 +217,12 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     return () => { cancelled = true }
   }, [cropYear, livePriceCropIds, cropById])
 
-  // (field|crop|year) → dry bushels + last load date, splits-aware. Drives actual
-  // production (by crop) and the field-level harvest-completion check.
+  // (field|crop|year) → dry bushels + last load date, splits-aware — narrowed
+  // to the entity's fields. Drives actual production (by crop) and the
+  // field-level harvest-completion check.
   const aggByKey = useMemo(
-    () => fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear }),
-    [loads, splits, cropById, cropYear],
+    () => scope.fieldAgg(fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear })),
+    [loads, splits, cropById, cropYear, scope],
   )
 
   // Actual production (dry bushels) by crop for the year.
@@ -213,8 +242,8 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     if (cropYear === '') return new Set<string>()
     const cropCompleteKeys = new Set<string>()
     for (const a of assumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
-    return cropsWithCompleteHarvest({ plantings, aggByKey, cropYear, cropCompleteKeys })
-  }, [plantings, aggByKey, cropYear, assumptions])
+    return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys })
+  }, [scopedPlantings, aggByKey, cropYear, assumptions])
 
   // Current futures per crop to value unpriced bushels in blended revenue — the
   // live harvest-month estimate, the EXACT source the Marketing dashboard uses
@@ -244,7 +273,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       balesByReceipt.set(b.gin_receipt_id, g)
     }
     let lintLbs = 0, baleCount = 0
-    for (const r of ginReceipts) {
+    for (const r of scope.ginReceipts(ginReceipts)) {
       if (r.crop_year !== cropYear) continue
       const fromBales = balesByReceipt.get(r.id)
       lintLbs += fromBales && fromBales.lbs > 0 ? fromBales.lbs : Number(r.total_bale_weight) || 0
@@ -252,35 +281,43 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     }
     for (const c of crops) if (isCottonCrop(c.name)) m.set(c.id, { lintLbs, bales: baleCount })
     return m
-  }, [cropYear, ginReceipts, cottonBales, crops])
+  }, [cropYear, ginReceipts, cottonBales, crops, scope])
 
-  // Physical cotton marketing summary (044) — same input the dashboard passes,
-  // so blended revenue stays structurally identical across the two pages.
-  const [cottonPhysical, setCottonPhysical] = useState<Map<string, CottonPhysicalSummary>>(new Map())
+  // Physical cotton marketing (044) — same input the dashboard passes, so
+  // blended revenue stays structurally identical across the two pages. Raw
+  // fetch + an entity-scoped summary derived below.
+  const [cottonPhysicalRaw, setCottonPhysicalRaw] = useState<CottonPhysicalData | null>(null)
   useEffect(() => {
-    if (cropYear === '' || crops.length === 0) { setCottonPhysical(new Map()); return }
+    if (cropYear === '') { setCottonPhysicalRaw(null); return }
     let cancelled = false
     ;(async () => {
       try {
         const physical = await fetchCottonPhysical(supabase, cropYear)
-        if (cancelled) return
-        const m = new Map<string, CottonPhysicalSummary>()
-        if (physical.hasData) for (const c of crops) if (isCottonCrop(c.name)) m.set(c.id, physical.summary)
-        setCottonPhysical(m)
-      } catch { if (!cancelled) setCottonPhysical(new Map()) }
+        if (!cancelled) setCottonPhysicalRaw(physical)
+      } catch { if (!cancelled) setCottonPhysicalRaw(null) }
     })()
     return () => { cancelled = true }
-  }, [cropYear, crops, supabase])
+  }, [cropYear, supabase])
+  const cottonPhysical = useMemo(() => {
+    const m = new Map<string, CottonPhysicalSummary>()
+    if (!cottonPhysicalRaw) return m
+    const inputs = scope.cottonInputs(cottonPhysicalRaw.inputs)
+    const hasData = inputs.contracts.length > 0 || inputs.loans.length > 0 || inputs.ldps.length > 0 || inputs.fees.length > 0
+    if (!hasData) return m
+    const summary = scope.active ? buildCottonPhysicalSummary(inputs) : cottonPhysicalRaw.summary
+    for (const c of crops) if (isCottonCrop(c.name)) m.set(c.id, summary)
+    return m
+  }, [cottonPhysicalRaw, scope, crops])
 
   const marketingRows = useMemo(() => {
     if (cropYear === '') return []
     return computeMarketing({
       cropYear,
       crops,
-      plantings: plantings.filter((p) => p.season_year === cropYear).map((p): Planting => ({ crop_id: p.crop_id, season_year: p.season_year, planted_acres: p.planted_acres })),
-      contracts: contracts.filter((c) => c.crop_year === cropYear),
-      futures: futures.filter((f) => f.crop_year === cropYear),
-      options: options.filter((o) => o.crop_year === cropYear),
+      plantings: scopedPlantings.filter((p) => p.season_year === cropYear).map((p): Planting => ({ crop_id: p.crop_id, season_year: p.season_year, planted_acres: p.planted_acres })),
+      contracts: scopedContracts.filter((c) => c.crop_year === cropYear),
+      futures: scopedFutures.filter((f) => f.crop_year === cropYear),
+      options: scopedOptions.filter((o) => o.crop_year === cropYear),
       assumptions: assumptions.filter((a) => a.crop_year === cropYear),
       actualProductionByCrop: productionByCrop,
       expectedProductionByCrop: expProdByCrop,
@@ -289,7 +326,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       cottonProductionByCrop,
       cottonPhysicalByCrop: cottonPhysical,
     })
-  }, [cropYear, crops, plantings, contracts, futures, options, assumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds, cottonProductionByCrop, cottonPhysical])
+  }, [cropYear, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, assumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds, cottonProductionByCrop, cottonPhysical])
 
   // Resolve a harvest price per crop for the MARKET path: final → estimate →
   // projected. `source` distinguishes RMA-native prices ($/lb for cotton:
@@ -316,13 +353,17 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     const scoBy = new Map(scos.map((s) => [s.policy_id, s]))
     const ecoBy = new Map(ecos.map((e) => [e.policy_id, e]))
     const yieldByCrop = new Map(marketingRows.map((r) => [r.cropId, r.yield]))
-    const yearPols = policies.filter((x) => x.crop_year === cropYear)
+    // Price resolution reads ALL of the year's policies (harvest prices are
+    // operation-level market facts that flow down); the P&L computation below
+    // runs only the selected entity's policies.
+    const yearPolsAll = policies.filter((x) => x.crop_year === cropYear)
+    const yearPols = scope.byEntity(yearPolsAll)
     // Insurance math runs in the policy's native $ unit ($/lb cotton) — the
     // shared resolver converts futures-derived ¢/lb sources at the boundary.
     const insuranceHarvest = resolveHarvestPriceByCrop({
-      cropIds: Array.from(new Set(yearPols.map((x) => x.crop_id))),
+      cropIds: Array.from(new Set(yearPolsAll.map((x) => x.crop_id))),
       cropYear,
-      policies: yearPols,
+      policies: yearPolsAll,
       estimates: priceEstimates,
       liveByCrop: new Map(Array.from(liveEstimates, ([id, price]) => [id, { price, stale: false, priceDate: null }])),
       crops,
@@ -361,7 +402,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       m.set(p.crop_id, cur)
     }
     return m
-  }, [policies, scos, ecos, cropYear, marketingRows, liveEstimates, priceEstimates, crops])
+  }, [policies, scos, ecos, cropYear, marketingRows, liveEstimates, priceEstimates, crops, scope])
 
   // Current market cash price by crop: harvest price + average basis. Cotton
   // marketing prices are ¢/lb — RMA-native sources (final/projected, $/lb)
@@ -396,9 +437,12 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     // stored estimate) — the same effective prices the Payment Tracker
     // projects that program year from.
     const effPrice = applyMyaResolution({ cropYear: programYear, commodities, priceData: arcPriceData, liveEstimates: new Map() })
+    // Entity filter: only the entity's farms' ARC/PLC and its other payments;
+    // the flat allocation below then recomputes over the entity's acres.
     const projected = projectPayments({ cropYear: programYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments })
+      .filter((p) => scope.farmInEntity(p.farmId))
     const totalArcPlc = projected.reduce((s, p) => s + p.result.net, 0)
-    const yearOther = otherPaymentsInRevenueYear(otherPayments, cropYear)
+    const yearOther = otherPaymentsInRevenueYear(scope.otherPayments(otherPayments), cropYear)
     const nonSpecificOther = yearOther.filter((o) => !o.crop_id).reduce((s, o) => s + Number(o.amount), 0)
     const cropSpecific = new Map<string, number>()
     for (const o of yearOther) if (o.crop_id) cropSpecific.set(o.crop_id, (cropSpecific.get(o.crop_id) ?? 0) + Number(o.amount))
@@ -412,14 +456,14 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       })
     }
     return m
-  }, [cropYear, arcPriceData, baseAcres, commodities, elections, arcPayments, otherPayments, marketingRows])
+  }, [cropYear, arcPriceData, baseAcres, commodities, elections, arcPayments, otherPayments, marketingRows, scope])
 
   const { rows, totals } = useMemo(
     () => computeRevenueProjections({
-      marketingRows, contracts: contracts.filter((c) => c.crop_year === cropYear),
+      marketingRows, contracts: scopedContracts.filter((c) => c.crop_year === cropYear),
       cropYear: cropYear === '' ? 0 : cropYear, marketPriceByCrop, insuranceByCrop, govtByCrop,
     }),
-    [marketingRows, contracts, cropYear, marketPriceByCrop, insuranceByCrop, govtByCrop],
+    [marketingRows, scopedContracts, cropYear, marketPriceByCrop, insuranceByCrop, govtByCrop],
   )
 
   const harvestLabelFor = (cropId: string) => {
@@ -428,7 +472,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   }
 
   function buildExportPayload(): ExportPayload {
-    const filters = `Crop year: ${cropYear || '—'}`
+    const filters = `Crop year: ${cropYear || '—'}${entityName ? ` · Entity: ${entityName}` : ''}`
     const revenueSection: ExportPayload['sections'][number] = {
       title: 'Revenue by Crop',
       columns: [
@@ -494,7 +538,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, totals, cropYear, onPayloadChange])
+  }, [rows, totals, cropYear, entityName, onPayloadChange])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   if (loading) return <p className="text-slate-500">Loading…</p>
@@ -509,6 +553,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
             {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
           </select>
         </label>
+        <EntityFilter entities={entities} value={entityId} onChange={setEntityId} />
       </div>
 
       {cropYear === '' && <p className="text-amber-700 text-sm">Pick a crop year to run the projection.</p>}
@@ -571,7 +616,10 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
 
           {/* Revenue summary */}
           <section className="bg-white rounded-xl shadow p-4 avoid-break overflow-x-auto">
-            <h2 className="font-bold text-lg mb-2">Revenue by Crop — {cropYear}</h2>
+            <h2 className="font-bold text-lg mb-2">
+              Revenue by Crop — {cropYear}
+              {entityName && <span className="ml-2 text-sm font-normal text-slate-500">Entity: {entityName}</span>}
+            </h2>
             <table className="min-w-full text-sm border-collapse">
               <thead className={theadCls}>
                 <tr>
