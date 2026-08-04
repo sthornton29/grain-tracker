@@ -84,6 +84,7 @@ export default function CashFlowPage() {
   const [buyers, setBuyers] = useState<Buyer[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
   const [farms, setFarms] = useState<FarmRow[]>([])
+  const [fields, setFields] = useState<Array<{ id: string; farm_id: string | null }>>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   // Safety-net data: crop insurance + government payments.
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
@@ -169,7 +170,7 @@ export default function CashFlowPage() {
         }
         return out
       }
-      const [ct, ld, ln, st, cr, by, en, fa, pl] = await Promise.all([
+      const [ct, ld, ln, st, cr, by, en, fa, fi, pl] = await Promise.all([
         supabase.from('contracts').select('*'),
         fetchAllLoads(),
         supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue, settlement_id'),
@@ -178,6 +179,7 @@ export default function CashFlowPage() {
         supabase.from('buyers').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('id, entity_id'),
+        supabase.from('fields').select('id, farm_id'),
         supabase.from('field_plantings').select('*'),
       ])
       const [ca, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp] = await Promise.all([
@@ -202,6 +204,7 @@ export default function CashFlowPage() {
       setBuyers((by.data as Buyer[]) || [])
       setEntities((en.data as Entity[]) || [])
       setFarms((fa.data as FarmRow[]) || [])
+      setFields((fi.data as Array<{ id: string; farm_id: string | null }>) || [])
       setPlantings((pl.data as FieldPlanting[]) || [])
       setAssumptions((ca.data as CropAssumption[]) || [])
       setPolicies((po.data as CropInsurancePolicy[]) || [])
@@ -224,10 +227,13 @@ export default function CashFlowPage() {
   const settlementById = useMemo(() => new Map(settlements.map((s) => [s.id, s])), [settlements])
 
   // Shared entity scoping (lib/entity-scope.ts) — same rules as the other
-  // financial reports: contracts/policies by their own entity_id, ARC/PLC by
-  // the farm's entity, other USDA payments by farm-then-entity attribution.
-  const scope = useMemo(() => buildEntityScope({ entityId, farms }), [entityId, farms])
+  // financial reports: policies by their own entity_id, ARC/PLC by the farm's
+  // entity, other USDA payments by farm-then-entity attribution, and contracts
+  // through the shared attribution (entity-keyed → whole; operation-level →
+  // the entity's acre share of the crop, so its sales don't vanish).
+  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields }), [entityId, farms, fields])
   const scopedPolicies = useMemo(() => scope.byEntity(policies), [scope, policies])
+  const attribution = useMemo(() => scope.attribution({ plantings, crops }), [scope, plantings, crops])
 
   // Crops carrying a policy, grouped by crop year, within the active filters —
   // drives the live harvest-price fetch (one call per year) so the insurance
@@ -344,14 +350,17 @@ export default function CashFlowPage() {
     return map
   }, [contracts, loads, cropById, lineByLoadId, lineByTicket, settlementById])
 
-  // Entity scoping matches the Contracts page and the other reports: a
-  // contract belongs to its own entity_id (settlement cash follows its
-  // contract). Rows without an entity drop out under a filter.
+  // Entity scoping via the shared attribution: a contract keyed to an entity
+  // belongs wholly to it; an operation-level (null-entity) contract carries
+  // the entity's acre share of its crop — its bushels and dollars scale by
+  // that share below, so filtered entities keep their sales and the per-entity
+  // views sum back to the all-entities report.
+  const shareFor = (c: Contract) => attribution.shareForContract(c)
   const visibleContracts = contracts.filter((c) => {
     if (cropYear !== '' && c.crop_year !== cropYear) return false
     if (cropId && c.crop_id !== cropId) return false
     if (buyerId && c.buyer_id !== buyerId) return false
-    if (entityId && c.entity_id !== entityId) return false
+    if (shareFor(c) <= 0) return false
     return true
   })
 
@@ -372,19 +381,21 @@ export default function CashFlowPage() {
       const agg = aggByContract.get(c.id)
       if (!agg) continue
       const price = Number(c.price_per_bushel ?? 0)
+      // Entity share of this contract (1 unfiltered / entity-keyed).
+      const s = shareFor(c)
 
       // received — by settlement month
       for (const [m, amount] of agg.revenueByMonth) {
-        ensure(m).received += amount
+        ensure(m).received += amount * s
       }
 
       // outstanding (delivered but unpaid) — receivable this month, valued at contract price
-      const outstandingAmt = agg.deliveredUnpaid * price
+      const outstandingAmt = agg.deliveredUnpaid * price * s
       if (outstandingAmt > 0) ensure(thisMonth).outstanding += outstandingAmt
 
       // projected (not yet delivered) — spread across remaining months in delivery
       // window. Completed contracts project nothing, even with bushels remaining.
-      const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered)
+      const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered) * s
       const complete = isContractComplete(c.completed_at, Number(c.contracted_bushels), agg.delivered)
       if (!complete && remainingBu > 0 && price > 0) {
         const totalProjected = remainingBu * price
@@ -412,6 +423,7 @@ export default function CashFlowPage() {
       }
     }
     return buckets
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleContracts, aggByContract])
 
   // Safety net (crop insurance + government payments) bucketed by month, with the
@@ -523,14 +535,16 @@ export default function CashFlowPage() {
     for (const c of visibleContracts) {
       const agg = aggByContract.get(c.id)!
       const price = Number(c.price_per_bushel ?? 0)
-      value += Number(c.contracted_bushels) * price
-      received += agg.revenueReceived
-      outstanding += agg.deliveredUnpaid * price
-      const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered)
+      const s = shareFor(c)
+      value += Number(c.contracted_bushels) * price * s
+      received += agg.revenueReceived * s
+      outstanding += agg.deliveredUnpaid * price * s
+      const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered) * s
       const complete = isContractComplete(c.completed_at, Number(c.contracted_bushels), agg.delivered)
       remaining += complete ? 0 : remainingBu * price
     }
     return { value, received, outstanding, remaining }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleContracts, aggByContract])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
@@ -602,14 +616,17 @@ export default function CashFlowPage() {
       rows: visibleContracts.map((c) => {
         const agg = aggByContract.get(c.id)!
         const price = Number(c.price_per_bushel ?? 0)
-        const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered)
+        const s = shareFor(c)
+        const contractedBu = Number(c.contracted_bushels) * s
+        const delivered = agg.delivered * s
+        const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered) * s
         const complete = isContractComplete(c.completed_at, Number(c.contracted_bushels), agg.delivered)
         const window = (c.delivery_start_date || c.delivery_end_date) ? `${c.delivery_start_date ?? '?'} → ${c.delivery_end_date ?? '?'}` : '—'
         return [
           complete ? `${c.contract_number} (complete)` : c.contract_number ?? '',
           buyerById.get(c.buyer_id ?? '')?.name ?? '', cropById.get(c.crop_id ?? '')?.name ?? '', c.crop_year ?? '', window,
-          price || '', Number(c.contracted_bushels), agg.delivered, remainingBu,
-          Number(c.contracted_bushels) * price, agg.revenueReceived, agg.deliveredUnpaid * price, complete ? 0 : remainingBu * price,
+          price || '', contractedBu, delivered, remainingBu,
+          contractedBu * price, agg.revenueReceived * s, agg.deliveredUnpaid * price * s, complete ? 0 : remainingBu * price,
         ]
       }),
     }
@@ -785,18 +802,24 @@ export default function CashFlowPage() {
                     {visibleContracts.map((c) => {
                       const agg = aggByContract.get(c.id)!
                       const price = Number(c.price_per_bushel ?? 0)
-                      const value = Number(c.contracted_bushels) * price
-                      const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered)
+                      // Entity share: operation-level contracts show the
+                      // entity's pro-rata slice under an entity filter.
+                      const s = shareFor(c)
+                      const contractedBu = Number(c.contracted_bushels) * s
+                      const delivered = agg.delivered * s
+                      const value = contractedBu * price
+                      const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered) * s
                       const complete = isContractComplete(c.completed_at, Number(c.contracted_bushels), agg.delivered)
                       // Completed contracts earn nothing more — no unearned revenue
                       // booked, matching the Projected column above.
                       const unearned = complete ? 0 : remainingBu * price
-                      const outstanding = agg.deliveredUnpaid * price
+                      const outstanding = agg.deliveredUnpaid * price * s
                       return (
                         <tr key={c.id} className="border-t border-slate-100">
                           <td className={`${textCell} font-semibold whitespace-nowrap`}>
                             {c.contract_number}
                             {complete && <span className="ml-1.5 rounded-full bg-slate-100 text-slate-500 text-[10px] font-medium px-1.5 py-0.5 align-middle">complete</span>}
+                            {s < 1 && <span className="ml-1.5 rounded-full bg-sky-100 text-sky-700 text-[10px] font-medium px-1.5 py-0.5 align-middle" title="Operation-level contract — showing this entity's pro-rata share by planted acres">{Math.round(s * 100)}% share</span>}
                           </td>
                           <td className={textCell}>{buyerById.get(c.buyer_id ?? '')?.name ?? ''}</td>
                           <td className={textCell}>{cropById.get(c.crop_id ?? '')?.name ?? ''}</td>
@@ -807,11 +830,11 @@ export default function CashFlowPage() {
                               : <span className="text-slate-400">—</span>}
                           </td>
                           <td className={numCell}>{price ? price.toFixed(4) : ''}</td>
-                          <td className={numCell}>{fmt(Number(c.contracted_bushels))}</td>
-                          <td className={numCell}>{fmt(agg.delivered)}</td>
+                          <td className={numCell}>{fmt(contractedBu)}</td>
+                          <td className={numCell}>{fmt(delivered)}</td>
                           <td className={numCell}>{fmt(remainingBu)}</td>
                           <td className={numCell}>${fmt(value)}</td>
-                          <td className={`${numCell} text-green-700`}>${fmt(agg.revenueReceived)}</td>
+                          <td className={`${numCell} text-green-700`}>${fmt(agg.revenueReceived * s)}</td>
                           <td className={`${numCell} text-amber-700`}>${fmt(outstanding)}</td>
                           <td className={`${numCell} text-brand-deep`}>${fmt(unearned)}</td>
                         </tr>
