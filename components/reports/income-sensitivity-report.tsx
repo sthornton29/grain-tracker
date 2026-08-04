@@ -23,8 +23,10 @@ import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/planting
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates } from '@/lib/yields'
 import { segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop } from '@/lib/marketing'
-import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
-import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
+import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
+import { buildCottonPhysicalSummary, type CottonPhysicalSummary } from '@/lib/cotton-sales'
+import { buildEntityScope } from '@/lib/entity-scope'
+import EntityFilter from '@/components/entity-filter'
 import { harvestContractSymbol, countyAssumptionFor, isAreaPlan } from '@/lib/crop-insurance'
 import { cropToHedgeCommodity } from '@/lib/contracts'
 import { quantityFor, formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
@@ -39,7 +41,7 @@ import { EmptyState, theadCls, toneText, signedTone } from '@/components/reports
 import { formatNumber, type ExportPayload, type ExportCell } from '@/lib/exports'
 import type {
   CropInsuranceStax, CropInsuranceMco, CountyYieldAssumption,
-  Crop, Contract, CropAssumption, FieldPlanting, FuturesPosition, OptionPosition,
+  Crop, Contract, CropAssumption, Entity, FieldPlanting, FuturesPosition, OptionPosition,
   CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate, ProgramYearConfig,
   CoveredCommodity, FarmBaseAcres, ArcPlcElection, ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment,
 } from '@/lib/types'
@@ -133,8 +135,14 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   // Live discovery-month futures per crop_id.
   const [liveEstimates, setLiveEstimates] = useState<Map<string, number>>(new Map())
   // Physical cotton marketing (044): sold/pool/loan facts that lock lbs and
-  // floor in-loan cells at the banked CCC loan value.
-  const [cottonPhysicalSummary, setCottonPhysicalSummary] = useState<CottonPhysicalSummary | null>(null)
+  // floor in-loan cells at the banked CCC loan value. Raw fetch; the
+  // entity-scoped summary is derived below.
+  const [cottonPhysicalRaw, setCottonPhysicalRaw] = useState<CottonPhysicalData | null>(null)
+  // Entity filter (shared scoping — see lib/entity-scope.ts). Operation-wide
+  // assumptions and axis defaults flow down; acres/positions/policies narrow.
+  const [entities, setEntities] = useState<Entity[]>([])
+  const [farms, setFarms] = useState<Array<{ id: string; entity_id: string | null }>>([])
+  const [fields, setFields] = useState<Array<{ id: string; farm_id: string | null }>>([])
   // 045: STAX/MCO endorsements + the shared county-yield assumptions.
   const [staxes, setStaxes] = useState<CropInsuranceStax[]>([])
   const [mcos, setMcos] = useState<CropInsuranceMco[]>([])
@@ -159,13 +167,13 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
 
   // Fetch the year's physical cotton marketing (tolerates 044 absent → null).
   useEffect(() => {
-    if (cropYear === '') { setCottonPhysicalSummary(null); return }
+    if (cropYear === '') { setCottonPhysicalRaw(null); return }
     let cancelled = false
     ;(async () => {
       try {
         const physical = await fetchCottonPhysical(supabase, cropYear)
-        if (!cancelled) setCottonPhysicalSummary(physical.hasData ? physical.summary : null)
-      } catch { if (!cancelled) setCottonPhysicalSummary(null) }
+        if (!cancelled) setCottonPhysicalRaw(physical)
+      } catch { if (!cancelled) setCottonPhysicalRaw(null) }
     })()
     return () => { cancelled = true }
   }, [cropYear, supabase])
@@ -173,10 +181,11 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   const [view, setView] = usePersistentState<ViewMode>('income-sens:view', 'revenue')
   const [includeGov, setIncludeGov] = usePersistentState<boolean>('income-sens:gov', false)
   const [axes, setAxes] = usePersistentState<Record<string, AxisCfg>>('income-sens:axes', {})
+  const [entityId, setEntityId] = usePersistentState('income-sens:entity', '')
 
   useEffect(() => {
     ;(async () => {
-      const [cr, pl, ct, fp, op, ca, ld, sp, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp] = await Promise.all([
+      const [cr, pl, ct, fp, op, ca, ld, sp, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp, en, fa, fi] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('field_plantings').select('*'),
         supabase.from('contracts').select('*'),
@@ -196,7 +205,13 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
         supabase.from('arc_plc_price_data').select('*'),
         supabase.from('arc_plc_payments').select('*'),
         supabase.from('other_government_payments').select('*'),
+        supabase.from('entities').select('*').order('name'),
+        supabase.from('farms').select('id, entity_id'),
+        supabase.from('fields').select('id, farm_id'),
       ])
+      setEntities((en.data as Entity[]) || [])
+      setFarms((fa.data as Array<{ id: string; entity_id: string | null }>) || [])
+      setFields((fi.data as Array<{ id: string; farm_id: string | null }>) || [])
       setCrops((cr.data as Crop[]) || [])
       setPlantings((pl.data as FieldPlanting[]) || [])
       setContracts((ct.data as Contract[]) || [])
@@ -228,9 +243,28 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
     () => cropYearOptionsFromPlantings(plantings.map((p) => p.season_year), cropYear === '' ? null : cropYear),
     [plantings, cropYear],
   )
+
+  // Shared entity scoping — the same layer Marketing / Revenue Projections
+  // apply, so the pages agree on what "entity selected" means. Assumptions and
+  // axis defaults are operation-wide and flow down unchanged.
+  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields }), [entityId, farms, fields])
+  const entityName = entityId ? entities.find((e) => e.id === entityId)?.name ?? null : null
+  const scopedPlantings = useMemo(() => scope.plantings(plantings), [scope, plantings])
+  const scopedContracts = useMemo(() => scope.byEntity(contracts), [scope, contracts])
+  const scopedFutures = useMemo(() => scope.byEntity(futures), [scope, futures])
+  const scopedOptions = useMemo(() => scope.byEntity(options), [scope, options])
+  const scopedPolicies = useMemo(() => scope.byEntity(policies), [scope, policies])
+  const cottonPhysicalSummary = useMemo(() => {
+    if (!cottonPhysicalRaw) return null
+    const inputs = scope.cottonInputs(cottonPhysicalRaw.inputs)
+    const hasData = inputs.contracts.length > 0 || inputs.loans.length > 0 || inputs.ldps.length > 0 || inputs.fees.length > 0
+    if (!hasData) return null
+    return scope.active ? buildCottonPhysicalSummary(inputs) : cottonPhysicalRaw.summary
+  }, [cottonPhysicalRaw, scope])
+
   const yearPlantings = useMemo(
-    () => plantings.filter((p) => p.season_year === cropYear),
-    [plantings, cropYear],
+    () => scopedPlantings.filter((p) => p.season_year === cropYear),
+    [scopedPlantings, cropYear],
   )
   const plantedCropIds = useMemo(() => Array.from(new Set(yearPlantings.map((p) => p.crop_id))), [yearPlantings])
 
@@ -260,10 +294,11 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
     return () => { cancelled = true }
   }, [cropYear, plantedCropIds, cropById])
 
-  // Field-level dry bushels + last load date, splits-aware.
+  // Field-level dry bushels + last load date, splits-aware — narrowed to the
+  // entity's fields.
   const aggByKey = useMemo(
-    () => fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear }),
-    [loads, splits, cropById, cropYear],
+    () => scope.fieldAgg(fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear })),
+    [loads, splits, cropById, cropYear, scope],
   )
   const cropCompleteKeys = useMemo(() => {
     const s = new Set<string>()
@@ -274,8 +309,8 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   // Harvested-fact vs still-in-the-field, per crop and per planting.
   const harvestSplit = useMemo(() => {
     if (cropYear === '') return { byCrop: new Map<string, HarvestSplit>(), statusByPlanting: new Map<string, 'complete' | 'in_progress' | 'unharvested'>() }
-    return splitHarvestByCrop({ plantings, aggByKey, cropYear, cropCompleteKeys })
-  }, [plantings, aggByKey, cropYear, cropCompleteKeys])
+    return splitHarvestByCrop({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys })
+  }, [scopedPlantings, aggByKey, cropYear, cropCompleteKeys])
 
   // Expected yield on the REMAINING (not-yet-complete) acres, per crop — the
   // yield-axis center once harvest is underway, from the assumption breakouts.
@@ -312,19 +347,22 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
     const programYear = programYearFor(cropYear)
     const payCfg = resolveProgramYearConfig(programYear, programConfigs)
     const effPrice = applyMyaResolution({ cropYear: programYear, commodities, priceData: arcPriceData, liveEstimates: new Map() })
+    // Entity filter: only the entity's farms' ARC/PLC and its other payments,
+    // re-spread over just the entity's planted acres.
     const projected = projectPayments({ cropYear: programYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments, sequestrationPct: payCfg.sequestrationPct })
+      .filter((p) => scope.farmInEntity(p.farmId))
     const totalArcPlc = projected.reduce((s, p) => s + p.result.net, 0)
-    const totalOther = otherPaymentsInRevenueYear(otherPayments, cropYear).reduce((s, o) => s + Number(o.amount), 0)
+    const totalOther = otherPaymentsInRevenueYear(scope.otherPayments(otherPayments), cropYear).reduce((s, o) => s + Number(o.amount), 0)
     const totalAcres = yearPlantings.reduce((s, p) => s + Number(p.planted_acres ?? 0), 0)
     return flatGovPerAcre(totalArcPlc + totalOther, totalAcres)
-  }, [cropYear, commodities, arcPriceData, baseAcres, elections, arcPayments, otherPayments, yearPlantings, programConfigs])
+  }, [cropYear, commodities, arcPriceData, baseAcres, elections, arcPayments, otherPayments, yearPlantings, programConfigs, scope])
 
   // ---- Per-crop views: inputs, axes, and the computed grid ----
   const cropViews: CropView[] = useMemo(() => {
     if (cropYear === '') return []
-    const yearContracts = contracts.filter((c) => c.crop_year === cropYear)
-    const yearFutures = futures.filter((f) => f.crop_year === cropYear)
-    const yearOptions = options.filter((o) => o.crop_year === cropYear)
+    const yearContracts = scopedContracts.filter((c) => c.crop_year === cropYear)
+    const yearFutures = scopedFutures.filter((f) => f.crop_year === cropYear)
+    const yearOptions = scopedOptions.filter((o) => o.crop_year === cropYear)
     const views: CropView[] = []
     for (const cropId of plantedCropIds) {
       const crop = cropById.get(cropId)
@@ -336,7 +374,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       const drylandAcres = cps.reduce((s, p) => s + (Number(p.dryland_acres) || 0), 0)
       const split = harvestSplit.byCrop.get(cropId) ?? { fixedBu: 0, completedAcres: 0, remainingAcres: plantedAcres, state: 'pre' as const }
       const assumption = assumptions.find((a) => a.crop_id === cropId && a.crop_year === cropYear)
-      const cropPolicies = policies.filter((p) => p.crop_id === cropId && p.crop_year === cropYear)
+      const cropPolicies = scopedPolicies.filter((p) => p.crop_id === cropId && p.crop_year === cropYear)
       // Once the RMA FINAL harvest price is on file (policy or stored final),
       // insurance in every cell uses it — the same basis as the Claims Monitor.
       const policyFinal = cropPolicies.find((p) => p.harvest_price != null)?.harvest_price
@@ -427,7 +465,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       })
     }
     return views.sort((a, b) => a.crop.name.localeCompare(b.crop.name))
-  }, [cropYear, plantedCropIds, cropById, yearPlantings, contracts, futures, options, assumptions, policies, scos, ecos, staxes, mcos, countyAssumptions, priceEstimates, harvestSplit, remainingExpectedYield, liveEstimates, axes, programCfg, includeGov, govPerAcre, cottonPhysicalSummary])
+  }, [cropYear, plantedCropIds, cropById, yearPlantings, scopedContracts, scopedFutures, scopedOptions, assumptions, scopedPolicies, scos, ecos, staxes, mcos, countyAssumptions, priceEstimates, harvestSplit, remainingExpectedYield, liveEstimates, axes, programCfg, includeGov, govPerAcre, cottonPhysicalSummary])
 
   function setAxis(cropId: string, patch: Partial<AxisCfg>) {
     const key = `${cropYear}:${cropId}`
@@ -489,7 +527,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
     const countyLabel = countyLabels.length > 0 ? `County: ${countyLabels.join(', ')}` : null
     return {
       title: 'Income Sensitivity',
-      filters: [`Crop year: ${cropYear || '—'}`, `View: ${viewLabel}`, govLabel, countyLabel].filter(Boolean).join(' · '),
+      filters: [`Crop year: ${cropYear || '—'}`, entityName ? `Entity: ${entityName}` : null, `View: ${viewLabel}`, govLabel, countyLabel].filter(Boolean).join(' · '),
       // Never export zero sections (exceljs needs at least one sheet).
       sections: sections.length > 0 ? sections : [{ columns: [{ label: 'No sensitivity tables' }], rows: [] }],
       orientation: 'landscape',
@@ -499,7 +537,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cropViews, view, includeGov, govPerAcre, cropYear, onPayloadChange])
+  }, [cropViews, view, includeGov, govPerAcre, cropYear, entityName, onPayloadChange])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   if (loading) return <p className="text-slate-500">Loading…</p>
@@ -515,6 +553,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
             {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
           </select>
         </label>
+        <EntityFilter entities={entities} value={entityId} onChange={setEntityId} />
         <div className="text-sm flex flex-col gap-1">
           <span className="text-slate-500">Cell value</span>
           <span className="inline-flex rounded-lg border border-slate-300 overflow-hidden">
@@ -538,6 +577,10 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       </div>
 
       {cropYear === '' && <p className="text-amber-700 text-sm">Pick a crop year to build the sensitivity tables.</p>}
+
+      {entityName && cropYear !== '' && (
+        <p className="text-sm text-slate-600">Entity: <span className="font-semibold">{entityName}</span></p>
+      )}
 
       {programNotice && (
         <div className="rounded-lg bg-yellow-50 border border-yellow-300 px-3 py-2 text-sm text-yellow-900">{programNotice}</div>

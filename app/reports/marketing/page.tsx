@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
-import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
-import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
+import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
+import { buildCottonPhysicalSummary, type CottonPhysicalSummary } from '@/lib/cotton-sales'
+import { buildEntityScope } from '@/lib/entity-scope'
+import EntityFilter from '@/components/entity-filter'
 import { buildMarketingExport } from '@/lib/marketing-export'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { buildDoubleCropSet } from '@/lib/plantings'
@@ -14,7 +16,7 @@ import { usePersistentState } from '@/lib/use-persistent-state'
 import { StackedBar } from '@/components/reports/report-kit'
 import ExportBar from '@/components/export-bar'
 import { type ExportPayload } from '@/lib/exports'
-import type { Contract, Crop, CropAssumption, FuturesPosition, OptionPosition, GinReceipt, CottonBale } from '@/lib/types'
+import type { Contract, Crop, CropAssumption, Entity, FuturesPosition, OptionPosition, GinReceipt, CottonBale } from '@/lib/types'
 
 type LoadRow = {
   id: string
@@ -151,16 +153,23 @@ export default function MarketingPage() {
   const [futures, setFutures] = useState<FuturesPosition[]>([])
   const [options, setOptions] = useState<OptionPosition[]>([])
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
-  const [production, setProduction] = useState<Map<string, number>>(new Map())
-  // Crops whose harvest is complete (field-level) → use actual, not the estimate.
-  const [harvestCompleteIds, setHarvestCompleteIds] = useState<Set<string>>(new Set())
+  // Raw loads/splits + cotton receipts/bales — production is derived below so
+  // the entity filter can re-scope without refetching.
+  const [loads, setLoads] = useState<LoadRow[]>([])
+  const [splits, setSplits] = useState<SplitRow[]>([])
+  const [ginReceipts, setGinReceipts] = useState<Array<Pick<GinReceipt, 'id' | 'bales_count' | 'total_bale_weight' | 'entity_id' | 'farm_id' | 'field_id'>>>([])
+  const [cottonBales, setCottonBales] = useState<Array<Pick<CottonBale, 'gin_receipt_id' | 'net_weight_lbs'>>>([])
   // Current futures price per crop (Barchart) — values completely-unpriced bushels.
   const [currentFutures, setCurrentFutures] = useState<Map<string, number>>(new Map())
-  // Cotton actuals per cotton crop id: lbs of lint + bales, from gin receipts.
-  const [cottonProd, setCottonProd] = useState<Map<string, { lintLbs: number; bales: number }>>(new Map())
-  // Physical cotton marketing summary (contracts / CCC loans / LDP / fees) per
-  // cotton crop id — empty until the 044 tables carry data.
-  const [cottonPhysical, setCottonPhysical] = useState<Map<string, CottonPhysicalSummary>>(new Map())
+  // Physical cotton marketing data (contracts / CCC loans / LDP / fees) — raw
+  // inputs + summary; scoped to the entity filter below.
+  const [cottonPhysicalRaw, setCottonPhysicalRaw] = useState<CottonPhysicalData | null>(null)
+  // Entity filter (shared scoping — see lib/entity-scope.ts). Operation-wide
+  // assumptions flow down unchanged; only acres/production/positions narrow.
+  const [entityId, setEntityId] = usePersistentState('marketing:entity', '')
+  const [entities, setEntities] = useState<Entity[]>([])
+  const [farms, setFarms] = useState<Array<{ id: string; entity_id: string | null }>>([])
+  const [fields, setFields] = useState<Array<{ id: string; farm_id: string | null }>>([])
 
   // Expanded crop sections (crop ids) — persisted per crop so a section the user
   // opened is still open when they come back.
@@ -171,14 +180,21 @@ export default function MarketingPage() {
   const [assumptionsOpen, setAssumptionsOpen] = useState(false)
   const [banner, setBanner] = useState<string | null>(null)
 
-  // Crop years that have any plantings, contracts, or futures positions.
+  // Crop years that have any plantings, contracts, or futures positions — plus
+  // the entity/farm/field lookups behind the entity filter (year-independent).
   useEffect(() => {
     ;(async () => {
-      const [pl, ct, fp] = await Promise.all([
+      const [pl, ct, fp, en, fa, fi] = await Promise.all([
         supabase.from('field_plantings').select('season_year'),
         supabase.from('contracts').select('crop_year'),
         supabase.from('futures_positions').select('crop_year'),
+        supabase.from('entities').select('*').order('name'),
+        supabase.from('farms').select('id, entity_id'),
+        supabase.from('fields').select('id, farm_id'),
       ])
+      setEntities((en.data as Entity[]) || [])
+      setFarms((fa.data as Array<{ id: string; entity_id: string | null }>) || [])
+      setFields((fi.data as Array<{ id: string; farm_id: string | null }>) || [])
       const set = new Set<number>()
       for (const r of (pl.data as Array<{ season_year: number | null }>) ?? []) if (r.season_year != null) set.add(r.season_year)
       for (const r of (ct.data as Array<{ crop_year: number | null }>) ?? []) if (r.crop_year != null) set.add(r.crop_year)
@@ -198,64 +214,25 @@ export default function MarketingPage() {
       supabase.from('crop_assumptions').select('*').eq('crop_year', cropYear),
       supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override').eq('crop_year', cropYear),
       supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels'),
-      supabase.from('gin_receipts').select('id, crop_year, bales_count, total_bale_weight').eq('crop_year', cropYear),
+      supabase.from('gin_receipts').select('id, crop_year, bales_count, total_bale_weight, entity_id, farm_id, field_id').eq('crop_year', cropYear),
       supabase.from('cotton_bales').select('gin_receipt_id, net_weight_lbs').eq('crop_year', cropYear),
     ])
-    const cropsList = (cr.data as Crop[]) ?? []
-    const plantingList = (pl.data as PlantingRow[]) ?? []
-    const assumptionList = (ca.data as CropAssumption[]) ?? []
-    setCrops(cropsList)
-    setPlantings(plantingList)
+    setCrops((cr.data as Crop[]) ?? [])
+    setPlantings((pl.data as PlantingRow[]) ?? [])
     setContracts((ct.data as Contract[]) ?? [])
     setFutures((fp.data as FuturesPosition[]) ?? [])
     setOptions((op.data as OptionPosition[]) ?? [])
-    setAssumptions(assumptionList)
-
-    // (field|crop|year) → dry bushels + last load date, splits-aware. Drives both
-    // actual production (by crop) and the field-level harvest-completion check.
-    const cropById = new Map(cropsList.map((c) => [c.id, c]))
-    const aggByKey = fieldCropAggregates((ld.data as LoadRow[]) ?? [], (sp.data as SplitRow[]) ?? [], cropById, { cropYear })
-    const prod = new Map<string, number>()
-    for (const [key, agg] of aggByKey) {
-      const cropId = key.split('|')[1]
-      if (cropId) prod.set(cropId, (prod.get(cropId) ?? 0) + agg.dryBu)
-    }
-    setProduction(prod)
-
-    // Cotton actual production: lbs of lint from gin receipts — per-bale net
-    // weights when the bales are on file, else the receipt's total bale weight.
-    const receipts = ((gr.data as unknown) as Pick<GinReceipt, 'id' | 'bales_count' | 'total_bale_weight'>[]) ?? []
-    const bales = ((cb.data as unknown) as Pick<CottonBale, 'gin_receipt_id' | 'net_weight_lbs'>[]) ?? []
-    const balesByReceipt = new Map<string, { lbs: number; count: number }>()
-    for (const b of bales) {
-      const g = balesByReceipt.get(b.gin_receipt_id) ?? { lbs: 0, count: 0 }
-      g.lbs += Number(b.net_weight_lbs) || 0
-      g.count += 1
-      balesByReceipt.set(b.gin_receipt_id, g)
-    }
-    let lintLbs = 0, baleCount = 0
-    for (const r of receipts) {
-      const fromBales = balesByReceipt.get(r.id)
-      lintLbs += fromBales && fromBales.lbs > 0 ? fromBales.lbs : Number(r.total_bale_weight) || 0
-      baleCount += fromBales && fromBales.count > 0 ? fromBales.count : Number(r.bales_count) || 0
-    }
-    const cotton = new Map<string, { lintLbs: number; bales: number }>()
-    for (const c of cropsList) if (isCottonCrop(c.name)) cotton.set(c.id, { lintLbs, bales: baleCount })
-    setCottonProd(cotton)
+    setAssumptions((ca.data as CropAssumption[]) ?? [])
+    setLoads((ld.data as LoadRow[]) ?? [])
+    setSplits((sp.data as SplitRow[]) ?? [])
+    setGinReceipts(((gr.data as unknown) as Array<Pick<GinReceipt, 'id' | 'bales_count' | 'total_bale_weight' | 'entity_id' | 'farm_id' | 'field_id'>>) ?? [])
+    setCottonBales(((cb.data as unknown) as Array<Pick<CottonBale, 'gin_receipt_id' | 'net_weight_lbs'>>) ?? [])
 
     // Physical cotton marketing (sales contracts, CCC loans, LDP, fees — 044).
     // Missing tables / no data degrade to an empty summary (hedges-only row).
     try {
-      const physical = await fetchCottonPhysical(supabase, cropYear)
-      const phys = new Map<string, CottonPhysicalSummary>()
-      if (physical.hasData) for (const c of cropsList) if (isCottonCrop(c.name)) phys.set(c.id, physical.summary)
-      setCottonPhysical(phys)
-    } catch { setCottonPhysical(new Map()) }
-
-    // Crops fully in the bin → use actual production instead of the estimate.
-    const cropCompleteKeys = new Set<string>()
-    for (const a of assumptionList) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
-    setHarvestCompleteIds(cropsWithCompleteHarvest({ plantings: plantingList, aggByKey, cropYear, cropCompleteKeys }))
+      setCottonPhysicalRaw(await fetchCottonPhysical(supabase, cropYear))
+    } catch { setCottonPhysicalRaw(null) }
     setLoading(false)
   }, [supabase])
 
@@ -286,29 +263,97 @@ export default function MarketingPage() {
     return () => { cancelled = true }
   }, [year, crops, plantings])
 
+  // Shared entity scoping: acres/production/contracts/positions narrow to the
+  // selected entity; the operation-wide assumptions apply to them unchanged.
+  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields }), [entityId, farms, fields])
+  const entityName = entityId ? entities.find((e) => e.id === entityId)?.name ?? null : null
+  const scopedPlantings = useMemo(() => scope.plantings(plantings), [scope, plantings])
+  const scopedContracts = useMemo(() => scope.byEntity(contracts), [scope, contracts])
+  const scopedFutures = useMemo(() => scope.byEntity(futures), [scope, futures])
+  const scopedOptions = useMemo(() => scope.byEntity(options), [scope, options])
+
   // Acres per crop split into full-season/double-crop × irrigated/dryland, and
   // the broken-out expected production used by the dashboard.
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const doubleCropIds = useMemo(() => buildDoubleCropSet(plantings, cropById), [plantings, cropById])
   const segByCrop = useMemo<Map<string, SegmentAcres>>(
-    () => (year == null ? new Map() : segmentAcresByCrop(plantings, year, doubleCropIds)),
-    [plantings, year, doubleCropIds],
+    () => (year == null ? new Map() : segmentAcresByCrop(scopedPlantings, year, doubleCropIds)),
+    [scopedPlantings, year, doubleCropIds],
   )
   const expProdByCrop = useMemo(
     () => (year == null ? new Map<string, number>() : expectedProductionFromBreakout(segByCrop, assumptions, year)),
     [segByCrop, assumptions, year],
   )
 
+  // (field|crop|year) → dry bushels + last load date, splits-aware — narrowed to
+  // the entity's fields. Drives both actual production (by crop) and the
+  // field-level harvest-completion check.
+  const aggByKey = useMemo(
+    () => (year == null ? new Map() : scope.fieldAgg(fieldCropAggregates(loads, splits, cropById, { cropYear: year }))),
+    [year, loads, splits, cropById, scope],
+  )
+  const production = useMemo(() => {
+    const prod = new Map<string, number>()
+    for (const [key, agg] of aggByKey) {
+      const cropId = key.split('|')[1]
+      if (cropId) prod.set(cropId, (prod.get(cropId) ?? 0) + agg.dryBu)
+    }
+    return prod
+  }, [aggByKey])
+
+  // Crops fully in the bin (within the scoped fields) → use actual production
+  // instead of the estimate.
+  const harvestCompleteIds = useMemo(() => {
+    if (year == null) return new Set<string>()
+    const cropCompleteKeys = new Set<string>()
+    for (const a of assumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
+    return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys })
+  }, [year, assumptions, scopedPlantings, aggByKey])
+
+  // Cotton actual production: lbs of lint from the entity's gin receipts —
+  // per-bale net weights when the bales are on file, else the receipt total.
+  const cottonProd = useMemo(() => {
+    const balesByReceipt = new Map<string, { lbs: number; count: number }>()
+    for (const b of cottonBales) {
+      const g = balesByReceipt.get(b.gin_receipt_id) ?? { lbs: 0, count: 0 }
+      g.lbs += Number(b.net_weight_lbs) || 0
+      g.count += 1
+      balesByReceipt.set(b.gin_receipt_id, g)
+    }
+    let lintLbs = 0, baleCount = 0
+    for (const r of scope.ginReceipts(ginReceipts)) {
+      const fromBales = balesByReceipt.get(r.id)
+      lintLbs += fromBales && fromBales.lbs > 0 ? fromBales.lbs : Number(r.total_bale_weight) || 0
+      baleCount += fromBales && fromBales.count > 0 ? fromBales.count : Number(r.bales_count) || 0
+    }
+    const cotton = new Map<string, { lintLbs: number; bales: number }>()
+    for (const c of crops) if (isCottonCrop(c.name)) cotton.set(c.id, { lintLbs, bales: baleCount })
+    return cotton
+  }, [scope, ginReceipts, cottonBales, crops])
+
+  // Physical cotton marketing summary per cotton crop id — rebuilt from the
+  // entity-scoped inputs when a filter is active.
+  const cottonPhysical = useMemo(() => {
+    const m = new Map<string, CottonPhysicalSummary>()
+    if (!cottonPhysicalRaw) return m
+    const inputs = scope.cottonInputs(cottonPhysicalRaw.inputs)
+    const hasData = inputs.contracts.length > 0 || inputs.loans.length > 0 || inputs.ldps.length > 0 || inputs.fees.length > 0
+    if (!hasData) return m
+    const summary = scope.active ? buildCottonPhysicalSummary(inputs) : cottonPhysicalRaw.summary
+    for (const c of crops) if (isCottonCrop(c.name)) m.set(c.id, summary)
+    return m
+  }, [cottonPhysicalRaw, scope, crops])
+
   const rows = useMemo(
-    () => (year == null ? [] : computeMarketing({ cropYear: year, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures, harvestCompleteCropIds: harvestCompleteIds, cottonProductionByCrop: cottonProd, cottonPhysicalByCrop: cottonPhysical })),
-    [year, crops, plantings, contracts, futures, options, assumptions, production, expProdByCrop, currentFutures, harvestCompleteIds, cottonProd, cottonPhysical],
+    () => (year == null ? [] : computeMarketing({ cropYear: year, crops, plantings: scopedPlantings, contracts: scopedContracts, futures: scopedFutures, options: scopedOptions, assumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures, harvestCompleteCropIds: harvestCompleteIds, cottonProductionByCrop: cottonProd, cottonPhysicalByCrop: cottonPhysical })),
+    [year, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, assumptions, production, expProdByCrop, currentFutures, harvestCompleteIds, cottonProd, cottonPhysical],
   )
 
   // Actual average yield (dry bushels from loads ÷ planted acres) per crop, used
   // to snap the estimate yield to actual when a crop is marked harvest-complete.
   const actualByCrop = useMemo(() => {
     const acres = new Map<string, number>()
-    for (const p of plantings) acres.set(p.crop_id, (acres.get(p.crop_id) ?? 0) + Number(p.planted_acres ?? 0))
+    for (const p of scopedPlantings) acres.set(p.crop_id, (acres.get(p.crop_id) ?? 0) + Number(p.planted_acres ?? 0))
     const m = new Map<string, { production: number; yield: number | null }>()
     for (const c of crops) {
       // Cotton actuals are lbs of lint from gin receipts; grains are dry bushels
@@ -318,12 +363,12 @@ export default function MarketingPage() {
       m.set(c.id, { production: prod, yield: prod > 0 && a > 0 ? Math.round((prod / a) * 10) / 10 : null })
     }
     return m
-  }, [plantings, crops, production, cottonProd])
+  }, [scopedPlantings, crops, production, cottonProd])
 
   // Crops shown in the assumptions editor: those with plantings this year.
   // Cotton is included — its expected_yield is lbs of lint/acre and cost/acre
   // works the same; the row labels adapt (see AssumptionRow).
-  const plantedCropIds = useMemo(() => new Set(plantings.map((p) => p.crop_id)), [plantings])
+  const plantedCropIds = useMemo(() => new Set(scopedPlantings.map((p) => p.crop_id)), [scopedPlantings])
   const plantedCrops = crops.filter((c) => plantedCropIds.has(c.id))
 
   // The only meaningful combined metrics across mixed crops: total acres and
@@ -346,14 +391,14 @@ export default function MarketingPage() {
     const m = new Map<string, boolean>()
     for (const r of rows) {
       const commodity = cropToHedgeCommodity(r.cropName)
-      const cropContracts = contracts.filter((c) => c.crop_id === r.cropId)
+      const cropContracts = scopedContracts.filter((c) => c.crop_id === r.cropId)
       const hasHtaOrBasis = cropContracts.some((c) => c.contract_type === 'hta' || c.contract_type === 'basis')
-      const hasFut = commodity ? futures.some((f) => f.commodity === commodity) : false
-      const hasOpt = commodity ? options.some((o) => o.commodity === commodity) : false
+      const hasFut = commodity ? scopedFutures.some((f) => f.commodity === commodity) : false
+      const hasOpt = commodity ? scopedOptions.some((o) => o.commodity === commodity) : false
       m.set(r.cropId, hasHtaOrBasis || hasFut || hasOpt)
     }
     return m
-  }, [rows, contracts, futures, options])
+  }, [rows, scopedContracts, scopedFutures, scopedOptions])
 
   function toggleBasis(cropId: string) {
     setBasisExpanded((s) => (s.includes(cropId) ? s.filter((x) => x !== cropId) : [...s, cropId]))
@@ -362,7 +407,7 @@ export default function MarketingPage() {
   // Export mirrors the cards; the pure builder handles grain ($/bu + bu) and
   // cotton (cents/lb + lbs) sections - see lib/marketing-export.ts.
   function buildPayload(): ExportPayload {
-    return buildMarketingExport({ year, rows, contracts, cropMeta, segByCrop, combined })
+    return buildMarketingExport({ year, rows, contracts: scopedContracts, cropMeta, segByCrop, combined, entityName })
   }
 
   async function saveAssumption(cropId: string, patch: Partial<CropAssumption>) {
@@ -409,7 +454,10 @@ export default function MarketingPage() {
           Assumptions. Everything else is per crop, in the sections below. */}
       <div className="flex items-end gap-3 flex-wrap">
         <div className="flex-1 flex items-baseline gap-x-6 gap-y-1 flex-wrap">
-          <h1 className="text-2xl font-bold">Marketing</h1>
+          <h1 className="text-2xl font-bold">
+            Marketing
+            {entityName && <span className="ml-2 text-base font-semibold text-slate-500">— {entityName}</span>}
+          </h1>
           {year != null && !loading && rows.length > 0 && (
             <div className="flex items-baseline gap-x-6 gap-y-1 text-sm flex-wrap">
               <div>
@@ -436,6 +484,7 @@ export default function MarketingPage() {
             {yearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </label>
+        <EntityFilter entities={entities} value={entityId} onChange={setEntityId} className="no-print" />
         {year != null && !loading && (
           <button
             type="button"

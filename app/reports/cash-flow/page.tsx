@@ -10,6 +10,9 @@ import { cottonCashFlowEvents, type CottonCashEvent } from '@/lib/cotton-sales'
 import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
 import { isCottonCrop } from '@/lib/marketing'
 import { resolveProgramYearConfig } from '@/lib/program-config'
+import { buildEntityScope } from '@/lib/entity-scope'
+import { usePersistentState } from '@/lib/use-persistent-state'
+import EntityFilter from '@/components/entity-filter'
 import ExportBar from '@/components/export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
 import {
@@ -17,7 +20,7 @@ import {
   numCell, textCell, theadCls,
 } from '@/components/reports/report-kit'
 import type {
-  Buyer, Contract, Crop, Entity, FieldPlanting, LoadSplit,
+  Buyer, Contract, Crop, Entity, FieldPlanting,
   CropAssumption, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate, ProgramYearConfig,
   CoveredCommodity, FarmBaseAcres, ArcPlcElection, ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment,
 } from '@/lib/types'
@@ -44,7 +47,6 @@ type LineRow = {
 }
 
 type SettlementRow = { id: string; settlement_date: string }
-type FieldRow = { id: string; farm_id: string | null }
 type FarmRow = { id: string; entity_id: string | null }
 
 const fmt = (n: number, d = 2) => n.toLocaleString(undefined, { maximumFractionDigits: d })
@@ -81,10 +83,8 @@ export default function CashFlowPage() {
   const [crops, setCrops] = useState<Crop[]>([])
   const [buyers, setBuyers] = useState<Buyer[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
-  const [fields, setFields] = useState<FieldRow[]>([])
   const [farms, setFarms] = useState<FarmRow[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
-  const [loadSplits, setLoadSplits] = useState<LoadSplit[]>([])
   // Safety-net data: crop insurance + government payments.
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
   const [policies, setPolicies] = useState<CropInsurancePolicy[]>([])
@@ -108,7 +108,10 @@ export default function CashFlowPage() {
   const [cropYear, setCropYear] = useState<number | ''>('')
   const [cropId, setCropId] = useState('')
   const [buyerId, setBuyerId] = useState('')
-  const [entityId, setEntityId] = useState('')
+  // Entity filter — persisted per report, scoped through the SHARED helper
+  // (lib/entity-scope.ts) so this page interprets "entity selected" exactly
+  // like Marketing / Revenue Projections / Income Sensitivity.
+  const [entityId, setEntityId] = usePersistentState('cash-flow:entity', '')
 
   // Cotton cash events (044): CCC loan proceeds at entry, redemption payoffs /
   // equity at outcome, pool payments, priced contract deliveries, LDP, fees.
@@ -122,16 +125,8 @@ export default function CashFlowPage() {
         const physical = await fetchCottonPhysical(supabase, cropYear)
         if (cancelled) return
         if (!physical.hasData) { setCottonEvents([]); return }
-        const inp = physical.inputs
-        const filt = entityId
-          ? {
-              ...inp,
-              contracts: inp.contracts.filter((c) => c.entity_id === entityId),
-              loans: inp.loans.filter((l) => l.entity_id === entityId),
-              ldps: inp.ldps.filter((l) => l.entity_id === entityId),
-              fees: inp.fees.filter((f) => f.entity_id === entityId),
-            }
-          : inp
+        // Shared entity scoping (same rule as the other reports).
+        const filt = buildEntityScope({ entityId, farms }).cottonInputs(physical.inputs)
         // Live CT futures (¢/lb) so on-call contracts awaiting futures can book
         // basis + current futures as a labeled estimate instead of vanishing.
         let currentFuturesCents: number | null = null
@@ -152,7 +147,7 @@ export default function CashFlowPage() {
       } catch { if (!cancelled) setCottonEvents([]) }
     })()
     return () => { cancelled = true }
-  }, [cropYear, entityId, supabase, crops])
+  }, [cropYear, entityId, supabase, crops, farms])
 
   useEffect(() => {
     ;(async () => {
@@ -174,7 +169,7 @@ export default function CashFlowPage() {
         }
         return out
       }
-      const [ct, ld, ln, st, cr, by, en, fi, fa, pl, sp] = await Promise.all([
+      const [ct, ld, ln, st, cr, by, en, fa, pl] = await Promise.all([
         supabase.from('contracts').select('*'),
         fetchAllLoads(),
         supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue, settlement_id'),
@@ -182,10 +177,8 @@ export default function CashFlowPage() {
         supabase.from('crops').select('*'),
         supabase.from('buyers').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
-        supabase.from('fields').select('id, farm_id'),
         supabase.from('farms').select('id, entity_id'),
         supabase.from('field_plantings').select('*'),
-        supabase.from('load_splits').select('load_id, field_id'),
       ])
       const [ca, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp] = await Promise.all([
         supabase.from('crop_assumptions').select('*'),
@@ -208,10 +201,8 @@ export default function CashFlowPage() {
       setCrops((cr.data as Crop[]) || [])
       setBuyers((by.data as Buyer[]) || [])
       setEntities((en.data as Entity[]) || [])
-      setFields((fi.data as FieldRow[]) || [])
       setFarms((fa.data as FarmRow[]) || [])
       setPlantings((pl.data as FieldPlanting[]) || [])
-      setLoadSplits((sp.data as LoadSplit[]) || [])
       setAssumptions((ca.data as CropAssumption[]) || [])
       setPolicies((po.data as CropInsurancePolicy[]) || [])
       setScos((sc.data as CropInsuranceSco[]) || [])
@@ -231,26 +222,27 @@ export default function CashFlowPage() {
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const buyerById = useMemo(() => new Map(buyers.map((b) => [b.id, b])), [buyers])
   const settlementById = useMemo(() => new Map(settlements.map((s) => [s.id, s])), [settlements])
-  const fieldEntity = useMemo(() => {
-    const farmEntity = new Map(farms.map((f) => [f.id, f.entity_id]))
-    return new Map(fields.map((f) => [f.id, f.farm_id ? farmEntity.get(f.farm_id) ?? null : null]))
-  }, [farms, fields])
+
+  // Shared entity scoping (lib/entity-scope.ts) — same rules as the other
+  // financial reports: contracts/policies by their own entity_id, ARC/PLC by
+  // the farm's entity, other USDA payments by farm-then-entity attribution.
+  const scope = useMemo(() => buildEntityScope({ entityId, farms }), [entityId, farms])
+  const scopedPolicies = useMemo(() => scope.byEntity(policies), [scope, policies])
 
   // Crops carrying a policy, grouped by crop year, within the active filters —
   // drives the live harvest-price fetch (one call per year) so the insurance
   // projection prices at today's market, matching the Claims Monitor.
   const insurancePolicyScope = useMemo(() => {
     const m = new Map<number, Set<string>>()
-    for (const p of policies) {
+    for (const p of scopedPolicies) {
       if (cropYear !== '' && p.crop_year !== cropYear) continue
-      if (entityId && p.entity_id !== entityId) continue
       if (cropId && p.crop_id !== cropId) continue
       const set = m.get(p.crop_year) ?? new Set<string>()
       set.add(p.crop_id)
       m.set(p.crop_year, set)
     }
     return m
-  }, [policies, cropYear, entityId, cropId])
+  }, [scopedPolicies, cropYear, cropId])
 
   useEffect(() => {
     let cancelled = false
@@ -279,16 +271,6 @@ export default function CashFlowPage() {
     })()
     return () => { cancelled = true }
   }, [insurancePolicyScope, cropById])
-  const splitsByLoadId = useMemo(() => {
-    const m = new Map<string, string[]>()
-    for (const s of loadSplits) {
-      const list = m.get(s.load_id) ?? []
-      list.push(s.field_id)
-      m.set(s.load_id, list)
-    }
-    return m
-  }, [loadSplits])
-
   const lineByLoadId = useMemo(() => {
     const m = new Map<string, LineRow>()
     for (const l of lines) if (l.load_id) m.set(l.load_id, l)
@@ -333,13 +315,12 @@ export default function CashFlowPage() {
     deliveredUnpaid: number
     revenueReceived: number
     revenueByMonth: Map<string, number>  // from settlements
-    entityIds: Set<string>
   }
   const aggByContract = useMemo(() => {
     const map = new Map<string, Agg>()
     for (const c of contracts) map.set(c.id, {
       contract: c, delivered: 0, deliveredUnpaid: 0, revenueReceived: 0,
-      revenueByMonth: new Map(), entityIds: new Set(),
+      revenueByMonth: new Map(),
     })
     for (const load of loads) {
       if (!load.contract_id) continue
@@ -359,31 +340,18 @@ export default function CashFlowPage() {
       } else {
         agg.deliveredUnpaid += bu
       }
-      if (load.from_type === 'field') {
-        if (load.from_field_id) {
-          const ent = fieldEntity.get(load.from_field_id) ?? null
-          if (ent) agg.entityIds.add(ent)
-        } else {
-          // Split load — attribute to every entity its constituent fields touch.
-          const fieldIds = splitsByLoadId.get(load.id) ?? []
-          for (const fid of fieldIds) {
-            const ent = fieldEntity.get(fid) ?? null
-            if (ent) agg.entityIds.add(ent)
-          }
-        }
-      }
     }
     return map
-  }, [contracts, loads, cropById, lineByLoadId, lineByTicket, settlementById, fieldEntity, splitsByLoadId])
+  }, [contracts, loads, cropById, lineByLoadId, lineByTicket, settlementById])
 
+  // Entity scoping matches the Contracts page and the other reports: a
+  // contract belongs to its own entity_id (settlement cash follows its
+  // contract). Rows without an entity drop out under a filter.
   const visibleContracts = contracts.filter((c) => {
     if (cropYear !== '' && c.crop_year !== cropYear) return false
     if (cropId && c.crop_id !== cropId) return false
     if (buyerId && c.buyer_id !== buyerId) return false
-    if (entityId) {
-      const agg = aggByContract.get(c.id)
-      if (!agg || !agg.entityIds.has(entityId)) return false
-    }
+    if (entityId && c.entity_id !== entityId) return false
     return true
   })
 
@@ -446,9 +414,6 @@ export default function CashFlowPage() {
     return buckets
   }, [visibleContracts, aggByContract])
 
-  // Farm -> entity, for filtering ARC/PLC by the entity dropdown.
-  const farmEntity = useMemo(() => new Map(farms.map((f) => [f.id, f.entity_id])), [farms])
-
   // Safety net (crop insurance + government payments) bucketed by month, with the
   // program-specific timing: ARC/PLC in October of crop_year + 1, crop insurance
   // proceeds in the chosen month (default December), other USDA payments on their
@@ -474,7 +439,7 @@ export default function CashFlowPage() {
         const projected = projectPayments({ cropYear: yr, baseAcres, commodities, elections, priceData: arcPriceData, payments: arcPayments })
         let net = 0
         for (const p of projected) {
-          if (entityId && farmEntity.get(p.farmId) !== entityId) continue
+          if (!scope.farmInEntity(p.farmId)) continue
           net += p.result.net
         }
         if (net !== 0) ensure(monthKey(new Date(expectedArcPlcDate(yr) + 'T00:00:00'))).arcPlc += net
@@ -486,13 +451,13 @@ export default function CashFlowPage() {
     // the two pages reconcile. Run once per crop year present in the filtered
     // policies and bucket each year's total into the chosen month.
     const insuranceYears = Array.from(new Set(
-      policies
-        .filter((p) => (cropYear === '' || p.crop_year === cropYear) && (!entityId || p.entity_id === entityId) && (!cropId || p.crop_id === cropId))
+      scopedPolicies
+        .filter((p) => (cropYear === '' || p.crop_year === cropYear) && (!cropId || p.crop_id === cropId))
         .map((p) => p.crop_year),
     ))
     for (const yr of insuranceYears) {
-      const yrPolicies = policies.filter((p) =>
-        p.crop_year === yr && (!entityId || p.entity_id === entityId) && (!cropId || p.crop_id === cropId))
+      const yrPolicies = scopedPolicies.filter((p) =>
+        p.crop_year === yr && (!cropId || p.crop_id === cropId))
       if (yrPolicies.length === 0) continue
       const projected = projectInsuranceIndemnities({
         cropYear: yr,
@@ -511,16 +476,15 @@ export default function CashFlowPage() {
     // Other USDA payments — on payment_date, else December of the crop year.
     // Attributed to the year the payment lands in (payment-date year, else
     // crop_year, which for manual entries means the payment year).
-    for (const o of otherPayments) {
+    for (const o of scope.otherPayments(otherPayments)) {
       if (cropYear !== '' && paymentAttributionYear(o) !== cropYear) continue
-      if (entityId && o.entity_id !== entityId) continue
       if (cropId && o.crop_id !== cropId) continue
       const key = o.payment_date ? monthKey(new Date(o.payment_date + 'T00:00:00')) : `${o.crop_year}-12`
       ensure(key).other += Number(o.amount)
     }
 
     return buckets
-  }, [cropYear, cropId, entityId, elections, baseAcres, commodities, arcPriceData, arcPayments, farmEntity, policies, scos, ecos, harvestEstimates, assumptions, plantings, loads, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments])
+  }, [cropYear, cropId, scope, elections, baseAcres, commodities, arcPriceData, arcPayments, scopedPolicies, scos, ecos, harvestEstimates, assumptions, plantings, loads, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments])
 
   // Cotton events, respecting the crop filter (a non-cotton crop hides them)
   // and bucketed net per month.
@@ -667,7 +631,14 @@ export default function CashFlowPage() {
   return (
     <div className="space-y-4">
       <div className="flex items-start gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold flex-1">Cash Flow Forecast</h1>
+        <h1 className="text-2xl font-bold flex-1">
+          Cash Flow Forecast
+          {entityId && (
+            <span className="ml-2 text-base font-semibold text-slate-500">
+              — {entities.find((e) => e.id === entityId)?.name ?? ''}
+            </span>
+          )}
+        </h1>
         {!loading && (monthlyRows.length > 0 || visibleContracts.length > 0) && <ExportBar buildPayload={buildPayload} />}
       </div>
 
@@ -686,10 +657,7 @@ export default function CashFlowPage() {
           <option value="">All buyers</option>
           {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
-        <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
-          <option value="">All entities</option>
-          {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-        </select>
+        <EntityFilter entities={entities} value={entityId} onChange={setEntityId} className="justify-end" />
       </div>
 
       {loading ? <p className="text-slate-500">Loading…</p> : (

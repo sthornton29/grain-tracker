@@ -23,6 +23,8 @@ export function buildMarketingExport(args: {
   /** cropId → "advanced" (has hedges / HTA / basis contracts). */
   cropMeta: Map<string, boolean>
   segByCrop: Map<string, SegmentAcres>
+  /** Active entity filter's display name (null = All entities). */
+  entityName?: string | null
   combined: { acres: number; profit: number | null }
 }): ExportPayload {
   const { year, rows, contracts, cropMeta, segByCrop, combined } = args
@@ -134,5 +136,10 @@ export function buildMarketingExport(args: {
     sections.push({ title: r.cropName, columns: KV, rows: rows2, rowMeta: meta2 })
   }
 
-  return { title: `Marketing — ${year ?? ''}`, filters: `Crop year: ${year ?? '—'}`, sections, singleSheet: true }
+  return {
+    title: `Marketing — ${year ?? ''}`,
+    filters: `Crop year: ${year ?? '—'}${args.entityName ? ` · Entity: ${args.entityName}` : ''}`,
+    sections,
+    singleSheet: true,
+  }
 }

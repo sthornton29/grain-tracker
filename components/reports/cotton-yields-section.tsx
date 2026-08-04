@@ -16,7 +16,7 @@ import type { CottonLoad, GinReceipt, CottonBale, Farm, Field, FieldPlanting, Cr
 
 const lbs = (n: number | null | undefined) => (n == null ? '—' : Math.round(Number(n)).toLocaleString())
 
-export default function CottonYieldsSection({ year }: { year: number | '' }) {
+export default function CottonYieldsSection({ year, entityId = '' }: { year: number | ''; entityId?: string }) {
   const supabase = useMemo(() => createClient(), [])
   const [enabled, setEnabled] = useState(false)
   const [loads, setLoads] = useState<CottonLoad[]>([])
@@ -61,10 +61,16 @@ export default function CottonYieldsSection({ year }: { year: number | '' }) {
     const cottonCropIds = new Set(crops.filter((c) => /cotton/i.test(c.name)).map((c) => c.id))
     // Planted acres: the field's cotton planting for the season; fall back to
     // the field's total acres when no planting row exists.
-    const fieldIds = new Set<string>([
+    let fieldIds = new Set<string>([
       ...yLoads.map((l) => l.field_id).filter((x): x is string => !!x),
       ...yReceipts.map((r) => r.field_id).filter((x): x is string => !!x),
     ])
+    // Entity filter (Season Summary): keep only fields on the entity's farms.
+    if (entityId) {
+      const entityFarms = new Set(farms.filter((f) => f.entity_id === entityId).map((f) => f.id))
+      const entityFields = new Set(fields.filter((f) => f.farm_id != null && entityFarms.has(f.farm_id)).map((f) => f.id))
+      fieldIds = new Set([...fieldIds].filter((fid) => entityFields.has(fid)))
+    }
     const fieldInputs = Array.from(fieldIds).map((fid) => {
       const planting = plantings.find((p) => p.field_id === fid && p.season_year === year && cottonCropIds.has(p.crop_id))
       const field = fields.find((f) => f.id === fid)
@@ -81,7 +87,7 @@ export default function CottonYieldsSection({ year }: { year: number | '' }) {
         return { ...r, farmName: farm?.name ?? '—', fieldName: field?.name_or_number ?? '—' }
       })
       .sort((a, b) => a.farmName.localeCompare(b.farmName) || a.fieldName.localeCompare(b.fieldName))
-  }, [year, loads, receipts, bales, ginnedIds, farms, fields, plantings, crops])
+  }, [year, entityId, loads, receipts, bales, ginnedIds, farms, fields, plantings, crops])
 
   if (!enabled || rows.length === 0) return null
 

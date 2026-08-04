@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { computeMarketing, aggregateMarketing, type Planting } from '@/lib/marketing'
 import { computeRevenueProjections, type InsuranceProceeds, type GovtProceeds } from '@/lib/revenue-projections'
+import { buildEntityScope } from '@/lib/entity-scope'
 import type { Crop, Contract, CropAssumption } from '@/lib/types'
 
 // Fix 4 — the Marketing dashboard and Revenue Projections share ONE revenue
@@ -214,5 +215,83 @@ describe('Revenue Projections ↔ Marketing dashboard reconciliation', () => {
     const insTotal = [...insuranceByCrop.values()].reduce((s, i) => s + i.netPnl, 0)
     const govtTotal = [...govtByCrop.values()].reduce((s, g) => s + g.arcPlc + g.cropSpecificOther + g.allocatedOther, 0)
     expect(totals.profit - dash.totalProfit!).toBeCloseTo(insTotal + govtTotal, 6)
+  })
+})
+
+// The five entity-filtered reports all scope through lib/entity-scope BEFORE
+// the shared computeMarketing/aggregateMarketing layer, so the identity must
+// keep holding per entity, and '' (All entities) must reproduce the unfiltered
+// numbers exactly.
+describe('reconciliation under an entity filter (shared entity-scope layer)', () => {
+  const farms = [{ id: 'F1', entity_id: 'E1' }, { id: 'F2', entity_id: 'E2' }]
+  const fields = [{ id: 'A', farm_id: 'F1' }, { id: 'B', farm_id: 'F2' }]
+  const crops = [crop('corn', 'Corn')]
+  // Field-keyed plantings: 600 ac on E1's field, 400 ac on E2's.
+  const allPlantings = [
+    { field_id: 'A', crop_id: 'corn', season_year: CY, planted_acres: 600 },
+    { field_id: 'B', crop_id: 'corn', season_year: CY, planted_acres: 400 },
+  ]
+  // Each entity's own flat-cash forward (contracts are entity-keyed).
+  const allContracts: Contract[] = [
+    contract({ crop_id: 'corn', entity_id: 'E1', contract_type: 'forward', contracted_bushels: 20000, cash_price: 4.9 }),
+    contract({ crop_id: 'corn', entity_id: 'E2', contract_type: 'forward', contracted_bushels: 10000, cash_price: 5.0 }),
+  ]
+  // ONE operation-wide assumption — 180 bu/ac and $600/ac apply to BOTH
+  // entities' acres (no per-entity assumption store).
+  const assumptions = [assumption({ crop_id: 'corn', expected_yield: 180, cost_per_acre: 600 })]
+  const currentFuturesByCrop = new Map([['corn', 4.5]])
+
+  function marketingFor(entityId: string) {
+    const scope = buildEntityScope({ entityId, farms, fields })
+    const plantings: Planting[] = scope.plantings(allPlantings)
+    const contracts = scope.byEntity(allContracts)
+    return {
+      contracts,
+      rows: computeMarketing({
+        cropYear: CY, crops, plantings, contracts, futures: [], options: [],
+        assumptions, actualProductionByCrop: new Map(), currentFuturesByCrop,
+      }),
+    }
+  }
+
+  it('RevProj profit − Marketing profit === the ENTITY’s insurance + government', () => {
+    const { rows: e1Rows, contracts: e1Contracts } = marketingFor('E1')
+    const corn = e1Rows[0]
+    // E1: 600 ac × 180 = 108,000 bu; 20,000 @ 4.90 + 88,000 unpriced @ 4.50
+    //   → blended 494,000; cost 600 × 600 ac = 360,000 → profit 134,000.
+    // The 180 bu/ac assumption applied to E1's acres exactly as operation-wide.
+    expect(corn.totalProduction).toBeCloseTo(108000, 2)
+    expect(corn.blendedRevenue).toBeCloseTo(494000, 2)
+    expect(corn.totalProfit).toBeCloseTo(134000, 2)
+
+    // E1's own safety net (policies/payments already narrowed to the entity).
+    const insuranceByCrop = new Map<string, InsuranceProceeds>([['corn', ins(12000, 20000, 8000)]])
+    const govtByCrop = new Map<string, GovtProceeds>([['corn', govt(9000, 0, 1000)]])
+    const { rows, totals } = computeRevenueProjections({
+      marketingRows: e1Rows, contracts: e1Contracts, cropYear: CY,
+      marketPriceByCrop: new Map(), insuranceByCrop, govtByCrop,
+    })
+    expect(rows[0].cropSalesRevenue).toBeCloseTo(corn.blendedRevenue, 6)
+    expect(rows[0].profit! - corn.totalProfit!).toBeCloseTo(12000 + 10000, 6)
+    expect(totals.profit - aggregateMarketing(e1Rows).totalProfit!).toBeCloseTo(22000, 6)
+  })
+
+  it('"All entities" reproduces the unfiltered numbers exactly, and entities partition the total', () => {
+    const { rows: allRows } = marketingFor('')
+    // Identical to running the engines with no scoping at all.
+    const unfiltered = computeMarketing({
+      cropYear: CY, crops, plantings: allPlantings, contracts: allContracts, futures: [], options: [],
+      assumptions, actualProductionByCrop: new Map(), currentFuturesByCrop,
+    })
+    expect(allRows).toEqual(unfiltered)
+    const aggAll = aggregateMarketing(allRows)
+
+    // The two entities' scoped results partition the unfiltered totals.
+    const aggE1 = aggregateMarketing(marketingFor('E1').rows)
+    const aggE2 = aggregateMarketing(marketingFor('E2').rows)
+    expect(aggE1.acres + aggE2.acres).toBeCloseTo(aggAll.acres, 6)
+    expect(aggE1.totalProduction + aggE2.totalProduction).toBeCloseTo(aggAll.totalProduction, 6)
+    expect(aggE1.blendedRevenue + aggE2.blendedRevenue).toBeCloseTo(aggAll.blendedRevenue, 6)
+    expect(aggE1.totalProfit! + aggE2.totalProfit!).toBeCloseTo(aggAll.totalProfit!, 6)
   })
 })
