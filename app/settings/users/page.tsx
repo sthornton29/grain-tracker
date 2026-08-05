@@ -31,6 +31,12 @@ export default function UsersModulesPage() {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
+  // Invite-by-email (055): Supabase emails a set-your-password link; the
+  // user lands in this org with the chosen role already assigned.
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteRole, setInviteRole] = useState<'owner' | 'gin' | 'viewer'>('owner')
+  const [inviteGrantIds, setInviteGrantIds] = useState<Set<string>>(new Set())
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false)
   // Inline per-row role editing.
   const [myUserId, setMyUserId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -41,8 +47,42 @@ export default function UsersModulesPage() {
     ;(async () => {
       const { data: { user } } = await supabase.auth.getUser()
       setMyUserId(user?.id ?? null)
+      if (user) {
+        const { data: sa } = await supabase.from('super_admins').select('user_id').eq('user_id', user.id).maybeSingle()
+        setIsSuperAdmin(sa != null)
+      }
     })()
   }, [supabase])
+
+  async function inviteUser(e: React.FormEvent) {
+    e.preventDefault()
+    setErr(null); setMsg(null)
+    if (!inviteEmail.trim()) { setErr('Enter the email to invite.'); return }
+    if (inviteRole === 'viewer' && inviteGrantIds.size === 0) { setErr('Pick at least one entity the viewer may see.'); return }
+    setBusy(true)
+    const res = await fetch('/api/admin/invite', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        email: inviteEmail.trim(),
+        role: inviteRole,
+        entity_ids: inviteRole === 'viewer' ? Array.from(inviteGrantIds) : undefined,
+      }),
+    })
+    const json = await res.json().catch(() => null)
+    setBusy(false)
+    if (!res.ok) { setErr(json?.error ?? 'Invite failed.'); return }
+    setMsg(`Invited ${inviteEmail.trim()} as ${inviteRole} — they'll get an email to set their password and land in this organization.`)
+    setInviteEmail(''); setInviteGrantIds(new Set())
+    refresh()
+  }
+
+  function toggleInviteGrant(id: string) {
+    setInviteGrantIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
 
   async function refresh() {
     const [settings, roles, ents] = await Promise.all([
@@ -169,14 +209,48 @@ export default function UsersModulesPage() {
       </section>
 
       <section className="bg-white rounded-xl shadow p-4 space-y-3">
+        <h2 className="font-semibold text-lg">Invite a user</h2>
+        <p className="text-sm text-slate-500">
+          Sends an email with a set-your-password link; they land in this organization with the role you pick.
+        </p>
+        <form onSubmit={inviteUser} className="space-y-3">
+          <div className="flex flex-wrap items-end gap-2">
+            <input type="email" placeholder="user@example.com" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} className={`${inputCls} w-64`} />
+            <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as 'owner' | 'gin' | 'viewer')} className={inputCls}>
+              <option value="owner">owner (full access)</option>
+              <option value="gin">gin (Cotton intake only)</option>
+              <option value="viewer">viewer (reports &amp; yields, read-only)</option>
+            </select>
+            <button type="submit" disabled={busy} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
+              Send invite
+            </button>
+          </div>
+          {inviteRole === 'viewer' && (
+            <fieldset className="rounded-lg border border-slate-200 p-3">
+              <legend className="text-sm font-semibold px-1">Entities this viewer may see (required — pick at least one)</legend>
+              <div className="flex flex-wrap gap-x-5 gap-y-2">
+                {entities.map((en) => (
+                  <label key={en.id} className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={inviteGrantIds.has(en.id)} onChange={() => toggleInviteGrant(en.id)} className="h-4 w-4" />
+                    <span>{en.name}{en.entity_role === 'marketing_agent' ? ' (marketing agent)' : ''}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+          )}
+        </form>
+      </section>
+
+      <section className="bg-white rounded-xl shadow p-4 space-y-3">
         <h2 className="font-semibold text-lg">Users &amp; Roles</h2>
         <p className="text-sm text-slate-500">
           <b>owner</b> = full access (the default). <b>gin</b> = the gin operator role: ONLY the Cotton intake pages
           (Seed Cotton Loads, Gin Receipts, Bales &amp; Grades). <b>viewer</b> = read-only stakeholder: ONLY the Yields
           page and the Reports, limited to the entities you pick below, with no editing anywhere (their report
           assumption tweaks are private to them and never touch your numbers). All of it enforced in the nav, by
-          server-side redirect, and by row-level security. Create the login itself (email + password) in the{' '}
-          <b>Supabase Auth dashboard</b> first, then assign its role here.
+          server-side redirect, and by row-level security. Prefer the <b>invite</b> above for new people; this form
+          assigns roles to logins that already exist (e.g. dashboard-created).
+          {isSuperAdmin && <> {' '}<a href="/admin" className="text-brand-deep underline decoration-dotted">Platform admin →</a></>}
         </p>
         <form onSubmit={assignRole} className="space-y-3">
           <div className="flex flex-wrap items-end gap-2">
