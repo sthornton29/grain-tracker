@@ -211,9 +211,9 @@ export default function EntitiesPage() {
 
       {!roleSupported && (
         <p className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">
-          Entity roles (farming vs marketing agent) need migration <code>051_entity_role.sql</code> — run it in the
-          Supabase SQL editor, then mark the marketing entity so its contracts and hedges flow down to the farming
-          entities in the entity-filtered reports.
+          Entity roles (farming vs marketing agent) aren&rsquo;t set up yet — contact support. Once enabled, you can
+          mark the marketing entity so its contracts and hedges flow down to the farming entities in the
+          entity-filtered reports.
         </p>
       )}
 

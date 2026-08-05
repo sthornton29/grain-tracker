@@ -138,7 +138,7 @@ export default function UsersModulesPage() {
       entity_ids: role === 'viewer' ? Array.from(grantIds) : null,
     })
     setBusy(false)
-    if (error) { setErr(error.message.includes('no auth user') ? `No login exists for ${email.trim()} — create the user in the Supabase Auth dashboard first, then assign the role here.` : error.message); return }
+    if (error) { setErr(error.message.includes('no auth user') ? `No login exists for ${email.trim()} yet — use “Invite a user” above to add them.` : error.message); return }
     const grantNames = entities.filter((en) => grantIds.has(en.id)).map((en) => en.name).join(', ')
     setMsg(
       role === 'gin' ? `${email.trim()} is now a gin operator (Cotton intake only).`
@@ -266,9 +266,9 @@ export default function UsersModulesPage() {
           <b>owner</b> = full access (the default). <b>gin</b> = the gin operator role: ONLY the Cotton intake pages
           (Seed Cotton Loads, Gin Receipts, Bales &amp; Grades). <b>viewer</b> = read-only stakeholder: ONLY the Yields
           page and the Reports, limited to the entities you pick below, with no editing anywhere (their report
-          assumption tweaks are private to them and never touch your numbers). All of it enforced in the nav, by
-          server-side redirect, and by row-level security. Prefer the <b>invite</b> above for new people; this form
-          assigns roles to logins that already exist (e.g. dashboard-created).
+          assumption tweaks are private to them and never touch your numbers). All of it enforced at every level of
+          the system. Prefer the <b>invite</b> above for new people; this form
+          assigns roles to logins that already exist.
           {isSuperAdmin && <> {' '}<a href="/admin" className="text-brand-deep underline decoration-dotted">Platform admin →</a></>}
         </p>
         <form onSubmit={assignRole} className="space-y-3">
@@ -307,7 +307,7 @@ export default function UsersModulesPage() {
         <table className="min-w-full text-sm">
           <thead className="bg-slate-50 text-slate-600"><tr>{['Email', 'Role', 'Entities', ''].map((h, i) => <th key={i} className="text-left px-3 py-2">{h}</th>)}</tr></thead>
           <tbody>
-            {users.length === 0 && <tr><td colSpan={4} className="px-3 py-4 text-slate-400">No users listed (run migration 042).</td></tr>}
+            {users.length === 0 && <tr><td colSpan={4} className="px-3 py-4 text-slate-400">No users listed — this part of Turnrow isn’t set up yet. Contact support.</td></tr>}
             {users.map((u) => {
               const isSelf = u.user_id === myUserId
               const isEditing = editingId === u.user_id
@@ -337,7 +337,7 @@ export default function UsersModulesPage() {
                       <button type="button" onClick={() => setEditingId(null)} className="text-slate-500 text-xs">Cancel</button>
                     </span>
                   ) : isSelf ? (
-                    <span className="text-xs text-slate-400 cursor-help" title="You can't change your own role — the last owner demoting themselves would lock everyone out of role management. Have another owner change it, or use the Supabase dashboard.">—</span>
+                    <span className="text-xs text-slate-400 cursor-help" title="You can't change your own role — the last owner demoting themselves would lock everyone out of role management. Have another owner change it, or contact support.">—</span>
                   ) : (
                     <button type="button" onClick={() => startEdit(u)} className="text-brand-deep text-xs underline decoration-dotted">Edit</button>
                   )}

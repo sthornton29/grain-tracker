@@ -225,7 +225,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
       supabase.from('fields').select('total_acres'),
     ])
     if (sc.error?.message.includes('does not exist') || sc.error?.code === '42P01') {
-      setErr('The budget tables are missing — run supabase/048_crop_budget_planner.sql in the Supabase SQL editor first.')
+      setErr('This part of Turnrow isn’t set up yet — contact support.')
     }
     setScenarios((sc.data as BudgetScenario[]) || [])
     setLines((ln.data as BudgetLine[]) || [])
@@ -328,7 +328,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
       })
       setPriceNote(typeof json.note === 'string' ? json.note : null)
     } catch {
-      setPriceNote('Could not refresh budget-year futures — showing cached quotes; crops without one fall back to manual.')
+      setPriceNote('Could not refresh budget-year futures — showing the most recent saved quotes; crops without one fall back to manual.')
     }
   }, [])
 
@@ -423,7 +423,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
         label: liveMode ? (card.symbol ?? 'live') : 'manual',
         live: liveMode,
         title: liveMode
-          ? `${budgetContractLabel(card.crop?.name, budgetYear === '' ? defaultBudgetYear : budgetYear) ?? 'Live futures'}${card.live ? ` as of ${card.live.priceDate ?? '—'}${card.live.stale ? ' (cached)' : ''}` : ' — not quoted'}${card.carrier?.basis ? ' + basis' : ''}`
+          ? `${budgetContractLabel(card.crop?.name, budgetYear === '' ? defaultBudgetYear : budgetYear) ?? 'Live futures'}${card.live ? ` as of ${card.live.priceDate ?? '—'}${card.live.stale ? ' (not current)' : ''}` : ' — not quoted'}${card.carrier?.basis ? ' + basis' : ''}`
           : 'Manual price — ↻ in Assumptions restores the live quote',
       }
     }
@@ -1184,7 +1184,7 @@ function CropAssumptionCard({
                 <span
                   className={`text-[10px] rounded-full px-1.5 py-0.5 border ${liveMode ? 'bg-sky-100 text-sky-800 border-sky-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}
                   title={liveMode
-                    ? `${budgetContractLabel(card.crop?.name, year) ?? 'Live futures'}${card.live ? ` as of ${card.live.priceDate ?? '—'}${card.live.stale ? ' (cached)' : ''}` : ' — not quoted'}`
+                    ? `${budgetContractLabel(card.crop?.name, year) ?? 'Live futures'}${card.live ? ` as of ${card.live.priceDate ?? '—'}${card.live.stale ? ' (not current)' : ''}` : ' — not quoted'}`
                     : 'Manual price — ↻ restores the live quote'}
                 >
                   {liveMode ? (card.symbol ?? 'live') : 'manual'}

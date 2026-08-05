@@ -95,7 +95,7 @@ export default function CottonMarketingPage() {
       supabase.from('awp_weekly').select('*').order('week_effective', { ascending: false }).limit(30),
     ])
     if (ct.error?.message.includes('does not exist') || ct.error?.code === '42P01') {
-      setErr('The cotton marketing tables are missing — run supabase/044_cotton_physical_marketing.sql in the Supabase SQL editor first.')
+      setErr('This part of Turnrow isn’t set up yet — contact support.')
     }
     setEntities((en.data as Entity[]) || [])
     setBuyers((by.data as Buyer[]) || [])

@@ -7,6 +7,7 @@ import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physi
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
+import CropYearSalesStatus from '@/components/crop-year-sales-status'
 import { buildMarketingExport } from '@/lib/marketing-export'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { buildDoubleCropSet } from '@/lib/plantings'
@@ -598,6 +599,15 @@ export default function MarketingPage() {
         </div>
       )}
 
+      {/* Sold everything? The same question as Settings → Crops, kept here so
+          finishing a year's marketing doesn't require a trip to Settings.
+          Viewers are read-only (the checkbox save is refused for them). */}
+      {year != null && !loading && rows.length > 0 && !viewer.isViewer && (
+        <div className="no-print">
+          <CropYearSalesStatus year={year} />
+        </div>
+      )}
+
       {/* Assumptions slide-over */}
       {assumptionsOpen && year != null && (
         <AssumptionsPanel
@@ -938,7 +948,7 @@ function CropSection({
                 </div>
                 {nc && expired && <div className="text-xs text-amber-700">Contract expired — enter price manually.</div>}
                 {/* Show the futures symbol only in advanced mode (no hedging jargon on simple sections). */}
-                {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{advanced ? `${wfSymbol} · ` : 'Today · '}{price2(wfFut)}{wfStale ? ' (cached)' : ''}</div>}
+                {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{advanced ? `${wfSymbol} · ` : 'Today · '}{price2(wfFut)}{wfStale ? ' (not current)' : ''}</div>}
                 {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
                 {/* Explanation under the futures input. */}
                 <div className="text-xs text-slate-400">Assumed {advanced ? 'futures ' : ''}price — saves automatically; values the unpriced bushels until cleared.</div>
@@ -1229,7 +1239,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
                 {!nc && <span className="text-xs text-slate-400">Enter a price</span>}
               </div>
               {nc && expired && <div className="text-xs text-amber-700">Contract expired — enter price manually.</div>}
-              {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{wfSymbol} · {cents2(wfFut)}{wfStale ? ' (cached)' : ''}</div>}
+              {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{wfSymbol} · {cents2(wfFut)}{wfStale ? ' (not current)' : ''}</div>}
               {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
               <div className="text-xs text-slate-400">Assumed $/lb — saves automatically; values the unhedged lbs until cleared.</div>
             </div>

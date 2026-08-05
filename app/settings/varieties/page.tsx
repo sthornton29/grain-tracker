@@ -258,7 +258,7 @@ export default function VarietiesPage() {
       setBanner(`Kept both “${pair.a.name}” and “${pair.b.name}” — this pair won’t be suggested again.`)
       await refresh()
     } catch (e: any) {
-      setErr(`Could not record the decision: ${e?.message ?? 'unknown error'}. (Has migration 043 been applied?)`)
+      setErr(`Could not record the decision: ${e?.message ?? 'unknown error'}. If this keeps happening, contact support.`)
     } finally {
       setBusyPair(null)
     }

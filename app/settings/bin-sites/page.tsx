@@ -251,7 +251,7 @@ export default function BinSitesPage() {
 
       {hasDefaultSite && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          Existing bins were placed in a &ldquo;Default Site&rdquo; during the migration. Rename or split these into the actual physical sites you use.
+          Your existing bins were grouped under a &ldquo;Default Site&rdquo; automatically. Rename or split these into the actual physical sites you use.
         </div>
       )}
 

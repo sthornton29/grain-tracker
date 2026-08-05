@@ -448,7 +448,7 @@ export default function GovernmentPaymentsSettingsPage() {
           and the <b>benchmark county yield</b> (5-yr Olympic average trend-adjusted). A row with no county is the
           default for all counties; add county rows if your farms span counties with different benchmarks. The{' '}
           <b>FSA lookup</b> reads the county yield straight from FSA&apos;s published “ARC-County Benchmark Yields and
-          Revenues” workbook (cached; falls back to the most recent published year) and takes the price from the
+          Revenues” workbook (falls back to the most recent published year) and takes the price from the
           seeded national values; an AI web search remains as a labeled fallback. You confirm before anything is
           saved.
         </p>

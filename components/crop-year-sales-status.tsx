@@ -1,21 +1,23 @@
 'use client'
 
-// Settings → Crops: manual "physical sales complete" flag per crop × crop
-// year (crop_year_sales_status, migration 050). Shrink and small residuals
-// keep the computed production-vs-settled check from ever hitting exactly
-// zero, so the partner API's /crop-year-status endpoint reports BOTH the
-// computed check and this manual flag — this is the only place the flag is
-// set. Crops listed = crops planted in the selected year.
+// The "Physical Sales Complete for the Year?" question per crop × crop year
+// (crop_year_sales_status, migration 050). Shrink and small residuals keep
+// the computed production-vs-settled check from ever hitting exactly zero,
+// so the partner API's /crop-year-status endpoint reports BOTH the computed
+// check and this manual flag. Rendered on Settings → Crops (standalone, own
+// year picker) AND embedded on the Marketing dashboard via the `year` prop
+// (follows the page's crop-year filter) — the same rows either way.
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 
 type StatusRow = { crop_id: string; physical_sales_complete: boolean }
 
-export default function CropYearSalesStatus() {
+export default function CropYearSalesStatus({ year: yearProp }: { year?: number }) {
   const supabase = useMemo(() => createClient(), [])
   const currentYear = new Date().getFullYear()
-  const [year, setYear] = useState(currentYear)
+  const [ownYear, setYear] = useState(currentYear)
+  const year = yearProp ?? ownYear
   const [years, setYears] = useState<number[]>([currentYear])
   const [crops, setCrops] = useState<Array<{ id: string; name: string }>>([])
   const [flags, setFlags] = useState<Map<string, boolean>>(new Map())
@@ -61,7 +63,7 @@ export default function CropYearSalesStatus() {
         // 42P01 = the table doesn't exist yet.
         setErr(
           statusRes.error.code === '42P01'
-            ? 'The crop_year_sales_status table is missing — run migration 050 in the Supabase SQL editor.'
+            ? 'This part of Turnrow isn’t set up yet — contact support.'
             : statusRes.error.message,
         )
         setFlags(new Map())
@@ -83,7 +85,7 @@ export default function CropYearSalesStatus() {
     if (error) {
       setErr(
         error.code === '42P01'
-          ? 'The crop_year_sales_status table is missing — run migration 050 in the Supabase SQL editor.'
+          ? 'This part of Turnrow isn’t set up yet — contact support.'
           : error.message,
       )
       setFlags((m) => new Map(m).set(cropId, !complete))
@@ -93,20 +95,22 @@ export default function CropYearSalesStatus() {
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-3 flex-wrap">
-        <h2 className="text-lg font-bold">Physical sales complete</h2>
-        <select
-          value={year}
-          onChange={(e) => setYear(Number(e.target.value))}
-          className="rounded-lg border border-slate-300 px-3 py-1.5 bg-white text-sm"
-          aria-label="Crop year"
-        >
-          {years.map((y) => <option key={y} value={y}>{y}</option>)}
-        </select>
+        <h2 className="text-lg font-bold">Physical Sales Complete for the Year?</h2>
+        {yearProp == null && (
+          <select
+            value={year}
+            onChange={(e) => setYear(Number(e.target.value))}
+            className="rounded-lg border border-slate-300 px-3 py-1.5 bg-white text-sm"
+            aria-label="Crop year"
+          >
+            {years.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+        )}
       </div>
       <p className="text-sm text-slate-500">
-        Marks a crop year&apos;s physical grain/cotton sales finished even when shrink or small
-        residuals keep the computed sold-vs-production check from reaching zero. The partner API
-        reports both this flag and the computed check.
+        When a crop year&apos;s grain or cotton is fully sold, mark it here. Shrink and small
+        leftovers mean the numbers rarely land on exactly zero, so this is how you tell Turnrow
+        the year&apos;s selling is truly finished.
       </p>
       {err && <p className="text-sm text-red-600">{err}</p>}
       <ul className="bg-white rounded-xl shadow divide-y">
@@ -124,7 +128,7 @@ export default function CropYearSalesStatus() {
                 onChange={(e) => toggle(c.id, e.target.checked)}
                 aria-label={`${c.name} ${year} physical sales complete`}
               />
-              All physical sales complete
+              Yes — all sold for {year}
             </label>
           </li>
         ))}

@@ -203,7 +203,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         setLiveEstimates(m)
         setPriceNote(typeof json.note === 'string' ? json.note : null)
       } catch {
-        if (!cancelled) setPriceNote('Could not refresh the harvest-price estimate — using cached/projected prices.')
+        if (!cancelled) setPriceNote('Could not refresh the harvest-price estimate — showing the most recent saved prices.')
       }
     })()
     return () => { cancelled = true }
@@ -500,7 +500,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
           return [
             cropName(p.crop_id), countyName(p.county_id), PLAN_TYPE_SHORT[p.plan_type], PRACTICE_LABEL[p.practice ?? 'non_irrigated'],
             Math.round(Number(p.coverage_level) * 100), isAreaPlan(p.plan_type) ? '' : Number(p.aph_yield),
-            Number(p.projected_price), Number(c.base.harvestPrice.toFixed(4)), `${c.harvest?.source ?? 'projected'}${c.harvest?.stale ? ' (cached)' : ''}`,
+            Number(p.projected_price), Number(c.base.harvestPrice.toFixed(4)), `${c.harvest?.source ?? 'projected'}${c.harvest?.stale ? ' (not current)' : ''}`,
             Number(c.assumedYield.toFixed(1)), yieldBasis.source,
             audit.countyEstimate ? Number(audit.countyEstimate.value.toFixed(1)) : '', audit.countyEstimate?.source ?? '',
             Math.round(c.comp.base.revenueGuarantee), Math.round(c.comp.base.expectedRevenue),
@@ -838,7 +838,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                           <td className="px-2 py-1 text-right tabular-nums">{isAreaPlan(p.plan_type) ? '—' : Number(p.aph_yield).toFixed(1)}</td>
                           <td className="px-2 py-1 text-right tabular-nums">{fmtPrice(p.projected_price)}</td>
                           <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">
-                            {fmtPrice(c.base.harvestPrice)} <span className="text-slate-400">({c.harvest?.source ?? 'projected'}{c.harvest?.stale ? ', cached' : ''})</span>
+                            {fmtPrice(c.base.harvestPrice)} <span className="text-slate-400">({c.harvest?.source ?? 'projected'}{c.harvest?.stale ? ', not current' : ''})</span>
                           </td>
                           <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">
                             {c.assumedYield.toFixed(1)} <span className="text-slate-400">({yieldSrcLabel[yieldBasis.source]}{Math.abs(yieldBasis.value - c.assumedYield) > 0.05 ? ` · audit ${yieldBasis.value.toFixed(1)}` : ''})</span>

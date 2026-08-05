@@ -638,7 +638,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
                 production (the over-contracting rule).</p>
               <p><strong className="text-slate-700">Yield axis</strong> — bushels from harvest-complete fields are fixed
                 facts; the scenario yield applies only to the remaining acres (scenario production = harvested bushels +
-                scenario yield × remaining acres). Before harvest that is simply yield × planted acres; once a crop is
+                scenario yield × remaining acres). Before harvest that is yield × planted acres; once a crop is
                 fully harvested the yield axis collapses to the single actual yield and only price risk remains.</p>
               <p><strong className="text-slate-700">Crop insurance</strong> — every policy (RP / RP-HPE / YP + SCO/ECO,
                 per practice) re-runs in each cell with the scenario price as the harvest price and the cell&apos;s blended
