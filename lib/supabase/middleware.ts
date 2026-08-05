@@ -44,6 +44,20 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
+  // Super-admin page (/admin): hidden from everyone but the platform
+  // operator(s) in super_admins — others bounce home as if it didn't exist.
+  // The admin_* RPCs re-check is_super_admin() server-side regardless.
+  if (user && (pathname === '/admin' || pathname.startsWith('/admin/'))) {
+    const { data: sa } = await supabase
+      .from('super_admins').select('user_id').eq('user_id', user.id).maybeSingle()
+    if (!sa) {
+      const url = request.nextUrl.clone()
+      url.pathname = '/'
+      url.search = ''
+      return NextResponse.redirect(url)
+    }
+  }
+
   // Role guards (lib/route-guard.ts): gin logins may reach ONLY the Cotton
   // intake pages; viewer logins ONLY Yields + Reports (and the read-only
   // price-lookup APIs). Server-side redirect here; the nav hides everything
