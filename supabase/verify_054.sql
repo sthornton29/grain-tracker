@@ -31,6 +31,10 @@ insert into _tenant_tables54 values
   ('cotton_bale_dispositions'), ('cotton_fees'), ('cotton_fee_schedule'),
   ('user_entity_access'), ('viewer_assumption_overrides'), ('app_settings'), ('user_profiles');
 
+-- The cross-org probe below runs as the `authenticated` role, which must be
+-- able to read this temp list (it was created by the admin role).
+grant select on _tenant_tables54 to authenticated;
+
 -- 1) Policy + default census. Expect ZERO rows.
 select tt.t as table_missing_isolation, 'no _org_isolation restrictive policy' as problem
 from _tenant_tables54 tt
