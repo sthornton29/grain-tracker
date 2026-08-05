@@ -22,6 +22,7 @@ type UserRow = { user_id: string; email: string; role: string; entity_ids: strin
 export default function UsersModulesPage() {
   const supabase = useMemo(() => createClient(), [])
   const [cottonEnabled, setCottonEnabled] = useState<boolean | null>(null)
+  const [settingsId, setSettingsId] = useState<number | null>(null)
   const [users, setUsers] = useState<UserRow[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
   const [email, setEmail] = useState('')
@@ -45,22 +46,26 @@ export default function UsersModulesPage() {
 
   async function refresh() {
     const [settings, roles, ents] = await Promise.all([
-      supabase.from('app_settings').select('cotton_module_enabled').eq('id', 1).maybeSingle(),
+      // The org's own settings row via RLS (054) — no fixed id.
+      supabase.from('app_settings').select('id, cotton_module_enabled').limit(1).maybeSingle(),
       supabase.rpc('list_user_roles'),
       supabase.from('entities').select('*').order('name'),
     ])
     if (settings.error) { setErr(settings.error.message); return }
-    setCottonEnabled(Boolean((settings.data as { cotton_module_enabled?: boolean } | null)?.cotton_module_enabled))
+    const row = settings.data as { id?: number; cotton_module_enabled?: boolean } | null
+    setCottonEnabled(Boolean(row?.cotton_module_enabled))
+    setSettingsId(row?.id ?? null)
     if (!roles.error) setUsers((roles.data as UserRow[]) || [])
     if (!ents.error) setEntities((ents.data as Entity[]) || [])
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
   async function toggleCotton(next: boolean) {
+    if (settingsId == null) return
     setBusy(true); setErr(null)
     const { error } = await supabase.from('app_settings')
       .update({ cotton_module_enabled: next, updated_at: new Date().toISOString() })
-      .eq('id', 1)
+      .eq('id', settingsId)
     setBusy(false)
     if (error) { setErr(error.message); return }
     setCottonEnabled(next)

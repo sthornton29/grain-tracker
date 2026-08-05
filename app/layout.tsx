@@ -43,7 +43,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   let role: AppRole = 'owner'
   if (user) {
     const [settings, profile] = await Promise.all([
-      supabase.from('app_settings').select('cotton_module_enabled').eq('id', 1).maybeSingle(),
+      supabase.from('app_settings').select('cotton_module_enabled').limit(1).maybeSingle() /* org row via RLS (054) */,
       supabase.from('user_profiles').select('role').eq('user_id', user.id).maybeSingle(),
     ])
     cottonEnabled = Boolean((settings.data as { cotton_module_enabled?: boolean } | null)?.cotton_module_enabled)

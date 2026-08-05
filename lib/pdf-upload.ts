@@ -8,6 +8,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/client'
+import { getOrgId } from '@/lib/org'
 import type { CottonMarketingCategory, CottonMarketingExtraction } from '@/lib/cotton-doc-import'
 
 export const MAX_PDF_BYTES = 20 * 1024 * 1024
@@ -376,15 +377,21 @@ export async function uploadPdfToStorage(
 // Generic uploader — accepts any file (PDF, image, etc.) and returns both the
 // public URL and the storage path. Callers need the path to delete the object
 // later (parsing the public URL is brittle if the bucket name ever changes).
+// Every path is prefixed with the caller's ORG id (054): the storage policies
+// enforce the prefix server-side, so an upload cannot land in (or masquerade
+// as) another org's space. Legacy pre-054 objects live at the un-prefixed
+// root and keep working.
 export async function uploadFileToStorage(
   supabase: SupabaseClient,
   file: File,
   prefix: string,
   contentType?: string,
 ): Promise<{ publicUrl: string; path: string }> {
+  const orgId = await getOrgId(supabase)
+  if (!orgId) throw new Error('Could not upload file: no organization membership.')
   const rand = Math.random().toString(36).slice(2, 10)
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]+/g, '_')
-  const path = `${prefix}/${Date.now()}-${rand}-${safeName}`
+  const path = `${orgId}/${prefix}/${Date.now()}-${rand}-${safeName}`
   const { error } = await supabase.storage
     .from(PDF_BUCKET)
     .upload(path, file, {
@@ -394,6 +401,13 @@ export async function uploadFileToStorage(
   if (error) throw new Error(`Could not upload file: ${error.message}`)
   const { data } = supabase.storage.from(PDF_BUCKET).getPublicUrl(path)
   return { publicUrl: data.publicUrl, path }
+}
+
+// The ONE remove seam (components must not call storage.remove directly —
+// the bucket literal and any future path handling live here).
+export async function deleteStorageObject(supabase: SupabaseClient, path: string): Promise<void> {
+  if (!path) return
+  await supabase.storage.from(PDF_BUCKET).remove([path])
 }
 
 // Best-effort delete: pulls the path out of a Supabase public URL of the form

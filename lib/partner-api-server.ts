@@ -3,10 +3,19 @@
 // user session, and RLS grants only `authenticated`, so it reads with the
 // service role — server-only, never exposed to the browser), and a pager that
 // walks past PostgREST's 1,000-row page cap.
+//
+// MULTI-TENANT (054): the service role BYPASSES RLS, so every partner query
+// must scope by org explicitly. The bearer token resolves to an org:
+//   * the legacy PARTNER_API_TOKEN env var maps to the Turnrow org (the
+//     'turnrow-farm' slug — the secret lives in Vercel, not in SQL);
+//   * additional tokens live in partner_api_tokens (sha256 at rest, per-org,
+//     revocable) — inserted by hand in the SQL editor for now.
+// Routes call resolvePartnerOrg() and add .eq('org_id', org) to every query.
 
+import { createHash } from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createSupabaseClient, type SupabaseClient } from '@supabase/supabase-js'
-import { checkPartnerAuth } from '@/lib/partner-api'
+import { bearerTokenFrom, checkPartnerAuth } from '@/lib/partner-api'
 
 // Returns the 401 response to send, or null when the request is authorized.
 // An unconfigured PARTNER_API_TOKEN fails closed (401 for every request).
@@ -14,6 +23,40 @@ export function partnerAuthGate(req: NextRequest): NextResponse | null {
   const result = checkPartnerAuth(req.headers.get('authorization'), process.env.PARTNER_API_TOKEN)
   if (result === 'ok') return null
   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+}
+
+export function sha256Hex(token: string): string {
+  return createHash('sha256').update(token, 'utf8').digest('hex')
+}
+
+/** The org the request's bearer token belongs to, or a 401/500 response.
+ *  Checks the legacy env token first (→ Turnrow), then partner_api_tokens.
+ *  Routes MUST scope every query with .eq('org_id', <result>). */
+export async function resolvePartnerOrg(
+  req: NextRequest,
+  supabase: SupabaseClient,
+): Promise<string | NextResponse> {
+  const unauthorized = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const token = bearerTokenFrom(req.headers.get('authorization'))
+  if (!token) return unauthorized
+
+  if (checkPartnerAuth(req.headers.get('authorization'), process.env.PARTNER_API_TOKEN) === 'ok') {
+    const { data, error } = await supabase
+      .from('organizations').select('id').eq('slug', 'turnrow-farm').maybeSingle()
+    if (error || !data) {
+      return NextResponse.json({ error: 'Organization for the legacy partner token is missing — run migration 053.' }, { status: 500 })
+    }
+    return (data as { id: string }).id
+  }
+
+  const { data } = await supabase
+    .from('partner_api_tokens')
+    .select('org_id, revoked_at')
+    .eq('token_sha256', sha256Hex(token))
+    .maybeSingle()
+  const row = data as { org_id: string; revoked_at: string | null } | null
+  if (!row || row.revoked_at != null) return unauthorized
+  return row.org_id
 }
 
 export function createServiceClient(): SupabaseClient | null {

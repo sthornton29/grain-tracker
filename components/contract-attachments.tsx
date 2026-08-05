@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { MAX_PDF_BYTES, uploadFileToStorage } from '@/lib/pdf-upload'
+import { MAX_PDF_BYTES, uploadFileToStorage, deleteStorageObject } from '@/lib/pdf-upload'
 import type { ContractAttachment } from '@/lib/types'
 
 function isImage(mime: string | null | undefined) {
@@ -78,7 +78,7 @@ export default function ContractAttachments({ contractId }: { contractId: string
     try {
       const { error } = await supabase.from('contract_attachments').delete().eq('id', a.id)
       if (error) throw new Error(error.message)
-      await supabase.storage.from('documents').remove([a.file_path])
+      await deleteStorageObject(supabase, a.file_path)
       setItems((prev) => (prev ?? []).filter((x) => x.id !== a.id))
     } catch (e: any) {
       setErr(e?.message ?? 'Could not remove attachment.')

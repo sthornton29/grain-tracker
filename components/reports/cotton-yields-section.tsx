@@ -30,7 +30,7 @@ export default function CottonYieldsSection({ year, entityId = '' }: { year: num
 
   useEffect(() => {
     ;(async () => {
-      const { data } = await supabase.from('app_settings').select('cotton_module_enabled').eq('id', 1).maybeSingle()
+      const { data } = await supabase.from('app_settings').select('cotton_module_enabled').limit(1).maybeSingle() /* org row via RLS (054) */
       if (!(data as { cotton_module_enabled?: boolean } | null)?.cotton_module_enabled) return
       setEnabled(true)
       const [l, r, b, jr, f, fl, pl, cr] = await Promise.all([

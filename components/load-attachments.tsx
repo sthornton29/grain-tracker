@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import {
   MAX_PDF_BYTES,
   uploadFileToStorage,
+  deleteStorageObject,
 } from '@/lib/pdf-upload'
 import type { LoadAttachment } from '@/lib/types'
 
@@ -105,7 +106,7 @@ export default function LoadAttachments({ loadId }: Props) {
         .eq('id', a.id)
       if (error) throw new Error(error.message)
       // Best-effort storage cleanup.
-      await supabase.storage.from('documents').remove([a.file_path])
+      await deleteStorageObject(supabase, a.file_path)
       setItems((prev) => (prev ?? []).filter((x) => x.id !== a.id))
     } catch (e: any) {
       setErr(e?.message ?? 'Could not remove attachment.')

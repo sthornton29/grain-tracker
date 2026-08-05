@@ -5,7 +5,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import {
-  partnerAuthGate,
+  resolvePartnerOrg,
   createServiceClient,
   serviceClientMissingResponse,
   fetchAll,
@@ -28,8 +28,10 @@ type EmbeddedLoad = { id: string; crop_id: string | null }
 type LineWithLoad = SettlementLineRow & { loads: EmbeddedLoad | EmbeddedLoad[] | null }
 
 export async function GET(req: NextRequest) {
-  const denied = partnerAuthGate(req)
-  if (denied) return denied
+  const supabase = createServiceClient()
+  if (!supabase) return serviceClientMissingResponse()
+  const org = await resolvePartnerOrg(req, supabase)
+  if (org instanceof NextResponse) return org
   const since = req.nextUrl.searchParams.get('since')
   if (since && !/^\d{4}-\d{2}-\d{2}/.test(since)) {
     return NextResponse.json(
@@ -37,8 +39,6 @@ export async function GET(req: NextRequest) {
       { status: 400 },
     )
   }
-  const supabase = createServiceClient()
-  if (!supabase) return serviceClientMissingResponse()
 
   try {
     const [settlements, lines, buyers, crops] = await Promise.all([
@@ -46,6 +46,7 @@ export async function GET(req: NextRequest) {
         supabase
           .from('settlements')
           .select('id, buyer_id, settlement_date, settlement_number, updated_at')
+          .eq('org_id', org)
           .order('id')
           .range(f, t),
       ),
@@ -53,12 +54,13 @@ export async function GET(req: NextRequest) {
         supabase
           .from('settlement_lines')
           .select('id, settlement_id, load_id, net_bushels, net_revenue, updated_at, loads(id, crop_id)')
+          .eq('org_id', org)
           .order('id')
           .range(f, t),
       ),
-      fetchAll<BuyerRow>((f, t) => supabase.from('buyers').select('id, name').order('id').range(f, t)),
+      fetchAll<BuyerRow>((f, t) => supabase.from('buyers').select('id, name').eq('org_id', org).order('id').range(f, t)),
       fetchAll<CropRow>((f, t) =>
-        supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').order('id').range(f, t),
+        supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').eq('org_id', org).order('id').range(f, t),
       ),
     ])
     const loads = lines.flatMap((l) =>

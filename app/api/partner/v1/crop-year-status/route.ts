@@ -5,7 +5,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import {
-  partnerAuthGate,
+  resolvePartnerOrg,
   createServiceClient,
   serviceClientMissingResponse,
   fetchAll,
@@ -35,12 +35,12 @@ type EmbeddedLoad = { id: string; crop_id: string | null; crop_year: number | nu
 type LineWithLoad = SettlementLineRow & { loads: EmbeddedLoad | EmbeddedLoad[] | null }
 
 export async function GET(req: NextRequest) {
-  const denied = partnerAuthGate(req)
-  if (denied) return denied
-  const year = requireYearParam(req)
-  if (year instanceof NextResponse) return year
   const supabase = createServiceClient()
   if (!supabase) return serviceClientMissingResponse()
+  const org = await resolvePartnerOrg(req, supabase)
+  if (org instanceof NextResponse) return org
+  const year = requireYearParam(req)
+  if (year instanceof NextResponse) return year
 
   try {
     const [plantings, loads, splits, crops, lines, ginReceipts, bales, dispositions, loans] =
@@ -49,6 +49,7 @@ export async function GET(req: NextRequest) {
           supabase
             .from('field_plantings')
             .select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, updated_at')
+            .eq('org_id', org)
             .eq('season_year', year)
             .order('id')
             .range(f, t),
@@ -57,20 +58,22 @@ export async function GET(req: NextRequest) {
           supabase
             .from('loads')
             .select('id, date, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, updated_at')
+            .eq('org_id', org)
             .eq('crop_year', year)
             .order('id')
             .range(f, t),
         ),
         fetchAll<SplitRow>((f, t) =>
-          supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels').order('id').range(f, t),
+          supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels').eq('org_id', org).order('id').range(f, t),
         ),
         fetchAll<CropRow>((f, t) =>
-          supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').order('id').range(f, t),
+          supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').eq('org_id', org).order('id').range(f, t),
         ),
         fetchAll<LineWithLoad>((f, t) =>
           supabase
             .from('settlement_lines')
             .select('id, settlement_id, load_id, net_bushels, net_revenue, updated_at, loads(id, crop_id, crop_year)')
+            .eq('org_id', org)
             .not('load_id', 'is', null)
             .order('id')
             .range(f, t),
@@ -79,6 +82,7 @@ export async function GET(req: NextRequest) {
           supabase
             .from('gin_receipts')
             .select('id, field_id, crop_year, total_bale_weight, updated_at')
+            .eq('org_id', org)
             .eq('crop_year', year)
             .order('id')
             .range(f, t),
@@ -87,6 +91,7 @@ export async function GET(req: NextRequest) {
           supabase
             .from('cotton_bales')
             .select('id, gin_receipt_id, crop_year, net_weight_lbs, updated_at')
+            .eq('org_id', org)
             .eq('crop_year', year)
             .order('id')
             .range(f, t),
@@ -95,10 +100,11 @@ export async function GET(req: NextRequest) {
           supabase
             .from('cotton_bale_dispositions')
             .select('bale_id, disposition, loan_id')
+            .eq('org_id', org)
             .order('id')
             .range(f, t),
         ),
-        fetchAll<CccLoanRow>((f, t) => supabase.from('ccc_loans').select('id, status').order('id').range(f, t)),
+        fetchAll<CccLoanRow>((f, t) => supabase.from('ccc_loans').select('id, status').eq('org_id', org).order('id').range(f, t)),
       ])
 
     // The manual flag lives in crop_year_sales_status (migration 050). A
@@ -108,6 +114,7 @@ export async function GET(req: NextRequest) {
     const statusResult = await supabase
       .from('crop_year_sales_status')
       .select('crop_id, crop_year, physical_sales_complete, updated_at')
+      .eq('org_id', org)
       .eq('crop_year', year)
     if (statusResult.error) {
       note = 'crop_year_sales_status is missing — run migration 050; manual flags default to false.'

@@ -5,7 +5,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import {
-  partnerAuthGate,
+  resolvePartnerOrg,
   createServiceClient,
   serviceClientMissingResponse,
   fetchAll,
@@ -21,8 +21,10 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
-  const denied = partnerAuthGate(req)
-  if (denied) return denied
+  const supabase = createServiceClient()
+  if (!supabase) return serviceClientMissingResponse()
+  const org = await resolvePartnerOrg(req, supabase)
+  if (org instanceof NextResponse) return org
   const params = req.nextUrl.searchParams
   const yearRaw = params.get('year')
   const year = yearRaw == null || yearRaw === '' ? null : Number(yearRaw)
@@ -30,8 +32,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: '?year= must be an integer crop year.' }, { status: 400 })
   }
   const crop = params.get('crop')
-  const supabase = createServiceClient()
-  if (!supabase) return serviceClientMissingResponse()
 
   try {
     // Only closed rows ever leave the database — the status filters here are
@@ -41,6 +41,7 @@ export async function GET(req: NextRequest) {
         supabase
           .from('futures_positions')
           .select('id, commodity, contract_symbol, crop_year, side, num_contracts, status, close_date, realized_pnl, updated_at')
+          .eq('org_id', org)
           .eq('status', 'closed')
           .order('id')
           .range(f, t),
@@ -49,6 +50,7 @@ export async function GET(req: NextRequest) {
         supabase
           .from('options_positions')
           .select('id, commodity, underlying_symbol, option_type, strike_price, crop_year, num_contracts, status, close_date, realized_pnl, updated_at')
+          .eq('org_id', org)
           .in('status', ['closed_offset', 'expired_worthless', 'exercised'])
           .order('id')
           .range(f, t),
