@@ -24,6 +24,19 @@ type Body = {
   entity_ids?: string[]
 }
 
+// The PUBLIC address the invite email should send people back to. On Vercel,
+// new URL(req.url).origin can be the internal DEPLOYMENT domain (protected by
+// Vercel's own login wall — invited users would hit a "log in to Vercel"
+// page). Prefer the configured site URL, then the forwarded host the visitor
+// actually used, and only then the raw request origin.
+function siteOrigin(req: NextRequest): string {
+  const configured = process.env.NEXT_PUBLIC_SITE_URL?.trim()
+  if (configured) return configured.replace(/\/+$/, '')
+  const host = req.headers.get('x-forwarded-host') ?? req.headers.get('host')
+  if (host) return `${req.headers.get('x-forwarded-proto') ?? 'https'}://${host}`
+  return new URL(req.url).origin
+}
+
 export async function POST(req: NextRequest) {
   const session = createClient()
   const { data: { user } } = await session.auth.getUser()
@@ -75,9 +88,8 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const origin = new URL(req.url).origin
   const { data: invited, error: inviteError } = await service.auth.admin.inviteUserByEmail(email, {
-    redirectTo: `${origin}/reset-password`,
+    redirectTo: `${siteOrigin(req)}/reset-password`,
   })
   if (inviteError || !invited?.user) {
     const msg = inviteError?.message ?? 'Invite failed.'
