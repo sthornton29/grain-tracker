@@ -76,15 +76,24 @@ export default async function Home() {
           </ol>
         </div>
       )}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {tiles.map((t) => (
           <Link
             key={t.href}
             href={t.href}
-            className={`${t.tileColor} text-white rounded-2xl p-6 shadow hover:opacity-95`}
+            className={`${t.tileColor} group relative overflow-hidden rounded-2xl p-6 text-white shadow-md ring-1 ring-black/5 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand`}
           >
-            <div className="text-xl font-bold">{t.label}</div>
-            <div className="text-sm opacity-90">{t.sub}</div>
+            {/* Soft light accents give the flat gradient some depth. */}
+            <span aria-hidden className="pointer-events-none absolute -right-10 -top-10 h-32 w-32 rounded-full bg-white/10 blur-[2px] transition-colors duration-200 group-hover:bg-white/15" />
+            <span aria-hidden className="pointer-events-none absolute -bottom-14 -left-8 h-28 w-28 rounded-full bg-black/10 blur-[2px]" />
+            <div className="relative">
+              <div className="font-display text-xl font-bold tracking-tight">{t.label}</div>
+              <div className="mt-1 text-sm text-white/85">{t.sub}</div>
+              <div className="mt-6 flex items-center justify-end text-white/70 transition-all duration-200 group-hover:translate-x-1 group-hover:text-white">
+                <span className="text-[11px] font-semibold uppercase tracking-widest mr-1.5">Open</span>
+                <span aria-hidden>→</span>
+              </div>
+            </div>
           </Link>
         ))}
       </div>
