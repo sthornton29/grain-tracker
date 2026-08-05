@@ -194,6 +194,11 @@ export default function YieldsPage() {
     return counties.filter((c) => used.has(c.id))
   }, [farms, counties])
 
+  // Viewer grants as a set — belt-and-suspenders on top of the 052 RLS row
+  // filters: even if a fetch somehow returns beyond-grant rows, they never
+  // render. Null for owners (no restriction).
+  const viewerGranted = viewer.isViewer ? new Set(viewer.grantedIds ?? []) : null
+
   const visible = plantings.filter((p) => {
     if (year !== '' && p.season_year !== year) return false
     if (cropId && p.crop_id !== cropId) return false
@@ -201,6 +206,7 @@ export default function YieldsPage() {
     if (!fld) return false
     if (farmId && fld.farm_id !== farmId) return false
     const farm = fld.farm_id ? farmById.get(fld.farm_id) : null
+    if (viewerGranted && (!farm || farm.entity_id == null || !viewerGranted.has(farm.entity_id))) return false
     if (entityId) {
       if (!farm || farm.entity_id !== entityId) return false
     }
@@ -235,7 +241,7 @@ export default function YieldsPage() {
       }
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ), [plantings, aggByKey, fieldById, farmById, year, cropId, farmId, entityId, countyId, view, practiceFilter])
+  ), [plantings, aggByKey, fieldById, farmById, year, cropId, farmId, entityId, countyId, view, practiceFilter, viewer.isViewer, viewer.grantedIds])
   const excludedFields = yieldAnalysis.excluded
   const includedPlantings = visible.filter((p) => !excludedFields.has(p.id))
 

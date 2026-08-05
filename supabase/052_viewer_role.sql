@@ -111,11 +111,14 @@ drop function if exists public.list_user_roles();
 
 -- Owner-run role assignment. For 'viewer', entity_ids is REQUIRED (at least
 -- one) and replaces the user's grants; for owner/gin any grants are cleared.
+-- The auth.uid() null-check matters: app_role() defaults to 'owner' when
+-- there is NO session, so without it an ANONYMOUS caller holding the public
+-- anon key would pass the role guard.
 create or replace function public.assign_user_role(user_email text, new_role text, entity_ids uuid[] default null) returns void
 language plpgsql security definer set search_path = public as $$
 declare uid uuid;
 begin
-  if public.app_role() <> 'owner' then raise exception 'not allowed'; end if;
+  if auth.uid() is null or public.app_role() <> 'owner' then raise exception 'not allowed'; end if;
   if new_role not in ('owner', 'gin', 'viewer') then raise exception 'invalid role'; end if;
   if new_role = 'viewer' and (entity_ids is null or coalesce(array_length(entity_ids, 1), 0) = 0) then
     raise exception 'a viewer needs at least one entity';
@@ -145,9 +148,17 @@ language sql stable security definer set search_path = public as $$
   select u.id, u.email::text, coalesce(p.role, 'owner'),
          coalesce((select array_agg(a.entity_id) from public.user_entity_access a where a.user_id = u.id), '{}')
   from auth.users u left join public.user_profiles p on p.user_id = u.id
-  where public.app_role() = 'owner'
+  where auth.uid() is not null and public.app_role() = 'owner'
   order by u.email
 $$;
+
+-- Belt and suspenders: the role RPCs are not callable without a session at
+-- all (functions default to EXECUTE for PUBLIC, which includes the anon
+-- key every browser holds). The internal guards above still apply.
+revoke execute on function public.assign_user_role(text, text, uuid[]) from public, anon;
+revoke execute on function public.list_user_roles() from public, anon;
+grant execute on function public.assign_user_role(text, text, uuid[]) to authenticated;
+grant execute on function public.list_user_roles() to authenticated;
 
 -- 5. updated_at on the assumption tables (staleness anchor) ------------------
 

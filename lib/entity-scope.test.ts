@@ -339,11 +339,17 @@ describe('buildEntityScope', () => {
       ]).map((r) => r.id)).toEqual(['o1', 'o3'])
     })
 
-    it('an empty grant list behaves like no grants (defensive: never grants everything by accident)', () => {
-      // Empty grants = not a viewer config the RPC allows; the scope treats it
-      // as "no grant restriction" and '' stays a pass-through.
+    it('an empty grant list FAILS CLOSED — selects nothing, never everything', () => {
+      // Empty grants = not a viewer config the RPC allows, but if it ever
+      // happens (partial migration, failed grant insert) the viewer must see
+      // ZERO rows, not the whole operation.
       const s = buildEntityScope({ entityId: '', farms: vFarms, fields: vFields, entities, grantedEntityIds: [] })
-      expect(s.active).toBe(false)
+      expect(s.active).toBe(true)
+      expect(s.plantings(plantings)).toEqual([])
+      expect(s.byEntity([{ id: 'x', entity_id: 'E1' }])).toEqual([])
+      expect(s.attribution({ plantings, crops }).contracts([
+        { id: 'op', entity_id: null, crop_id: 'corn', crop_year: 2026, contracted_bushels: 30000 },
+      ])).toEqual([])
     })
 
     it('OWNER INVARIANCE: omitted/null grants produce byte-identical scoping to the pre-052 behavior', () => {

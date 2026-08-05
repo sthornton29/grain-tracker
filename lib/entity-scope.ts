@@ -203,11 +203,15 @@ export function buildEntityScope(args: {
   grantedEntityIds?: ReadonlyArray<string> | ReadonlySet<string> | null
 }): EntityScope {
   const { entityId, farms, fields = [], entities = [] } = args
-  const grants = args.grantedEntityIds ? new Set(args.grantedEntityIds) : null
+  // FAIL CLOSED: any non-null grant list — even an empty one — means "this
+  // user is grant-restricted". An empty set then selects NOTHING (a viewer
+  // with zero grants sees zero rows), never everything. Only null/undefined
+  // (owners) leaves the scope unrestricted.
+  const grants = args.grantedEntityIds != null ? new Set(args.grantedEntityIds) : null
   // The entity ids this scope selects: a granted (or plain, for owners)
   // single entity, or — for a viewer with no/foreign selection — the union
   // of the grants. Null = no filtering at all (owners' "All entities").
-  const selected: ReadonlySet<string> | null = grants && grants.size > 0
+  const selected: ReadonlySet<string> | null = grants
     ? (entityId !== '' && grants.has(entityId) ? new Set([entityId]) : grants)
     : (entityId !== '' ? new Set([entityId]) : null)
   const active = selected != null
