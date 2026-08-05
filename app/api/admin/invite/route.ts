@@ -22,6 +22,10 @@ type Body = {
   role?: 'owner' | 'gin' | 'viewer'
   org_id?: string
   entity_ids?: string[]
+  /** 'email' (default) sends the Supabase invite email; 'link' creates the
+   *  invitation WITHOUT sending anything and returns the one-time URL to
+   *  hand over yourself — no mailer, no built-in email rate limit. */
+  delivery?: 'email' | 'link'
 }
 
 // The PUBLIC address the invite email should send people back to. On Vercel,
@@ -88,30 +92,54 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const { data: invited, error: inviteError } = await service.auth.admin.inviteUserByEmail(email, {
-    redirectTo: `${siteOrigin(req)}/reset-password`,
-  })
-  if (inviteError || !invited?.user) {
-    const msg = inviteError?.message ?? 'Invite failed.'
-    const already = /already/i.test(msg)
-    return NextResponse.json(
-      { error: already ? `${email} already has a login — assign their role on Settings → Users instead.` : msg },
-      { status: already ? 409 : 500 },
-    )
+  const redirectTo = `${siteOrigin(req)}/reset-password`
+  let invitedUserId: string
+  let inviteLink: string | null = null
+
+  if (body?.delivery === 'link') {
+    // No email involved — mint the one-time URL directly. For a login that
+    // already exists (e.g. an earlier invite that never completed), an
+    // invite-type link is refused, so fall back to a magic link: it signs
+    // them in and lands on the same set-a-password page.
+    let { data: linkData, error: linkError } = await service.auth.admin.generateLink({
+      type: 'invite', email, options: { redirectTo },
+    })
+    if (linkError && /already/i.test(linkError.message)) {
+      ;({ data: linkData, error: linkError } = await service.auth.admin.generateLink({
+        type: 'magiclink', email, options: { redirectTo },
+      }))
+    }
+    if (linkError || !linkData?.user || !linkData.properties?.action_link) {
+      return NextResponse.json({ error: linkError?.message ?? 'Could not create the invite link.' }, { status: 500 })
+    }
+    invitedUserId = linkData.user.id
+    inviteLink = linkData.properties.action_link
+  } else {
+    const { data: invited, error: inviteError } = await service.auth.admin.inviteUserByEmail(email, { redirectTo })
+    if (inviteError || !invited?.user) {
+      const msg = inviteError?.message ?? 'Invite failed.'
+      const already = /already/i.test(msg)
+      return NextResponse.json(
+        { error: already ? `${email} already has a login — use "Invite link" instead, or assign their role on Settings → Users.` : msg },
+        { status: already ? 409 : 500 },
+      )
+    }
+    invitedUserId = invited.user.id
   }
 
   // Profile stamps role + org; the sync trigger creates the membership row.
   const { error: profileError } = await service.from('user_profiles').upsert(
-    { user_id: invited.user.id, role, org_id: targetOrg },
+    { user_id: invitedUserId, role, org_id: targetOrg },
     { onConflict: 'user_id' },
   )
   if (profileError) return NextResponse.json({ error: `Invited, but role assignment failed: ${profileError.message}` }, { status: 500 })
   if (role === 'viewer') {
-    const { error: grantError } = await service.from('user_entity_access').insert(
-      entityIds.map((eid) => ({ user_id: invited.user!.id, entity_id: eid, org_id: targetOrg })),
+    const { error: grantError } = await service.from('user_entity_access').upsert(
+      entityIds.map((eid) => ({ user_id: invitedUserId, entity_id: eid, org_id: targetOrg })),
+      { onConflict: 'user_id,entity_id' },
     )
     if (grantError) return NextResponse.json({ error: `Invited, but entity grants failed: ${grantError.message}` }, { status: 500 })
   }
 
-  return NextResponse.json({ ok: true, email, org: (org as { name: string }).name, role })
+  return NextResponse.json({ ok: true, email, org: (org as { name: string }).name, role, link: inviteLink })
 }

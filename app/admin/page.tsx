@@ -22,6 +22,7 @@ export default function AdminPage() {
   const [newOrgName, setNewOrgName] = useState('')
   const [inviteEmailByOrg, setInviteEmailByOrg] = useState<Record<string, string>>({})
   const [mintedToken, setMintedToken] = useState<{ org: string; token: string } | null>(null)
+  const [inviteLink, setInviteLink] = useState<{ email: string; org: string; link: string } | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
@@ -47,19 +48,23 @@ export default function AdminPage() {
     refresh()
   }
 
-  async function inviteOwner(org: OrgRow) {
+  async function inviteOwner(org: OrgRow, delivery: 'email' | 'link') {
     const email = (inviteEmailByOrg[org.id] ?? '').trim()
-    setErr(null); setMsg(null)
+    setErr(null); setMsg(null); setInviteLink(null)
     if (!email) { setErr('Enter the email to invite.'); return }
     setBusy(true)
     const res = await fetch('/api/admin/invite', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ email, role: 'owner', org_id: org.id }),
+      body: JSON.stringify({ email, role: 'owner', org_id: org.id, delivery }),
     })
     const json = await res.json().catch(() => null)
     setBusy(false)
     if (!res.ok) { setErr(json?.error ?? 'Invite failed.'); return }
-    setMsg(`Invited ${email} as an owner of ${org.name} — they'll get an email to set their password.`)
+    if (delivery === 'link' && json?.link) {
+      setInviteLink({ email, org: org.name, link: json.link })
+    } else {
+      setMsg(`Invited ${email} as an owner of ${org.name} — they'll get an email to set their password.`)
+    }
     setInviteEmailByOrg((m) => ({ ...m, [org.id]: '' }))
     refresh()
   }
@@ -100,6 +105,14 @@ export default function AdminPage() {
 
       {err && <p className="text-sm text-red-600">{err}</p>}
       {msg && <p className="text-sm text-green-700">{msg}</p>}
+      {inviteLink && (
+        <div className="rounded-lg bg-sky-50 border border-sky-300 px-3 py-2 text-sm text-sky-900 space-y-1">
+          <div><b>Invite link for {inviteLink.email} ({inviteLink.org})</b> — no email was sent. Text or email
+          this to them yourself; it's their one-time set-a-password link:</div>
+          <code className="block font-mono text-xs break-all bg-white rounded border border-sky-200 px-2 py-1">{inviteLink.link}</code>
+          <button type="button" className="text-xs underline" onClick={() => { navigator.clipboard?.writeText(inviteLink.link); setMsg('Link copied.') }}>Copy to clipboard</button>
+        </div>
+      )}
       {mintedToken && (
         <div className="rounded-lg bg-amber-50 border border-amber-300 px-3 py-2 text-sm text-amber-900 space-y-1">
           <div><b>Partner API token for {mintedToken.org}</b> — copy it NOW; it is shown once and only its hash is stored:</div>
@@ -133,8 +146,11 @@ export default function AdminPage() {
                         onChange={(e) => setInviteEmailByOrg((m) => ({ ...m, [o.id]: e.target.value }))}
                         className="rounded border border-slate-300 px-2 py-1 text-sm w-52"
                       />
-                      <button type="button" disabled={busy} onClick={() => inviteOwner(o)}
+                      <button type="button" disabled={busy} onClick={() => inviteOwner(o, 'email')}
                         className="rounded bg-brand hover:bg-brand-deep text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50">Invite</button>
+                      <button type="button" disabled={busy} onClick={() => inviteOwner(o, 'link')}
+                        title="Create the invitation without sending an email — you copy the link and send it yourself (no email rate limit)"
+                        className="rounded border border-slate-300 text-slate-700 hover:bg-slate-50 px-2.5 py-1 text-xs font-semibold disabled:opacity-50">Invite link</button>
                     </div>
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap">

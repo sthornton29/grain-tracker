@@ -36,6 +36,7 @@ export default function UsersModulesPage() {
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteRole, setInviteRole] = useState<'owner' | 'gin' | 'viewer'>('owner')
   const [inviteGrantIds, setInviteGrantIds] = useState<Set<string>>(new Set())
+  const [inviteLink, setInviteLink] = useState<{ email: string; link: string } | null>(null)
   const [isSuperAdmin, setIsSuperAdmin] = useState(false)
   // Inline per-row role editing.
   const [myUserId, setMyUserId] = useState<string | null>(null)
@@ -54,9 +55,8 @@ export default function UsersModulesPage() {
     })()
   }, [supabase])
 
-  async function inviteUser(e: React.FormEvent) {
-    e.preventDefault()
-    setErr(null); setMsg(null)
+  async function inviteUser(delivery: 'email' | 'link') {
+    setErr(null); setMsg(null); setInviteLink(null)
     if (!inviteEmail.trim()) { setErr('Enter the email to invite.'); return }
     if (inviteRole === 'viewer' && inviteGrantIds.size === 0) { setErr('Pick at least one entity the viewer may see.'); return }
     setBusy(true)
@@ -66,12 +66,18 @@ export default function UsersModulesPage() {
         email: inviteEmail.trim(),
         role: inviteRole,
         entity_ids: inviteRole === 'viewer' ? Array.from(inviteGrantIds) : undefined,
+        delivery,
       }),
     })
     const json = await res.json().catch(() => null)
     setBusy(false)
     if (!res.ok) { setErr(json?.error ?? 'Invite failed.'); return }
-    setMsg(`Invited ${inviteEmail.trim()} as ${inviteRole} — they'll get an email to set their password and land in this organization.`)
+    if (delivery === 'link' && json?.link) {
+      setInviteLink({ email: inviteEmail.trim(), link: json.link })
+      setMsg(null)
+    } else {
+      setMsg(`Invited ${inviteEmail.trim()} as ${inviteRole} — they'll get an email to set their password and land in this organization.`)
+    }
     setInviteEmail(''); setInviteGrantIds(new Set())
     refresh()
   }
@@ -213,7 +219,7 @@ export default function UsersModulesPage() {
         <p className="text-sm text-slate-500">
           Sends an email with a set-your-password link; they land in this organization with the role you pick.
         </p>
-        <form onSubmit={inviteUser} className="space-y-3">
+        <form onSubmit={(e) => { e.preventDefault(); inviteUser('email') }} className="space-y-3">
           <div className="flex flex-wrap items-end gap-2">
             <input type="email" placeholder="user@example.com" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} className={`${inputCls} w-64`} />
             <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as 'owner' | 'gin' | 'viewer')} className={inputCls}>
@@ -224,7 +230,20 @@ export default function UsersModulesPage() {
             <button type="submit" disabled={busy} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
               Send invite
             </button>
+            <button type="button" disabled={busy} onClick={() => inviteUser('link')}
+              title="Create the invitation without sending an email — copy the link and text/email it yourself"
+              className="rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50 px-4 py-2 font-semibold disabled:opacity-50">
+              Invite link
+            </button>
           </div>
+          {inviteLink && (
+            <div className="rounded-lg bg-sky-50 border border-sky-300 px-3 py-2 text-sm text-sky-900 space-y-1">
+              <div><b>Invite link for {inviteLink.email}</b> — no email was sent. Text or email it to them
+              yourself; it's their one-time set-a-password link:</div>
+              <code className="block font-mono text-xs break-all bg-white rounded border border-sky-200 px-2 py-1">{inviteLink.link}</code>
+              <button type="button" className="text-xs underline" onClick={() => { navigator.clipboard?.writeText(inviteLink.link); setMsg('Link copied.') }}>Copy to clipboard</button>
+            </div>
+          )}
           {inviteRole === 'viewer' && (
             <fieldset className="rounded-lg border border-slate-200 p-3">
               <legend className="text-sm font-semibold px-1">Entities this viewer may see (required — pick at least one)</legend>
