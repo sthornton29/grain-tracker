@@ -24,10 +24,15 @@ describe('roleAllowsPath', () => {
     }
   })
 
-  it('viewer: home, Yields, all of Reports, logout', () => {
+  it('viewer: home, Yields, the entity-scopable Reports, logout', () => {
     for (const p of ['/', '/yields', '/reports', '/reports/marketing', '/reports/crop-insurance-claims', '/reports/season', '/logout']) {
       expect(roleAllowsPath('viewer', p)).toBe(true)
     }
+  })
+
+  it('viewer: whole-operation reports with no entity dimension are blocked', () => {
+    expect(roleAllowsPath('viewer', '/reports/settlement-pdfs')).toBe(false)
+    expect(roleAllowsPath('viewer', '/reports/crop-budget')).toBe(false)
   })
 
   it('viewer: every operational/settings/cotton/hedging path is denied', () => {

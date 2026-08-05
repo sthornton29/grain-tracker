@@ -23,6 +23,12 @@ const VIEWER_API_PATHS = [
   '/api/mya-monthly-lookup',
 ]
 
+// Report pages with NO entity dimension to scope by — they show whole-
+// operation data (every buyer settlement; the operation budget sandbox), so
+// viewers don't get them at all. reportGroupsFor() hides them from the
+// sidebar/landing via this same matrix.
+const VIEWER_BLOCKED_REPORTS = ['/reports/settlement-pdfs', '/reports/crop-budget']
+
 const startsAt = (pathname: string, base: string) =>
   pathname === base || pathname.startsWith(base + '/')
 
@@ -36,6 +42,7 @@ export function roleAllowsPath(role: AppRole, pathname: string): boolean {
     )
   }
   // viewer
+  if (VIEWER_BLOCKED_REPORTS.some((p) => startsAt(pathname, p))) return false
   return (
     pathname === '/' ||
     startsAt(pathname, '/yields') ||
