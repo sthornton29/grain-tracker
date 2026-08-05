@@ -122,6 +122,9 @@ begin
   end if;
   select id into uid from auth.users where lower(email) = lower(user_email);
   if uid is null then raise exception 'no auth user with email %', user_email; end if;
+  -- The last owner demoting themselves would lock everyone out of role
+  -- management — self-changes are refused outright (the UI hides them too).
+  if uid = auth.uid() then raise exception 'you cannot change your own role'; end if;
   if new_role = 'viewer' and exists (
     select 1 from unnest(entity_ids) g(eid) where not exists (select 1 from public.entities e where e.id = g.eid)
   ) then

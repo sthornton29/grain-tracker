@@ -7,10 +7,13 @@
 // enforced by nav, middleware redirect, and the 042/052 RLS policies).
 // Login credentials are still created in the Supabase Auth dashboard (this
 // app has no self-serve signup and no service key in the browser) — this
-// page assigns ROLES to those logins by email. Assigning 'viewer' REQUIRES
-// picking at least one entity; the grants replace any previous set.
+// page assigns ROLES to those logins: by email in the form, or inline per
+// row in the users table (Edit). Assigning 'viewer' REQUIRES picking at
+// least one entity; the grants replace any previous set. You cannot change
+// YOUR OWN role — the last owner demoting themselves would lock everyone
+// out of role management.
 
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import type { Entity } from '@/lib/types'
 
@@ -27,6 +30,18 @@ export default function UsersModulesPage() {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
+  // Inline per-row role editing.
+  const [myUserId, setMyUserId] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editRole, setEditRole] = useState<'owner' | 'gin' | 'viewer'>('owner')
+  const [editGrantIds, setEditGrantIds] = useState<Set<string>>(new Set())
+
+  useEffect(() => {
+    ;(async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      setMyUserId(user?.id ?? null)
+    })()
+  }, [supabase])
 
   async function refresh() {
     const [settings, roles, ents] = await Promise.all([
@@ -85,6 +100,42 @@ export default function UsersModulesPage() {
   }
 
   const entityName = (id: string) => entities.find((en) => en.id === id)?.name ?? '…'
+
+  function startEdit(u: UserRow) {
+    setErr(null); setMsg(null)
+    setEditingId(u.user_id)
+    setEditRole(u.role === 'gin' || u.role === 'viewer' ? u.role : 'owner')
+    setEditGrantIds(new Set(u.entity_ids ?? []))
+  }
+
+  function toggleEditGrant(id: string) {
+    setEditGrantIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  async function saveEdit(u: UserRow) {
+    setErr(null); setMsg(null)
+    if (editRole === 'viewer' && editGrantIds.size === 0) { setErr('Pick at least one entity the viewer may see.'); return }
+    setBusy(true)
+    const { error } = await supabase.rpc('assign_user_role', {
+      user_email: u.email,
+      new_role: editRole,
+      entity_ids: editRole === 'viewer' ? Array.from(editGrantIds) : null,
+    })
+    setBusy(false)
+    if (error) { setErr(error.message); return }
+    const grantNames = entities.filter((en) => editGrantIds.has(en.id)).map((en) => en.name).join(', ')
+    setMsg(
+      editRole === 'gin' ? `${u.email} is now a gin operator (Cotton intake only).`
+      : editRole === 'viewer' ? `${u.email} is now a viewer (reports & yields for: ${grantNames}).`
+      : `${u.email} is now an owner (full access).`
+    )
+    setEditingId(null)
+    refresh()
+  }
   const rolePill = (r: string) =>
     r === 'gin' ? 'bg-amber-100 text-amber-800'
     : r === 'viewer' ? 'bg-violet-100 text-violet-800'
@@ -156,20 +207,62 @@ export default function UsersModulesPage() {
         {err && <p className="text-sm text-red-600">{err}</p>}
         {msg && <p className="text-sm text-green-700">{msg}</p>}
         <table className="min-w-full text-sm">
-          <thead className="bg-slate-50 text-slate-600"><tr>{['Email', 'Role', 'Entities'].map((h) => <th key={h} className="text-left px-3 py-2">{h}</th>)}</tr></thead>
+          <thead className="bg-slate-50 text-slate-600"><tr>{['Email', 'Role', 'Entities', ''].map((h, i) => <th key={i} className="text-left px-3 py-2">{h}</th>)}</tr></thead>
           <tbody>
-            {users.length === 0 && <tr><td colSpan={3} className="px-3 py-4 text-slate-400">No users listed (run migration 042).</td></tr>}
-            {users.map((u) => (
-              <tr key={u.user_id} className="border-t border-slate-100">
-                <td className="px-3 py-2">{u.email}</td>
+            {users.length === 0 && <tr><td colSpan={4} className="px-3 py-4 text-slate-400">No users listed (run migration 042).</td></tr>}
+            {users.map((u) => {
+              const isSelf = u.user_id === myUserId
+              const isEditing = editingId === u.user_id
+              return (
+              <Fragment key={u.user_id}>
+              <tr className="border-t border-slate-100">
+                <td className="px-3 py-2">{u.email}{isSelf && <span className="ml-1.5 text-xs text-slate-400">(you)</span>}</td>
                 <td className="px-3 py-2">
-                  <span className={`text-xs rounded-full px-2 py-0.5 ${rolePill(u.role)}`}>{u.role}</span>
+                  {isEditing ? (
+                    <select value={editRole} onChange={(e) => setEditRole(e.target.value as 'owner' | 'gin' | 'viewer')} className="rounded border border-slate-300 px-2 py-1 text-sm bg-white">
+                      <option value="owner">owner (full access)</option>
+                      <option value="gin">gin (Cotton intake only)</option>
+                      <option value="viewer">viewer (reports &amp; yields)</option>
+                    </select>
+                  ) : (
+                    <span className={`text-xs rounded-full px-2 py-0.5 ${rolePill(u.role)}`}>{u.role}</span>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-slate-600">
-                  {u.role === 'viewer' ? ((u.entity_ids ?? []).map(entityName).join(', ') || '—') : ''}
+                  {!isEditing && (u.role === 'viewer' ? ((u.entity_ids ?? []).map(entityName).join(', ') || '—') : '')}
+                </td>
+                <td className="px-3 py-2 text-right whitespace-nowrap">
+                  {isEditing ? (
+                    <span className="inline-flex gap-2">
+                      <button type="button" disabled={busy} onClick={() => saveEdit(u)}
+                        className="rounded bg-brand hover:bg-brand-deep text-white px-2.5 py-1 text-xs font-semibold disabled:opacity-50">Save</button>
+                      <button type="button" onClick={() => setEditingId(null)} className="text-slate-500 text-xs">Cancel</button>
+                    </span>
+                  ) : isSelf ? (
+                    <span className="text-xs text-slate-400 cursor-help" title="You can't change your own role — the last owner demoting themselves would lock everyone out of role management. Have another owner change it, or use the Supabase dashboard.">—</span>
+                  ) : (
+                    <button type="button" onClick={() => startEdit(u)} className="text-brand-deep text-xs underline decoration-dotted">Edit</button>
+                  )}
                 </td>
               </tr>
-            ))}
+              {isEditing && editRole === 'viewer' && (
+                <tr className="border-t border-slate-50 bg-violet-50/40">
+                  <td colSpan={4} className="px-3 py-2">
+                    <div className="text-xs font-semibold text-slate-600 mb-1.5">Entities this viewer may see (required — pick at least one)</div>
+                    <div className="flex flex-wrap gap-x-5 gap-y-1.5">
+                      {entities.map((en) => (
+                        <label key={en.id} className="flex items-center gap-2 text-sm">
+                          <input type="checkbox" checked={editGrantIds.has(en.id)} onChange={() => toggleEditGrant(en.id)} className="h-4 w-4" />
+                          <span>{en.name}{en.entity_role === 'marketing_agent' ? ' (marketing agent)' : ''}</span>
+                        </label>
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              )}
+              </Fragment>
+              )
+            })}
           </tbody>
         </table>
       </section>
