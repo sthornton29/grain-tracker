@@ -1,6 +1,8 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
 import { navLinksFor } from '@/lib/nav-links'
+import type { AppRole } from '@/lib/types'
+import { coerceAppRole } from '@/lib/app-role'
 
 // Landing page: quick-action tiles that MIRROR the top nav exactly — same
 // items, same order, same labels — both rendered from lib/nav-links.ts so
@@ -10,14 +12,14 @@ export default async function Home() {
   const supabase = createClient()
   const { data: { user } } = await supabase.auth.getUser()
   let cottonEnabled = false
-  let role: 'owner' | 'gin' = 'owner'
+  let role: AppRole = 'owner'
   if (user) {
     const [settings, profile] = await Promise.all([
       supabase.from('app_settings').select('cotton_module_enabled').eq('id', 1).maybeSingle(),
       supabase.from('user_profiles').select('role').eq('user_id', user.id).maybeSingle(),
     ])
     cottonEnabled = Boolean((settings.data as { cotton_module_enabled?: boolean } | null)?.cotton_module_enabled)
-    role = ((profile.data as { role?: string } | null)?.role === 'gin' ? 'gin' : 'owner')
+    role = coerceAppRole((profile.data as { role?: string } | null)?.role)
   }
   const tiles = navLinksFor({ cottonEnabled: cottonEnabled || role === 'gin', role })
   return (

@@ -15,7 +15,7 @@ const key = { cropId: 'corn', countyId: 'A', cropYear: 2026 }
 const row = (over: Partial<CountyYieldAssumption> = {}): CountyYieldAssumption => ({
   id: 'r1', crop_id: 'corn', county_id: 'A', crop_year: 2026, variance_pct: 0,
   yield_differential: null, county_yield_override: null, rma_final_county_yield: null,
-  notes: null, created_at: '', ...over,
+  notes: null, created_at: '', updated_at: '', ...over,
 })
 
 describe('parseYieldInput', () => {

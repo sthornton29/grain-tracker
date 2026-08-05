@@ -3,6 +3,9 @@
 // sidebar (layout.tsx) and the landing-page cards (page.tsx) render from this,
 // so they never drift apart. Routes are unchanged — only names and ordering.
 
+import type { AppRole } from '@/lib/types'
+import { roleAllowsPath } from '@/lib/route-guard'
+
 export type ReportNavItem = {
   label: string
   href: string
@@ -12,6 +15,17 @@ export type ReportNavItem = {
 }
 
 export type ReportNavGroup = { title: string; reports: ReportNavItem[] }
+
+/** The groups a role may see. Viewers keep every embedded /reports page and
+ *  the Yields links, but lose the ↗ links into operational pages (Loads,
+ *  Contracts, Inventory…) — the middleware (lib/route-guard.ts) redirects
+ *  those paths anyway. Empty groups drop out. */
+export function reportGroupsFor(role: AppRole, groups: ReportNavGroup[] = REPORT_GROUPS): ReportNavGroup[] {
+  if (role !== 'viewer') return groups
+  return groups
+    .map((g) => ({ ...g, reports: g.reports.filter((r) => roleAllowsPath('viewer', r.href)) }))
+    .filter((g) => g.reports.length > 0)
+}
 
 export const REPORT_GROUPS: ReportNavGroup[] = [
   {

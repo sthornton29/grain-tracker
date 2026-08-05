@@ -606,7 +606,31 @@ export type Load = {
 // ---------- Cotton module (042) ----------
 
 export type AppSettings = { id: number; cotton_module_enabled: boolean; updated_at: string }
-export type AppRole = 'owner' | 'gin'
+export type AppRole = 'owner' | 'gin' | 'viewer'
+
+// ---------- Viewer role (052) ----------
+
+// A viewer's entity grant — the entities a read-only stakeholder may see.
+export type UserEntityAccess = { id: string; user_id: string; entity_id: string; created_at: string }
+
+// A viewer's private assumption override: shadows ONE column of ONE row of
+// crop_assumptions (scope 'crop') or county_yield_assumptions (scope
+// 'county'). base_updated_at snapshots the base row's updated_at at save
+// time — the override applies only while they still match, so any admin edit
+// supersedes it automatically (lib/viewer-assumptions.ts).
+export type ViewerAssumptionOverride = {
+  id: string
+  user_id: string
+  scope: 'crop' | 'county'
+  crop_id: string
+  crop_year: number
+  county_id: string | null // county scope only; null = the crop's default row
+  field: string
+  value: unknown // jsonb: number, or null to override a field to "unset"
+  base_updated_at: string
+  created_at: string
+  updated_at: string
+}
 
 export type Gin = { id: string; name: string; address: string | null; phone: string | null; notes: string | null }
 
@@ -857,6 +881,7 @@ export type CountyYieldAssumption = {
   rma_final_county_yield: number | null // published final: pins everything
   notes: string | null
   created_at: string
+  updated_at: string // 052 — staleness anchor for viewer overrides
 }
 
 // STAX endorsement (cotton): band from coverage_range_top down coverage_pct.

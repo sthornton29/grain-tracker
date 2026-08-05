@@ -13,6 +13,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { useLiveMyaDetailed } from '@/lib/use-live-mya'
 import { fetchAllCounties } from '@/lib/counties'
 import EntityFilter from '@/components/entity-filter'
@@ -121,6 +122,10 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase])
+
+  // Viewer role (052): RLS already row-filters the data; here the grants only
+  // limit the entity dropdown and name the granted entities on the export.
+  const viewer = useViewerScope(supabase)
 
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const entityById = useMemo(() => new Map(entities.map((e) => [e.id, e])), [entities])
@@ -335,6 +340,12 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
 
   function toggle(id: string) { setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n }) }
 
+  // For a viewer, "no entity selected" means their granted entities — the
+  // export's filter line names them. Null for owners (keep existing wording).
+  const entityName = entityId
+    ? entityById.get(entityId)?.name ?? null
+    : viewerAllEntitiesLabel(viewer, entities)
+
   function buildExportPayload(): ExportPayload {
     const cols: ExportPayload['sections'][number]['columns'] = [{ label: 'Farm' }, { label: 'FSA #' }, { label: 'Entity' }]
     // Per commodity: base acres, the farm's election (PLC / ARC-CO — shown under
@@ -425,7 +436,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
       title: 'Government Payment Tracker',
       filters: `${yearBasis === 'payment'
         ? `Payments received in crop year ${paymentYear || '—'} (${programYear || '—'} program year, paid Oct ${paymentYear || '—'})`
-        : `Program year ${programYear || '—'} (paid Oct ${paymentYear || '—'})`}${entityId ? ` · Entity: ${entityById.get(entityId)?.name ?? ''}` : ''}`,
+        : `Program year ${programYear || '—'} (paid Oct ${paymentYear || '—'})`}${entityName ? ` · Entity: ${entityName}` : ''}`,
       summary: [
         { label: 'Total ARC/PLC', value: formatNumber(totals.arcPlc, 'usd0'), tone: 'favorable' },
         { label: 'Other USDA', value: formatNumber(totals.other, 'usd0') },
@@ -438,7 +449,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [farmRows, totals, shownCommodities, limitRows, entityMatrix, matrixCommodities, cropYear, yearBasis, onPayloadChange])
+  }, [farmRows, totals, shownCommodities, limitRows, entityMatrix, matrixCommodities, cropYear, yearBasis, entityName, onPayloadChange])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   if (loading) return <p className="text-slate-500">Loading…</p>
@@ -472,7 +483,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
             </button>
           </span>
         </label>
-        <EntityFilter entities={entities} value={entityId} onChange={setEntityId} />
+        <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} />
         <Link
           href={`/settings/government-payments${programYear !== '' ? `?year=${programYear}` : ''}#bench`}
           className="ml-auto rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"

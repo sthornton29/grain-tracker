@@ -14,6 +14,10 @@ import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physi
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
+import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
+import { useViewerAssumptions } from '@/lib/use-viewer-assumptions'
+import { resolveCropAssumptions } from '@/lib/viewer-assumptions'
+import { SupersededNotice } from '@/components/viewer-scenario'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { cropToCommodity } from '@/lib/contracts'
 import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
@@ -163,11 +167,24 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
 
+  // Viewer role (052): the grant universe caps the entity scope, and the
+  // viewer's private assumption overrides layer over the shared rows.
+  const viewer = useViewerScope(supabase)
+  const viewerA = useViewerAssumptions(supabase, viewer)
+  const assumptionRes = useMemo(() => resolveCropAssumptions(assumptions, viewerA.overrides), [assumptions, viewerA.overrides])
+  const effAssumptions = assumptionRes.rows
+  useEffect(() => { if (assumptionRes.staleIds.length > 0) viewerA.cleanupStale(assumptionRes.staleIds) }, [assumptionRes, viewerA])
+
   // Shared entity scoping — the SAME layer the Marketing dashboard applies, so
   // the reconciliation identity (RevProj profit − Marketing profit = insurance
   // + government) survives an entity filter.
-  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields, entities }), [entityId, farms, fields, entities])
-  const entityName = entityId ? entities.find((e) => e.id === entityId)?.name ?? null : null
+  const scope = useMemo(
+    () => buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds }),
+    [entityId, farms, fields, entities, viewer.grantedIds],
+  )
+  const entityName = entityId
+    ? entities.find((e) => e.id === entityId)?.name ?? null
+    : viewerAllEntitiesLabel(viewer, entities)
   const scopedPlantings = useMemo(() => scope.plantings(plantings), [scope, plantings])
   // Contracts/hedges attribute (entity-keyed → whole; operation-level → the
   // entity's acre share of the crop), so filtered sales don't vanish.
@@ -183,8 +200,8 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   const doubleCropIds = useMemo(() => buildDoubleCropSet(plantings, cropById), [plantings, cropById])
   const expProdByCrop = useMemo(() => {
     if (cropYear === '') return new Map<string, number>()
-    return expectedProductionFromBreakout(segmentAcresByCrop(scopedPlantings, cropYear, doubleCropIds), assumptions, cropYear)
-  }, [scopedPlantings, cropYear, doubleCropIds, assumptions])
+    return expectedProductionFromBreakout(segmentAcresByCrop(scopedPlantings, cropYear, doubleCropIds), effAssumptions, cropYear)
+  }, [scopedPlantings, cropYear, doubleCropIds, effAssumptions])
 
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings([...plantings.map((p) => p.season_year), ...policies.map((p) => p.crop_year)], cropYear === '' ? null : cropYear),
@@ -244,9 +261,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   const harvestCompleteIds = useMemo(() => {
     if (cropYear === '') return new Set<string>()
     const cropCompleteKeys = new Set<string>()
-    for (const a of assumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
+    for (const a of effAssumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
     return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys })
-  }, [scopedPlantings, aggByKey, cropYear, assumptions])
+  }, [scopedPlantings, aggByKey, cropYear, effAssumptions])
 
   // Current futures per crop to value unpriced bushels in blended revenue — the
   // live harvest-month estimate, the EXACT source the Marketing dashboard uses
@@ -313,7 +330,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   }, [cottonPhysicalRaw, attribution, crops])
 
   const marketingRows = useMemo(() => {
-    if (cropYear === '') return []
+    if (cropYear === '' || viewer.loading || !viewerA.ready) return []
     return computeMarketing({
       cropYear,
       crops,
@@ -321,7 +338,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       contracts: scopedContracts.filter((c) => c.crop_year === cropYear),
       futures: scopedFutures.filter((f) => f.crop_year === cropYear),
       options: scopedOptions.filter((o) => o.crop_year === cropYear),
-      assumptions: assumptions.filter((a) => a.crop_year === cropYear),
+      assumptions: effAssumptions.filter((a) => a.crop_year === cropYear),
       actualProductionByCrop: productionByCrop,
       expectedProductionByCrop: expProdByCrop,
       currentFuturesByCrop,
@@ -329,7 +346,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       cottonProductionByCrop,
       cottonPhysicalByCrop: cottonPhysical,
     })
-  }, [cropYear, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, assumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds, cottonProductionByCrop, cottonPhysical])
+  }, [cropYear, viewer.loading, viewerA.ready, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds, cottonProductionByCrop, cottonPhysical])
 
   // Resolve a harvest price per crop for the MARKET path: final → estimate →
   // projected. `source` distinguishes RMA-native prices ($/lb for cotton:
@@ -544,7 +561,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   }, [rows, totals, cropYear, entityName, onPayloadChange])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  // Hold the report until the viewer scope/overrides resolve too, so a viewer
+  // never sees a flash of unscoped numbers. Inert timing for owners.
+  if (loading || viewer.loading || !viewerA.ready) return <p className="text-slate-500">Loading…</p>
 
   return (
     <div className="space-y-4 print-area">
@@ -556,8 +575,10 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
             {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
           </select>
         </label>
-        <EntityFilter entities={entities} value={entityId} onChange={setEntityId} />
+        <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} />
       </div>
+
+      <SupersededNotice show={viewerA.superseded} onDismiss={viewerA.dismissSuperseded} />
 
       {cropYear === '' && <p className="text-amber-700 text-sm">Pick a crop year to run the projection.</p>}
 

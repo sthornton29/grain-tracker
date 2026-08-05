@@ -13,6 +13,10 @@ import { buildDoubleCropSet } from '@/lib/plantings'
 import { cropToHedgeCommodity } from '@/lib/contracts'
 import { fmtPnl, buildContractSymbol, formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
+import { useViewerAssumptions } from '@/lib/use-viewer-assumptions'
+import { resolveCropAssumptions, OVERRIDABLE_CROP_FIELDS, type OverridableCropField } from '@/lib/viewer-assumptions'
+import { ScenarioChip, SupersededNotice } from '@/components/viewer-scenario'
 import { StackedBar } from '@/components/reports/report-kit'
 import ExportBar from '@/components/export-bar'
 import { type ExportPayload } from '@/lib/exports'
@@ -263,13 +267,26 @@ export default function MarketingPage() {
     return () => { cancelled = true }
   }, [year, crops, plantings])
 
+  // Viewer role (052): the grant universe caps the entity scope, and the
+  // viewer's private assumption overrides layer over the shared rows.
+  const viewer = useViewerScope(supabase)
+  const viewerA = useViewerAssumptions(supabase, viewer)
+  const assumptionRes = useMemo(() => resolveCropAssumptions(assumptions, viewerA.overrides), [assumptions, viewerA.overrides])
+  const effAssumptions = assumptionRes.rows
+  useEffect(() => { if (assumptionRes.staleIds.length > 0) viewerA.cleanupStale(assumptionRes.staleIds) }, [assumptionRes, viewerA])
+
   // Shared entity scoping: acres/production narrow to the selected entity's
   // fields; the operation-wide assumptions apply to them unchanged. Contracts
   // and hedges attribute through scope.attribution — entity-keyed rows go to
   // their entity, operation-level (null-entity) rows pro-rate by the entity's
   // acre share of the crop, so a filtered entity keeps its sales.
-  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields, entities }), [entityId, farms, fields, entities])
-  const entityName = entityId ? entities.find((e) => e.id === entityId)?.name ?? null : null
+  const scope = useMemo(
+    () => buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds }),
+    [entityId, farms, fields, entities, viewer.grantedIds],
+  )
+  const entityName = entityId
+    ? entities.find((e) => e.id === entityId)?.name ?? null
+    : viewerAllEntitiesLabel(viewer, entities)
   const scopedPlantings = useMemo(() => scope.plantings(plantings), [scope, plantings])
   const attribution = useMemo(() => scope.attribution({ plantings, crops }), [scope, plantings, crops])
   const scopedContracts = useMemo(() => attribution.contracts(contracts), [attribution, contracts])
@@ -285,8 +302,8 @@ export default function MarketingPage() {
     [scopedPlantings, year, doubleCropIds],
   )
   const expProdByCrop = useMemo(
-    () => (year == null ? new Map<string, number>() : expectedProductionFromBreakout(segByCrop, assumptions, year)),
-    [segByCrop, assumptions, year],
+    () => (year == null ? new Map<string, number>() : expectedProductionFromBreakout(segByCrop, effAssumptions, year)),
+    [segByCrop, effAssumptions, year],
   )
 
   // (field|crop|year) → dry bushels + last load date, splits-aware — narrowed to
@@ -310,9 +327,9 @@ export default function MarketingPage() {
   const harvestCompleteIds = useMemo(() => {
     if (year == null) return new Set<string>()
     const cropCompleteKeys = new Set<string>()
-    for (const a of assumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
+    for (const a of effAssumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
     return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys })
-  }, [year, assumptions, scopedPlantings, aggByKey])
+  }, [year, effAssumptions, scopedPlantings, aggByKey])
 
   // Cotton actual production: lbs of lint from the entity's gin receipts —
   // per-bale net weights when the bales are on file, else the receipt total.
@@ -348,8 +365,8 @@ export default function MarketingPage() {
   }, [cottonPhysicalRaw, attribution, crops])
 
   const rows = useMemo(
-    () => (year == null ? [] : computeMarketing({ cropYear: year, crops, plantings: scopedPlantings, contracts: scopedContracts, futures: scopedFutures, options: scopedOptions, assumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures, harvestCompleteCropIds: harvestCompleteIds, cottonProductionByCrop: cottonProd, cottonPhysicalByCrop: cottonPhysical })),
-    [year, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, assumptions, production, expProdByCrop, currentFutures, harvestCompleteIds, cottonProd, cottonPhysical],
+    () => (year == null || viewer.loading || !viewerA.ready ? [] : computeMarketing({ cropYear: year, crops, plantings: scopedPlantings, contracts: scopedContracts, futures: scopedFutures, options: scopedOptions, assumptions: effAssumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures, harvestCompleteCropIds: harvestCompleteIds, cottonProductionByCrop: cottonProd, cottonPhysicalByCrop: cottonPhysical })),
+    [year, viewer.loading, viewerA.ready, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, production, expProdByCrop, currentFutures, harvestCompleteIds, cottonProd, cottonPhysical],
   )
 
   // Actual average yield (dry bushels from loads ÷ planted acres) per crop, used
@@ -415,6 +432,24 @@ export default function MarketingPage() {
 
   async function saveAssumption(cropId: string, patch: Partial<CropAssumption>) {
     if (year == null) return
+    // Viewers never write the shared rows: each patched field becomes (or
+    // updates) a PRIVATE override snapshotted against the current base row.
+    // harvest_complete is an operational fact — not overridable (the checkbox
+    // is hidden for viewers; guard anyway).
+    if (viewer.isViewer) {
+      const base = assumptions.find((a) => a.crop_id === cropId && a.crop_year === year) ?? null
+      for (const field of OVERRIDABLE_CROP_FIELDS) {
+        if (!Object.prototype.hasOwnProperty.call(patch, field)) continue
+        const raw = patch[field as keyof CropAssumption]
+        const value = raw == null ? (field === 'assumed_basis' ? 0 : null) : Number(raw)
+        const baseRaw = base?.[field as keyof CropAssumption]
+        const baseVal = baseRaw == null ? (field === 'assumed_basis' ? 0 : null) : Number(baseRaw)
+        // Typing the official value back is a reset, not a pinned override.
+        if (value === baseVal) await viewerA.resetOverride({ scope: 'crop', cropId, cropYear: year, field: field as OverridableCropField })
+        else await viewerA.saveOverride({ scope: 'crop', cropId, cropYear: year, field: field as OverridableCropField, value, base })
+      }
+      return
+    }
     const existing = assumptions.find((a) => a.crop_id === cropId && a.crop_year === year)
     // Use a field from `patch` when it's present (even if null, to clear it);
     // otherwise keep the stored value. This lets a partial patch (e.g. just the
@@ -487,7 +522,7 @@ export default function MarketingPage() {
             {yearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </label>
-        <EntityFilter entities={entities} value={entityId} onChange={setEntityId} className="no-print" />
+        <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} className="no-print" />
         {year != null && !loading && (
           <button
             type="button"
@@ -507,12 +542,13 @@ export default function MarketingPage() {
       </div>
 
       {banner && <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">{banner}</div>}
+      <SupersededNotice show={viewerA.superseded} onDismiss={viewerA.dismissSuperseded} />
 
       {year == null ? (
         <div className="bg-white rounded-xl shadow p-8 text-center text-slate-500">
           Pick a crop year to load the marketing dashboard.
         </div>
-      ) : loading ? (
+      ) : loading || viewer.loading || !viewerA.ready ? (
         <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">Loading…</div>
       ) : rows.length === 0 ? (
         <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">No planted crops for {year}.</div>
@@ -521,8 +557,17 @@ export default function MarketingPage() {
            crops. Each section is the complete view for its crop: an at-a-glance
            header row plus an expandable 4-column detail grid. */
         <div className="space-y-5 print-area">
-          {rows.map((r) => (
-            r.unit === 'lbs' ? (
+          {rows.map((r) => {
+            const wfKeys = (f: string) => assumptionRes.appliedKeys.has(`crop|${r.cropId}|${year}|${f}`)
+            const wfScenario = viewer.isViewer && (wfKeys('assumed_futures') || wfKeys('assumed_basis'))
+              ? {
+                  onReset: async () => {
+                    await viewerA.resetOverride({ scope: 'crop', cropId: r.cropId, cropYear: year!, field: 'assumed_futures' })
+                    await viewerA.resetOverride({ scope: 'crop', cropId: r.cropId, cropYear: year!, field: 'assumed_basis' })
+                  },
+                }
+              : undefined
+            return r.unit === 'lbs' ? (
               <CottonSection
                 key={`${r.cropId}-${year}`}
                 row={r}
@@ -531,6 +576,7 @@ export default function MarketingPage() {
                 cropYear={year}
                 onSaveFutures={(v) => saveAssumption(r.cropId, { assumed_futures: v })}
                 onClearAssumptions={() => saveAssumption(r.cropId, { assumed_futures: null, assumed_basis: 0 })}
+                wfScenario={wfScenario}
               />
             ) : (
             <CropSection
@@ -545,18 +591,26 @@ export default function MarketingPage() {
               onSaveBasis={(v) => saveAssumption(r.cropId, { assumed_basis: v })}
               onSaveFutures={(v) => saveAssumption(r.cropId, { assumed_futures: v })}
               onClearAssumptions={() => saveAssumption(r.cropId, { assumed_futures: null, assumed_basis: 0 })}
+              wfScenario={wfScenario}
             />
             )
-          ))}
+          })}
         </div>
       )}
 
       {/* Assumptions slide-over */}
       {assumptionsOpen && year != null && (
         <AssumptionsPanel
-          crops={plantedCrops} year={year} assumptions={assumptions}
+          crops={plantedCrops} year={year} assumptions={effAssumptions}
           segByCrop={segByCrop} actualByCrop={actualByCrop}
           onSave={saveAssumption} onClose={() => setAssumptionsOpen(false)}
+          viewerMode={viewer.isViewer}
+          scenarioCrops={new Set(
+            Array.from(assumptionRes.appliedKeys)
+              .filter((k) => k.startsWith('crop|'))
+              .map((k) => k.split('|')[1]),
+          )}
+          onResetScenario={(cropId) => viewerA.resetOverridesFor({ scope: 'crop', cropId, cropYear: year })}
         />
       )}
     </div>
@@ -575,7 +629,7 @@ export default function MarketingPage() {
 // ---------------------------------------------------------------------------
 function CropSection({
   row, advanced, basisOpen, onToggleBasis, detailsOpen, onToggleDetails,
-  cropYear, onSaveBasis, onSaveFutures, onClearAssumptions,
+  cropYear, onSaveBasis, onSaveFutures, onClearAssumptions, wfScenario,
 }: {
   row: MarketingRow
   advanced: boolean
@@ -587,6 +641,8 @@ function CropSection({
   onSaveBasis: (v: number) => void
   onSaveFutures: (v: number | null) => void
   onClearAssumptions: () => void
+  /** Present when the viewer has a private what-if override on this crop. */
+  wfScenario?: { onReset: () => void }
 }) {
   const prod = row.totalProduction
   const profitTone = row.totalProfit == null ? 'text-slate-400' : row.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'
@@ -862,6 +918,7 @@ function CropSection({
           <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 sm:p-4 no-print text-sm">
             <div className="flex items-baseline gap-3 mb-3">
               <div className="font-semibold text-sky-900">What-If on Unpriced Bushels</div>
+              {wfScenario && <ScenarioChip onReset={() => { setWfFutures(''); setBasisInput(''); wfScenario.onReset() }} />}
               {hasAssumptions && (
                 <button type="button" onClick={clearAssumptions} className="ml-auto text-xs text-slate-500 hover:text-red-600 font-medium">
                   Clear assumptions
@@ -910,13 +967,15 @@ function CropSection({
 // isn't tracked yet, and cotton has no basis concept until it is). The What-If
 // re-prices the unhedged lbs at a scenario ¢/lb against the crop-year CTZ.
 // ---------------------------------------------------------------------------
-function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutures, onClearAssumptions }: {
+function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutures, onClearAssumptions, wfScenario }: {
   row: MarketingRow
   detailsOpen: boolean
   onToggleDetails: () => void
   cropYear: number | null
   onSaveFutures: (v: number | null) => void
   onClearAssumptions: () => void
+  /** Present when the viewer has a private what-if override on this crop. */
+  wfScenario?: { onReset: () => void }
 }) {
   const prod = row.totalProduction
   const be = breakevenOf(row)
@@ -1153,6 +1212,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
           <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 sm:p-4 no-print text-sm">
             <div className="flex items-baseline gap-3 mb-3">
               <div className="font-semibold text-sky-900">What-If on Unhedged Lbs</div>
+              {wfScenario && <ScenarioChip onReset={() => { setWfFutures(''); wfScenario.onReset() }} />}
               {row.assumedFutures != null && (
                 <button type="button" onClick={clearAssumptions} className="ml-auto text-xs text-slate-500 hover:text-red-600 font-medium">
                   Clear assumptions
@@ -1288,12 +1348,17 @@ function Row({ label, value, tone }: { label: string; value: string; tone?: stri
 // ---------------------------------------------------------------------------
 // Assumptions slide-over panel — collapsible per crop, live recalc, stays open
 // ---------------------------------------------------------------------------
-function AssumptionsPanel({ crops, year, assumptions, segByCrop, actualByCrop, onSave, onClose }: {
+function AssumptionsPanel({ crops, year, assumptions, segByCrop, actualByCrop, onSave, onClose, viewerMode, scenarioCrops, onResetScenario }: {
   crops: Crop[]; year: number; assumptions: CropAssumption[]
   segByCrop: Map<string, SegmentAcres>
   actualByCrop: Map<string, { production: number; yield: number | null }>
   onSave: (cropId: string, patch: Partial<CropAssumption>) => void
   onClose: () => void
+  /** Viewer role: edits are private overrides; harvest-complete is read-only. */
+  viewerMode?: boolean
+  /** Crops the viewer has any private override on (chip + reset). */
+  scenarioCrops?: Set<string>
+  onResetScenario?: (cropId: string) => void
 }) {
   const [openCrop, setOpenCrop] = useState<string | null>(crops[0]?.id ?? null)
   return (
@@ -1328,6 +1393,9 @@ function AssumptionsPanel({ crops, year, assumptions, segByCrop, actualByCrop, o
                 >
                   <span className="text-slate-400">{isOpen ? '▾' : '▸'}</span>
                   <span className="font-semibold flex-1">{c.name}</span>
+                  {scenarioCrops?.has(c.id) && onResetScenario && (
+                    <ScenarioChip onReset={() => onResetScenario(c.id)} />
+                  )}
                   {missing
                     ? <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">needs yield</span>
                     : <span className="text-xs text-slate-500 tabular-nums">{effYield?.toFixed(1)} {isCottonCrop(c.name) ? 'lbs lint/ac' : 'bu/ac'}{a?.cost_per_acre != null ? ` · ${usd0(a.cost_per_acre)}/ac` : ''}{a?.harvest_complete ? ' · harvested' : ''}</span>}
@@ -1337,6 +1405,7 @@ function AssumptionsPanel({ crops, year, assumptions, segByCrop, actualByCrop, o
                     <AssumptionRow
                       key={`${c.id}:${a?.updated_at ?? 'new'}`}
                       crop={c} assumption={a} seg={segByCrop.get(c.id)} actual={actual} onSave={onSave}
+                      viewerMode={viewerMode}
                     />
                   </div>
                 )}
@@ -1349,10 +1418,12 @@ function AssumptionsPanel({ crops, year, assumptions, segByCrop, actualByCrop, o
   )
 }
 
-function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
+function AssumptionRow({ crop, assumption, seg, actual, onSave, viewerMode }: {
   crop: Crop; assumption?: CropAssumption; seg?: SegmentAcres
   actual?: { production: number; yield: number | null }
   onSave: (cropId: string, patch: Partial<CropAssumption>) => void
+  /** Viewer role: harvest-complete is an operational fact — read-only. */
+  viewerMode?: boolean
 }) {
   const s0 = (v: number | null | undefined) => (v != null ? String(v) : '')
   const a = assumption
@@ -1433,6 +1504,10 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
   const prodUnit = lbsUnit ? 'lbs' : 'bu'
   return (
     <div className="space-y-2 pt-2">
+      {viewerMode ? (
+        // Operational fact — viewers see it, never change it.
+        <p className="text-sm text-slate-500">Harvest {a?.harvest_complete ? 'complete' : 'not complete'}.</p>
+      ) : (
       <label className="text-sm flex items-center gap-1 text-slate-600">
         <input
           type="checkbox"
@@ -1447,6 +1522,7 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave }: {
         />
         Harvest complete
       </label>
+      )}
       <table className="w-full text-sm">
         <thead>
           <tr className="text-xs text-slate-500">

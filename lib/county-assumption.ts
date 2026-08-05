@@ -101,6 +101,7 @@ export function applySavePlan(
           variance_pct: 0,
           notes: null,
           created_at: '',
+          updated_at: '',
           ...plan.row,
         },
       ]

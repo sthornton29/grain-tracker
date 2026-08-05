@@ -17,6 +17,7 @@ import { createClient } from '@/lib/supabase/client'
 import { fetchAllCounties } from '@/lib/counties'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { useLiveMyaDetailed } from '@/lib/use-live-mya'
 import EntityFilter from '@/components/entity-filter'
 import MyaPricePanel from '@/components/reports/mya-price-panel'
@@ -104,6 +105,10 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
     setCropYear(yrs.length > 0 ? Math.max(...yrs) : new Date().getFullYear())
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, elections])
+
+  // Viewer role (052): RLS already row-filters the data; here the grants only
+  // limit the entity dropdown and name the granted entities on the export.
+  const viewer = useViewerScope(supabase)
 
   const commodityById = useMemo(() => new Map(commodities.map((c) => [c.id, c])), [commodities])
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
@@ -312,10 +317,16 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
     return <span className={`text-[10px] rounded-full px-1.5 py-0.5 whitespace-nowrap ${cls}`}>{MYA_STATE_LABEL[state]}</span>
   }
 
+  // For a viewer, "no entity selected" means their granted entities — the
+  // export's filter line names them. Null for owners (keep existing wording).
+  const entityName = entityId
+    ? entities.find((e) => e.id === entityId)?.name ?? null
+    : viewerAllEntitiesLabel(viewer, entities)
+
   function buildExportPayload(): ExportPayload {
     return {
       title: 'ARC/PLC Decision Aid',
-      filters: `Crop year: ${cropYear || '—'}${entityId ? ` · Entity: ${entities.find((e) => e.id === entityId)?.name ?? ''}` : ''}${myaPct !== 0 ? ` · MYA what-if: ${myaPct > 0 ? '+' : ''}${myaPct}%` : ''} · ARC guarantee ${Math.round(programCfg.arcGuaranteePct * 100)}% / cap ${Math.round(programCfg.arcPaymentCapPct * 100)}% · toss-up within $${TOSS_UP_BAND_PER_ACRE}/base acre`,
+      filters: `Crop year: ${cropYear || '—'}${entityName ? ` · Entity: ${entityName}` : ''}${myaPct !== 0 ? ` · MYA what-if: ${myaPct > 0 ? '+' : ''}${myaPct}%` : ''} · ARC guarantee ${Math.round(programCfg.arcGuaranteePct * 100)}% / cap ${Math.round(programCfg.arcPaymentCapPct * 100)}% · toss-up within $${TOSS_UP_BAND_PER_ACRE}/base acre`,
       sections: [{
         // The page a farmer brings to the FSA office — the by-crop comparison
         // leads the export.
@@ -356,7 +367,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, cropSummary, cropYear, entityId, myaPct, onPayloadChange])
+  }, [rows, cropSummary, cropYear, entityId, entityName, myaPct, onPayloadChange])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   if (loading) return <p className="text-slate-500">Loading…</p>
@@ -371,7 +382,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
             {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </label>
-        <EntityFilter entities={entities} value={entityId} onChange={setEntityId} />
+        <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} />
       </div>
 
       {cropYear === '' && <p className="text-amber-700 text-sm">Pick a crop year.</p>}

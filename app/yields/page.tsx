@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import CottonYieldsSection from '@/components/reports/cotton-yields-section'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { fieldCropAggregates, analyzeYields, isHarvestComplete, groupYieldAggregates, type HarvestProgress, type GroupYieldAgg, type GroupYieldPlanting } from '@/lib/yields'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
@@ -47,6 +48,11 @@ function practiceOf(p: FieldPlanting): 'pure-dry' | 'pure-irr' | 'mixed' {
 
 export default function YieldsPage() {
   const supabase = useMemo(() => createClient(), [])
+  // Viewer role (052): RLS already limits farms/fields/loads/splits to the
+  // granted entities server-side; here we prune the entity dropdown, name the
+  // grants on exports, and hide the edit affordances (writes are RLS-blocked
+  // anyway — no point offering buttons that would only error).
+  const viewer = useViewerScope(supabase)
   const [entities, setEntities] = useState<Entity[]>([])
   const [farms, setFarms] = useState<Farm[]>([])
   const [fields, setFields] = useState<Field[]>([])
@@ -601,6 +607,10 @@ export default function YieldsPage() {
     if (cropId) parts.push(`Crop: ${cropById.get(cropId)?.name ?? '?'}`)
     if (farmId) parts.push(`Farm: ${farmById.get(farmId)?.name ?? '?'}`)
     if (entityId) parts.push(`Entity: ${entityById.get(entityId)?.name ?? '?'}`)
+    else {
+      const granted = viewerAllEntitiesLabel(viewer, entities)
+      if (granted) parts.push(`Entity: ${granted}`)
+    }
     if (countyId) {
       const c = counties.find((c) => c.id === countyId)
       parts.push(`County: ${c ? `${c.name}, ${c.state_code}` : '?'}`)
@@ -968,10 +978,12 @@ export default function YieldsPage() {
           <option value="">All farms</option>
           {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
         </select>
+        {(!viewer.isViewer || entityOptionsFor(viewer, entities).length > 1) && (
         <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
           <option value="">All entities</option>
-          {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+          {entityOptionsFor(viewer, entities).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
         </select>
+        )}
         <select value={countyId} onChange={(e) => setCountyId(e.target.value)} className={inputCls}>
           <option value="">All counties</option>
           {countyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
@@ -1076,7 +1088,7 @@ export default function YieldsPage() {
                                 Needs allocation
                               </span>
                             )}
-                            {!isOpen && (
+                            {!isOpen && !viewer.isViewer && (
                               <button
                                 type="button"
                                 onClick={() => openVarAlloc(p)}
@@ -1236,7 +1248,7 @@ export default function YieldsPage() {
                               in progress · counted
                             </span>
                           )}
-                          {exclusion === 'in_progress' && (
+                          {exclusion === 'in_progress' && !viewer.isViewer && (
                             <button
                               type="button"
                               disabled={savingOverride}
@@ -1244,7 +1256,7 @@ export default function YieldsPage() {
                               className="text-brand-deep text-xs underline disabled:opacity-50 no-print"
                             >Count anyway</button>
                           )}
-                          {overridden && (
+                          {overridden && !viewer.isViewer && (
                             <button
                               type="button"
                               disabled={savingOverride}
@@ -1289,7 +1301,7 @@ export default function YieldsPage() {
                       )}
                       {yieldView === 'breakdown' && (
                         <td className="px-3 py-2 whitespace-nowrap">
-                          {showAllocateButton && !isBreakoutOpen && (
+                          {showAllocateButton && !isBreakoutOpen && !viewer.isViewer && (
                             // Allocation is offered only once harvest is complete;
                             // an existing breakout stays editable so saved data is
                             // never stranded.

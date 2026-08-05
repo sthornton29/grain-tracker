@@ -33,6 +33,13 @@
 //
 // With entityId === '' (All entities) every filter is the identity function, so
 // the unfiltered numbers are structurally guaranteed to match today's.
+//
+// VIEWER GRANTS (052): pass grantedEntityIds (the viewer's user_entity_access
+// set) and the scope's universe shrinks to those entities. '' then means "all
+// MY entities combined" (the grants' union — still active filtering, never the
+// whole operation), a granted entityId narrows to it, and a NON-granted
+// entityId (URL/localStorage manipulation) falls back to the union — it can
+// never widen the scope. Owners simply don't pass grants and nothing changes.
 
 import { cropToHedgeCommodity } from '@/lib/contracts'
 import { buildCottonPhysicalSummary, type CottonPhysicalInputs, type CottonPhysicalSummary, type DispositionBoard } from '@/lib/cotton-sales'
@@ -146,8 +153,13 @@ function mergeCottonSummaries(a: CottonPhysicalSummary, b: CottonPhysicalSummary
 
 export type EntityScope = {
   entityId: string
-  /** False for '' (All entities) — every method is then a pass-through. */
+  /** False for '' (All entities) — every method is then a pass-through.
+   *  With viewer grants the scope is ALWAYS active ('' = union of grants). */
   active: boolean
+  /** The entity ids this scope actually selects; null when inactive.
+   *  A single id for a normal filter, the whole grant set for a viewer's
+   *  "all my entities". */
+  selectedEntityIds: ReadonlySet<string> | null
   /** Fields on the entity's farms; null when inactive (= no field filter). */
   fieldIds: ReadonlySet<string> | null
   /** The entity's farms; null when inactive. */
@@ -186,14 +198,24 @@ export function buildEntityScope(args: {
    *  down through attribution(). Optional — without it only null-entity rows
    *  are treated as operation-level. */
   entities?: ReadonlyArray<{ id: string; entity_role?: string | null }>
+  /** The viewer's granted entities (user_entity_access, 052). When present
+   *  and non-empty, the scope can never reach outside them — see the header. */
+  grantedEntityIds?: ReadonlyArray<string> | ReadonlySet<string> | null
 }): EntityScope {
   const { entityId, farms, fields = [], entities = [] } = args
-  const active = entityId !== ''
+  const grants = args.grantedEntityIds ? new Set(args.grantedEntityIds) : null
+  // The entity ids this scope selects: a granted (or plain, for owners)
+  // single entity, or — for a viewer with no/foreign selection — the union
+  // of the grants. Null = no filtering at all (owners' "All entities").
+  const selected: ReadonlySet<string> | null = grants && grants.size > 0
+    ? (entityId !== '' && grants.has(entityId) ? new Set([entityId]) : grants)
+    : (entityId !== '' ? new Set([entityId]) : null)
+  const active = selected != null
   const agentIds = new Set(entities.filter((e) => e.entity_role === 'marketing_agent').map((e) => e.id))
 
   const farmEntity = new Map(farms.map((f) => [f.id, f.entity_id]))
   const farmIds = active
-    ? new Set(farms.filter((f) => f.entity_id === entityId).map((f) => f.id))
+    ? new Set(farms.filter((f) => f.entity_id != null && selected!.has(f.entity_id)).map((f) => f.id))
     : null
   const fieldIds = active
     ? new Set(fields.filter((f) => f.farm_id != null && farmIds!.has(f.farm_id)).map((f) => f.id))
@@ -237,13 +259,13 @@ export function buildEntityScope(args: {
       shareOf(mineByCrop, totalByCrop, cropId != null && cropYear != null ? `${cropId}|${cropYear}` : null)
     const shareForCommodity = (commodity: string | null, cropYear: number | null) =>
       shareOf(mineByCommodity, totalByCommodity, commodity != null && cropYear != null ? `${commodity}|${cropYear}` : null)
-    // Farming-entity-keyed rows (own-name marketing): whole for the own
+    // Farming-entity-keyed rows (own-name marketing): whole for a selected
     // entity, gone for another's. Marketing-agent-held and null-entity rows
     // market FOR the operation: the pro-rata acre share.
     const factor = (rowEntity: string | null, share: () => number): number => {
       if (!active) return 1
       if (rowEntity == null || agentIds.has(rowEntity)) return share()
-      return rowEntity === entityId ? 1 : 0
+      return selected!.has(rowEntity) ? 1 : 0
     }
     // ---- Physical cotton (044): own-name rows whole, agent/null rows at the
     //      cotton acre share. See cottonPartition/cottonSummary on the type. ----
@@ -271,7 +293,7 @@ export function buildEntityScope(args: {
         const own: T[] = [], flow: T[] = []
         for (const r of rows) {
           if (r.entity_id == null || agentIds.has(r.entity_id)) flow.push(r)
-          else if (r.entity_id === entityId) own.push(r)
+          else if (selected!.has(r.entity_id)) own.push(r)
         }
         return { own, flow }
       }
@@ -346,19 +368,22 @@ export function buildEntityScope(args: {
     }
   }
 
+  const inSelected = (id: string | null | undefined): boolean => id != null && selected!.has(id)
+
   return {
     entityId,
     active,
+    selectedEntityIds: selected,
     fieldIds,
     farmIds,
     plantings: (rows) => (active ? rows.filter((r) => fieldIds!.has(r.field_id)) : [...rows]),
-    byEntity: (rows) => (active ? rows.filter((r) => r.entity_id === entityId) : [...rows]),
+    byEntity: (rows) => (active ? rows.filter((r) => inSelected(r.entity_id)) : [...rows]),
     attribution,
     byFarm: (rows) => (active ? rows.filter((r) => farmIds!.has(r.farm_id)) : [...rows]),
     farmInEntity,
     otherPayments: (rows) =>
       active
-        ? rows.filter((r) => (r.farm_id != null ? farmEntity.get(r.farm_id) === entityId : r.entity_id === entityId))
+        ? rows.filter((r) => (r.farm_id != null ? inSelected(farmEntity.get(r.farm_id)) : inSelected(r.entity_id)))
         : [...rows],
     fieldAgg: <V,>(agg: ReadonlyMap<string, V>) => {
       if (!active) return new Map(agg)
@@ -369,8 +394,8 @@ export function buildEntityScope(args: {
     ginReceipts: (rows) =>
       active
         ? rows.filter((r) => {
-            if (r.entity_id != null) return r.entity_id === entityId
-            if (r.farm_id != null) return farmEntity.get(r.farm_id) === entityId
+            if (r.entity_id != null) return selected!.has(r.entity_id)
+            if (r.farm_id != null) return inSelected(farmEntity.get(r.farm_id))
             if (r.field_id != null) return fieldIds!.has(r.field_id)
             return false
           })

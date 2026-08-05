@@ -1,7 +1,15 @@
 import Link from 'next/link'
-import { REPORT_GROUPS } from './reports-nav'
+import { reportGroupsFor } from './reports-nav'
+import { createClient } from '@/lib/supabase/server'
+import { coerceAppRole } from '@/lib/app-role'
 
-export default function ReportsLanding() {
+export default async function ReportsLanding() {
+  const supabase = createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  const { data: profile } = user
+    ? await supabase.from('user_profiles').select('role').eq('user_id', user.id).maybeSingle()
+    : { data: null }
+  const groups = reportGroupsFor(coerceAppRole((profile as { role?: string } | null)?.role))
   return (
     <div className="space-y-6">
       <div>
@@ -13,7 +21,7 @@ export default function ReportsLanding() {
         </p>
       </div>
 
-      {REPORT_GROUPS.map((group) => (
+      {groups.map((group) => (
         <section key={group.title} className="space-y-3">
           <h2 className="text-xs uppercase tracking-wide text-slate-500 font-semibold">{group.title}</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

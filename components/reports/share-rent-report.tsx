@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import {
   EmptyState, SummaryCards, numCell, textCell, theadCls,
   subtotalRowCls, grandTotalRowCls, toneText,
@@ -107,6 +108,11 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
       setLoading(false)
     })()
   }, [supabase])
+
+  // Viewer role (052): RLS already row-filters the data; here the grants only
+  // limit the entity dropdown and name the granted entities on the export.
+  const viewer = useViewerScope(supabase)
+  const entityOptions = entityOptionsFor(viewer, entities)
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
@@ -259,7 +265,12 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
   function filtersLabel(): string {
     const parts: string[] = [`Crop year: ${cropYear === '' ? '(none)' : cropYear}`]
     if (cropId) parts.push(`Crop: ${cropById.get(cropId)?.name ?? '?'}`)
-    if (entityId) parts.push(`Entity: ${entities.find((e) => e.id === entityId)?.name ?? '?'}`)
+    // For a viewer, "no entity selected" means their granted entities — name
+    // them. Null for owners (keep existing wording).
+    const entityName = entityId
+      ? entities.find((e) => e.id === entityId)?.name ?? '?'
+      : viewerAllEntitiesLabel(viewer, entities)
+    if (entityName) parts.push(`Entity: ${entityName}`)
     if (landownerId) parts.push(`Landowner: ${landownerById.get(landownerId)?.name ?? '?'}`)
     return parts.join(' · ')
   }
@@ -336,7 +347,7 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groups, summaryByCrop, cropYear, cropId, entityId, landownerId, onPayloadChange])
+  }, [groups, summaryByCrop, cropYear, cropId, entityId, landownerId, viewer, onPayloadChange])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   const fmt = (n: number, d = 2) => n.toLocaleString(undefined, { maximumFractionDigits: d })
@@ -358,10 +369,12 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
           <option value="">All crops</option>
           {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
-        <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
-          <option value="">All entities</option>
-          {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-        </select>
+        {!(viewer.isViewer && entityOptions.length <= 1) && (
+          <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
+            <option value="">All entities</option>
+            {entityOptions.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+        )}
         <select value={landownerId} onChange={(e) => setLandownerId(e.target.value)} className={inputCls}>
           <option value="">All landowners</option>
           {landowners.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}

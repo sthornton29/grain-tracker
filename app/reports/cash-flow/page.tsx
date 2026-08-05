@@ -12,6 +12,10 @@ import { isCottonCrop } from '@/lib/marketing'
 import { resolveProgramYearConfig } from '@/lib/program-config'
 import { buildEntityScope } from '@/lib/entity-scope'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
+import { useViewerAssumptions } from '@/lib/use-viewer-assumptions'
+import { resolveCropAssumptions } from '@/lib/viewer-assumptions'
+import { SupersededNotice } from '@/components/viewer-scenario'
 import EntityFilter from '@/components/entity-filter'
 import ExportBar from '@/components/export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
@@ -114,12 +118,25 @@ export default function CashFlowPage() {
   // like Marketing / Revenue Projections / Income Sensitivity.
   const [entityId, setEntityId] = usePersistentState('cash-flow:entity', '')
 
+  // Viewer role (052): the grant universe caps the entity scope, and the
+  // viewer's private assumption overrides layer over the shared crop
+  // assumptions feeding the insurance projection.
+  const viewer = useViewerScope(supabase)
+  const viewerA = useViewerAssumptions(supabase, viewer)
+  const assumptionRes = useMemo(() => resolveCropAssumptions(assumptions, viewerA.overrides), [assumptions, viewerA.overrides])
+  const effAssumptions = assumptionRes.rows
+  useEffect(() => { if (assumptionRes.staleIds.length > 0) viewerA.cleanupStale(assumptionRes.staleIds) }, [assumptionRes, viewerA])
+  // Hold viewer-scoped output until the grants/overrides resolve, so a viewer
+  // never sees a flash of unscoped numbers. Inert timing for owners.
+  const viewerPending = viewer.loading || !viewerA.ready
+
   // Cotton cash events (044): CCC loan proceeds at entry, redemption payoffs /
   // equity at outcome, pool payments, priced contract deliveries, LDP, fees.
   // Only computed for a specific crop year (cotton timing is per-crop-year).
   const [cottonEvents, setCottonEvents] = useState<CottonCashEvent[]>([])
   useEffect(() => {
     if (cropYear === '') { setCottonEvents([]); return }
+    if (viewer.loading) return
     let cancelled = false
     ;(async () => {
       try {
@@ -128,7 +145,7 @@ export default function CashFlowPage() {
         if (!physical.hasData) { setCottonEvents([]); return }
         // Shared attribution (same rule as the other reports): own-name rows
         // whole, marketing-agent/null rows flow down at the cotton acre share.
-        const { own, flow, flowShare, hasData } = buildEntityScope({ entityId, farms, fields, entities })
+        const { own, flow, flowShare, hasData } = buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds })
           .attribution({ plantings, crops })
           .cottonPartition(physical.inputs)
         if (!hasData) { setCottonEvents([]); return }
@@ -161,7 +178,7 @@ export default function CashFlowPage() {
       } catch { if (!cancelled) setCottonEvents([]) }
     })()
     return () => { cancelled = true }
-  }, [cropYear, entityId, supabase, crops, farms, fields, entities, plantings])
+  }, [cropYear, entityId, supabase, crops, farms, fields, entities, plantings, viewer.loading, viewer.grantedIds])
 
   useEffect(() => {
     ;(async () => {
@@ -244,7 +261,13 @@ export default function CashFlowPage() {
   // entity, other USDA payments by farm-then-entity attribution, and contracts
   // through the shared attribution (entity-keyed → whole; operation-level →
   // the entity's acre share of the crop, so its sales don't vanish).
-  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields, entities }), [entityId, farms, fields, entities])
+  const scope = useMemo(
+    () => buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds }),
+    [entityId, farms, fields, entities, viewer.grantedIds],
+  )
+  const entityName = entityId
+    ? entities.find((e) => e.id === entityId)?.name ?? null
+    : viewerAllEntitiesLabel(viewer, entities)
   const scopedPolicies = useMemo(() => scope.byEntity(policies), [scope, policies])
   const attribution = useMemo(() => scope.attribution({ plantings, crops }), [scope, plantings, crops])
 
@@ -370,6 +393,7 @@ export default function CashFlowPage() {
   // views sum back to the all-entities report.
   const shareFor = (c: Contract) => attribution.shareForContract(c)
   const visibleContracts = contracts.filter((c) => {
+    if (viewerPending) return false
     if (cropYear !== '' && c.crop_year !== cropYear) return false
     if (cropId && c.crop_id !== cropId) return false
     if (buyerId && c.buyer_id !== buyerId) return false
@@ -487,7 +511,7 @@ export default function CashFlowPage() {
       const projected = projectInsuranceIndemnities({
         cropYear: yr,
         policies: yrPolicies,
-        scos, ecos, assumptions, plantings,
+        scos, ecos, assumptions: effAssumptions, plantings,
         actualYieldByCrop: actualYieldByCropFromLoads({ loads, plantings, crops, cropYear: yr }),
         harvestEstimates,
         liveHarvestByCrop: liveHarvestByYear.get(yr),
@@ -509,7 +533,7 @@ export default function CashFlowPage() {
     }
 
     return buckets
-  }, [cropYear, cropId, scope, elections, baseAcres, commodities, arcPriceData, arcPayments, scopedPolicies, scos, ecos, harvestEstimates, assumptions, plantings, loads, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments])
+  }, [cropYear, cropId, scope, elections, baseAcres, commodities, arcPriceData, arcPayments, scopedPolicies, scos, ecos, harvestEstimates, effAssumptions, plantings, loads, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments])
 
   // Cotton events, respecting the crop filter (a non-cotton crop hides them)
   // and bucketed net per month.
@@ -590,7 +614,7 @@ export default function CashFlowPage() {
       cropYear === '' ? 'All crop years' : `${cropYear} crop`,
       cropId ? cropById.get(cropId)?.name ?? 'Crop' : 'All crops',
       buyerId ? buyerById.get(buyerId)?.name ?? 'Buyer' : 'All buyers',
-      entityId ? entities.find((e) => e.id === entityId)?.name ?? 'Entity' : 'All entities',
+      entityName ?? 'All entities',
     ].join(' · ')
 
     const monthly: ExportPayload['sections'][number] = {
@@ -663,14 +687,16 @@ export default function CashFlowPage() {
       <div className="flex items-start gap-3 flex-wrap">
         <h1 className="text-2xl font-bold flex-1">
           Cash Flow Forecast
-          {entityId && (
+          {entityName && (
             <span className="ml-2 text-base font-semibold text-slate-500">
-              — {entities.find((e) => e.id === entityId)?.name ?? ''}
+              — {entityName}
             </span>
           )}
         </h1>
-        {!loading && (monthlyRows.length > 0 || visibleContracts.length > 0) && <ExportBar buildPayload={buildPayload} />}
+        {!loading && !viewerPending && (monthlyRows.length > 0 || visibleContracts.length > 0) && <ExportBar buildPayload={buildPayload} />}
       </div>
+
+      <SupersededNotice show={viewerA.superseded} onDismiss={viewerA.dismissSuperseded} />
 
       <SummaryCards cards={summaryCards} />
 
@@ -687,10 +713,10 @@ export default function CashFlowPage() {
           <option value="">All buyers</option>
           {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
         </select>
-        <EntityFilter entities={entities} value={entityId} onChange={setEntityId} className="justify-end" />
+        <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} className="justify-end" />
       </div>
 
-      {loading ? <p className="text-slate-500">Loading…</p> : (
+      {loading || viewerPending ? <p className="text-slate-500">Loading…</p> : (
         <>
           {/* Total Safety Net — crop insurance + government program cash, with timing. */}
           <div className="bg-white rounded-xl shadow p-4 space-y-3">
