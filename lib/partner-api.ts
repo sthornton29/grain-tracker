@@ -29,6 +29,15 @@ function timingSafeEqualStr(a: string, b: string): boolean {
   return diff === 0
 }
 
+/** The raw bearer token from an Authorization header, or null. Pure — the
+ *  054 per-org token lookup (partner_api_tokens, sha256 at rest) hashes this
+ *  server-side in lib/partner-api-server.ts. */
+export function bearerTokenFrom(authorizationHeader: string | null | undefined): string | null {
+  const header = (authorizationHeader ?? '').trim()
+  const m = header.match(/^Bearer\s+(.+)$/i)
+  return m ? m[1].trim() : null
+}
+
 // Header must be exactly `Bearer <PARTNER_API_TOKEN>`. A missing/blank env var
 // fails closed: every request is unauthorized until the token is configured.
 export function checkPartnerAuth(

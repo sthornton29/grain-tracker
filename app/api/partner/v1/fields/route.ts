@@ -3,7 +3,7 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import {
-  partnerAuthGate,
+  resolvePartnerOrg,
   createServiceClient,
   serviceClientMissingResponse,
   fetchAll,
@@ -15,10 +15,10 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
-  const denied = partnerAuthGate(req)
-  if (denied) return denied
   const supabase = createServiceClient()
   if (!supabase) return serviceClientMissingResponse()
+  const org = await resolvePartnerOrg(req, supabase)
+  if (org instanceof NextResponse) return org
 
   try {
     const [fields, farms, entities] = await Promise.all([
@@ -26,14 +26,15 @@ export async function GET(req: NextRequest) {
         supabase
           .from('fields')
           .select('id, farm_id, name_or_number, total_acres, irrigated_acres, dryland_acres, updated_at')
+          .eq('org_id', org)
           .order('id')
           .range(f, t),
       ),
       fetchAll<FarmRow>((f, t) =>
-        supabase.from('farms').select('id, name, fsa_number, entity_id, updated_at').order('id').range(f, t),
+        supabase.from('farms').select('id, name, fsa_number, entity_id, updated_at').eq('org_id', org).order('id').range(f, t),
       ),
       fetchAll<EntityRow>((f, t) =>
-        supabase.from('entities').select('id, name, updated_at').order('id').range(f, t),
+        supabase.from('entities').select('id, name, updated_at').eq('org_id', org).order('id').range(f, t),
       ),
     ])
     return NextResponse.json({ data: buildFieldRecords({ fields, farms, entities }) })

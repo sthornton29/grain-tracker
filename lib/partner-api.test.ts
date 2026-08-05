@@ -6,6 +6,7 @@ import {
   buildPlantingRecords,
   buildProductionRecords,
   buildSettlementRecords,
+  bearerTokenFrom,
   checkPartnerAuth,
   type BaleDispositionRow,
   type BaleRow,
@@ -27,6 +28,22 @@ import {
 // ---------------------------------------------------------------------------
 // Auth
 // ---------------------------------------------------------------------------
+
+describe('bearerTokenFrom', () => {
+  // Feeds the 054 per-org token lookup (partner_api_tokens): the raw token
+  // must extract exactly, or null so the request fails closed.
+  it('extracts the raw token (case-insensitive scheme, trimmed)', () => {
+    expect(bearerTokenFrom('Bearer tok_abc')).toBe('tok_abc')
+    expect(bearerTokenFrom('bearer tok_abc')).toBe('tok_abc')
+    expect(bearerTokenFrom('  Bearer   tok_abc  ')).toBe('tok_abc')
+  })
+  it('null on missing/malformed headers (fails closed)', () => {
+    expect(bearerTokenFrom(null)).toBeNull()
+    expect(bearerTokenFrom('')).toBeNull()
+    expect(bearerTokenFrom('tok_abc')).toBeNull()
+    expect(bearerTokenFrom('Basic tok_abc')).toBeNull()
+  })
+})
 
 describe('checkPartnerAuth', () => {
   const TOKEN = 'tok_abc123'
