@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 
@@ -15,6 +15,19 @@ import { createClient } from '@/lib/supabase/client'
 export default function LoginForm({ next }: { next: string }) {
   const router = useRouter()
   const [mode, setMode] = useState<'signin' | 'forgot'>('signin')
+
+  // An invite/recovery email link that lands HERE (e.g. a link minted before
+  // the redirect config was fixed falls back to the Site URL, whose
+  // unauthenticated redirect ends at /login) still carries its credentials in
+  // the URL. Forward them to /reset-password, which finishes the exchange and
+  // shows the set-a-password form — otherwise the invited user just stares at
+  // a sign-in screen with no password to type.
+  useEffect(() => {
+    const { hash, search } = window.location
+    if (/type=(invite|recovery|signup|magiclink)/.test(hash) || /[?&]code=/.test(search)) {
+      window.location.replace(`/reset-password${search}${hash}`)
+    }
+  }, [])
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
