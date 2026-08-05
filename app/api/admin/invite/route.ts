@@ -109,11 +109,15 @@ export async function POST(req: NextRequest) {
         type: 'magiclink', email, options: { redirectTo },
       }))
     }
-    if (linkError || !linkData?.user || !linkData.properties?.action_link) {
+    if (linkError || !linkData?.user || !linkData.properties?.hashed_token) {
       return NextResponse.json({ error: linkError?.message ?? 'Could not create the invite link.' }, { status: 500 })
     }
     invitedUserId = linkData.user.id
-    inviteLink = linkData.properties.action_link
+    // token_hash form: /reset-password verifies it directly (verifyOtp), so
+    // the link works in ANY browser — the verify-endpoint ?code= redirect
+    // only works in a browser that started a flow, which a shared link never has.
+    const linkType = linkData.properties.verification_type === 'magiclink' ? 'magiclink' : 'invite'
+    inviteLink = `${siteOrigin(req)}/reset-password?token_hash=${encodeURIComponent(linkData.properties.hashed_token)}&type=${linkType}`
   } else {
     const { data: invited, error: inviteError } = await service.auth.admin.inviteUserByEmail(email, { redirectTo })
     if (inviteError || !invited?.user) {

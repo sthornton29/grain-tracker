@@ -1,8 +1,10 @@
 <!-- Supabase Auth email template: "Invite user".
      Paste into Dashboard -> Authentication -> Email Templates -> Invite user.
      Suggested subject: You're invited to Turnrow
-     {{ .ConfirmationURL }} is filled in by Supabase. The logo loads from the
-     public site, so it renders in any mail client that shows images. -->
+     Uses the token_hash link form: /reset-password verifies it directly, so
+     the link works in ANY browser (the default ConfirmationURL ?code= flow
+     fails outside the browser that started a session — incognito, phones).
+     The logo loads from the public site. -->
 <div style="background:#f1f5f9;padding:32px 12px;font-family:Arial,Helvetica,sans-serif;">
   <div style="max-width:460px;margin:0 auto;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e2e8f0;">
     <div style="background:#0B4A24;padding:20px;text-align:center;">
@@ -15,7 +17,7 @@
         Click the button below to set your password and get started.
       </p>
       <div style="text-align:center;margin:0 0 24px;">
-        <a href="{{ .ConfirmationURL }}"
+        <a href="{{ .SiteURL }}/reset-password?token_hash={{ .TokenHash }}&type=invite"
            style="display:inline-block;background:#36B449;color:#ffffff;text-decoration:none;font-weight:bold;font-size:15px;padding:12px 28px;border-radius:8px;">
           Set my password
         </a>
@@ -23,7 +25,7 @@
       <p style="font-size:12px;color:#64748b;line-height:1.5;margin:0 0 8px;">
         If the button doesn&rsquo;t work, copy and paste this link into your browser:
       </p>
-      <p style="font-size:11px;color:#64748b;word-break:break-all;margin:0 0 20px;">{{ .ConfirmationURL }}</p>
+      <p style="font-size:11px;color:#64748b;word-break:break-all;margin:0 0 20px;">{{ .SiteURL }}/reset-password?token_hash={{ .TokenHash }}&type=invite</p>
     </div>
     <div style="border-top:1px solid #e2e8f0;padding:14px 28px;background:#f8fafc;">
       <p style="font-size:11px;color:#94a3b8;margin:0;">

@@ -31,6 +31,23 @@ export default function ResetPasswordPage() {
       if (event === 'PASSWORD_RECOVERY') { setHasSession(true); setChecking(false) }
     })
     ;(async () => {
+      // token_hash links (the invite/reset email templates and the admin
+      // "Invite link" button) verify HERE, so they work in any browser —
+      // the ?code= exchange only works in the browser that started a flow,
+      // which an emailed link never has (incognito, phone, etc.).
+      const params = new URLSearchParams(window.location.search)
+      const tokenHash = params.get('token_hash')
+      const otpType = params.get('type')
+      if (tokenHash && otpType) {
+        const { data, error } = await supabase.auth.verifyOtp({
+          type: otpType as 'invite' | 'recovery' | 'magiclink' | 'email',
+          token_hash: tokenHash,
+        })
+        if (cancelled) return
+        if (!error && data.session) setHasSession(true)
+        setChecking(false)
+        return
+      }
       const { data } = await supabase.auth.getSession()
       if (cancelled) return
       if (data.session) setHasSession(true)
