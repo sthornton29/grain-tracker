@@ -365,7 +365,7 @@ describe('resolveEstimatedCountyYield — differential semantics', () => {
 describe('countyAssumptionFor', () => {
   const mkRow = (over: Partial<CountyYieldAssumption>): CountyYieldAssumption => ({
     id: '1', crop_id: 'corn', county_id: 'A', crop_year: 2026, variance_pct: 0,
-    yield_differential: null, county_yield_override: null, rma_final_county_yield: null, notes: null, created_at: '',
+    yield_differential: null, county_yield_override: null, rma_final_county_yield: null, notes: null, created_at: '', updated_at: '',
     ...over,
   })
   const rows = [

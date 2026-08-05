@@ -276,4 +276,93 @@ describe('buildEntityScope', () => {
     expect(prodFor('E2')).toBeCloseTo(165 * 50, 6)    // entity 2's dryland acres
     expect(prodFor('')).toBeCloseTo(165 * 150, 6)     // All entities = the sum
   })
+
+  describe('viewer grants (052 — grantedEntityIds)', () => {
+    // Three farming entities + the marketing agent; the viewer is granted
+    // E1 + E2 only. E3's own-name book and acres must never leak in.
+    const vFarms = [...farms, { id: 'F4', entity_id: 'E3' }]
+    const vFields = [...fields, { id: 'E', farm_id: 'F4' }]
+    const entities = [
+      { id: 'E1', entity_role: 'farming' }, { id: 'E2', entity_role: 'farming' },
+      { id: 'E3', entity_role: 'farming' }, { id: 'TRW', entity_role: 'marketing_agent' },
+    ]
+    // Corn acres: E1 600 (60%... of 1000) — now with E3: E1 600, E2 400, E3 500 → total 1500.
+    const plantings = [
+      { field_id: 'A', crop_id: 'corn', season_year: 2026, planted_acres: 600 },
+      { field_id: 'B', crop_id: 'corn', season_year: 2026, planted_acres: 400 },
+      { field_id: 'E', crop_id: 'corn', season_year: 2026, planted_acres: 500 },
+    ]
+    const crops = [{ id: 'corn', name: 'Corn' }]
+    const granted = ['E1', 'E2']
+    const viewerScope = (entityId: string) =>
+      buildEntityScope({ entityId, farms: vFarms, fields: vFields, entities, grantedEntityIds: granted })
+
+    it("'' means all MY entities combined — active, never the whole operation", () => {
+      const s = viewerScope('')
+      expect(s.active).toBe(true)
+      expect(Array.from(s.selectedEntityIds!).sort()).toEqual(['E1', 'E2'])
+      expect(Array.from(s.farmIds!).sort()).toEqual(['F1', 'F2'])
+      expect(s.plantings(plantings).map((p) => p.field_id).sort()).toEqual(['A', 'B'])
+    })
+
+    it('a granted entity narrows to it; a NON-granted id falls back to the union (URL manipulation)', () => {
+      expect(Array.from(viewerScope('E1').selectedEntityIds!)).toEqual(['E1'])
+      expect(Array.from(viewerScope('E3').selectedEntityIds!).sort()).toEqual(['E1', 'E2'])
+    })
+
+    it("agent flow-down under 'all my entities': ONLY the granted entities' combined share, never the whole book", () => {
+      const attr = viewerScope('').attribution({ plantings, crops })
+      const rows = [
+        { id: 'agent', entity_id: 'TRW', crop_id: 'corn', crop_year: 2026, contracted_bushels: 30000 },
+        { id: 'e2own', entity_id: 'E2', crop_id: 'corn', crop_year: 2026, contracted_bushels: 7000 },
+        { id: 'e3own', entity_id: 'E3', crop_id: 'corn', crop_year: 2026, contracted_bushels: 9000 },
+      ]
+      const out = attr.contracts(rows)
+      // (600 + 400) / 1500 of the agent's book…
+      expect(out.find((c) => c.id === 'agent')!.contracted_bushels).toBeCloseTo(30000 * (1000 / 1500), 6)
+      // …granted own-name whole, non-granted own-name GONE.
+      expect(out.find((c) => c.id === 'e2own')!.contracted_bushels).toBe(7000)
+      expect(out.find((c) => c.id === 'e3own')).toBeUndefined()
+      // Agent-held hedge P&L: same combined share.
+      const futs = [{ id: 'f', entity_id: 'TRW', commodity: 'Corn', crop_year: 2026, num_contracts: 3, realized_pnl: 9000, commission: 300 }]
+      expect(attr.futures(futs)[0].realized_pnl).toBeCloseTo(6000, 6)
+    })
+
+    it('strictly entity-keyed and farm/payment filters honor the grant set', () => {
+      const s = viewerScope('')
+      expect(s.byEntity([{ id: 'p1', entity_id: 'E1' }, { id: 'p2', entity_id: 'E3' }]).map((r) => r.id)).toEqual(['p1'])
+      expect(s.byFarm([{ id: 'b1', farm_id: 'F2' }, { id: 'b2', farm_id: 'F4' }]).map((r) => r.id)).toEqual(['b1'])
+      expect(s.otherPayments([
+        { id: 'o1', farm_id: 'F1', entity_id: null },
+        { id: 'o2', farm_id: 'F4', entity_id: 'E1' }, // farm attribution wins → E3: out
+        { id: 'o3', farm_id: null, entity_id: 'E2' },
+      ]).map((r) => r.id)).toEqual(['o1', 'o3'])
+    })
+
+    it('an empty grant list behaves like no grants (defensive: never grants everything by accident)', () => {
+      // Empty grants = not a viewer config the RPC allows; the scope treats it
+      // as "no grant restriction" and '' stays a pass-through.
+      const s = buildEntityScope({ entityId: '', farms: vFarms, fields: vFields, entities, grantedEntityIds: [] })
+      expect(s.active).toBe(false)
+    })
+
+    it('OWNER INVARIANCE: omitted/null grants produce byte-identical scoping to the pre-052 behavior', () => {
+      const rows = [
+        { id: 'op', entity_id: null, crop_id: 'corn', crop_year: 2026, contracted_bushels: 30000 },
+        { id: 'mine', entity_id: 'E1', crop_id: 'corn', crop_year: 2026, contracted_bushels: 5000 },
+      ]
+      for (const entityId of ['', 'E1', 'E2']) {
+        const before = buildEntityScope({ entityId, farms: vFarms, fields: vFields, entities })
+        const after = buildEntityScope({ entityId, farms: vFarms, fields: vFields, entities, grantedEntityIds: null })
+        expect(after.active).toBe(before.active)
+        expect(after.farmIds).toEqual(before.farmIds)
+        expect(after.fieldIds).toEqual(before.fieldIds)
+        expect(after.plantings(plantings)).toEqual(before.plantings(plantings))
+        const aAttr = after.attribution({ plantings, crops })
+        const bAttr = before.attribution({ plantings, crops })
+        expect(aAttr.contracts(rows)).toEqual(bAttr.contracts(rows))
+        expect(aAttr.shareForCrop('corn', 2026)).toBe(bAttr.shareForCrop('corn', 2026))
+      }
+    })
+  })
 })

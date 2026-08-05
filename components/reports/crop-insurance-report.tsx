@@ -20,6 +20,10 @@ import { createClient } from '@/lib/supabase/client'
 import { analyzeYields, fieldCropAggregates, harvestStatusOf, type HarvestStatus } from '@/lib/yields'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
+import { useViewerAssumptions } from '@/lib/use-viewer-assumptions'
+import { resolveCropAssumptions } from '@/lib/viewer-assumptions'
+import { SupersededNotice } from '@/components/viewer-scenario'
 import { EmptyState, theadCls, grandTotalRowCls } from '@/components/reports/report-kit'
 import { exportToExcel, exportToPdf, type ExportPayload } from '@/lib/exports'
 import type {
@@ -154,6 +158,16 @@ export default function CropInsuranceReport() {
     setAcceptedAsDryland(false)
   }, [cropYear, entityId, cropIds])
 
+  // Viewer role (052): grants prune the entity dropdown and name the export's
+  // entity label; the viewer's private overrides layer over crop_assumptions.
+  // The row data itself (farms/fields/loads) is already RLS-scoped server-side,
+  // so the hand-rolled entity filtering below stays as-is.
+  const viewer = useViewerScope(supabase)
+  const viewerA = useViewerAssumptions(supabase, viewer)
+  const assumptionRes = useMemo(() => resolveCropAssumptions(assumptions, viewerA.overrides), [assumptions, viewerA.overrides])
+  const effAssumptions = assumptionRes.rows
+  useEffect(() => { if (assumptionRes.staleIds.length > 0) viewerA.cleanupStale(assumptionRes.staleIds) }, [assumptionRes, viewerA])
+
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
@@ -207,9 +221,9 @@ export default function CropInsuranceReport() {
   // assumptions) — these force every field of that crop to "complete".
   const cropCompleteKeys = useMemo(() => {
     const s = new Set<string>()
-    for (const a of assumptions) if (a.harvest_complete) s.add(`${a.crop_id}|${a.crop_year}`)
+    for (const a of effAssumptions) if (a.harvest_complete) s.add(`${a.crop_id}|${a.crop_year}`)
     return s
-  }, [assumptions])
+  }, [effAssumptions])
 
   // Field-level harvest status per planting, by the same rule the Yields page
   // uses (analyzeYields + the crop-level harvest-complete override). Only
@@ -430,7 +444,12 @@ export default function CropInsuranceReport() {
   }, [detailSheets, activeTab])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
-  const entityName = entityId ? (entities.find((e) => e.id === entityId)?.name ?? '') : ''
+  // A viewer with no entity selected reports over their granted entities, and
+  // the title/filter line must say so by name.
+  const entityName = entityId
+    ? (entities.find((e) => e.id === entityId)?.name ?? '')
+    : (viewerAllEntitiesLabel(viewer, entities) ?? '')
+  const entityOptions = entityOptionsFor(viewer, entities)
   const reportTitle = `${entityName ? entityName + ' ' : ''}${cropYear === '' ? '' : cropYear + ' '}Production Report`
 
   // Build the shared ExportPayload: a Summary section (one sheet) listing each
@@ -532,7 +551,9 @@ export default function CropInsuranceReport() {
     if (typeof window !== 'undefined') window.print()
   }
 
-  if (loading) return <p className="text-slate-500">Loading…</p>
+  // Hold the report until the viewer scope/overrides resolve too, so a viewer
+  // never sees a flash of unresolved numbers. Inert timing for owners.
+  if (loading || viewer.loading || !viewerA.ready) return <p className="text-slate-500">Loading…</p>
 
   return (
     <div className="space-y-4">
@@ -549,13 +570,17 @@ export default function CropInsuranceReport() {
             {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
           </select>
         </label>
-        <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Entity (optional)</span>
-          <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
-            <option value="">All entities</option>
-            {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-          </select>
-        </label>
+        {/* A viewer with a single grant has nothing to switch between (the
+            EntityFilter component's <=1 hide rule); owners keep the select. */}
+        {(!viewer.isViewer || entityOptions.length > 1) && (
+          <label className="text-sm flex flex-col gap-1">
+            <span className="text-slate-500">Entity (optional)</span>
+            <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
+              <option value="">All entities</option>
+              {entityOptions.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+          </label>
+        )}
         {cropFilterOptions.length > 0 && (
           <div className="text-sm flex flex-col gap-1">
             <span className="text-slate-500">Crops (optional)</span>
@@ -613,6 +638,7 @@ export default function CropInsuranceReport() {
           </button>
         </div>
       </div>
+      <SupersededNotice show={viewerA.superseded} onDismiss={viewerA.dismissSuperseded} />
       {exportErr && <p className="text-sm text-red-600 no-print">{exportErr}</p>}
 
       {cropYear === '' && (

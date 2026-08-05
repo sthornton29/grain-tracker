@@ -32,9 +32,11 @@ export const GRAIN_LINKS: NavLink[] = [
 export const COTTON_TAB: NavLink = { href: '/cotton/loads', label: 'Cotton', sub: 'Gin loads, bales, marketing', tileColor: 'bg-fuchsia-800' }
 
 /** The exact link set for a user: gin operators see ONLY the Cotton tab;
+ *  viewers (read-only stakeholders) see ONLY Yields and Reports;
  *  owners get Cotton after Hedging when the module is enabled. */
 export function navLinksFor(args: { cottonEnabled: boolean; role: AppRole }): NavLink[] {
   if (args.role === 'gin') return [COTTON_TAB]
+  if (args.role === 'viewer') return GRAIN_LINKS.filter((l) => l.label === 'Yields' || l.label === 'Reports')
   if (!args.cottonEnabled) return GRAIN_LINKS
   const hedgingIdx = GRAIN_LINKS.findIndex((l) => l.label === 'Hedging') + 1
   return [...GRAIN_LINKS.slice(0, hedgingIdx), COTTON_TAB, ...GRAIN_LINKS.slice(hedgingIdx)]

@@ -18,7 +18,9 @@ import {
   fmtCents,
 } from '@/lib/hedging'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
-import type { Entity, FuturesPosition, OptionPosition } from '@/lib/types'
+import { buildEntityScope } from '@/lib/entity-scope'
+import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
+import type { Crop, Entity, FuturesPosition, OptionPosition } from '@/lib/types'
 import {
   SummaryCards,
   EmptyState,
@@ -67,6 +69,61 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
     })()
   }, [supabase])
 
+  // Viewer role (052): agent-held / operation-level (null-entity) positions
+  // must never appear whole — they attribute at the granted entities' pro-rata
+  // acre share, exactly like the Marketing dashboard (lib/entity-scope.ts).
+  // Owners skip all of this (attributed === raw rows).
+  const viewer = useViewerScope(supabase)
+  const [viewerAcreage, setViewerAcreage] = useState<{
+    plantings: Array<{ field_id: string; crop_id: string; season_year: number; planted_acres: number | null }>
+    crops: Crop[]
+    farms: Array<{ id: string; entity_id: string | null }>
+    fields: Array<{ id: string; farm_id: string | null }>
+  } | null>(null)
+  useEffect(() => {
+    if (!viewer.isViewer) return
+    let cancelled = false
+    ;(async () => {
+      const [pl, cr, fa, fi] = await Promise.all([
+        supabase.from('field_plantings').select('field_id, crop_id, season_year, planted_acres'),
+        supabase.from('crops').select('*'),
+        supabase.from('farms').select('id, entity_id'),
+        supabase.from('fields').select('id, farm_id'),
+      ])
+      if (cancelled) return
+      setViewerAcreage({
+        plantings: (pl.data as Array<{ field_id: string; crop_id: string; season_year: number; planted_acres: number | null }>) ?? [],
+        crops: (cr.data as Crop[]) ?? [],
+        farms: (fa.data as Array<{ id: string; entity_id: string | null }>) ?? [],
+        fields: (fi.data as Array<{ id: string; farm_id: string | null }>) ?? [],
+      })
+    })()
+    return () => { cancelled = true }
+  }, [viewer.isViewer, supabase])
+  const viewerAttr = useMemo(() => {
+    if (!viewer.isViewer || !viewerAcreage) return null
+    const scope = buildEntityScope({
+      entityId: entityId === 'All' ? '' : entityId,
+      farms: viewerAcreage.farms, fields: viewerAcreage.fields, entities,
+      grantedEntityIds: viewer.grantedIds,
+    })
+    return scope.attribution({ plantings: viewerAcreage.plantings, crops: viewerAcreage.crops })
+  }, [viewer.isViewer, viewer.grantedIds, viewerAcreage, entities, entityId])
+  // Attributed inputs: identity for owners; scaled + grant-narrowed for viewers.
+  const attributedPositions = useMemo(
+    () => (viewerAttr ? viewerAttr.futures(positions) : positions),
+    [viewerAttr, positions],
+  )
+  const attributedOptions = useMemo(
+    () => (viewerAttr ? viewerAttr.options(options) : options),
+    [viewerAttr, options],
+  )
+  // A viewer's rows are already entity-narrowed by the attribution — the
+  // strict per-row entity match below would wrongly drop scaled agent rows.
+  const entityMatches = (rowEntity: string | null) =>
+    viewer.isViewer ? true : entityId === 'All' || rowEntity === entityId
+  const viewerReady = !viewer.loading && (!viewer.isViewer || viewerAcreage != null)
+
   const entityName = (id: string | null) => (id ? entities.find((e) => e.id === id)?.name ?? '' : '')
 
   const cropYears = useMemo(
@@ -80,12 +137,12 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
 
   const filtered = useMemo(
     () =>
-      positions
+      (viewerReady ? attributedPositions : [])
         .filter(
           (p) =>
             (cropYear === 'All' || p.crop_year === Number(cropYear)) &&
             (commodity === 'All' || p.commodity === commodity) &&
-            (entityId === 'All' || p.entity_id === entityId) &&
+            entityMatches(p.entity_id) &&
             (!from || refDate(p) >= from) &&
             (!to || refDate(p) <= to),
         )
@@ -95,7 +152,8 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
             a.commodity.localeCompare(b.commodity) ||
             contractMonthSortKey(a.contract_month) - contractMonthSortKey(b.contract_month),
         ),
-    [positions, cropYear, commodity, entityId, from, to],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [attributedPositions, viewerReady, viewer.isViewer, cropYear, commodity, entityId, from, to],
   )
 
   const unrealizedOf = (p: FuturesPosition) =>
@@ -110,12 +168,12 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
   const refDateOpt = (o: OptionPosition) => (o.status !== 'open' ? o.close_date ?? o.trade_date : o.trade_date)
   const filteredOptions = useMemo(
     () =>
-      options
+      (viewerReady ? attributedOptions : [])
         .filter(
           (o) =>
             (cropYear === 'All' || o.crop_year === Number(cropYear)) &&
             (commodity === 'All' || o.commodity === commodity) &&
-            (entityId === 'All' || o.entity_id === entityId) &&
+            entityMatches(o.entity_id) &&
             (!from || refDateOpt(o) >= from) &&
             (!to || refDateOpt(o) <= to),
         )
@@ -125,7 +183,8 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
             a.commodity.localeCompare(b.commodity) ||
             contractMonthSortKey(a.underlying_contract_month) - contractMonthSortKey(b.underlying_contract_month),
         ),
-    [options, cropYear, commodity, entityId, from, to],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [attributedOptions, viewerReady, viewer.isViewer, cropYear, commodity, entityId, from, to],
   )
   const optUnrealizedOf = (o: OptionPosition) =>
     o.status === 'open'
@@ -169,6 +228,10 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
   function filtersLabel() {
     const parts = [`Crop year: ${cropYear}`, `Commodity: ${commodity}`]
     if (entityId !== 'All') parts.push(`Entity: ${entityName(entityId) || entityId}`)
+    else {
+      const granted = viewerAllEntitiesLabel(viewer, entities)
+      if (granted) parts.push(`Entity: ${granted}`)
+    }
     if (from) parts.push(`From: ${from}`)
     if (to) parts.push(`To: ${to}`)
     return parts.join(' · ')
@@ -288,10 +351,12 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
           <option value="All">All commodities</option>
           {COMMODITIES.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
+        {(!viewer.isViewer || entityOptionsFor(viewer, entities).length > 1) && (
         <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
           <option value="All">All entities</option>
-          {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+          {entityOptionsFor(viewer, entities).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
         </select>
+        )}
         <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={inputCls} title="From date" />
         <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={inputCls} title="To date" />
       </div>

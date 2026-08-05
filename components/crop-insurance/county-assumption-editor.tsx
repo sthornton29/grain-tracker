@@ -18,9 +18,23 @@
 import { useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { isUniqueViolation, planAssumptionSave, saveErrorMessage, type SavePlan } from '@/lib/county-assumption'
+import { OVERRIDABLE_COUNTY_FIELDS, type OverridableCountyField } from '@/lib/viewer-assumptions'
+import { ScenarioChip } from '@/components/viewer-scenario'
 import type { CountyYieldAssumption } from '@/lib/types'
 
-export function CountyAssumptionControl({ cropId, countyId, cropYear, assumption, farmYield, yieldUnit = 'bu/ac', compact = false, onChanged }: {
+/** Viewer-role diversion (052): edits become PRIVATE overrides instead of
+ *  writes to the shared row. `assumption` should then be the viewer's
+ *  EFFECTIVE row (base + overrides); `base` is the shared row (the staleness
+ *  snapshot anchor). */
+export type CountyViewerOverride = {
+  base: CountyYieldAssumption | null
+  /** True when any of the three fields is currently overridden (chip). */
+  active: boolean
+  save: (field: OverridableCountyField, value: number | null, base: { updated_at: string } | null) => Promise<void>
+  reset: () => Promise<void>
+}
+
+export function CountyAssumptionControl({ cropId, countyId, cropYear, assumption, farmYield, yieldUnit = 'bu/ac', compact = false, onChanged, viewerOverride }: {
   cropId: string
   countyId: string | null
   cropYear: number
@@ -32,6 +46,7 @@ export function CountyAssumptionControl({ cropId, countyId, cropYear, assumption
   yieldUnit?: string
   compact?: boolean
   onChanged: () => void
+  viewerOverride?: CountyViewerOverride
 }) {
   const supabase = useMemo(() => createClient(), [])
   const [editing, setEditing] = useState(false)
@@ -92,6 +107,30 @@ export function CountyAssumptionControl({ cropId, countyId, cropYear, assumption
   function saveOnBlur() {
     chain.current = chain.current.then(async () => {
       const { diff: d, abs: o, finalYld: f } = latest.current
+      // Viewer: each differing field becomes (or clears) a private override —
+      // the shared row is never written.
+      if (viewerOverride) {
+        const parse = (s: string): number | null | undefined => {
+          const t = s.trim().replace('−', '-')
+          if (t === '') return null
+          const n = Number(t)
+          return Number.isFinite(n) ? n : undefined // undefined = unparseable, skip
+        }
+        const drafts: Record<OverridableCountyField, number | null | undefined> = {
+          yield_differential: parse(d), county_yield_override: parse(o), rma_final_county_yield: parse(f),
+        }
+        const base = viewerOverride.base
+        for (const field of OVERRIDABLE_COUNTY_FIELDS) {
+          const v = drafts[field]
+          if (v === undefined) continue
+          const baseVal = base?.[field] != null ? Number(base[field]) : null
+          if (v !== baseVal) await viewerOverride.save(field, v, base)
+        }
+        setSaved(true)
+        setTimeout(() => setSaved(false), 2000)
+        onChanged()
+        return
+      }
       const draft = { diff: d, abs: o, final: f }
       const existing = await fetchExisting()
       const plan = planAssumptionSave({ existing, cropId, countyId, cropYear, draft })
@@ -115,6 +154,7 @@ export function CountyAssumptionControl({ cropId, countyId, cropYear, assumption
       <span className={`inline-flex items-center gap-1.5 flex-wrap ${compact ? 'text-xs' : 'text-sm'}`}>
         <span className="text-slate-500">My yield vs county:</span>
         <span className="font-semibold tabular-nums">{label}</span>
+        {viewerOverride?.active && <ScenarioChip onReset={() => { viewerOverride.reset().then(onChanged) }} />}
         {derivation && <span className="text-slate-400 tabular-nums">· {derivation}</span>}
         <button type="button" className="text-brand-deep underline decoration-dotted"
           onClick={() => {

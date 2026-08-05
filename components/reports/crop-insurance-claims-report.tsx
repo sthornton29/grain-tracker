@@ -26,6 +26,10 @@ import {
   type LiveHarvest, type Practice,
 } from '@/lib/crop-insurance'
 import { CountyAssumptionControl } from '@/components/crop-insurance/county-assumption-editor'
+import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
+import { useViewerAssumptions } from '@/lib/use-viewer-assumptions'
+import { resolveCropAssumptions, resolveCountyAssumptions, overrideKey, OVERRIDABLE_COUNTY_FIELDS } from '@/lib/viewer-assumptions'
+import { SupersededNotice } from '@/components/viewer-scenario'
 import {
   auditPolicyIndemnities, auditYieldBasis, compareAudit, auditInvariants,
   type AuditResult, type AuditComparison, type InvariantCheck, type YieldBasisAudit,
@@ -139,6 +143,19 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase])
 
+  // Viewer role (052): dropdown/exports limited to grants (RLS already scopes
+  // the policy/planting rows), private crop+county assumption overrides.
+  const viewer = useViewerScope(supabase)
+  const viewerA = useViewerAssumptions(supabase, viewer)
+  const cropRes = useMemo(() => resolveCropAssumptions(assumptions, viewerA.overrides), [assumptions, viewerA.overrides])
+  const countyRes = useMemo(() => resolveCountyAssumptions(countyAssumptions, viewerA.overrides), [countyAssumptions, viewerA.overrides])
+  const effAssumptions = cropRes.rows
+  const effCountyAssumptions = countyRes.rows
+  useEffect(() => {
+    const stale = [...cropRes.staleIds, ...countyRes.staleIds]
+    if (stale.length > 0) viewerA.cleanupStale(stale)
+  }, [cropRes, countyRes, viewerA])
+
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const countyById = useMemo(() => new Map(counties.map((c) => [c.id, c])), [counties])
   const scoByPolicy = useMemo(() => new Map(scos.map((s) => [s.policy_id, s])), [scos])
@@ -228,11 +245,11 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
 
   type Computed = { policy: CropInsurancePolicy; comp: PolicyComputation; harvest: HarvestInfo | undefined; assumedYield: number; base: PolicyInputs; sco: ScoConfig | null; eco: EcoConfig | null; basePremium: number }
   const computed: Computed[] = useMemo(() => {
-    if (cropYear === '') return []
+    if (cropYear === '' || viewer.loading || !viewerA.ready) return []
     // Single source of truth shared with the Cash Flow safety-net so the two
     // pages' projected indemnity reconciles.
     const projected = projectInsuranceIndemnities({
-      cropYear, policies: yearPolicies, scos, ecos, staxes, mcos, countyAssumptions, assumptions, plantings,
+      cropYear, policies: yearPolicies, scos, ecos, staxes, mcos, countyAssumptions: effCountyAssumptions, assumptions: effAssumptions, plantings,
       actualYieldByCrop, harvestEstimates: priceEstimates, liveHarvestByCrop, crops,
       scoTrigger: programCfg.scoTrigger,
     })
@@ -240,7 +257,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       policy: r.policy, comp: r.comp, harvest: harvestByCrop.get(r.policy.crop_id),
       assumedYield: r.assumedYield, base: r.base, sco: r.sco, eco: r.eco, basePremium: r.basePremium,
     }))
-  }, [cropYear, yearPolicies, scos, ecos, staxes, mcos, countyAssumptions, assumptions, plantings, actualYieldByCrop, priceEstimates, liveHarvestByCrop, crops, programCfg, harvestByCrop])
+  }, [cropYear, viewer.loading, viewerA.ready, yearPolicies, scos, ecos, staxes, mcos, effCountyAssumptions, effAssumptions, plantings, actualYieldByCrop, priceEstimates, liveHarvestByCrop, crops, programCfg, harvestByCrop])
 
   const totals = useMemo(() => {
     return computed.reduce(
@@ -303,7 +320,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     return computed.map((c) => {
       const p = c.policy
       const practice = (p.practice ?? 'non_irrigated') as Practice
-      const a = assumptions.find((x) => x.crop_id === p.crop_id && x.crop_year === cropYear)
+      const a = effAssumptions.find((x) => x.crop_id === p.crop_id && x.crop_year === cropYear)
       const pols = yearPolicies.filter((x) => x.crop_id === p.crop_id)
       const meanAph = pols.length ? pols.reduce((s, x) => s + Number(x.aph_yield), 0) / pols.length : 0
       const yieldBasis = auditYieldBasis({
@@ -316,7 +333,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         actualCropYield: actualYieldByCrop.get(p.crop_id) ?? null,
         meanAph,
       })
-      const assumption = countyAssumptionFor(countyAssumptions, p.crop_id, p.county_id, cropYear)
+      const assumption = countyAssumptionFor(effCountyAssumptions, p.crop_id, p.county_id, cropYear)
       const scoRow = scoByPolicy.get(p.id)
       const ecoRow = ecoByPolicy.get(p.id)
       const staxRow = staxByPolicy.get(p.id)
@@ -367,7 +384,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       })
       return { c, yieldBasis, audit, cmp, invariants }
     })
-  }, [auditMode, computed, cropYear, plantings, assumptions, yearPolicies, actualYieldByCrop, countyAssumptions, scoByPolicy, ecoByPolicy, staxByPolicy, mcoByPolicy, programCfg, cropById])
+  }, [auditMode, computed, cropYear, plantings, effAssumptions, yearPolicies, actualYieldByCrop, effCountyAssumptions, scoByPolicy, ecoByPolicy, staxByPolicy, mcoByPolicy, programCfg, cropById])
 
   // Headline summary cards from the already-computed totals (no new math).
   const summaryCards: SummaryCardData[] = useMemo(() => [
@@ -421,7 +438,9 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
 
   // ----- Export payload -----
   function buildExportPayload(): ExportPayload {
-    const entityName = entityId ? entities.find((e) => e.id === entityId)?.name ?? '' : ''
+    const entityName = entityId
+      ? entities.find((e) => e.id === entityId)?.name ?? ''
+      : viewerAllEntitiesLabel(viewer, entities) ?? ''
     const filters = [`Crop year: ${cropYear || '—'}`, entityName ? `Entity: ${entityName}` : 'All entities'].join(' · ')
     const sections: ExportPayload['sections'] = []
     sections.push({
@@ -532,13 +551,15 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
             {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
           </select>
         </label>
+        {(!viewer.isViewer || entityOptionsFor(viewer, entities).length > 1) && (
         <label className="text-sm flex flex-col gap-1">
           <span className="text-slate-500">Entity (optional)</span>
           <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
             <option value="">All entities</option>
-            {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            {entityOptionsFor(viewer, entities).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
         </label>
+        )}
         <div className="ml-auto self-end flex flex-wrap gap-2">
           <Link
             href="/reports/income-sensitivity"
@@ -554,6 +575,8 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
           </Link>
         </div>
       </div>
+
+      <SupersededNotice show={viewerA.superseded} onDismiss={viewerA.dismissSuperseded} />
 
       {cropYear === '' && <p className="text-amber-700 text-sm">Pick a crop year to run the claims monitor.</p>}
 
@@ -621,6 +644,8 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
             {Array.from(new Map(yearPolicies.map((p) => [`${p.crop_id}|${p.county_id ?? ''}`, p])).values()).map((p) => {
               const rep = computed.find((c) => c.policy.crop_id === p.crop_id && (c.policy.county_id ?? '') === (p.county_id ?? ''))
               const isCottonCropRow = /cotton/i.test(cropById.get(p.crop_id)?.name ?? '')
+              const baseRow = countyAssumptions.find((a) => a.crop_id === p.crop_id && a.crop_year === cropYear && (a.county_id ?? '') === (p.county_id ?? '')) ?? null
+              const effRow = effCountyAssumptions.find((a) => a.crop_id === p.crop_id && a.crop_year === cropYear && (a.county_id ?? '') === (p.county_id ?? '')) ?? null
               return (
               <div key={`${p.crop_id}|${p.county_id ?? ''}`} className="flex items-center gap-2 flex-wrap text-sm">
                 <span className="font-medium w-56 truncate">{cropName(p.crop_id)} · {countyName(p.county_id)}</span>
@@ -628,14 +653,24 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                   cropId={p.crop_id}
                   countyId={p.county_id}
                   cropYear={cropYear as number}
-                  assumption={countyAssumptions.find((a) => a.crop_id === p.crop_id && a.crop_year === cropYear && (a.county_id ?? '') === (p.county_id ?? '')) ?? null}
+                  assumption={effRow}
                   farmYield={rep?.assumedYield ?? null}
                   yieldUnit={isCottonCropRow ? 'lbs/ac' : 'bu/ac'}
                   compact
                   onChanged={async () => {
+                    if (viewer.isViewer) return // overrides live in state; nothing shared to refetch
                     const { data } = await supabase.from('county_yield_assumptions').select('*')
                     setCountyAssumptions((data as CountyYieldAssumption[]) || [])
                   }}
+                  viewerOverride={viewer.isViewer ? {
+                    base: baseRow,
+                    active: OVERRIDABLE_COUNTY_FIELDS.some((f) => countyRes.appliedKeys.has(
+                      overrideKey({ scope: 'county', crop_id: p.crop_id, crop_year: cropYear as number, county_id: p.county_id, field: f }))),
+                    save: (field, value, base) => viewerA.saveOverride({
+                      scope: 'county', cropId: p.crop_id, cropYear: cropYear as number, countyId: p.county_id, field, value, base,
+                    }),
+                    reset: () => viewerA.resetOverridesFor({ scope: 'county', cropId: p.crop_id, cropYear: cropYear as number, countyId: p.county_id }),
+                  } : undefined}
                 />
               </div>
               )

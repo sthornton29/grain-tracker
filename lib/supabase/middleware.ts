@@ -1,5 +1,7 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { roleAllowsPath, roleHome } from '../route-guard'
+import { coerceAppRole } from '../app-role'
 
 // /api/partner does its own bearer-token auth (PARTNER_API_TOKEN) — no
 // Supabase session, so it must skip the login redirect. Its routes 401 on
@@ -42,23 +44,22 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  // Gin-operator role guard: gin logins may reach ONLY the Cotton intake
-  // pages — NOT /cotton/marketing (producer sales/loans/fees; 044 RLS blocks
-  // the data too). Server-side redirect here; the nav hides everything else
-  // and the RLS policies (042/044) are the real enforcement underneath.
+  // Role guards (lib/route-guard.ts): gin logins may reach ONLY the Cotton
+  // intake pages; viewer logins ONLY Yields + Reports (and the read-only
+  // price-lookup APIs). Server-side redirect here; the nav hides everything
+  // else and the RLS policies (042/044/052) are the real enforcement
+  // underneath. The profile lookup is skipped on paths every role may see.
   if (user && !isPublic) {
-    const ginAllowed =
-      (pathname.startsWith('/cotton') && !pathname.startsWith('/cotton/marketing')) ||
-      pathname.startsWith('/logout') || pathname.startsWith('/api/parse-document')
-    if (!ginAllowed) {
+    if (!roleAllowsPath('gin', pathname) || !roleAllowsPath('viewer', pathname)) {
       const { data: profile } = await supabase
         .from('user_profiles')
         .select('role')
         .eq('user_id', user.id)
         .maybeSingle()
-      if ((profile as { role?: string } | null)?.role === 'gin') {
+      const role = coerceAppRole((profile as { role?: string } | null)?.role)
+      if (!roleAllowsPath(role, pathname)) {
         const url = request.nextUrl.clone()
-        url.pathname = '/cotton/loads'
+        url.pathname = roleHome(role)
         url.search = ''
         return NextResponse.redirect(url)
       }

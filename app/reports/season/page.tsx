@@ -9,6 +9,7 @@ import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
 import { isCottonCrop } from '@/lib/marketing'
 import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
+import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import ExportBar from '@/components/export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
@@ -75,10 +76,19 @@ export default function SeasonSummaryPage() {
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
 
+  // Viewer role (052): the grant universe caps the entity scope and prunes the
+  // entity dropdown; '' then means "all MY entities".
+  const viewer = useViewerScope(supabase)
+
   // Shared entity scoping — acreage/production narrow to the entity's fields;
   // the season's assumptions and shared rules are untouched.
-  const scope = useMemo(() => buildEntityScope({ entityId, farms, fields }), [entityId, farms, fields])
-  const entityName = entityId ? entities.find((e) => e.id === entityId)?.name ?? null : null
+  const scope = useMemo(
+    () => buildEntityScope({ entityId, farms, fields, entities, grantedEntityIds: viewer.grantedIds }),
+    [entityId, farms, fields, entities, viewer.grantedIds],
+  )
+  const entityName = entityId
+    ? entities.find((e) => e.id === entityId)?.name ?? null
+    : viewerAllEntitiesLabel(viewer, entities)
 
   const distinctYears = useMemo(() => {
     const s = new Set<number>([currentYear()])
@@ -237,11 +247,11 @@ export default function SeasonSummaryPage() {
             {!distinctYears.includes(year) && <option value={year}>{year}</option>}
           </select>
         </label>
-        <EntityFilter entities={entities} value={entityId} onChange={setEntityId} className="no-print" />
-        {!loading && byCrop.length > 0 && <ExportBar buildPayload={buildPayload} />}
+        <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} className="no-print" />
+        {!loading && !viewer.loading && byCrop.length > 0 && <ExportBar buildPayload={buildPayload} />}
       </div>
 
-      {loading ? (
+      {loading || viewer.loading ? (
         <p className="text-slate-500">Loading…</p>
       ) : (
         <>
