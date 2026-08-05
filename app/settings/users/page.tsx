@@ -239,7 +239,7 @@ export default function UsersModulesPage() {
           {inviteLink && (
             <div className="rounded-lg bg-sky-50 border border-sky-300 px-3 py-2 text-sm text-sky-900 space-y-1">
               <div><b>Invite link for {inviteLink.email}</b> — no email was sent. Text or email it to them
-              yourself; it's their one-time set-a-password link:</div>
+              yourself; it&rsquo;s their one-time set-a-password link:</div>
               <code className="block font-mono text-xs break-all bg-white rounded border border-sky-200 px-2 py-1">{inviteLink.link}</code>
               <button type="button" className="text-xs underline" onClick={() => { navigator.clipboard?.writeText(inviteLink.link); setMsg('Link copied.') }}>Copy to clipboard</button>
             </div>
