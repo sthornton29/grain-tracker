@@ -60,6 +60,16 @@ describe('roleAllowsPath', () => {
   })
 })
 
+describe('help access', () => {
+  it('help, the assistant, and contact support are open to EVERY role', () => {
+    for (const role of ['owner', 'gin', 'viewer'] as const) {
+      for (const p of ['/help', '/api/support-chat', '/api/support-request']) {
+        expect(roleAllowsPath(role, p)).toBe(true)
+      }
+    }
+  })
+})
+
 describe('roleHome', () => {
   it('sends each role to its landing page', () => {
     expect(roleHome('owner')).toBe('/')

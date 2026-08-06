@@ -15,6 +15,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { openHelp } from '@/lib/help-bus'
 import type { Entity } from '@/lib/types'
 
 type UserRow = { user_id: string; email: string; role: string; entity_ids: string[] | null }
@@ -263,13 +264,13 @@ export default function UsersModulesPage() {
       <section className="bg-white rounded-xl shadow p-4 space-y-3">
         <h2 className="font-semibold text-lg">Users &amp; Roles</h2>
         <p className="text-sm text-slate-500">
-          <b>owner</b> = full access (the default). <b>gin</b> = the gin operator role: ONLY the Cotton intake pages
-          (Seed Cotton Loads, Gin Receipts, Bales &amp; Grades). <b>viewer</b> = read-only stakeholder: ONLY the Yields
-          page and the Reports, limited to the entities you pick below, with no editing anywhere (their report
-          assumption tweaks are private to them and never touch your numbers). All of it enforced at every level of
-          the system. Prefer the <b>invite</b> above for new people; this form
-          assigns roles to logins that already exist.
-          {isSuperAdmin && <> {' '}<a href="/admin" className="text-brand-deep underline decoration-dotted">Platform admin →</a></>}
+          <b>owner</b> = everything · <b>gin</b> = cotton intake only · <b>viewer</b> = read-only reports for
+          chosen entities. Prefer the invite above for new people; this form assigns roles to logins that
+          already exist.{' '}
+          <button type="button" onClick={() => openHelp('/settings/users')} className="text-brand-deep underline decoration-dotted">
+            Learn more about roles
+          </button>
+          {isSuperAdmin && <> {' '}· <a href="/admin" className="text-brand-deep underline decoration-dotted">Platform admin →</a></>}
         </p>
         <form onSubmit={assignRole} className="space-y-3">
           <div className="flex flex-wrap items-end gap-2">
