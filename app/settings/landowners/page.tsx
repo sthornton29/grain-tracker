@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import CsvImport from '@/components/csv-import'
 import type { Farm, Landowner } from '@/lib/types'
 
 type Draft = {
@@ -112,6 +113,23 @@ export default function LandownersPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Landowners</h1>
+
+      <CsvImport
+        config={{
+          tableName: 'landowners',
+          uniqueKey: 'name',
+          title: 'Import landowners from a spreadsheet',
+          note: 'One row per landowner. Only Name is required — import these before farms so the farms import can match landowner names.',
+          columns: [
+            { key: 'name', required: true },
+            { key: 'phone' },
+            { key: 'email' },
+            { key: 'address' },
+            { key: 'notes' },
+          ],
+        }}
+        onImported={refresh}
+      />
 
       <form onSubmit={onAdd} className="bg-white p-4 rounded-xl shadow space-y-2">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
