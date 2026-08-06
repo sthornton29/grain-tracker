@@ -28,6 +28,7 @@ type ContractDetail = {
   delivery_type: 'pickup' | 'delivered'
   delivery_start_date: string | null
   delivery_end_date: string | null
+  date_sold: string | null
   completed_at: string | null
   created_at: string
   buyer_id: string | null
@@ -98,7 +99,7 @@ export default async function ContractDetailPage({ params }: { params: { id: str
     .select(`
       id, contract_number, contracted_bushels, price_per_bushel, notes,
       crop_year, contract_month, contract_type, pricing_status, futures_price, basis, cash_price, service_fee,
-      delivery_type, delivery_start_date, delivery_end_date, completed_at, created_at,
+      delivery_type, delivery_start_date, delivery_end_date, date_sold, completed_at, created_at,
       buyer_id, crop_id, entity_id, delivery_location_id,
       buyer:buyers(name),
       crop:crops(name, base_moisture_pct, base_lb_per_bushel),
@@ -212,6 +213,7 @@ export default async function ContractDetailPage({ params }: { params: { id: str
         ? `${contract.delivery_start_date ?? '?'} → ${contract.delivery_end_date ?? '?'}`
         : '—',
     ],
+    ['Date sold', contract.date_sold ?? '—'],
     ['Notes', contract.notes ?? '—'],
   ]
 
