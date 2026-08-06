@@ -20,7 +20,9 @@ export type SaveOverrideArgs = {
   cropYear: number
   countyId?: string | null
   field: OverridableCropField | OverridableCountyField
-  value: number | null
+  // Numeric for every field except reference_contract_month (a 'SEP 26'
+  // label); the column is jsonb, so both shapes round-trip unchanged.
+  value: number | string | null
   /** The CURRENT shared base row (or null if none) — its updated_at becomes
    *  the staleness snapshot. */
   base: { updated_at: string } | null | undefined

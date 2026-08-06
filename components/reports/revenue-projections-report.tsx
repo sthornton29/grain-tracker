@@ -17,6 +17,7 @@ import EntityFilter from '@/components/entity-filter'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { useViewerAssumptions } from '@/lib/use-viewer-assumptions'
 import { resolveCropAssumptions } from '@/lib/viewer-assumptions'
+import { marketingReferenceContract, referenceMonthOptions, fallForwardOnMissingQuote, type ReferenceContract } from '@/lib/reference-contract'
 import { SupersededNotice } from '@/components/viewer-scenario'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { cropToCommodity } from '@/lib/contracts'
@@ -208,34 +209,64 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     [plantings, policies, cropYear],
   )
 
-  // Live harvest-month futures estimate for EVERY planted crop — the exact same
-  // request the Marketing dashboard makes, so the price used to value unpriced
-  // bushels is identical on both pages (not just for crops that carry a policy).
+  // Live reference-contract quote for EVERY planted crop — the SAME expiry-
+  // aware resolver (+ any pinned month) the Marketing dashboard uses, so the
+  // price valuing unpriced bushels is identical on both pages and the
+  // RevProj − Marketing reconciliation identity keeps holding.
   const livePriceCropIds = useMemo(
     () => Array.from(new Set(plantings.filter((p) => p.season_year === cropYear).map((p) => p.crop_id))),
     [plantings, cropYear],
   )
+  const refAsOf = useMemo(() => new Date(), [])
+  const refByCrop = useMemo(() => {
+    const m = new Map<string, ReferenceContract>()
+    if (cropYear === '') return m
+    for (const id of livePriceCropIds) {
+      const c = cropById.get(id)
+      if (!c) continue
+      const pinned = effAssumptions.find((a) => a.crop_id === id && a.crop_year === cropYear)?.reference_contract_month ?? null
+      const ref = marketingReferenceContract(c.name, cropYear, refAsOf, pinned)
+      if (ref) m.set(id, ref)
+    }
+    return m
+  }, [cropYear, livePriceCropIds, cropById, effAssumptions, refAsOf])
   useEffect(() => {
-    if (cropYear === '' || livePriceCropIds.length === 0) { setLiveEstimates(new Map()); return }
-    const payload = livePriceCropIds.map((id) => ({ crop_id: id, crop_name: cropById.get(id)?.name ?? '' })).filter((c) => c.crop_name)
+    if (cropYear === '' || refByCrop.size === 0) { setLiveEstimates(new Map()); return }
+    // Fetch the resolved symbols plus each crop's later listed months so a
+    // quoteless contract falls forward identically to the dashboard.
+    const optsByCrop = new Map<string, ReturnType<typeof referenceMonthOptions>>()
+    for (const [id] of refByCrop) {
+      const c = cropById.get(id)
+      if (c) optsByCrop.set(id, referenceMonthOptions(c.name, cropYear, refAsOf))
+    }
+    const symbols = Array.from(new Set([
+      ...[...refByCrop.values()].map((r) => r.symbol),
+      ...[...optsByCrop.values()].flat().map((o) => o.symbol),
+    ]))
     let cancelled = false
     ;(async () => {
       try {
-        const res = await fetch('/api/harvest-price-estimate', {
+        const res = await fetch('/api/market-prices', {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ crop_year: cropYear, crops: payload }),
+          body: JSON.stringify({ symbols }),
         })
         const json = await res.json().catch(() => null)
         if (cancelled || !json) return
+        const bySymbol = new Map<string, number>()
+        for (const p of (json.prices ?? []) as Array<{ symbol: string; price: number | null }>) {
+          if (p.price != null) bySymbol.set(p.symbol.toUpperCase(), Number(p.price))
+        }
         const m = new Map<string, number>()
-        for (const e of (json.estimates ?? []) as Array<{ crop_id: string; price: number | null }>) {
-          if (e.price != null) m.set(e.crop_id, Number(e.price))
+        for (const [id, ref] of refByCrop) {
+          const eff = fallForwardOnMissingQuote(ref, optsByCrop.get(id) ?? [], (s) => bySymbol.has(s), bySymbol.size > 0)
+          const price = bySymbol.get(eff.symbol)
+          if (price != null) m.set(id, price)
         }
         setLiveEstimates(m)
       } catch { /* keep cached/projected */ }
     })()
     return () => { cancelled = true }
-  }, [cropYear, livePriceCropIds, cropById])
+  }, [cropYear, refByCrop, cropById, refAsOf])
 
   // (field|crop|year) → dry bushels + last load date, splits-aware — narrowed
   // to the entity's fields. Drives actual production (by crop) and the

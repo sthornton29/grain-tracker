@@ -27,7 +27,7 @@ function assumption(over: Partial<CropAssumption> = {}): CropAssumption {
     id: 'a1', crop_id: 'corn', crop_year: 2026,
     expected_yield: 200, expected_yield_irr: null, expected_yield_dry: null,
     expected_yield_dc_irr: null, expected_yield_dc_dry: null,
-    harvest_complete: false, assumed_basis: 0, assumed_futures: null,
+    harvest_complete: false, assumed_basis: 0, assumed_futures: null, reference_contract_month: null,
     cost_per_acre: null, cost_per_acre_irr: null, cost_per_acre_dry: null,
     cost_per_acre_dc_irr: null, cost_per_acre_dc_dry: null,
     notes: null, created_at: '', updated_at: '',

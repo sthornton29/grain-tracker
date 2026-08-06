@@ -29,6 +29,7 @@ import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { useViewerAssumptions } from '@/lib/use-viewer-assumptions'
+import { marketingReferenceContract, referenceMonthOptions, fallForwardOnMissingQuote, type ReferenceContract } from '@/lib/reference-contract'
 import { resolveCropAssumptions, resolveCountyAssumptions } from '@/lib/viewer-assumptions'
 import { SupersededNotice } from '@/components/viewer-scenario'
 import { harvestContractSymbol, countyAssumptionFor, isAreaPlan } from '@/lib/crop-insurance'
@@ -295,31 +296,67 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   )
   const plantedCropIds = useMemo(() => Array.from(new Set(yearPlantings.map((p) => p.crop_id))), [yearPlantings])
 
-  // Live harvest-month futures for every planted crop — the same request the
-  // Marketing dashboard / Revenue Projections make. Reset up front so a failed
+  // Live reference-contract quotes for every planted crop — the SAME expiry-
+  // aware resolver (+ any pinned month) the Marketing dashboard uses, so the
+  // price-axis center and header name the same contract everywhere. The
+  // insurance math beneath the axis (projected price, RMA final pinning)
+  // keeps its own harvest-price seams untouched. Reset up front so a failed
   // refetch never leaves another year's prices centering the axes.
+  const refAsOf = useMemo(() => new Date(), [])
+  const refByCrop = useMemo(() => {
+    const m = new Map<string, ReferenceContract>()
+    if (cropYear === '') return m
+    for (const id of plantedCropIds) {
+      const c = cropById.get(id)
+      if (!c) continue
+      const pinned = effAssumptions.find((a) => a.crop_id === id && a.crop_year === cropYear)?.reference_contract_month ?? null
+      const ref = marketingReferenceContract(c.name, cropYear, refAsOf, pinned)
+      if (ref) m.set(id, ref)
+    }
+    return m
+  }, [cropYear, plantedCropIds, cropById, effAssumptions, refAsOf])
+  // Effective (quote-backed) reference symbol per crop, for the axis header.
+  const [refSymbols, setRefSymbols] = useState<Map<string, string>>(new Map())
   useEffect(() => {
     setLiveEstimates(new Map())
-    if (cropYear === '' || plantedCropIds.length === 0) return
-    const payload = plantedCropIds.map((id) => ({ crop_id: id, crop_name: cropById.get(id)?.name ?? '' })).filter((c) => c.crop_name)
+    setRefSymbols(new Map())
+    if (cropYear === '' || refByCrop.size === 0) return
+    const optsByCrop = new Map<string, ReturnType<typeof referenceMonthOptions>>()
+    for (const [id] of refByCrop) {
+      const c = cropById.get(id)
+      if (c) optsByCrop.set(id, referenceMonthOptions(c.name, cropYear, refAsOf))
+    }
+    const symbols = Array.from(new Set([
+      ...[...refByCrop.values()].map((r) => r.symbol),
+      ...[...optsByCrop.values()].flat().map((o) => o.symbol),
+    ]))
     let cancelled = false
     ;(async () => {
       try {
-        const res = await fetch('/api/harvest-price-estimate', {
+        const res = await fetch('/api/market-prices', {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ crop_year: cropYear, crops: payload }),
+          body: JSON.stringify({ symbols }),
         })
         const json = await res.json().catch(() => null)
         if (cancelled || !json) return
-        const m = new Map<string, number>()
-        for (const e of (json.estimates ?? []) as Array<{ crop_id: string; price: number | null }>) {
-          if (e.price != null) m.set(e.crop_id, Number(e.price))
+        const bySymbol = new Map<string, number>()
+        for (const p of (json.prices ?? []) as Array<{ symbol: string; price: number | null }>) {
+          if (p.price != null) bySymbol.set(p.symbol.toUpperCase(), Number(p.price))
         }
-        setLiveEstimates(m)
+        const prices = new Map<string, number>()
+        const syms = new Map<string, string>()
+        for (const [id, ref] of refByCrop) {
+          const eff = fallForwardOnMissingQuote(ref, optsByCrop.get(id) ?? [], (s) => bySymbol.has(s), bySymbol.size > 0)
+          syms.set(id, eff.symbol)
+          const price = bySymbol.get(eff.symbol)
+          if (price != null) prices.set(id, price)
+        }
+        setLiveEstimates(prices)
+        setRefSymbols(syms)
       } catch { /* fall back to stored/assumed prices */ }
     })()
     return () => { cancelled = true }
-  }, [cropYear, plantedCropIds, cropById])
+  }, [cropYear, refByCrop, cropById, refAsOf])
 
   // Field-level dry bushels + last load date, splits-aware — narrowed to the
   // entity's fields.
@@ -479,7 +516,9 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       views.push({
         crop, inputs, split,
         countyPinned, hasCountyLegs, countyMode,
-        symbol: harvestContractSymbol(crop.name, cropYear),
+        // Axis header names the marketing reference contract (rolled/pinned);
+        // the RMA discovery symbol is only the last-resort label.
+        symbol: refSymbols.get(cropId) ?? refByCrop.get(cropId)?.symbol ?? harvestContractSymbol(crop.name, cropYear),
         currentPrice: live,
         expectedYield: split.state === 'complete' ? actualYield : expectedRemaining,
         actualYield,
@@ -492,7 +531,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       })
     }
     return views.sort((a, b) => a.crop.name.localeCompare(b.crop.name))
-  }, [cropYear, viewer.loading, viewerA.ready, plantedCropIds, cropById, yearPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, scopedPolicies, scos, ecos, staxes, mcos, effCountyAssumptions, priceEstimates, harvestSplit, remainingExpectedYield, liveEstimates, axes, programCfg, includeGov, govPerAcre, cottonPhysicalSummary])
+  }, [cropYear, viewer.loading, viewerA.ready, plantedCropIds, cropById, yearPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, scopedPolicies, scos, ecos, staxes, mcos, effCountyAssumptions, priceEstimates, harvestSplit, remainingExpectedYield, liveEstimates, refSymbols, refByCrop, axes, programCfg, includeGov, govPerAcre, cottonPhysicalSummary])
 
   function setAxis(cropId: string, patch: Partial<AxisCfg>) {
     const key = `${cropYear}:${cropId}`

@@ -204,6 +204,10 @@ export type CropAssumption = {
   // futures half of the What-If, persisted like assumed_basis. null = none set
   // (fall back to the auto-fetched harvest-price estimate).
   assumed_futures: number | null
+  // Contract-month label ('SEP 26') pinning the marketing reference contract
+  // for this crop × year. null = automatic (the new-crop benchmark, rolled
+  // forward past expiry — lib/reference-contract.ts). 059.
+  reference_contract_month: string | null
   // Overall cost/acre (acre-weighted average when the breakout below is used).
   cost_per_acre: number | null
   // Optional cost/acre breakout, mirroring the yield breakout.

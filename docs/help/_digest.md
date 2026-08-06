@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-08-06 · version 0.1.0 · build 813b79b. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-08-06 · version 0.1.0 · build 6b88573. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -766,13 +766,14 @@ Pick a crop year, then scroll through the crop sections. The chevron on each sec
 
 - **Crop year and entity filter** — the entity filter narrows acres and production to that entity. Contracts and hedges held by your marketing agent — or entered with no entity — are marketing for the whole operation, so they count toward each entity in proportion to its share of that crop's planted acres. A contract in an entity's own name counts wholly toward it.
 - **Edit Assumptions** — a panel with one section per crop: enter an overall yield and cost per acre, or break them out by irrigated/dryland and full-season/double-crop. A blank breakout cell falls back to the overall figure. The **Harvest complete** checkbox tells Turnrow the crop is finished; checking it snaps the yield to the actual average from your loads.
-- **What-If on Unpriced Bushels** — type an assumed futures price (or use the **use today's price** button, which fills in the current new-crop futures quote) and an assumed basis. These are standing assumptions: they save automatically, stay until you change them, and flow into every headline number here and on Revenue Projections. **Clear assumptions** wipes both.
+- **What-If on Unpriced Bushels** — type an assumed futures price (or use the **use today's price** button, which fills in the current quote for the reference contract shown) and an assumed basis. These are standing assumptions: they save automatically, stay until you change them, and flow into every headline number here and on Revenue Projections. **Clear assumptions** wipes both.
+- **The reference contract** — shown next to the futures input as the board month and its live quote (for example "ZWU26 · $5.72"). This is the futures contract your unpriced bushels are valued against. The default is the crop year's new-crop month — December corn and cotton, November soybeans, July wheat — and once that contract stops trading (around the middle of its delivery month), Turnrow automatically moves to the next traded month and shows a small note like "Jul 26 expired → Sep 26". You can also pick a different month from the dropdown — any traded month from this crop year through the next — and your choice sticks for that crop and year until you press **Reset to default**. The Income Sensitivity price axis and Revenue Projections follow the same contract, so every page prices unpriced bushels off one answer.
 - **Physical Sales Complete for the Year?** — checkboxes at the bottom, one per crop. Because shrink and small leftovers keep the math from ever landing on exactly zero, this is how you tell Turnrow a year's selling is truly finished.
 - **Export Excel / PDF / Print** — the full dashboard, formatted for handing to a lender.
 
 ## How the numbers work
 
-Production is your assumed acres × yield until you mark harvest complete; after that it is the actual bushels from your loads (pounds of lint from gin receipts for cotton). Every bushel is valued at its own price: cash sales at their cash price, HTA and basis contracts at their locked legs, hedged bushels at their trade price with realized futures and options gains counted once, and unpriced bushels at your assumed futures plus assumed basis. Basis totals show their state — actual where locked, assumed where not, and a blend when it is some of each.
+Production is your assumed acres × yield until you mark harvest complete; after that it is the actual bushels from your loads (pounds of lint from gin receipts for cotton). Every bushel is valued at its own price: cash sales at their cash price, HTA and basis contracts at their locked legs, hedged bushels at their trade price with realized futures and options gains counted once, and unpriced bushels at your assumed futures plus assumed basis (or, with no assumption entered, the reference contract's current quote). Basis totals show their state — actual where locked, assumed where not, and a blend when it is some of each.
 
 An amber **includes assumptions** marker appears whenever any production is not fully priced; its tooltip breaks down how many bushels ride on assumed futures or basis. Profit is this blended revenue minus your cost per acre, and it matches Revenue Projections to the cent. Breakeven price is cost divided by yield; breakeven yield is cost divided by average price.
 
@@ -1191,7 +1192,8 @@ Yields turns your load log into bushels per acre. The same production can be vie
 - Pick a view from the dropdown: **By field**, **By farm**, **By entity**, **By variety**, or **By landowner**.
 - Narrow with the season, crop, farm, entity, and county filters. In the by-field view you can also filter to irrigated or dryland ground. Your filter choices are remembered, so the page comes back the way you left it.
 - Toggle between **Total** and **Irrigated / Dryland breakdown** to split the yield columns by practice.
-- Export any view to a spreadsheet or a formatted report — the export carries exactly the columns you're showing on screen.
+- **Tap any row to open its detail.** A field row shows the loads behind its yield; a farm, entity, or landowner row shows its totals plus a field-by-field breakdown, and each field there opens further into its loads — two taps from a landowner to a scale ticket.
+- Export any view to a spreadsheet or a formatted report — the export carries exactly the columns you're showing on screen, and when a row's detail is open the export adds a Load Detail sheet for it.
 
 ## What the controls do
 
@@ -1199,6 +1201,7 @@ Yields turns your load log into bushels per acre. The same production can be vie
 - **Allocate irr/dry.** A field with both irrigated and dryland acres has one pile of bushels but two practices. Once its harvest is complete, an **Allocate irr/dry** button lets you split the field's dry bushels between the two — type one side and the other side fills in so the split always totals the field's bushels. Until you allocate, the field counts in the overall total but sits out of the irrigated and dryland columns.
 - **Allocate bushels (varieties).** A planting with a single variety credits all its bushels to that variety automatically. A planting with two or more varieties shows in the variety view only after you allocate its bushels among them — the page lists the plantings that still need allocation once their harvest is complete.
 - **By landowner** groups production by the landowner on each farm, split-aware, for rent conversations and year-end summaries.
+- **Row detail.** The detail's summary line shows load count, total pounds, wet and dry bushels, the average moisture and test weight (weighted by each load's pounds, so an 80,000-lb pair at 16.0 and 18.0 moisture averages by weight — not a simple midpoint), the first-to-last load dates, and how the bushels split between bins and buyers. The load list carries date, ticket, truck, weights, moisture, test weight, and destination; a load split across fields shows just this field's share with a badge like "split — 14,200 of 34,300 lbs". Fields flagged in-progress or counted by override carry the same flag on their detail, so the list always matches the number above it. Cotton fields show gin receipts, bales, turnout, and loan values in pounds instead of grain loads.
 
 ## How the numbers work
 

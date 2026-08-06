@@ -6,22 +6,35 @@ import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { fieldCropAggregates, analyzeYields, isHarvestComplete, groupYieldAggregates, type HarvestProgress, type GroupYieldAgg, type GroupYieldPlanting } from '@/lib/yields'
+import { isCottonCrop } from '@/lib/marketing'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import ExportBar from '@/components/export-bar'
-import type { ExportColumn, ExportPayload } from '@/lib/exports'
+import {
+  YieldRowDetail, useCottonDetailData, buildDetailForPlantings, cottonDetailsByYear,
+  grainDetailExportSection, cottonDetailExportSection,
+} from '@/components/yields-detail'
+import type { ExportColumn, ExportPayload, ExportSection } from '@/lib/exports'
 import type { Crop, CropAssumption, Entity, Farm, Field, FieldPlanting, FieldPlantingVariety, County, LoadSplit } from '@/lib/types'
 
+// Carries everything the drill-down needs (lib/yield-detail's DetailLoadLike)
+// on top of what the yield math uses — one fetch serves both.
 type LoadRow = {
   id: string
   date: string
   net_weight: number | null
   moisture: number | null
+  test_weight: number | null
   crop_id: string | null
   dry_bushels_override: number | null
   crop_year: number | null
   from_type: string | null
   from_field_id: string | null
+  to_type: string | null
+  to_bin_id: string | null
+  to_buyer_id: string | null
+  truck_id: string | null
+  ticket_number: string | null
 }
 
 type ViewMode = 'field' | 'farm' | 'entity' | 'variety' | 'landowner'
@@ -63,6 +76,10 @@ export default function YieldsPage() {
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
   const [counties, setCounties] = useState<County[]>([])
+  // Light name lookups (id + name only) for the drill-down's load list.
+  const [trucks, setTrucks] = useState<Array<{ id: string; name_or_number: string }>>([])
+  const [bins, setBins] = useState<Array<{ id: string; name_or_number: string }>>([])
+  const [buyers, setBuyers] = useState<Array<{ id: string; name: string }>>([])
   const [loading, setLoading] = useState(true)
 
   // Filters persist in localStorage so the user returns to the same view and
@@ -115,17 +132,20 @@ export default function YieldsPage() {
 
   async function refresh() {
     setLoading(true)
-    const [en, fa, fi, cr, pl, lo, co, sp, vv, ca] = await Promise.all([
+    const [en, fa, fi, cr, pl, lo, co, sp, vv, ca, tr, bi, bu] = await Promise.all([
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
-      supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id'),
+      supabase.from('loads').select('id, date, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, ticket_number'),
       supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('load_splits').select('*'),
       supabase.from('field_planting_varieties').select('*').order('variety'),
       supabase.from('crop_assumptions').select('*'),
+      supabase.from('trucks').select('id, name_or_number').order('name_or_number'),
+      supabase.from('bins').select('id, name_or_number').order('name_or_number'),
+      supabase.from('buyers').select('id, name').order('name'),
     ])
     setEntities((en.data as Entity[]) || [])
     setFarms((fa.data as Farm[]) || [])
@@ -137,6 +157,9 @@ export default function YieldsPage() {
     setCounties((co.data as County[]) || [])
     setVarieties((vv.data as FieldPlantingVariety[]) || [])
     setAssumptions((ca.data as CropAssumption[]) || [])
+    setTrucks((tr.data as Array<{ id: string; name_or_number: string }>) || [])
+    setBins((bi.data as Array<{ id: string; name_or_number: string }>) || [])
+    setBuyers((bu.data as Array<{ id: string; name: string }>) || [])
     setLoading(false)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
@@ -161,6 +184,28 @@ export default function YieldsPage() {
   const farmById  = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const cropById  = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const entityById = useMemo(() => new Map(entities.map((e) => [e.id, e])), [entities])
+
+  // ---- Drill-down detail --------------------------------------------------
+  // One open detail at a time, keyed per view; any view or filter change
+  // closes it (the row it pointed at may no longer exist).
+  const [openDetail, setOpenDetail] = useState<{ view: ViewMode; key: string } | null>(null)
+  useEffect(() => { setOpenDetail(null) }, [view, year, cropId, farmId, entityId, countyId, practiceFilter])
+  // Cotton sources load lazily the first time a cotton row's detail opens.
+  const cottonDetail = useCottonDetailData(supabase)
+  function toggleDetail(v: ViewMode, key: string, rowCropName: string) {
+    const isOpen = openDetail?.view === v && openDetail.key === key
+    setOpenDetail(isOpen ? null : { view: v, key })
+    if (!isOpen && isCottonCrop(rowCropName)) cottonDetail.ensure()
+  }
+  // Ignore clicks that land on a row's own controls (buttons/links).
+  const rowClickIsOnControl = (e: { target: EventTarget | null }) =>
+    e.target instanceof Element && e.target.closest('button, a') != null
+  const detailLookups = useMemo(() => ({
+    fieldNameById: new Map(fields.map((f) => [f.id, f.name_or_number])),
+    truckNameById: new Map(trucks.map((t) => [t.id, t.name_or_number])),
+    binNameById: new Map(bins.map((b) => [b.id, b.name_or_number])),
+    buyerNameById: new Map(buyers.map((b) => [b.id, b.name])),
+  }), [fields, trucks, bins, buyers])
 
   const varietiesByPlanting = useMemo(() => {
     const m = new Map<string, FieldPlantingVariety[]>()
@@ -352,6 +397,7 @@ export default function YieldsPage() {
     farmName: string
     fsaNumber: string | null
     entityName: string
+    cropId: string
     cropName: string
     seasonYear: number
     acres: number
@@ -406,6 +452,7 @@ export default function YieldsPage() {
           farmName: farm?.name ?? '— no farm —',
           fsaNumber: farm?.fsa_number ?? null,
           entityName: ent?.name ?? '',
+          cropId: p.crop_id,
           cropName: crop?.name ?? '—',
           seasonYear: p.season_year,
           acres,
@@ -434,6 +481,19 @@ export default function YieldsPage() {
       irrigated: r.irrAc > 0 ? r.irrBu / r.irrAc : null,
       dryland: r.dryAc > 0 ? r.dryBuLand / r.dryAc : null,
     }
+  }
+
+  const farmRowKey = (r: FarmAgg) => `${r.farmId ?? '∅'}|${r.cropId}|${r.seasonYear}`
+
+  // Constituent plantings of a farm row — the SAME includedPlantings + grouping
+  // rule byFarm was computed from, so the detail sums to the row exactly.
+  function farmRowPlantings(r: FarmAgg): FieldPlanting[] {
+    return includedPlantings.filter((p) => {
+      if (p.crop_id !== r.cropId || p.season_year !== r.seasonYear) return false
+      const fld = fieldById.get(p.field_id)
+      const farm = fld?.farm_id ? farmById.get(fld.farm_id) : null
+      return (farm?.id ?? null) === r.farmId
+    })
   }
 
   // --- By Entity: roll the harvest-included plantings up to entity × crop ×
@@ -484,6 +544,62 @@ export default function YieldsPage() {
   // Hide the per-row Year column when every entity row is the same season.
   const showEntityYear = new Set(byEntity.map((r) => r.seasonYear)).size > 1
 
+  const entityRowKey = (r: GroupYieldAgg) => `${r.groupId}|${r.cropId}|${r.seasonYear}`
+
+  // Constituent plantings of an entity row — same source + grouping as byEntity.
+  function entityRowPlantings(r: GroupYieldAgg): FieldPlanting[] {
+    return includedPlantings.filter((p) => {
+      if (p.crop_id !== r.cropId || p.season_year !== r.seasonYear) return false
+      const fld = fieldById.get(p.field_id)
+      const farm = fld?.farm_id ? farmById.get(fld.farm_id) : null
+      const ent = farm?.entity_id ? entityById.get(farm.entity_id) : null
+      return (ent?.id ?? '∅') === r.groupId
+    })
+  }
+
+  // While a detail is open on the current view, the view's export gains one
+  // extra section itemizing that row's loads (or, for cotton, its gin/bale
+  // numbers). Returns null when nothing is open for the view.
+  function openDetailExportSection(v: ViewMode): ExportSection | null {
+    if (!openDetail || openDetail.view !== v) return null
+    let label = ''
+    let rowCropName = ''
+    let yearLabel = ''
+    let rowPlantings: FieldPlanting[] = []
+    if (v === 'field') {
+      const p = visible.find((x) => x.id === openDetail.key)
+      if (!p) return null
+      rowPlantings = [p]
+      label = fieldById.get(p.field_id)?.name_or_number ?? '—'
+      rowCropName = cropById.get(p.crop_id)?.name ?? '—'
+      yearLabel = String(p.season_year)
+    } else if (v === 'farm') {
+      const r = byFarm.find((x) => farmRowKey(x) === openDetail.key)
+      if (!r) return null
+      rowPlantings = farmRowPlantings(r)
+      label = r.farmName
+      rowCropName = r.cropName
+      yearLabel = String(r.seasonYear)
+    } else if (v === 'entity') {
+      const r = byEntity.find((x) => entityRowKey(x) === openDetail.key)
+      if (!r) return null
+      rowPlantings = entityRowPlantings(r)
+      label = r.groupName
+      rowCropName = r.cropName
+      yearLabel = String(r.seasonYear)
+    } else {
+      return null
+    }
+    const title = `Load Detail — ${label} · ${rowCropName} · ${yearLabel}`
+    if (isCottonCrop(rowCropName)) {
+      if (!cottonDetail.data) return null
+      const details = cottonDetailsByYear(rowPlantings, cottonDetail.data)
+      return cottonDetailExportSection({ title, details, showYear: details.length > 1 })
+    }
+    const detail = buildDetailForPlantings({ plantings: rowPlantings, loads, splits, cropById })
+    return grainDetailExportSection({ title, detailLoads: detail.loads, lookups: detailLookups })
+  }
+
   function buildEntityPayload(): ExportPayload {
     const columns: ExportColumn[] = [{ label: 'Crop' }]
     if (showEntityYear) columns.push({ label: 'Year', format: 'text' })
@@ -493,7 +609,7 @@ export default function YieldsPage() {
     if (entityShowBreakdown) columns.push({ label: 'Irrigated yield', align: 'right', format: 'yield' }, { label: 'Dryland yield', align: 'right', format: 'yield' })
     columns.push({ label: 'Yield (bu/ac)', align: 'right', format: 'yield' })
 
-    const sections = entityGroups.map((g) => {
+    const sections: ExportSection[] = entityGroups.map((g) => {
       const rows: Array<Array<string | number | null>> = []
       const rowMeta: ('data' | 'subhead' | 'total')[] = []
       for (const r of g.rows) {
@@ -518,6 +634,8 @@ export default function YieldsPage() {
       }
       return { title: `${g.groupName} — ${g.rows.length} crop${g.rows.length === 1 ? '' : 's'}`, columns, rows, rowMeta }
     })
+    const detailSection = openDetailExportSection('entity')
+    if (detailSection) sections.push(detailSection)
     return { title: 'Yields by Entity', filters: fieldFiltersLabel(), singleSheet: true, sections }
   }
 
@@ -666,7 +784,10 @@ export default function YieldsPage() {
       if (showTotalCol) cells.push(r.totalYield ?? '')
       return cells
     })
-    return { title: 'Yields by Field', filters: fieldFiltersLabel(), sections: [{ columns, rows }] }
+    const sections: ExportSection[] = [{ columns, rows }]
+    const detailSection = openDetailExportSection('field')
+    if (detailSection) sections.push(detailSection)
+    return { title: 'Yields by Field', filters: fieldFiltersLabel(), sections }
   }
 
   function buildFarmPayload(): ExportPayload {
@@ -707,7 +828,10 @@ export default function YieldsPage() {
       cells.push(y.total ?? '')
       return cells
     })
-    return { title: 'Yields by Farm', filters: fieldFiltersLabel(), sections: [{ columns, rows }] }
+    const sections: ExportSection[] = [{ columns, rows }]
+    const detailSection = openDetailExportSection('farm')
+    if (detailSection) sections.push(detailSection)
+    return { title: 'Yields by Farm', filters: fieldFiltersLabel(), sections }
   }
 
   function buildVarietyPayload(): ExportPayload {
@@ -897,12 +1021,14 @@ export default function YieldsPage() {
   // only" view.
   const visibleYieldCols = [showIrrigatedCol, showDrylandCol, showTotalCol].filter(Boolean).length
   const visibleAcresBreakoutCols = [showIrrigatedCol, showDrylandCol].filter(Boolean).length
-  const fieldColCount = 2 /* Field/Crop */ + (showFieldYear ? 1 : 0) + 1 /* Acres */
+  const fieldColCount = 1 /* detail chevron */ + 2 /* Field/Crop */ + (showFieldYear ? 1 : 0) + 1 /* Acres */
     + visibleAcresBreakoutCols + 1 /* Dry bu */ + visibleYieldCols
     + (yieldView === 'breakdown' ? 1 : 0) /* allocate actions */
-  // Farm: Farm/FSA#/Entity/Crop/Acres/Dry bu/Yield = 7 (+Year), plus 4 in
-  // breakdown (Irr ac, Dry ac, Irrigated yield, Dryland yield).
-  const farmColCount = 7 + (showFarmYear ? 1 : 0) + (farmShowBreakdown ? 4 : 0)
+  // Farm: chevron + Farm/FSA#/Entity/Crop/Acres/Dry bu/Yield = 8 (+Year), plus
+  // 4 in breakdown (Irr ac, Dry ac, Irrigated yield, Dryland yield).
+  const farmColCount = 8 + (showFarmYear ? 1 : 0) + (farmShowBreakdown ? 4 : 0)
+  // Entity: chevron + Crop/Acres/Dry bu/Yield = 5 (+Year), plus 4 in breakdown.
+  const entityColCount = 5 + (showEntityYear ? 1 : 0) + (entityShowBreakdown ? 4 : 0)
   const multiVarColCount = 6 + (showMultiVarYear ? 1 : 0)
   // Variety rollup: Crop/Variety/Plantings/Acres/Dry bu/Yield = 6 (+Year).
   const varietyColCount = 6 + (showVarietyYear ? 1 : 0)
@@ -1210,6 +1336,7 @@ export default function YieldsPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-slate-100 text-slate-700">
               <tr>
+                <th className="w-6 px-2 py-2"></th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Field</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
                 {showFieldYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
@@ -1238,9 +1365,15 @@ export default function YieldsPage() {
                 // unharvested field has no bushels to count.
                 const overridden = p.yield_include_override === true && autoFlag === 'in_progress'
                 const savingOverride = overrideSavingId === p.id
+                const rowCropName = r.crop?.name ?? ''
+                const detailOpen = openDetail?.view === 'field' && openDetail.key === p.id
                 return (
                   <Fragment key={p.id}>
-                    <tr className={`border-t border-slate-100 ${exclusion ? 'text-slate-400' : ''}`}>
+                    <tr
+                      className={`border-t border-slate-100 hover:bg-slate-50 cursor-pointer ${exclusion ? 'text-slate-400' : ''}`}
+                      onClick={(e) => { if (rowClickIsOnControl(e)) return; toggleDetail('field', p.id, rowCropName) }}
+                    >
+                      <td className="px-2 py-2 text-slate-400">{detailOpen ? '▾' : '▸'}</td>
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span>{r.fld?.name_or_number ?? '—'}</span>
@@ -1331,6 +1464,33 @@ export default function YieldsPage() {
                         </td>
                       )}
                     </tr>
+                    {detailOpen && (
+                      <tr className="bg-slate-50">
+                        <td colSpan={fieldColCount} className="px-3 py-3">
+                          <YieldRowDetail
+                            plantings={[p]}
+                            loads={loads}
+                            splits={splits}
+                            cropById={cropById}
+                            lookups={detailLookups}
+                            allowLoadLinks={!viewer.isViewer}
+                            perFieldBreakdown={false}
+                            flag={
+                              overridden ? (
+                                <span className="text-xs rounded px-2 py-0.5 bg-green-100 text-green-800">
+                                  in progress · counted
+                                </span>
+                              ) : exclusion === 'in_progress' ? (
+                                <span className="text-xs rounded px-2 py-0.5 bg-amber-100 text-amber-800">
+                                  in progress
+                                </span>
+                              ) : undefined
+                            }
+                            cotton={isCottonCrop(rowCropName) ? cottonDetail : null}
+                          />
+                        </td>
+                      </tr>
+                    )}
                     {isBreakoutOpen && (
                       <tr className="bg-sky-50 no-print">
                         <td colSpan={fieldColCount} className="px-3 py-3">
@@ -1411,6 +1571,7 @@ export default function YieldsPage() {
                   <table className="min-w-full text-sm">
                     <thead className="bg-slate-50 text-slate-700">
                       <tr>
+                        <th className="w-6 px-2 py-2"></th>
                         <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
                         {showEntityYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
                         <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
@@ -1423,23 +1584,50 @@ export default function YieldsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {g.rows.map((r, i) => (
-                        <tr key={i} className="border-t border-slate-100">
-                          <td className="px-3 py-2 font-medium">{r.cropName}</td>
-                          {showEntityYear && <td className="px-3 py-2">{r.seasonYear}</td>}
-                          <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
-                          {entityShowBreakdown && <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>}
-                          {entityShowBreakdown && <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>}
-                          <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
-                          {entityShowBreakdown && <td className="px-3 py-2 text-right font-semibold">{r.irrigatedYield != null ? r.irrigatedYield.toFixed(1) : '—'}</td>}
-                          {entityShowBreakdown && <td className="px-3 py-2 text-right font-semibold">{r.drylandYield != null ? r.drylandYield.toFixed(1) : '—'}</td>}
-                          <td className="px-3 py-2 text-right font-semibold">{r.yield != null ? r.yield.toFixed(1) : '—'}</td>
-                        </tr>
-                      ))}
+                      {g.rows.map((r) => {
+                        const rowKey = entityRowKey(r)
+                        const detailOpen = openDetail?.view === 'entity' && openDetail.key === rowKey
+                        return (
+                          <Fragment key={rowKey}>
+                            <tr
+                              className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+                              onClick={(e) => { if (rowClickIsOnControl(e)) return; toggleDetail('entity', rowKey, r.cropName) }}
+                            >
+                              <td className="px-2 py-2 text-slate-400">{detailOpen ? '▾' : '▸'}</td>
+                              <td className="px-3 py-2 font-medium">{r.cropName}</td>
+                              {showEntityYear && <td className="px-3 py-2">{r.seasonYear}</td>}
+                              <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
+                              {entityShowBreakdown && <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>}
+                              {entityShowBreakdown && <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>}
+                              <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
+                              {entityShowBreakdown && <td className="px-3 py-2 text-right font-semibold">{r.irrigatedYield != null ? r.irrigatedYield.toFixed(1) : '—'}</td>}
+                              {entityShowBreakdown && <td className="px-3 py-2 text-right font-semibold">{r.drylandYield != null ? r.drylandYield.toFixed(1) : '—'}</td>}
+                              <td className="px-3 py-2 text-right font-semibold">{r.yield != null ? r.yield.toFixed(1) : '—'}</td>
+                            </tr>
+                            {detailOpen && (
+                              <tr className="bg-slate-50">
+                                <td colSpan={entityColCount} className="px-3 py-3">
+                                  <YieldRowDetail
+                                    plantings={entityRowPlantings(r)}
+                                    loads={loads}
+                                    splits={splits}
+                                    cropById={cropById}
+                                    lookups={detailLookups}
+                                    allowLoadLinks={!viewer.isViewer}
+                                    perFieldBreakdown
+                                    cotton={isCottonCrop(r.cropName) ? cottonDetail : null}
+                                  />
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        )
+                      })}
                     </tbody>
                     {g.rows.length > 1 && (
                       <tfoot>
                         <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
+                          <td></td>
                           <td className="px-3 py-2">{g.groupName} total</td>
                           {showEntityYear && <td></td>}
                           <td className="px-3 py-2 text-right">{fmtNum(g.acres)}</td>
@@ -1463,6 +1651,7 @@ export default function YieldsPage() {
           <table className="min-w-full text-sm">
             <thead className="bg-slate-100 text-slate-700">
               <tr>
+                <th className="w-6 px-2 py-2"></th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Farm</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">FSA#</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Entity</th>
@@ -1482,29 +1671,53 @@ export default function YieldsPage() {
               {!loading && byFarm.length === 0 && (
                 <tr><td colSpan={farmColCount} className="px-3 py-6 text-center text-slate-400">No plantings match these filters.</td></tr>
               )}
-              {byFarm.map((r, i) => {
+              {byFarm.map((r) => {
                 const y = farmYields(r)
+                const rowKey = farmRowKey(r)
+                const detailOpen = openDetail?.view === 'farm' && openDetail.key === rowKey
                 return (
-                  <tr key={i} className="border-t border-slate-100">
-                    <td className="px-3 py-2 font-semibold">{r.farmName}</td>
-                    <td className="px-3 py-2 font-mono text-xs">{r.fsaNumber ?? ''}</td>
-                    <td className="px-3 py-2">{r.entityName}</td>
-                    <td className="px-3 py-2">{r.cropName}</td>
-                    {showFarmYear && <td className="px-3 py-2">{r.seasonYear}</td>}
-                    <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
-                    {farmShowBreakdown && <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>}
-                    {farmShowBreakdown && <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>}
-                    <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
-                    {farmShowBreakdown && (
-                      <td className="px-3 py-2 text-right font-semibold">{y.irrigated != null ? y.irrigated.toFixed(1) : '—'}</td>
+                  <Fragment key={rowKey}>
+                    <tr
+                      className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+                      onClick={(e) => { if (rowClickIsOnControl(e)) return; toggleDetail('farm', rowKey, r.cropName) }}
+                    >
+                      <td className="px-2 py-2 text-slate-400">{detailOpen ? '▾' : '▸'}</td>
+                      <td className="px-3 py-2 font-semibold">{r.farmName}</td>
+                      <td className="px-3 py-2 font-mono text-xs">{r.fsaNumber ?? ''}</td>
+                      <td className="px-3 py-2">{r.entityName}</td>
+                      <td className="px-3 py-2">{r.cropName}</td>
+                      {showFarmYear && <td className="px-3 py-2">{r.seasonYear}</td>}
+                      <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
+                      {farmShowBreakdown && <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>}
+                      {farmShowBreakdown && <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>}
+                      <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
+                      {farmShowBreakdown && (
+                        <td className="px-3 py-2 text-right font-semibold">{y.irrigated != null ? y.irrigated.toFixed(1) : '—'}</td>
+                      )}
+                      {farmShowBreakdown && (
+                        <td className="px-3 py-2 text-right font-semibold">{y.dryland != null ? y.dryland.toFixed(1) : '—'}</td>
+                      )}
+                      <td className="px-3 py-2 text-right font-semibold">
+                        {y.total != null ? y.total.toFixed(1) : '—'}
+                      </td>
+                    </tr>
+                    {detailOpen && (
+                      <tr className="bg-slate-50">
+                        <td colSpan={farmColCount} className="px-3 py-3">
+                          <YieldRowDetail
+                            plantings={farmRowPlantings(r)}
+                            loads={loads}
+                            splits={splits}
+                            cropById={cropById}
+                            lookups={detailLookups}
+                            allowLoadLinks={!viewer.isViewer}
+                            perFieldBreakdown
+                            cotton={isCottonCrop(r.cropName) ? cottonDetail : null}
+                          />
+                        </td>
+                      </tr>
                     )}
-                    {farmShowBreakdown && (
-                      <td className="px-3 py-2 text-right font-semibold">{y.dryland != null ? y.dryland.toFixed(1) : '—'}</td>
-                    )}
-                    <td className="px-3 py-2 text-right font-semibold">
-                      {y.total != null ? y.total.toFixed(1) : '—'}
-                    </td>
-                  </tr>
+                  </Fragment>
                 )
               })}
             </tbody>
