@@ -372,7 +372,8 @@ export async function runImport(
 
   // Pre-fetch existing rows (id + unique keys + importable columns) so we can
   // match by unique key and, in sync mode, detect which fields changed.
-  const mainKeys = config.columns.filter((c) => !c.child).map((c) => c.key)
+  // Virtual columns are lookup-only — they don't exist on the target table.
+  const mainKeys = config.columns.filter((c) => !c.child && !c.virtual).map((c) => c.key)
   const selectCols = Array.from(new Set(['id', ...uniqueKeys, ...mainKeys]))
   const existingRes = await supabase.from(config.tableName).select(selectCols.join(','))
   if (existingRes.error) throw new Error(`Could not read ${config.tableName}: ${existingRes.error.message}`)

@@ -177,13 +177,23 @@ describe('autoMapHeaders', () => {
 // ---------------------------------------------------------------------------
 type Rec = Record<string, unknown>
 
-function makeFakeClient(tables: Record<string, Rec[]>) {
+function makeFakeClient(tables: Record<string, Rec[]>, tableColumns: Record<string, string[]> = {}) {
   const inserted: Record<string, Rec[]> = {}
   const updates: Array<{ table: string; patch: Rec; id: unknown }> = []
   let idSeq = 0
 
   function selectResult(table: string, cols: string) {
-    void cols
+    // When the fixture declares a table's real columns, behave like Postgres:
+    // selecting a column that doesn't exist is an ERROR (this is how the
+    // virtual/state_code leak into the existing-rows fetch escaped the suite).
+    const known = tableColumns[table]
+    if (known && cols !== '*') {
+      for (const c of cols.split(',').map((s) => s.trim())) {
+        if (c && !known.includes(c)) {
+          return Promise.resolve({ data: null, error: { message: `column ${table}.${c} does not exist` } })
+        }
+      }
+    }
     const data = tables[table] ?? []
     return Promise.resolve({ data, error: null })
   }
@@ -1075,9 +1085,15 @@ describe('runImport — county + state scoped FK (farms demo fixture)', () => {
   }
   const headers = ['name', 'entity', 'county', 'state', 'landowner', 'share_rent', 'landlord_share_pct']
   const mapping = autoMapHeaders(headers, farmsConfig.columns)
+  // The REAL farms columns — no state_code. With these declared, the fake
+  // client errors like Postgres if the importer ever selects or writes a
+  // virtual column against the table (the regression that shipped once).
+  const farmsColumns = {
+    farms: ['id', 'name', 'entity_id', 'county_id', 'fsa_number', 'landowner_id', 'is_share_rent', 'landlord_share_percentage'],
+  }
 
   it('all five demo rows import; the three Lawrence rows resolve to Lawrence, AL', async () => {
-    const { client, inserted } = makeFakeClient(structuredClone(tables))
+    const { client, inserted } = makeFakeClient(structuredClone(tables), farmsColumns)
     const rows = [
       ['Wolf Pen', 'Clearwater Farms LLC', 'Lawrence', 'AL', 'McGee Family Trust', 'yes', '33.33'],
       ['River Place', 'Clearwater Farms LLC', 'Lawrence County', 'al', 'Holt Land LLC', 'no', ''],
@@ -1102,7 +1118,7 @@ describe('runImport — county + state scoped FK (farms demo fixture)', () => {
   })
 
   it('a county with no state fails that row with the clear message — even when unique', async () => {
-    const { client, inserted } = makeFakeClient(structuredClone(tables))
+    const { client, inserted } = makeFakeClient(structuredClone(tables), farmsColumns)
     const rows = [
       ['No State A', 'Clearwater Farms LLC', 'Lawrence', '', '', '', ''],
       ['No State B', 'Clearwater Farms LLC', 'Colbert', '', '', '', ''], // unique name, still requires state
@@ -1118,7 +1134,7 @@ describe('runImport — county + state scoped FK (farms demo fixture)', () => {
   })
 
   it('a wrong state gives "not found" naming the state, not an ambiguous-match error', async () => {
-    const { client } = makeFakeClient(structuredClone(tables))
+    const { client } = makeFakeClient(structuredClone(tables), farmsColumns)
     const rows = [['Wrong State', 'Clearwater Farms LLC', 'Colbert', 'TN', '', '', '']]
     const res = await runImport(client, farmsConfig, rows, headers, mapping, { mode: 'add' })
     expect(res.added).toBe(0)
