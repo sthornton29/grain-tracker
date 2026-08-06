@@ -125,7 +125,22 @@ export default function BuyersPage() {
         config={{
           tableName: 'buyers',
           uniqueKey: 'name',
-          columns: [{ key: 'name', required: true }],
+          title: 'Import buyers & delivery locations from a spreadsheet',
+          note: 'One row per buyer. Put all of a buyer’s delivery locations in one cell, separated by semicolons; add an address after an @ sign — e.g. "North Elevator @ 105 Grain Rd, Decatur AL; River Terminal". Re-importing an existing buyer adds any NEW locations without touching the rest.',
+          columns: [
+            { key: 'name', label: 'buyer', required: true },
+            {
+              key: 'delivery_locations',
+              label: 'delivery_locations',
+              child: {
+                table: 'delivery_locations',
+                valueColumn: 'name',
+                parentKey: 'buyer_id',
+                splitOn: ';|',
+                detailColumn: 'address',
+              },
+            },
+          ],
         }}
         onImported={refresh}
       />

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import CsvImport from '@/components/csv-import'
 import { computeBushels } from '@/lib/shrink'
 import type {
   Bin, BinSite, Crop, Entity, County, EntityCounty, BinInventoryAdjustment,
@@ -13,8 +14,10 @@ type SiteForm = {
   countyId: string
   address: string
   notes: string
+  /** Comma/semicolon-separated bin names created WITH the site (create only). */
+  bins: string
 }
-const emptySite: SiteForm = { name: '', entityId: '', countyId: '', address: '', notes: '' }
+const emptySite: SiteForm = { name: '', entityId: '', countyId: '', address: '', notes: '', bins: '' }
 
 type BinForm = { name: string; cropId: string }
 const emptyBin: BinForm = { name: '', cropId: '' }
@@ -145,14 +148,22 @@ export default function BinSitesPage() {
     e.preventDefault()
     const v = validateSite(siteForm)
     if (v) { setErr(v); return }
-    const { error } = await supabase.from('bin_sites').insert({
+    const { data: created, error } = await supabase.from('bin_sites').insert({
       name: siteForm.name.trim(),
       entity_id: siteForm.entityId,
       county_id: siteForm.countyId || null,
       address: siteForm.address.trim() || null,
       notes: siteForm.notes.trim() || null,
-    })
+    }).select('id').single()
     if (error) { setErr(error.message); return }
+    // Bins named on the create form land at the new site in the same step.
+    const binNames = [...new Set(siteForm.bins.split(/[,;\n]+/).map((s) => s.trim()).filter(Boolean))]
+    if (binNames.length > 0 && created?.id) {
+      const { error: binErr } = await supabase.from('bins').insert(
+        binNames.map((n) => ({ name_or_number: n, bin_site_id: created.id })),
+      )
+      if (binErr) { setErr(`Site saved, but the bins didn’t: ${binErr.message}`); refresh(); return }
+    }
     setSiteForm(emptySite); setErr(null); refresh()
   }
 
@@ -322,10 +333,31 @@ export default function BinSitesPage() {
           placeholder="Notes (optional)"
           className={inputCls + ' w-full'}
         />
+        <input
+          value={siteForm.bins}
+          onChange={(e) => setSiteForm({ ...siteForm, bins: e.target.value })}
+          placeholder="Bins at this site (optional) — e.g. Bin 1, Bin 2, Bin 3"
+          className={inputCls + ' w-full'}
+        />
         <div className="flex justify-end">
           <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Site</button>
         </div>
       </form>
+
+      <CsvImport
+        config={{
+          tableName: 'bins',
+          uniqueKey: 'name_or_number',
+          title: 'Import bins from a spreadsheet',
+          note: 'One row per bin. Site matches by name against the sites above — add the sites first. If two entities have a site with the same name, rename one before importing (the match must be unambiguous).',
+          columns: [
+            { key: 'name_or_number', label: 'bin', required: true },
+            { key: 'bin_site_id', label: 'site', fk: { table: 'bin_sites', matchColumn: 'name' } },
+            { key: 'crop_id', label: 'crop', fk: { table: 'crops', matchColumn: 'name' } },
+          ],
+        }}
+        onImported={refresh}
+      />
 
       {err && <p className="text-sm text-red-600">{err}</p>}
 
@@ -410,6 +442,7 @@ export default function BinSitesPage() {
                       onClick={() => {
                         setEditingSiteId(s.id)
                         setEditSiteForm({
+                          bins: '',
                           name: s.name,
                           entityId: s.entity_id,
                           countyId: s.county_id ?? '',
