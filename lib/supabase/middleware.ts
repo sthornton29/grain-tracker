@@ -44,6 +44,20 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
+  // Cotton-module gate: the Bale Quality report exists only when the org's
+  // Cotton module is on (per-org app_settings via RLS). Direct URLs bounce
+  // to the reports landing; the sidebar/landing hide it too.
+  if (user && (pathname === '/reports/bale-quality' || pathname.startsWith('/reports/bale-quality/'))) {
+    const { data: settings } = await supabase
+      .from('app_settings').select('cotton_module_enabled').limit(1).maybeSingle()
+    if (!(settings as { cotton_module_enabled?: boolean } | null)?.cotton_module_enabled) {
+      const url = request.nextUrl.clone()
+      url.pathname = '/reports'
+      url.search = ''
+      return NextResponse.redirect(url)
+    }
+  }
+
   // Super-admin page (/admin): hidden from everyone but the platform
   // operator(s) in super_admins — others bounce home as if it didn't exist.
   // The admin_* RPCs re-check is_super_admin() server-side regardless.

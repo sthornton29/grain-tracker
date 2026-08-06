@@ -53,16 +53,19 @@ export default function HelpDrawer() {
       <button
         type="button"
         onClick={openFromButton}
-        title="Help"
-        aria-label="Help"
-        className="ml-2 h-7 w-7 rounded-full border border-white/30 text-white/80 hover:text-white hover:border-white/60 text-sm font-semibold leading-none"
+        title="Help & Support"
+        aria-label="Help & Support"
+        className="ml-1 sm:ml-2 h-10 w-10 shrink-0 rounded-full border border-white/30 text-white/85 hover:text-white hover:border-white/60 active:bg-white/10 text-base font-semibold leading-none"
       >
         ?
       </button>
       {open && (
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/30" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-0 h-full w-full max-w-md bg-white shadow-xl flex flex-col">
+          {/* text-slate-800 matters: the drawer mounts inside the nav, which
+              sets text-white — without the reset every input inherits
+              white-on-white (invisible typing). */}
+          <div className="absolute right-0 top-0 h-full w-full max-w-md bg-white text-slate-800 shadow-xl flex flex-col">
             <div className="border-b border-slate-200 px-4 py-3 flex items-center gap-2">
               <h2 className="font-display font-bold text-lg text-brand-dark flex-1">Help</h2>
               <a href="/help" className="text-xs text-brand-deep underline decoration-dotted">Help center</a>
@@ -107,7 +110,7 @@ export default function HelpDrawer() {
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     placeholder="Search help…"
-                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400"
                   />
                   <ul className="divide-y divide-slate-100">
                     {results.map((t) => (

@@ -15,14 +15,17 @@ export default function Nav({ cottonEnabled = false, role = 'owner' }: { cottonE
   const links = navLinksFor({ cottonEnabled, role })
   return (
     <nav className="sticky top-0 z-10 bg-brand-dark text-white shadow">
-      <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-2 overflow-x-auto">
+      {/* The links scroll horizontally on narrow screens; the logo and the
+          Help "?" sit OUTSIDE the scroll region so they are always visible
+          and tappable — the help entry point must never scroll away. */}
+      <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-2">
         <Link
           href={role === 'gin' ? '/cotton/loads' : '/'}
-          className="flex items-center whitespace-nowrap mr-4"
+          className="flex items-center whitespace-nowrap mr-2 sm:mr-4 shrink-0"
         >
           <img src="/brand/logo-lockup-white.png" alt="Turnrow" className="h-6 w-auto" />
         </Link>
-        <div className="flex gap-1 flex-1">
+        <div className="flex gap-1 flex-1 min-w-0 overflow-x-auto">
           {links.map((l) => {
             const active = navLinkActive(l, pathname)
             return (

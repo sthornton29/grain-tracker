@@ -1,10 +1,12 @@
 ---
 page_route: /reports/bale-quality
 title: Bale Quality Summary
-updated: 2026-08-05
+updated: 2026-08-06
 keywords: cotton, bales, HVI, classing, color grade, staple, mic, strength, loan value, lint pounds, gin
 ---
 ## What this page is for
+
+This report is part of the Cotton module — it appears in the Reports menu only when Cotton is turned on under Settings → Users & Modules.
 
 The Bale Quality Summary is the quality package a cotton producer shows buyers. For each field — with farm and entity rollups — it shows how many bales you made, total lint pounds, the weighted average loan value in cents per pound, and how your bales distribute across the HVI grades that drive price: color grade, staple, micronaire, and strength. When a merchant asks "what does your cotton look like?", this is the answer.
 

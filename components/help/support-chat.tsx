@@ -91,7 +91,7 @@ export default function SupportChat({ route, onEscalate }: {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Type a question…"
-          className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+          className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400"
         />
         <button type="submit" disabled={busy || !input.trim()}
           className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 text-sm font-semibold disabled:opacity-50">
