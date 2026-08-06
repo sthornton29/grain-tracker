@@ -25,6 +25,8 @@ export function buildMarketingExport(args: {
   segByCrop: Map<string, SegmentAcres>
   /** Active entity filter's display name (null = All entities). */
   entityName?: string | null
+  /** Per-crop reference contracts ("Corn: ZCZ26 · Wheat: ZWU26 (rolled from Jul 26)"). */
+  referenceNote?: string | null
   combined: { acres: number; profit: number | null }
 }): ExportPayload {
   const { year, rows, contracts, cropMeta, segByCrop, combined } = args
@@ -138,7 +140,7 @@ export function buildMarketingExport(args: {
 
   return {
     title: `Marketing — ${year ?? ''}`,
-    filters: `Crop year: ${year ?? '—'}${args.entityName ? ` · Entity: ${args.entityName}` : ''}`,
+    filters: `Crop year: ${year ?? '—'}${args.entityName ? ` · Entity: ${args.entityName}` : ''}${args.referenceNote ? ` · Reference: ${args.referenceNote}` : ''}`,
     sections,
     singleSheet: true,
   }

@@ -1,8 +1,8 @@
 ---
 page_route: /yields
 title: Yields
-updated: 2026-08-05
-keywords: yields, bushels per acre, field, farm, entity, variety, landowner, irrigated, dryland, harvest, allocation, season, export
+updated: 2026-08-06
+keywords: yields, bushels per acre, field, farm, entity, variety, landowner, irrigated, dryland, harvest, allocation, season, export, detail, loads, tickets, moisture, test weight, split load, drill down
 ---
 ## What this page is for
 
@@ -13,7 +13,8 @@ Yields turns your load log into bushels per acre. The same production can be vie
 - Pick a view from the dropdown: **By field**, **By farm**, **By entity**, **By variety**, or **By landowner**.
 - Narrow with the season, crop, farm, entity, and county filters. In the by-field view you can also filter to irrigated or dryland ground. Your filter choices are remembered, so the page comes back the way you left it.
 - Toggle between **Total** and **Irrigated / Dryland breakdown** to split the yield columns by practice.
-- Export any view to a spreadsheet or a formatted report — the export carries exactly the columns you're showing on screen.
+- **Tap any row to open its detail.** A field row shows the loads behind its yield; a farm, entity, or landowner row shows its totals plus a field-by-field breakdown, and each field there opens further into its loads — two taps from a landowner to a scale ticket.
+- Export any view to a spreadsheet or a formatted report — the export carries exactly the columns you're showing on screen, and when a row's detail is open the export adds a Load Detail sheet for it.
 
 ## What the controls do
 
@@ -21,6 +22,7 @@ Yields turns your load log into bushels per acre. The same production can be vie
 - **Allocate irr/dry.** A field with both irrigated and dryland acres has one pile of bushels but two practices. Once its harvest is complete, an **Allocate irr/dry** button lets you split the field's dry bushels between the two — type one side and the other side fills in so the split always totals the field's bushels. Until you allocate, the field counts in the overall total but sits out of the irrigated and dryland columns.
 - **Allocate bushels (varieties).** A planting with a single variety credits all its bushels to that variety automatically. A planting with two or more varieties shows in the variety view only after you allocate its bushels among them — the page lists the plantings that still need allocation once their harvest is complete.
 - **By landowner** groups production by the landowner on each farm, split-aware, for rent conversations and year-end summaries.
+- **Row detail.** The detail's summary line shows load count, total pounds, wet and dry bushels, the average moisture and test weight (weighted by each load's pounds, so an 80,000-lb pair at 16.0 and 18.0 moisture averages by weight — not a simple midpoint), the first-to-last load dates, and how the bushels split between bins and buyers. The load list carries date, ticket, truck, weights, moisture, test weight, and destination; a load split across fields shows just this field's share with a badge like "split — 14,200 of 34,300 lbs". Fields flagged in-progress or counted by override carry the same flag on their detail, so the list always matches the number above it. Cotton fields show gin receipts, bales, turnout, and loan values in pounds instead of grain loads.
 
 ## How the numbers work
 

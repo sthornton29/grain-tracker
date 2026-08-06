@@ -12,7 +12,8 @@ import { buildMarketingExport } from '@/lib/marketing-export'
 import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { cropToHedgeCommodity } from '@/lib/contracts'
-import { fmtPnl, buildContractSymbol, formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
+import { fmtPnl, formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
+import { marketingReferenceContract, referenceMonthOptions, type ReferenceContract, type ReferenceMonthOption } from '@/lib/reference-contract'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { useViewerAssumptions } from '@/lib/use-viewer-assumptions'
@@ -68,22 +69,15 @@ const basisStateLabel = (r: MarketingRow) => (r.basisState === 'actual' ? 'actua
 const basisCompositionTitle = (r: MarketingRow) =>
   `Locked: ${bu(r.basisLockedBu)} bu @ ${basis2(r.basisLockedAvg)} · Assumed: ${bu(r.basisAssumedBu)} bu @ ${basis2(r.assumedBasis)}`
 
-// The new-crop benchmark futures contract for a crop year, used by the what-if
-// "use today's price" button: Corn → DEC (ZCZ{yy}), Soybeans → NOV (ZSX{yy}),
-// Chicago Wheat → JUL (ZWN{yy}), Cotton → DEC (CTZ{yy}, the new-crop benchmark).
-// null for crops with no traded future (e.g. Canola).
-const NEW_CROP_MONTH: Record<string, { abbr: string; num: number }> = {
-  Corn: { abbr: 'DEC', num: 12 },
-  Soybeans: { abbr: 'NOV', num: 11 },
-  'Chicago Wheat': { abbr: 'JUL', num: 7 },
-  Cotton: { abbr: 'DEC', num: 12 },
-}
-function newCropContract(cropName: string, cropYear: number): { symbol: string; monthNum: number; year: number } | null {
-  const commodity = cropToHedgeCommodity(cropName)
-  if (!commodity) return null
-  const m = NEW_CROP_MONTH[commodity]
-  const symbol = buildContractSymbol(commodity, `${m.abbr} ${String(cropYear % 100).padStart(2, '0')}`)
-  return symbol ? { symbol, monthNum: m.num, year: cropYear } : null
+// Reference contract per crop — the shared expiry-aware resolver
+// (lib/reference-contract.ts): the crop year's new-crop benchmark, rolled
+// forward once it expires, unless the user pinned a month
+// (crop_assumptions.reference_contract_month).
+type RefQuote = { price: number; stale: boolean }
+
+// 'SEP 26' → 'Sep 26' for farmer-facing chips and dropdowns.
+function prettyMonth(label: string): string {
+  return label.charAt(0) + label.slice(1, 3).toLowerCase() + label.slice(3)
 }
 
 // Breakeven (a guide, holding the other variable fixed):
@@ -164,8 +158,9 @@ export default function MarketingPage() {
   const [splits, setSplits] = useState<SplitRow[]>([])
   const [ginReceipts, setGinReceipts] = useState<Array<Pick<GinReceipt, 'id' | 'bales_count' | 'total_bale_weight' | 'entity_id' | 'farm_id' | 'field_id'>>>([])
   const [cottonBales, setCottonBales] = useState<Array<Pick<CottonBale, 'gin_receipt_id' | 'net_weight_lbs'>>>([])
-  // Current futures price per crop (Barchart) — values completely-unpriced bushels.
-  const [currentFutures, setCurrentFutures] = useState<Map<string, number>>(new Map())
+  // Quotes for the reference-month candidates (symbol → price) — the effective
+  // reference contract's quote values completely-unpriced bushels.
+  const [quotes, setQuotes] = useState<Map<string, RefQuote>>(new Map())
   // Physical cotton marketing data (contracts / CCC loans / LDP / fees) — raw
   // inputs + summary; scoped to the entity filter below.
   const [cottonPhysicalRaw, setCottonPhysicalRaw] = useState<CottonPhysicalData | null>(null)
@@ -243,30 +238,8 @@ export default function MarketingPage() {
 
   useEffect(() => { if (year != null) load(year) }, [year, load])
 
-  // Refresh current futures (Barchart harvest-month estimate) for the planted
-  // crops, to value completely-unpriced bushels in blended revenue. Falls back to
-  // each crop's raw futures average when unavailable, so it never blocks numbers.
-  useEffect(() => {
-    if (year == null || crops.length === 0) { setCurrentFutures(new Map()); return }
-    const plantedIds = new Set(plantings.map((p) => p.crop_id))
-    const payload = crops.filter((c) => plantedIds.has(c.id)).map((c) => ({ crop_id: c.id, crop_name: c.name })).filter((c) => c.crop_name)
-    if (payload.length === 0) { setCurrentFutures(new Map()); return }
-    let cancelled = false
-    ;(async () => {
-      try {
-        const res = await fetch('/api/harvest-price-estimate', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ crop_year: year, crops: payload }),
-        })
-        const json = await res.json().catch(() => null)
-        if (cancelled || !json) return
-        const m = new Map<string, number>()
-        for (const e of (json.estimates ?? []) as Array<{ crop_id: string; price: number | null }>) if (e.price != null) m.set(e.crop_id, Number(e.price))
-        setCurrentFutures(m)
-      } catch { /* fall back to raw futures average */ }
-    })()
-    return () => { cancelled = true }
-  }, [year, crops, plantings])
+  // (The reference-contract quote fetch lives below, after the viewer-resolved
+  // assumptions — the pinned month is itself an overridable assumption.)
 
   // Viewer role (052): the grant universe caps the entity scope, and the
   // viewer's private assumption overrides layer over the shared rows.
@@ -275,6 +248,79 @@ export default function MarketingPage() {
   const assumptionRes = useMemo(() => resolveCropAssumptions(assumptions, viewerA.overrides), [assumptions, viewerA.overrides])
   const effAssumptions = assumptionRes.rows
   useEffect(() => { if (assumptionRes.staleIds.length > 0) viewerA.cleanupStale(assumptionRes.staleIds) }, [assumptionRes, viewerA])
+
+  // --- Reference contracts (expiry-aware, override-aware) ------------------
+  // One resolver decides the futures contract unpriced bushels are valued
+  // against (lib/reference-contract.ts); the What-If dropdown offers the
+  // still-trading listed months, each quoted below.
+  const asOf = useMemo(() => new Date(), [])
+  const plantedCropList = useMemo(() => {
+    const ids = new Set(plantings.map((p) => p.crop_id))
+    return crops.filter((c) => ids.has(c.id))
+  }, [crops, plantings])
+  const monthOptsByCrop = useMemo(() => {
+    const m = new Map<string, ReferenceMonthOption[]>()
+    if (year == null) return m
+    for (const c of plantedCropList) {
+      const opts = referenceMonthOptions(c.name, year, asOf)
+      if (opts.length > 0) m.set(c.id, opts)
+    }
+    return m
+  }, [plantedCropList, year, asOf])
+
+  useEffect(() => {
+    const symbols = Array.from(new Set([...monthOptsByCrop.values()].flat().map((o) => o.symbol)))
+    if (symbols.length === 0) { setQuotes(new Map()); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/market-prices', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ symbols }),
+        })
+        const json = await res.json().catch(() => null)
+        if (cancelled || !json) return
+        const m = new Map<string, RefQuote>()
+        for (const p of (json.prices ?? []) as Array<{ symbol: string; price: number | null; stale: boolean }>) {
+          if (p.price != null) m.set(p.symbol.toUpperCase(), { price: Number(p.price), stale: !!p.stale })
+        }
+        setQuotes(m)
+      } catch { /* engine falls back to each crop's raw futures average */ }
+    })()
+    return () => { cancelled = true }
+  }, [monthOptsByCrop])
+
+  // The effective reference per crop: the resolver's answer (benchmark, rolled
+  // past expiry, or the user's pinned month), falling FORWARD once more when a
+  // supposedly-live contract returned no quote at all (a fetch that succeeded
+  // for the other symbols but not this one).
+  const refByCrop = useMemo(() => {
+    const m = new Map<string, ReferenceContract>()
+    if (year == null) return m
+    for (const c of plantedCropList) {
+      const overrideMonth = effAssumptions.find((a) => a.crop_id === c.id && a.crop_year === year)?.reference_contract_month ?? null
+      let ref = marketingReferenceContract(c.name, year, asOf, overrideMonth)
+      if (!ref) continue
+      if (!ref.overridden && quotes.size > 0 && !quotes.has(ref.symbol)) {
+        const opts = monthOptsByCrop.get(c.id) ?? []
+        const key = ref.year * 100 + ref.monthNum
+        const live = opts.find((o) => o.year * 100 + o.monthNum > key && quotes.has(o.symbol))
+        if (live) ref = { ...ref, symbol: live.symbol, contractMonth: live.contractMonth, monthNum: live.monthNum, year: live.year, rolled: true }
+      }
+      m.set(c.id, ref)
+    }
+    return m
+  }, [plantedCropList, year, asOf, effAssumptions, quotes, monthOptsByCrop])
+
+  // Current futures per crop = the effective reference contract's live quote.
+  const currentFutures = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const [cropId, ref] of refByCrop) {
+      const q = quotes.get(ref.symbol)
+      if (q) m.set(cropId, q.price)
+    }
+    return m
+  }, [refByCrop, quotes])
 
   // Shared entity scoping: acres/production narrow to the selected entity's
   // fields; the operation-wide assumptions apply to them unchanged. Contracts
@@ -426,9 +472,18 @@ export default function MarketingPage() {
   }
 
   // Export mirrors the cards; the pure builder handles grain ($/bu + bu) and
-  // cotton (cents/lb + lbs) sections - see lib/marketing-export.ts.
+  // cotton (cents/lb + lbs) sections - see lib/marketing-export.ts. The context
+  // line names each crop's reference contract so the basis of the unpriced
+  // valuation travels with the numbers.
   function buildPayload(): ExportPayload {
-    return buildMarketingExport({ year, rows, contracts: scopedContracts, cropMeta, segByCrop, combined, entityName })
+    const referenceNote = rows
+      .map((r) => {
+        const ref = refByCrop.get(r.cropId)
+        return ref ? `${r.cropName}: ${ref.symbol}${ref.rolled ? ` (rolled from ${prettyMonth(ref.benchmarkMonth)})` : ref.overridden ? ' (pinned)' : ''}` : null
+      })
+      .filter(Boolean)
+      .join(' · ')
+    return buildMarketingExport({ year, rows, contracts: scopedContracts, cropMeta, segByCrop, combined, entityName, referenceNote: referenceNote || null })
   }
 
   async function saveAssumption(cropId: string, patch: Partial<CropAssumption>) {
@@ -442,9 +497,11 @@ export default function MarketingPage() {
       for (const field of OVERRIDABLE_CROP_FIELDS) {
         if (!Object.prototype.hasOwnProperty.call(patch, field)) continue
         const raw = patch[field as keyof CropAssumption]
-        const value = raw == null ? (field === 'assumed_basis' ? 0 : null) : Number(raw)
-        const baseRaw = base?.[field as keyof CropAssumption]
-        const baseVal = baseRaw == null ? (field === 'assumed_basis' ? 0 : null) : Number(baseRaw)
+        // reference_contract_month is a text field; the rest are numeric.
+        const coerce = (v: unknown) =>
+          v == null ? (field === 'assumed_basis' ? 0 : null) : field === 'reference_contract_month' ? String(v) : Number(v)
+        const value = coerce(raw)
+        const baseVal = coerce(base?.[field as keyof CropAssumption])
         // Typing the official value back is a reset, not a pinned override.
         if (value === baseVal) await viewerA.resetOverride({ scope: 'crop', cropId, cropYear: year, field: field as OverridableCropField })
         else await viewerA.saveOverride({ scope: 'crop', cropId, cropYear: year, field: field as OverridableCropField, value, base })
@@ -468,8 +525,10 @@ export default function MarketingPage() {
       harvest_complete: has('harvest_complete') ? patch.harvest_complete : existing?.harvest_complete ?? false,
       // assumed_basis is NOT NULL (default 0) — never write null.
       assumed_basis: (has('assumed_basis') ? patch.assumed_basis : existing?.assumed_basis) ?? 0,
-      // assumed_futures is nullable (null = fall back to the harvest-price estimate).
+      // assumed_futures is nullable (null = fall back to the reference-contract quote).
       assumed_futures: has('assumed_futures') ? patch.assumed_futures ?? null : existing?.assumed_futures ?? null,
+      // The pinned reference month (null = automatic benchmark/roll — 059).
+      reference_contract_month: has('reference_contract_month') ? patch.reference_contract_month ?? null : existing?.reference_contract_month ?? null,
       cost_per_acre: pick('cost_per_acre'),
       cost_per_acre_irr: pick('cost_per_acre_irr'),
       cost_per_acre_dry: pick('cost_per_acre_dry'),
@@ -560,11 +619,12 @@ export default function MarketingPage() {
         <div className="space-y-5 print-area">
           {rows.map((r) => {
             const wfKeys = (f: string) => assumptionRes.appliedKeys.has(`crop|${r.cropId}|${year}|${f}`)
-            const wfScenario = viewer.isViewer && (wfKeys('assumed_futures') || wfKeys('assumed_basis'))
+            const wfScenario = viewer.isViewer && (wfKeys('assumed_futures') || wfKeys('assumed_basis') || wfKeys('reference_contract_month'))
               ? {
                   onReset: async () => {
                     await viewerA.resetOverride({ scope: 'crop', cropId: r.cropId, cropYear: year!, field: 'assumed_futures' })
                     await viewerA.resetOverride({ scope: 'crop', cropId: r.cropId, cropYear: year!, field: 'assumed_basis' })
+                    await viewerA.resetOverride({ scope: 'crop', cropId: r.cropId, cropYear: year!, field: 'reference_contract_month' })
                   },
                 }
               : undefined
@@ -575,6 +635,10 @@ export default function MarketingPage() {
                 detailsOpen={expanded.includes(r.cropId)}
                 onToggleDetails={() => toggleRow(r.cropId)}
                 cropYear={year}
+                refContract={refByCrop.get(r.cropId) ?? null}
+                monthOptions={monthOptsByCrop.get(r.cropId) ?? []}
+                quotes={quotes}
+                onSaveMonth={(v) => saveAssumption(r.cropId, { reference_contract_month: v })}
                 onSaveFutures={(v) => saveAssumption(r.cropId, { assumed_futures: v })}
                 onClearAssumptions={() => saveAssumption(r.cropId, { assumed_futures: null, assumed_basis: 0 })}
                 wfScenario={wfScenario}
@@ -589,6 +653,10 @@ export default function MarketingPage() {
               detailsOpen={expanded.includes(r.cropId)}
               onToggleDetails={() => toggleRow(r.cropId)}
               cropYear={year}
+              refContract={refByCrop.get(r.cropId) ?? null}
+              monthOptions={monthOptsByCrop.get(r.cropId) ?? []}
+              quotes={quotes}
+              onSaveMonth={(v) => saveAssumption(r.cropId, { reference_contract_month: v })}
               onSaveBasis={(v) => saveAssumption(r.cropId, { assumed_basis: v })}
               onSaveFutures={(v) => saveAssumption(r.cropId, { assumed_futures: v })}
               onClearAssumptions={() => saveAssumption(r.cropId, { assumed_futures: null, assumed_basis: 0 })}
@@ -639,7 +707,8 @@ export default function MarketingPage() {
 // ---------------------------------------------------------------------------
 function CropSection({
   row, advanced, basisOpen, onToggleBasis, detailsOpen, onToggleDetails,
-  cropYear, onSaveBasis, onSaveFutures, onClearAssumptions, wfScenario,
+  cropYear, refContract, monthOptions, quotes, onSaveMonth,
+  onSaveBasis, onSaveFutures, onClearAssumptions, wfScenario,
 }: {
   row: MarketingRow
   advanced: boolean
@@ -648,6 +717,12 @@ function CropSection({
   detailsOpen: boolean
   onToggleDetails: () => void
   cropYear: number | null
+  /** The resolved reference contract (benchmark / rolled / pinned) for this crop. */
+  refContract: ReferenceContract | null
+  monthOptions: ReferenceMonthOption[]
+  quotes: Map<string, RefQuote>
+  /** Pin the reference month (a 'SEP 26' label) or null to restore automatic. */
+  onSaveMonth: (v: string | null) => void
   onSaveBasis: (v: number) => void
   onSaveFutures: (v: number | null) => void
   onClearAssumptions: () => void
@@ -660,9 +735,10 @@ function CropSection({
 
   // --- What-if pricing. Both the futures price and the basis are STANDING
   //     assumptions persisted to crop_assumptions, so they survive leaving the
-  //     page and are wiped by "Clear assumptions". Inputs save on blur. ---
-  const nc = cropYear != null ? newCropContract(row.cropName, cropYear) : null
-  const expired = nc != null ? (() => { const now = new Date(); return nc.year * 12 + nc.monthNum < now.getFullYear() * 12 + (now.getMonth() + 1) })() : false
+  //     page and are wiped by "Clear assumptions". Inputs save on blur. The
+  //     reference contract (symbol + quote shown beside the input) comes from
+  //     the shared resolver; the month dropdown pins it per crop × year. ---
+  const refQuote = refContract ? quotes.get(refContract.symbol) ?? null : null
   const [wfFutures, setWfFutures] = useState(row.assumedFutures != null ? String(row.assumedFutures) : '')
   const [wfSymbol, setWfSymbol] = useState<string | null>(null)
   const [wfStale, setWfStale] = useState(false)
@@ -708,15 +784,15 @@ function CropSection({
     : null
 
   async function useTodaysPrice() {
-    if (!nc || expired) return
+    if (!refContract) return
     setFetching(true); setWfNote(null)
     try {
       const res = await fetch('/api/market-prices', {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ symbols: [nc.symbol] }),
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ symbols: [refContract.symbol] }),
       })
       const json = await res.json().catch(() => null)
       const p = json?.prices?.[0]
-      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(nc.symbol); setWfStale(!!p.stale); onSaveFutures(Number(p.price)) }
+      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(refContract.symbol); setWfStale(!!p.stale); onSaveFutures(Number(p.price)) }
       else setWfNote('No price available — enter manually.')
     } catch {
       setWfNote('Could not fetch — enter manually.')
@@ -867,11 +943,18 @@ function CropSection({
                       </div>
                     )}
                     {/* Assumed futures price on the unpriced bushels folds into the
-                        buildup, then re-foots to an avg across all production. */}
+                        buildup, then re-foots to an avg across all production. The
+                        reference contract is named so the basis of the number is
+                        never ambiguous. */}
                     {wfFut != null && scenarioUnpricedBu > 0 && (
                       <div className="border-t border-amber-200 pt-1 mt-1 space-y-0.5">
                         <Row label={`Assumed · unpriced (${bu(scenarioUnpricedBu)} bu)`} value={price2(wfFut)} tone="text-amber-700" />
                         {blendedFutures != null && <Row label="= Avg futures incl. assumed" value={price2(blendedFutures)} tone="text-slate-900 font-bold" />}
+                      </div>
+                    )}
+                    {wfFut == null && refContract && scenarioUnpricedBu > 0 && (
+                      <div className="text-[11px] text-slate-400 leading-snug mt-1">
+                        Unpriced bushels valued at the {refContract.symbol} quote{refContract.rolled ? ` (${prettyMonth(refContract.benchmarkMonth)} expired)` : ''}.
                       </div>
                     )}
                   </>
@@ -936,18 +1019,58 @@ function CropSection({
               )}
             </div>
             <div className="flex flex-col lg:flex-row lg:items-start gap-x-8 gap-y-4">
-              {/* Assumed futures — input + its explanation, kept together. */}
+              {/* Assumed futures — input + the reference contract it prices
+                  against (symbol + live quote, month selectable), kept together. */}
               <div className="space-y-1 lg:max-w-xs">
                 <div className="text-xs text-slate-600">{advanced ? 'Unpriced futures bushels' : 'Unsold bushels'}: <span className="tabular-nums font-medium">{bu(scenarioUnpricedBu)}</span></div>
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <input type="number" step="0.01" inputMode="decimal" value={wfFutures} placeholder={advanced ? 'futures $/bu' : '$/bu'}
                     onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }} onBlur={commitFutures}
                     className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
-                  {nc && !expired && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-brand-deep font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
-                  {!nc && <span className="text-xs text-slate-400">{advanced ? 'No futures contract' : 'Enter a price'}</span>}
+                  {refContract && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-brand-deep font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
+                  {!refContract && <span className="text-xs text-slate-400">{advanced ? 'No futures contract' : 'Enter a price'}</span>}
                 </div>
-                {nc && expired && <div className="text-xs text-amber-700">Contract expired — enter price manually.</div>}
-                {/* Show the futures symbol only in advanced mode (no hedging jargon on simple sections). */}
+                {refContract && (
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                    <select
+                      value={refContract.contractMonth}
+                      onChange={(e) => {
+                        const picked = e.target.value
+                        const def = monthOptions.find((o) => o.isDefault)
+                        onSaveMonth(def && picked === def.contractMonth ? null : picked)
+                      }}
+                      className="rounded border border-slate-300 px-1.5 py-0.5 bg-white text-slate-700"
+                      title="The futures contract unpriced bushels are valued against"
+                    >
+                      {/* An effective month outside the options list (edge: all listed
+                          months expired) still renders itself so the select is honest. */}
+                      {!monthOptions.some((o) => o.contractMonth === refContract.contractMonth) && (
+                        <option value={refContract.contractMonth}>{refContract.symbol}</option>
+                      )}
+                      {monthOptions.map((o) => {
+                        const q = quotes.get(o.symbol)
+                        return (
+                          <option key={o.contractMonth} value={o.contractMonth}>
+                            {prettyMonth(o.contractMonth)} ({o.symbol}){q ? ` · ${price2(q.price)}` : ''}{o.isDefault ? ' — default' : ''}
+                          </option>
+                        )
+                      })}
+                    </select>
+                    <span className="text-slate-500 tabular-nums">
+                      {refContract.symbol}{refQuote ? ` · ${price2(refQuote.price)}${refQuote.stale ? ' (not current)' : ''}` : ' · no quote'}
+                    </span>
+                    {refContract.rolled && (
+                      <span className="rounded-full bg-amber-100 border border-amber-300 text-amber-800 px-1.5 py-0.5">
+                        {prettyMonth(refContract.benchmarkMonth)} expired → {prettyMonth(refContract.contractMonth)}
+                      </span>
+                    )}
+                    {refContract.overridden && (
+                      <button type="button" onClick={() => onSaveMonth(null)} className="text-brand-deep font-medium">
+                        Reset to default
+                      </button>
+                    )}
+                  </div>
+                )}
                 {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{advanced ? `${wfSymbol} · ` : 'Today · '}{price2(wfFut)}{wfStale ? ' (not current)' : ''}</div>}
                 {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
                 {/* Explanation under the futures input. */}
@@ -977,11 +1100,15 @@ function CropSection({
 // isn't tracked yet, and cotton has no basis concept until it is). The What-If
 // re-prices the unhedged lbs at a scenario ¢/lb against the crop-year CTZ.
 // ---------------------------------------------------------------------------
-function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutures, onClearAssumptions, wfScenario }: {
+function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContract, monthOptions, quotes, onSaveMonth, onSaveFutures, onClearAssumptions, wfScenario }: {
   row: MarketingRow
   detailsOpen: boolean
   onToggleDetails: () => void
   cropYear: number | null
+  refContract: ReferenceContract | null
+  monthOptions: ReferenceMonthOption[]
+  quotes: Map<string, RefQuote>
+  onSaveMonth: (v: string | null) => void
   onSaveFutures: (v: number | null) => void
   onClearAssumptions: () => void
   /** Present when the viewer has a private what-if override on this crop. */
@@ -989,8 +1116,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
 }) {
   const prod = row.totalProduction
   const be = breakevenOf(row)
-  const nc = cropYear != null ? newCropContract(row.cropName, cropYear) : null
-  const expired = nc != null ? (() => { const now = new Date(); return nc.year * 12 + nc.monthNum < now.getFullYear() * 12 + (now.getMonth() + 1) })() : false
+  const refQuote = refContract ? quotes.get(refContract.symbol) ?? null : null
   const [wfFutures, setWfFutures] = useState(row.assumedFutures != null ? String(row.assumedFutures) : '')
   const [wfSymbol, setWfSymbol] = useState<string | null>(null)
   const [wfStale, setWfStale] = useState(false)
@@ -1013,15 +1139,15 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
   const markSup = includesAssumptions ? <sup className="text-amber-600"> *</sup> : null
 
   async function useTodaysPrice() {
-    if (!nc || expired) return
+    if (!refContract) return
     setFetching(true); setWfNote(null)
     try {
       const res = await fetch('/api/market-prices', {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ symbols: [nc.symbol] }),
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ symbols: [refContract.symbol] }),
       })
       const json = await res.json().catch(() => null)
       const p = json?.prices?.[0]
-      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(nc.symbol); setWfStale(!!p.stale); onSaveFutures(Number(p.price)) }
+      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(refContract.symbol); setWfStale(!!p.stale); onSaveFutures(Number(p.price)) }
       else setWfNote('No price available — enter manually.')
     } catch {
       setWfNote('Could not fetch — enter manually.')
@@ -1235,10 +1361,48 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, onSaveFutu
                 <input type="text" inputMode="decimal" value={wfFutures} placeholder="$/lb e.g. 0.7000"
                   onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }} onBlur={commitFutures}
                   className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
-                {nc && !expired && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-brand-deep font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
-                {!nc && <span className="text-xs text-slate-400">Enter a price</span>}
+                {refContract && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-brand-deep font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
+                {!refContract && <span className="text-xs text-slate-400">Enter a price</span>}
               </div>
-              {nc && expired && <div className="text-xs text-amber-700">Contract expired — enter price manually.</div>}
+              {refContract && (
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                  <select
+                    value={refContract.contractMonth}
+                    onChange={(e) => {
+                      const picked = e.target.value
+                      const def = monthOptions.find((o) => o.isDefault)
+                      onSaveMonth(def && picked === def.contractMonth ? null : picked)
+                    }}
+                    className="rounded border border-slate-300 px-1.5 py-0.5 bg-white text-slate-700"
+                    title="The futures contract unhedged lbs are valued against"
+                  >
+                    {!monthOptions.some((o) => o.contractMonth === refContract.contractMonth) && (
+                      <option value={refContract.contractMonth}>{refContract.symbol}</option>
+                    )}
+                    {monthOptions.map((o) => {
+                      const q = quotes.get(o.symbol)
+                      return (
+                        <option key={o.contractMonth} value={o.contractMonth}>
+                          {prettyMonth(o.contractMonth)} ({o.symbol}){q ? ` · ${cents2(q.price)}` : ''}{o.isDefault ? ' — default' : ''}
+                        </option>
+                      )
+                    })}
+                  </select>
+                  <span className="text-slate-500 tabular-nums">
+                    {refContract.symbol}{refQuote ? ` · ${cents2(refQuote.price)}${refQuote.stale ? ' (not current)' : ''}` : ' · no quote'}
+                  </span>
+                  {refContract.rolled && (
+                    <span className="rounded-full bg-amber-100 border border-amber-300 text-amber-800 px-1.5 py-0.5">
+                      {prettyMonth(refContract.benchmarkMonth)} expired → {prettyMonth(refContract.contractMonth)}
+                    </span>
+                  )}
+                  {refContract.overridden && (
+                    <button type="button" onClick={() => onSaveMonth(null)} className="text-brand-deep font-medium">
+                      Reset to default
+                    </button>
+                  )}
+                </div>
+              )}
               {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{wfSymbol} · {cents2(wfFut)}{wfStale ? ' (not current)' : ''}</div>}
               {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
               <div className="text-xs text-slate-400">Assumed $/lb — saves automatically; values the unhedged lbs until cleared.</div>

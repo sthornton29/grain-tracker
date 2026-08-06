@@ -11,6 +11,7 @@
 
 import { buildContractSymbol, type Commodity } from '@/lib/hedging'
 import { cropToHedgeCommodity } from '@/lib/contracts'
+import { marketingReferenceContract } from '@/lib/reference-contract'
 import type { BudgetLine, CropAssumption, CropInsurancePolicy } from '@/lib/types'
 
 const r2 = (n: number) => Math.round(n * 100) / 100
@@ -34,18 +35,27 @@ const NEW_CROP_MONTH_ABBR: Record<Commodity, string> = {
 
 /** Barchart symbol for a crop's new-crop benchmark in the budget year, e.g.
  *  Corn 2027 → "ZCZ27", Soybeans → "ZSX27", Wheat → "ZWN27", Cotton → "CTZ27".
- *  These trade well ahead. null for untraded crops. */
-export function budgetContractSymbol(cropName: string | null | undefined, budgetYear: number): string | null {
+ *  These trade well ahead. When `asOf` is passed and the benchmark has already
+ *  expired (budgeting the CURRENT year mid-season), the shared resolver rolls
+ *  to the nearest still-trading month — forward budget years are unaffected.
+ *  null for untraded crops. */
+export function budgetContractSymbol(cropName: string | null | undefined, budgetYear: number, asOf?: Date): string | null {
   const c = cropToHedgeCommodity(cropName)
   if (!c) return null
+  if (asOf) return marketingReferenceContract(cropName, budgetYear, asOf)?.symbol ?? null
   const yy = String(budgetYear % 100).padStart(2, '0')
   return buildContractSymbol(c, `${NEW_CROP_MONTH_ABBR[c]} ${yy}`) || null
 }
 
-export function budgetContractLabel(cropName: string | null | undefined, budgetYear: number): string | null {
+export function budgetContractLabel(cropName: string | null | undefined, budgetYear: number, asOf?: Date): string | null {
   const c = cropToHedgeCommodity(cropName)
   if (!c) return null
   const display = c === 'Chicago Wheat' ? 'Wheat' : c
+  if (asOf) {
+    const ref = marketingReferenceContract(cropName, budgetYear, asOf)
+    if (!ref) return null
+    return `${ref.contractMonth} ${display}`
+  }
   return `${NEW_CROP_MONTH_ABBR[c]} ${String(budgetYear % 100).padStart(2, '0')} ${display}`
 }
 

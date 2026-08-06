@@ -303,7 +303,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
     if (budgetYear === '') return []
     const out = new Set<string>()
     for (const id of activeCropIds) {
-      const sym = budgetContractSymbol(cropById.get(id)?.name, budgetYear)
+      const sym = budgetContractSymbol(cropById.get(id)?.name, budgetYear, new Date())
       if (sym) out.add(sym)
     }
     return Array.from(out)
@@ -361,7 +361,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
       const crop = cropById.get(cropId)
       const isCotton = isCottonName(crop?.name)
       const isDc = crop?.double_crop === true
-      const symbol = budgetContractSymbol(crop?.name, budgetYear)
+      const symbol = budgetContractSymbol(crop?.name, budgetYear, new Date())
       const live = symbol ? livePrices.get(symbol) ?? null : null
       const cropLines = byCrop.get(cropId) ?? []
       const grid = gridFromLines(cropLines)
@@ -423,7 +423,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
         label: liveMode ? (card.symbol ?? 'live') : 'manual',
         live: liveMode,
         title: liveMode
-          ? `${budgetContractLabel(card.crop?.name, budgetYear === '' ? defaultBudgetYear : budgetYear) ?? 'Live futures'}${card.live ? ` as of ${card.live.priceDate ?? '—'}${card.live.stale ? ' (not current)' : ''}` : ' — not quoted'}${card.carrier?.basis ? ' + basis' : ''}`
+          ? `${budgetContractLabel(card.crop?.name, budgetYear === '' ? defaultBudgetYear : budgetYear, new Date()) ?? 'Live futures'}${card.live ? ` as of ${card.live.priceDate ?? '—'}${card.live.stale ? ' (not current)' : ''}` : ' — not quoted'}${card.carrier?.basis ? ' + basis' : ''}`
           : 'Manual price — ↻ in Assumptions restores the live quote',
       }
     }
@@ -501,7 +501,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
         cropping: null,
         acres: null,
         yield_per_acre: null,
-        price_mode: budgetContractSymbol(cropById.get(cropId)?.name, scenario.budget_crop_year) ? 'live' : 'manual',
+        price_mode: budgetContractSymbol(cropById.get(cropId)?.name, scenario.budget_crop_year, new Date()) ? 'live' : 'manual',
         manual_price: null,
         basis: assumption?.assumed_basis != null ? Number(assumption.assumed_basis) : 0,
         cost_per_acre: null,
@@ -1184,7 +1184,7 @@ function CropAssumptionCard({
                 <span
                   className={`text-[10px] rounded-full px-1.5 py-0.5 border ${liveMode ? 'bg-sky-100 text-sky-800 border-sky-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}
                   title={liveMode
-                    ? `${budgetContractLabel(card.crop?.name, year) ?? 'Live futures'}${card.live ? ` as of ${card.live.priceDate ?? '—'}${card.live.stale ? ' (not current)' : ''}` : ' — not quoted'}`
+                    ? `${budgetContractLabel(card.crop?.name, year, new Date()) ?? 'Live futures'}${card.live ? ` as of ${card.live.priceDate ?? '—'}${card.live.stale ? ' (not current)' : ''}` : ' — not quoted'}`
                     : 'Manual price — ↻ restores the live quote'}
                 >
                   {liveMode ? (card.symbol ?? 'live') : 'manual'}

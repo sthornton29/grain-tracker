@@ -1,34 +1,56 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
+import { isCottonCrop } from '@/lib/marketing'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import { EmptyState, theadCls, subtotalRowCls } from '@/components/reports/report-kit'
-import type { ExportPayload } from '@/lib/exports'
+import {
+  YieldRowDetail, useCottonDetailData, buildDetailForPlantings, cottonDetailsByYear,
+  grainDetailExportSection, cottonDetailExportSection,
+} from '@/components/yields-detail'
+import type { ExportPayload, ExportSection } from '@/lib/exports'
 import type {
   Crop, Entity, Farm, Field, FieldPlanting, Landowner, LoadSplit,
 } from '@/lib/types'
 
+// Carries everything the drill-down needs (lib/yield-detail's DetailLoadLike)
+// on top of what the yield math uses — one fetch serves both.
 type LoadRow = {
   id: string
   date: string
   net_weight: number | null
   moisture: number | null
+  test_weight: number | null
   crop_id: string | null
   dry_bushels_override: number | null
   crop_year: number | null
   from_type: string | null
   from_field_id: string | null
+  to_type: string | null
+  to_bin_id: string | null
+  to_buyer_id: string | null
+  truck_id: string | null
+  ticket_number: string | null
+}
+
+type FarmCropAgg = {
+  cropId: string
+  acres: number
+  dryBu: number
+  cropName: string
+  /** The constituent (harvest-included) plantings the numbers rolled up from. */
+  plantings: FieldPlanting[]
 }
 
 type FarmAgg = {
   farmName: string
   fsaNumber: string | null
-  byCrop: Map<string, { acres: number; dryBu: number; cropName: string }>
+  byCrop: Map<string, FarmCropAgg>
 }
 
 type LandownerGroup = {
@@ -57,6 +79,10 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
   const [landowners, setLandowners] = useState<Landowner[]>([])
+  // Light name lookups (id + name only) for the drill-down's load list.
+  const [trucks, setTrucks] = useState<Array<{ id: string; name_or_number: string }>>([])
+  const [bins, setBins] = useState<Array<{ id: string; name_or_number: string }>>([])
+  const [buyers, setBuyers] = useState<Array<{ id: string; name: string }>>([])
   const [loading, setLoading] = useState(true)
 
   // Filters persist across visits; default the crop year to the current year.
@@ -67,15 +93,18 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [cr, en, fa, fi, pl, lo, sp, lan] = await Promise.all([
+      const [cr, en, fa, fi, pl, lo, sp, lan, tr, bi, bu] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('*'),
         supabase.from('fields').select('*'),
         supabase.from('field_plantings').select('*'),
-        supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id'),
+        supabase.from('loads').select('id, date, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, ticket_number'),
         supabase.from('load_splits').select('*'),
         supabase.from('landowners').select('*').order('name'),
+        supabase.from('trucks').select('id, name_or_number').order('name_or_number'),
+        supabase.from('bins').select('id, name_or_number').order('name_or_number'),
+        supabase.from('buyers').select('id, name').order('name'),
       ])
       setCrops((cr.data as Crop[]) || [])
       setEntities((en.data as Entity[]) || [])
@@ -85,6 +114,9 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
       setLoads((lo.data as LoadRow[]) || [])
       setSplits((sp.data as LoadSplit[]) || [])
       setLandowners((lan.data as Landowner[]) || [])
+      setTrucks((tr.data as Array<{ id: string; name_or_number: string }>) || [])
+      setBins((bi.data as Array<{ id: string; name_or_number: string }>) || [])
+      setBuyers((bu.data as Array<{ id: string; name: string }>) || [])
       setLoading(false)
     })()
   }, [supabase])
@@ -106,6 +138,31 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
   )
   const dryBuFor = (fieldId: string, cropId2: string, year: number) =>
     aggByKey.get(`${fieldId}|${cropId2}|${year}`)?.dryBu ?? 0
+
+  // ---- Drill-down detail --------------------------------------------------
+  // One open detail at a time (a farm × crop row inside a landowner group);
+  // any filter change closes it.
+  const [openDetail, setOpenDetail] = useState<{ ownerKey: string; farmName: string; cropId: string } | null>(null)
+  useEffect(() => { setOpenDetail(null) }, [cropYear, cropId, entityId, landownerId])
+  // Cotton sources load lazily the first time a cotton row's detail opens.
+  const cottonDetail = useCottonDetailData(supabase)
+  // Mirror fieldCropAggregates' cropYear option above: the drill-down must see
+  // exactly the loads the row's dry bushels came from — no more, no less.
+  const detailLoads = useMemo(
+    () => (cropYear === '' ? loads : loads.filter((l) => l.crop_year === cropYear)),
+    [loads, cropYear],
+  )
+  const detailLookups = useMemo(() => ({
+    fieldNameById: new Map(fields.map((f) => [f.id, f.name_or_number])),
+    truckNameById: new Map(trucks.map((t) => [t.id, t.name_or_number])),
+    binNameById: new Map(bins.map((b) => [b.id, b.name_or_number])),
+    buyerNameById: new Map(buyers.map((b) => [b.id, b.name])),
+  }), [fields, trucks, bins, buyers])
+  function toggleDetail(ownerKey: string, farmName: string, t: FarmCropAgg) {
+    const isOpen = openDetail?.ownerKey === ownerKey && openDetail.farmName === farmName && openDetail.cropId === t.cropId
+    setOpenDetail(isOpen ? null : { ownerKey, farmName, cropId: t.cropId })
+    if (!isOpen && isCottonCrop(t.cropName)) cottonDetail.ensure()
+  }
 
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings(
@@ -191,9 +248,10 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
         }
         group.farms.push(farmAgg)
       }
-      const farmCropTotal = farmAgg.byCrop.get(p.crop_id) ?? { acres: 0, dryBu: 0, cropName }
+      const farmCropTotal = farmAgg.byCrop.get(p.crop_id) ?? { cropId: p.crop_id, acres: 0, dryBu: 0, cropName, plantings: [] }
       farmCropTotal.acres += acres
       farmCropTotal.dryBu += dryBu
+      farmCropTotal.plantings.push(p)
       farmAgg.byCrop.set(p.crop_id, farmCropTotal)
 
       const ownerCropTotal = group.byCrop.get(p.crop_id) ?? { acres: 0, dryBu: 0, cropName }
@@ -239,7 +297,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
     // Real number (formatted to 1 dec by the column), or '—' when there are no acres.
     const yld = (acres: number, dryBu: number): number | string => (acres > 0 ? dryBu / acres : '—')
 
-    const sections = groups.map((g) => {
+    const sections: ExportSection[] = groups.map((g) => {
       const rows: Array<Array<string | number | null>> = []
       const rowMeta: NonNullable<ExportPayload['sections'][number]['rowMeta']> = []
 
@@ -270,6 +328,27 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
       }
     })
 
+    // While a drill-down is open, its load list (or cotton numbers) rides along
+    // as one extra section.
+    if (openDetail) {
+      const g = groups.find((x) => x.key === openDetail.ownerKey)
+      const f = g?.farms.find((x) => x.farmName === openDetail.farmName)
+      const t = f?.byCrop.get(openDetail.cropId)
+      if (g && f && t) {
+        const yearLabel = cropYear === '' ? 'all crop years' : String(cropYear)
+        const title = `Load Detail — ${g.landownerName} · ${f.farmName} · ${t.cropName} · ${yearLabel}`
+        if (isCottonCrop(t.cropName)) {
+          if (cottonDetail.data) {
+            const details = cottonDetailsByYear(t.plantings, cottonDetail.data)
+            sections.push(cottonDetailExportSection({ title, details, showYear: details.length > 1 }))
+          }
+        } else {
+          const detail = buildDetailForPlantings({ plantings: t.plantings, loads: detailLoads, splits, cropById })
+          sections.push(grainDetailExportSection({ title, detailLoads: detail.loads, lookups: detailLookups }))
+        }
+      }
+    }
+
     return {
       title: 'Yields by Landowner',
       filters: filtersLabel(),
@@ -283,7 +362,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groups, cropYear, cropId, entityId, landownerId, viewer, onPayloadChange])
+  }, [groups, cropYear, cropId, entityId, landownerId, viewer, onPayloadChange, openDetail, cottonDetail.data])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   const fmt = (n: number, d = 2) => n.toLocaleString(undefined, { maximumFractionDigits: d })
@@ -342,6 +421,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
                   <table className="min-w-full text-sm">
                     <thead className={theadCls}>
                       <tr>
+                        <th className="w-5"></th>
                         <th className="text-left pr-4 font-medium">Crop</th>
                         <th className="text-right pr-4 font-medium">Acres</th>
                         <th className="text-right pr-4 font-medium">Dry bu</th>
@@ -349,14 +429,44 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
                       </tr>
                     </thead>
                     <tbody>
-                      {[...f.byCrop.values()].map((t) => (
-                        <tr key={t.cropName} className="border-t border-slate-100">
-                          <td className="pr-4 py-1 font-medium">{t.cropName}</td>
-                          <td className="pr-4 py-1 text-right font-mono tabular-nums">{fmt(t.acres)}</td>
-                          <td className="pr-4 py-1 text-right font-mono tabular-nums">{fmt(t.dryBu)}</td>
-                          <td className="pr-4 py-1 text-right font-mono tabular-nums">{t.acres > 0 ? (t.dryBu / t.acres).toFixed(1) : '—'}</td>
-                        </tr>
-                      ))}
+                      {[...f.byCrop.values()].map((t) => {
+                        const detailOpen = openDetail?.ownerKey === g.key
+                          && openDetail.farmName === f.farmName
+                          && openDetail.cropId === t.cropId
+                        return (
+                          <Fragment key={t.cropId}>
+                            <tr
+                              className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+                              onClick={(e) => {
+                                if ((e.target as HTMLElement).closest('button, a')) return
+                                toggleDetail(g.key, f.farmName, t)
+                              }}
+                            >
+                              <td className="pr-2 py-1 text-slate-400">{detailOpen ? '▾' : '▸'}</td>
+                              <td className="pr-4 py-1 font-medium">{t.cropName}</td>
+                              <td className="pr-4 py-1 text-right font-mono tabular-nums">{fmt(t.acres)}</td>
+                              <td className="pr-4 py-1 text-right font-mono tabular-nums">{fmt(t.dryBu)}</td>
+                              <td className="pr-4 py-1 text-right font-mono tabular-nums">{t.acres > 0 ? (t.dryBu / t.acres).toFixed(1) : '—'}</td>
+                            </tr>
+                            {detailOpen && (
+                              <tr className="bg-slate-50">
+                                <td colSpan={5} className="px-2 py-3">
+                                  <YieldRowDetail
+                                    plantings={t.plantings}
+                                    loads={detailLoads}
+                                    splits={splits}
+                                    cropById={cropById}
+                                    lookups={detailLookups}
+                                    allowLoadLinks={!viewer.isViewer}
+                                    perFieldBreakdown
+                                    cotton={isCottonCrop(t.cropName) ? cottonDetail : null}
+                                  />
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>
