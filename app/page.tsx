@@ -30,7 +30,7 @@ export default async function Home() {
 
     if (role === 'owner') {
       // Head counts only — RLS scopes them to the org. Shown while any of the
-      // setup basics are missing; a going concern (Turnrow) never sees this.
+      // setup basics are missing; an established operation never sees this.
       const [en, fa, fi, lo] = await Promise.all([
         supabase.from('entities').select('id', { count: 'exact', head: true }),
         supabase.from('farms').select('id', { count: 'exact', head: true }),

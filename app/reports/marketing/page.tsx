@@ -355,7 +355,7 @@ export default function MarketingPage() {
 
   // Physical cotton marketing summary per cotton crop id — attributed to the
   // entity filter: own-name rows whole, marketing-agent/null rows flow down at
-  // the entity's cotton acre share (Turnrow markets the cotton too).
+  // the entity's cotton acre share (agent-held cotton flows down too).
   const cottonPhysical = useMemo(() => {
     const m = new Map<string, CottonPhysicalSummary>()
     if (!cottonPhysicalRaw) return m

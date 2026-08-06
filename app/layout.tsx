@@ -15,7 +15,7 @@ const display = Montserrat({ subsets: ['latin'], weight: ['600', '700'], variabl
 
 export const metadata: Metadata = {
   title: 'Turnrow',
-  description: 'Turnrow — farm operations for Turnrow Farm',
+  description: 'Turnrow — farm operations, from the field through storage, contracts, and settlement',
   manifest: '/manifest.json',
   appleWebApp: {
     capable: true,
