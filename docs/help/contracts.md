@@ -25,6 +25,8 @@ When you later set the open leg — an HTA gets its basis, or a basis contract g
 
 ## What the controls do
 
+- **Filters stay put** — entity, crop, crop year, type, pricing, and the hide toggles are remembered: leave the page and come back and your last view is waiting. **Clear filters** (shown whenever any filter is on) resets to everything.
+
 - **Date sold** — an optional date on each contract recording when you made the sale. Informational: it prints on the contract page and exports, and doesn't change any delivery or payment math.
 
 - **Filters** narrow by type, pricing status, crop year, and more; **Hide completed** tucks away finished contracts.

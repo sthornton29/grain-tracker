@@ -1,4 +1,6 @@
 import Link from 'next/link'
+import { Suspense } from 'react'
+import ContractFilterPersistence from '@/components/contract-filter-persistence'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
@@ -150,6 +152,7 @@ export default async function ContractsPage({
   const sortDir: 'asc' | 'desc' = searchParams.dir === 'desc' ? 'desc' : 'asc'
   const hideCompleted = searchParams.hide_completed === '1'
   const hideFuture = searchParams.hide_future === '1'
+  const anyFilters = Boolean(entityId || cropFilter || typeFilter || pricingFilter || cropYear != null || hideCompleted || hideFuture)
 
   const [contractsRes, loads, cropsRes, fieldsRes, farmsRes, entitiesRes, linesRes, plantingsRes] = await Promise.all([
     supabase
@@ -373,6 +376,9 @@ export default async function ContractsPage({
 
   return (
     <div className="space-y-4">
+      <Suspense fallback={null}>
+        <ContractFilterPersistence />
+      </Suspense>
       <h1 className="text-2xl font-bold">Contract Tracker</h1>
       <div className="flex items-end gap-3 flex-wrap">
         <Link
@@ -407,7 +413,18 @@ export default async function ContractsPage({
             <option value="awaiting_basis">Awaiting basis</option>
             <option value="awaiting_futures">Awaiting futures</option>
           </select>
+          {/* Keep the toggle/sort state through an Apply — a GET form drops
+              params its inputs don't carry. */}
+          {hideCompleted && <input type="hidden" name="hide_completed" value="1" />}
+          {hideFuture && <input type="hidden" name="hide_future" value="1" />}
+          {sortKey && <input type="hidden" name="sort" value={sortKey} />}
+          {sortKey && <input type="hidden" name="dir" value={sortDir} />}
           <button className="rounded-lg bg-slate-700 text-white px-3 py-2 text-sm">Apply</button>
+          {anyFilters && (
+            <Link href="/contracts" className="rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50">
+              Clear filters
+            </Link>
+          )}
         </form>
       </div>
 
