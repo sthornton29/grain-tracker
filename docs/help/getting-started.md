@@ -32,6 +32,7 @@ That order matters: farms need an entity, fields need a farm, and loads need fie
 - **Do I have to finish the checklist before using the app?** No. Any page works at any time — the checklist is a guide, not a gate.
 - **What's a planting?** A field, a crop, and a season together — for example, Field 12, corn, 2026. Plantings are what yields, insurance, and marketing reports are built on, so enter them once planting is done each spring.
 - **I farm under several companies. How do those fit?** Each one is an entity. Farms belong to entities, and most reports can be filtered by entity, so keeping them straight up front pays off later.
+- **I farm under just one company. Do I have to keep picking it?** No. With a single entity, Turnrow fills it in for you everywhere — entity dropdowns disappear from forms and imports until the day you add a second entity.
 - **Can more people on my crew log in?** Yes. Under Settings → Users & Modules an owner can invite people by email and set what they're allowed to see.
 
 ## If something looks wrong

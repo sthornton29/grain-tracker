@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-08-06 · version 0.1.0 · build 699204e. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-08-06 · version 0.1.0 · build 813b79b. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -102,7 +102,7 @@ When you later set the open leg — an HTA gets its basis, or a basis contract g
 
 - **Filters** narrow by type, pricing status, crop year, and more; **Hide completed** tucks away finished contracts.
 - **Warnings** appear at the top for contracts approaching risk: an HTA or basis contract with pricing still open whose contract month's first notice day is within 30 days (or already past), and contracts whose delivery window ends within 14 days. Both warnings stop once a contract is completed — marked complete or fully delivered — since there's nothing left to price or deliver.
-- **Entity** on a contract is optional. Leave it blank when the contract belongs to the operation as a whole. Pick an entity when one company holds the contract in its own name. If your operation markets everyone's grain through a single marketing company, put that company on the contract — entity-filtered reports then share its bushels out to the farming entities by their share of the acres.
+- **Entity** on a contract is optional. If your operation has one entity, Turnrow fills it in for you — you'll see it on the form but won't need to touch it. With more than one entity, leave it blank when the contract belongs to the operation as a whole, or pick an entity when one company holds the contract in its own name. If your operation markets everyone's grain through a single marketing company, put that company on the contract — entity-filtered reports then share its bushels out to the farming entities by their share of the acres.
 - **Orphan-load warnings** flag delivered loads that aren't tied to any contract, so bushels don't slip through unpriced.
 
 ## How the numbers work
@@ -265,6 +265,7 @@ That order matters: farms need an entity, fields need a farm, and loads need fie
 - **Do I have to finish the checklist before using the app?** No. Any page works at any time — the checklist is a guide, not a gate.
 - **What's a planting?** A field, a crop, and a season together — for example, Field 12, corn, 2026. Plantings are what yields, insurance, and marketing reports are built on, so enter them once planting is done each spring.
 - **I farm under several companies. How do those fit?** Each one is an entity. Farms belong to entities, and most reports can be filtered by entity, so keeping them straight up front pays off later.
+- **I farm under just one company. Do I have to keep picking it?** No. With a single entity, Turnrow fills it in for you everywhere — entity dropdowns disappear from forms and imports until the day you add a second entity.
 - **Can more people on my crew log in?** Yes. Under Settings → Users & Modules an owner can invite people by email and set what they're allowed to see.
 
 ## If something looks wrong
@@ -1076,7 +1077,7 @@ Work top-down the first time: entities, then farms, then fields, then crops and 
 ## What the controls do
 
 - **Entities** — your legal entities and the counties they operate in, plus each entity's FSA eligible-persons count for payment limits (set once; the total ARC/PLC cap is persons times the program year's per-person limit). An entity can also be marked a **marketing agent**: one entity that holds the contracts and hedge account on behalf of the whole operation. In entity-filtered reports, the agent's marketing flows down to each farming entity by that entity's share of the crop's planted acres — so income lands where the grain was grown. A farming entity that markets in its own name keeps those contracts whole.
-- **Farms** — each farm's entity, county, **FSA number**, and landowner, plus the **share-rent flag and landlord share percentage** that drive the Share Rent Report. The spreadsheet import takes all of it — entity and landowner match by name against what already exists, counties match by **name plus two-letter state** together — the state column is required whenever a county is given, and "Lawrence County" or plain "Lawrence" both match — and share rent comes in as yes/no with the landlord percent. Deleting a farm removes its fields too.
+- **Farms** — each farm's entity, county, **FSA number**, and landowner, plus the **share-rent flag and landlord share percentage** that drive the Share Rent Report. The spreadsheet import takes all of it — entity and landowner match by name against what already exists, counties match by **name plus two-letter state** together — the state column is required whenever a county is given, and "Lawrence County" or plain "Lawrence" both match — and share rent comes in as yes/no with the landlord percent. If your operation has one entity, Turnrow fills it in for you: the entity dropdown disappears from the farm form and the spreadsheet can leave the entity column out entirely. Deleting a farm removes its fields too.
 - **Fields** — total and irrigated acres (dryland is derived), county, and each field's plantings. Import by CSV or by **AI upload** of a document. A farm filter narrows long lists.
 - **Crops** — each crop's base moisture and pounds per bushel (the standards dry-bushel math uses), its **harvest category** (fall or spring — spring-harvest crops like wheat are what make a later planting count as double-crop), and the double-crop designation. This page also holds **"Physical Sales Complete for the Year?"**: when a crop year's grain or cotton is fully sold, mark it here — shrink and small leftovers mean the sold-versus-production numbers rarely land on exactly zero, so this checkbox is how you tell Turnrow the year's selling is truly finished. The same checkboxes sit at the bottom of the Marketing Dashboard, so you can flip it from either place.
 - **Plantings** — what's planted where, per field, crop, and season, with one or more varieties per planting. Import by CSV or **AI upload**; both recognize variety-name spellings that differ only by brand prefix and ask you whether to link or keep them separate, so "DG 3644" and "Dyna-Gro 3644" don't become two varieties.

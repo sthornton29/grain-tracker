@@ -1192,3 +1192,100 @@ describe('runImport — buyer with multiple delivery locations (child detailColu
     expect(locs[0]).toMatchObject({ name: 'South Scale', address: '400 Depot St', buyer_id: 'b1' })
   })
 })
+
+// ---------------------------------------------------------------------------
+// fk.fallbackId — the single-entity auto-assign seam feeding CSV imports:
+// a one-entity operation imports without an entity column at all; multi-entity
+// operations (no fallback) keep the required-column row error.
+// ---------------------------------------------------------------------------
+
+describe('runImport — fk.fallbackId (single-entity auto-assign)', () => {
+  const farmColumns = (fallbackId: string | null): ImportConfig => ({
+    tableName: 'farms',
+    columns: [
+      { key: 'name', label: 'farm', required: true },
+      {
+        key: 'entity_id',
+        label: 'entity',
+        required: true,
+        fk: { table: 'entities', matchColumn: 'name', fallbackId },
+      },
+    ],
+    uniqueKey: 'name',
+  })
+
+  it('a single-entity operation imports with NO entity column — rows stamp the only entity', async () => {
+    const { client, inserted } = makeFakeClient({
+      entities: [{ id: 'E1', name: 'Clearwater Farms LLC' }],
+      farms: [],
+    })
+    const headers = ['farm'] // entity column entirely absent from the file
+    const config = farmColumns('E1')
+    const mapping = autoMapHeaders(headers, config.columns)
+    const res = await runImport(client, config, [['Home Place'], ['River Bottom']], headers, mapping, { mode: 'add' })
+    expect(res.failed).toEqual([])
+    expect(res.added).toBe(2)
+    expect(inserted.farms[0].entity_id).toBe('E1')
+    expect(inserted.farms[1].entity_id).toBe('E1')
+  })
+
+  it('a blank entity cell resolves to the fallback; a filled cell still matches by name', async () => {
+    const { client, inserted } = makeFakeClient({
+      entities: [{ id: 'E1', name: 'Clearwater Farms LLC' }],
+      farms: [],
+    })
+    const headers = ['farm', 'entity']
+    const config = farmColumns('E1')
+    const mapping = autoMapHeaders(headers, config.columns)
+    const res = await runImport(
+      client, config,
+      [['Home Place', ''], ['River Bottom', 'Clearwater Farms LLC']],
+      headers, mapping, { mode: 'add' },
+    )
+    expect(res.failed).toEqual([])
+    expect(inserted.farms[0].entity_id).toBe('E1')
+    expect(inserted.farms[1].entity_id).toBe('E1')
+  })
+
+  it('a multi-entity operation (no fallback) keeps the clear required-row error', async () => {
+    const { client, inserted } = makeFakeClient({
+      entities: [
+        { id: 'E1', name: 'Clearwater Farms LLC' },
+        { id: 'E2', name: 'Two Creeks Land Co LLC' },
+      ],
+      farms: [],
+    })
+    const headers = ['farm']
+    const config = farmColumns(null) // defaultEntityId over 2 entities → null
+    const mapping = autoMapHeaders(headers, config.columns)
+    const res = await runImport(client, config, [['Home Place']], headers, mapping, { mode: 'add' })
+    expect(res.added).toBe(0)
+    expect(res.failed).toHaveLength(1)
+    expect(res.failed[0].reason).toBe('entity is required')
+    expect(inserted.farms ?? []).toHaveLength(0)
+  })
+
+  it('sync mode: a blank cell with a fallback never overwrites the stored entity', async () => {
+    const { client, updates } = makeFakeClient({
+      entities: [{ id: 'E1', name: 'Clearwater Farms LLC' }],
+      farms: [{ id: 'f1', name: 'Home Place', entity_id: 'E-legacy', notes: 'old' }],
+    })
+    const config: ImportConfig = {
+      tableName: 'farms',
+      columns: [
+        { key: 'name', label: 'farm', required: true },
+        { key: 'entity_id', label: 'entity', required: true, fk: { table: 'entities', matchColumn: 'name', fallbackId: 'E1' } },
+        { key: 'notes', label: 'notes' },
+      ],
+      uniqueKey: 'name',
+    }
+    const headers = ['farm', 'notes']
+    const mapping = autoMapHeaders(headers, config.columns)
+    const res = await runImport(client, config, [['Home Place', 'updated note']], headers, mapping, { mode: 'sync' })
+    expect(res.failed).toEqual([])
+    expect(res.updated).toBe(1)
+    expect(updates).toHaveLength(1)
+    expect(updates[0].patch).toHaveProperty('notes', 'updated note')
+    expect(updates[0].patch).not.toHaveProperty('entity_id')
+  })
+})

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import EntitySelect from '@/components/entity-select'
 import { computeBushels } from '@/lib/shrink'
 import type {
   Bin, BinSite, Crop, Entity, County, EntityCounty, BinInventoryAdjustment,
@@ -316,14 +317,12 @@ export default function BinSitesPage() {
             placeholder="Site name"
             className={inputCls}
           />
-          <select
+          <EntitySelect
+            entities={entities}
             value={siteForm.entityId}
-            onChange={(e) => setSiteForm({ ...siteForm, entityId: e.target.value, countyId: '' })}
+            onChange={(id) => setSiteForm({ ...siteForm, entityId: id, countyId: '' })}
             className={inputCls}
-          >
-            <option value="">— entity —</option>
-            {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-          </select>
+          />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <select
@@ -396,14 +395,12 @@ export default function BinSitesPage() {
                       onChange={(e) => setEditSiteForm({ ...editSiteForm, name: e.target.value })}
                       className={inputCls}
                     />
-                    <select
+                    <EntitySelect
+                      entities={entities}
                       value={editSiteForm.entityId}
-                      onChange={(e) => setEditSiteForm({ ...editSiteForm, entityId: e.target.value, countyId: '' })}
+                      onChange={(id) => setEditSiteForm({ ...editSiteForm, entityId: id, countyId: '' })}
                       className={inputCls}
-                    >
-                      <option value="">— entity —</option>
-                      {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-                    </select>
+                    />
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     <select

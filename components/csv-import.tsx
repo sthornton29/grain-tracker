@@ -40,7 +40,9 @@ type Props = {
 function downloadTemplate(config: ImportConfig) {
   const headers = config.columns.map((c) => {
     const base = c.label ?? c.key
-    return c.required ? `${base}*` : base
+    // A column with an auto-assign fallback (single-entity operations) isn't
+    // actually required of the file, so it loses the star.
+    return c.required && !c.fk?.fallbackId ? `${base}*` : base
   })
   const csv = headers.join(',') + '\n'
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
@@ -167,7 +169,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
       if (isExcelFile(file)) {
         const XLSX = await import('xlsx')
         const wb = XLSX.read(new Uint8Array(await file.arrayBuffer()), { type: 'array' })
-        const required = config.columns.filter((c) => c.required).map((c) => c.key)
+        const required = config.columns.filter((c) => c.required && !c.fk?.fallbackId).map((c) => c.key)
         let chosen = wb.SheetNames[0]
         for (const name of wb.SheetNames) {
           const sheet = wb.Sheets[name]
@@ -268,8 +270,10 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
     return m
   }, [mapping])
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
+  // A required column is satisfied by a mapped header OR an auto-assign
+  // fallback (a single-entity operation importing without an entity column).
   const requiredOk = config.columns
-    .filter((c) => c.required)
+    .filter((c) => c.required && !c.fk?.fallbackId)
     .every((c) => mapping[c.key])
 
   return (
@@ -311,7 +315,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
                 <span key={c.key}>
                   {i > 0 && ', '}
                   <code className="bg-slate-100 px-1 rounded">{c.label ?? c.key}</code>
-                  {c.required && <span className="text-red-600">*</span>}
+                  {c.required && !c.fk?.fallbackId && <span className="text-red-600">*</span>}
                 </span>
               ))}
             </p>
@@ -335,7 +339,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
                   {config.columns.map((c) => (
                     <label key={c.key} className="text-sm flex items-center gap-2">
                       <span className="w-36 shrink-0 text-slate-700">
-                        {c.label ?? c.key}{c.required && <span className="text-red-600">*</span>}
+                        {c.label ?? c.key}{c.required && !c.fk?.fallbackId && <span className="text-red-600">*</span>}
                       </span>
                       <select
                         value={mapping[c.key] ?? ''}

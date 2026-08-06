@@ -3,7 +3,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import EntitySelect from '@/components/entity-select'
 import LandownerPicker from '@/components/landowner-picker'
+import { defaultEntityId } from '@/lib/entity-default'
 import { normalizeCountyName } from '@/lib/fsa-benchmark-file'
 import type { Entity, Farm, County, EntityCounty, Landowner } from '@/lib/types'
 
@@ -204,10 +206,13 @@ export default function FarmsPage() {
         config={{
           tableName: 'farms',
           uniqueKey: 'name',
-          note: 'Entity and landowner match by name against what already exists — import entities and landowners first. Counties match by name + state together (two-letter state code, e.g. AL), so a "Lawrence" resolves to the right state’s Lawrence County. Share rent: yes/no, with the landlord share as a percent (e.g. 33.33) when yes.',
+          note: 'Entity and landowner match by name against what already exists — import entities and landowners first. If your operation has one entity, you can leave the entity column out — it’s filled in for you. Counties match by name + state together (two-letter state code, e.g. AL), so a "Lawrence" resolves to the right state’s Lawrence County. Share rent: yes/no, with the landlord share as a percent (e.g. 33.33) when yes.',
           columns: [
             { key: 'name', required: true },
-            { key: 'entity_id', label: 'entity', fk: { table: 'entities', matchColumn: 'name' } },
+            // fallbackId auto-assigns the lone entity for single-entity
+            // operations (column may be omitted); multi-entity operations
+            // still get the required-column row error.
+            { key: 'entity_id', label: 'entity', required: true, fk: { table: 'entities', matchColumn: 'name', fallbackId: defaultEntityId(entities) } },
             // Lookup-only: pairs with the county column below; never written
             // to the farm row (farms carry county_id, not a state).
             { key: 'state_code', label: 'state', virtual: true },
@@ -251,10 +256,7 @@ export default function FarmsPage() {
             placeholder="Farm name"
             className={inputCls}
           />
-          <select value={entityId} onChange={(e) => onEntityChange(e.target.value)} className={inputCls}>
-            <option value="">— entity —</option>
-            {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-          </select>
+          <EntitySelect entities={entities} value={entityId} onChange={onEntityChange} className={inputCls} />
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-[1fr_160px_auto] gap-2">
           {entityId && createCountyList.length === 1 ? (
@@ -379,14 +381,12 @@ export default function FarmsPage() {
                     onChange={(e) => setEditName(e.target.value)}
                     className={inputCls}
                   />
-                  <select
+                  <EntitySelect
+                    entities={entities}
                     value={editEntityId}
-                    onChange={(e) => onEditEntityChange(e.target.value)}
+                    onChange={onEditEntityChange}
                     className={inputCls}
-                  >
-                    <option value="">— entity —</option>
-                    {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-                  </select>
+                  />
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-[1fr_160px_auto_auto] gap-2 items-center">
                   {editEntityId && editCountyList.length === 1 ? (

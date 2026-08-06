@@ -8,6 +8,8 @@ import { fetchAllCounties } from '@/lib/counties'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import EntityFilter from '@/components/entity-filter'
+import EntitySelect from '@/components/entity-select'
+import { defaultEntityId } from '@/lib/entity-default'
 import {
   ELECTION_LABEL, COMMON_PROGRAMS, effectiveReferencePrice,
   computeArcCoFlatPayment, expectedArcPlcDate, paymentLimitTotal,
@@ -558,7 +560,7 @@ export default function GovernmentPaymentsSettingsPage() {
 
       {/* Other payments */}
       <Section id="other" title="Other USDA Payments" open={open === 'other'} onToggle={() => setOpen(open === 'other' ? '' : 'other')}>
-        <AddOtherPaymentForm entities={entityList} crops={crops} farms={entityFarms} cropYear={cropYear} defaultEntityId={entityFilter} onSaved={refresh} onErr={setErr} />
+        <AddOtherPaymentForm entities={entityList} allEntities={entities} crops={crops} farms={entityFarms} cropYear={cropYear} seedEntityId={entityFilter} onSaved={refresh} onErr={setErr} />
         {(() => { const visibleOther = entityFilter ? otherPayments.filter((p) => p.entity_id === entityFilter) : otherPayments; return (
         <div className="overflow-x-auto">
           <table className="min-w-full text-sm">
@@ -1243,13 +1245,13 @@ function BenchmarkRow({ row, commodity, counties, cropYear, defaultPrice, onSave
   )
 }
 
-function AddOtherPaymentForm({ entities, crops, farms, cropYear, defaultEntityId = '', onSaved, onErr }: { entities: Entity[]; crops: Crop[]; farms: Farm[]; cropYear: number; defaultEntityId?: string; onSaved: () => void; onErr: (s: string) => void }) {
+function AddOtherPaymentForm({ entities, allEntities, crops, farms, cropYear, seedEntityId = '', onSaved, onErr }: { entities: Entity[]; allEntities: Entity[]; crops: Crop[]; farms: Farm[]; cropYear: number; seedEntityId?: string; onSaved: () => void; onErr: (s: string) => void }) {
   const supabase = useMemo(() => createClient(), [])
   const [program, setProgram] = useState(''); const [customProgram, setCustomProgram] = useState('')
-  const [entityId, setEntityId] = useState(defaultEntityId); const [cropId, setCropId] = useState(''); const [farmId, setFarmId] = useState('')
+  const [entityId, setEntityId] = useState(seedEntityId); const [cropId, setCropId] = useState(''); const [farmId, setFarmId] = useState('')
   const [amount, setAmount] = useState(''); const [date, setDate] = useState(''); const [status, setStatus] = useState<'projected' | 'confirmed' | 'received'>('projected'); const [year, setYear] = useState(String(cropYear))
   useEffect(() => { setYear(String(cropYear)) }, [cropYear])
-  useEffect(() => { setEntityId(defaultEntityId) }, [defaultEntityId])
+  useEffect(() => { setEntityId(seedEntityId) }, [seedEntityId])
   const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm bg-white'
 
   async function add() {
@@ -1261,7 +1263,7 @@ function AddOtherPaymentForm({ entities, crops, farms, cropYear, defaultEntityId
       payment_date: date || null, payment_status: status,
     })
     if (error) { onErr(error.message); return }
-    setProgram(''); setCustomProgram(''); setEntityId(defaultEntityId); setCropId(''); setFarmId(''); setAmount(''); setDate(''); setStatus('projected')
+    setProgram(''); setCustomProgram(''); setEntityId(seedEntityId); setCropId(''); setFarmId(''); setAmount(''); setDate(''); setStatus('projected')
     onSaved()
   }
   return (
@@ -1273,7 +1275,15 @@ function AddOtherPaymentForm({ entities, crops, farms, cropYear, defaultEntityId
       </select>
       {program === 'Other' && <input placeholder="Program name" value={customProgram} onChange={(e) => setCustomProgram(e.target.value)} className={inputCls} />}
       <input type="number" placeholder="Year" value={year} onChange={(e) => setYear(e.target.value)} className={`${inputCls} w-20`} />
-      <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}><option value="">Entity…</option>{entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
+      {/* Single-entity operation → EntitySelect auto-stamps the only entity and
+          renders nothing. The decision keys off allEntities (the org's full
+          list) — the entities prop narrows to the page's entity filter, and a
+          multi-entity operation must keep its filter-scoped dropdown exactly. */}
+      {defaultEntityId(allEntities) ? (
+        <EntitySelect entities={allEntities} value={entityId} onChange={setEntityId} className={inputCls} />
+      ) : (
+        <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}><option value="">Entity…</option>{entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
+      )}
       <select value={cropId} onChange={(e) => setCropId(e.target.value)} className={inputCls}><option value="">Crop (opt)…</option>{crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
       <select value={farmId} onChange={(e) => setFarmId(e.target.value)} className={inputCls}><option value="">Farm (opt)…</option>{farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}</select>
       <input type="number" step="0.01" placeholder="Amount" value={amount} onChange={(e) => setAmount(e.target.value)} className={`${inputCls} w-28`} />

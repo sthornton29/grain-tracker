@@ -6,7 +6,8 @@
 // helpers to map a saved policy ⇄ form ⇄ insert/update payloads. The settings
 // page and the AI import screen both drive this.
 
-import { useEffect, useMemo } from 'react'
+import { useMemo } from 'react'
+import EntitySelect from '@/components/entity-select'
 import {
   PLAN_TYPES, PLAN_TYPE_LABEL, UNIT_STRUCTURES, UNIT_STRUCTURE_LABEL,
   PRACTICES, PRACTICE_LABEL, ECO_TRIGGER_LEVELS, guaranteePriceFor, projectedPriceFromEstimates,
@@ -339,15 +340,6 @@ export function PolicyFields({
     onChange({ ...value, [key]: v })
   }
 
-  // Single-entity operations should never have to pick: auto-assign the only
-  // entity so the (hidden) selector is always satisfied and non-blocking.
-  useEffect(() => {
-    if (entities.length === 1 && value.entity_id !== entities[0].id) {
-      onChange({ ...value, entity_id: entities[0].id })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [entities, value.entity_id])
-
   // Resolved SCO trigger for a given crop year (from program_year_config).
   function triggerForYear(yearStr: string): number {
     const yr = Number(yearStr)
@@ -410,24 +402,22 @@ export function PolicyFields({
           </select>
         </label>
         {/* Crop insurance is carried per entity. Multi-entity operations must
-            pick; single-entity ones are auto-assigned (selector shown disabled
-            and pre-filled) and never blocked. */}
-        {entities.length > 1 ? (
+            pick; single-entity ones are auto-assigned through EntitySelect
+            (shown pre-filled and disabled — seeing the entity on a policy aids
+            confidence) and never blocked. */}
+        {entities.length > 0 && (
           <label className={labelCls}>
-            <span className={spanCls}>Entity *</span>
-            <select value={value.entity_id} onChange={(e) => set('entity_id', e.target.value)} className={inputCls}>
-              <option value="">— select entity —</option>
-              {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-            </select>
+            <span className={spanCls}>Entity{entities.length > 1 ? ' *' : ''}</span>
+            <EntitySelect
+              entities={entities}
+              value={value.entity_id}
+              onChange={(id) => set('entity_id', id)}
+              className={`${inputCls} disabled:bg-slate-50 disabled:text-slate-600`}
+              placeholder="— select entity —"
+              showWhenSingle
+            />
           </label>
-        ) : entities.length === 1 ? (
-          <label className={labelCls}>
-            <span className={spanCls}>Entity</span>
-            <select value={entities[0].id} disabled className={`${inputCls} bg-slate-50 text-slate-600`}>
-              <option value={entities[0].id}>{entities[0].name}</option>
-            </select>
-          </label>
-        ) : null}
+        )}
         <label className={labelCls}>
           <span className={spanCls}>Policy #</span>
           <input value={value.policy_number} onChange={(e) => set('policy_number', e.target.value)} className={inputCls} />

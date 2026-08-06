@@ -22,6 +22,8 @@ import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import { BuyerPicker } from '@/components/buyer-location-pickers'
+import EntitySelect from '@/components/entity-select'
+import { resolveUploadEntityId } from '@/lib/crop-insurance'
 import { parseDocument } from '@/lib/pdf-upload'
 import { findBestMatch } from '@/lib/fuzzy'
 import { formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
@@ -83,7 +85,9 @@ export default function MarketingDocImport(props: Props) {
   const [src, setSrc] = useState<DocumentSource | null>(null)
   const [result, setResult] = useState<CottonMarketingExtraction | null>(null)
 
-  const singleEntityId = props.entities.length === 1 ? props.entities[0].id : ''
+  // One marketing document belongs to one entity — resolved through the shared
+  // upload seam (single-entity ops auto-assign; derived per render, never cached).
+  const singleEntityId = resolveUploadEntityId({ entities: props.entities, chosen: '' }) ?? ''
 
   async function runParse(source: DocumentSource, category?: CottonMarketingCategory) {
     setBusy(true); setErr(null)
@@ -269,14 +273,9 @@ function ContractReview({ supabase, extracted: x, buyers, contracts, entities, c
         <label className="flex flex-col gap-1">Buyer / merchant / pool
           <BuyerPicker value={f.buyer_id} onChange={(id) => set('buyer_id', id)} buyers={buyers} onCreated={onBuyerCreated} className={inputCls} />
         </label>
-        {entities.length > 1 && (
-          <label className="flex flex-col gap-1">Entity
-            <select value={f.entity_id} onChange={(e) => set('entity_id', e.target.value)} className={inputCls}>
-              <option value="">— entity —</option>
-              {entities.map((en) => <option key={en.id} value={en.id}>{en.name}</option>)}
-            </select>
-          </label>
-        )}
+        <label className="flex flex-col gap-1">Entity
+          <EntitySelect entities={entities} value={f.entity_id} onChange={(id) => set('entity_id', id)} className={inputCls} showWhenSingle />
+        </label>
         <label className="flex flex-col gap-1">Date
           <input type="date" value={f.contract_date} onChange={(e) => set('contract_date', e.target.value)} className={inputCls} />
         </label>
@@ -524,12 +523,9 @@ function LoanReview({ supabase, extracted: x, loans, bales, gradeByBale, disposi
         <label className="flex flex-col gap-1">Base loan rate ($/lb)
           <input type="text" inputMode="decimal" value={f.rate} onChange={(e) => set('rate', e.target.value)} className={inputCls} placeholder="0.5500" />
         </label>
-        {entities.length > 1 && !existing && (
+        {!existing && (
           <label className="flex flex-col gap-1">Entity
-            <select value={f.entity_id} onChange={(e) => set('entity_id', e.target.value)} className={inputCls}>
-              <option value="">— entity —</option>
-              {entities.map((en) => <option key={en.id} value={en.id}>{en.name}</option>)}
-            </select>
+            <EntitySelect entities={entities} value={f.entity_id} onChange={(id) => set('entity_id', id)} className={inputCls} showWhenSingle />
           </label>
         )}
       </div>
