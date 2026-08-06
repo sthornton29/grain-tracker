@@ -31,7 +31,7 @@ When you later set the open leg — an HTA gets its basis, or a basis contract g
 
 - **Filters** narrow by type, pricing status, crop year, and more; **Hide completed** tucks away finished contracts.
 - **Warnings** appear at the top for contracts approaching risk: an HTA or basis contract with pricing still open whose contract month's first notice day is within 30 days (or already past), and contracts whose delivery window ends within 14 days. Both warnings stop once a contract is completed — marked complete or fully delivered — since there's nothing left to price or deliver.
-- **Entity** on a contract is optional. Leave it blank when the contract belongs to the operation as a whole. Pick an entity when one company holds the contract in its own name. If your operation markets everyone's grain through a single marketing company, put that company on the contract — entity-filtered reports then share its bushels out to the farming entities by their share of the acres.
+- **Entity** on a contract is optional. If your operation has one entity, Turnrow fills it in for you — you'll see it on the form but won't need to touch it. With more than one entity, leave it blank when the contract belongs to the operation as a whole, or pick an entity when one company holds the contract in its own name. If your operation markets everyone's grain through a single marketing company, put that company on the contract — entity-filtered reports then share its bushels out to the farming entities by their share of the acres.
 - **Orphan-load warnings** flag delivered loads that aren't tied to any contract, so bushels don't slip through unpriced.
 
 ## How the numbers work

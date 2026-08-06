@@ -14,6 +14,8 @@ import { BuyerPicker } from '@/components/buyer-location-pickers'
 import { formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
 import MarketingDocImport from '@/components/cotton/marketing-doc-import'
 import BaleFileAssign from '@/components/cotton/bale-file-assign'
+import EntitySelect from '@/components/entity-select'
+import { defaultEntityId } from '@/lib/entity-default'
 import {
   buildCottonPhysicalSummary, computeLoanPrincipal, contractPricedCents,
   dispositionBoard, equityOutcome, ldpRateCents, projectBaleHandlingFees,
@@ -169,7 +171,7 @@ export default function CottonMarketingPage() {
     delivery_start: string; delivery_end: string; notes: string
   }
   const emptyContract: ContractForm = {
-    id: null, entity_id: entities.length === 1 ? entities[0].id : '', buyer_id: '', contract_type: 'fixed_price',
+    id: null, entity_id: '', buyer_id: '', contract_type: 'fixed_price',
     contract_number: '', contract_date: todayIso(), commitment_basis: 'bales', committed_bales: '', committed_acres: '',
     price_cents_per_lb: '', basis_cents: '', futures_month: 'DEC 26', delivery_start: '', delivery_end: '', notes: '',
   }
@@ -392,7 +394,7 @@ export default function CottonMarketingPage() {
     if (!confirm(`LDP rate = ${cents(DEFAULT_LOAN_RATE)} loan rate − ${cents(awpV)} AWP = ${cents(r)}/lb\nTotal payment: ${usd(total)}\n\nThese bales become CCC-loan-INELIGIBLE.`)) return
     try {
       const { data, error } = await supabase.from('cotton_ldp_records').insert({
-        entity_id: entities.length === 1 ? entities[0].id : null, crop_year: cropYear,
+        entity_id: defaultEntityId(entities), crop_year: cropYear,
         ldp_date: todayIso(), awp_cents: awpV, ldp_rate_cents: r, total_payment: total, status: 'received',
       }).select('id').single()
       if (error || !data) throw new Error(error?.message ?? 'insert failed')
@@ -470,7 +472,7 @@ export default function CottonMarketingPage() {
       // Replace prior projections wholesale so re-posting never duplicates.
       await supabase.from('cotton_fees').delete().eq('crop_year', cropYear).eq('status', 'projected')
       const { error } = await supabase.from('cotton_fees').insert(projections.map((p) => ({
-        entity_id: entities.length === 1 ? entities[0].id : null, crop_year: cropYear,
+        entity_id: defaultEntityId(entities), crop_year: cropYear,
         fee_type: p.fee_type, basis: p.basis, rate: null, loan_id: p.loan_id ?? null, contract_id: p.contract_id ?? null,
         amount_total: Math.round(p.amount * 100) / 100, status: 'projected', fee_date: todayIso(), notes: p.label,
       })))
@@ -487,7 +489,7 @@ export default function CottonMarketingPage() {
     const date = (prompt('Date (YYYY-MM-DD):', todayIso()) ?? '').trim()
     try {
       const { error } = await supabase.from('cotton_fees').insert({
-        entity_id: entities.length === 1 ? entities[0].id : null, crop_year: cropYear,
+        entity_id: defaultEntityId(entities), crop_year: cropYear,
         fee_type: type, basis: 'flat', amount_total: amount, status: 'actual', fee_date: date || null,
       })
       if (error) throw new Error(error.message)
@@ -694,14 +696,9 @@ export default function CottonMarketingPage() {
                   className={inputCls}
                 />
               </label>
-              {entities.length > 1 && (
-                <label className="flex flex-col gap-1">Entity
-                  <select value={contractForm.entity_id} onChange={(e) => cf('entity_id', e.target.value)} className={inputCls}>
-                    <option value="">— entity —</option>
-                    {entities.map((en) => <option key={en.id} value={en.id}>{en.name}</option>)}
-                  </select>
-                </label>
-              )}
+              <label className="flex flex-col gap-1">Entity
+                <EntitySelect entities={entities} value={contractForm.entity_id} onChange={(id) => cf('entity_id', id)} className={inputCls} showWhenSingle />
+              </label>
               <label className="flex flex-col gap-1">Date
                 <input type="date" value={contractForm.contract_date} onChange={(e) => cf('contract_date', e.target.value)} className={inputCls} />
               </label>
@@ -763,7 +760,7 @@ export default function CottonMarketingPage() {
         <div className="flex items-center gap-3 flex-wrap">
           <h2 className="font-semibold flex-1">CCC Loans</h2>
           <button type="button" className={btnCls} onClick={() => {
-            setLoanForm({ entity_id: entities.length === 1 ? entities[0].id : '', loan_number: '', entry_date: todayIso(), rate: String(DEFAULT_LOAN_RATE) })
+            setLoanForm({ entity_id: '', loan_number: '', entry_date: todayIso(), rate: String(DEFAULT_LOAN_RATE) })
             setPickFor({ kind: 'loan' }); setPicked(new Set())
           }}>+ New loan</button>
         </div>
@@ -861,14 +858,9 @@ export default function CottonMarketingPage() {
               <label className="flex flex-col gap-1">Base loan rate ($/lb)
                 <input type="text" inputMode="decimal" value={loanForm.rate} onChange={(e) => setLoanForm((f) => f && { ...f, rate: e.target.value })} className={inputCls} placeholder="0.5500" />
               </label>
-              {entities.length > 1 && (
-                <label className="flex flex-col gap-1">Entity
-                  <select value={loanForm.entity_id} onChange={(e) => setLoanForm((f) => f && { ...f, entity_id: e.target.value })} className={inputCls}>
-                    <option value="">— entity —</option>
-                    {entities.map((en) => <option key={en.id} value={en.id}>{en.name}</option>)}
-                  </select>
-                </label>
-              )}
+              <label className="flex flex-col gap-1">Entity
+                <EntitySelect entities={entities} value={loanForm.entity_id} onChange={(id) => setLoanForm((f) => f && { ...f, entity_id: id })} className={inputCls} showWhenSingle />
+              </label>
             </div>
             {loanPrincipalPreview && picked.size > 0 && (
               <p className="text-sm tabular-nums">

@@ -69,6 +69,15 @@ export type ColumnSpec = {
     /** Column on the FK table to match against. */
     matchColumn: string
     /**
+     * Used when the cell is blank OR the column is absent from the file: the
+     * row resolves to this id instead of erroring/nulling. The single-entity
+     * seam (lib/entity-default.ts defaultEntityId) feeds this so a one-entity
+     * operation can import without an entity column at all, while multi-entity
+     * operations (fallbackId null) keep the required-column error. A fallback
+     * never overwrites existing rows in sync mode — only blanks resolve to it.
+     */
+    fallbackId?: string | null
+    /**
      * If set, the FK lookup is composite — it also filters by the payload
      * value of `scopeKey` on the row being imported (e.g. delivery_location_id
      * is scoped by the resolved buyer_id; county_id by the state column).
@@ -454,6 +463,13 @@ export async function runImport(
         if (col.fk) {
           const value = raw.trim()
           if (!value) {
+            if (col.fk.fallbackId) {
+              // Auto-assign (e.g. a single-entity operation's only entity).
+              // Deliberately NOT marked provided: in sync mode a blank never
+              // overwrites what's stored, same as every other column.
+              payload[col.key] = col.fk.fallbackId
+              continue
+            }
             if (col.required) throw new Error(`${col.label ?? col.key} is required`)
             payload[col.key] = null
             continue

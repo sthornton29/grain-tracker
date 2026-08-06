@@ -3,6 +3,8 @@
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Modal } from './position-form'
+import EntitySelect from '@/components/entity-select'
+import { defaultEntityId } from '@/lib/entity-default'
 import {
   COMMODITIES,
   type Commodity,
@@ -64,6 +66,11 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
   const [err, setErr] = useState<string | null>(null)
 
   const monthOptions = useMemo(() => contractMonthOptions(commodity), [commodity])
+  // Single-entity operation → the entity is auto-assigned by EntitySelect
+  // (it renders nothing); hide the wrapper label in step so no orphan
+  // "Entity" text remains. Derived from the live entities prop every render.
+  const autoEntity = defaultEntityId(entities)
+  const entityHidden = autoEntity != null && (!entityId || entityId === autoEntity)
   const strike = parsePrice(strikeInput)
   const premiumCents = parseFractional(premiumInput)
   const n = Number(numContracts)
@@ -127,12 +134,9 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
   return (
     <Modal onClose={onClose} title={editing ? 'Edit Option Position' : 'New Option Position'}>
       <form onSubmit={onSubmit} className="space-y-4">
-        <label className={labelCls}>
+        <label className={entityHidden ? 'hidden' : labelCls}>
           Entity
-          <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
-            <option value="">— none —</option>
-            {entities.map((en) => <option key={en.id} value={en.id}>{en.name}</option>)}
-          </select>
+          <EntitySelect entities={entities} value={entityId} onChange={setEntityId} className={inputCls} placeholder="— none —" />
         </label>
 
         <label className={labelCls}>

@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { parsePrice, fmtPrice } from '@/lib/hedging'
 import { BuyerPicker, DeliveryLocationPicker } from '@/components/buyer-location-pickers'
+import EntitySelect from '@/components/entity-select'
 import {
   cashFromFuturesBasis,
   futuresFromCashBasis,
@@ -273,10 +274,13 @@ export function ContractFields({
           <option value="">— crop year —</option>
           {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
         </select>
-        <select value={f.entity_id} onChange={(e) => set('entity_id', e.target.value)} className={INPUT_CLS}>
-          <option value="">— entity —</option>
-          {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-        </select>
+        <EntitySelect
+          entities={entities}
+          value={f.entity_id}
+          onChange={(id) => set('entity_id', id)}
+          className={INPUT_CLS}
+          showWhenSingle
+        />
       </div>
 
       {/* Pricing block */}

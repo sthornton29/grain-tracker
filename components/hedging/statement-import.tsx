@@ -3,6 +3,8 @@
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Modal } from './position-form'
+import EntitySelect from '@/components/entity-select'
+import { defaultEntityId } from '@/lib/entity-default'
 import ClosePositionDialog from './close-position-dialog'
 import CloseOptionDialog from './close-option-dialog'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
@@ -550,6 +552,12 @@ export default function StatementImport({ entities, existingPositions, existingO
   // the import flow above and excluded here. Nothing is auto-closed — the user
   // confirms each through the real close workflow or keeps it open.
   const importEntity = importEntityId || null
+  // Single-entity operation: the account entity is auto-assigned, and every
+  // position — including legacy ones saved with no entity — belongs to the
+  // same account universe, so the possibly-closed comparison spans them all.
+  // Multi-entity: scope strictly to the selected account entity as before.
+  const entityScopeMatches = (rowEntity: string | null) =>
+    defaultEntityId(entities) != null || (rowEntity ?? null) === importEntity
   const statementOpenKeys = useMemo(() => {
     const s = new Set<string>()
     for (const p of extraction?.open_positions ?? []) {
@@ -581,23 +589,23 @@ export default function StatementImport({ entities, existingPositions, existingO
       extraction == null ? [] : existingPositions.filter(
         (p) =>
           p.status === 'open' &&
-          (p.entity_id ?? null) === importEntity &&
+          entityScopeMatches(p.entity_id ?? null) &&
           !keptOpenIds.has(p.id) &&
           !matchedCloseIds.has(p.id) &&
           !statementOpenKeys.has(`${p.commodity}|${up(p.contract_month)}`),
       ),
-    [extraction, existingPositions, importEntity, keptOpenIds, matchedCloseIds, statementOpenKeys],
+    [extraction, existingPositions, importEntity, entities, keptOpenIds, matchedCloseIds, statementOpenKeys],
   )
   const possiblyClosedOptions = useMemo(
     () =>
       extraction == null ? [] : existingOptions.filter(
         (o) =>
           o.status === 'open' &&
-          (o.entity_id ?? null) === importEntity &&
+          entityScopeMatches(o.entity_id ?? null) &&
           !keptOpenIds.has(o.id) &&
           !statementOptionKeys.has(`${o.commodity}|${o.option_type}|${up(o.underlying_contract_month)}|${o.strike_price.toFixed(4)}`),
       ),
-    [extraction, existingOptions, importEntity, keptOpenIds, statementOptionKeys],
+    [extraction, existingOptions, importEntity, entities, keptOpenIds, statementOptionKeys],
   )
   const possiblyClosedCount = possiblyClosedFutures.length + possiblyClosedOptions.length
   function keepOpen(id: string) {
@@ -752,10 +760,16 @@ export default function StatementImport({ entities, existingPositions, existingO
             </div>
             <label className="text-sm text-slate-700">
               Account entity (applied to imported positions)
-              <select value={importEntityId} onChange={(e) => setImportEntityId(e.target.value)} className="mt-1 block rounded-lg border border-slate-300 px-3 py-2 bg-white">
-                <option value="">— none —</option>
-                {entities.map((en) => <option key={en.id} value={en.id}>{en.name}</option>)}
-              </select>
+              {/* Single-entity operation → auto-assigned, shown pre-filled and
+                  disabled so the reviewer still sees where the import lands. */}
+              <EntitySelect
+                entities={entities}
+                value={importEntityId}
+                onChange={setImportEntityId}
+                className="mt-1 block rounded-lg border border-slate-300 px-3 py-2 bg-white"
+                placeholder="— none —"
+                showWhenSingle
+              />
             </label>
             <label className="text-sm text-slate-700">
               Quick-fill crop year <span className="text-xs text-slate-400">optional shortcut</span>

@@ -7,6 +7,7 @@
 // All amounts are ESTIMATES until RMA sets the final harvest price and county
 // yields after harvest. The UI labels them as such.
 
+import { defaultEntityId } from '@/lib/entity-default'
 import { buildContractSymbol, type Commodity } from '@/lib/hedging'
 import { cropToHedgeCommodity } from '@/lib/contracts'
 import { DEFAULT_SCO_TRIGGER } from '@/lib/program-config'
@@ -736,8 +737,7 @@ export function resolveUploadEntityId(args: {
   fallback?: string
 }): string | null {
   if (args.chosen) return args.chosen
-  if (args.entities.length === 1) return args.entities[0].id
-  return args.fallback || null
+  return defaultEntityId(args.entities) ?? (args.fallback || null)
 }
 
 // ---------- Policy upload dedupe (Already exists / Update available / New) ----------

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import { defaultEntityId } from '@/lib/entity-default'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import {
   ContractFields,
@@ -170,11 +171,16 @@ export default function ContractsSettingsPage() {
         config={{
           tableName: 'contracts',
           uniqueKey: 'contract_number',
+          note: 'Buyer, crop, and entity match by name against what already exists. If your operation has one entity, you can leave the entity column out — it’s filled in for you.',
           columns: [
             { key: 'contract_number', required: true },
             { key: 'buyer_id', label: 'buyer', fk: { table: 'buyers', matchColumn: 'name' } },
             { key: 'crop_id', label: 'crop', fk: { table: 'crops', matchColumn: 'name', aliases: { soybeans: 'Soybean', beans: 'Soybean', soy: 'Soybean' } } },
-            { key: 'entity_id', label: 'entity', fk: { table: 'entities', matchColumn: 'name' } },
+            // fallbackId auto-assigns the lone entity for single-entity
+            // operations (column may be omitted). NOT required: contracts can
+            // legitimately be operation-level (null entity), and today's
+            // multi-entity import allows a blank entity — keep that behavior.
+            { key: 'entity_id', label: 'entity', fk: { table: 'entities', matchColumn: 'name', fallbackId: defaultEntityId(entities) } },
             { key: 'crop_year', type: 'number' },
             { key: 'contracted_bushels', type: 'number' },
             { key: 'price_per_bushel', type: 'number' },
