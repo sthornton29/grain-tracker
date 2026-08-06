@@ -79,7 +79,7 @@ describe('checkPartnerAuth', () => {
 // Shared fixtures
 // ---------------------------------------------------------------------------
 
-const entities: EntityRow[] = [{ id: 'e1', name: 'Turnrow Farms LLC', updated_at: '2026-01-01T00:00:00Z' }]
+const entities: EntityRow[] = [{ id: 'e1', name: 'Prairie Farms LLC', updated_at: '2026-01-01T00:00:00Z' }]
 const farms: FarmRow[] = [
   { id: 'fa1', name: 'Home Place', fsa_number: '1234', entity_id: 'e1', updated_at: '2026-01-02T00:00:00Z' },
 ]
@@ -152,7 +152,7 @@ describe('buildFieldRecords', () => {
       farm_id: 'fa1',
       farm_name: 'Home Place',
       farm_code: '1234',
-      entity: 'Turnrow Farms LLC',
+      entity: 'Prairie Farms LLC',
       acres: { total: 80, irrigated: 60, dryland: 20 },
     })
     // updated_at = newest of field/farm/entity.
@@ -188,7 +188,7 @@ describe('buildPlantingRecords', () => {
     expect(corn).toMatchObject({
       field_id: 'f1', field_name: 'North 80', crop: 'Corn', crop_year: 2026,
       planted_acres: 80, irrigated_acres: 60, dryland_acres: 20,
-      entity: 'Turnrow Farms LLC', updated_at: '2026-04-01T00:00:00Z',
+      entity: 'Prairie Farms LLC', updated_at: '2026-04-01T00:00:00Z',
     })
   })
 })
@@ -205,7 +205,7 @@ describe('buildProductionRecords', () => {
     expect(out).toHaveLength(2)
     const corn = out.find((r) => r.crop === 'Corn')!
     expect(corn).toMatchObject({
-      field_id: 'f1', entity: 'Turnrow Farms LLC', crop_year: 2026,
+      field_id: 'f1', entity: 'Prairie Farms LLC', crop_year: 2026,
       planted_acres: 80, harvested_acres: 80, production_units: 1000, unit: 'bu',
     })
     // updated_at = newest of planting + contributing loads.

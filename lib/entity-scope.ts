@@ -10,7 +10,7 @@
 //   * crop insurance policies — rows whose OWN entity_id matches (policies are
 //     genuinely carried per entity);
 //   * contracts / futures / options — via attribution() below. In this
-//     operation the MARKETING AGENT entity (Turnrow, entities.entity_role =
+//     operation the MARKETING AGENT entity (the org's marketing entity, entities.entity_role =
 //     'marketing_agent', 051) holds the contracts and the hedge account and
 //     markets on behalf of the farming entities; the income then shifts down.
 //     So a row held by a marketing agent — or carrying no entity at all — is
@@ -49,7 +49,7 @@ import { buildCottonPhysicalSummary, type CottonPhysicalInputs, type CottonPhysi
 //   * a row keyed to a FARMING entity that matches the scope counts WHOLE
 //     (own-name marketing); keyed to a different farming entity, it drops;
 //   * a row held by a MARKETING-AGENT entity (entity_role='marketing_agent',
-//     e.g. Turnrow, who markets for the farming entities and shifts the income
+//     one that markets for the farming entities and shifts the income
 //     down) — or carrying no entity at all — scales by the entity's share of
 //     the crop's (or hedge commodity's) planted acres for that crop year:
 //     prices per bushel are untouched, so the entity view shows the same avg

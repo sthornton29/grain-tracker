@@ -314,8 +314,8 @@ function RolePicker({ value, onChange }: { value: Role; onChange: (r: Role) => v
         <option value="marketing_agent">Marketing agent</option>
       </select>
       <span className="text-slate-500">
-        A marketing agent (e.g. Turnrow) holds the contracts and hedge account on behalf of the farming entities and
-        shifts the income down — in the entity-filtered reports its marketing flows to each farming entity by that
+        A marketing agent is an entity that holds the contracts and hedge account on behalf of your farming entities
+        and shifts the income down — in the entity-filtered reports its marketing flows to each farming entity by that
         entity&apos;s acre share of the crop. A farming entity that markets in its own name keeps those contracts whole.
       </span>
     </label>

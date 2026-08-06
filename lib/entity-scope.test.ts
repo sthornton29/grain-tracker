@@ -205,7 +205,7 @@ describe('buildEntityScope', () => {
     })
 
     it('marketing-agent-held rows flow DOWN to farming entities like operation-level rows', () => {
-      // Turnrow-style setup: TRW is the marketing agent (holds the contracts
+      // Typical setup: TRW is the marketing-agent entity (holds the contracts
       // and the hedge account, income shifted down); E1/E2 farm. E2 also has
       // an own-name contract, which stays wholly its own.
       const entities = [

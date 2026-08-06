@@ -220,7 +220,7 @@ describe('Revenue Projections ↔ Marketing dashboard reconciliation', () => {
 
 // The five entity-filtered reports all scope through lib/entity-scope BEFORE
 // the shared computeMarketing/aggregateMarketing layer. In this operation the
-// MARKETING AGENT entity (Turnrow, entity_role='marketing_agent') holds the
+// MARKETING AGENT entity (entity_role='marketing_agent') holds the
 // contracts and the hedge account and markets on behalf of the farming
 // entities — the income shifts down. So agent-held (and null-entity) rows
 // attribute pro-rata by the entity's acre share of the crop; a row keyed to a
