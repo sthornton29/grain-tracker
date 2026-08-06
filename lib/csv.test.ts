@@ -1015,3 +1015,114 @@ describe('runImport — result accounting', () => {
     expect(res).toEqual({ added: 2, updated: 0, unchanged: 0, skipped: 0, failed: [] })
   })
 })
+
+// ---------------------------------------------------------------------------
+// County + state resolution (the farms import) — mirrors the demo farms.csv
+// that surfaced the bug: three "Lawrence" rows failed with "matches multiple
+// rows" because Lawrence County exists in more than one state, while the
+// unambiguous Colbert rows sailed through. Counties must match name + state
+// TOGETHER and never on name alone.
+// ---------------------------------------------------------------------------
+
+describe('runImport — county + state scoped FK (farms demo fixture)', () => {
+  const normalizeCounty = (s: string) =>
+    s.toUpperCase().replace(/[.'’]/g, '').replace(/\s+(COUNTY|PARISH|BOROUGH|CENSUS AREA)$/g, '').replace(/\s+/g, ' ').trim()
+
+  const farmsConfig: ImportConfig = {
+    tableName: 'farms',
+    uniqueKey: 'name',
+    columns: [
+      { key: 'name', required: true },
+      { key: 'entity_id', label: 'entity', fk: { table: 'entities', matchColumn: 'name' } },
+      { key: 'state_code', label: 'state', virtual: true },
+      {
+        key: 'county_id', label: 'county',
+        fk: {
+          table: 'counties', matchColumn: 'name', scopeKey: 'state_code',
+          scopeRequired: true,
+          scopeMissingError: 'county requires a state — add a state_code column',
+          normalizeMatch: normalizeCounty,
+        },
+      },
+      { key: 'landowner_id', label: 'landowner', fk: { table: 'landowners', matchColumn: 'name' } },
+      { key: 'is_share_rent', label: 'share_rent', enum: ['yes', 'no', 'true', 'false', 'y', 'n'] },
+      { key: 'landlord_share_percentage', label: 'landlord_share_pct', type: 'number' },
+    ],
+    derive: (row) => {
+      const raw = row.is_share_rent
+      if (raw == null || raw === '') return {}
+      const sr = ['yes', 'true', 'y'].includes(String(raw).toLowerCase())
+      return { is_share_rent: sr, landlord_share_percentage: sr ? row.landlord_share_percentage ?? null : null }
+    },
+  }
+
+  const tables = {
+    entities: [
+      { id: 'ent-clearwater', name: 'Clearwater Farms LLC' },
+      { id: 'ent-twocreeks', name: 'Two Creeks Land Co LLC' },
+    ],
+    counties: [
+      { id: 'cty-lawrence-al', name: 'Lawrence', state_code: 'AL' },
+      { id: 'cty-lawrence-tn', name: 'Lawrence', state_code: 'TN' },
+      { id: 'cty-lawrence-ms', name: 'Lawrence', state_code: 'MS' },
+      { id: 'cty-colbert-al', name: 'Colbert', state_code: 'AL' },
+    ],
+    landowners: [
+      { id: 'lo-mcgee', name: 'McGee Family Trust' },
+      { id: 'lo-holt', name: 'Holt Land LLC' },
+    ],
+    farms: [],
+  }
+  const headers = ['name', 'entity', 'county', 'state', 'landowner', 'share_rent', 'landlord_share_pct']
+  const mapping = autoMapHeaders(headers, farmsConfig.columns)
+
+  it('all five demo rows import; the three Lawrence rows resolve to Lawrence, AL', async () => {
+    const { client, inserted } = makeFakeClient(structuredClone(tables))
+    const rows = [
+      ['Wolf Pen', 'Clearwater Farms LLC', 'Lawrence', 'AL', 'McGee Family Trust', 'yes', '33.33'],
+      ['River Place', 'Clearwater Farms LLC', 'Lawrence County', 'al', 'Holt Land LLC', 'no', ''],
+      ['Upper 300', 'Two Creeks Land Co LLC', 'LAWRENCE', 'AL', '', '', ''],
+      ['Sandy Bottom', 'Clearwater Farms LLC', 'Colbert', 'AL', '', 'no', ''],
+      ['Cane Creek', 'Two Creeks Land Co LLC', 'Colbert', 'AL', 'Holt Land LLC', 'yes', '25'],
+    ]
+    const res = await runImport(client, farmsConfig, rows, headers, mapping, { mode: 'add' })
+    expect(res.failed).toEqual([])
+    expect(res.added).toBe(5)
+    const byName = new Map(inserted.farms.map((f) => [f.name, f]))
+    for (const n of ['Wolf Pen', 'River Place', 'Upper 300']) {
+      expect(byName.get(n)?.county_id, `${n} should land on Lawrence, AL`).toBe('cty-lawrence-al')
+    }
+    expect(byName.get('Sandy Bottom')?.county_id).toBe('cty-colbert-al')
+    // The lookup-only state column is never written to the farm row.
+    for (const f of inserted.farms) expect(f).not.toHaveProperty('state_code')
+    // Share-rent details survive the import.
+    expect(byName.get('Wolf Pen')).toMatchObject({ is_share_rent: true, landlord_share_percentage: 33.33 })
+    expect(byName.get('River Place')?.is_share_rent).toBe(false)
+    expect(byName.get('Wolf Pen')?.landowner_id).toBe('lo-mcgee')
+  })
+
+  it('a county with no state fails that row with the clear message — even when unique', async () => {
+    const { client, inserted } = makeFakeClient(structuredClone(tables))
+    const rows = [
+      ['No State A', 'Clearwater Farms LLC', 'Lawrence', '', '', '', ''],
+      ['No State B', 'Clearwater Farms LLC', 'Colbert', '', '', '', ''], // unique name, still requires state
+      ['Good Row', 'Clearwater Farms LLC', 'Lawrence', 'AL', '', '', ''],
+    ]
+    const res = await runImport(client, farmsConfig, rows, headers, mapping, { mode: 'add' })
+    expect(res.added).toBe(1)
+    expect(res.failed).toHaveLength(2)
+    for (const f of res.failed) {
+      expect(f.reason).toBe('county requires a state — add a state_code column')
+    }
+    expect(inserted.farms.map((f) => f.name)).toEqual(['Good Row'])
+  })
+
+  it('a wrong state gives "not found" naming the state, not an ambiguous-match error', async () => {
+    const { client } = makeFakeClient(structuredClone(tables))
+    const rows = [['Wrong State', 'Clearwater Farms LLC', 'Colbert', 'TN', '', '', '']]
+    const res = await runImport(client, farmsConfig, rows, headers, mapping, { mode: 'add' })
+    expect(res.added).toBe(0)
+    expect(res.failed[0].reason).toContain('not found')
+    expect(res.failed[0].reason).toContain('TN')
+  })
+})

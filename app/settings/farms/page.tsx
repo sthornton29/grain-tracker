@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
 import LandownerPicker from '@/components/landowner-picker'
+import { normalizeCountyName } from '@/lib/fsa-benchmark-file'
 import type { Entity, Farm, County, EntityCounty, Landowner } from '@/lib/types'
 
 const LAST_COUNTY_KEY = 'lastFarmCountyId'
@@ -203,11 +204,27 @@ export default function FarmsPage() {
         config={{
           tableName: 'farms',
           uniqueKey: 'name',
-          note: 'Entity, county, and landowner match by name against what already exists — import entities and landowners first. Share rent: yes/no, with the landlord share as a percent (e.g. 33.33) when yes.',
+          note: 'Entity and landowner match by name against what already exists — import entities and landowners first. Counties match by name + state together (two-letter state code, e.g. AL), so a "Lawrence" resolves to the right state’s Lawrence County. Share rent: yes/no, with the landlord share as a percent (e.g. 33.33) when yes.',
           columns: [
             { key: 'name', required: true },
             { key: 'entity_id', label: 'entity', fk: { table: 'entities', matchColumn: 'name' } },
-            { key: 'county_id', label: 'county', fk: { table: 'counties', matchColumn: 'name' } },
+            // Lookup-only: pairs with the county column below; never written
+            // to the farm row (farms carry county_id, not a state).
+            { key: 'state_code', label: 'state', virtual: true },
+            {
+              key: 'county_id',
+              label: 'county',
+              fk: {
+                table: 'counties',
+                matchColumn: 'name',
+                scopeKey: 'state_code',
+                scopeRequired: true,
+                scopeMissingError: 'county requires a state — add a state_code column',
+                // Same normalization as the rest of the app's county matching
+                // ("Lawrence County" ≡ "LAWRENCE" ≡ "Lawrence").
+                normalizeMatch: normalizeCountyName,
+              },
+            },
             { key: 'fsa_number', label: 'fsa_number' },
             { key: 'landowner_id', label: 'landowner', fk: { table: 'landowners', matchColumn: 'name' } },
             { key: 'is_share_rent', label: 'share_rent', enum: ['yes', 'no', 'true', 'false', 'y', 'n'] },

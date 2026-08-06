@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-08-06 · version 0.1.0 · build 4980822. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-08-06 · version 0.1.0 · build e3f6bdc. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -1055,7 +1055,7 @@ Work top-down the first time: entities, then farms, then fields, then crops and 
 ## What the controls do
 
 - **Entities** — your legal entities and the counties they operate in, plus each entity's FSA eligible-persons count for payment limits (set once; the total ARC/PLC cap is persons times the program year's per-person limit). An entity can also be marked a **marketing agent**: one entity that holds the contracts and hedge account on behalf of the whole operation. In entity-filtered reports, the agent's marketing flows down to each farming entity by that entity's share of the crop's planted acres — so income lands where the grain was grown. A farming entity that markets in its own name keeps those contracts whole.
-- **Farms** — each farm's entity, county, **FSA number**, and landowner, plus the **share-rent flag and landlord share percentage** that drive the Share Rent Report. The spreadsheet import takes all of it — entity, county, and landowner match by name against what already exists, and share rent comes in as yes/no with the landlord percent. Deleting a farm removes its fields too.
+- **Farms** — each farm's entity, county, **FSA number**, and landowner, plus the **share-rent flag and landlord share percentage** that drive the Share Rent Report. The spreadsheet import takes all of it — entity and landowner match by name against what already exists, counties match by **name plus two-letter state** together (so a "Lawrence" lands on the right state's Lawrence County), and share rent comes in as yes/no with the landlord percent. Deleting a farm removes its fields too.
 - **Fields** — total and irrigated acres (dryland is derived), county, and each field's plantings. Import by CSV or by **AI upload** of a document. A farm filter narrows long lists.
 - **Crops** — each crop's base moisture and pounds per bushel (the standards dry-bushel math uses), its **harvest category** (fall or spring — spring-harvest crops like wheat are what make a later planting count as double-crop), and the double-crop designation. This page also holds **"Physical Sales Complete for the Year?"**: when a crop year's grain or cotton is fully sold, mark it here — shrink and small leftovers mean the sold-versus-production numbers rarely land on exactly zero, so this checkbox is how you tell Turnrow the year's selling is truly finished.
 - **Plantings** — what's planted where, per field, crop, and season, with one or more varieties per planting. Import by CSV or **AI upload**; both recognize variety-name spellings that differ only by brand prefix and ask you whether to link or keep them separate, so "DG 3644" and "Dyna-Gro 3644" don't become two varieties.

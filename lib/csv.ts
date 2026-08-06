@@ -57,6 +57,12 @@ export type ColumnSpec = {
   default?: string | number | null
   /** Allowed literal values (case-insensitive match, canonicalized to lowercase). */
   enum?: string[]
+  /**
+   * Lookup-only column: its value participates in resolution (e.g. as an fk
+   * scopeKey — the farms import's state column disambiguating counties) but
+   * is NEVER written to the table. Stripped after derive() runs.
+   */
+  virtual?: boolean
   /** Foreign key: look up an id in another table by matching a column. */
   fk?: {
     table: string
@@ -65,9 +71,23 @@ export type ColumnSpec = {
     /**
      * If set, the FK lookup is composite — it also filters by the payload
      * value of `scopeKey` on the row being imported (e.g. delivery_location_id
-     * is scoped by the resolved buyer_id). Left blank for simple FK.
+     * is scoped by the resolved buyer_id; county_id by the state column).
+     * Scope values compare trimmed + case-insensitively.
      */
     scopeKey?: string
+    /**
+     * With scopeKey: a value in THIS column with no scope value fails the row
+     * (scopeMissingError) instead of silently resolving to null — counties
+     * must never match on name alone (a bare "Lawrence" is ambiguous).
+     */
+    scopeRequired?: boolean
+    scopeMissingError?: string
+    /**
+     * Normalizer applied to BOTH sides of the match-column comparison (e.g.
+     * normalizeCountyName so "Lawrence County" ≡ "LAWRENCE" ≡ "Lawrence").
+     * Defaults to trim + lowercase.
+     */
+    normalizeMatch?: (value: string) => string
     /**
      * Synonyms: lowercased incoming value → the canonical value to match on.
      * e.g. { soybeans: 'Soybean', beans: 'Soybean' } so a CSV "Soybeans" maps to
@@ -428,24 +448,32 @@ export async function runImport(
             continue
           }
           const matchVal = col.fk.aliases?.[value.toLowerCase()] ?? value
+          const norm = col.fk.normalizeMatch ?? ((s: string) => s.trim().toLowerCase())
           const lookupRows = fkTables.get(col.fk.table) || []
           let candidates = lookupRows.filter(
-            (r) => String(r[col.fk!.matchColumn] ?? '').toLowerCase() === matchVal.toLowerCase()
+            (r) => norm(String(r[col.fk!.matchColumn] ?? '')) === norm(matchVal)
           )
-          if (col.fk.scopeKey && candidates.length > 0) {
+          let scopeStr: string | null = null
+          if (col.fk.scopeKey) {
             const scopeVal = payload[col.fk.scopeKey]
-            if (scopeVal == null) {
-              // Can't resolve without the scope value set.
+            scopeStr = scopeVal == null ? '' : String(scopeVal).trim()
+            if (scopeStr === '') {
+              if (col.fk.scopeRequired) {
+                throw new Error(col.fk.scopeMissingError ?? `${col.label ?? col.key} "${value}" needs a ${col.fk.scopeKey} value`)
+              }
+              // Legacy composite FKs: can't resolve without the scope value.
               payload[col.key] = null
               continue
             }
-            candidates = candidates.filter((r) => r[col.fk!.scopeKey!] === scopeVal)
+            candidates = candidates.filter(
+              (r) => String(r[col.fk!.scopeKey!] ?? '').trim().toLowerCase() === scopeStr!.toLowerCase()
+            )
           }
           if (candidates.length === 0) {
-            throw new Error(`${col.label ?? col.key} "${value}" not found`)
+            throw new Error(`${col.label ?? col.key} "${value}"${scopeStr ? ` (${scopeStr})` : ''} not found`)
           }
           if (candidates.length > 1) {
-            throw new Error(`${col.label ?? col.key} "${value}" matches multiple rows`)
+            throw new Error(`${col.label ?? col.key} "${value}"${scopeStr ? ` (${scopeStr})` : ''} matches multiple rows`)
           }
           payload[col.key] = candidates[0].id
           provided.add(col.key)
@@ -487,6 +515,11 @@ export async function runImport(
 
       // Derived columns (e.g. dryland = planted - irrigated) for the insert path.
       if (config.derive) Object.assign(payload, config.derive(payload))
+
+      // Lookup-only columns did their job (fk scoping) — never write them.
+      for (const col of config.columns) {
+        if (col.virtual) { delete payload[col.key]; provided.delete(col.key) }
+      }
 
       const dedupKey = uniqueKeys.map((k) => normValue(payload[k])).join('|')
 
