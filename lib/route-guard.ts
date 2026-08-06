@@ -29,12 +29,17 @@ const VIEWER_API_PATHS = [
 // sidebar/landing via this same matrix.
 const VIEWER_BLOCKED_REPORTS = ['/reports/settlement-pdfs', '/reports/crop-budget']
 
+// Help is NEVER restricted: every role gets the help center, the assistant,
+// and contact support.
+const HELP_PATHS = ['/help', '/api/support-chat', '/api/support-request']
+
 const startsAt = (pathname: string, base: string) =>
   pathname === base || pathname.startsWith(base + '/')
 
 export function roleAllowsPath(role: AppRole, pathname: string): boolean {
   if (role === 'owner') return true
   if (startsAt(pathname, '/logout')) return true
+  if (HELP_PATHS.some((p) => startsAt(pathname, p))) return true
   if (role === 'gin') {
     return (
       (startsAt(pathname, '/cotton') && !startsAt(pathname, '/cotton/marketing')) ||

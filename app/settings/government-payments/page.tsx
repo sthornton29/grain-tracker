@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { openHelp } from '@/lib/help-bus'
 import { fetchAllCounties } from '@/lib/counties'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
@@ -420,11 +421,11 @@ export default function GovernmentPaymentsSettingsPage() {
       <Section id="price" title="Price Data" open={open === 'price'} onToggle={() => setOpen(open === 'price' ? '' : 'price')}>
         <div className="flex items-center gap-3 flex-wrap">
           <p className="text-sm text-slate-500 flex-1">
-            MYA estimates are a marketing-year blend of USDA monthly prices (+ futures-implied months for traded
-            commodities) — enter monthly prices, run the USDA lookup, and set WASDE midpoints from the MYA panel on
-            the Decision Aid or Tracker; every commodity (including seed cotton) has the same Auto | Manual toggle
-            there. Seed cotton&apos;s monthly price is blended in the app from the NASS lint + cottonseed series. A typed
-            WASDE midpoint overrides the blend; a Manual estimate and a published Final outrank both.
+            MYA estimates blend USDA monthly prices with futures for the months not yet published; a Manual
+            estimate or a published Final outranks the blend.{' '}
+            <button type="button" onClick={() => openHelp('/settings/government-payments')} className="text-brand-deep underline decoration-dotted">
+              Learn more
+            </button>
           </p>
           <button onClick={refreshMya} disabled={refreshing} className="rounded-lg bg-slate-700 text-white px-3 py-2 text-sm font-semibold disabled:opacity-50">{refreshing ? 'Refreshing…' : 'Refresh MYA blend'}</button>
         </div>

@@ -4,6 +4,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { navLinksFor, navLinkActive } from '@/lib/nav-links'
+import HelpDrawer from '@/components/help/help-drawer'
 import type { AppRole } from '@/lib/types'
 
 // Top nav — Turnrow brand chrome: forest-green bar, white mark + spaced-caps
@@ -37,6 +38,7 @@ export default function Nav({ cottonEnabled = false, role = 'owner' }: { cottonE
             )
           })}
         </div>
+        <HelpDrawer />
       </div>
     </nav>
   )
