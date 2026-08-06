@@ -220,6 +220,53 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
   }
 
   const preview = rows.slice(0, 5)
+
+  // Live resolution preview for scoped FK columns (the farms county + state
+  // pairing): the preview's county cells show which record the value will
+  // land on ("Lawrence → Lawrence, AL") or the specific problem, before the
+  // user commits the import.
+  const [fkPreview, setFkPreview] = useState<Map<string, { text: string; ok: boolean }> | null>(null)
+  useEffect(() => {
+    const scoped = config.columns.filter((c) => c.fk?.scopeKey && c.fk?.scopeRequired)
+    if (scoped.length === 0 || rows.length === 0) { setFkPreview(null); return }
+    let cancelled = false
+    ;(async () => {
+      const map = new Map<string, { text: string; ok: boolean }>()
+      for (const col of scoped) {
+        const fk = col.fk!
+        const colHeader = mapping[col.key]
+        if (!colHeader) continue
+        const { data } = await supabase.from(fk.table).select(`id, ${fk.matchColumn}, ${fk.scopeKey}`)
+        const lookup = (data ?? []) as unknown as Array<Record<string, unknown>>
+        const norm = fk.normalizeMatch ?? ((s: string) => s.trim().toLowerCase())
+        const hIdx = headers.indexOf(colHeader)
+        const scopeHeader = mapping[fk.scopeKey!]
+        const sIdx = scopeHeader ? headers.indexOf(scopeHeader) : -1
+        for (let i = 0; i < Math.min(rows.length, 5); i++) {
+          const value = (rows[i][hIdx] ?? '').trim()
+          if (!value) continue
+          const scopeStr = sIdx >= 0 ? (rows[i][sIdx] ?? '').trim() : ''
+          if (!scopeStr) { map.set(`${col.key}|${i}`, { text: 'needs a state', ok: false }); continue }
+          const cands = lookup.filter((r) =>
+            norm(String(r[fk.matchColumn] ?? '')) === norm(value) &&
+            String(r[fk.scopeKey!] ?? '').trim().toLowerCase() === scopeStr.toLowerCase())
+          map.set(`${col.key}|${i}`, cands.length === 1
+            ? { text: `${String(cands[0][fk.matchColumn])}, ${String(cands[0][fk.scopeKey!])}`, ok: true }
+            : { text: cands.length === 0 ? 'not found' : 'matches multiple', ok: false })
+        }
+      }
+      if (!cancelled) setFkPreview(map.size > 0 ? map : null)
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, mapping, headers])
+
+  // header (raw CSV string) → config column key, for preview annotation.
+  const headerToColKey = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const [key, header] of Object.entries(mapping)) m.set(header, key)
+    return m
+  }, [mapping])
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   const requiredOk = config.columns
     .filter((c) => c.required)
@@ -410,7 +457,18 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
                       <tbody>
                         {preview.map((r, i) => (
                           <tr key={i} className="border-t border-slate-100">
-                            {headers.map((_, j) => <td key={j} className="px-2 py-1 whitespace-nowrap">{r[j] ?? ''}</td>)}
+                            {headers.map((h, j) => {
+                              const colKey = headerToColKey.get(h)
+                              const ann = colKey ? fkPreview?.get(`${colKey}|${i}`) : undefined
+                              return (
+                                <td key={j} className="px-2 py-1 whitespace-nowrap">
+                                  {r[j] ?? ''}
+                                  {ann && (
+                                    <span className={ann.ok ? 'text-slate-400' : 'text-red-600'}> → {ann.text}</span>
+                                  )}
+                                </td>
+                              )
+                            })}
                           </tr>
                         ))}
                       </tbody>
