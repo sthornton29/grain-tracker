@@ -48,7 +48,7 @@ function contract(over: Partial<Contract> & Pick<Contract, 'crop_id' | 'crop_yea
   return {
     id: 'c-' + Math.random().toString(36).slice(2), contract_number: 'CN', buyer_id: null, entity_id: null,
     contracted_bushels: 0, price_per_bushel: null, notes: null, delivery_type: 'pickup',
-    delivery_location_id: null, delivery_start_date: null, delivery_end_date: null, completed_at: null,
+    delivery_location_id: null, delivery_start_date: null, delivery_end_date: null, date_sold: null, completed_at: null,
     created_at: '2026-01-01', contract_month: null, contract_type: 'forward', futures_price: null,
     basis: null, cash_price: null, service_fee: 0, futures_set_date: null, basis_set_date: null,
     pricing_status: 'fully_priced', ...over,

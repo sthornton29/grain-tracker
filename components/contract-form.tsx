@@ -25,6 +25,7 @@ export type ContractFormState = {
   delivery_location_id: string
   delivery_start_date: string
   delivery_end_date: string
+  date_sold: string
   notes: string
   contract_type: ContractType
   contract_month: string
@@ -39,7 +40,7 @@ export type ContractFormState = {
 export const emptyContractForm: ContractFormState = {
   contract_number: '', buyer_id: '', crop_id: '', entity_id: '', crop_year: '',
   contracted_bushels: '', delivery_type: 'pickup', delivery_location_id: '',
-  delivery_start_date: '', delivery_end_date: '', notes: '',
+  delivery_start_date: '', delivery_end_date: '', date_sold: '', notes: '',
   contract_type: 'forward', contract_month: '',
   futures_price: '', basis: '', cash_price: '', service_fee: '',
   futures_set_date: '', basis_set_date: '',
@@ -59,6 +60,7 @@ export function contractToForm(c: Contract): ContractFormState {
     delivery_location_id: c.delivery_location_id ?? '',
     delivery_start_date: c.delivery_start_date ?? '',
     delivery_end_date: c.delivery_end_date ?? '',
+    date_sold: c.date_sold ?? '',
     notes: c.notes ?? '',
     // A contract with both legs reads as a forward (see effectiveContractType), so
     // the editor opens with all three price legs visible instead of locking one.
@@ -99,6 +101,7 @@ export function contractFormToPayload(f: ContractFormState) {
     delivery_location_id: f.delivery_type === 'delivered' ? (f.delivery_location_id || null) : null,
     delivery_start_date: f.delivery_start_date || null,
     delivery_end_date: f.delivery_end_date || null,
+    date_sold: f.date_sold || null,
     notes: f.notes || null,
     contract_type,
     contract_month: f.contract_month || null,
@@ -354,7 +357,11 @@ export function ContractFields({
           Delivery end
           <input type="date" value={f.delivery_end_date} onChange={(e) => set('delivery_end_date', e.target.value)} className={`w-full ${INPUT_CLS}`} />
         </label>
-        <input placeholder="Notes" value={f.notes} onChange={(e) => set('notes', e.target.value)} className={`sm:col-span-2 ${INPUT_CLS}`} />
+        <label className="text-sm text-slate-700">
+          Date sold <span className="text-slate-400">(optional)</span>
+          <input type="date" value={f.date_sold} onChange={(e) => set('date_sold', e.target.value)} className={`w-full ${INPUT_CLS}`} />
+        </label>
+        <input placeholder="Notes" value={f.notes} onChange={(e) => set('notes', e.target.value)} className={`self-end ${INPUT_CLS}`} />
       </div>
 
       <div className="flex flex-wrap items-center gap-3">

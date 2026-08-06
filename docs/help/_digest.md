@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-08-06 · version 0.1.0 · build e3f6bdc. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-08-06 · version 0.1.0 · build 4d8cd53. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -79,6 +79,8 @@ The contract tracker shows every grain contract with how much you've delivered a
 When you later set the open leg — an HTA gets its basis, or a basis contract gets its futures — the contract shows as Forward, because at that point both legs are locked and it prices like one. The pricing status (fully priced, awaiting basis, awaiting futures) is shown and filterable on the list.
 
 ## What the controls do
+
+- **Date sold** — an optional date on each contract recording when you made the sale. Informational: it prints on the contract page and exports, and doesn't change any delivery or payment math.
 
 - **Filters** narrow by type, pricing status, crop year, and more; **Hide completed** tucks away finished contracts.
 - **Warnings** appear at the top for contracts approaching risk: an HTA or basis contract with pricing still open whose contract month's first notice day is within 30 days (or already past), and contracts whose delivery window ends within 14 days. Both warnings stop once a contract is completed — marked complete or fully delivered — since there's nothing left to price or deliver.

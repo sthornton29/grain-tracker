@@ -152,6 +152,9 @@ export type Contract = {
   delivery_start_date: string | null
   delivery_end_date: string | null
   completed_at: string | null
+  /** Optional: the date the contract was sold/signed (057) — informational,
+   *  distinct from the delivery window and completed_at. */
+  date_sold: string | null
   created_at: string
   // Pricing breakdown (forward / HTA / basis). cash_price is the canonical flat
   // price; price_per_bushel is kept in sync for backward compatibility.

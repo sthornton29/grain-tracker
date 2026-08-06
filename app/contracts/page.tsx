@@ -21,6 +21,7 @@ type ContractRow = {
   delivery_type: 'pickup' | 'delivered'
   delivery_start_date: string | null
   delivery_end_date: string | null
+  date_sold: string | null
   completed_at: string | null
   buyer_id: string | null
   crop_id: string | null
@@ -155,7 +156,7 @@ export default async function ContractsPage({
       .from('contracts')
       .select(`
         id, contract_number, contracted_bushels, price_per_bushel, notes,
-        crop_year, delivery_type, delivery_start_date, delivery_end_date, completed_at,
+        crop_year, delivery_type, delivery_start_date, delivery_end_date, date_sold, completed_at,
         buyer_id, crop_id, entity_id,
         contract_month, contract_type, pricing_status, futures_price, basis, cash_price,
         buyer:buyers(name), crop:crops(name), delivery_location:delivery_locations(name)
@@ -347,7 +348,7 @@ export default async function ContractsPage({
     sections: [{
       columns: [
         { label: 'Contract #' }, { label: 'Buyer' }, { label: 'Crop' }, { label: 'Type' }, { label: 'Year', format: 'text' },
-        { label: 'Location' }, { label: 'Delivery window' },
+        { label: 'Sold' }, { label: 'Location' }, { label: 'Delivery window' },
         { label: 'Contracted', align: 'right', format: 'bu' }, { label: 'Delivered', align: 'right', format: 'bu' }, { label: 'Remaining', align: 'right', format: 'bu' },
         { label: '% Delivered', align: 'right', format: 'pct1' }, { label: '$/bu', align: 'right', format: 'price' },
         { label: 'Revenue', align: 'right', format: 'usd0' }, { label: 'Paid bu', align: 'right', format: 'bu' }, { label: 'Unpaid bu', align: 'right', format: 'bu' },
@@ -364,7 +365,7 @@ export default async function ContractsPage({
         const window = (c.delivery_start_date || c.delivery_end_date) ? `${fmtDate(c.delivery_start_date)} → ${fmtDate(c.delivery_end_date)}` : '—'
         return [
           c.contract_number, c.buyer?.name ?? '', c.crop?.name ?? '', CONTRACT_TYPE_LABEL[effectiveContractType(c)], c.crop_year ?? '',
-          location, window, contracted, delivered, remaining, pct, price, revenue, agg?.paidBushels ?? 0, agg?.deliveredUnpaid ?? 0,
+          c.date_sold ? fmtDate(c.date_sold) : '', location, window, contracted, delivered, remaining, pct, price, revenue, agg?.paidBushels ?? 0, agg?.deliveredUnpaid ?? 0,
         ]
       }),
     }],
@@ -478,12 +479,12 @@ export default async function ContractsPage({
                   Crop{sortKey === 'crop' ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
                 </Link>
               </th>
-              {['Type', 'Year', 'Location', 'Delivery window', 'Contracted', 'Delivered', 'Progress', '$/bu', 'Revenue', 'Paid (bu)', 'Unpaid (bu)']
+              {['Type', 'Year', 'Sold', 'Location', 'Delivery window', 'Contracted', 'Delivered', 'Progress', '$/bu', 'Revenue', 'Paid (bu)', 'Unpaid (bu)']
                 .map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
             </tr>
           </thead>
           <tbody>
-            {visible.length === 0 && <tr><td colSpan={14} className="px-3 py-6 text-center text-slate-400">No contracts.</td></tr>}
+            {visible.length === 0 && <tr><td colSpan={15} className="px-3 py-6 text-center text-slate-400">No contracts.</td></tr>}
             {visible.map((c) => {
               const agg = aggByContract.get(c.id) ?? { delivered: 0, paidBushels: 0, revenue: 0, deliveredUnpaid: 0, entityIds: new Set<string>(), loadCount: 0 }
               const isDup = (numberCounts.get(c.contract_number) ?? 0) > 1
@@ -516,6 +517,9 @@ export default async function ContractsPage({
                     <span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{CONTRACT_TYPE_LABEL[effectiveContractType(c)]}</span>
                   </td>
                   <td className="px-3 py-2">{c.crop_year ?? ''}</td>
+                  <td className="px-3 py-2 text-xs whitespace-nowrap">
+                    {c.date_sold ? fmtDate(c.date_sold) : <span className="text-slate-400">—</span>}
+                  </td>
                   <td className="px-3 py-2">
                     {c.delivery_type === 'delivered'
                       ? <>Del → {c.delivery_location?.name ?? '—'}</>

@@ -40,7 +40,7 @@ function contract(over: Partial<Contract> = {}): Contract {
     id: 'c1', contract_number: 'CT-1', buyer_id: null, crop_id: 'corn', entity_id: null,
     crop_year: 2026, contracted_bushels: 0, price_per_bushel: null, notes: null,
     delivery_type: 'delivered', delivery_location_id: null,
-    delivery_start_date: null, delivery_end_date: null, completed_at: null, created_at: '',
+    delivery_start_date: null, delivery_end_date: null, date_sold: null, completed_at: null, created_at: '',
     contract_month: null, contract_type: 'forward', futures_price: null, basis: null,
     cash_price: null, service_fee: 0, futures_set_date: null, basis_set_date: null,
     pricing_status: 'fully_priced',
