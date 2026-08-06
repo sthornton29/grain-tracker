@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-08-06 · version 0.1.0 · build 93a7a14. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-08-06 · version 0.1.0 · build 7859c9a. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -422,6 +422,8 @@ Every year you elect ARC or PLC for each farm and covered commodity at the FSA o
 # Bale Quality Summary  (page: /reports/bale-quality)
 
 ## What this page is for
+
+This report is part of the Cotton module — it appears in the Reports menu only when Cotton is turned on under Settings → Users & Modules.
 
 The Bale Quality Summary is the quality package a cotton producer shows buyers. For each field — with farm and entity rollups — it shows how many bales you made, total lint pounds, the weighted average loan value in cents per pound, and how your bales distribute across the HVI grades that drive price: color grade, staple, micronaire, and strength. When a merchant asks "what does your cotton look like?", this is the answer.
 

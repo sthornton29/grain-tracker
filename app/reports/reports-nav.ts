@@ -16,15 +16,24 @@ export type ReportNavItem = {
 
 export type ReportNavGroup = { title: string; reports: ReportNavItem[] }
 
-/** The groups a role may see. Viewers keep every embedded /reports page and
+// Reports that exist only when the Cotton module is on for the org.
+const COTTON_REPORT_ROUTES = ['/reports/bale-quality']
+
+/** The groups a user may see. Viewers keep every embedded /reports page and
  *  the Yields links, but lose the ↗ links into operational pages (Loads,
  *  Contracts, Inventory…) — the middleware (lib/route-guard.ts) redirects
- *  those paths anyway. Empty groups drop out. */
-export function reportGroupsFor(role: AppRole, groups: ReportNavGroup[] = REPORT_GROUPS): ReportNavGroup[] {
-  if (role !== 'viewer') return groups
-  return groups
-    .map((g) => ({ ...g, reports: g.reports.filter((r) => roleAllowsPath('viewer', r.href)) }))
-    .filter((g) => g.reports.length > 0)
+ *  those paths anyway. Cotton-only reports (Bale Quality) drop out when the
+ *  org's Cotton module is off — the middleware guards the route too. Empty
+ *  groups drop out. */
+export function reportGroupsFor(role: AppRole, cottonEnabled = true, groups: ReportNavGroup[] = REPORT_GROUPS): ReportNavGroup[] {
+  let out = groups
+  if (!cottonEnabled) {
+    out = out.map((g) => ({ ...g, reports: g.reports.filter((r) => !COTTON_REPORT_ROUTES.includes(r.href)) }))
+  }
+  if (role === 'viewer') {
+    out = out.map((g) => ({ ...g, reports: g.reports.filter((r) => roleAllowsPath('viewer', r.href)) }))
+  }
+  return out.filter((g) => g.reports.length > 0)
 }
 
 export const REPORT_GROUPS: ReportNavGroup[] = [

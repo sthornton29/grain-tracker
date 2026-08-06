@@ -6,10 +6,14 @@ import { coerceAppRole } from '@/lib/app-role'
 export default async function ReportsLanding() {
   const supabase = createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  const { data: profile } = user
-    ? await supabase.from('user_profiles').select('role').eq('user_id', user.id).maybeSingle()
-    : { data: null }
-  const groups = reportGroupsFor(coerceAppRole((profile as { role?: string } | null)?.role))
+  const [{ data: profile }, { data: settings }] = user
+    ? await Promise.all([
+        supabase.from('user_profiles').select('role').eq('user_id', user.id).maybeSingle(),
+        supabase.from('app_settings').select('cotton_module_enabled').limit(1).maybeSingle() /* org row via RLS (054) */,
+      ])
+    : [{ data: null }, { data: null }]
+  const cottonEnabled = Boolean((settings as { cotton_module_enabled?: boolean } | null)?.cotton_module_enabled)
+  const groups = reportGroupsFor(coerceAppRole((profile as { role?: string } | null)?.role), cottonEnabled)
   return (
     <div className="space-y-6">
       <div>

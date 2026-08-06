@@ -74,16 +74,16 @@ export default function SupportForm({ route, transcript }: { route: string; tran
         </p>
       )}
       <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject"
-        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400" />
       <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={5}
         placeholder="What do you need help with?"
-        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400" />
       <label className="block text-xs text-slate-500">
         Screenshot (optional, image up to 3 MB)
         <input type="file" accept="image/*" onChange={(e) => pickShot(e.target.files?.[0])}
-          className="mt-1 block w-full text-xs" />
+          className="mt-1 block w-full text-xs text-slate-700" />
       </label>
-      {shot && <p className="text-xs text-slate-500">Attached: {shot.name}</p>}
+      {shot && <p className="text-xs text-slate-600">Attached: {shot.name}</p>}
       {err && <p className="text-sm text-red-600">{err}</p>}
       <button type="submit" disabled={busy}
         className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 text-sm font-semibold disabled:opacity-50">
