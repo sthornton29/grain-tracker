@@ -55,6 +55,7 @@ export type Bin = {
   name_or_number: string
   crop_id: string | null
   bin_site_id: string | null
+  capacity_bushels: number | null
 }
 export type BinSite = {
   id: string
@@ -84,6 +85,20 @@ export type Crop = {
   // Whether this crop is grown as a double-crop (a second crop after a
   // spring-harvest crop). Set per crop under Settings → Crops.
   double_crop: boolean
+}
+
+export type BinTransfer = {
+  id: string
+  from_bin_id: string
+  to_bin_id: string
+  crop_id: string
+  bushels: number
+  transfer_date: string
+  method: 'entered' | 'estimated'
+  throughput_bu_per_hr: number | null
+  hours_run: number | null
+  notes: string | null
+  created_at: string
 }
 
 export type BinInventoryAdjustment = {

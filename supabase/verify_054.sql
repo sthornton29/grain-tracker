@@ -19,7 +19,7 @@
 with tenant(t) as (
   values
     ('entities'), ('farms'), ('fields'), ('field_plantings'), ('field_planting_varieties'), ('crops'),
-    ('bins'), ('bin_sites'), ('bin_inventory_adjustments'), ('trucks'), ('buyers'), ('delivery_locations'),
+    ('bins'), ('bin_sites'), ('bin_inventory_adjustments'), ('bin_transfers'), ('trucks'), ('buyers'), ('delivery_locations'),
     ('landowners'), ('entity_counties'),
     ('loads'), ('load_splits'), ('load_attachments'), ('contracts'), ('contract_attachments'),
     ('settlements'), ('settlement_lines'),
@@ -86,7 +86,7 @@ begin
   for t in
     select x from unnest(array[
       'entities','farms','fields','field_plantings','field_planting_varieties','crops',
-      'bins','bin_sites','bin_inventory_adjustments','trucks','buyers','delivery_locations',
+      'bins','bin_sites','bin_inventory_adjustments','bin_transfers','trucks','buyers','delivery_locations',
       'landowners','entity_counties',
       'loads','load_splits','load_attachments','contracts','contract_attachments',
       'settlements','settlement_lines',

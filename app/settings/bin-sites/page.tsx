@@ -19,8 +19,17 @@ type SiteForm = {
 }
 const emptySite: SiteForm = { name: '', entityId: '', countyId: '', address: '', notes: '', bins: '' }
 
-type BinForm = { name: string; cropId: string }
-const emptyBin: BinForm = { name: '', cropId: '' }
+type BinForm = { name: string; cropId: string; capacity: string }
+const emptyBin: BinForm = { name: '', cropId: '', capacity: '' }
+
+/** '' → null; anything else must be a positive number of bushels. */
+function parseCapacity(raw: string): { value: number | null; error?: string } {
+  const s = raw.trim().replace(/,/g, '')
+  if (!s) return { value: null }
+  const n = Number(s)
+  if (!Number.isFinite(n) || n <= 0) return { value: null, error: 'Capacity must be a positive number of bushels.' }
+  return { value: n }
+}
 
 type LoadRow = {
   net_weight: number | null
@@ -55,7 +64,7 @@ export default function BinSitesPage() {
 
   const [newBinBySite, setNewBinBySite] = useState<Record<string, BinForm>>({})
   const [editingBinId, setEditingBinId] = useState<string | null>(null)
-  const [editBinForm, setEditBinForm] = useState<{ name: string; cropId: string; siteId: string }>({ name: '', cropId: '', siteId: '' })
+  const [editBinForm, setEditBinForm] = useState<{ name: string; cropId: string; siteId: string; capacity: string }>({ name: '', cropId: '', siteId: '', capacity: '' })
 
   const [err, setErr] = useState<string | null>(null)
 
@@ -204,10 +213,13 @@ export default function BinSitesPage() {
     e.preventDefault()
     const f = getNewBin(siteId)
     if (!f.name.trim()) return
+    const cap = parseCapacity(f.capacity)
+    if (cap.error) { setErr(cap.error); return }
     const { error } = await supabase.from('bins').insert({
       name_or_number: f.name.trim(),
       crop_id: f.cropId || null,
       bin_site_id: siteId,
+      capacity_bushels: cap.value,
     })
     if (error) { setErr(error.message); return }
     setNewBin(siteId, emptyBin)
@@ -218,10 +230,13 @@ export default function BinSitesPage() {
   async function saveBin(id: string) {
     if (!editBinForm.name.trim()) return
     if (!editBinForm.siteId) { setErr('Pick a bin site before saving.'); return }
+    const cap = parseCapacity(editBinForm.capacity)
+    if (cap.error) { setErr(cap.error); return }
     const { error } = await supabase.from('bins').update({
       name_or_number: editBinForm.name.trim(),
       crop_id: editBinForm.cropId || null,
       bin_site_id: editBinForm.siteId,
+      capacity_bushels: cap.value,
     }).eq('id', id)
     if (error) { setErr(error.message); return }
     setEditingBinId(null); setErr(null); refresh()
@@ -354,6 +369,7 @@ export default function BinSitesPage() {
             { key: 'name_or_number', label: 'bin', required: true },
             { key: 'bin_site_id', label: 'site', fk: { table: 'bin_sites', matchColumn: 'name' } },
             { key: 'crop_id', label: 'crop', fk: { table: 'crops', matchColumn: 'name' } },
+            { key: 'capacity_bushels', label: 'capacity_bu', type: 'number' },
           ],
         }}
         onImported={refresh}
@@ -458,7 +474,7 @@ export default function BinSitesPage() {
                     <div className="mt-3 ml-2 border-l-2 border-slate-200 pl-3 space-y-2">
                       <form
                         onSubmit={(e) => addBin(s.id, e)}
-                        className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2"
+                        className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_auto] gap-2"
                       >
                         <input
                           value={newBin.name}
@@ -474,6 +490,16 @@ export default function BinSitesPage() {
                           <option value="">— crop (optional) —</option>
                           {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                         </select>
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          min="0"
+                          step="1"
+                          value={newBin.capacity}
+                          onChange={(e) => setNewBin(s.id, { ...newBin, capacity: e.target.value })}
+                          placeholder="Capacity (bu) — optional"
+                          className={inputCls}
+                        />
                         <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 font-semibold text-sm">
                           Add bin
                         </button>
@@ -486,7 +512,7 @@ export default function BinSitesPage() {
                           {list.map((b) => (
                             <li key={b.id} className="py-2">
                               {editingBinId === b.id ? (
-                                <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_auto_auto] gap-2">
+                                <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr_1fr_auto_auto] gap-2">
                                   <input
                                     value={editBinForm.name}
                                     onChange={(e) => setEditBinForm({ ...editBinForm, name: e.target.value })}
@@ -510,6 +536,16 @@ export default function BinSitesPage() {
                                     <option value="">— no crop —</option>
                                     {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                                   </select>
+                                  <input
+                                    type="number"
+                                    inputMode="decimal"
+                                    min="0"
+                                    step="1"
+                                    value={editBinForm.capacity}
+                                    onChange={(e) => setEditBinForm({ ...editBinForm, capacity: e.target.value })}
+                                    placeholder="Capacity (bu) — optional"
+                                    className={inputCls}
+                                  />
                                   <button onClick={() => saveBin(b.id)} className="text-green-700 font-semibold">Save</button>
                                   <button onClick={() => setEditingBinId(null)} className="text-slate-500">Cancel</button>
                                 </div>
@@ -523,6 +559,9 @@ export default function BinSitesPage() {
                                         : <span className="text-amber-600">no crop assigned</span>}
                                       {' · '}
                                       <span className="font-mono">{fmtBu(bushelsByBin.get(b.id) ?? 0)} bu</span>
+                                      {b.capacity_bushels != null && b.capacity_bushels > 0 && (
+                                        <> · <span className="text-slate-400">capacity {fmtBu(b.capacity_bushels)} bu</span></>
+                                      )}
                                     </div>
                                   </div>
                                   <button
@@ -532,6 +571,7 @@ export default function BinSitesPage() {
                                         name: b.name_or_number,
                                         cropId: b.crop_id ?? '',
                                         siteId: b.bin_site_id ?? s.id,
+                                        capacity: b.capacity_bushels != null ? String(b.capacity_bushels) : '',
                                       })
                                     }}
                                     className="text-brand-deep text-sm"

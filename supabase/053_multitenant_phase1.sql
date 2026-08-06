@@ -144,7 +144,7 @@ begin
   foreach t in array array[
     -- core operation
     'entities', 'farms', 'fields', 'field_plantings', 'field_planting_varieties', 'crops',
-    'bins', 'bin_sites', 'bin_inventory_adjustments', 'trucks', 'buyers', 'delivery_locations',
+    'bins', 'bin_sites', 'bin_inventory_adjustments', 'bin_transfers', 'trucks', 'buyers', 'delivery_locations',
     'landowners', 'entity_counties',
     -- grain flow
     'loads', 'load_splits', 'load_attachments', 'contracts', 'contract_attachments',

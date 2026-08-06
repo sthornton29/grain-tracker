@@ -7,8 +7,11 @@ export type InventoryCsvRow = {
   binName: string
   cropName: string
   loadBackedBu: number
+  transferNetBu: number
   beginningBu: number
   totalBu: number
+  capacityBu: number | null
+  pctFull: string
   beginningNotes: string
 }
 
@@ -21,8 +24,13 @@ function csvCell(v: unknown): string {
 // Formatted PDF/Excel mirroring the on-screen inventory (real bushel numbers).
 function buildPayload(rows: InventoryCsvRow[]): ExportPayload {
   const total = rows.reduce(
-    (a, r) => ({ load: a.load + r.loadBackedBu, beg: a.beg + r.beginningBu, tot: a.tot + r.totalBu }),
-    { load: 0, beg: 0, tot: 0 },
+    (a, r) => ({
+      load: a.load + r.loadBackedBu,
+      xfer: a.xfer + r.transferNetBu,
+      beg: a.beg + r.beginningBu,
+      tot: a.tot + r.totalBu,
+    }),
+    { load: 0, xfer: 0, beg: 0, tot: 0 },
   )
   return {
     title: 'Bin Inventory Summary',
@@ -30,12 +38,20 @@ function buildPayload(rows: InventoryCsvRow[]): ExportPayload {
     sections: [{
       columns: [
         { label: 'Bin' }, { label: 'Crop' },
-        { label: 'Load-backed bu', align: 'right', format: 'bu' }, { label: 'Beginning inventory bu', align: 'right', format: 'bu' },
-        { label: 'Total bu', align: 'right', format: 'bu' }, { label: 'Beginning inventory notes' },
+        { label: 'Load-backed bu', align: 'right', format: 'bu' },
+        { label: 'Transfers net bu', align: 'right', format: 'bu' },
+        { label: 'Beginning inventory bu', align: 'right', format: 'bu' },
+        { label: 'Total bu', align: 'right', format: 'bu' },
+        { label: 'Capacity bu', align: 'right', format: 'bu' },
+        { label: '% full', align: 'right', format: 'text' },
+        { label: 'Beginning inventory notes' },
       ],
       rows: [
-        ...rows.map((r) => [r.binName, r.cropName, r.loadBackedBu, r.beginningBu, r.totalBu, r.beginningNotes]),
-        ['Total', '', total.load, total.beg, total.tot, ''],
+        ...rows.map((r) => [
+          r.binName, r.cropName, r.loadBackedBu, r.transferNetBu, r.beginningBu, r.totalBu,
+          r.capacityBu ?? '', r.pctFull, r.beginningNotes,
+        ]),
+        ['Total', '', total.load, total.xfer, total.beg, total.tot, '', '', ''],
       ],
       rowMeta: [...rows.map(() => 'data' as const), 'total'],
     }],
@@ -46,15 +62,18 @@ export default function ExportInventoryCsv({ rows }: { rows: InventoryCsvRow[] }
   function download() {
     const header = [
       'Bin', 'Crop',
-      'Load-backed bu', 'Beginning inventory bu',
-      'Total bu', 'Beginning inventory notes',
+      'Load-backed bu', 'Transfers net bu', 'Beginning inventory bu',
+      'Total bu', 'Capacity bu', '% full', 'Beginning inventory notes',
     ]
     const body = rows.map((r) => [
       r.binName,
       r.cropName,
       r.loadBackedBu.toFixed(2),
+      r.transferNetBu.toFixed(2),
       r.beginningBu.toFixed(2),
       r.totalBu.toFixed(2),
+      r.capacityBu != null ? r.capacityBu.toFixed(2) : '',
+      r.pctFull,
       r.beginningNotes,
     ])
     const csv = [header, ...body].map((r) => r.map(csvCell).join(',')).join('\n')

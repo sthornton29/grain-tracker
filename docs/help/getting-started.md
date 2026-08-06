@@ -1,8 +1,8 @@
 ---
 page_route: /
 title: Getting Started
-updated: 2026-08-05
-keywords: home, setup, checklist, new farm, onboarding, tiles, entities, farms, fields, crops, first loads, import
+updated: 2026-08-06
+keywords: home, setup, checklist, new farm, onboarding, tiles, entities, farms, fields, crops, first loads, import, help, support, assistant, question mark
 ---
 ## What this page is for
 
@@ -24,6 +24,7 @@ That order matters: farms need an entity, fields need a farm, and loads need fie
 
 - **The checklist** shows only while entities, farms, or fields are missing, and only to owners. Once the basics exist it goes away for good — the tiles are all you see afterward.
 - **The tiles** mirror the top navigation exactly. If the Cotton module is turned on for your operation, a Cotton tile appears as well.
+- **The ? button** in the top bar is on every page, for every role. It opens Help with a guide to the page you're on, plus tabs to browse all topics, ask the assistant a question, and send a message to support — that last one reaches a person. The **Help center** link inside it opens the full searchable Help Center.
 
 ## Common questions
 
