@@ -41,6 +41,7 @@ begin
   delete from public.field_planting_varieties where org_id = org;
   delete from public.field_plantings where org_id = org;
   delete from public.bin_inventory_adjustments where org_id = org;
+  delete from public.bin_transfers where org_id = org;
   delete from public.settlement_lines where org_id = org;
   delete from public.settlements where org_id = org;
   delete from public.user_entity_access where org_id = org;

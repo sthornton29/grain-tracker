@@ -1,9 +1,15 @@
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
+import {
+  type OnHandBag, type BinInventoryCell,
+  cellFor, cellTotal, applyTransfers,
+  percentFull, percentFullLabel, capacityStatus, siteCapacitySummary,
+} from '@/lib/bin-inventory'
 import EmptyBinButton from '@/components/empty-bin-button'
 import BeginningInventoryButton from '@/components/beginning-inventory-button'
+import TransferGrainButton, { BinTransferHistory, type TransferBinOption } from '@/components/transfer-grain'
 import ExportInventoryCsv, { type InventoryCsvRow } from '@/components/export-inventory-csv'
-import type { BinInventoryAdjustment, Crop } from '@/lib/types'
+import type { BinInventoryAdjustment, BinTransfer, Crop } from '@/lib/types'
 
 type LoadRow = {
   net_weight: number | null
@@ -17,7 +23,7 @@ type LoadRow = {
 }
 
 type EntityRow = { id: string; name: string }
-type BinRow = { id: string; name_or_number: string; crop_id: string | null; bin_site_id: string | null }
+type BinRow = { id: string; name_or_number: string; crop_id: string | null; bin_site_id: string | null; capacity_bushels: number | null }
 type BinSiteRow = { id: string; name: string; entity_id: string }
 
 export const dynamic = 'force-dynamic'
@@ -50,6 +56,27 @@ function hasActiveBeginning(adjs: BinInventoryAdjustment[], cropId: string): boo
   )
 }
 
+// Percent-full bar shared by bin cards and site headers. Same visual language
+// as the contract tracker's delivery-progress bars; amber near full, red when
+// the estimate says the bin is at/over capacity (inventory is an estimate, so
+// over 100% is shown as ">100%" rather than clipped).
+function CapacityBar({ totalBu, capacityBu }: { totalBu: number; capacityBu: number }) {
+  const pct = percentFull(totalBu, capacityBu)
+  if (pct == null) return null
+  const status = capacityStatus(pct)
+  const fill = status === 'over' ? 'bg-red-600' : status === 'near_full' ? 'bg-amber-500' : 'bg-brand'
+  return (
+    <div>
+      <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
+        <div className={`h-2 ${fill}`} style={{ width: `${Math.min(100, pct)}%` }} />
+      </div>
+      <div className={`text-xs mt-0.5 ${status === 'over' ? 'text-red-700 font-semibold' : status === 'near_full' ? 'text-amber-700' : 'text-slate-500'}`}>
+        {percentFullLabel(pct)} full · {fmtBu(Math.max(0, totalBu))} of {fmtBu(capacityBu)} bu
+      </div>
+    </div>
+  )
+}
+
 export default async function InventoryPage({
   searchParams,
 }: {
@@ -61,8 +88,8 @@ export default async function InventoryPage({
   const siteFilter = searchParams.site ?? ''
   const today = todayISO()
 
-  const [binsRes, sitesRes, cropsRes, loadsRes, entitiesRes, adjsRes] = await Promise.all([
-    supabase.from('bins').select('id, name_or_number, crop_id, bin_site_id').order('name_or_number'),
+  const [binsRes, sitesRes, cropsRes, loadsRes, entitiesRes, adjsRes, transfersRes] = await Promise.all([
+    supabase.from('bins').select('id, name_or_number, crop_id, bin_site_id, capacity_bushels').order('name_or_number'),
     supabase.from('bin_sites').select('id, name, entity_id').order('name'),
     supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').order('name'),
     supabase.from('loads').select('net_weight, moisture, crop_id, dry_bushels_override, from_type, from_bin_id, to_type, to_bin_id'),
@@ -71,6 +98,11 @@ export default async function InventoryPage({
       .select('id, bin_id, crop_id, adjustment_type, bushels, moisture, as_of_date, notes, created_at')
       .lte('as_of_date', today)
       .order('as_of_date', { ascending: true }),
+    supabase.from('bin_transfers')
+      .select('id, from_bin_id, to_bin_id, crop_id, bushels, transfer_date, method, throughput_bu_per_hr, hours_run, notes, created_at')
+      .lte('transfer_date', today)
+      .order('transfer_date', { ascending: false })
+      .order('created_at', { ascending: false }),
   ])
 
   const allBins = (binsRes.data ?? []) as BinRow[]
@@ -79,21 +111,16 @@ export default async function InventoryPage({
   const loads = (loadsRes.data ?? []) as LoadRow[]
   const entities = (entitiesRes.data ?? []) as EntityRow[]
   const adjustments = (adjsRes.data ?? []) as BinInventoryAdjustment[]
+  const transfers = (transfersRes.data ?? []) as BinTransfer[]
 
   const cropById = new Map(crops.map((c) => [c.id, c]))
   const siteById = new Map(sites.map((s) => [s.id, s]))
 
-  // Per-bin × per-crop totals from all loads + adjustments — bin inventory is a
-  // live snapshot, so we don't try to attribute inflow by entity/county/year.
-  type Cell = { loadBacked: number; beginning: number; emptyAdj: number }
-  const cellFor = (bag: Map<string, Map<string, Cell>>, binId: string, cropId: string): Cell => {
-    let inner = bag.get(binId)
-    if (!inner) { inner = new Map(); bag.set(binId, inner) }
-    let cell = inner.get(cropId)
-    if (!cell) { cell = { loadBacked: 0, beginning: 0, emptyAdj: 0 }; inner.set(cropId, cell) }
-    return cell
-  }
-  const onHand = new Map<string, Map<string, Cell>>()
+  // Per-bin × per-crop totals from loads + adjustments + bin-to-bin transfers —
+  // bin inventory is a live snapshot, so we don't try to attribute inflow by
+  // entity/county/year. Transfers move grain between bins without ever
+  // touching yields, production, or contract math (they aren't loads).
+  const onHand: OnHandBag = new Map()
   for (const b of allBins) onHand.set(b.id, new Map())
 
   for (const l of loads) {
@@ -126,6 +153,18 @@ export default async function InventoryPage({
     adjustmentsForBin.set(a.bin_id, list)
   }
 
+  applyTransfers(onHand, transfers)
+
+  const transfersForBin = new Map<string, BinTransfer[]>()
+  for (const t of transfers) {
+    for (const binId of [t.from_bin_id, t.to_bin_id]) {
+      if (!onHand.has(binId)) continue
+      const list = transfersForBin.get(binId) ?? []
+      list.push(t)
+      transfersForBin.set(binId, list)
+    }
+  }
+
   const cropName = (id: string) => cropById.get(id)?.name ?? '—'
 
   // Apply visibility filters — entity scopes by the bin's site, site scopes
@@ -139,18 +178,22 @@ export default async function InventoryPage({
 
   type BinView = {
     bin: BinRow
-    rows: { cid: string; cell: Cell; total: number }[]
+    rows: { cid: string; cell: BinInventoryCell; total: number }[]
     total: number
+    /** Total across ALL crops (ignores the crop filter) — what's physically in the bin, for the capacity bar. */
+    physicalTotal: number
   }
   function viewFor(b: BinRow): BinView {
-    const inner = onHand.get(b.id) ?? new Map<string, Cell>()
-    const rows = [...inner.entries()]
-      .map(([cid, cell]) => ({ cid, cell, total: cell.loadBacked + cell.beginning - cell.emptyAdj }))
+    const inner = onHand.get(b.id) ?? new Map<string, BinInventoryCell>()
+    const allRows = [...inner.entries()]
+      .map(([cid, cell]) => ({ cid, cell, total: cellTotal(cell) }))
       .filter((r) => Math.abs(r.total) >= 0.005)
+    const physicalTotal = allRows.reduce((s, r) => s + r.total, 0)
+    const rows = allRows
       .filter((r) => !cropFilter || r.cid === cropFilter)
       .sort((a, b) => cropName(a.cid).localeCompare(cropName(b.cid)))
     const total = rows.reduce((s, r) => s + r.total, 0)
-    return { bin: b, rows, total }
+    return { bin: b, rows, total, physicalTotal }
   }
 
   const binsBySite = new Map<string, BinView[]>()
@@ -191,16 +234,35 @@ export default async function InventoryPage({
   // Sites available in the dropdown: filtered by entity if active.
   const siteOptions = entityId ? sites.filter((s) => s.entity_id === entityId) : sites
 
+  // Serializable props for the transfer UI (client components).
+  const transferBins: TransferBinOption[] = allBins.map((b) => ({
+    id: b.id,
+    name: b.name_or_number,
+    siteName: b.bin_site_id ? siteById.get(b.bin_site_id)?.name ?? null : null,
+    cropId: b.crop_id,
+  }))
+  const transferCrops = crops.map((c) => ({ id: c.id, name: c.name }))
+  const onHandRecord: Record<string, Record<string, number>> = {}
+  for (const [binId, inner] of onHand.entries()) {
+    const rec: Record<string, number> = {}
+    for (const [cid, cell] of inner.entries()) rec[cid] = cellTotal(cell)
+    onHandRecord[binId] = rec
+  }
+
   // CSV mirrors the page: break out load-backed vs. beginning only when a
   // beginning inventory is still active; otherwise it's a single total.
+  // Transfer net is its own column so load-backed stays honest, and each row
+  // carries its bin's capacity/% full when a capacity is set.
   const csvRows: InventoryCsvRow[] = []
   for (const list of binsBySite.values()) {
     for (const v of list) {
       const adjs = adjustmentsForBin.get(v.bin.id) ?? []
+      const pct = percentFull(v.physicalTotal, v.bin.capacity_bushels)
       for (const r of v.rows) {
         const active = hasActiveBeginning(adjs, r.cid)
         const beginningBu = active ? r.cell.beginning : 0
-        const loadBackedBu = r.total - beginningBu
+        const transferNetBu = r.cell.transferIn - r.cell.transferOut
+        const loadBackedBu = r.total - beginningBu - transferNetBu
         const beginningNotes = active
           ? adjs
               .filter((a) => a.crop_id === r.cid && a.adjustment_type === 'beginning_inventory')
@@ -211,8 +273,11 @@ export default async function InventoryPage({
           binName: v.bin.name_or_number,
           cropName: cropName(r.cid),
           loadBackedBu,
+          transferNetBu,
           beginningBu,
           totalBu: r.total,
+          capacityBu: v.bin.capacity_bushels,
+          pctFull: pct != null ? percentFullLabel(pct) : '',
           beginningNotes,
         })
       }
@@ -254,10 +319,13 @@ export default async function InventoryPage({
           </select>
           <button className="rounded-lg bg-slate-700 text-white px-3 py-2 text-sm">Apply</button>
         </form>
+        {allBins.length > 1 && (
+          <TransferGrainButton bins={transferBins} crops={transferCrops} onHand={onHandRecord} prominent />
+        )}
         <ExportInventoryCsv rows={csvRows} />
       </div>
       <p className="text-sm text-slate-500">
-        Live snapshot of dry bushels on hand: bushels delivered to bin − bushels pulled from bin + beginning inventory − empty-bin adjustments.
+        Live snapshot of dry bushels on hand: bushels delivered to bin − bushels pulled from bin + beginning inventory − empty-bin adjustments ± bin-to-bin transfers.
         Loads from any source/crop year are counted; this view shows what is physically in the bins right now.
       </p>
 
@@ -273,6 +341,9 @@ export default async function InventoryPage({
           .sort(([a], [b]) => cropName(a).localeCompare(cropName(b)))
         const total = siteTotal.get(site.id) ?? 0
         const ent = entityNameById.get(site.entity_id) ?? ''
+        const capacity = siteCapacitySummary(
+          list.map((v) => ({ capacityBu: v.bin.capacity_bushels, totalBu: v.physicalTotal })),
+        )
         return (
           <section key={site.id} className="space-y-3">
             <div className="bg-slate-100 rounded-xl px-4 py-3">
@@ -290,12 +361,36 @@ export default async function InventoryPage({
                   ))}
                 </div>
               )}
+              {capacity.pct != null && (
+                <div className="mt-2 max-w-sm">
+                  <CapacityBar totalBu={capacity.bushelsInCapacityBins} capacityBu={capacity.capacityBu} />
+                  {capacity.binsWithoutCapacity > 0 && (
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {capacity.binsWithoutCapacity} bin{capacity.binsWithoutCapacity === 1 ? ' at this site has' : 's at this site have'} no
+                      capacity set and {capacity.binsWithoutCapacity === 1 ? 'isn’t' : 'aren’t'} included in the site percentage.
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
             {list.length === 0 ? (
               <p className="text-sm text-slate-400 ml-2">No bins at this site{cropFilter ? ' for the selected crop' : ''}.</p>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {list.map((v) => <BinCard key={v.bin.id} v={v} crops={crops} adjustmentsForBin={adjustmentsForBin} cropName={cropName} />)}
+                {list.map((v) => (
+                  <BinCard
+                    key={v.bin.id}
+                    v={v}
+                    crops={crops}
+                    adjustmentsForBin={adjustmentsForBin}
+                    cropName={cropName}
+                    transferBins={transferBins}
+                    transferCrops={transferCrops}
+                    onHandRecord={onHandRecord}
+                    transfers={transfersForBin.get(v.bin.id) ?? []}
+                    canTransfer={allBins.length > 1}
+                  />
+                ))}
               </div>
             )}
           </section>
@@ -311,7 +406,20 @@ export default async function InventoryPage({
             </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {unsited.map((v) => <BinCard key={v.bin.id} v={v} crops={crops} adjustmentsForBin={adjustmentsForBin} cropName={cropName} />)}
+            {unsited.map((v) => (
+              <BinCard
+                key={v.bin.id}
+                v={v}
+                crops={crops}
+                adjustmentsForBin={adjustmentsForBin}
+                cropName={cropName}
+                transferBins={transferBins}
+                transferCrops={transferCrops}
+                onHandRecord={onHandRecord}
+                transfers={transfersForBin.get(v.bin.id) ?? []}
+                canTransfer={allBins.length > 1}
+              />
+            ))}
           </div>
         </section>
       )}
@@ -324,12 +432,17 @@ export default async function InventoryPage({
 }
 
 function BinCard({
-  v, crops, adjustmentsForBin, cropName,
+  v, crops, adjustmentsForBin, cropName, transferBins, transferCrops, onHandRecord, transfers, canTransfer,
 }: {
-  v: { bin: BinRow; rows: { cid: string; cell: { loadBacked: number; beginning: number; emptyAdj: number }; total: number }[]; total: number }
+  v: { bin: BinRow; rows: { cid: string; cell: BinInventoryCell; total: number }[]; total: number; physicalTotal: number }
   crops: Crop[]
   adjustmentsForBin: Map<string, BinInventoryAdjustment[]>
   cropName: (id: string) => string
+  transferBins: TransferBinOption[]
+  transferCrops: { id: string; name: string }[]
+  onHandRecord: Record<string, Record<string, number>>
+  transfers: BinTransfer[]
+  canTransfer: boolean
 }) {
   const adjs = adjustmentsForBin.get(v.bin.id) ?? []
 
@@ -337,6 +450,7 @@ function BinCard({
   // Only break out load-backed vs. beginning when a beginning inventory is
   // actually in play; otherwise the inventory is just one number.
   const showBreakout = rows.some((r) => r.active)
+  const showTransferCol = rows.some((r) => Math.abs(r.cell.transferIn - r.cell.transferOut) >= 0.005)
   const beginningNotes = adjs.filter(
     (a) => a.adjustment_type === 'beginning_inventory' && hasActiveBeginning(adjs, a.crop_id),
   )
@@ -347,6 +461,11 @@ function BinCard({
         <h3 className="text-base font-semibold">{v.bin.name_or_number}</h3>
         <span className="text-sm text-slate-500">{fmtBu(v.total)} bu total</span>
       </div>
+      {v.bin.capacity_bushels != null && v.bin.capacity_bushels > 0 && (
+        <div className="mt-2">
+          <CapacityBar totalBu={v.physicalTotal} capacityBu={v.bin.capacity_bushels} />
+        </div>
+      )}
       {rows.length === 0 ? (
         <p className="text-sm text-slate-400 mt-2">Empty.</p>
       ) : showBreakout ? (
@@ -355,6 +474,7 @@ function BinCard({
             <tr className="text-xs text-slate-500">
               <th className="text-left py-1">Crop</th>
               <th className="text-right py-1">Load-backed</th>
+              {showTransferCol && <th className="text-right py-1">Transfers</th>}
               <th className="text-right py-1">Beginning</th>
               <th className="text-right py-1">Total</th>
             </tr>
@@ -362,11 +482,17 @@ function BinCard({
           <tbody>
             {rows.map((r) => {
               const beginning = r.active ? r.cell.beginning : 0
-              const loadBacked = r.total - beginning
+              const transferNet = r.cell.transferIn - r.cell.transferOut
+              const loadBacked = r.total - beginning - transferNet
               return (
                 <tr key={r.cid} className="border-t border-slate-100">
                   <td className="py-1">{cropName(r.cid)}</td>
                   <td className="py-1 text-right font-mono">{fmtBu(loadBacked)}</td>
+                  {showTransferCol && (
+                    <td className="py-1 text-right font-mono text-slate-500">
+                      {Math.abs(transferNet) >= 0.005 ? `${transferNet > 0 ? '+' : ''}${fmtBu(transferNet)}` : '—'}
+                    </td>
+                  )}
                   <td className="py-1 text-right font-mono text-slate-500">
                     {beginning > 0 ? fmtBu(beginning) : '—'}
                   </td>
@@ -406,7 +532,22 @@ function BinCard({
           crops={crops}
           defaultCropId={v.bin.crop_id}
         />
+        {canTransfer && (
+          <TransferGrainButton
+            bins={transferBins}
+            crops={transferCrops}
+            onHand={onHandRecord}
+            defaultFromBinId={v.bin.id}
+          />
+        )}
       </div>
+      <BinTransferHistory
+        binId={v.bin.id}
+        transfers={transfers}
+        bins={transferBins}
+        crops={transferCrops}
+        onHand={onHandRecord}
+      />
     </div>
   )
 }
