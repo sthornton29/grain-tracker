@@ -1142,3 +1142,53 @@ describe('runImport — county + state scoped FK (farms demo fixture)', () => {
     expect(res.failed[0].reason).toContain('TN')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Buyers + delivery locations: one row per buyer, several locations in one
+// cell (semicolon-separated so addresses can contain commas), "@" carrying
+// the address into the child column.
+// ---------------------------------------------------------------------------
+
+describe('runImport — buyer with multiple delivery locations (child detailColumn)', () => {
+  const buyersConfig: ImportConfig = {
+    tableName: 'buyers',
+    uniqueKey: 'name',
+    columns: [
+      { key: 'name', label: 'buyer', required: true },
+      {
+        key: 'delivery_locations', label: 'delivery_locations',
+        child: { table: 'delivery_locations', valueColumn: 'name', parentKey: 'buyer_id', splitOn: ';|', detailColumn: 'address' },
+      },
+    ],
+  }
+  const headers = ['buyer', 'delivery_locations']
+  const mapping = autoMapHeaders(headers, buyersConfig.columns)
+
+  it('creates the buyer and one child row per location; @ becomes the address', async () => {
+    const { client, inserted } = makeFakeClient({ buyers: [], delivery_locations: [] })
+    const rows = [['Plains Grain Co-op', 'North Elevator @ 105 Grain Rd, Decatur AL; River Terminal']]
+    const res = await runImport(client, buyersConfig, rows, headers, mapping, { mode: 'add' })
+    expect(res.failed).toEqual([])
+    expect(res.added).toBe(1)
+    expect(inserted.buyers).toHaveLength(1)
+    const locs = inserted.delivery_locations
+    expect(locs).toHaveLength(2)
+    expect(locs[0]).toMatchObject({ name: 'North Elevator', address: '105 Grain Rd, Decatur AL', buyer_id: 'buyers-new-1' })
+    expect(locs[1].name).toBe('River Terminal')
+    expect(locs[1].address).toBeUndefined()
+  })
+
+  it('re-importing an existing buyer ADDS only new locations', async () => {
+    const { client, inserted } = makeFakeClient({
+      buyers: [{ id: 'b1', name: 'Plains Grain Co-op' }],
+      delivery_locations: [{ id: 'dl1', buyer_id: 'b1', name: 'North Elevator', address: null }],
+    })
+    const rows = [['Plains Grain Co-op', 'North Elevator; South Scale @ 400 Depot St']]
+    const res = await runImport(client, buyersConfig, rows, headers, mapping, { mode: 'sync' })
+    expect(res.failed).toEqual([])
+    expect(res.updated).toBe(1)
+    const locs = inserted.delivery_locations ?? []
+    expect(locs).toHaveLength(1) // only the NEW location
+    expect(locs[0]).toMatchObject({ name: 'South Scale', address: '400 Depot St', buyer_id: 'b1' })
+  })
+})

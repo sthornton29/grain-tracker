@@ -114,6 +114,10 @@ export type ColumnSpec = {
     /** When set, an inline "name:amount" (or "name=amount") puts the amount into
      *  this child column — e.g. a variety's acres in "P2089:70". */
     amountColumn?: string
+    /** When set, an inline "name @ detail" puts the TEXT after the @ into this
+     *  child column — e.g. a delivery location's address in
+     *  "North Elevator @ 105 Grain Rd, Decatur AL". */
+    detailColumn?: string
   }
 }
 
@@ -285,10 +289,16 @@ function parseChildCell(raw: string, child: NonNullable<ColumnSpec['child']>): A
       const m = piece.match(/^(.+?)\s*[:=]\s*(-?\d+(?:\.\d+)?)\s*$/)
       if (m) { name = m[1].trim(); amount = Number(m[2]) }
     }
+    let detail: string | null = null
+    if (child.detailColumn) {
+      const dm = name.match(/^(.+?)\s*@\s*(.+)$/)
+      if (dm) { name = dm[1]; detail = dm[2].trim() }
+    }
     name = name.trim()
     if (name === '') continue
     const row: AnyRow = { [child.valueColumn]: name }
     if (child.amountColumn && amount != null && Number.isFinite(amount)) row[child.amountColumn] = amount
+    if (child.detailColumn && detail) row[child.detailColumn] = detail
     out.push(row)
   }
   return out

@@ -20,9 +20,9 @@ Work top-down the first time: entities, then farms, then fields, then crops and 
 - **Crops** — each crop's base moisture and pounds per bushel (the standards dry-bushel math uses), its **harvest category** (fall or spring — spring-harvest crops like wheat are what make a later planting count as double-crop), and the double-crop designation. This page also holds **"Physical Sales Complete for the Year?"**: when a crop year's grain or cotton is fully sold, mark it here — shrink and small leftovers mean the sold-versus-production numbers rarely land on exactly zero, so this checkbox is how you tell Turnrow the year's selling is truly finished.
 - **Plantings** — what's planted where, per field, crop, and season, with one or more varieties per planting. Import by CSV or **AI upload**; both recognize variety-name spellings that differ only by brand prefix and ask you whether to link or keep them separate, so "DG 3644" and "Dyna-Gro 3644" don't become two varieties.
 - **Varieties** — every variety with usage counts, inline rename (renaming onto an existing spelling merges them), and a find-similar tool for cleaning up duplicates pair by pair.
-- **Bins & Sites** — your storage sites and bins, with current bushels on hand per bin.
+- **Bins & Sites** — your storage sites and bins, with current bushels on hand per bin. Add a site's bins right on the same form (type the names, comma-separated), or bring bins in from a spreadsheet — each row names the bin, its site, and optionally the crop it holds.
 - **Trucks** — the truck list the load form offers.
-- **Buyers** — buyers and their delivery locations, used by contracts and settlements.
+- **Buyers** — buyers and their delivery locations, used by contracts and settlements. The spreadsheet import takes one row per buyer with all their delivery locations in one cell, separated by semicolons, each with an optional address after an @ sign — re-importing adds new locations to a buyer without touching the rest.
 - **Landowners** — names and contact details, linked to farms for the landowner reports. Spreadsheet import with a downloadable template — bring landowners in before farms so the farms import can match their names.
 
 ## Common questions
