@@ -1,7 +1,7 @@
 ---
 page_route: /settings
 title: Operation Settings
-updated: 2026-08-05
+updated: 2026-08-06
 keywords: settings, entities, marketing agent, farms, FSA number, fields, crops, plantings, varieties, bins, trucks, buyers, landowners, share rent, physical sales complete
 ---
 ## What this page is for
@@ -15,7 +15,7 @@ Work top-down the first time: entities, then farms, then fields, then crops and 
 ## What the controls do
 
 - **Entities** — your legal entities and the counties they operate in, plus each entity's FSA eligible-persons count for payment limits (set once; the total ARC/PLC cap is persons times the program year's per-person limit). An entity can also be marked a **marketing agent**: one entity that holds the contracts and hedge account on behalf of the whole operation. In entity-filtered reports, the agent's marketing flows down to each farming entity by that entity's share of the crop's planted acres — so income lands where the grain was grown. A farming entity that markets in its own name keeps those contracts whole.
-- **Farms** — each farm's entity, county, **FSA number**, and landowner, plus the **share-rent flag and landlord share percentage** that drive the Share Rent Report. CSV import available. Deleting a farm removes its fields too.
+- **Farms** — each farm's entity, county, **FSA number**, and landowner, plus the **share-rent flag and landlord share percentage** that drive the Share Rent Report. The spreadsheet import takes all of it — entity, county, and landowner match by name against what already exists, and share rent comes in as yes/no with the landlord percent. Deleting a farm removes its fields too.
 - **Fields** — total and irrigated acres (dryland is derived), county, and each field's plantings. Import by CSV or by **AI upload** of a document. A farm filter narrows long lists.
 - **Crops** — each crop's base moisture and pounds per bushel (the standards dry-bushel math uses), its **harvest category** (fall or spring — spring-harvest crops like wheat are what make a later planting count as double-crop), and the double-crop designation. This page also holds **"Physical Sales Complete for the Year?"**: when a crop year's grain or cotton is fully sold, mark it here — shrink and small leftovers mean the sold-versus-production numbers rarely land on exactly zero, so this checkbox is how you tell Turnrow the year's selling is truly finished.
 - **Plantings** — what's planted where, per field, crop, and season, with one or more varieties per planting. Import by CSV or **AI upload**; both recognize variety-name spellings that differ only by brand prefix and ask you whether to link or keep them separate, so "DG 3644" and "Dyna-Gro 3644" don't become two varieties.
@@ -23,7 +23,7 @@ Work top-down the first time: entities, then farms, then fields, then crops and 
 - **Bins & Sites** — your storage sites and bins, with current bushels on hand per bin.
 - **Trucks** — the truck list the load form offers.
 - **Buyers** — buyers and their delivery locations, used by contracts and settlements.
-- **Landowners** — names and contact details, linked to farms for the landowner reports.
+- **Landowners** — names and contact details, linked to farms for the landowner reports. Spreadsheet import with a downloadable template — bring landowners in before farms so the farms import can match their names.
 
 ## Common questions
 

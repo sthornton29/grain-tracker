@@ -203,11 +203,25 @@ export default function FarmsPage() {
         config={{
           tableName: 'farms',
           uniqueKey: 'name',
+          note: 'Entity, county, and landowner match by name against what already exists — import entities and landowners first. Share rent: yes/no, with the landlord share as a percent (e.g. 33.33) when yes.',
           columns: [
             { key: 'name', required: true },
             { key: 'entity_id', label: 'entity', fk: { table: 'entities', matchColumn: 'name' } },
+            { key: 'county_id', label: 'county', fk: { table: 'counties', matchColumn: 'name' } },
             { key: 'fsa_number', label: 'fsa_number' },
+            { key: 'landowner_id', label: 'landowner', fk: { table: 'landowners', matchColumn: 'name' } },
+            { key: 'is_share_rent', label: 'share_rent', enum: ['yes', 'no', 'true', 'false', 'y', 'n'] },
+            { key: 'landlord_share_percentage', label: 'landlord_share_pct', type: 'number' },
           ],
+          // The share-rent flag arrives as text; convert to the real boolean
+          // and keep the percentage only when share rent is on (the DB
+          // requires a percentage with the flag and forbids one without).
+          derive: (row) => {
+            const raw = row.is_share_rent
+            if (raw == null || raw === '') return {}
+            const sr = ['yes', 'true', 'y'].includes(String(raw).toLowerCase())
+            return { is_share_rent: sr, landlord_share_percentage: sr ? row.landlord_share_percentage ?? null : null }
+          },
         }}
         onImported={refresh}
       />
