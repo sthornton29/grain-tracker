@@ -1,0 +1,32 @@
+---
+page_route: /settings/buyers
+title: Buyers & Delivery Locations
+updated: 2026-08-07
+keywords: buyers, delivery locations, elevators, terminals, gins, find buyers, near me, zip code, import, csv, duplicate
+---
+## What this page is for
+
+Buyers are the businesses you sell and haul to — elevators, river terminals, feed mills, ethanol plants, gins. Each buyer can carry one or more delivery locations (separate elevators, terminals), which contracts and loads then point at. Set them up once here and they're available everywhere a load or contract asks where the grain went.
+
+## How to use it
+
+- Type a name and **Add Buyer** to create one. Expand a buyer to add its delivery locations, each with an optional address.
+- **Find buyers near me** searches the web for elevators, terminals, and other buyers that handle your crops near a zip code you enter, within a radius you pick. Results come back as a checklist — tick the ones you actually sell to, edit a name if it isn't quite right, and add them. Anything you don't tick is discarded, and results already in your list are marked so you don't double up.
+- To bring in a whole list at once, use the spreadsheet import at the top — one row per buyer, locations in one cell separated by semicolons.
+
+## What the controls do
+
+- **Find buyers near me** remembers your last zip and radius. Results are AI-found from public sources — verify the details (that they're still buying, hours, address) before hauling. A result marked **unverified** means the search couldn't confirm it from a direct source. Rural areas may genuinely turn up only a handful — that's the honest answer, not a glitch. Adding your buyers by hand is always the sure path.
+- **Edit / Delete** on a buyer or location work as you'd expect; deleting a buyer also deletes its locations, and contracts pointing at a deleted location have their location cleared.
+
+## Common questions
+
+- **The finder didn't list an elevator I know is there.** Public listings are patchy, especially for smaller elevators. Add it manually — that's the primary way, the finder is just a head start.
+- **A found buyer's details look off.** Treat the finder as a lead, not gospel: verify the name, location, and that they're buying your crop before hauling. You can edit everything after adding it.
+- **Why is a result greyed out?** A buyer with that name is already in your list.
+
+## If something looks wrong
+
+- A buyer missing from a load or contract dropdown: check it exists here and, for contracts, that the delivery location is on the right buyer.
+- The finder keeps erroring: wait a few minutes and try again — searches are limited to keep them snappy. Manual entry always works meanwhile.
+- Still stuck: contact support.

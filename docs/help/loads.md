@@ -1,8 +1,8 @@
 ---
 page_route: /loads
 title: Loads
-updated: 2026-08-05
-keywords: loads, load log, tickets, scale, paid, unpaid, splits, export, delete, test weight, moisture, gross, tare, net
+updated: 2026-08-07
+keywords: loads, load log, tickets, scale, paid, unpaid, splits, export, delete, test weight, moisture, gross, tare, net, irrigated, dryland, practice
 ---
 ## What this page is for
 
@@ -11,6 +11,7 @@ The load log is the master list of every load you've hauled — to a bin or to a
 ## How to use it
 
 - To record a new load by hand, use **New Load** — pick the date, truck, crop, crop year, where it came from (field or bin), where it went (bin or buyer), and enter the weights. If a load carries grain from more than one field, add a split so each field gets credit for its share.
+- **Irrigated or dryland?** When the load's field has both irrigated and dryland acres, an optional Irrigated/Dryland choice appears (on New Load, Edit, ticket scanning, and on each line of a split load). Tag it if you know which ground the load came off — skip it if you don't. Fields that are all one practice never ask; Turnrow already knows. If you tag every load on a mixed field, the Yields page splits that field's bushels between irrigated and dryland automatically, so you won't be asked to allocate after harvest.
 - To enter a stack of tickets at once, use **Scan** (photograph or upload the tickets) or **Import** (upload a spreadsheet).
 - Tap anywhere on a row to open that load's detail page. A small chevron on split loads expands the per-field breakdown right in the list.
 - Tick the checkboxes to select loads, then export the selection or delete them in bulk.

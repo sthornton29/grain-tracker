@@ -6,6 +6,7 @@ import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { projectPayments, expectedArcPlcDate, programYearFor, paymentAttributionYear } from '@/lib/government-payments'
 import { projectInsuranceIndemnities, actualYieldByCropFromLoads, type LiveHarvest } from '@/lib/crop-insurance'
+import { fieldCropAggregates, withLoadBreakouts } from '@/lib/yields'
 import { cottonCashFlowEvents, type CottonCashEvent } from '@/lib/cotton-sales'
 import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
 import { isCottonCrop } from '@/lib/marketing'
@@ -31,6 +32,7 @@ import type {
 
 type LoadRow = {
   id: string
+  date: string
   contract_id: string | null
   ticket_number: string | null
   net_weight: number | null
@@ -40,6 +42,15 @@ type LoadRow = {
   dry_bushels_override: number | null
   from_type: string | null
   from_field_id: string | null
+  practice: 'irrigated' | 'dryland' | null
+}
+
+type CashFlowSplitRow = {
+  load_id: string
+  field_id: string
+  crop_id: string
+  dry_bushels: number | null
+  practice: 'irrigated' | 'dryland' | null
 }
 
 type LineRow = {
@@ -82,6 +93,7 @@ export default function CashFlowPage() {
   const supabase = useMemo(() => createClient(), [])
   const [contracts, setContracts] = useState<Contract[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
+  const [splits, setSplits] = useState<CashFlowSplitRow[]>([])
   const [lines, setLines] = useState<LineRow[]>([])
   const [settlements, setSettlements] = useState<SettlementRow[]>([])
   const [crops, setCrops] = useState<Crop[]>([])
@@ -190,7 +202,7 @@ export default function CashFlowPage() {
         for (let from = 0; ; from += PAGE) {
           const { data, error } = await supabase
             .from('loads')
-            .select('id, contract_id, ticket_number, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id')
+            .select('id, date, contract_id, ticket_number, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, practice')
             .order('id', { ascending: true })
             .range(from, from + PAGE - 1)
           if (error) throw error
@@ -200,9 +212,10 @@ export default function CashFlowPage() {
         }
         return out
       }
-      const [ct, ld, ln, st, cr, by, en, fa, fi, pl] = await Promise.all([
+      const [ct, ld, sp, ln, st, cr, by, en, fa, fi, pl] = await Promise.all([
         supabase.from('contracts').select('*'),
         fetchAllLoads(),
+        supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels, practice'),
         supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue, settlement_id'),
         supabase.from('settlements').select('id, settlement_date'),
         supabase.from('crops').select('*'),
@@ -228,6 +241,7 @@ export default function CashFlowPage() {
       ])
       setContracts((ct.data as Contract[]) || [])
       setLoads(ld)
+      setSplits((sp.data as CashFlowSplitRow[]) || [])
       setLines((ln.data as LineRow[]) || [])
       setSettlements((st.data as SettlementRow[]) || [])
       setCrops((cr.data as Crop[]) || [])
@@ -508,10 +522,18 @@ export default function CashFlowPage() {
       const yrPolicies = scopedPolicies.filter((p) =>
         p.crop_year === yr && (!cropId || p.crop_id === cropId))
       if (yrPolicies.length === 0) continue
+      // Load-derived irrigated/dryland splits materialized onto the plantings
+      // (same seam as the Claims Monitor) so the shared projection's
+      // per-practice yields agree between the two pages whichever path — manual
+      // allocation or fully practice-tagged loads — produced the split.
+      const effPlantings = withLoadBreakouts(
+        plantings,
+        fieldCropAggregates(loads, splits, cropById, { cropYear: yr }),
+      )
       const projected = projectInsuranceIndemnities({
         cropYear: yr,
         policies: yrPolicies,
-        scos, ecos, assumptions: effAssumptions, plantings,
+        scos, ecos, assumptions: effAssumptions, plantings: effPlantings,
         actualYieldByCrop: actualYieldByCropFromLoads({ loads, plantings, crops, cropYear: yr }),
         harvestEstimates,
         liveHarvestByCrop: liveHarvestByYear.get(yr),
@@ -533,7 +555,7 @@ export default function CashFlowPage() {
     }
 
     return buckets
-  }, [cropYear, cropId, scope, elections, baseAcres, commodities, arcPriceData, arcPayments, scopedPolicies, scos, ecos, harvestEstimates, effAssumptions, plantings, loads, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments])
+  }, [cropYear, cropId, scope, elections, baseAcres, commodities, arcPriceData, arcPayments, scopedPolicies, scos, ecos, harvestEstimates, effAssumptions, plantings, loads, splits, cropById, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments])
 
   // Cotton events, respecting the crop filter (a non-cotton crop hides them)
   // and bucketed net per month.

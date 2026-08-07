@@ -17,7 +17,7 @@
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { analyzeYields, fieldCropAggregates, harvestStatusOf, type HarvestStatus } from '@/lib/yields'
+import { analyzeYields, fieldCropAggregates, harvestStatusOf, withLoadBreakouts, type HarvestStatus } from '@/lib/yields'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
@@ -212,9 +212,16 @@ export default function CropInsuranceReport() {
 
   // Apply the optional crop filter. Empty selection = all crops. Everything
   // downstream (gate, resolution, sheets) keys off this filtered list.
+  // withLoadBreakouts materializes the load-derived irrigated/dryland split
+  // onto mixed plantings whose loads are all practice-tagged, so those fields
+  // read as already-allocated here — same as a manual breakout — and never
+  // trip the missing-breakout gate.
   const yearPlantings = useMemo(
-    () => (cropIds.length === 0 ? yearEntityPlantings : yearEntityPlantings.filter((p) => cropIds.includes(p.crop_id))),
-    [yearEntityPlantings, cropIds],
+    () => withLoadBreakouts(
+      cropIds.length === 0 ? yearEntityPlantings : yearEntityPlantings.filter((p) => cropIds.includes(p.crop_id)),
+      aggByKey,
+    ),
+    [yearEntityPlantings, cropIds, aggByKey],
   )
 
   // Crop+year combos flagged harvest-complete at the crop level (Marketing

@@ -358,3 +358,114 @@ export function normalizeAwpResult(raw: unknown): AwpLookupResult | null {
     confidence: conf,
   }
 }
+
+// ---------- Buyer & delivery-location finder ----------
+// AI web-search for grain buyers / delivery points near a zip code, tailored
+// to the org's crops. Convenience finder, not authoritative data: results are
+// a confirm-before-save checklist on Settings → Buyers; only ticked entries
+// are created (through the same insert path as manual adds), and everything
+// carries a verify-before-hauling caveat.
+
+export type BuyerFinderRequest = {
+  zip: string
+  radiusMiles: number
+  /** The org's crop names (e.g. ["Corn", "Soybean", "Cotton"]) — drives which
+   *  buyer types the prompt asks for. */
+  crops: string[]
+}
+
+export const BUYER_FINDER_RADII = [25, 50, 75, 100] as const
+
+export function parseBuyerFinderRequest(body: unknown): { ok: true; value: BuyerFinderRequest } | { ok: false; error: string } {
+  const b = (body ?? {}) as Record<string, unknown>
+  const zip = typeof b.zip === 'string' ? b.zip.trim() : ''
+  if (!/^\d{5}$/.test(zip)) {
+    return { ok: false, error: 'Enter a 5-digit zip code.' }
+  }
+  const radiusRaw = Number(b.radius_miles)
+  const radiusMiles = Number.isFinite(radiusRaw) && radiusRaw >= 10 && radiusRaw <= 200 ? Math.round(radiusRaw) : 50
+  const cropsRaw = Array.isArray(b.crops) ? b.crops : []
+  const crops = [...new Set(
+    cropsRaw
+      .filter((c): c is string => typeof c === 'string' && c.trim() !== '')
+      .map((c) => c.trim().slice(0, 40)),
+  )].slice(0, 20)
+  if (crops.length === 0) {
+    return { ok: false, error: 'No crops set up yet — add your crops under Settings → Crops first.' }
+  }
+  return { ok: true, value: { zip, radiusMiles, crops } }
+}
+
+export type BuyerFinderHit = {
+  name: string
+  /** City/town (or location descriptor) — becomes the buyer's first delivery
+   *  location name. */
+  location: string | null
+  address: string | null
+  buyerType: string | null // elevator, river terminal, feed mill, ethanol plant, gin, …
+  crops: string[]
+  distanceMiles: number | null
+  confidence: 'high' | 'low'
+}
+
+export type BuyerFinderResult = {
+  results: BuyerFinderHit[]
+  sourceDescription: string
+}
+
+const cleanStr = (v: unknown, max: number): string | null => {
+  if (typeof v !== 'string') return null
+  const s = v.trim().slice(0, max)
+  return s === '' ? null : s
+}
+
+// Normalize the model's JSON into the contract: entries without a name are
+// dropped, duplicate names (case-insensitive) keep the first entry, strings
+// are trimmed and capped, and the list is capped at 25. Sparse or empty
+// results are legitimate — rural areas may genuinely have two elevators.
+export function normalizeBuyerFinderResult(raw: unknown): BuyerFinderResult {
+  const r = (raw ?? {}) as Record<string, unknown>
+  const entries = Array.isArray(r.results) ? r.results : []
+  const seen = new Set<string>()
+  const out: BuyerFinderHit[] = []
+  for (const e of entries) {
+    if (out.length >= 25) break
+    const rec = (e ?? {}) as Record<string, unknown>
+    const name = cleanStr(rec.name, 120)
+    if (!name) continue
+    const key = name.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    const dist = Number(rec.distance_miles)
+    const cropsRaw = Array.isArray(rec.crops) ? rec.crops : []
+    out.push({
+      name,
+      location: cleanStr(rec.location, 120),
+      address: cleanStr(rec.address, 200),
+      buyerType: cleanStr(rec.buyer_type, 60),
+      crops: cropsRaw
+        .filter((c): c is string => typeof c === 'string' && c.trim() !== '')
+        .map((c) => c.trim().slice(0, 40))
+        .slice(0, 10),
+      distanceMiles: Number.isFinite(dist) && dist >= 0 && dist < 1000 ? Math.round(dist) : null,
+      confidence: rec.confidence === 'high' ? 'high' : 'low',
+    })
+  }
+  return {
+    results: out,
+    sourceDescription: cleanStr(r.source_description, 400) ?? '',
+  }
+}
+
+// The SAME case-insensitive duplicate rule the inline BuyerPicker uses
+// (components/buyer-location-pickers.tsx): trimmed, case-insensitive name
+// equality. Finder results matching an existing buyer show as "already in
+// your list" and stay unticked.
+export function matchExistingBuyer<T extends { name: string }>(
+  buyers: readonly T[],
+  name: string,
+): T | null {
+  const key = name.trim().toLowerCase()
+  if (!key) return null
+  return buyers.find((b) => b.name.trim().toLowerCase() === key) ?? null
+}

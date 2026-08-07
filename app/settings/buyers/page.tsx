@@ -3,15 +3,34 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import { usePersistentState } from '@/lib/use-persistent-state'
+import { matchExistingBuyer, BUYER_FINDER_RADII, type BuyerFinderHit } from '@/lib/ai-lookups'
 import type { Buyer, DeliveryLocation } from '@/lib/types'
 
 type LocForm = { name: string; address: string }
 const emptyLoc: LocForm = { name: '', address: '' }
 
+// One row of the AI finder's review checklist. The name is editable before
+// import; checked entries are created through the same insert path as the
+// manual form above.
+type FinderRow = { hit: BuyerFinderHit; name: string; checked: boolean }
+
 export default function BuyersPage() {
   const supabase = useMemo(() => createClient(), [])
   const [buyers, setBuyers] = useState<Buyer[]>([])
   const [locs, setLocs] = useState<DeliveryLocation[]>([])
+  const [cropNames, setCropNames] = useState<string[]>([])
+  // AI buyer finder state. Zip + radius persist so the next search starts
+  // where the last one left off.
+  const [finderOpen, setFinderOpen] = useState(false)
+  const [finderZip, setFinderZip] = usePersistentState('buyers:finderZip', '')
+  const [finderRadius, setFinderRadius] = usePersistentState<number>('buyers:finderRadius', 50)
+  const [finderBusy, setFinderBusy] = useState(false)
+  const [finderErr, setFinderErr] = useState<string | null>(null)
+  const [finderRows, setFinderRows] = useState<FinderRow[] | null>(null)
+  const [finderSource, setFinderSource] = useState('')
+  const [importBusy, setImportBusy] = useState(false)
+  const [importSummary, setImportSummary] = useState<string | null>(null)
   const [newBuyerName, setNewBuyerName] = useState('')
   const [editingBuyerId, setEditingBuyerId] = useState<string | null>(null)
   const [editBuyerName, setEditBuyerName] = useState('')
@@ -22,12 +41,14 @@ export default function BuyersPage() {
   const [err, setErr] = useState<string | null>(null)
 
   async function refresh() {
-    const [b, l] = await Promise.all([
+    const [b, l, c] = await Promise.all([
       supabase.from('buyers').select('*').order('name'),
       supabase.from('delivery_locations').select('*').order('name'),
+      supabase.from('crops').select('name').order('name'),
     ])
     setBuyers((b.data as Buyer[]) || [])
     setLocs((l.data as DeliveryLocation[]) || [])
+    setCropNames(((c.data as Array<{ name: string }>) || []).map((x) => x.name))
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
@@ -112,6 +133,82 @@ export default function BuyersPage() {
     refresh()
   }
 
+  // ---- AI buyer finder --------------------------------------------------
+
+  async function runFinder(e: React.FormEvent) {
+    e.preventDefault()
+    setFinderErr(null)
+    setImportSummary(null)
+    setFinderBusy(true)
+    setFinderRows(null)
+    try {
+      const res = await fetch('/api/buyer-finder', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ zip: finderZip.trim(), radius_miles: finderRadius, crops: cropNames }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok || !json?.data) {
+        setFinderErr(json?.error ?? 'The search didn’t go through — try again in a minute.')
+        return
+      }
+      const data = json.data as { results: BuyerFinderHit[]; sourceDescription: string }
+      setFinderRows(data.results.map((hit) => ({ hit, name: hit.name, checked: false })))
+      setFinderSource(data.sourceDescription)
+    } catch {
+      setFinderErr('The search didn’t go through — check your connection and try again.')
+    } finally {
+      setFinderBusy(false)
+    }
+  }
+
+  function setFinderRow(i: number, patch: Partial<FinderRow>) {
+    setFinderRows((rows) => (rows ? rows.map((r, j) => (i === j ? { ...r, ...patch } : r)) : rows))
+  }
+
+  // Create the ticked results through the SAME path as the manual form:
+  // insert into buyers, then the found location/address as the buyer's first
+  // delivery location. The case-insensitive duplicate guard re-checks at
+  // import time (the user may have edited a name into an existing one) —
+  // matches are skipped, never doubled up.
+  async function importFinderRows() {
+    if (!finderRows) return
+    setImportBusy(true)
+    setFinderErr(null)
+    let created = 0
+    let skipped = 0
+    for (const row of finderRows) {
+      if (!row.checked) continue
+      const name = row.name.trim()
+      if (!name || matchExistingBuyer(buyers, name)) { skipped++; continue }
+      const { data: inserted, error } = await supabase
+        .from('buyers')
+        .insert({ name })
+        .select('*')
+        .single()
+      if (error) { setFinderErr(error.message); break }
+      created++
+      const buyerId = (inserted as Buyer).id
+      const locName = row.hit.location ?? name
+      if (locName) {
+        const { error: locErr } = await supabase.from('delivery_locations').insert({
+          buyer_id: buyerId,
+          name: locName,
+          address: row.hit.address,
+        })
+        if (locErr) { setFinderErr(`Added ${name} but couldn’t save its location: ${locErr.message}`); break }
+      }
+    }
+    setImportBusy(false)
+    if (created > 0 || skipped > 0) {
+      setImportSummary(
+        `${created} buyer${created === 1 ? '' : 's'} added${skipped > 0 ? ` · ${skipped} already in your list` : ''}.`,
+      )
+      setFinderRows(null)
+      refresh()
+    }
+  }
+
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
 
   return (
@@ -154,6 +251,141 @@ export default function BuyersPage() {
         />
         <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Buyer</button>
       </form>
+
+      <div className="bg-white rounded-xl shadow p-4 space-y-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold">Find buyers near me</div>
+            <div className="text-sm text-slate-500">
+              Searches the web for elevators, terminals, and other buyers for your crops near a zip code.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFinderOpen((v) => !v)}
+            className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm"
+          >
+            {finderOpen ? 'Hide' : 'Find buyers'}
+          </button>
+        </div>
+
+        {finderOpen && (
+          <div className="space-y-3">
+            <form onSubmit={runFinder} className="flex flex-wrap items-end gap-2">
+              <label className="text-sm text-slate-700">
+                Zip code
+                <input
+                  value={finderZip}
+                  onChange={(e) => setFinderZip(e.target.value)}
+                  inputMode="numeric"
+                  pattern="\d{5}"
+                  placeholder="35601"
+                  className={`mt-1 block w-28 ${inputCls}`}
+                />
+              </label>
+              <label className="text-sm text-slate-700">
+                Within
+                <select
+                  value={finderRadius}
+                  onChange={(e) => setFinderRadius(Number(e.target.value))}
+                  className={`mt-1 block ${inputCls}`}
+                >
+                  {BUYER_FINDER_RADII.map((r) => <option key={r} value={r}>{r} miles</option>)}
+                </select>
+              </label>
+              <button
+                disabled={finderBusy || !/^\d{5}$/.test(finderZip.trim())}
+                className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50"
+              >
+                {finderBusy ? 'Searching…' : 'Search'}
+              </button>
+            </form>
+            {finderBusy && (
+              <p className="text-sm text-slate-500">Looking for buyers near {finderZip.trim()} — this can take up to a minute.</p>
+            )}
+            {finderErr && <p className="text-sm text-red-600">{finderErr}</p>}
+            {importSummary && (
+              <p className="text-sm rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-green-900">{importSummary}</p>
+            )}
+
+            {finderRows && finderRows.length === 0 && (
+              <p className="text-sm text-slate-500">
+                Nothing turned up within {finderRadius} miles of {finderZip.trim()}. Try a wider radius — or add your buyers manually above.
+              </p>
+            )}
+
+            {finderRows && finderRows.length > 0 && (
+              <div className="space-y-2">
+                <p className="text-xs rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-amber-900">
+                  AI-found from public sources — verify details before hauling. Tick the ones you actually sell to;
+                  everything else is discarded. You can edit a name before adding it.
+                </p>
+                <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg">
+                  {finderRows.map((row, i) => {
+                    const existing = matchExistingBuyer(buyers, row.name)
+                    return (
+                      <li key={i} className="px-3 py-2 flex items-start gap-3">
+                        <input
+                          type="checkbox"
+                          checked={row.checked && !existing}
+                          disabled={!!existing}
+                          onChange={(e) => setFinderRow(i, { checked: e.target.checked })}
+                          className="mt-1.5 h-4 w-4"
+                        />
+                        <div className="flex-1 min-w-0 space-y-0.5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <input
+                              value={row.name}
+                              onChange={(e) => setFinderRow(i, { name: e.target.value })}
+                              className={`${inputCls} text-sm font-medium min-w-0 flex-1 max-w-xs`}
+                            />
+                            {existing && (
+                              <span className="text-xs rounded px-2 py-0.5 bg-slate-100 text-slate-600">already in your list</span>
+                            )}
+                            {row.hit.confidence === 'low' && !existing && (
+                              <span className="text-xs rounded px-2 py-0.5 bg-amber-100 text-amber-800" title="The search couldn’t confirm this from a direct source — double-check before hauling">
+                                unverified
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-sm text-slate-600">
+                            {[row.hit.buyerType, row.hit.location, row.hit.distanceMiles != null ? `~${row.hit.distanceMiles} mi` : null]
+                              .filter(Boolean).join(' · ')}
+                          </div>
+                          {row.hit.address && <div className="text-xs text-slate-500">{row.hit.address}</div>}
+                          {row.hit.crops.length > 0 && (
+                            <div className="text-xs text-slate-500">Handles: {row.hit.crops.join(', ')}</div>
+                          )}
+                        </div>
+                      </li>
+                    )
+                  })}
+                </ul>
+                {finderSource && <p className="text-xs text-slate-400">{finderSource}</p>}
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button
+                    type="button"
+                    disabled={importBusy || !finderRows.some((r) => r.checked && !matchExistingBuyer(buyers, r.name))}
+                    onClick={importFinderRows}
+                    className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50"
+                  >
+                    {importBusy
+                      ? 'Adding…'
+                      : `Add ${finderRows.filter((r) => r.checked && !matchExistingBuyer(buyers, r.name)).length} selected`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setFinderRows(null); setFinderSource('') }}
+                    className="text-sm text-slate-500"
+                  >
+                    Discard results
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {err && <p className="text-sm text-red-600">{err}</p>}
 

@@ -17,6 +17,8 @@ type LoadLike = {
   crop_year: number | null
   from_type: string | null
   from_field_id: string | null
+  /** Optional load-level irrigated/dryland designation (migration 060). */
+  practice?: 'irrigated' | 'dryland' | null
 }
 
 type SplitLike = {
@@ -24,6 +26,7 @@ type SplitLike = {
   field_id: string
   crop_id: string
   dry_bushels: number | null
+  practice?: 'irrigated' | 'dryland' | null
 }
 
 type CropLike = {
@@ -37,6 +40,17 @@ export type FieldCropAgg = {
   /** Most recent contributing load date (YYYY-MM-DD), or null. Used to spot the
    *  field currently being harvested. */
   lastLoadDate: string | null
+  /** Dry bushels from loads/split-portions designated irrigated / dryland.
+   *  A load with practice null contributes to dryBu only. Optional so callers
+   *  that hand-build aggregates (income-sensitivity, tests) stay valid;
+   *  fieldCropAggregates always fills them. */
+  irrBu?: number
+  dryLandBu?: number
+  /** Counted loads + split portions (each portion counts separately) with /
+   *  without a practice designation. designatedLoads === totalLoads (> 0) means
+   *  the field's split is fully derivable from the loads. */
+  designatedLoads?: number
+  totalLoads?: number
 }
 
 // (fieldId|cropId|loadYear) → { dryBu, lastLoadDate }. Single-field loads count
@@ -52,14 +66,17 @@ export function fieldCropAggregates(
   const loadYear = opts?.loadYear ?? null
   const map = new Map<string, FieldCropAgg>()
 
-  const bump = (key: string, bu: number, date: string) => {
-    const cur = map.get(key)
-    if (cur) {
-      cur.dryBu += bu
-      if (cur.lastLoadDate == null || date > cur.lastLoadDate) cur.lastLoadDate = date
-    } else {
-      map.set(key, { dryBu: bu, lastLoadDate: date })
+  const bump = (key: string, bu: number, date: string, practice: 'irrigated' | 'dryland' | null) => {
+    let cur = map.get(key)
+    if (!cur) {
+      cur = { dryBu: 0, lastLoadDate: null, irrBu: 0, dryLandBu: 0, designatedLoads: 0, totalLoads: 0 }
+      map.set(key, cur)
     }
+    cur.dryBu += bu
+    if (cur.lastLoadDate == null || date > cur.lastLoadDate) cur.lastLoadDate = date
+    cur.totalLoads = (cur.totalLoads ?? 0) + 1
+    if (practice === 'irrigated') { cur.irrBu = (cur.irrBu ?? 0) + bu; cur.designatedLoads = (cur.designatedLoads ?? 0) + 1 }
+    else if (practice === 'dryland') { cur.dryLandBu = (cur.dryLandBu ?? 0) + bu; cur.designatedLoads = (cur.designatedLoads ?? 0) + 1 }
   }
 
   for (const l of loads) {
@@ -76,7 +93,7 @@ export function fieldCropAggregates(
       dryBushelsOverride: l.dry_bushels_override,
     })
     if (!dryBushels) continue
-    bump(`${l.from_field_id}|${l.crop_id}|${yr}`, dryBushels, l.date)
+    bump(`${l.from_field_id}|${l.crop_id}|${yr}`, dryBushels, l.date, l.practice ?? null)
   }
 
   const loadById = new Map(loads.map((l) => [l.id, l]))
@@ -87,10 +104,116 @@ export function fieldCropAggregates(
     if (s.dry_bushels == null) continue
     const yr = Number(parent.date.slice(0, 4))
     if (loadYear != null && yr !== loadYear) continue
-    bump(`${s.field_id}|${s.crop_id}|${yr}`, s.dry_bushels, parent.date)
+    bump(`${s.field_id}|${s.crop_id}|${yr}`, s.dry_bushels, parent.date, s.practice ?? null)
   }
 
   return map
+}
+
+// ---------------------------------------------------------------------------
+// Irrigated / dryland practice classification and breakout resolution.
+// ---------------------------------------------------------------------------
+
+export type FieldPractice = 'pure-dry' | 'pure-irr' | 'mixed'
+
+// Practice classification per planting (or field):
+//   pure-dry: irrigated_acres == 0 (also the 0/0 case)
+//   pure-irr: dryland_acres == 0
+//   mixed:    both > 0 (the only case where a bushel breakout makes sense)
+export function practiceOf(p: {
+  irrigated_acres: number | string | null
+  dryland_acres: number | string | null
+}): FieldPractice {
+  const irr = Number(p.irrigated_acres) || 0
+  const dry = Number(p.dryland_acres) || 0
+  if (irr > 0 && dry > 0) return 'mixed'
+  if (irr > 0) return 'pure-irr'
+  return 'pure-dry'
+}
+
+export type PracticeBreakout = {
+  /** Where the irr/dry bushel split comes from:
+   *  'manual' — the yields-page post-harvest allocation. Always wins over
+   *             load-level designations, even ones edited later.
+   *  'loads'  — every counted load (and split portion) carries a practice
+   *             designation, so the split derives directly from the loads.
+   *  null     — no complete split (pure-practice planting, or a mixed planting
+   *             with missing designations and no manual allocation). */
+  source: 'manual' | 'loads' | null
+  irrigatedBushels: number | null
+  drylandBushels: number | null
+  /** Designated sums / counts off the loads, for pre-filling a partial manual
+   *  allocation ("from X of Y loads — complete the remainder"). */
+  designatedIrrBu: number
+  designatedDryBu: number
+  designatedLoads: number
+  totalLoads: number
+}
+
+// One resolver for the mixed-planting bushel breakout, whichever path produced
+// it. Every consumer (per-practice yields, insurance, Claims Monitor, Coverage
+// Check, practice filters) goes through this — do not fork the rule. Pure.
+export function resolvePracticeBreakout(
+  planting: {
+    irrigated_acres: number | string | null
+    dryland_acres: number | string | null
+    irrigated_bushels: number | string | null
+    dryland_bushels: number | string | null
+    yield_breakout_entered: boolean | null
+  },
+  agg: FieldCropAgg | null | undefined,
+): PracticeBreakout {
+  const designatedIrrBu = agg?.irrBu ?? 0
+  const designatedDryBu = agg?.dryLandBu ?? 0
+  const designatedLoads = agg?.designatedLoads ?? 0
+  const totalLoads = agg?.totalLoads ?? 0
+  const base = { designatedIrrBu, designatedDryBu, designatedLoads, totalLoads }
+  if (practiceOf(planting) !== 'mixed') {
+    return { source: null, irrigatedBushels: null, drylandBushels: null, ...base }
+  }
+  // A saved manual allocation wins over any later load-level edits.
+  if (planting.yield_breakout_entered) {
+    return {
+      source: 'manual',
+      irrigatedBushels: planting.irrigated_bushels != null ? Number(planting.irrigated_bushels) : null,
+      drylandBushels: planting.dryland_bushels != null ? Number(planting.dryland_bushels) : null,
+      ...base,
+    }
+  }
+  if (totalLoads > 0 && designatedLoads === totalLoads) {
+    return { source: 'loads', irrigatedBushels: designatedIrrBu, drylandBushels: designatedDryBu, ...base }
+  }
+  return { source: null, irrigatedBushels: null, drylandBushels: null, ...base }
+}
+
+// Materializes the effective breakout onto planting rows so downstream
+// consumers that read irrigated_bushels / dryland_bushels /
+// yield_breakout_entered straight off the planting (practiceActualYieldByCrop,
+// the insurance production report, projectInsuranceIndemnities) see ONE shared
+// representation regardless of whether the split came from the manual
+// allocation or from fully-designated loads. Rows are copied, never mutated.
+export function withLoadBreakouts<
+  T extends {
+    field_id: string
+    crop_id: string
+    season_year: number
+    irrigated_acres: number | string | null
+    dryland_acres: number | string | null
+    irrigated_bushels: number | string | null
+    dryland_bushels: number | string | null
+    yield_breakout_entered: boolean | null
+  },
+>(plantings: readonly T[], aggByKey: Map<string, FieldCropAgg>): T[] {
+  return plantings.map((p) => {
+    const b = resolvePracticeBreakout(p, aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`))
+    if (b.source !== 'loads') return p
+    return {
+      ...p,
+      irrigated_bushels: b.irrigatedBushels,
+      dryland_bushels: b.drylandBushels,
+      yield_breakout_entered: true,
+    }
+  })
 }
 
 export type ExclusionReason = 'unharvested' | 'in_progress'
@@ -396,7 +519,7 @@ export function groupYieldAggregates(plantings: readonly GroupYieldPlanting[]): 
     //   pure-irrigated → all dry bu to the irrigated side
     //   pure-dryland   → all dry bu to the dryland side (also the 0/0 case)
     //   mixed          → only the entered breakout splits the bushels
-    const practice = irrAcP > 0 && dryAcP > 0 ? 'mixed' : irrAcP > 0 ? 'pure-irr' : 'pure-dry'
+    const practice = practiceOf({ irrigated_acres: irrAcP, dryland_acres: dryAcP })
     let irrBu = 0, irrAc = 0, dryBuLand = 0, dryAc = 0
     if (practice === 'pure-irr') { irrBu = p.dryBu; irrAc = irrAcP }
     else if (practice === 'pure-dry') { dryBuLand = p.dryBu; dryAc = dryAcP }

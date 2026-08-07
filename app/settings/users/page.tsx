@@ -27,7 +27,7 @@ export default function UsersModulesPage() {
   const [users, setUsers] = useState<UserRow[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
   const [email, setEmail] = useState('')
-  const [role, setRole] = useState<'owner' | 'gin' | 'viewer'>('gin')
+  const [role, setRole] = useState<'owner' | 'gin' | 'viewer'>('owner')
   const [grantIds, setGrantIds] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -276,9 +276,9 @@ export default function UsersModulesPage() {
           <div className="flex flex-wrap items-end gap-2">
             <input type="email" placeholder="user@example.com" value={email} onChange={(e) => setEmail(e.target.value)} className={`${inputCls} w-64`} />
             <select value={role} onChange={(e) => setRole(e.target.value as 'owner' | 'gin' | 'viewer')} className={inputCls}>
+              <option value="owner">owner (full access)</option>
               <option value="gin">gin (Cotton intake only)</option>
               <option value="viewer">viewer (reports &amp; yields, read-only)</option>
-              <option value="owner">owner (full access)</option>
             </select>
             <button type="submit" disabled={busy} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
               Assign role

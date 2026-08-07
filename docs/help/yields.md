@@ -1,8 +1,8 @@
 ---
 page_route: /yields
 title: Yields
-updated: 2026-08-06
-keywords: yields, bushels per acre, field, farm, entity, variety, landowner, irrigated, dryland, harvest, allocation, season, export, detail, loads, tickets, moisture, test weight, split load, drill down
+updated: 2026-08-07
+keywords: yields, bushels per acre, field, farm, entity, variety, landowner, irrigated, dryland, harvest, allocation, load tags, practice, season, export, detail, loads, tickets, moisture, test weight, split load, drill down
 ---
 ## What this page is for
 
@@ -19,7 +19,7 @@ Yields turns your load log into bushels per acre. The same production can be vie
 ## What the controls do
 
 - **Harvest status.** A field that hasn't been harvested, or is only partway through, is left out of the yield math — a half-harvested field would drag every average down. In-progress fields are labeled so you can see they're pending. If a field really is done but Turnrow can't tell (say the last loads went straight to town under a different crop year), tap **Count anyway** on that field to include it; tapping again puts it back to automatic.
-- **Allocate irr/dry.** A field with both irrigated and dryland acres has one pile of bushels but two practices. Once its harvest is complete, an **Allocate irr/dry** button lets you split the field's dry bushels between the two — type one side and the other side fills in so the split always totals the field's bushels. Until you allocate, the field counts in the overall total but sits out of the irrigated and dryland columns.
+- **Allocate irr/dry.** A field with both irrigated and dryland acres has one pile of bushels but two practices. There are two ways to split it. The easy way: tag each load Irrigated or Dryland as you enter it — when every load on the field carries a tag, the split comes straight from the loads (the row shows **From load tags ✓**) and you're never asked to allocate. Otherwise, once the field's harvest is complete, an **Allocate irr/dry** button lets you split the field's dry bushels between the two — type one side and the other side fills in so the split always totals the field's bushels. If some loads are tagged, the allocation opens pre-filled from those tags so you only complete the remainder. A manual allocation, once saved, stays in charge even if load tags change later — clear it to go back to using the tags. Until the field is split one way or the other, it counts in the overall total but sits out of the irrigated and dryland columns.
 - **Allocate bushels (varieties).** A planting with a single variety credits all its bushels to that variety automatically. A planting with two or more varieties shows in the variety view only after you allocate its bushels among them — the page lists the plantings that still need allocation once their harvest is complete.
 - **By landowner** groups production by the landowner on each farm, split-aware, for rent conversations and year-end summaries.
 - **Row detail.** The detail's summary line shows load count, total pounds, wet and dry bushels, the average moisture and test weight (weighted by each load's pounds, so an 80,000-lb pair at 16.0 and 18.0 moisture averages by weight — not a simple midpoint), the first-to-last load dates, and how the bushels split between bins and buyers. The load list carries date, ticket, truck, weights, moisture, test weight, and destination; a load split across fields shows just this field's share with a badge like "split — 14,200 of 34,300 lbs". Fields flagged in-progress or counted by override carry the same flag on their detail, so the list always matches the number above it. Cotton fields show gin receipts, bales, turnout, and loan values in pounds instead of grain loads.
@@ -27,13 +27,13 @@ Yields turns your load log into bushels per acre. The same production can be vie
 ## How the numbers work
 
 - **Yield = dry bushels ÷ planted acres.** Bushels come from your loads (shrunk to dry at each crop's base moisture), matched to a planting by field, crop, and crop year. Acres come from the planting.
-- In the breakdown, a field that's all irrigated or all dryland reports its whole yield under that practice; mixed fields use your allocation.
+- In the breakdown, a field that's all irrigated or all dryland reports its whole yield under that practice; mixed fields use the split from their load tags or your manual allocation — every report (insurance, claims, per-practice yields) reads the same split either way.
 - Farm, entity, and variety views are the same math rolled up — the totals foot back to the by-field view under the same filters.
 
 ## Common questions
 
 - **Why is a harvested field missing from the averages?** Turnrow still sees it as unharvested or in progress. Check that its loads carry the right field, crop, and crop year — or use Count anyway.
-- **Why is the irrigated column blank for a field I know is irrigated?** It's a mixed field without an allocation yet. Allocate irr/dry once it's finished.
+- **Why is the irrigated column blank for a field I know is irrigated?** It's a mixed field without a complete split yet. Tag its remaining loads Irrigated/Dryland, or Allocate irr/dry once it's finished.
 - **My yield looks too low.** Usually acres: check the planting's acres, and check for loads recorded against the wrong field or year.
 - **Do bin loads count?** Yes. Any load leaving the field counts toward that field's production, whether it went to a bin or to town.
 - **A variety I planted isn't in the variety view.** Its planting has multiple varieties and hasn't been allocated, or the variety was never recorded on the planting under Settings → Plantings.
