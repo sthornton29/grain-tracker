@@ -7,7 +7,7 @@
 > programs. **Not a SaaS product** — single-tenant, used on iPads in trucks by a
 > small team, so the UX favors fast capture and forgiving data entry.
 >
-> _Snapshot date: 2026-08-06. Schema at migration `059` (051–056 applied in production; 057 — contracts.date_sold —, 058 — bins.capacity_bushels + bin_transfers —, and 059 — crop_assumptions.reference_contract_month + the widened viewer-override field check — pending manual apply). `supabase/verify_052/053/054.sql` are read-only diagnostics; `docs/BETA_ACCEPTANCE.md` is the pre-invite isolation checklist._
+> _Snapshot date: 2026-08-07. Schema at migration `060` (051–056 applied in production; 057 — contracts.date_sold —, 058 — bins.capacity_bushels + bin_transfers —, 059 — crop_assumptions.reference_contract_month + the widened viewer-override field check —, and 060 — loads.practice + load_splits.practice (irrigated/dryland load tags) — pending manual apply). `supabase/verify_052/053/054.sql` are read-only diagnostics; `docs/BETA_ACCEPTANCE.md` is the pre-invite isolation checklist._
 
 ---
 
