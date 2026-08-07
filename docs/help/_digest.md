@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-08-06 · version 0.1.0 · build 6b88573. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-08-07 · version 0.1.0 · build 23330a2. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -364,6 +364,7 @@ The load log is the master list of every load you've hauled — to a bin or to a
 ## How to use it
 
 - To record a new load by hand, use **New Load** — pick the date, truck, crop, crop year, where it came from (field or bin), where it went (bin or buyer), and enter the weights. If a load carries grain from more than one field, add a split so each field gets credit for its share.
+- **Irrigated or dryland?** When the load's field has both irrigated and dryland acres, an optional Irrigated/Dryland choice appears (on New Load, Edit, ticket scanning, and on each line of a split load). Tag it if you know which ground the load came off — skip it if you don't. Fields that are all one practice never ask; Turnrow already knows. If you tag every load on a mixed field, the Yields page splits that field's bushels between irrigated and dryland automatically, so you won't be asked to allocate after harvest.
 - To enter a stack of tickets at once, use **Scan** (photograph or upload the tickets) or **Import** (upload a spreadsheet).
 - Tap anywhere on a row to open that load's detail page. A small chevron on split loads expands the per-field breakdown right in the list.
 - Tick the checkboxes to select loads, then export the selection or delete them in bulk.
@@ -1065,6 +1066,35 @@ For tickets you already have in a spreadsheet, use Loads → Import instead. Dow
 - Numbers look transposed or wrong: trust the source preview, not the extraction; correct the cell by hand.
 - Uploads failing repeatedly on clear documents: contact support.
 
+# Buyers & Delivery Locations  (page: /settings/buyers)
+
+## What this page is for
+
+Buyers are the businesses you sell and haul to — elevators, river terminals, feed mills, ethanol plants, gins. Each buyer can carry one or more delivery locations (separate elevators, terminals), which contracts and loads then point at. Set them up once here and they're available everywhere a load or contract asks where the grain went.
+
+## How to use it
+
+- Type a name and **Add Buyer** to create one. Expand a buyer to add its delivery locations, each with an optional address.
+- **Find buyers near me** searches the web for elevators, terminals, and other buyers that handle your crops near a zip code you enter, within a radius you pick. Results come back as a checklist — tick the ones you actually sell to, edit a name if it isn't quite right, and add them. Anything you don't tick is discarded, and results already in your list are marked so you don't double up.
+- To bring in a whole list at once, use the spreadsheet import at the top — one row per buyer, locations in one cell separated by semicolons.
+
+## What the controls do
+
+- **Find buyers near me** remembers your last zip and radius. Results are AI-found from public sources — verify the details (that they're still buying, hours, address) before hauling. A result marked **unverified** means the search couldn't confirm it from a direct source. Rural areas may genuinely turn up only a handful — that's the honest answer, not a glitch. Adding your buyers by hand is always the sure path.
+- **Edit / Delete** on a buyer or location work as you'd expect; deleting a buyer also deletes its locations, and contracts pointing at a deleted location have their location cleared.
+
+## Common questions
+
+- **The finder didn't list an elevator I know is there.** Public listings are patchy, especially for smaller elevators. Add it manually — that's the primary way, the finder is just a head start.
+- **A found buyer's details look off.** Treat the finder as a lead, not gospel: verify the name, location, and that they're buying your crop before hauling. You can edit everything after adding it.
+- **Why is a result greyed out?** A buyer with that name is already in your list.
+
+## If something looks wrong
+
+- A buyer missing from a load or contract dropdown: check it exists here and, for contracts, that the delivery location is on the right buyer.
+- The finder keeps erroring: wait a few minutes and try again — searches are limited to keep them snappy. Manual entry always works meanwhile.
+- Still stuck: contact support.
+
 # Operation Settings  (page: /settings)
 
 ## What this page is for
@@ -1198,7 +1228,7 @@ Yields turns your load log into bushels per acre. The same production can be vie
 ## What the controls do
 
 - **Harvest status.** A field that hasn't been harvested, or is only partway through, is left out of the yield math — a half-harvested field would drag every average down. In-progress fields are labeled so you can see they're pending. If a field really is done but Turnrow can't tell (say the last loads went straight to town under a different crop year), tap **Count anyway** on that field to include it; tapping again puts it back to automatic.
-- **Allocate irr/dry.** A field with both irrigated and dryland acres has one pile of bushels but two practices. Once its harvest is complete, an **Allocate irr/dry** button lets you split the field's dry bushels between the two — type one side and the other side fills in so the split always totals the field's bushels. Until you allocate, the field counts in the overall total but sits out of the irrigated and dryland columns.
+- **Allocate irr/dry.** A field with both irrigated and dryland acres has one pile of bushels but two practices. There are two ways to split it. The easy way: tag each load Irrigated or Dryland as you enter it — when every load on the field carries a tag, the split comes straight from the loads (the row shows **From load tags ✓**) and you're never asked to allocate. Otherwise, once the field's harvest is complete, an **Allocate irr/dry** button lets you split the field's dry bushels between the two — type one side and the other side fills in so the split always totals the field's bushels. If some loads are tagged, the allocation opens pre-filled from those tags so you only complete the remainder. A manual allocation, once saved, stays in charge even if load tags change later — clear it to go back to using the tags. Until the field is split one way or the other, it counts in the overall total but sits out of the irrigated and dryland columns.
 - **Allocate bushels (varieties).** A planting with a single variety credits all its bushels to that variety automatically. A planting with two or more varieties shows in the variety view only after you allocate its bushels among them — the page lists the plantings that still need allocation once their harvest is complete.
 - **By landowner** groups production by the landowner on each farm, split-aware, for rent conversations and year-end summaries.
 - **Row detail.** The detail's summary line shows load count, total pounds, wet and dry bushels, the average moisture and test weight (weighted by each load's pounds, so an 80,000-lb pair at 16.0 and 18.0 moisture averages by weight — not a simple midpoint), the first-to-last load dates, and how the bushels split between bins and buyers. The load list carries date, ticket, truck, weights, moisture, test weight, and destination; a load split across fields shows just this field's share with a badge like "split — 14,200 of 34,300 lbs". Fields flagged in-progress or counted by override carry the same flag on their detail, so the list always matches the number above it. Cotton fields show gin receipts, bales, turnout, and loan values in pounds instead of grain loads.
@@ -1206,13 +1236,13 @@ Yields turns your load log into bushels per acre. The same production can be vie
 ## How the numbers work
 
 - **Yield = dry bushels ÷ planted acres.** Bushels come from your loads (shrunk to dry at each crop's base moisture), matched to a planting by field, crop, and crop year. Acres come from the planting.
-- In the breakdown, a field that's all irrigated or all dryland reports its whole yield under that practice; mixed fields use your allocation.
+- In the breakdown, a field that's all irrigated or all dryland reports its whole yield under that practice; mixed fields use the split from their load tags or your manual allocation — every report (insurance, claims, per-practice yields) reads the same split either way.
 - Farm, entity, and variety views are the same math rolled up — the totals foot back to the by-field view under the same filters.
 
 ## Common questions
 
 - **Why is a harvested field missing from the averages?** Turnrow still sees it as unharvested or in progress. Check that its loads carry the right field, crop, and crop year — or use Count anyway.
-- **Why is the irrigated column blank for a field I know is irrigated?** It's a mixed field without an allocation yet. Allocate irr/dry once it's finished.
+- **Why is the irrigated column blank for a field I know is irrigated?** It's a mixed field without a complete split yet. Tag its remaining loads Irrigated/Dryland, or Allocate irr/dry once it's finished.
 - **My yield looks too low.** Usually acres: check the planting's acres, and check for loads recorded against the wrong field or year.
 - **Do bin loads count?** Yes. Any load leaving the field counts toward that field's production, whether it went to a bin or to town.
 - **A variety I planted isn't in the variety view.** Its planting has multiple varieties and hasn't been allocated, or the variety was never recorded on the planting under Settings → Plantings.

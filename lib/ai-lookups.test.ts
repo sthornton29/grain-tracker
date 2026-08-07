@@ -5,6 +5,7 @@ import {
   elapsedMarketingMonths, monthKey,
   defaultConfirmedMonths, planMonthlySaves,
   blendSeedCottonMonth, normalizeSeedCottonMonthlyResult,
+  parseBuyerFinderRequest, normalizeBuyerFinderResult, matchExistingBuyer,
 } from './ai-lookups'
 
 // ---------- ARC benchmark lookup request: county + state both required ----------
@@ -300,5 +301,95 @@ describe('seed cotton monthly blend', () => {
     expect(r.monthly_prices.map((m) => m.key)).toEqual(['2025-08'])
     expect(r.monthly_prices[0].status).toBe('not_yet_published')
     expect(r.confidence).toBe('low')
+  })
+})
+
+// ---------- Buyer & delivery-location finder ----------
+
+describe('parseBuyerFinderRequest', () => {
+  it('accepts a 5-digit zip, radius, and crop list', () => {
+    const r = parseBuyerFinderRequest({ zip: ' 35601 ', radius_miles: 75, crops: ['Corn', 'Soybean'] })
+    expect(r).toEqual({ ok: true, value: { zip: '35601', radiusMiles: 75, crops: ['Corn', 'Soybean'] } })
+  })
+  it('rejects a malformed zip', () => {
+    for (const zip of ['3560', '356011', 'ABCDE', '', undefined]) {
+      const r = parseBuyerFinderRequest({ zip, radius_miles: 50, crops: ['Corn'] })
+      expect(r.ok).toBe(false)
+    }
+  })
+  it('defaults an out-of-range or missing radius to 50 miles', () => {
+    for (const radius_miles of [undefined, 0, 5, 5000, 'x']) {
+      const r = parseBuyerFinderRequest({ zip: '35601', radius_miles, crops: ['Corn'] })
+      expect(r.ok && r.value.radiusMiles).toBe(50)
+    }
+  })
+  it('dedupes and trims crops, and rejects an empty crop list', () => {
+    const r = parseBuyerFinderRequest({ zip: '35601', radius_miles: 50, crops: [' Corn ', 'Corn', '', 42] })
+    expect(r.ok && r.value.crops).toEqual(['Corn'])
+    const empty = parseBuyerFinderRequest({ zip: '35601', radius_miles: 50, crops: [] })
+    expect(empty.ok).toBe(false)
+  })
+})
+
+describe('normalizeBuyerFinderResult', () => {
+  it('normalizes well-formed results and defaults confidence to low', () => {
+    const r = normalizeBuyerFinderResult({
+      results: [
+        {
+          name: ' Tennessee Valley Co-op ', location: 'Decatur', address: '105 Grain Rd',
+          buyer_type: 'elevator', crops: ['Corn', 'Soybean'], distance_miles: 12.4, confidence: 'high',
+        },
+        { name: 'River Terminal', location: null, buyer_type: 'river terminal', crops: [], confidence: 'weird' },
+      ],
+      source_description: 'Found on co-op sites.',
+    })
+    expect(r.results).toHaveLength(2)
+    expect(r.results[0]).toEqual({
+      name: 'Tennessee Valley Co-op', location: 'Decatur', address: '105 Grain Rd',
+      buyerType: 'elevator', crops: ['Corn', 'Soybean'], distanceMiles: 12, confidence: 'high',
+    })
+    expect(r.results[1].confidence).toBe('low')
+    expect(r.results[1].address).toBeNull()
+    expect(r.sourceDescription).toBe('Found on co-op sites.')
+  })
+
+  it('drops nameless entries and case-insensitive duplicate names', () => {
+    const r = normalizeBuyerFinderResult({
+      results: [
+        { name: 'Cargill' },
+        { name: 'CARGILL', location: 'elsewhere' },
+        { name: '' },
+        { location: 'no name at all' },
+        null,
+      ],
+    })
+    expect(r.results.map((x) => x.name)).toEqual(['Cargill'])
+  })
+
+  it('tolerates junk shapes and returns an empty result set', () => {
+    for (const raw of [null, undefined, 42, 'nope', {}, { results: 'not-an-array' }]) {
+      const r = normalizeBuyerFinderResult(raw)
+      expect(r.results).toEqual([])
+    }
+  })
+
+  it('caps the list at 25 and rejects nonsense distances', () => {
+    const r = normalizeBuyerFinderResult({
+      results: Array.from({ length: 40 }, (_, i) => ({ name: `Buyer ${i}`, distance_miles: i === 0 ? -5 : 2000 })),
+    })
+    expect(r.results).toHaveLength(25)
+    expect(r.results.every((x) => x.distanceMiles == null)).toBe(true)
+  })
+})
+
+describe('matchExistingBuyer', () => {
+  const buyers = [{ id: 'b1', name: ' Cargill ' }, { id: 'b2', name: 'Local Elevator' }]
+  it('matches trimmed, case-insensitively — the same rule as the inline picker', () => {
+    expect(matchExistingBuyer(buyers, 'cargill')?.id).toBe('b1')
+    expect(matchExistingBuyer(buyers, '  LOCAL ELEVATOR ')?.id).toBe('b2')
+  })
+  it('returns null for no match or a blank name', () => {
+    expect(matchExistingBuyer(buyers, 'ADM')).toBeNull()
+    expect(matchExistingBuyer(buyers, '   ')).toBeNull()
   })
 })

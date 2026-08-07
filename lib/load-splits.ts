@@ -17,6 +17,9 @@ export const PCT_TOLERANCE = 0.05
 export type SplitDraft = {
   field_id: string
   net_weight: number
+  /** Irrigated/dryland designation for this portion — only set when the
+   *  portion's field is mixed-practice; null/omitted otherwise. */
+  practice?: 'irrigated' | 'dryland' | null
 }
 
 export type AllocatedSplit = {
@@ -26,6 +29,7 @@ export type AllocatedSplit = {
   percentage: number
   wet_bushels: number | null
   dry_bushels: number | null
+  practice: 'irrigated' | 'dryland' | null
 }
 
 export type ParentLoadForAllocation = {
@@ -62,6 +66,7 @@ export function allocateSplits(
       percentage: round3(pct),
       wet_bushels: wetBushels == null ? null : round2(wetBushels),
       dry_bushels: dryBushels == null ? null : round2(dryBushels),
+      practice: s.practice ?? null,
     }
   })
 }

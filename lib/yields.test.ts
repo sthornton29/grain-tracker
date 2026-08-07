@@ -6,6 +6,9 @@ import {
   isHarvestComplete,
   cropsWithCompleteHarvest,
   groupYieldAggregates,
+  practiceOf,
+  resolvePracticeBreakout,
+  withLoadBreakouts,
   IN_PROGRESS_THRESHOLD,
   IN_PROGRESS_STALE_DAYS,
   type YieldInput,
@@ -28,6 +31,7 @@ type LoadLike = {
   crop_year: number | null
   from_type: string | null
   from_field_id: string | null
+  practice?: 'irrigated' | 'dryland' | null
 }
 
 type SplitLike = {
@@ -35,6 +39,7 @@ type SplitLike = {
   field_id: string
   crop_id: string
   dry_bushels: number | null
+  practice?: 'irrigated' | 'dryland' | null
 }
 
 type CropLike = {
@@ -80,8 +85,8 @@ describe('fieldCropAggregates', () => {
     ]
     const agg = fieldCropAggregates(loads, [], cropById)
 
-    expect(agg.get('fA|corn|2025')).toEqual({ dryBu: 1250, lastLoadDate: '2025-09-15' })
-    expect(agg.get('fB|corn|2025')).toEqual({ dryBu: 500, lastLoadDate: '2025-09-12' })
+    expect(agg.get('fA|corn|2025')).toMatchObject({ dryBu: 1250, lastLoadDate: '2025-09-15' })
+    expect(agg.get('fB|corn|2025')).toMatchObject({ dryBu: 500, lastLoadDate: '2025-09-12' })
     expect(agg.size).toBe(2)
   })
 
@@ -118,8 +123,8 @@ describe('fieldCropAggregates', () => {
     ]
     const agg = fieldCropAggregates(loads, splits, cropById)
 
-    expect(agg.get('fC|corn|2025')).toEqual({ dryBu: 800, lastLoadDate: '2025-09-20' })
-    expect(agg.get('fD|beans|2025')).toEqual({ dryBu: 300, lastLoadDate: '2025-09-20' })
+    expect(agg.get('fC|corn|2025')).toMatchObject({ dryBu: 800, lastLoadDate: '2025-09-20' })
+    expect(agg.get('fD|beans|2025')).toMatchObject({ dryBu: 300, lastLoadDate: '2025-09-20' })
     expect(agg.get('fE|corn|2025')).toBeUndefined()
     expect(agg.size).toBe(2)
   })
@@ -140,7 +145,7 @@ describe('fieldCropAggregates', () => {
       { load_id: 'p1', field_id: 'fA', crop_id: 'corn', dry_bushels: 200 },
     ]
     const agg = fieldCropAggregates(loads, splits, cropById)
-    expect(agg.get('fA|corn|2025')).toEqual({ dryBu: 1200, lastLoadDate: '2025-09-22' })
+    expect(agg.get('fA|corn|2025')).toMatchObject({ dryBu: 1200, lastLoadDate: '2025-09-22' })
   })
 
   it('skips non-field loads, and loads missing from_field_id or crop_id', () => {
@@ -177,7 +182,7 @@ describe('fieldCropAggregates', () => {
     ]
     const agg = fieldCropAggregates(loads, splits, cropById, { cropYear: 2025 })
     // Only l1 survives (crop_year 2025). l2 (2024) and the 2024 split are dropped.
-    expect(agg.get('fA|corn|2025')).toEqual({ dryBu: 1000, lastLoadDate: '2025-09-10' })
+    expect(agg.get('fA|corn|2025')).toMatchObject({ dryBu: 1000, lastLoadDate: '2025-09-10' })
     expect(agg.size).toBe(1)
   })
 
@@ -190,7 +195,7 @@ describe('fieldCropAggregates', () => {
     ]
     const agg = fieldCropAggregates(loads, [], cropById, { loadYear: 2025 })
     // The 2026-dated load is keyed under fA|corn|2026 too, but loadYear filters it out.
-    expect(agg.get('fA|corn|2025')).toEqual({ dryBu: 1000, lastLoadDate: '2025-09-10' })
+    expect(agg.get('fA|corn|2025')).toMatchObject({ dryBu: 1000, lastLoadDate: '2025-09-10' })
     expect(agg.size).toBe(1)
   })
 
@@ -207,7 +212,7 @@ describe('fieldCropAggregates', () => {
       { load_id: 'p1', field_id: 'fA', crop_id: 'corn', dry_bushels: 500 },
     ]
     expect(fieldCropAggregates(loads, splits, cropById, { loadYear: 2026 }).get('fA|corn|2026'))
-      .toEqual({ dryBu: 500, lastLoadDate: '2026-01-03' })
+      .toMatchObject({ dryBu: 500, lastLoadDate: '2026-01-03' })
     expect(fieldCropAggregates(loads, splits, cropById, { loadYear: 2025 }).size).toBe(0)
   })
 })
@@ -667,5 +672,194 @@ describe('groupYieldAggregates', () => {
 
   it('returns an empty array for no plantings', () => {
     expect(groupYieldAggregates([])).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Load-level irrigated/dryland designation (060) — practiceOf,
+// practice-aware fieldCropAggregates, resolvePracticeBreakout, withLoadBreakouts
+// ---------------------------------------------------------------------------
+
+// A mixed planting: 60 irrigated + 40 dryland acres on fA/corn/2025.
+function mixedPlanting(over: Partial<{
+  field_id: string; crop_id: string; season_year: number
+  irrigated_acres: number | string | null; dryland_acres: number | string | null
+  irrigated_bushels: number | string | null; dryland_bushels: number | string | null
+  yield_breakout_entered: boolean | null
+}> = {}) {
+  return {
+    field_id: 'fA', crop_id: 'corn', season_year: 2025,
+    irrigated_acres: 60, dryland_acres: 40,
+    irrigated_bushels: null, dryland_bushels: null,
+    yield_breakout_entered: false,
+    ...over,
+  }
+}
+
+describe('practiceOf', () => {
+  it('classifies pure-dry, pure-irr, and mixed (both > 0)', () => {
+    expect(practiceOf({ irrigated_acres: 0, dryland_acres: 100 })).toBe('pure-dry')
+    expect(practiceOf({ irrigated_acres: 100, dryland_acres: 0 })).toBe('pure-irr')
+    expect(practiceOf({ irrigated_acres: 60, dryland_acres: 40 })).toBe('mixed')
+    // 0/0 and null/null count as pure-dry (matches the historical backfill).
+    expect(practiceOf({ irrigated_acres: 0, dryland_acres: 0 })).toBe('pure-dry')
+    expect(practiceOf({ irrigated_acres: null, dryland_acres: null })).toBe('pure-dry')
+    // Numeric strings (numeric columns come back as strings from supabase-js).
+    expect(practiceOf({ irrigated_acres: '60.00', dryland_acres: '40.00' })).toBe('mixed')
+  })
+})
+
+describe('fieldCropAggregates — practice designation', () => {
+  it('sums designated bushels per side and counts designated vs total loads', () => {
+    const loads: LoadLike[] = [
+      load({ id: 'l1', date: '2025-09-10', dry_bushels_override: 1000, practice: 'irrigated' }),
+      load({ id: 'l2', date: '2025-09-11', dry_bushels_override: 400, practice: 'dryland' }),
+      load({ id: 'l3', date: '2025-09-12', dry_bushels_override: 250 }), // undesignated
+    ]
+    const agg = fieldCropAggregates(loads, [], cropById).get('fA|corn|2025')!
+    expect(agg.dryBu).toBe(1650)
+    expect(agg.irrBu).toBe(1000)
+    expect(agg.dryLandBu).toBe(400)
+    expect(agg.designatedLoads).toBe(2)
+    expect(agg.totalLoads).toBe(3)
+  })
+
+  it('split portions designate independently — each portion counts separately', () => {
+    // One split load: the fA portion is irrigated, the fB portion undesignated.
+    const loads: LoadLike[] = [
+      {
+        id: 'p1', date: '2025-09-20', net_weight: null, moisture: null, crop_id: null,
+        dry_bushels_override: null, crop_year: 2025, from_type: 'field', from_field_id: null,
+      },
+    ]
+    const splits: SplitLike[] = [
+      { load_id: 'p1', field_id: 'fA', crop_id: 'corn', dry_bushels: 800, practice: 'irrigated' },
+      { load_id: 'p1', field_id: 'fB', crop_id: 'corn', dry_bushels: 300, practice: null },
+    ]
+    const agg = fieldCropAggregates(loads, splits, cropById)
+    const a = agg.get('fA|corn|2025')!
+    expect(a.irrBu).toBe(800)
+    expect(a.designatedLoads).toBe(1)
+    expect(a.totalLoads).toBe(1)
+    const b = agg.get('fB|corn|2025')!
+    expect(b.irrBu ?? 0).toBe(0)
+    expect(b.designatedLoads).toBe(0)
+    expect(b.totalLoads).toBe(1)
+  })
+})
+
+describe('resolvePracticeBreakout', () => {
+  const aggOf = (loads: LoadLike[], splits: SplitLike[] = []) =>
+    fieldCropAggregates(loads, splits, cropById).get('fA|corn|2025')
+
+  it('all loads designated: source "loads", breakout equals the designated sums', () => {
+    const agg = aggOf([
+      load({ id: 'l1', date: '2025-09-10', dry_bushels_override: 1000, practice: 'irrigated' }),
+      load({ id: 'l2', date: '2025-09-11', dry_bushels_override: 400, practice: 'dryland' }),
+    ])
+    const b = resolvePracticeBreakout(mixedPlanting(), agg)
+    expect(b.source).toBe('loads')
+    expect(b.irrigatedBushels).toBe(1000)
+    expect(b.drylandBushels).toBe(400)
+  })
+
+  it('partial designation: source null but designated sums exposed for the pre-fill', () => {
+    const agg = aggOf([
+      load({ id: 'l1', date: '2025-09-10', dry_bushels_override: 1000, practice: 'irrigated' }),
+      load({ id: 'l2', date: '2025-09-11', dry_bushels_override: 400 }), // untagged
+    ])
+    const b = resolvePracticeBreakout(mixedPlanting(), agg)
+    expect(b.source).toBeNull()
+    expect(b.irrigatedBushels).toBeNull()
+    expect(b.drylandBushels).toBeNull()
+    expect(b.designatedIrrBu).toBe(1000)
+    expect(b.designatedLoads).toBe(1)
+    expect(b.totalLoads).toBe(2)
+  })
+
+  it('no loads at all: source null (nothing to derive)', () => {
+    const b = resolvePracticeBreakout(mixedPlanting(), undefined)
+    expect(b.source).toBeNull()
+    expect(b.totalLoads).toBe(0)
+  })
+
+  it('single-practice plantings never produce a load-derived breakout', () => {
+    // Even fully-tagged loads: a pure field implies its practice from the
+    // planting, so the resolver stays out of the way.
+    const agg = aggOf([
+      load({ id: 'l1', date: '2025-09-10', dry_bushels_override: 1000, practice: 'irrigated' }),
+    ])
+    const pure = mixedPlanting({ irrigated_acres: 100, dryland_acres: 0 })
+    expect(resolvePracticeBreakout(pure, agg).source).toBeNull()
+  })
+
+  it('a saved manual allocation wins over fully-designated loads', () => {
+    const agg = aggOf([
+      load({ id: 'l1', date: '2025-09-10', dry_bushels_override: 1000, practice: 'irrigated' }),
+      load({ id: 'l2', date: '2025-09-11', dry_bushels_override: 400, practice: 'dryland' }),
+    ])
+    const manual = mixedPlanting({
+      yield_breakout_entered: true, irrigated_bushels: 900, dryland_bushels: 500,
+    })
+    const b = resolvePracticeBreakout(manual, agg)
+    expect(b.source).toBe('manual')
+    expect(b.irrigatedBushels).toBe(900)
+    expect(b.drylandBushels).toBe(500)
+  })
+})
+
+describe('withLoadBreakouts — one shared representation downstream', () => {
+  it('materializes the load-derived split so consumers see it exactly like a manual breakout', () => {
+    const loads: LoadLike[] = [
+      load({ id: 'l1', date: '2025-09-10', dry_bushels_override: 15000, practice: 'irrigated' }),
+      load({ id: 'l2', date: '2025-09-11', dry_bushels_override: 5000, practice: 'dryland' }),
+    ]
+    const agg = fieldCropAggregates(loads, [], cropById)
+    const [eff] = withLoadBreakouts([mixedPlanting()], agg)
+    expect(eff.yield_breakout_entered).toBe(true)
+    expect(eff.irrigated_bushels).toBe(15000)
+    expect(eff.dryland_bushels).toBe(5000)
+  })
+
+  it('leaves partially-designated and pure plantings untouched', () => {
+    const loads: LoadLike[] = [
+      load({ id: 'l1', date: '2025-09-10', dry_bushels_override: 1000, practice: 'irrigated' }),
+      load({ id: 'l2', date: '2025-09-11', dry_bushels_override: 400 }),
+    ]
+    const agg = fieldCropAggregates(loads, [], cropById)
+    const partial = mixedPlanting()
+    const pure = mixedPlanting({ field_id: 'fB', irrigated_acres: 0, dryland_acres: 100 })
+    const [effPartial, effPure] = withLoadBreakouts([partial, pure], agg)
+    expect(effPartial).toBe(partial) // same object — untouched
+    expect(effPure).toBe(pure)
+  })
+
+  it('downstream per-practice consumers agree between the two paths', () => {
+    // Path 1: manual allocation. Path 2: identical numbers via load tags.
+    // groupYieldAggregates must produce identical per-practice yields.
+    const manual = mixedPlanting({
+      yield_breakout_entered: true, irrigated_bushels: 15000, dryland_bushels: 5000,
+    })
+    const loads: LoadLike[] = [
+      load({ id: 'l1', date: '2025-09-10', dry_bushels_override: 15000, practice: 'irrigated' }),
+      load({ id: 'l2', date: '2025-09-11', dry_bushels_override: 5000, practice: 'dryland' }),
+    ]
+    const agg = fieldCropAggregates(loads, [], cropById)
+    const [fromLoads] = withLoadBreakouts([mixedPlanting()], agg)
+
+    const toGroupInput = (p: ReturnType<typeof mixedPlanting>): GroupYieldPlanting => gp({
+      groupId: 'E1', cropId: 'corn', seasonYear: 2025, acres: 100, dryBu: 20000,
+      irrigatedAcres: Number(p.irrigated_acres), drylandAcres: Number(p.dryland_acres),
+      yieldBreakoutEntered: !!p.yield_breakout_entered,
+      irrigatedBushels: p.irrigated_bushels != null ? Number(p.irrigated_bushels) : null,
+      drylandBushels: p.dryland_bushels != null ? Number(p.dryland_bushels) : null,
+    })
+    const [viaManual] = groupYieldAggregates([toGroupInput(manual)])
+    const [viaLoads] = groupYieldAggregates([toGroupInput(fromLoads)])
+    expect(viaLoads.irrigatedYield).toBeCloseTo(viaManual.irrigatedYield!, 9)
+    expect(viaLoads.drylandYield).toBeCloseTo(viaManual.drylandYield!, 9)
+    expect(viaLoads.yield).toBeCloseTo(viaManual.yield!, 9)
+    expect(viaManual.irrigatedYield).toBeCloseTo(250, 6) // 15000/60
+    expect(viaManual.drylandYield).toBeCloseTo(125, 6)   // 5000/40
   })
 })

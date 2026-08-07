@@ -35,6 +35,7 @@ import {
   type AuditResult, type AuditComparison, type InvariantCheck, type YieldBasisAudit,
 } from '@/lib/crop-insurance-audit'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
+import { fieldCropAggregates, withLoadBreakouts } from '@/lib/yields'
 import {
   SummaryCards, EmptyState, fmtUsd, signedTone, toneText,
   theadCls, grandTotalRowCls, type SummaryCardData,
@@ -46,7 +47,19 @@ import type {
   HarvestPriceEstimate, ProgramYearConfig,
 } from '@/lib/types'
 
+type SplitRow = {
+  load_id: string
+  field_id: string
+  crop_id: string
+  dry_bushels: number | null
+  practice: 'irrigated' | 'dryland' | null
+}
+
 type LoadRow = {
+  id: string
+  date: string
+  from_field_id: string | null
+  practice: 'irrigated' | 'dryland' | null
   crop_id: string | null
   crop_year: number | null
   from_type: string | null
@@ -79,6 +92,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
+  const [splits, setSplits] = useState<SplitRow[]>([])
   const [policies, setPolicies] = useState<CropInsurancePolicy[]>([])
   const [scos, setScos] = useState<CropInsuranceSco[]>([])
   const [ecos, setEcos] = useState<CropInsuranceEco[]>([])
@@ -106,13 +120,13 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [cr, co, en, ca, pl, ld, po, sc, ec, hpe, pgc, sx, mc, cya] = await Promise.all([
+      const [cr, co, en, ca, pl, ld, po, sc, ec, hpe, pgc, sx, mc, cya, sp] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('counties').select('*').order('state_code').order('name'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('crop_assumptions').select('*'),
         supabase.from('field_plantings').select('*'),
-        supabase.from('loads').select('crop_id, crop_year, from_type, net_weight, moisture, dry_bushels_override'),
+        supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override, practice'),
         supabase.from('crop_insurance_policies').select('*'),
         supabase.from('crop_insurance_sco').select('*'),
         supabase.from('crop_insurance_eco').select('*'),
@@ -121,6 +135,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         supabase.from('crop_insurance_stax').select('*'),
         supabase.from('crop_insurance_mco').select('*'),
         supabase.from('county_yield_assumptions').select('*'),
+        supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels, practice'),
       ])
       setCrops((cr.data as Crop[]) || [])
       setCounties((co.data as County[]) || [])
@@ -128,6 +143,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       setAssumptions((ca.data as CropAssumption[]) || [])
       setPlantings((pl.data as FieldPlanting[]) || [])
       setLoads((ld.data as LoadRow[]) || [])
+      setSplits((sp.data as SplitRow[]) || [])
       setPolicies((po.data as CropInsurancePolicy[]) || [])
       setScos((sc.data as CropInsuranceSco[]) || [])
       setEcos((ec.data as CropInsuranceEco[]) || [])
@@ -209,6 +225,17 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     return () => { cancelled = true }
   }, [cropYear, reportCropIds, cropById])
 
+  // Plantings with the load-derived irrigated/dryland breakout materialized —
+  // a mixed field whose loads are all practice-tagged reads exactly like one
+  // with a manual post-harvest allocation, so the per-practice yield basis
+  // (practiceActualYieldByCrop inside projectInsuranceIndemnities and the
+  // audit) sees one representation whichever path produced the split.
+  const effPlantings = useMemo(() => {
+    if (cropYear === '') return plantings
+    const agg = fieldCropAggregates(loads, splits, cropById, { cropYear })
+    return withLoadBreakouts(plantings, agg)
+  }, [plantings, loads, splits, cropById, cropYear])
+
   // Crop-level actual yield (Σ dry bu / Σ planted ac) — shared resolver so this
   // matches the Cash Flow's safety-net exactly.
   const actualYieldByCrop = useMemo(
@@ -249,7 +276,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     // Single source of truth shared with the Cash Flow safety-net so the two
     // pages' projected indemnity reconciles.
     const projected = projectInsuranceIndemnities({
-      cropYear, policies: yearPolicies, scos, ecos, staxes, mcos, countyAssumptions: effCountyAssumptions, assumptions: effAssumptions, plantings,
+      cropYear, policies: yearPolicies, scos, ecos, staxes, mcos, countyAssumptions: effCountyAssumptions, assumptions: effAssumptions, plantings: effPlantings,
       actualYieldByCrop, harvestEstimates: priceEstimates, liveHarvestByCrop, crops,
       scoTrigger: programCfg.scoTrigger,
     })
@@ -257,7 +284,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       policy: r.policy, comp: r.comp, harvest: harvestByCrop.get(r.policy.crop_id),
       assumedYield: r.assumedYield, base: r.base, sco: r.sco, eco: r.eco, basePremium: r.basePremium,
     }))
-  }, [cropYear, viewer.loading, viewerA.ready, yearPolicies, scos, ecos, staxes, mcos, effCountyAssumptions, effAssumptions, plantings, actualYieldByCrop, priceEstimates, liveHarvestByCrop, crops, programCfg, harvestByCrop])
+  }, [cropYear, viewer.loading, viewerA.ready, yearPolicies, scos, ecos, staxes, mcos, effCountyAssumptions, effAssumptions, effPlantings, actualYieldByCrop, priceEstimates, liveHarvestByCrop, crops, programCfg, harvestByCrop])
 
   const totals = useMemo(() => {
     return computed.reduce(
@@ -316,7 +343,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   }
   const auditRows: AuditRow[] = useMemo(() => {
     if (!auditMode || cropYear === '') return []
-    const practiceActual = practiceActualYieldByCrop(plantings, cropYear)
+    const practiceActual = practiceActualYieldByCrop(effPlantings, cropYear)
     return computed.map((c) => {
       const p = c.policy
       const practice = (p.practice ?? 'non_irrigated') as Practice
@@ -384,7 +411,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       })
       return { c, yieldBasis, audit, cmp, invariants }
     })
-  }, [auditMode, computed, cropYear, plantings, effAssumptions, yearPolicies, actualYieldByCrop, effCountyAssumptions, scoByPolicy, ecoByPolicy, staxByPolicy, mcoByPolicy, programCfg, cropById])
+  }, [auditMode, computed, cropYear, effPlantings, effAssumptions, yearPolicies, actualYieldByCrop, effCountyAssumptions, scoByPolicy, ecoByPolicy, staxByPolicy, mcoByPolicy, programCfg, cropById])
 
   // Headline summary cards from the already-computed totals (no new math).
   const summaryCards: SummaryCardData[] = useMemo(() => [

@@ -5,7 +5,7 @@ import CottonYieldsSection from '@/components/reports/cotton-yields-section'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
-import { fieldCropAggregates, analyzeYields, isHarvestComplete, groupYieldAggregates, type HarvestProgress, type GroupYieldAgg, type GroupYieldPlanting } from '@/lib/yields'
+import { fieldCropAggregates, analyzeYields, isHarvestComplete, groupYieldAggregates, practiceOf, resolvePracticeBreakout, type HarvestProgress, type GroupYieldAgg, type GroupYieldPlanting, type PracticeBreakout } from '@/lib/yields'
 import { isCottonCrop } from '@/lib/marketing'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
@@ -35,6 +35,7 @@ type LoadRow = {
   to_buyer_id: string | null
   truck_id: string | null
   ticket_number: string | null
+  practice: 'irrigated' | 'dryland' | null
 }
 
 type ViewMode = 'field' | 'farm' | 'entity' | 'variety' | 'landowner'
@@ -45,18 +46,6 @@ const currentYear = () => new Date().getFullYear()
 
 function fmtNum(n: number, d = 2) {
   return n.toLocaleString(undefined, { maximumFractionDigits: d })
-}
-
-// Practice classification per planting.
-//   pure-dry: irrigated_acres == 0
-//   pure-irr: dryland_acres == 0
-//   mixed:    both > 0 (the only case where yield breakout makes sense)
-function practiceOf(p: FieldPlanting): 'pure-dry' | 'pure-irr' | 'mixed' {
-  const irr = Number(p.irrigated_acres) || 0
-  const dry = Number(p.dryland_acres) || 0
-  if (irr > 0 && dry > 0) return 'mixed'
-  if (irr > 0) return 'pure-irr'
-  return 'pure-dry'
 }
 
 export default function YieldsPage() {
@@ -138,7 +127,7 @@ export default function YieldsPage() {
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
-      supabase.from('loads').select('id, date, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, ticket_number'),
+      supabase.from('loads').select('id, date, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, ticket_number, practice'),
       supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('load_splits').select('*'),
       supabase.from('field_planting_varieties').select('*').order('variety'),
@@ -226,6 +215,13 @@ export default function YieldsPage() {
   )
   const dryBuFor = (fieldId: string, cropId: string, year: number) =>
     aggByKey.get(`${fieldId}|${cropId}|${year}`)?.dryBu ?? 0
+
+  // Effective irrigated/dryland breakout for a mixed planting, whichever path
+  // produced it: the manual post-harvest allocation (always wins) or fully
+  // practice-tagged loads. Every per-practice consumer on this page reads
+  // through this so the two paths never fork.
+  const breakoutFor = (p: FieldPlanting): PracticeBreakout =>
+    resolvePracticeBreakout(p, aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`))
 
   const distinctYears = useMemo(() => {
     const s = new Set<number>([currentYear()])
@@ -376,18 +372,20 @@ export default function YieldsPage() {
     // Practice-specific yields per the spec:
     //   pure-dry  -> dryland yield uses total dry bushels / dryland acres
     //   pure-irr  -> irrigated yield uses total dry bushels / irrigated acres
-    //   mixed     -> use the user-entered breakout when present, else null
+    //   mixed     -> the resolved breakout (manual allocation or fully
+    //                practice-tagged loads) when present, else null
     let irrigatedYield: number | null = null
     let drylandYield: number | null = null
     if (practice === 'pure-dry') {
       drylandYield = dryAc > 0 ? dryBu / dryAc : null
     } else if (practice === 'pure-irr') {
       irrigatedYield = irrAc > 0 ? dryBu / irrAc : null
-    } else if (p.yield_breakout_entered) {
-      const ib = p.irrigated_bushels != null ? Number(p.irrigated_bushels) : null
-      const db = p.dryland_bushels != null ? Number(p.dryland_bushels) : null
-      if (ib != null && irrAc > 0) irrigatedYield = ib / irrAc
-      if (db != null && dryAc > 0) drylandYield = db / dryAc
+    } else {
+      const b = breakoutFor(p)
+      if (b.source != null) {
+        if (b.irrigatedBushels != null && irrAc > 0) irrigatedYield = b.irrigatedBushels / irrAc
+        if (b.drylandBushels != null && dryAc > 0) drylandYield = b.drylandBushels / dryAc
+      }
     }
     return { fld, farm, ent, crop, dryBu, acres, irrAc, dryAc, totalYield, irrigatedYield, drylandYield, practice }
   }
@@ -432,9 +430,12 @@ export default function YieldsPage() {
         irrBu = dryBu; irrAc = irrAcP
       } else if (practice === 'pure-dry') {
         dryBuLand = dryBu; dryAc = dryAcP
-      } else if (p.yield_breakout_entered) {
-        if (p.irrigated_bushels != null) { irrBu = Number(p.irrigated_bushels); irrAc = irrAcP }
-        if (p.dryland_bushels != null) { dryBuLand = Number(p.dryland_bushels); dryAc = dryAcP }
+      } else {
+        const b = breakoutFor(p)
+        if (b.source != null) {
+          if (b.irrigatedBushels != null) { irrBu = b.irrigatedBushels; irrAc = irrAcP }
+          if (b.drylandBushels != null) { dryBuLand = b.drylandBushels; dryAc = dryAcP }
+        }
       }
 
       const key = `${farm?.id ?? '∅'}|${p.crop_id}|${p.season_year}`
@@ -505,6 +506,9 @@ export default function YieldsPage() {
       const fld = fieldById.get(p.field_id)
       const farm = fld?.farm_id ? farmById.get(fld.farm_id) : null
       const ent = farm?.entity_id ? entityById.get(farm.entity_id) : null
+      // Feed the rollup the RESOLVED breakout (manual or load-derived) so the
+      // entity view agrees with by-field/by-farm whichever path produced it.
+      const b = breakoutFor(p)
       return {
         groupId: ent?.id ?? '∅',
         groupName: ent?.name ?? '— No entity —',
@@ -515,9 +519,9 @@ export default function YieldsPage() {
         dryBu: dryBuFor(p.field_id, p.crop_id, p.season_year),
         irrigatedAcres: Number(p.irrigated_acres) || 0,
         drylandAcres: Number(p.dryland_acres) || 0,
-        yieldBreakoutEntered: p.yield_breakout_entered,
-        irrigatedBushels: p.irrigated_bushels,
-        drylandBushels: p.dryland_bushels,
+        yieldBreakoutEntered: b.source != null,
+        irrigatedBushels: b.irrigatedBushels,
+        drylandBushels: b.drylandBushels,
       }
     })
     return groupYieldAggregates(inputs)
@@ -863,9 +867,17 @@ export default function YieldsPage() {
     setBreakoutId(p.id)
     setBreakoutErr(null)
     setLastTouched(null)
+    const b = breakoutFor(p)
     if (p.yield_breakout_entered) {
       setBreakoutIrr(p.irrigated_bushels != null ? String(p.irrigated_bushels) : '')
       setBreakoutDry(p.dryland_bushels != null ? String(p.dryland_bushels) : '')
+    } else if (b.designatedLoads > 0) {
+      // Pre-fill from the loads that carry an irrigated/dryland tag — either
+      // the complete load-derived split (adjusting it manually) or a partial
+      // one ("from X of Y loads — complete the remainder"). The user confirms
+      // the final numbers.
+      setBreakoutIrr(String(Number(b.designatedIrrBu.toFixed(2))))
+      setBreakoutDry(String(Number(b.designatedDryBu.toFixed(2))))
     } else {
       // No prior allocation — leave inputs blank so the auto-calc kicks in
       // the moment the user types the first number.
@@ -1440,11 +1452,27 @@ export default function YieldsPage() {
                       )}
                       {yieldView === 'breakdown' && (
                         <td className="px-3 py-2 whitespace-nowrap">
-                          {showAllocateButton && !isBreakoutOpen && !viewer.isViewer && (
+                          {showAllocateButton && !isBreakoutOpen && !viewer.isViewer && (() => {
+                            const b = breakoutFor(p)
+                            // Fully load-tagged fields are already allocated —
+                            // no prompt, just a quiet note (still adjustable;
+                            // saving a manual split overrides the load tags).
+                            if (b.source === 'loads') {
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => openBreakout(p)}
+                                  title="Every load on this field carries an irrigated/dryland tag — the split comes straight from the loads. Open to replace it with a manual split."
+                                  className="text-slate-500 text-sm whitespace-nowrap no-print"
+                                >
+                                  From load tags ✓
+                                </button>
+                              )
+                            }
                             // Allocation is offered only once harvest is complete;
                             // an existing breakout stays editable so saved data is
                             // never stranded.
-                            (fieldComplete(p) || p.yield_breakout_entered) ? (
+                            return (fieldComplete(p) || p.yield_breakout_entered) ? (
                               <button
                                 type="button"
                                 onClick={() => openBreakout(p)}
@@ -1460,7 +1488,7 @@ export default function YieldsPage() {
                                 Allocate irr/dry
                               </span>
                             )
-                          )}
+                          })()}
                         </td>
                       )}
                     </tr>
@@ -1494,6 +1522,35 @@ export default function YieldsPage() {
                     {isBreakoutOpen && (
                       <tr className="bg-sky-50 no-print">
                         <td colSpan={fieldColCount} className="px-3 py-3">
+                          {(() => {
+                            const b = breakoutFor(p)
+                            if (p.yield_breakout_entered) {
+                              return (
+                                <p className="text-xs text-slate-600 mb-2">
+                                  Manual split — it stays in charge even if the irrigated/dryland tags on this
+                                  field&rsquo;s loads change later. Clear it to go back to using the load tags.
+                                </p>
+                              )
+                            }
+                            if (b.source === 'loads') {
+                              return (
+                                <p className="text-xs text-slate-600 mb-2">
+                                  This split comes from the irrigated/dryland tags on all {b.totalLoads} of this
+                                  field&rsquo;s loads. Saving here replaces it with a manual split, which then stays
+                                  in charge even if the load tags change later.
+                                </p>
+                              )
+                            }
+                            if (b.designatedLoads > 0) {
+                              return (
+                                <p className="text-xs text-slate-600 mb-2">
+                                  Pre-filled from {b.designatedLoads} of {b.totalLoads} tagged loads — complete the
+                                  remainder and save to confirm the final split.
+                                </p>
+                              )
+                            }
+                            return null
+                          })()}
                           <div className="flex flex-wrap items-end gap-3">
                             <div className="text-sm text-slate-600">
                               Total dry bushels: <span className="font-semibold">{fmtNum(r.dryBu)}</span>

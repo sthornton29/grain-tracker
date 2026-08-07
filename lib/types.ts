@@ -274,6 +274,9 @@ export type LoadSplit = {
   percentage: number
   wet_bushels: number | null
   dry_bushels: number | null
+  /** Irrigated/dryland designation for this portion (060). Null = undesignated;
+   *  only meaningful for mixed-practice fields. */
+  practice: 'irrigated' | 'dryland' | null
   notes: string | null
   created_at: string
 }
@@ -621,6 +624,9 @@ export type Load = {
   contract_id: string | null
   ticket_number: string | null
   source_pdf_url: string | null
+  /** Irrigated/dryland designation (060). Null = undesignated; only meaningful
+   *  for mixed-practice fields — pure fields imply it from the planting. */
+  practice: 'irrigated' | 'dryland' | null
   created_at: string
   updated_at: string
 }

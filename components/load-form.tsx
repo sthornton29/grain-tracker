@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { allocateSplits, validateSplitDrafts, type SplitDraft } from '@/lib/load-splits'
+import { practiceOf } from '@/lib/yields'
 import { relinkSettlementLinesForLoad } from '@/lib/settlement-link'
 import type { Bin, Buyer, Contract, Crop, Field, FieldPlanting, Load, LoadSplit, Truck } from '@/lib/types'
 
@@ -15,7 +16,9 @@ type Props = {
   mode: 'create' | 'edit'
 }
 
-type SplitRow = { field_id: string; weight: string }
+type PracticeChoice = '' | 'irrigated' | 'dryland'
+
+type SplitRow = { field_id: string; weight: string; practice: PracticeChoice }
 
 type FormState = {
   date: string
@@ -37,6 +40,7 @@ type FormState = {
   to_buyer_id: string
   contract_id: string
   ticket_number: string
+  practice: PracticeChoice
 }
 
 function todayISO() {
@@ -70,6 +74,7 @@ function toForm(initial?: Partial<Load>): FormState {
     to_buyer_id: initial?.to_buyer_id ?? '',
     contract_id: initial?.contract_id ?? '',
     ticket_number: initial?.ticket_number ?? '',
+    practice: (initial?.practice as PracticeChoice) ?? '',
   }
 }
 
@@ -92,7 +97,11 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   const [splitEntryMode, setSplitEntryMode] = useState<'weight' | 'percentage'>('weight')
   const [splits, setSplits] = useState<SplitRow[]>(() =>
     initialSplits && initialSplits.length > 0
-      ? initialSplits.map((s) => ({ field_id: s.field_id, weight: String(s.net_weight) }))
+      ? initialSplits.map((s) => ({
+          field_id: s.field_id,
+          weight: String(s.net_weight),
+          practice: (s.practice as PracticeChoice) ?? '',
+        }))
       : [],
   )
   // Tracks whether the user has manually typed into the last split row. When
@@ -275,6 +284,26 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     return fields.filter((f) => plantedFieldIds.has(f.id))
   }, [fields, plantings, form.crop_id, form.crop_year])
 
+  // Planting for a field under the selected crop (+ crop year when picked).
+  // Used to detect mixed-practice fields: only those get the optional
+  // Irrigated/Dryland toggle — a pure field's practice is implied by its
+  // planting, so we never ask.
+  const plantingFor = (fieldId: string): FieldPlanting | null => {
+    if (!fieldId || !form.crop_id) return null
+    const matches = plantings.filter(
+      (p) =>
+        p.field_id === fieldId &&
+        p.crop_id === form.crop_id &&
+        (cropYearNum == null || p.season_year === cropYearNum),
+    )
+    if (matches.length === 0) return null
+    return matches.sort((a, b) => b.season_year - a.season_year)[0]
+  }
+  const isMixedField = (fieldId: string): boolean => {
+    const p = plantingFor(fieldId)
+    return p != null && practiceOf(p) === 'mixed'
+  }
+
   const seasonYearOptions = useMemo(
     () =>
       cropYearOptionsFromPlantings(
@@ -361,8 +390,8 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     if (!splitMode) return
     if (splits.length > 0) return
     setSplits([
-      { field_id: form.from_field_id || '', weight: '' },
-      { field_id: '', weight: '' },
+      { field_id: form.from_field_id || '', weight: '', practice: form.practice },
+      { field_id: '', weight: '', practice: '' },
     ])
     setLastSplitManual(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -417,10 +446,13 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     setSplitWeight(i, w > 0 ? String(Math.round(w * 100) / 100) : '')
   }
   function setSplitField(i: number, field_id: string) {
-    setSplits((rs) => rs.map((r, j) => (i === j ? { ...r, field_id } : r)))
+    setSplits((rs) => rs.map((r, j) => (i === j ? { ...r, field_id, practice: '' } : r)))
+  }
+  function setSplitPractice(i: number, practice: PracticeChoice) {
+    setSplits((rs) => rs.map((r, j) => (i === j ? { ...r, practice } : r)))
   }
   function addSplit() {
-    setSplits((rs) => [...rs, { field_id: '', weight: '' }])
+    setSplits((rs) => [...rs, { field_id: '', weight: '', practice: '' }])
     setLastSplitManual(false)
   }
   function removeSplit(i: number) {
@@ -432,6 +464,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   const splitsResolved: SplitDraft[] = splits.map((s, i) => ({
     field_id: s.field_id,
     net_weight: resolvedSplitWeight(i),
+    practice: isMixedField(s.field_id) ? s.practice || null : null,
   }))
   const splitTotalLb = splitsResolved.reduce((a, d) => a + d.net_weight, 0)
   const splitTotalPct = totalNetLb > 0 ? (splitTotalLb / totalNetLb) * 100 : 0
@@ -487,6 +520,11 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       to_buyer_id: form.to_type === 'buyer' ? form.to_buyer_id || null : null,
       contract_id: form.to_type === 'buyer' ? form.contract_id || null : null,
       ticket_number: form.ticket_number || null,
+      // Only mixed-practice fields carry a designation; pure fields imply it.
+      practice:
+        !useSplits && form.from_type === 'field' && isMixedField(form.from_field_id)
+          ? form.practice || null
+          : null,
     }
 
     let savedLoadId: string | null = null
@@ -634,7 +672,11 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         </div>
         {form.from_type === 'field' && !splitMode && (
           <>
-            <select value={form.from_field_id} onChange={(e) => set('from_field_id', e.target.value)} className={inputCls}>
+            <select
+              value={form.from_field_id}
+              onChange={(e) => setForm((f) => ({ ...f, from_field_id: e.target.value, practice: '' }))}
+              className={inputCls}
+            >
               <option value="">— select field —</option>
               {filteredFields.map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
             </select>
@@ -642,6 +684,27 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
               <p className="text-xs text-amber-700">
                 No fields have a planting recorded for this crop. Add one under Settings → Field Plantings.
               </p>
+            )}
+            {isMixedField(form.from_field_id) && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-2 space-y-1">
+                <span className="text-xs text-slate-600">
+                  This field has both irrigated and dryland acres. Tag the load if you know — optional.
+                </span>
+                <div className="flex gap-2">
+                  {(['irrigated', 'dryland'] as const).map((p) => (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => set('practice', form.practice === p ? '' : p)}
+                      className={`flex-1 py-2 rounded-lg border text-sm ${
+                        form.practice === p ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white'
+                      }`}
+                    >
+                      {p === 'irrigated' ? 'Irrigated' : 'Dryland'}
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
             <button
               type="button"
@@ -750,6 +813,26 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                   </div>
                   {isAutoFilled && (
                     <p className="text-[11px] text-slate-500">Auto-filled from remainder — type a value to override.</p>
+                  )}
+                  {isMixedField(row.field_id) && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500 w-16">Irr / dry</span>
+                      <div className="flex gap-2 flex-1">
+                        {(['irrigated', 'dryland'] as const).map((p) => (
+                          <button
+                            key={p}
+                            type="button"
+                            onClick={() => setSplitPractice(i, row.practice === p ? '' : p)}
+                            className={`flex-1 py-1.5 rounded-lg border text-sm ${
+                              row.practice === p ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white'
+                            }`}
+                          >
+                            {p === 'irrigated' ? 'Irrigated' : 'Dryland'}
+                          </button>
+                        ))}
+                      </div>
+                      <span className="text-[11px] text-slate-400 w-14 text-right">optional</span>
+                    </div>
                   )}
                 </div>
               )

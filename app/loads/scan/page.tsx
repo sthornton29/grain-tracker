@@ -15,6 +15,7 @@ import {
   type TicketExtraction,
 } from '@/lib/pdf-upload'
 import { imagesToPdf } from '@/lib/image-capture'
+import { practiceOf } from '@/lib/yields'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
 import type { Bin, Buyer, Contract, Crop, Field, FieldPlanting, Truck } from '@/lib/types'
@@ -43,6 +44,7 @@ type Row = {
   to_bin_id: string
   to_buyer_id: string
   contract_id: string
+  practice: '' | 'irrigated' | 'dryland'
 }
 
 function numStr(n: number | null | undefined): string {
@@ -109,7 +111,6 @@ function ticketToRow(
     net = +(t.gross_weight - t.tare_weight).toFixed(2)
   }
 
-  // Suppress unused-var warning while keeping plantings around for future filtering.
   void plantings
 
   return {
@@ -134,6 +135,7 @@ function ticketToRow(
     to_bin_id,
     to_buyer_id,
     contract_id: '',
+    practice: '',
   }
 }
 
@@ -233,6 +235,23 @@ export default function ScanTicketsPage() {
     return bins.filter((b) => b.crop_id === crop_id)
   }
 
+  // Mixed-practice check for the optional Irrigated/Dryland tag: only fields
+  // whose planting (for the row's crop + the page's crop year) has both
+  // irrigated and dryland acres get the toggle — pure fields never ask.
+  function isMixedField(field_id: string, crop_id: string): boolean {
+    if (!field_id || !crop_id) return false
+    const yearNum = cropYear === '' ? null : Number(cropYear)
+    const matches = plantings.filter(
+      (p) =>
+        p.field_id === field_id &&
+        p.crop_id === crop_id &&
+        (yearNum == null || p.season_year === yearNum),
+    )
+    if (matches.length === 0) return false
+    const planting = matches.sort((a, b) => b.season_year - a.season_year)[0]
+    return practiceOf(planting) === 'mixed'
+  }
+
   function contractsFor(buyer_id: string, crop_id: string): Contract[] {
     const y = cropYear === '' ? null : Number(cropYear)
     if (y == null) return []
@@ -310,6 +329,12 @@ export default function ScanTicketsPage() {
           next.contract_id = ''
         }
         if ('to_buyer_id' in patch) next.contract_id = ''
+        // The practice tag belongs to a specific mixed field — drop it when the
+        // field/crop changes or the field is no longer mixed.
+        if (('from_field_id' in patch || 'crop_id' in patch || 'from_type' in patch) &&
+            !isMixedField(next.from_type === 'field' ? next.from_field_id : '', next.crop_id)) {
+          next.practice = ''
+        }
         return next
       }),
     )
@@ -384,6 +409,10 @@ export default function ScanTicketsPage() {
           contract_id: r.to_type === 'buyer' ? r.contract_id || null : null,
           ticket_number: r.ticket_number || null,
           source_pdf_url: pdfUrl,
+          practice:
+            r.from_type === 'field' && isMixedField(r.from_field_id, r.crop_id)
+              ? r.practice || null
+              : null,
         }
       })
 
@@ -574,6 +603,21 @@ export default function ScanTicketsPage() {
                             <option value="">— select field —</option>
                             {ff.map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
                           </select>
+                        )}
+                        {r.from_type === 'field' && isMixedField(r.from_field_id, r.crop_id) && (
+                          <div className="flex gap-1 mt-1">
+                            {(['irrigated', 'dryland'] as const).map((p) => (
+                              <button
+                                key={p}
+                                type="button"
+                                onClick={() => updateRow(i, { practice: r.practice === p ? '' : p })}
+                                className={`flex-1 text-xs px-2 py-1 rounded border ${r.practice === p ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white border-slate-300'}`}
+                                title="Optional — this field has both irrigated and dryland acres"
+                              >
+                                {p === 'irrigated' ? 'Irrigated' : 'Dryland'}
+                              </button>
+                            ))}
+                          </div>
                         )}
                         {r.from_type === 'bin' && (
                           <select value={r.from_bin_id} onChange={(e) => updateRow(i, { from_bin_id: e.target.value })} className={inputCls}>
