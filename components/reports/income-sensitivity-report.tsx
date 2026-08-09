@@ -38,7 +38,7 @@ import { quantityFor, formatCottonPrice, parseCottonPriceInput } from '@/lib/hed
 import { projectPayments, applyMyaResolution, programYearFor, otherPaymentsInRevenueYear } from '@/lib/government-payments'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import {
-  axisValues, defaultPriceStep, defaultYieldStep, closestIndex,
+  axisValues, defaultPriceStep, defaultYieldStep, closestIndex, insurancePriceToAxisUnits,
   splitHarvestByCrop, buildScenarioGrid, flatGovPerAcre,
   type CropScenarioInputs, type HarvestSplit, type ScenarioCell,
 } from '@/lib/income-sensitivity'
@@ -479,14 +479,22 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
             .reduce((s, f) => s + quantityFor(commodity, Number(f.num_contracts)), 0)
         : 0
 
-      // Axis defaults. Price centers on today's live benchmark quote (fallbacks:
-      // the standing assumed futures, then the avg projected price on file).
+      // Axis defaults. Price centers on the CURRENT ASSUMPTIONS midpoint: the
+      // standing What-If assumed futures first, then today's live benchmark
+      // quote, then the avg projected price on file. The projected-price
+      // fallback is insurance-native ($/lb for cotton) while the cotton axis
+      // is ¢/lb — insurancePriceToAxisUnits converts at the boundary so the
+      // fallback never centers a cotton axis ~100× low. The "you are here"
+      // row still marks the live quote wherever it lands on the axis.
       const live = liveEstimates.get(cropId) ?? null
       const assumedFutures = assumption?.assumed_futures != null ? Number(assumption.assumed_futures) : null
       const avgProjected = cropPolicies.length > 0
-        ? cropPolicies.reduce((s, p) => s + Number(p.projected_price), 0) / cropPolicies.length
+        ? insurancePriceToAxisUnits(
+            crop.name,
+            cropPolicies.reduce((s, p) => s + Number(p.projected_price), 0) / cropPolicies.length,
+          )
         : null
-      const autoPriceCenter = live ?? assumedFutures ?? avgProjected
+      const autoPriceCenter = assumedFutures ?? live ?? avgProjected
       const actualYield = split.fixedBu > 0 && plantedAcres > 0 && split.state === 'complete' ? split.fixedBu / plantedAcres : null
       const expectedRemaining = remainingExpectedYield.get(cropId)
         ?? (assumption?.expected_yield != null ? Number(assumption.expected_yield) : null)
