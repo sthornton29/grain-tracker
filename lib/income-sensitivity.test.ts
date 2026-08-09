@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
-  axisValues, closestIndex, defaultPriceStep, defaultYieldStep,
+  axisValues, closestIndex, defaultPriceStep, defaultYieldStep, insurancePriceToAxisUnits,
   splitHarvestByCrop, computeScenarioCell, buildScenarioGrid, flatGovPerAcre,
   type CropScenarioInputs,
 } from '@/lib/income-sensitivity'
@@ -98,6 +98,16 @@ describe('axis defaults + closestIndex', () => {
   it('finds the you-are-here index', () => {
     expect(closestIndex([4.1, 4.3, 4.5, 4.7], 4.38)).toBe(1)
     expect(closestIndex([4.1, 4.3], null)).toBe(-1)
+  })
+  // Policy projected prices are insurance-native ($/lb for cotton) but the
+  // cotton axis is ¢/lb. A $0.79/lb projected price must center the axis at
+  // 79¢ — feeding 0.79 straight in centered a new cotton org's axis ~100×
+  // low (the confusing near-zero price axis bug).
+  it('converts insurance-native policy prices to axis units (cotton ×100, grains unchanged)', () => {
+    expect(insurancePriceToAxisUnits('Cotton', 0.79)).toBeCloseTo(79, 9)
+    expect(insurancePriceToAxisUnits('Corn', 4.5)).toBe(4.5)
+    expect(insurancePriceToAxisUnits('Soybeans', 10.4)).toBe(10.4)
+    expect(insurancePriceToAxisUnits(null, 4.5)).toBe(4.5)
   })
 })
 

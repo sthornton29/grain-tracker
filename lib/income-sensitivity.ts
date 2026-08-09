@@ -67,6 +67,16 @@ export function defaultYieldStep(cropName: string | null | undefined): number {
   return c === 'Corn' ? 10 : 5
 }
 
+// Policy prices (projected/harvest) are insurance-native — $/bu for grains but
+// $/lb for cotton — while the cotton price axis runs in ¢/lb (the CT futures
+// convention). Convert HERE, at the one boundary, before a policy price is
+// used as an axis center. Without this, a cotton org with policies on file
+// but no live quote and no standing assumption yet gets an axis centered at
+// ~$0.79 "cents" — ~100× low and nonsense to read.
+export function insurancePriceToAxisUnits(cropName: string | null | undefined, price: number): number {
+  return cropToHedgeCommodity(cropName) === 'Cotton' ? price * 100 : price
+}
+
 // Index of the axis value closest to `target` (the "you are here" row/column).
 export function closestIndex(values: readonly number[], target: number | null | undefined): number {
   if (target == null || values.length === 0) return -1

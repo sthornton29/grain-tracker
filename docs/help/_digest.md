@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-08-07 · version 0.1.0 · build 23330a2. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-08-09 · version 0.1.0 · build a809e8f. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -690,7 +690,7 @@ Pick a crop year and scroll to a crop. The row and column closest to today's fut
 ## What the controls do
 
 - **Revenue/acre | Net profit/acre** — switches what the cells show; profit subtracts your cost per acre from the Marketing assumptions.
-- **Price and yield axis controls** — set the center, step, and number of steps for each axis of each crop; leave them blank for automatic values centered on today's price and your expected yield. An entry that does not parse reverts to the previous value.
+- **Price and yield axis controls** — set the center, step, and number of steps for each axis of each crop; leave them blank for automatic values centered on your current assumptions — the assumed futures price from your marketing assumptions (falling back to today's price, then your policies' projected price) and your expected yield. An entry that does not parse reverts to the previous value.
 - **Include government payments** — adds the payments expected to arrive during the crop year (the prior program year's ARC/PLC paid that fall, plus other USDA payments) as one flat dollars-per-acre amount, identical for every crop and constant across cells.
 - **County yield toggle** — see below.
 - **Entity filter** — narrows acres, positions, and policies; agent-held or whole-operation contracts count toward each entity by its share of the crop's planted acres.
@@ -702,7 +702,7 @@ Pick a crop year and scroll to a crop. The row and column closest to today's fut
 - **Harvested bushels are facts.** The yield axis applies only to unharvested acres. Mid-harvest, the header shows what is already in the bin; a fully harvested crop collapses to a single actual-yield column, leaving only price risk.
 - **Insurance re-runs in every cell.** Each RP, RP-HPE, and YP policy — with SCO and ECO, per irrigated/dryland practice — recomputes with the scenario price as the harvest price, shown net of premium. Once the RMA final harvest price is on file, it is used instead in every cell.
 - **County yield modes.** County-based coverage (SCO, ECO, STAX, ARP, AYP, MCO) needs a county yield, estimated from your "my yield vs county" differential. **County independent** (the default) holds the county constant while your farm yield moves — a local loss the county may not share, exposing the gap where county products might not pay when you have a loss. **County moves with me** models a widespread loss: the county falls with your yield, keeping your usual relationship to it, so area coverage triggers alongside your own policies. Once the RMA final county yield is published, both modes pin to it.
-- **Cotton** tables run in dollars per pound and pounds of lint per acre; sold and pool pounds stay locked, and in-loan pounds never fall below the banked CCC loan value.
+- **Cotton** tables run in cents per pound (the futures convention) and pounds of lint per acre; sold and pool pounds stay locked, and in-loan pounds never fall below the banked CCC loan value.
 
 ## Common questions
 
