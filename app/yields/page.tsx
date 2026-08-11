@@ -5,6 +5,8 @@ import CottonYieldsSection from '@/components/reports/cotton-yields-section'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
+import { roleCanEditYields } from '@/lib/app-role'
+import { roleAllowsPath } from '@/lib/route-guard'
 import { fieldCropAggregates, analyzeYields, isHarvestComplete, groupYieldAggregates, practiceOf, resolvePracticeBreakout, type HarvestProgress, type GroupYieldAgg, type GroupYieldPlanting, type PracticeBreakout } from '@/lib/yields'
 import { isCottonCrop } from '@/lib/marketing'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
@@ -54,7 +56,12 @@ export default function YieldsPage() {
   // granted entities server-side; here we prune the entity dropdown, name the
   // grants on exports, and hide the edit affordances (writes are RLS-blocked
   // anyway — no point offering buttons that would only error).
+  // Agronomist role (061): org-wide read-only — all entities and tabs, but the
+  // same hidden edit affordances, and load links render as plain text because
+  // /loads is outside the role's route allowlist.
   const viewer = useViewerScope(supabase)
+  const canEdit = roleCanEditYields(viewer.role)
+  const allowLoadLinks = roleAllowsPath(viewer.role, '/loads')
   const [entities, setEntities] = useState<Entity[]>([])
   const [farms, setFarms] = useState<Farm[]>([])
   const [fields, setFields] = useState<Field[]>([])
@@ -917,6 +924,7 @@ export default function YieldsPage() {
   }
 
   async function saveBreakout(p: FieldPlanting, totalDryBu: number) {
+    if (!canEdit) return
     if (!breakoutSumValid(totalDryBu)) return
     setBreakoutSaving(true)
     const { error } = await supabase
@@ -934,6 +942,7 @@ export default function YieldsPage() {
   }
 
   async function clearBreakout(p: FieldPlanting) {
+    if (!canEdit) return
     if (!confirm('Clear the irrigated/dryland breakout for this planting?')) return
     setBreakoutSaving(true)
     const { error } = await supabase
@@ -954,6 +963,7 @@ export default function YieldsPage() {
   // despite an unharvested/in-progress flag; value=null restores the automatic
   // behavior.
   async function setInclusionOverride(p: FieldPlanting, value: boolean | null) {
+    if (!canEdit) return
     setOverrideErr(null)
     setOverrideSavingId(p.id)
     const { error } = await supabase
@@ -984,6 +994,7 @@ export default function YieldsPage() {
   }
 
   async function saveVarAlloc(p: FieldPlanting, totalDryBu: number) {
+    if (!canEdit) return
     const vs = varietiesByPlanting.get(p.id) ?? []
     if (!varAllocValid(vs, totalDryBu)) return
     setVarAllocSaving(true)
@@ -1002,6 +1013,7 @@ export default function YieldsPage() {
   }
 
   async function clearVarAlloc(p: FieldPlanting) {
+    if (!canEdit) return
     if (!confirm('Clear the variety bushel allocation for this planting?')) return
     const vs = varietiesByPlanting.get(p.id) ?? []
     setVarAllocSaving(true)
@@ -1232,7 +1244,7 @@ export default function YieldsPage() {
                                 Needs allocation
                               </span>
                             )}
-                            {!isOpen && !viewer.isViewer && (
+                            {!isOpen && canEdit && (
                               <button
                                 type="button"
                                 onClick={() => openVarAlloc(p)}
@@ -1399,7 +1411,7 @@ export default function YieldsPage() {
                               in progress · counted
                             </span>
                           )}
-                          {exclusion === 'in_progress' && !viewer.isViewer && (
+                          {exclusion === 'in_progress' && canEdit && (
                             <button
                               type="button"
                               disabled={savingOverride}
@@ -1407,7 +1419,7 @@ export default function YieldsPage() {
                               className="text-brand-deep text-xs underline disabled:opacity-50 no-print"
                             >Count anyway</button>
                           )}
-                          {overridden && !viewer.isViewer && (
+                          {overridden && canEdit && (
                             <button
                               type="button"
                               disabled={savingOverride}
@@ -1452,7 +1464,7 @@ export default function YieldsPage() {
                       )}
                       {yieldView === 'breakdown' && (
                         <td className="px-3 py-2 whitespace-nowrap">
-                          {showAllocateButton && !isBreakoutOpen && !viewer.isViewer && (() => {
+                          {showAllocateButton && !isBreakoutOpen && canEdit && (() => {
                             const b = breakoutFor(p)
                             // Fully load-tagged fields are already allocated —
                             // no prompt, just a quiet note (still adjustable;
@@ -1501,7 +1513,7 @@ export default function YieldsPage() {
                             splits={splits}
                             cropById={cropById}
                             lookups={detailLookups}
-                            allowLoadLinks={!viewer.isViewer}
+                            allowLoadLinks={allowLoadLinks}
                             perFieldBreakdown={false}
                             flag={
                               overridden ? (
@@ -1670,7 +1682,7 @@ export default function YieldsPage() {
                                     splits={splits}
                                     cropById={cropById}
                                     lookups={detailLookups}
-                                    allowLoadLinks={!viewer.isViewer}
+                                    allowLoadLinks={allowLoadLinks}
                                     perFieldBreakdown
                                     cotton={isCottonCrop(r.cropName) ? cottonDetail : null}
                                   />
@@ -1767,7 +1779,7 @@ export default function YieldsPage() {
                             splits={splits}
                             cropById={cropById}
                             lookups={detailLookups}
-                            allowLoadLinks={!viewer.isViewer}
+                            allowLoadLinks={allowLoadLinks}
                             perFieldBreakdown
                             cotton={isCottonCrop(r.cropName) ? cottonDetail : null}
                           />

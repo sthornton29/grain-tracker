@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
+import { roleAllowsPath } from '@/lib/route-guard'
 import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
 import { isCottonCrop } from '@/lib/marketing'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
@@ -123,8 +124,11 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
 
   // Viewer role (052): RLS already row-filters the data; here the grants only
   // limit the entity dropdown and name the granted entities on the export.
+  // Viewers AND agronomists (061) get plain-text load rows — /loads is
+  // outside both roles' route allowlists.
   const viewer = useViewerScope(supabase)
   const entityOptions = entityOptionsFor(viewer, entities)
+  const allowLoadLinks = roleAllowsPath(viewer.role, '/loads')
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
@@ -457,7 +461,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
                                     splits={splits}
                                     cropById={cropById}
                                     lookups={detailLookups}
-                                    allowLoadLinks={!viewer.isViewer}
+                                    allowLoadLinks={allowLoadLinks}
                                     perFieldBreakdown
                                     cotton={isCottonCrop(t.cropName) ? cottonDetail : null}
                                   />

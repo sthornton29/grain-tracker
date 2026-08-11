@@ -26,6 +26,12 @@ describe('navLinksFor', () => {
       expect(navLinksFor({ cottonEnabled, role: 'viewer' }).map((l) => l.label)).toEqual(['Yields', 'Reports'])
     }
   })
+
+  it('agronomist: ONLY Yields, cotton module or not', () => {
+    for (const cottonEnabled of [true, false]) {
+      expect(navLinksFor({ cottonEnabled, role: 'agronomist' }).map((l) => l.label)).toEqual(['Yields'])
+    }
+  })
 })
 
 describe('navLinkActive', () => {

@@ -2,11 +2,13 @@
 // and the tests. Pure so the viewer/gin path rules are unit-testable — the
 // middleware only wires it to the session.
 //
-//   owner  — everything.
-//   gin    — Cotton intake only (not /cotton/marketing) + logout + doc parsing.
-//   viewer — read-only stakeholder: the home tiles, Yields, every /reports
-//            page, logout, and the read-only price/market API routes the
-//            report pages call. Everything else redirects to roleHome.
+//   owner      — everything.
+//   gin        — Cotton intake only (not /cotton/marketing) + logout + doc parsing.
+//   viewer     — read-only stakeholder: the home tiles, Yields, every /reports
+//                page, logout, and the read-only price/market API routes the
+//                report pages call. Everything else redirects to roleHome.
+//   agronomist — the Yields page ONLY (all entities, all tabs, drill-down).
+//                Org-wide production data, no financial surfaces at all.
 //
 // The nav (navLinksFor) hides the links and the RLS policies (042/044/052) are
 // the real enforcement underneath — this is the server-side redirect layer.
@@ -46,6 +48,7 @@ export function roleAllowsPath(role: AppRole, pathname: string): boolean {
       startsAt(pathname, '/api/parse-document')
     )
   }
+  if (role === 'agronomist') return startsAt(pathname, '/yields')
   // viewer
   if (VIEWER_BLOCKED_REPORTS.some((p) => startsAt(pathname, p))) return false
   return (
@@ -60,5 +63,6 @@ export function roleAllowsPath(role: AppRole, pathname: string): boolean {
 export function roleHome(role: AppRole): string {
   if (role === 'gin') return '/cotton/loads'
   if (role === 'viewer') return '/reports'
+  if (role === 'agronomist') return '/yields'
   return '/'
 }
