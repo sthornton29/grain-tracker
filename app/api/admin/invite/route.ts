@@ -19,7 +19,7 @@ import { createServiceClient, serviceClientMissingResponse } from '@/lib/partner
 
 type Body = {
   email?: string
-  role?: 'owner' | 'gin' | 'viewer'
+  role?: 'owner' | 'gin' | 'viewer' | 'agronomist'
   org_id?: string
   entity_ids?: string[]
   /** 'email' (default) sends the Supabase invite email; 'link' creates the
@@ -52,8 +52,8 @@ export async function POST(req: NextRequest) {
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return NextResponse.json({ error: 'A valid email is required.' }, { status: 400 })
   }
-  if (role !== 'owner' && role !== 'gin' && role !== 'viewer') {
-    return NextResponse.json({ error: 'role must be owner, gin, or viewer.' }, { status: 400 })
+  if (role !== 'owner' && role !== 'gin' && role !== 'viewer' && role !== 'agronomist') {
+    return NextResponse.json({ error: 'role must be owner, gin, viewer, or agronomist.' }, { status: 400 })
   }
 
   // Caller powers — via the SESSION client, so RLS vouches for every row.

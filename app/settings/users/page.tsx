@@ -2,9 +2,10 @@
 
 // Users & Modules — the module flags (Cotton) and the app's role system.
 // Roles: 'owner' (everything — the default for any user without a profile
-// row), 'gin' (ONLY the Cotton intake pages), and 'viewer' (read-only
-// stakeholder: ONLY Yields + Reports, scoped to the entities granted here —
-// enforced by nav, middleware redirect, and the 042/052 RLS policies).
+// row), 'gin' (ONLY the Cotton intake pages), 'viewer' (read-only
+// stakeholder: ONLY Yields + Reports, scoped to the entities granted here),
+// and 'agronomist' (ONLY the Yields page, org-wide — no entity grants) —
+// enforced by nav, middleware redirect, and the 042/052/061 RLS policies.
 // Login credentials are still created in the Supabase Auth dashboard (this
 // app has no self-serve signup and no service key in the browser) — this
 // page assigns ROLES to those logins: by email in the form, or inline per
@@ -16,9 +17,19 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { openHelp } from '@/lib/help-bus'
-import type { Entity } from '@/lib/types'
+import { coerceAppRole } from '@/lib/app-role'
+import type { AppRole, Entity } from '@/lib/types'
 
 type UserRow = { user_id: string; email: string; role: string; entity_ids: string[] | null }
+
+// ONE option list for all three role dropdowns (invite / assign / inline
+// edit) — adding a role means adding a line here, nowhere else.
+const ROLE_OPTIONS: Array<{ value: AppRole; label: string }> = [
+  { value: 'owner', label: 'owner (full access)' },
+  { value: 'gin', label: 'gin (Cotton intake only)' },
+  { value: 'viewer', label: 'viewer (reports & yields, read-only)' },
+  { value: 'agronomist', label: 'agronomist (yields only, read-only)' },
+]
 
 export default function UsersModulesPage() {
   const supabase = useMemo(() => createClient(), [])
@@ -27,7 +38,7 @@ export default function UsersModulesPage() {
   const [users, setUsers] = useState<UserRow[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
   const [email, setEmail] = useState('')
-  const [role, setRole] = useState<'owner' | 'gin' | 'viewer'>('owner')
+  const [role, setRole] = useState<AppRole>('owner')
   const [grantIds, setGrantIds] = useState<Set<string>>(new Set())
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -35,14 +46,14 @@ export default function UsersModulesPage() {
   // Invite-by-email (055): Supabase emails a set-your-password link; the
   // user lands in this org with the chosen role already assigned.
   const [inviteEmail, setInviteEmail] = useState('')
-  const [inviteRole, setInviteRole] = useState<'owner' | 'gin' | 'viewer'>('owner')
+  const [inviteRole, setInviteRole] = useState<AppRole>('owner')
   const [inviteGrantIds, setInviteGrantIds] = useState<Set<string>>(new Set())
   const [inviteLink, setInviteLink] = useState<{ email: string; link: string } | null>(null)
   const [isSuperAdmin, setIsSuperAdmin] = useState(false)
   // Inline per-row role editing.
   const [myUserId, setMyUserId] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [editRole, setEditRole] = useState<'owner' | 'gin' | 'viewer'>('owner')
+  const [editRole, setEditRole] = useState<AppRole>('owner')
   const [editGrantIds, setEditGrantIds] = useState<Set<string>>(new Set())
 
   useEffect(() => {
@@ -144,6 +155,7 @@ export default function UsersModulesPage() {
     setMsg(
       role === 'gin' ? `${email.trim()} is now a gin operator (Cotton intake only).`
       : role === 'viewer' ? `${email.trim()} is now a viewer (reports & yields for: ${grantNames}).`
+      : role === 'agronomist' ? `${email.trim()} is now an agronomist (Yields only, whole operation, read-only).`
       : `${email.trim()} is now an owner (full access).`
     )
     setEmail('')
@@ -156,7 +168,7 @@ export default function UsersModulesPage() {
   function startEdit(u: UserRow) {
     setErr(null); setMsg(null)
     setEditingId(u.user_id)
-    setEditRole(u.role === 'gin' || u.role === 'viewer' ? u.role : 'owner')
+    setEditRole(coerceAppRole(u.role))
     setEditGrantIds(new Set(u.entity_ids ?? []))
   }
 
@@ -183,6 +195,7 @@ export default function UsersModulesPage() {
     setMsg(
       editRole === 'gin' ? `${u.email} is now a gin operator (Cotton intake only).`
       : editRole === 'viewer' ? `${u.email} is now a viewer (reports & yields for: ${grantNames}).`
+      : editRole === 'agronomist' ? `${u.email} is now an agronomist (Yields only, whole operation, read-only).`
       : `${u.email} is now an owner (full access).`
     )
     setEditingId(null)
@@ -191,6 +204,7 @@ export default function UsersModulesPage() {
   const rolePill = (r: string) =>
     r === 'gin' ? 'bg-amber-100 text-amber-800'
     : r === 'viewer' ? 'bg-violet-100 text-violet-800'
+    : r === 'agronomist' ? 'bg-sky-100 text-sky-800'
     : 'bg-green-100 text-green-800'
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
 
@@ -223,10 +237,8 @@ export default function UsersModulesPage() {
         <form onSubmit={(e) => { e.preventDefault(); inviteUser('email') }} className="space-y-3">
           <div className="flex flex-wrap items-end gap-2">
             <input type="email" placeholder="user@example.com" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} className={`${inputCls} w-64`} />
-            <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as 'owner' | 'gin' | 'viewer')} className={inputCls}>
-              <option value="owner">owner (full access)</option>
-              <option value="gin">gin (Cotton intake only)</option>
-              <option value="viewer">viewer (reports &amp; yields, read-only)</option>
+            <select value={inviteRole} onChange={(e) => setInviteRole(e.target.value as AppRole)} className={inputCls}>
+              {ROLE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
             <button type="submit" disabled={busy} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
               Send invite
@@ -265,8 +277,8 @@ export default function UsersModulesPage() {
         <h2 className="font-semibold text-lg">Users &amp; Roles</h2>
         <p className="text-sm text-slate-500">
           <b>owner</b> = everything · <b>gin</b> = cotton intake only · <b>viewer</b> = read-only reports for
-          chosen entities. Prefer the invite above for new people; this form assigns roles to logins that
-          already exist.{' '}
+          chosen entities · <b>agronomist</b> = the Yields page only, whole operation, read-only. Prefer the
+          invite above for new people; this form assigns roles to logins that already exist.{' '}
           <button type="button" onClick={() => openHelp('/settings/users')} className="text-brand-deep underline decoration-dotted">
             Learn more about roles
           </button>
@@ -275,10 +287,8 @@ export default function UsersModulesPage() {
         <form onSubmit={assignRole} className="space-y-3">
           <div className="flex flex-wrap items-end gap-2">
             <input type="email" placeholder="user@example.com" value={email} onChange={(e) => setEmail(e.target.value)} className={`${inputCls} w-64`} />
-            <select value={role} onChange={(e) => setRole(e.target.value as 'owner' | 'gin' | 'viewer')} className={inputCls}>
-              <option value="owner">owner (full access)</option>
-              <option value="gin">gin (Cotton intake only)</option>
-              <option value="viewer">viewer (reports &amp; yields, read-only)</option>
+            <select value={role} onChange={(e) => setRole(e.target.value as AppRole)} className={inputCls}>
+              {ROLE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
             <button type="submit" disabled={busy} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
               Assign role
@@ -318,10 +328,8 @@ export default function UsersModulesPage() {
                 <td className="px-3 py-2">{u.email}{isSelf && <span className="ml-1.5 text-xs text-slate-400">(you)</span>}</td>
                 <td className="px-3 py-2">
                   {isEditing ? (
-                    <select value={editRole} onChange={(e) => setEditRole(e.target.value as 'owner' | 'gin' | 'viewer')} className="rounded border border-slate-300 px-2 py-1 text-sm bg-white">
-                      <option value="owner">owner (full access)</option>
-                      <option value="gin">gin (Cotton intake only)</option>
-                      <option value="viewer">viewer (reports &amp; yields)</option>
+                    <select value={editRole} onChange={(e) => setEditRole(e.target.value as AppRole)} className="rounded border border-slate-300 px-2 py-1 text-sm bg-white">
+                      {ROLE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
                   ) : (
                     <span className={`text-xs rounded-full px-2 py-0.5 ${rolePill(u.role)}`}>{u.role}</span>

@@ -7,7 +7,7 @@
 > programs. **Not a SaaS product** — single-tenant, used on iPads in trucks by a
 > small team, so the UX favors fast capture and forgiving data entry.
 >
-> _Snapshot date: 2026-08-07. Schema at migration `060` (051–056 applied in production; 057 — contracts.date_sold —, 058 — bins.capacity_bushels + bin_transfers —, 059 — crop_assumptions.reference_contract_month + the widened viewer-override field check —, and 060 — loads.practice + load_splits.practice (irrigated/dryland load tags) — pending manual apply). `supabase/verify_052/053/054.sql` are read-only diagnostics; `docs/BETA_ACCEPTANCE.md` is the pre-invite isolation checklist._
+> _Snapshot date: 2026-08-10. Schema at migration `061` (051–060 applied in production; 061 — the agronomist role: user_profiles role check widened, assign_user_role RPC, RESTRICTIVE write-block on every table + SELECT allowlist limited to the Yields read set — pending manual apply). `supabase/verify_052/053/054.sql` are read-only diagnostics; `docs/BETA_ACCEPTANCE.md` is the pre-invite isolation checklist._
 
 ---
 
@@ -45,7 +45,9 @@ session and redirects unauthenticated users to `/login` (public paths: `/login`,
 users are server-side-redirected to `/cotton/loads` from every non-cotton path; `viewer`
 users (052 — read-only stakeholders) are redirected to `/reports` from everything except
 `/`, `/yields`, `/reports/*`, `/logout`, and the read-only price-lookup APIs the reports
-call. The nav hides everything else and the 042/052 RLS policies enforce underneath. The
+call; `agronomist` users (061 — org-wide production advisors) are redirected to `/yields`
+from everything except `/yields/*` and `/logout` (help is open to every role). The nav
+hides everything else and the 042/052/061 RLS policies enforce underneath. The
 root layout (`app/layout.tsx`) renders the top `<Nav>` only when
 signed in, plus `<PwaRegister>`.
 
@@ -63,7 +65,7 @@ pure logic in `lib/` is covered by Vitest unit tests (`npm run test`); UI compon
 
 ### Navigation structure
 
-The global nav (`components/nav.tsx`, sticky forest-green bar with the white mark + TURNROW wordmark) and the landing tiles (`app/page.tsx`) BOTH render from **`lib/nav-links.ts`** (`navLinksFor` — single source of truth, so they cannot drift; gin role → Cotton only; viewer role → Yields + Reports only). 9 top-level destinations:
+The global nav (`components/nav.tsx`, sticky forest-green bar with the white mark + TURNROW wordmark) and the landing tiles (`app/page.tsx`) BOTH render from **`lib/nav-links.ts`** (`navLinksFor` — single source of truth, so they cannot drift; gin role → Cotton only; viewer role → Yields + Reports only; agronomist role → Yields only). 9 top-level destinations:
 New Load, Loads, Bin Inventory, Contracts, Settlements, Yields, Hedging, Reports, Settings —
 plus a single **Cotton** tab (inserted right after Hedging) when the **Cotton module** is
 enabled (`app_settings.cotton_module_enabled`, toggled under Settings → Users & Modules).
@@ -319,7 +321,7 @@ Coverage Check attestation that suppresses acre-mismatch flags for a combination
 **Cotton module (042)**
 
 - **`app_settings`** — single row (`id = 1`): `cotton_module_enabled`. Org-level; the multi-tenant conversion re-keys it per organization.
-- **`user_profiles`** — `user_id`→auth.users, `role` ('owner' | 'gin' | 'viewer' since 052). No row = owner. Read via security-definer `app_role()` so policies don't recurse.
+- **`user_profiles`** — `user_id`→auth.users, `role` ('owner' | 'gin' | 'viewer' since 052; + 'agronomist' since 061 — org-wide read-only Yields, no entity grants). No row = owner. Read via security-definer `app_role()` so policies don't recurse.
 - **`gins`** — `name` (unique), address/phone/notes.
 - **`cotton_loads`** — seed cotton module tickets, parallel to grain loads: `load_number` (unique per `crop_year`), entity/farm/field FKs, picked/delivered dates, truck, gross/tare/`net_weight` (lbs SEED COTTON), `gin_id`, source ('manual'|'document_import'), `source_pdf_url`. Yard inventory until on a receipt.
 - **`gin_receipts`** — one Statement of Ginning (unique `crop_year`+`receipt_number`): gin/entity/farm/field, `modules_count`, `total_seed_cotton_weight`, `bales_count`, `total_bale_weight` (lbs LINT), `avg_bale_weight`, `seed_lbs` (cottonseed), `lint_turnout_pct`, `lint_lbs_per_bale`.
@@ -587,7 +589,7 @@ capability is added or an integration assumption changes.
 - `dryland_acres` is **trigger-maintained**; don't try to set it directly.
 - Filters on many pages persist in `localStorage` via `usePersistentState`.
 - Heavy export/PDF libs are dynamically `import()`-ed to keep first-load small.
-- Single-tenant security model: RLS is permissive for any authenticated user, minus the 042 gin-role and 052 viewer-role RESTRICTIVE policies — **do not** treat this as multi-tenant isolation.
+- Single-tenant security model: RLS is permissive for any authenticated user, minus the 042 gin-role, 052 viewer-role, and 061 agronomist-role RESTRICTIVE policies — **do not** treat this as multi-tenant isolation.
 - **Cotton prices are STORED in ¢/lb, DISPLAYED as $/lb** (stored 72.65; shown $0.7265 via `formatCottonPrice()` / `fmtCommodityPrice()` / the exports `'cents'` format — never ad-hoc ÷100s): futures P&L must use `pnlSizeFor()` ($500/point), never the raw 50,000-lb contract size; quantities use `quantityFor()`/`contractUnit()` (lbs for CT) and Barchart quote magnitudes normalize only in `normalizeBarchartPrice` (CT passes through, grains ÷100). Cotton price INPUTS accept dollar-style entry (0.7265) AND legacy cents (72.65) through `parseCottonPriceInput()`'s magnitude guard (>5 = ¢; small figures like basis/LDP-rate/equity use a 0.25 threshold). **EXCEPTION — crop insurance is $/lb (RMA-native)**: everything in `lib/crop-insurance.ts` (computePolicy and under) runs in the policy's native $ per unit ($/bu grains, $/lb cotton, e.g. 0.68). Any futures-derived cotton ¢/lb price (CT quote, scenario axis, stored `harvest_estimate` mirror) converts at the boundary via `centsToInsuranceDollars()` — never ad-hoc ÷100s — and `computePolicy` carries a sanity-guard `warnings` list that flags implausible per-acre guarantees/indemnities (the ¢-leak signature) in the Claims Monitor and Income Sensitivity UIs (046 migration normalized any ¢-stored cotton policy prices).
 - **Two crop→commodity maps**: `cropToCommodity` (grain-shaped $/bu surfaces — physical contracts, government programs) deliberately excludes cotton; `cropToHedgeCommodity` (marketing, income sensitivity, harvest-price symbols) adds Cotton → CT. Pick the right one when wiring a new surface.
 - **Cotton scope notes**: physical cotton marketing IS tracked (044 — sales contracts, CCC loans, LDP, fees under Cotton → Marketing) and flows into the Marketing dashboard (Sold/Pool/In-Loan/Hedged/Unpriced bar), Revenue Projections, Cash Flow (labeled cotton lines + Cotton (net) column), and Income Sensitivity (loan floor flattens cells below the banked value; sold lbs locked). Cotton contracts live in their OWN tables (`cotton_sales_contracts`), never in grain `contracts`. LDP/MLG are counted once in cotton marketing revenue — never in the government pool. The Crop Insurance Production report and the Yields variety/landowner groupings still don't include cotton (it has its own unit-aware section on Yields/Season instead).

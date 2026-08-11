@@ -74,11 +74,16 @@ export async function updateSession(request: NextRequest) {
 
   // Role guards (lib/route-guard.ts): gin logins may reach ONLY the Cotton
   // intake pages; viewer logins ONLY Yields + Reports (and the read-only
-  // price-lookup APIs). Server-side redirect here; the nav hides everything
-  // else and the RLS policies (042/044/052) are the real enforcement
-  // underneath. The profile lookup is skipped on paths every role may see.
+  // price-lookup APIs); agronomist logins ONLY Yields. Server-side redirect
+  // here; the nav hides everything else and the RLS policies (042/044/052/061)
+  // are the real enforcement underneath. The profile lookup is skipped on
+  // paths every role may see.
   if (user && !isPublic) {
-    if (!roleAllowsPath('gin', pathname) || !roleAllowsPath('viewer', pathname)) {
+    if (
+      !roleAllowsPath('gin', pathname) ||
+      !roleAllowsPath('viewer', pathname) ||
+      !roleAllowsPath('agronomist', pathname)
+    ) {
       const { data: profile } = await supabase
         .from('user_profiles')
         .select('role')

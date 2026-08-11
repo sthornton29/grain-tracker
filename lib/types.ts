@@ -634,7 +634,7 @@ export type Load = {
 // ---------- Cotton module (042) ----------
 
 export type AppSettings = { id: number; cotton_module_enabled: boolean; updated_at: string }
-export type AppRole = 'owner' | 'gin' | 'viewer'
+export type AppRole = 'owner' | 'gin' | 'viewer' | 'agronomist'
 
 // ---------- Viewer role (052) ----------
 

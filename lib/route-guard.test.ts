@@ -58,11 +58,32 @@ describe('roleAllowsPath', () => {
     expect(roleAllowsPath('viewer', '/reportsX')).toBe(false)
     expect(roleAllowsPath('viewer', '/reports/anything/nested')).toBe(true)
   })
+
+  it('agronomist: Yields (incl. drill-down) and logout, nothing else', () => {
+    expect(roleAllowsPath('agronomist', '/yields')).toBe(true)
+    expect(roleAllowsPath('agronomist', '/yields/anything/nested')).toBe(true)
+    expect(roleAllowsPath('agronomist', '/logout')).toBe(true)
+    expect(roleAllowsPath('agronomist', '/yieldsX')).toBe(false)
+  })
+
+  it('agronomist: every other route is blocked — reports, loads, contracts, hedging, financials, settings, cotton, home', () => {
+    for (const p of [
+      '/', '/loads', '/loads/new', '/loads/unpaid', '/inventory', '/contracts', '/settlements',
+      '/hedging', '/settings', '/settings/users', '/cotton', '/cotton/loads', '/cotton/marketing',
+      '/reports', '/reports/marketing', '/reports/season', '/reports/settlement-pdfs', '/reports/crop-budget',
+      '/revenue-projections', '/admin',
+      '/api/parse-document', '/api/market-prices', '/api/harvest-price-estimate',
+      '/api/mya-estimate', '/api/nass-monthly-prices', '/api/mya-monthly-lookup',
+      '/api/options-prices', '/api/awp-lookup',
+    ]) {
+      expect(roleAllowsPath('agronomist', p)).toBe(false)
+    }
+  })
 })
 
 describe('help access', () => {
   it('help, the assistant, and contact support are open to EVERY role', () => {
-    for (const role of ['owner', 'gin', 'viewer'] as const) {
+    for (const role of ['owner', 'gin', 'viewer', 'agronomist'] as const) {
       for (const p of ['/help', '/api/support-chat', '/api/support-request']) {
         expect(roleAllowsPath(role, p)).toBe(true)
       }
@@ -75,5 +96,6 @@ describe('roleHome', () => {
     expect(roleHome('owner')).toBe('/')
     expect(roleHome('gin')).toBe('/cotton/loads')
     expect(roleHome('viewer')).toBe('/reports')
+    expect(roleHome('agronomist')).toBe('/yields')
   })
 })
