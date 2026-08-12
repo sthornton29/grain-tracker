@@ -45,6 +45,21 @@ begin
     alter table public.user_profiles
       add constraint user_profiles_role_check check (role in ('owner', 'gin', 'viewer', 'agronomist'));
   end if;
+
+  -- organization_members.role mirrors user_profiles.role via 053's
+  -- sync_profile_membership trigger, so ITS check must widen too — otherwise
+  -- the very first agronomist assignment fails inside the trigger.
+  if exists (
+    select 1 from pg_constraint
+    where conname = 'organization_members_role_check'
+      and pg_get_constraintdef(oid) not like '%agronomist%'
+  ) then
+    alter table public.organization_members drop constraint organization_members_role_check;
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'organization_members_role_check') then
+    alter table public.organization_members
+      add constraint organization_members_role_check check (role in ('owner', 'gin', 'viewer', 'agronomist'));
+  end if;
 end $$;
 
 -- 2. Role RPC: allow 'agronomist' --------------------------------------------
