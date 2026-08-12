@@ -70,8 +70,13 @@ describe('agronomist RLS shape (061)', () => {
     expect(sql).toMatch(/if not \(t = any\(readable\)\) then/)
   })
 
-  it('the role constraint and RPC accept agronomist', () => {
-    expect(sql).toContain("check (role in ('owner', 'gin', 'viewer', 'agronomist'))")
+  it('BOTH role constraints and the RPC accept agronomist', () => {
+    // user_profiles AND organization_members — 053's sync trigger mirrors the
+    // role into the membership row, so widening only one breaks assignment.
+    expect(sql).toMatch(/alter table public\.user_profiles\s+add constraint user_profiles_role_check/)
+    expect(sql).toMatch(/alter table public\.organization_members\s+add constraint organization_members_role_check/)
+    const widened = sql.match(/check \(role in \('owner', 'gin', 'viewer', 'agronomist'\)\)/g) ?? []
+    expect(widened).toHaveLength(2)
     expect(sql).toContain("new_role not in ('owner', 'gin', 'viewer', 'agronomist')")
   })
 })
