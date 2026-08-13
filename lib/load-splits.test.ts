@@ -18,7 +18,7 @@ const SOY: Crop = {
   base_moisture_pct: 13,
   base_lb_per_bushel: 60,
   harvest_category: 'fall',
-  double_crop: false,
+  double_crop: false, combine_adjustment_bu_per_acre: null,
 }
 
 function draft(field_id: string, net_weight: number): SplitDraft {

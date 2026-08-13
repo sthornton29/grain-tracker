@@ -6,7 +6,7 @@ import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { roleAllowsPath } from '@/lib/route-guard'
-import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
+import { fieldCropAggregates, analyzeYields, type CombineEntryLike } from '@/lib/yields'
 import { isCottonCrop } from '@/lib/marketing'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import { EmptyState, theadCls, subtotalRowCls } from '@/components/reports/report-kit'
@@ -79,6 +79,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
+  const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [landowners, setLandowners] = useState<Landowner[]>([])
   // Light name lookups (id + name only) for the drill-down's load list.
   const [trucks, setTrucks] = useState<Array<{ id: string; name_or_number: string }>>([])
@@ -94,7 +95,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [cr, en, fa, fi, pl, lo, sp, lan, tr, bi, bu] = await Promise.all([
+      const [cr, en, fa, fi, pl, lo, sp, lan, tr, bi, bu, ce] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('*'),
@@ -106,6 +107,8 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
         supabase.from('trucks').select('id, name_or_number').order('name_or_number'),
         supabase.from('bins').select('id, name_or_number').order('name_or_number'),
         supabase.from('buyers').select('id, name').order('name'),
+        // May not exist yet (migration 062): an error leaves data null → [].
+        supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
       ])
       setCrops((cr.data as Crop[]) || [])
       setEntities((en.data as Entity[]) || [])
@@ -118,6 +121,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
       setTrucks((tr.data as Array<{ id: string; name_or_number: string }>) || [])
       setBins((bi.data as Array<{ id: string; name_or_number: string }>) || [])
       setBuyers((bu.data as Array<{ id: string; name: string }>) || [])
+      setCombineEntries((ce.data as CombineEntryLike[]) || [])
       setLoading(false)
     })()
   }, [supabase])
@@ -137,8 +141,8 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
 
   // Dry bushels + most-recent load date per field+crop+year (shared rules).
   const aggByKey = useMemo(
-    () => fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear }),
-    [loads, splits, cropById, cropYear],
+    () => fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear, combineEntries }),
+    [loads, splits, cropById, cropYear, combineEntries],
   )
   const dryBuFor = (fieldId: string, cropId2: string, year: number) =>
     aggByKey.get(`${fieldId}|${cropId2}|${year}`)?.dryBu ?? 0
@@ -201,6 +205,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
         dryBu: agg?.dryBu ?? 0,
         lastLoadDate: agg?.lastLoadDate ?? null,
         override: p.yield_include_override,
+        combineComplete: agg?.combine?.harvestComplete,
       }
     }),
   ), [filteredPlantings, aggByKey])
@@ -463,6 +468,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
                                     lookups={detailLookups}
                                     allowLoadLinks={allowLoadLinks}
                                     perFieldBreakdown
+                                    combineEntries={combineEntries}
                                     cotton={isCottonCrop(t.cropName) ? cottonDetail : null}
                                   />
                                 </td>

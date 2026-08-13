@@ -1,7 +1,7 @@
 // Bin inventory math shared by the Bin Inventory page and the transfer UI.
 //
 // A bin's on-hand dry bushels for a crop:
-//   loadBacked + beginning − emptyAdj + transferIn − transferOut
+//   loadBacked + beginning − emptyAdj + transferIn − transferOut + combineRemainder
 //
 // Transfers move grain BETWEEN bins on a dry-bushel basis, so every transfer
 // subtracts from the source and adds the same amount to the destination —
@@ -10,6 +10,14 @@
 // conversion on loads, not by transfers). Transfers are NOT loads: they never
 // enter yield, production, contract-delivery, or marketing math, all of which
 // aggregate loads only.
+//
+// combineRemainder (062) is the same kind of non-load component: the NETTED
+// remainder of a combine yield entry with a destination bin — adjusted total
+// minus the field's weighed loads. The weighed bin-bound loads from that field
+// are already in loadBacked, so posting only the remainder keeps the bin from
+// double-counting them. A negative remainder (weighed > combine entry) posts
+// nothing here — it's warned on the entry and in the yields drill-down, never
+// silently netted out of a bin.
 
 export type BinInventoryCell = {
   loadBacked: number
@@ -17,6 +25,8 @@ export type BinInventoryCell = {
   emptyAdj: number
   transferIn: number
   transferOut: number
+  /** Netted combine-entry remainders posted to this bin (062). */
+  combineRemainder: number
 }
 
 /** bin_id → crop_id → cell */
@@ -30,7 +40,7 @@ export type TransferLike = {
 }
 
 export function emptyCell(): BinInventoryCell {
-  return { loadBacked: 0, beginning: 0, emptyAdj: 0, transferIn: 0, transferOut: 0 }
+  return { loadBacked: 0, beginning: 0, emptyAdj: 0, transferIn: 0, transferOut: 0, combineRemainder: 0 }
 }
 
 export function cellFor(bag: OnHandBag, binId: string, cropId: string): BinInventoryCell {
@@ -42,7 +52,24 @@ export function cellFor(bag: OnHandBag, binId: string, cropId: string): BinInven
 }
 
 export function cellTotal(c: BinInventoryCell): number {
-  return c.loadBacked + c.beginning - c.emptyAdj + c.transferIn - c.transferOut
+  return c.loadBacked + c.beginning - c.emptyAdj + c.transferIn - c.transferOut + c.combineRemainder
+}
+
+/**
+ * Post combine-entry remainders (062) to their destination bins. Each entry
+ * with a destination bin adds its netted remainder — adjusted total minus the
+ * field's weighed loads — as a non-load component. Only positive remainders
+ * post (a negative net is a data problem warned on the yields side); only bins
+ * already seeded in the bag are touched, like applyTransfers.
+ */
+export function applyCombineRemainders(
+  bag: OnHandBag,
+  entries: ReadonlyArray<{ crop_id: string; destinationBinId: string | null; remainderBu: number }>,
+): void {
+  for (const e of entries) {
+    if (!e.destinationBinId || !(e.remainderBu > 0)) continue
+    if (bag.has(e.destinationBinId)) cellFor(bag, e.destinationBinId, e.crop_id).combineRemainder += e.remainderBu
+  }
 }
 
 /**

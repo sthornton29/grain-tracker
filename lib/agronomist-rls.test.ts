@@ -31,6 +31,7 @@ const YIELDS_READ_SET = [
   'field_planting_varieties', 'entities', 'crops', 'landowners', 'counties',
   'trucks', 'bins', 'buyers', 'crop_assumptions',
   'gin_receipts', 'gin_receipt_loads', 'cotton_bales', 'cotton_bale_grades', 'cotton_loads',
+  'combine_yield_entries',
   'user_profiles', 'app_settings',
 ]
 

@@ -132,8 +132,9 @@ export function splitHarvestByCrop(args: {
     if (cur) {
       cur.dryBu += v.dryBu
       if (v.lastLoadDate != null && (cur.lastLoadDate == null || v.lastLoadDate > cur.lastLoadDate)) cur.lastLoadDate = v.lastLoadDate
+      if (v.combine) cur.combine = v.combine
     } else {
-      aggByFieldCrop.set(ck, { dryBu: v.dryBu, lastLoadDate: v.lastLoadDate })
+      aggByFieldCrop.set(ck, { dryBu: v.dryBu, lastLoadDate: v.lastLoadDate, combine: v.combine })
     }
   }
   const yearPlantings = args.plantings.filter((p) => p.season_year === args.cropYear)
@@ -144,6 +145,7 @@ export function splitHarvestByCrop(args: {
         id: p.id, cropId: p.crop_id, acres: Number(p.planted_acres ?? 0),
         dryBu: agg?.dryBu ?? 0, lastLoadDate: agg?.lastLoadDate ?? null,
         override: p.yield_include_override ?? null,
+        combineComplete: agg?.combine?.harvestComplete,
       }
     }),
     IN_PROGRESS_THRESHOLD, args.now ?? new Date(),

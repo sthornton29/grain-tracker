@@ -5,8 +5,15 @@
 // exactly equals the yield row it explains — never a parallel query that
 // could disagree. Weighted averages weight by NET WEIGHT (lbs), never a
 // simple mean of percentages.
+//
+// Combine entries (062): a combine-tracked field's detail lists the entry as a
+// labeled source row ABOVE the weighed-load list, with the netting shown; the
+// summary's fieldProductionDryBu then uses the entry's adjusted total for that
+// field (mirroring fieldCropAggregates), so the detail still provably sums to
+// the yield row.
 
 import { computeBushels } from '@/lib/shrink'
+import type { CombineAggInfo, CombineEntryLike } from '@/lib/yields'
 
 export type DetailLoadLike = {
   id: string
@@ -58,11 +65,24 @@ export type YieldDetailLoad = {
   split: { portionLbs: number | null; parentLbs: number | null } | null
 }
 
+/** A combine entry rendered in the drill-down, with its netting computed
+ *  against exactly the weighed loads listed alongside it. */
+export type CombineDetailRow = {
+  fieldId: string
+  cropId: string
+  info: CombineAggInfo
+}
+
 export type YieldDetailSummary = {
   loadCount: number
   totalNetLbs: number
   totalWetBu: number
+  /** Σ dry bushels of the WEIGHED loads listed (netting basis, not the row). */
   totalDryBu: number
+  /** The field-production number the yield row shows: weighed loads for
+   *  load-tracked fields + adjusted combine totals for combine-tracked ones.
+   *  Equals totalDryBu when no combine entry is present. */
+  fieldProductionDryBu: number
   /** Weighted by net lbs — 30,000 @ 16.0 + 50,000 @ 18.0 → 17.25, not 17.0. */
   weightedMoisture: number | null
   /** Weighted by net lbs across loads that captured a test weight. */
@@ -103,9 +123,25 @@ export function buildLoadDetail(args: {
   loads: readonly DetailLoadLike[]
   splits: readonly DetailSplitLike[]
   cropById: Map<string, CropLike>
-}): { loads: YieldDetailLoad[]; summary: YieldDetailSummary } {
+  /** Combine entries (062); entries for `keys` in `seasonYear` become labeled
+   *  source rows and switch the matched loads to crop-year matching, exactly
+   *  like fieldCropAggregates. */
+  combineEntries?: readonly CombineEntryLike[] | null
+}): { loads: YieldDetailLoad[]; summary: YieldDetailSummary; combineRows: CombineDetailRow[] } {
   const { keys, seasonYear, loads, splits, cropById } = args
   const out: YieldDetailLoad[] = []
+
+  // Combine-tracked keys for this season: their loads match on the load's
+  // EFFECTIVE crop year (crop_year ?? date year) — a January haul still nets
+  // against its season's entry (mirrors fieldCropAggregates' keying).
+  const entryFor = new Map<string, CombineEntryLike>()
+  for (const e of args.combineEntries ?? []) {
+    if (e.crop_year !== seasonYear) continue
+    const k = `${e.field_id}|${e.crop_id}`
+    if (keys.has(k)) entryFor.set(k, e)
+  }
+  const inSeason = (key: string, dateYr: number, cropYear: number | null) =>
+    entryFor.has(key) ? (cropYear ?? dateYr) === seasonYear : dateYr === seasonYear
 
   const dest = (l: DetailLoadLike): { destination: 'bin' | 'buyer' | null; destinationId: string | null } => {
     if (l.to_type === 'bin') return { destination: 'bin', destinationId: l.to_bin_id }
@@ -116,8 +152,9 @@ export function buildLoadDetail(args: {
   // Direct single-field loads — the same rule as fieldCropAggregates.
   for (const l of loads) {
     if (l.from_type !== 'field' || !l.from_field_id || !l.crop_id) continue
-    if (!keys.has(`${l.from_field_id}|${l.crop_id}`)) continue
-    if (Number(l.date.slice(0, 4)) !== seasonYear) continue
+    const key = `${l.from_field_id}|${l.crop_id}`
+    if (!keys.has(key)) continue
+    if (!inSeason(key, Number(l.date.slice(0, 4)), l.crop_year)) continue
     const crop = cropById.get(l.crop_id)
     const { dryBushels, wetBushels } = computeBushels({
       netWeightLb: l.net_weight,
@@ -144,10 +181,11 @@ export function buildLoadDetail(args: {
   // the parent's — one load, one probe).
   const loadById = new Map(loads.map((l) => [l.id, l]))
   for (const s of splits) {
-    if (!keys.has(`${s.field_id}|${s.crop_id}`)) continue
+    const key = `${s.field_id}|${s.crop_id}`
+    if (!keys.has(key)) continue
     const parent = loadById.get(s.load_id)
     if (!parent || s.dry_bushels == null) continue
-    if (Number(parent.date.slice(0, 4)) !== seasonYear) continue
+    if (!inSeason(key, Number(parent.date.slice(0, 4)), parent.crop_year)) continue
     const portionDry = Number(s.dry_bushels)
     if (!portionDry) continue
     const crop = cropById.get(s.crop_id)
@@ -175,10 +213,37 @@ export function buildLoadDetail(args: {
   }
 
   out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.loadId.localeCompare(b.loadId)))
-  return { loads: out, summary: summarizeDetail(out) }
+
+  // Combine rows: netting computed against exactly the loads listed above.
+  const combineRows: CombineDetailRow[] = []
+  for (const [k, e] of entryFor) {
+    const [fieldId, cropId] = k.split('|')
+    const weighedBu = out.reduce((s, l) => (l.fieldId === fieldId && l.cropId === cropId ? s + l.dryBu : s), 0)
+    const adjustedBu = Number(e.adjusted_total_bushels) || 0
+    combineRows.push({
+      fieldId, cropId,
+      info: {
+        entryId: e.id,
+        statedBu: Number(e.stated_total_bushels) || 0,
+        adjustedBu,
+        adjustmentBuPerAcre: e.adjustment_bu_per_acre != null ? Number(e.adjustment_bu_per_acre) : null,
+        weighedBu,
+        remainderBu: adjustedBu - weighedBu,
+        destinationBinId: e.destination_bin_id,
+        harvestComplete: e.harvest_complete,
+        entryDate: e.entry_date,
+      },
+    })
+  }
+  combineRows.sort((a, b) => a.fieldId.localeCompare(b.fieldId) || a.cropId.localeCompare(b.cropId))
+
+  return { loads: out, summary: summarizeDetail(out, combineRows), combineRows }
 }
 
-export function summarizeDetail(loads: readonly YieldDetailLoad[]): YieldDetailSummary {
+export function summarizeDetail(
+  loads: readonly YieldDetailLoad[],
+  combineRows: readonly CombineDetailRow[] = [],
+): YieldDetailSummary {
   let totalNetLbs = 0
   let totalWetBu = 0
   let totalDryBu = 0
@@ -195,9 +260,16 @@ export function summarizeDetail(loads: readonly YieldDetailLoad[]): YieldDetailS
     if (first == null || l.date < first) first = l.date
     if (last == null || l.date > last) last = l.date
   }
+  // Field production = weighed loads, except combine-tracked fields where the
+  // entry's adjusted total replaces that field's weighed sum (the weighed
+  // bushels are the netting basis, already inside each row's weighedBu).
+  let fieldProductionDryBu = totalDryBu
+  for (const r of combineRows) fieldProductionDryBu += r.info.adjustedBu - r.info.weighedBu
+
   return {
     loadCount: loads.length,
     totalNetLbs, totalWetBu, totalDryBu,
+    fieldProductionDryBu,
     weightedMoisture: weightedAverage(loads.map((l) => ({ value: l.moisture, weight: l.netLbs }))),
     weightedTestWeight: weightedAverage(loads.map((l) => ({ value: l.testWeight, weight: l.netLbs }))),
     firstLoadDate: first, lastLoadDate: last,

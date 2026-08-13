@@ -2,9 +2,10 @@ import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
 import {
   type OnHandBag, type BinInventoryCell,
-  cellFor, cellTotal, applyTransfers,
+  cellFor, cellTotal, applyTransfers, applyCombineRemainders,
   percentFull, percentFullLabel, capacityStatus, siteCapacitySummary,
 } from '@/lib/bin-inventory'
+import { fieldCropAggregates, type CombineEntryLike } from '@/lib/yields'
 import EmptyBinButton from '@/components/empty-bin-button'
 import BeginningInventoryButton from '@/components/beginning-inventory-button'
 import TransferGrainButton, { BinTransferHistory, type TransferBinOption } from '@/components/transfer-grain'
@@ -12,15 +13,21 @@ import ExportInventoryCsv, { type InventoryCsvRow } from '@/components/export-in
 import type { BinInventoryAdjustment, BinTransfer, Crop } from '@/lib/types'
 
 type LoadRow = {
+  id: string
+  date: string
   net_weight: number | null
   moisture: number | null
   crop_id: string | null
+  crop_year: number | null
   dry_bushels_override: number | null
   from_type: string | null
+  from_field_id: string | null
   from_bin_id: string | null
   to_type: string | null
   to_bin_id: string | null
 }
+
+type SplitRow = { load_id: string; field_id: string; crop_id: string; dry_bushels: number | null }
 
 type EntityRow = { id: string; name: string }
 type BinRow = { id: string; name_or_number: string; crop_id: string | null; bin_site_id: string | null; capacity_bushels: number | null }
@@ -88,11 +95,16 @@ export default async function InventoryPage({
   const siteFilter = searchParams.site ?? ''
   const today = todayISO()
 
-  const [binsRes, sitesRes, cropsRes, loadsRes, entitiesRes, adjsRes, transfersRes] = await Promise.all([
+  const [binsRes, sitesRes, cropsRes, loadsRes, splitsRes, combineRes, entitiesRes, adjsRes, transfersRes] = await Promise.all([
     supabase.from('bins').select('id, name_or_number, crop_id, bin_site_id, capacity_bushels').order('name_or_number'),
     supabase.from('bin_sites').select('id, name, entity_id').order('name'),
     supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').order('name'),
-    supabase.from('loads').select('net_weight, moisture, crop_id, dry_bushels_override, from_type, from_bin_id, to_type, to_bin_id'),
+    supabase.from('loads').select('id, date, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, from_bin_id, to_type, to_bin_id'),
+    supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels'),
+    // Combine yield entries (062) — tolerate the table not existing yet
+    // (migration pending): error → no entries, the page still renders.
+    supabase.from('combine_yield_entries')
+      .select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
     supabase.from('entities').select('id, name').order('name'),
     supabase.from('bin_inventory_adjustments')
       .select('id, bin_id, crop_id, adjustment_type, bushels, moisture, as_of_date, notes, created_at')
@@ -109,6 +121,8 @@ export default async function InventoryPage({
   const sites = (sitesRes.data ?? []) as BinSiteRow[]
   const crops = (cropsRes.data ?? []) as Crop[]
   const loads = (loadsRes.data ?? []) as LoadRow[]
+  const splits = (splitsRes.data ?? []) as SplitRow[]
+  const combineEntries = (combineRes.data ?? []) as CombineEntryLike[]
   const entities = (entitiesRes.data ?? []) as EntityRow[]
   const adjustments = (adjsRes.data ?? []) as BinInventoryAdjustment[]
   const transfers = (transfersRes.data ?? []) as BinTransfer[]
@@ -154,6 +168,22 @@ export default async function InventoryPage({
   }
 
   applyTransfers(onHand, transfers)
+
+  // Combine-entry remainders (062): a combine-tracked field's NETTED remainder
+  // (adjusted total − its weighed loads, via the shared yield engine) posts to
+  // the entry's destination bin as a non-load component — the field's weighed
+  // bin-bound loads are already in loadBacked, so only the remainder adds.
+  if (combineEntries.length > 0) {
+    const aggByKey = fieldCropAggregates(loads, splits, cropById, { combineEntries })
+    applyCombineRemainders(
+      onHand,
+      combineEntries.map((e) => ({
+        crop_id: e.crop_id,
+        destinationBinId: e.destination_bin_id,
+        remainderBu: aggByKey.get(`${e.field_id}|${e.crop_id}|${e.crop_year}`)?.combine?.remainderBu ?? 0,
+      })),
+    )
+  }
 
   const transfersForBin = new Map<string, BinTransfer[]>()
   for (const t of transfers) {

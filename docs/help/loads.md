@@ -1,8 +1,8 @@
 ---
 page_route: /loads
 title: Loads
-updated: 2026-08-07
-keywords: loads, load log, tickets, scale, paid, unpaid, splits, export, delete, test weight, moisture, gross, tare, net, irrigated, dryland, practice
+updated: 2026-08-13
+keywords: loads, load log, tickets, scale, paid, unpaid, splits, export, delete, test weight, moisture, gross, tare, net, irrigated, dryland, practice, combine, yield monitor, no scales
 ---
 ## What this page is for
 
@@ -24,6 +24,14 @@ The load log is the master list of every load you've hauled — to a bin or to a
 - **Paid / Unpaid badges** show on buyer-delivered loads. A load is Paid when a settlement line is tied to it — by ticket number or by a manual match on the settlement screen. Loads that went to a bin get no badge; they haven't been sold.
 - **Export** downloads what's currently filtered, including a payment column. You can also print or export a formatted report.
 - **Delete** removes the selected loads permanently after a confirmation.
+
+## Tracking harvest without scales
+
+- No scale tickets for a field? Use **Yield from Combine** (next to New Load) to record the field's production straight off the combine monitor — as total dry bushels or as yield per acre (Turnrow multiplies by the field's planted acres). One entry per field per crop per year; entering it again revises it.
+- **The adjustment.** If your yield maps run consistently high or low against real weights, set a ± bushels-per-acre adjustment on the entry — the math shows live ("Combine says 228.0 bu/ac − 3.0 adjustment = 225.0 bu/ac · 1,321 ac → 297,225 bu"). Turnrow remembers the adjustment per crop and pre-fills it on your next combine entry; clear it to stop.
+- **Weighed loads still count — once.** Any loads you did weigh from that field (sold to town, hauled on a scale) keep their full identity for contracts, settlements, and the load log, and are automatically netted out of the combine total — whether they were entered before or after the combine entry. If you picked a destination bin, only the netted remainder shows in that bin.
+- If your weighed loads ever add up to MORE than the combine entry, Turnrow warns you on the entry and on the Yields page — check the entry or the adjustment.
+- Whichever way you entered a field last, the Loads page makes that button the prominent one next time. Both are always available.
 
 ## How the numbers work
 

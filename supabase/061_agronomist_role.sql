@@ -127,6 +127,8 @@ declare
     -- cotton yield sources
     'gin_receipts', 'gin_receipt_loads', 'cotton_bales', 'cotton_bale_grades',
     'cotton_loads',
+    -- combine-monitor harvest entries (062)
+    'combine_yield_entries',
     -- app shell: own role row + the cotton-module flag
     'user_profiles', 'app_settings'
   ];

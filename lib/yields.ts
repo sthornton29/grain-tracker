@@ -6,6 +6,16 @@ import { computeBushels } from '@/lib/shrink'
 //     date, per field+crop+year, using the same allocation rules every view uses.
 //   * analyzeYields — which plantings to drop (unharvested / in-progress) and the
 //     weighted average yield per crop over the survivors.
+//
+// Combine entries (062): a combine_yield_entries row makes the COMBINE the
+// authority for a field × crop × crop-year's production — the aggregate's
+// dryBu becomes adjusted_total_bushels, and the weighed loads from that field
+// are NETTED out of it (they keep their full identity everywhere load-specific:
+// contracts, settlements, bin flows, the load log). The netting is recomputed
+// from whatever loads exist at read time, so weighed loads entered before OR
+// after the combine entry are never double-counted. Downstream consumers see
+// the same FieldCropAgg shape with an extra `combine` block for the drill-down
+// label, the bin-remainder posting, and the negative-net warning.
 
 type LoadLike = {
   id: string
@@ -35,6 +45,64 @@ type CropLike = {
   base_lb_per_bushel: number | null
 }
 
+/** The subset of a combine_yield_entries row (062) the yield math needs. */
+export type CombineEntryLike = {
+  id: string
+  field_id: string
+  crop_id: string
+  crop_year: number
+  stated_total_bushels: number | string
+  adjusted_total_bushels: number | string
+  adjustment_bu_per_acre: number | string | null
+  destination_bin_id: string | null
+  harvest_complete: boolean
+  entry_date: string
+}
+
+/** The combine block on an aggregate: the authoritative entry + the netting. */
+export type CombineAggInfo = {
+  entryId: string
+  statedBu: number
+  /** THE field production number (stated ± adjustment × acres, stored). */
+  adjustedBu: number
+  adjustmentBuPerAcre: number | null
+  /** Σ dry bushels of weighed loads / split portions from the field (netted). */
+  weighedBu: number
+  /** adjustedBu − weighedBu — the netted-to-storage remainder. NEGATIVE when
+   *  weighed loads exceed the combine entry: warned everywhere, never clamped. */
+  remainderBu: number
+  destinationBinId: string | null
+  harvestComplete: boolean
+  entryDate: string
+}
+
+/** The entry-form math, in one place for the form, the live preview, and the
+ *  tests: yield mode computes the stated total from the planting's acres; the
+ *  signed calibration offset (± bu/ac) then scales by acres on top. No
+ *  clamping — the form refuses to save a negative adjusted total. */
+export function combineEntryTotals(args: {
+  entryMode: 'total_bushels' | 'yield_per_acre'
+  statedYieldPerAcre: number | null
+  statedTotalBushels: number | null
+  adjustmentBuPerAcre: number | null
+  acres: number
+}): { statedTotalBu: number; adjustedTotalBu: number } {
+  const statedTotalBu = args.entryMode === 'yield_per_acre'
+    ? (args.statedYieldPerAcre ?? 0) * args.acres
+    : (args.statedTotalBushels ?? 0)
+  const adjustedTotalBu = statedTotalBu + (args.adjustmentBuPerAcre ?? 0) * args.acres
+  return { statedTotalBu, adjustedTotalBu }
+}
+
+/** The negative-net warning, worded once for the entry form AND the yields
+ *  drill-down. Null when the netting is fine. Never clamps — the numbers stay
+ *  as entered so the user can see exactly what disagrees. */
+export function combineNegativeNetMessage(c: Pick<CombineAggInfo, 'weighedBu' | 'adjustedBu' | 'remainderBu'>): string | null {
+  if (c.remainderBu >= 0) return null
+  const fmt = (n: number) => Math.round(n).toLocaleString()
+  return `Weighed loads from this field total ${fmt(c.weighedBu)} bu — more than the combine entry of ${fmt(c.adjustedBu)} bu; check the entry or the adjustment.`
+}
+
 export type FieldCropAgg = {
   dryBu: number
   /** Most recent contributing load date (YYYY-MM-DD), or null. Used to spot the
@@ -51,20 +119,45 @@ export type FieldCropAgg = {
    *  the field's split is fully derivable from the loads. */
   designatedLoads?: number
   totalLoads?: number
+  /** Present when a combine entry (062) is the authority for this field × crop
+   *  × year — dryBu is then the entry's adjusted total, not the load sum. */
+  combine?: CombineAggInfo
 }
 
 // (fieldId|cropId|loadYear) → { dryBu, lastLoadDate }. Single-field loads count
 // via from_field_id; split loads via load_splits.dry_bushels. Optionally filters
 // to a single crop_year (loads.crop_year) and/or a single load year (from date).
+//
+// combineEntries: for a combine-tracked field × crop × crop-year, loads that
+// belong to that crop year (loads.crop_year, falling back to the date year) are
+// keyed under the ENTRY's crop year rather than their haul date's year — a load
+// hauled in January still nets against its season's combine entry — and the
+// aggregate's dryBu becomes the entry's adjusted total (see `combine`).
 export function fieldCropAggregates(
   loads: readonly LoadLike[],
   splits: readonly SplitLike[],
   cropById: Map<string, CropLike>,
-  opts?: { cropYear?: number | null; loadYear?: number | null },
+  opts?: { cropYear?: number | null; loadYear?: number | null; combineEntries?: readonly CombineEntryLike[] | null },
 ): Map<string, FieldCropAgg> {
   const cropYear = opts?.cropYear ?? null
   const loadYear = opts?.loadYear ?? null
   const map = new Map<string, FieldCropAgg>()
+
+  // Combine entries indexed by field|crop|cropYear. An entry's own year filter
+  // uses crop_year for BOTH opts (a combine entry has no haul date).
+  const entryByKey = new Map<string, CombineEntryLike>()
+  for (const e of opts?.combineEntries ?? []) {
+    if (cropYear != null && e.crop_year !== cropYear) continue
+    if (loadYear != null && e.crop_year !== loadYear) continue
+    entryByKey.set(`${e.field_id}|${e.crop_id}|${e.crop_year}`, e)
+  }
+  // The year a load's bushels are keyed under: normally the haul date's year,
+  // but a load whose effective crop year (crop_year ?? date year) matches a
+  // combine entry belongs to that entry's aggregate.
+  const keyYearFor = (fieldId: string, cropId: string, dateYr: number, loadCropYear: number | null) => {
+    const effYear = loadCropYear ?? dateYr
+    return entryByKey.has(`${fieldId}|${cropId}|${effYear}`) ? effYear : dateYr
+  }
 
   const bump = (key: string, bu: number, date: string, practice: 'irrigated' | 'dryland' | null) => {
     let cur = map.get(key)
@@ -83,7 +176,8 @@ export function fieldCropAggregates(
     if (l.from_type !== 'field' || !l.from_field_id || !l.crop_id) continue
     if (cropYear != null && l.crop_year !== cropYear) continue
     const yr = Number(l.date.slice(0, 4))
-    if (loadYear != null && yr !== loadYear) continue
+    const keyYr = keyYearFor(l.from_field_id, l.crop_id, yr, l.crop_year)
+    if (loadYear != null && keyYr !== loadYear) continue
     const crop = cropById.get(l.crop_id)
     const { dryBushels } = computeBushels({
       netWeightLb: l.net_weight,
@@ -93,7 +187,7 @@ export function fieldCropAggregates(
       dryBushelsOverride: l.dry_bushels_override,
     })
     if (!dryBushels) continue
-    bump(`${l.from_field_id}|${l.crop_id}|${yr}`, dryBushels, l.date, l.practice ?? null)
+    bump(`${l.from_field_id}|${l.crop_id}|${keyYr}`, dryBushels, l.date, l.practice ?? null)
   }
 
   const loadById = new Map(loads.map((l) => [l.id, l]))
@@ -103,8 +197,36 @@ export function fieldCropAggregates(
     if (cropYear != null && parent.crop_year !== cropYear) continue
     if (s.dry_bushels == null) continue
     const yr = Number(parent.date.slice(0, 4))
-    if (loadYear != null && yr !== loadYear) continue
-    bump(`${s.field_id}|${s.crop_id}|${yr}`, s.dry_bushels, parent.date, s.practice ?? null)
+    const keyYr = keyYearFor(s.field_id, s.crop_id, yr, parent.crop_year)
+    if (loadYear != null && keyYr !== loadYear) continue
+    bump(`${s.field_id}|${s.crop_id}|${keyYr}`, s.dry_bushels, parent.date, s.practice ?? null)
+  }
+
+  // Combine pass: the entry is authoritative for the field's production. The
+  // weighed sum accumulated above becomes the netting basis; dryBu is REPLACED
+  // by the adjusted total (loads keep their identity everywhere load-specific —
+  // only the field-production number is superseded).
+  for (const [key, e] of entryByKey) {
+    let cur = map.get(key)
+    if (!cur) {
+      cur = { dryBu: 0, lastLoadDate: null, irrBu: 0, dryLandBu: 0, designatedLoads: 0, totalLoads: 0 }
+      map.set(key, cur)
+    }
+    const adjustedBu = Number(e.adjusted_total_bushels) || 0
+    const weighedBu = cur.dryBu
+    cur.combine = {
+      entryId: e.id,
+      statedBu: Number(e.stated_total_bushels) || 0,
+      adjustedBu,
+      adjustmentBuPerAcre: e.adjustment_bu_per_acre != null ? Number(e.adjustment_bu_per_acre) : null,
+      weighedBu,
+      remainderBu: adjustedBu - weighedBu,
+      destinationBinId: e.destination_bin_id,
+      harvestComplete: e.harvest_complete,
+      entryDate: e.entry_date,
+    }
+    cur.dryBu = adjustedBu
+    if (cur.lastLoadDate == null || e.entry_date > cur.lastLoadDate) cur.lastLoadDate = e.entry_date
   }
 
   return map
@@ -180,7 +302,11 @@ export function resolvePracticeBreakout(
       ...base,
     }
   }
-  if (totalLoads > 0 && designatedLoads === totalLoads) {
+  // A combine-tracked field's weighed loads are only PART of its production
+  // (the entry is the authority), so fully-designated loads can no longer
+  // derive the whole split — only the manual allocation (or the combine
+  // entry's irr/dry sub-entry, which writes through to it) can.
+  if (totalLoads > 0 && designatedLoads === totalLoads && !agg?.combine) {
     return { source: 'loads', irrigatedBushels: designatedIrrBu, drylandBushels: designatedDryBu, ...base }
   }
   return { source: null, irrigatedBushels: null, drylandBushels: null, ...base }
@@ -256,6 +382,12 @@ export type YieldInput = {
   /** Manual override: true forces the field to be counted despite an auto flag;
    *  null/undefined leaves the automatic classification in effect. */
   override?: boolean | null
+  /** The field's combine entry harvest_complete flag (062): true forces the
+   *  field to classify complete (the user said it's finished), false forces
+   *  in_progress (still harvesting — the partial figure would mislead).
+   *  Undefined = no combine entry; the automatic classification applies.
+   *  Callers set this from agg.combine?.harvestComplete. */
+  combineComplete?: boolean
 }
 
 export type CropAverage = {
@@ -381,6 +513,16 @@ export function analyzeYields(
       }
     }
 
+    // --- Combine entries override the automatic classification (062) ---
+    // The entry's harvest_complete flag is the user's explicit statement:
+    // true → the field is done (counted, whatever the load-recency heuristics
+    // say — even at 0 bu, a recorded crop failure); false → still harvesting
+    // (in_progress; the "count anyway" override can still rescue it).
+    for (const r of list) {
+      if (r.combineComplete === true) autoExcluded.delete(r.id)
+      else if (r.combineComplete === false) autoExcluded.set(r.id, 'in_progress')
+    }
+
     // --- Apply overrides → effective exclusion + averages ---
     // The override only un-excludes an in-progress field — an unharvested field
     // has no bushels, so "count anyway" never applies to it.
@@ -448,6 +590,7 @@ export function cropsWithCompleteHarvest(args: {
         id: p.id, cropId: p.crop_id, acres: Number(p.planted_acres ?? 0),
         dryBu: agg?.dryBu ?? 0, lastLoadDate: agg?.lastLoadDate ?? null,
         override: p.yield_include_override ?? null,
+        combineComplete: agg?.combine?.harvestComplete,
       }
     }),
     IN_PROGRESS_THRESHOLD, now,

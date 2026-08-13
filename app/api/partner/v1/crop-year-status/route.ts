@@ -17,6 +17,7 @@ import {
   type BaleDispositionRow,
   type BaleRow,
   type CccLoanRow,
+  type CombineEntryRow,
   type CropRow,
   type GinReceiptRow,
   type LoadRow,
@@ -107,6 +108,16 @@ export async function GET(req: NextRequest) {
         fetchAll<CccLoanRow>((f, t) => supabase.from('ccc_loans').select('id, status').eq('org_id', org).order('id').range(f, t)),
       ])
 
+    // Combine entries (062) net against weighed loads. A missing table (062
+    // not applied yet) degrades to none — same pattern as sales status below.
+    let combineEntries: CombineEntryRow[] = []
+    const combineResult = await supabase
+      .from('combine_yield_entries')
+      .select('field_id, crop_id, crop_year, adjusted_total_bushels, updated_at')
+      .eq('org_id', org)
+      .eq('crop_year', year)
+    if (!combineResult.error) combineEntries = (combineResult.data ?? []) as CombineEntryRow[]
+
     // The manual flag lives in crop_year_sales_status (migration 050). A
     // missing table gets an actionable message instead of a bare 42P01.
     let salesStatus: SalesStatusRow[] = []
@@ -128,7 +139,7 @@ export async function GET(req: NextRequest) {
     const data = buildCropYearStatus({
       plantings, loads, splits, crops, lines, settlementLoads,
       ginReceipts, bales, baleDispositions: dispositions, cccLoans: loans,
-      salesStatus, year,
+      salesStatus, combineEntries, year,
     })
     return NextResponse.json(note ? { data, note } : { data })
   } catch (e) {

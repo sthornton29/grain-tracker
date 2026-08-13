@@ -6,7 +6,7 @@ import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { projectPayments, expectedArcPlcDate, programYearFor, paymentAttributionYear } from '@/lib/government-payments'
 import { projectInsuranceIndemnities, actualYieldByCropFromLoads, type LiveHarvest } from '@/lib/crop-insurance'
-import { fieldCropAggregates, withLoadBreakouts } from '@/lib/yields'
+import { fieldCropAggregates, withLoadBreakouts, type CombineEntryLike } from '@/lib/yields'
 import { cottonCashFlowEvents, type CottonCashEvent } from '@/lib/cotton-sales'
 import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
 import { isCottonCrop } from '@/lib/marketing'
@@ -94,6 +94,7 @@ export default function CashFlowPage() {
   const [contracts, setContracts] = useState<Contract[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<CashFlowSplitRow[]>([])
+  const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [lines, setLines] = useState<LineRow[]>([])
   const [settlements, setSettlements] = useState<SettlementRow[]>([])
   const [crops, setCrops] = useState<Crop[]>([])
@@ -225,7 +226,7 @@ export default function CashFlowPage() {
         supabase.from('fields').select('id, farm_id'),
         supabase.from('field_plantings').select('*'),
       ])
-      const [ca, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp] = await Promise.all([
+      const [ca, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp, ce] = await Promise.all([
         supabase.from('crop_assumptions').select('*'),
         supabase.from('crop_insurance_policies').select('*'),
         supabase.from('crop_insurance_sco').select('*'),
@@ -238,6 +239,8 @@ export default function CashFlowPage() {
         supabase.from('arc_plc_price_data').select('*'),
         supabase.from('arc_plc_payments').select('*'),
         supabase.from('other_government_payments').select('*'),
+        // May not exist yet (migration 062): an error leaves data null → [].
+        supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
       ])
       setContracts((ct.data as Contract[]) || [])
       setLoads(ld)
@@ -262,6 +265,7 @@ export default function CashFlowPage() {
       setArcPriceData((apd.data as ArcPlcPriceData[]) || [])
       setArcPayments((apay.data as ArcPlcPayment[]) || [])
       setOtherPayments((ogp.data as OtherGovernmentPayment[]) || [])
+      setCombineEntries((ce.data as CombineEntryLike[]) || [])
       setLoading(false)
     })()
   }, [supabase])
@@ -528,13 +532,13 @@ export default function CashFlowPage() {
       // allocation or fully practice-tagged loads — produced the split.
       const effPlantings = withLoadBreakouts(
         plantings,
-        fieldCropAggregates(loads, splits, cropById, { cropYear: yr }),
+        fieldCropAggregates(loads, splits, cropById, { cropYear: yr, combineEntries }),
       )
       const projected = projectInsuranceIndemnities({
         cropYear: yr,
         policies: yrPolicies,
         scos, ecos, assumptions: effAssumptions, plantings: effPlantings,
-        actualYieldByCrop: actualYieldByCropFromLoads({ loads, plantings, crops, cropYear: yr }),
+        actualYieldByCrop: actualYieldByCropFromLoads({ loads, plantings, crops, cropYear: yr, combineEntries }),
         harvestEstimates,
         liveHarvestByCrop: liveHarvestByYear.get(yr),
         crops,
@@ -555,7 +559,7 @@ export default function CashFlowPage() {
     }
 
     return buckets
-  }, [cropYear, cropId, scope, elections, baseAcres, commodities, arcPriceData, arcPayments, scopedPolicies, scos, ecos, harvestEstimates, effAssumptions, plantings, loads, splits, cropById, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments])
+  }, [cropYear, cropId, scope, elections, baseAcres, commodities, arcPriceData, arcPayments, scopedPolicies, scos, ecos, harvestEstimates, effAssumptions, plantings, loads, splits, combineEntries, cropById, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments])
 
   // Cotton events, respecting the crop filter (a non-cotton crop hides them)
   // and bucketed net per month.

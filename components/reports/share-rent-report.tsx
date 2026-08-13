@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { computeBushels } from '@/lib/shrink'
+import { fieldCropAggregates, type CombineEntryLike } from '@/lib/yields'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
@@ -72,6 +72,7 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
+  const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [landowners, setLandowners] = useState<Landowner[]>([])
   const [loading, setLoading] = useState(true)
 
@@ -83,7 +84,7 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [cr, en, fa, fi, pl, lo, sp, lan] = await Promise.all([
+      const [cr, en, fa, fi, pl, lo, sp, lan, ce] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('*'),
@@ -92,6 +93,8 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
         supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id'),
         supabase.from('load_splits').select('*'),
         supabase.from('landowners').select('*').order('name'),
+        // May not exist yet (migration 062): an error leaves data null → [].
+        supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
       ])
       setCrops((cr.data as Crop[]) || [])
       setEntities((en.data as Entity[]) || [])
@@ -101,6 +104,7 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
       setLoads((lo.data as LoadRow[]) || [])
       setSplits((sp.data as LoadSplit[]) || [])
       setLandowners((lan.data as Landowner[]) || [])
+      setCombineEntries((ce.data as CombineEntryLike[]) || [])
       // Default to the latest year that has plantings.
       const years = (pl.data as FieldPlanting[] | null)?.map((p) => p.season_year) ?? []
       if (years.length > 0) setCropYear(Math.max(...years))
@@ -119,38 +123,17 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const landownerById = useMemo(() => new Map(landowners.map((l) => [l.id, l])), [landowners])
 
-  // (fieldId, cropId, year) → dryBu. Same allocation rules as yields:
-  // single-field loads via from_field_id, split loads via load_splits.
+  // (fieldId, cropId, year) → dryBu via the shared yield engine — the same
+  // allocation rules (and keys) as the Yields pages, combine entries included.
   const dryBuByKey = useMemo(() => {
+    const agg = fieldCropAggregates(loads, splits, cropById, {
+      cropYear: cropYear === '' ? null : cropYear,
+      combineEntries,
+    })
     const map = new Map<string, number>()
-    for (const l of loads) {
-      if (l.from_type !== 'field' || !l.from_field_id || !l.crop_id) continue
-      if (cropYear !== '' && l.crop_year !== cropYear) continue
-      const crop = cropById.get(l.crop_id)
-      const { dryBushels } = computeBushels({
-        netWeightLb: l.net_weight,
-        moisturePct: l.moisture,
-        baseMoisturePct: crop?.base_moisture_pct ?? null,
-        baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
-        dryBushelsOverride: l.dry_bushels_override,
-      })
-      if (!dryBushels) continue
-      const yr = Number(l.date.slice(0, 4))
-      const key = `${l.from_field_id}|${l.crop_id}|${yr}`
-      map.set(key, (map.get(key) ?? 0) + dryBushels)
-    }
-    const loadById = new Map(loads.map((l) => [l.id, l]))
-    for (const s of splits) {
-      const parent = loadById.get(s.load_id)
-      if (!parent) continue
-      if (cropYear !== '' && parent.crop_year !== cropYear) continue
-      if (s.dry_bushels == null) continue
-      const yr = Number(parent.date.slice(0, 4))
-      const key = `${s.field_id}|${s.crop_id}|${yr}`
-      map.set(key, (map.get(key) ?? 0) + s.dry_bushels)
-    }
+    for (const [k, v] of agg) map.set(k, v.dryBu)
     return map
-  }, [loads, splits, cropById, cropYear])
+  }, [loads, splits, cropById, cropYear, combineEntries])
 
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings(

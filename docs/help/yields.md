@@ -1,8 +1,8 @@
 ---
 page_route: /yields
 title: Yields
-updated: 2026-08-07
-keywords: yields, bushels per acre, field, farm, entity, variety, landowner, irrigated, dryland, harvest, allocation, load tags, practice, season, export, detail, loads, tickets, moisture, test weight, split load, drill down
+updated: 2026-08-13
+keywords: yields, bushels per acre, field, farm, entity, variety, landowner, irrigated, dryland, harvest, allocation, load tags, practice, season, export, detail, loads, tickets, moisture, test weight, split load, drill down, combine, yield monitor, no scales
 ---
 ## What this page is for
 
@@ -24,9 +24,17 @@ Yields turns your load log into bushels per acre. The same production can be vie
 - **By landowner** groups production by the landowner on each farm, split-aware, for rent conversations and year-end summaries.
 - **Row detail.** The detail's summary line shows load count, total pounds, wet and dry bushels, the average moisture and test weight (weighted by each load's pounds, so an 80,000-lb pair at 16.0 and 18.0 moisture averages by weight — not a simple midpoint), the first-to-last load dates, and how the bushels split between bins and buyers. The load list carries date, ticket, truck, weights, moisture, test weight, and destination; a load split across fields shows just this field's share with a badge like "split — 14,200 of 34,300 lbs". Fields flagged in-progress or counted by override carry the same flag on their detail, so the list always matches the number above it. Cotton fields show gin receipts, bales, turnout, and loan values in pounds instead of grain loads.
 
+## Tracking harvest without scales
+
+- A field entered with **Yield from Combine** (on the Loads page) shows here exactly like a weighed field — its production is the combine entry's adjusted total, and the row works in every view, filter, and export.
+- Its detail opens with a labeled **Combine entry** line above any weighed loads, showing the adjusted total and the netting: weighed loads are subtracted from the combine figure, and the remainder is what sits in storage (in the destination bin, if one was picked). The weighed loads keep their own rows — tickets, weights, destinations — they're just never counted twice.
+- The entry's **"Harvest complete"** checkbox decides whether the field counts now: checked, the field is done and its yield is in the averages; unchecked, it shows as in progress until you finish it.
+- If the weighed loads from a field total more than its combine entry, the detail shows a warning instead of quietly hiding the difference — check the entry or its adjustment.
+- Mixed irrigated/dryland fields entered by combine allocate the same way as everyone else: enter the split on the combine entry if the monitor shows it, or use **Allocate irr/dry** here after harvest.
+
 ## How the numbers work
 
-- **Yield = dry bushels ÷ planted acres.** Bushels come from your loads (shrunk to dry at each crop's base moisture), matched to a planting by field, crop, and crop year. Acres come from the planting.
+- **Yield = dry bushels ÷ planted acres.** Bushels come from your loads (shrunk to dry at each crop's base moisture) — or from the field's combine entry where you used one — matched to a planting by field, crop, and crop year. Acres come from the planting.
 - In the breakdown, a field that's all irrigated or all dryland reports its whole yield under that practice; mixed fields use the split from their load tags or your manual allocation — every report (insurance, claims, per-practice yields) reads the same split either way.
 - Farm, entity, and variety views are the same math rolled up — the totals foot back to the by-field view under the same filters.
 

@@ -9,7 +9,7 @@ import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
 import CropYearSalesStatus from '@/components/crop-year-sales-status'
 import { buildMarketingExport } from '@/lib/marketing-export'
-import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
+import { fieldCropAggregates, cropsWithCompleteHarvest, type CombineEntryLike } from '@/lib/yields'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { cropToHedgeCommodity } from '@/lib/contracts'
 import { fmtPnl, formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
@@ -156,6 +156,7 @@ export default function MarketingPage() {
   // the entity filter can re-scope without refetching.
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<SplitRow[]>([])
+  const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [ginReceipts, setGinReceipts] = useState<Array<Pick<GinReceipt, 'id' | 'bales_count' | 'total_bale_weight' | 'entity_id' | 'farm_id' | 'field_id'>>>([])
   const [cottonBales, setCottonBales] = useState<Array<Pick<CottonBale, 'gin_receipt_id' | 'net_weight_lbs'>>>([])
   // Quotes for the reference-month candidates (symbol → price) — the effective
@@ -205,7 +206,7 @@ export default function MarketingPage() {
 
   const load = useCallback(async (cropYear: number) => {
     setLoading(true)
-    const [cr, pl, ct, fp, op, ca, ld, sp, gr, cb] = await Promise.all([
+    const [cr, pl, ct, fp, op, ca, ld, sp, gr, cb, ce] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, yield_include_override').eq('season_year', cropYear),
       supabase.from('contracts').select('*').eq('crop_year', cropYear),
@@ -216,6 +217,8 @@ export default function MarketingPage() {
       supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels'),
       supabase.from('gin_receipts').select('id, crop_year, bales_count, total_bale_weight, entity_id, farm_id, field_id').eq('crop_year', cropYear),
       supabase.from('cotton_bales').select('gin_receipt_id, net_weight_lbs').eq('crop_year', cropYear),
+      // May not exist yet (migration 062): an error leaves data null → [].
+      supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date').eq('crop_year', cropYear),
     ])
     setCrops((cr.data as Crop[]) ?? [])
     setPlantings((pl.data as PlantingRow[]) ?? [])
@@ -225,6 +228,7 @@ export default function MarketingPage() {
     setAssumptions((ca.data as CropAssumption[]) ?? [])
     setLoads((ld.data as LoadRow[]) ?? [])
     setSplits((sp.data as SplitRow[]) ?? [])
+    setCombineEntries((ce.data as CombineEntryLike[]) ?? [])
     setGinReceipts(((gr.data as unknown) as Array<Pick<GinReceipt, 'id' | 'bales_count' | 'total_bale_weight' | 'entity_id' | 'farm_id' | 'field_id'>>) ?? [])
     setCottonBales(((cb.data as unknown) as Array<Pick<CottonBale, 'gin_receipt_id' | 'net_weight_lbs'>>) ?? [])
 
@@ -357,8 +361,8 @@ export default function MarketingPage() {
   // the entity's fields. Drives both actual production (by crop) and the
   // field-level harvest-completion check.
   const aggByKey = useMemo(
-    () => (year == null ? new Map() : scope.fieldAgg(fieldCropAggregates(loads, splits, cropById, { cropYear: year }))),
-    [year, loads, splits, cropById, scope],
+    () => (year == null ? new Map() : scope.fieldAgg(fieldCropAggregates(loads, splits, cropById, { cropYear: year, combineEntries }))),
+    [year, loads, splits, combineEntries, cropById, scope],
   )
   const production = useMemo(() => {
     const prod = new Map<string, number>()
