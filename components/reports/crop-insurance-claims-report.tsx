@@ -35,7 +35,7 @@ import {
   type AuditResult, type AuditComparison, type InvariantCheck, type YieldBasisAudit,
 } from '@/lib/crop-insurance-audit'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
-import { fieldCropAggregates, withLoadBreakouts } from '@/lib/yields'
+import { fieldCropAggregates, withLoadBreakouts, type CombineEntryLike } from '@/lib/yields'
 import {
   SummaryCards, EmptyState, fmtUsd, signedTone, toneText,
   theadCls, grandTotalRowCls, type SummaryCardData,
@@ -93,6 +93,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<SplitRow[]>([])
+  const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [policies, setPolicies] = useState<CropInsurancePolicy[]>([])
   const [scos, setScos] = useState<CropInsuranceSco[]>([])
   const [ecos, setEcos] = useState<CropInsuranceEco[]>([])
@@ -120,7 +121,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [cr, co, en, ca, pl, ld, po, sc, ec, hpe, pgc, sx, mc, cya, sp] = await Promise.all([
+      const [cr, co, en, ca, pl, ld, po, sc, ec, hpe, pgc, sx, mc, cya, sp, ce] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('counties').select('*').order('state_code').order('name'),
         supabase.from('entities').select('*').order('name'),
@@ -136,6 +137,8 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         supabase.from('crop_insurance_mco').select('*'),
         supabase.from('county_yield_assumptions').select('*'),
         supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels, practice'),
+        // May not exist yet (migration 062): an error leaves data null → [].
+        supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
       ])
       setCrops((cr.data as Crop[]) || [])
       setCounties((co.data as County[]) || [])
@@ -152,6 +155,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       setStaxes((sx.data as CropInsuranceStax[]) || [])
       setMcos((mc.data as CropInsuranceMco[]) || [])
       setCountyAssumptions((cya.data as CountyYieldAssumption[]) || [])
+      setCombineEntries((ce.data as CombineEntryLike[]) || [])
       const yrs = (po.data as CropInsurancePolicy[] | null)?.map((p) => p.crop_year) ?? []
       if (yrs.length > 0) setCropYear((cy) => (cy === '' ? Math.max(...yrs) : cy))
       setLoading(false)
@@ -232,15 +236,15 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   // audit) sees one representation whichever path produced the split.
   const effPlantings = useMemo(() => {
     if (cropYear === '') return plantings
-    const agg = fieldCropAggregates(loads, splits, cropById, { cropYear })
+    const agg = fieldCropAggregates(loads, splits, cropById, { cropYear, combineEntries })
     return withLoadBreakouts(plantings, agg)
-  }, [plantings, loads, splits, cropById, cropYear])
+  }, [plantings, loads, splits, cropById, cropYear, combineEntries])
 
   // Crop-level actual yield (Σ dry bu / Σ planted ac) — shared resolver so this
   // matches the Cash Flow's safety-net exactly.
   const actualYieldByCrop = useMemo(
-    () => (cropYear === '' ? new Map<string, number>() : actualYieldByCropFromLoads({ loads, plantings, crops, cropYear })),
-    [loads, plantings, crops, cropYear],
+    () => (cropYear === '' ? new Map<string, number>() : actualYieldByCropFromLoads({ loads, plantings, crops, cropYear, combineEntries })),
+    [loads, plantings, crops, cropYear, combineEntries],
   )
 
   // Today's live Barchart estimate per crop_id, for the shared resolver.

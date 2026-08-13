@@ -5,7 +5,7 @@ import CottonYieldsSection from '@/components/reports/cotton-yields-section'
 import { createClient } from '@/lib/supabase/client'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
-import { fieldCropAggregates, analyzeYields } from '@/lib/yields'
+import { fieldCropAggregates, analyzeYields, type CombineEntryLike } from '@/lib/yields'
 import { isCottonCrop } from '@/lib/marketing'
 import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
@@ -44,6 +44,7 @@ export default function SeasonSummaryPage() {
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
+  const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
   const [farms, setFarms] = useState<Array<{ id: string; entity_id: string | null }>>([])
   const [fields, setFields] = useState<Array<{ id: string; farm_id: string | null }>>([])
@@ -54,7 +55,7 @@ export default function SeasonSummaryPage() {
 
   async function refresh() {
     setLoading(true)
-    const [cr, pl, lo, sp, en, fa, fi] = await Promise.all([
+    const [cr, pl, lo, sp, en, fa, fi, ce] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
       supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id'),
@@ -62,6 +63,8 @@ export default function SeasonSummaryPage() {
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('id, entity_id'),
       supabase.from('fields').select('id, farm_id'),
+      // May not exist yet (migration 062): an error leaves data null → [].
+      supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
     ])
     setCrops((cr.data as Crop[]) || [])
     setPlantings((pl.data as FieldPlanting[]) || [])
@@ -70,6 +73,7 @@ export default function SeasonSummaryPage() {
     setEntities((en.data as Entity[]) || [])
     setFarms((fa.data as Array<{ id: string; entity_id: string | null }>) || [])
     setFields((fi.data as Array<{ id: string; farm_id: string | null }>) || [])
+    setCombineEntries((ce.data as CombineEntryLike[]) || [])
     setLoading(false)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
@@ -101,8 +105,8 @@ export default function SeasonSummaryPage() {
   // Dry bushels + most-recent load date per field+crop+year (shared rules),
   // scoped to the selected season year.
   const aggByKey = useMemo(
-    () => fieldCropAggregates(loads, splits, cropById, { loadYear: year }),
-    [loads, splits, cropById, year],
+    () => fieldCropAggregates(loads, splits, cropById, { loadYear: year, combineEntries }),
+    [loads, splits, cropById, year, combineEntries],
   )
   const dryBuFor = (fieldId: string, cropId: string, yr: number) =>
     aggByKey.get(`${fieldId}|${cropId}|${yr}`)?.dryBu ?? 0
@@ -119,6 +123,7 @@ export default function SeasonSummaryPage() {
         dryBu: agg?.dryBu ?? 0,
         lastLoadDate: agg?.lastLoadDate ?? null,
         override: p.yield_include_override,
+        combineComplete: agg?.combine?.harvestComplete,
       }
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps

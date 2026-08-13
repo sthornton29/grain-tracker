@@ -1086,16 +1086,22 @@ export function practiceActualYieldByCrop(
 
 // Crop-level actual yield = Σ dry bushels (field loads) / Σ planted acres, by
 // crop. Shared so both reports derive the post-harvest actual identically.
+// Combine-tracked fields (062): the entry's adjusted total REPLACES that
+// field's weighed loads — same netting rule as fieldCropAggregates.
 export function actualYieldByCropFromLoads(args: {
-  loads: ReadonlyArray<{ crop_id: string | null; crop_year: number | null; from_type: string | null; net_weight: number | null; moisture: number | null; dry_bushels_override: number | null }>
+  loads: ReadonlyArray<{ crop_id: string | null; crop_year: number | null; from_type: string | null; from_field_id: string | null; net_weight: number | null; moisture: number | null; dry_bushels_override: number | null }>
   plantings: ReadonlyArray<{ crop_id: string; season_year: number; planted_acres: number | string | null }>
   crops: ReadonlyArray<Pick<Crop, 'id' | 'base_moisture_pct' | 'base_lb_per_bushel'>>
   cropYear: number
+  combineEntries?: ReadonlyArray<{ field_id: string; crop_id: string; crop_year: number; adjusted_total_bushels: number | string }> | null
 }): Map<string, number> {
   const cropById = new Map(args.crops.map((c) => [c.id, c]))
+  const yearEntries = (args.combineEntries ?? []).filter((e) => e.crop_year === args.cropYear)
+  const combineFields = new Set(yearEntries.map((e) => `${e.field_id}|${e.crop_id}`))
   const prod = new Map<string, number>()
   for (const l of args.loads) {
     if (l.from_type !== 'field' || !l.crop_id || l.crop_year !== args.cropYear) continue
+    if (l.from_field_id != null && combineFields.has(`${l.from_field_id}|${l.crop_id}`)) continue
     const crop = cropById.get(l.crop_id)
     const { dryBushels } = computeBushels({
       netWeightLb: l.net_weight, moisturePct: l.moisture,
@@ -1103,6 +1109,10 @@ export function actualYieldByCropFromLoads(args: {
       dryBushelsOverride: l.dry_bushels_override,
     })
     if (dryBushels) prod.set(l.crop_id, (prod.get(l.crop_id) ?? 0) + dryBushels)
+  }
+  for (const e of yearEntries) {
+    const bu = Number(e.adjusted_total_bushels) || 0
+    if (bu) prod.set(e.crop_id, (prod.get(e.crop_id) ?? 0) + bu)
   }
   const acres = new Map<string, number>()
   for (const p of args.plantings) {

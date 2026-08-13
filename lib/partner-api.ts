@@ -114,6 +114,13 @@ export type GinReceiptRow = {
   total_bale_weight: number | string | null // lbs LINT
   updated_at?: string | null
 }
+export type CombineEntryRow = {
+  field_id: string
+  crop_id: string
+  crop_year: number
+  adjusted_total_bushels: number | string
+  updated_at?: string | null
+}
 
 const num = (v: number | string | null | undefined): number => {
   const n = Number(v)
@@ -246,7 +253,9 @@ export type PartnerProduction = {
 
 // Grain production = the Yields pages' math: dry bushels per field × crop from
 // field-sourced loads (shrink applied via computeBushels) plus split
-// allocations, filtered on loads.crop_year. Cotton production = lint lbs from
+// allocations, filtered on loads.crop_year. A combine-tracked field × crop
+// (062) reports the entry's adjusted total INSTEAD of its weighed loads — the
+// same netting rule as fieldCropAggregates. Cotton production = lint lbs from
 // gin receipts (receipts carry no crop_id; they attach to the field's cotton
 // planting for the year).
 export function buildProductionRecords(args: {
@@ -254,6 +263,7 @@ export function buildProductionRecords(args: {
   loads: readonly LoadRow[]
   splits: readonly SplitRow[]
   ginReceipts: readonly GinReceiptRow[]
+  combineEntries?: readonly CombineEntryRow[] | null
   fields: readonly FieldRow[]
   farms: readonly FarmRow[]
   entities: readonly EntityRow[]
@@ -280,9 +290,14 @@ export function buildProductionRecords(args: {
     }
   }
 
+  // Combine-tracked field × crop pairs: the entry replaces the weighed loads.
+  const yearEntries = (args.combineEntries ?? []).filter((e) => e.crop_year === args.year)
+  const combineFields = new Set(yearEntries.map((e) => `${e.field_id}|${e.crop_id}`))
+
   for (const l of args.loads) {
     if (l.from_type !== 'field' || !l.from_field_id || !l.crop_id) continue
     if (l.crop_year !== args.year) continue
+    if (combineFields.has(`${l.from_field_id}|${l.crop_id}`)) continue
     const crop = cropById.get(l.crop_id)
     const { dryBushels } = computeBushels({
       netWeightLb: l.net_weight,
@@ -297,7 +312,12 @@ export function buildProductionRecords(args: {
   for (const s of args.splits) {
     const parent = loadById.get(s.load_id)
     if (!parent || parent.crop_year !== args.year || s.dry_bushels == null) continue
+    if (combineFields.has(`${s.field_id}|${s.crop_id}`)) continue
     bump(s.field_id, s.crop_id, num(s.dry_bushels), parent.updated_at)
+  }
+  for (const e of yearEntries) {
+    const bu = num(e.adjusted_total_bushels)
+    if (bu) bump(e.field_id, e.crop_id, bu, e.updated_at)
   }
 
   // Cotton lint lbs per field from gin receipts → the field's cotton planting.
@@ -654,6 +674,7 @@ export function buildCropYearStatus(args: {
   baleDispositions: readonly BaleDispositionRow[]
   cccLoans: readonly CccLoanRow[]
   salesStatus: readonly SalesStatusRow[]
+  combineEntries?: readonly CombineEntryRow[] | null
   year: number
 }): PartnerCropYearStatus[] {
   const cropById = new Map(args.crops.map((c) => [c.id, c]))
@@ -669,11 +690,15 @@ export function buildCropYearStatus(args: {
     return e
   }
 
-  // --- Grain production (same math as buildProductionRecords) ---
+  // --- Grain production (same math as buildProductionRecords, incl. the
+  // combine-entry netting: a tracked field's entry replaces its loads) ---
+  const yearEntries = (args.combineEntries ?? []).filter((e) => e.crop_year === args.year)
+  const combineFields = new Set(yearEntries.map((e) => `${e.field_id}|${e.crop_id}`))
   const loadById = new Map(args.loads.map((l) => [l.id, l]))
   for (const l of args.loads) {
     if (l.from_type !== 'field' || !l.from_field_id || !l.crop_id) continue
     if (l.crop_year !== args.year) continue
+    if (combineFields.has(`${l.from_field_id}|${l.crop_id}`)) continue
     const crop = cropById.get(l.crop_id)
     if (isCottonCrop(crop?.name)) continue
     const { dryBushels } = computeBushels({
@@ -691,10 +716,19 @@ export function buildCropYearStatus(args: {
   for (const s of args.splits) {
     const parent = loadById.get(s.load_id)
     if (!parent || parent.crop_year !== args.year || s.dry_bushels == null) continue
+    if (combineFields.has(`${s.field_id}|${s.crop_id}`)) continue
     if (isCottonCrop(cropById.get(s.crop_id)?.name)) continue
     const e = entry(s.crop_id)
     e.produced += num(s.dry_bushels)
     e.updatedAt = maxIso(e.updatedAt, parent.updated_at)
+  }
+  for (const ce of yearEntries) {
+    if (isCottonCrop(cropById.get(ce.crop_id)?.name)) continue
+    const bu = num(ce.adjusted_total_bushels)
+    if (!bu) continue
+    const e = entry(ce.crop_id)
+    e.produced += bu
+    e.updatedAt = maxIso(e.updatedAt, ce.updated_at)
   }
 
   // --- Grain settled units (settlement lines via matched load's crop) ---

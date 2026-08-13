@@ -21,7 +21,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
-import { fieldCropAggregates } from '@/lib/yields'
+import { fieldCropAggregates, type CombineEntryLike } from '@/lib/yields'
 import { segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop } from '@/lib/marketing'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
@@ -125,6 +125,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<SplitRow[]>([])
+  const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [policies, setPolicies] = useState<CropInsurancePolicy[]>([])
   const [scos, setScos] = useState<CropInsuranceSco[]>([])
   const [ecos, setEcos] = useState<CropInsuranceEco[]>([])
@@ -194,7 +195,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [cr, pl, ct, fp, op, ca, ld, sp, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp, en, fa, fi] = await Promise.all([
+      const [cr, pl, ct, fp, op, ca, ld, sp, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp, en, fa, fi, ce] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('field_plantings').select('*'),
         supabase.from('contracts').select('*'),
@@ -217,6 +218,8 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('id, entity_id'),
         supabase.from('fields').select('id, farm_id'),
+        // May not exist yet (migration 062): an error leaves data null → [].
+        supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
       ])
       setEntities((en.data as Entity[]) || [])
       setFarms((fa.data as Array<{ id: string; entity_id: string | null }>) || [])
@@ -229,6 +232,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       setAssumptions((ca.data as CropAssumption[]) || [])
       setLoads((ld.data as LoadRow[]) || [])
       setSplits((sp.data as SplitRow[]) || [])
+      setCombineEntries((ce.data as CombineEntryLike[]) || [])
       setPolicies((po.data as CropInsurancePolicy[]) || [])
       setScos((sc.data as CropInsuranceSco[]) || [])
       setEcos((ec.data as CropInsuranceEco[]) || [])
@@ -361,8 +365,8 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   // Field-level dry bushels + last load date, splits-aware — narrowed to the
   // entity's fields.
   const aggByKey = useMemo(
-    () => scope.fieldAgg(fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear })),
-    [loads, splits, cropById, cropYear, scope],
+    () => scope.fieldAgg(fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear, combineEntries })),
+    [loads, splits, combineEntries, cropById, cropYear, scope],
   )
   const cropCompleteKeys = useMemo(() => {
     const s = new Set<string>()

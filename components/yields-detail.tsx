@@ -18,7 +18,9 @@ import {
   type YieldDetailLoad,
   type YieldDetailSummary,
   type CottonFieldDetail,
+  type CombineDetailRow,
 } from '@/lib/yield-detail'
+import { combineNegativeNetMessage, type CombineEntryLike } from '@/lib/yields'
 import { formatCottonPrice } from '@/lib/hedging'
 import type { ExportSection } from '@/lib/exports'
 import type { createClient } from '@/lib/supabase/client'
@@ -93,7 +95,8 @@ export function buildDetailForPlantings(args: {
   loads: readonly DetailLoadLike[]
   splits: readonly DetailSplitLike[]
   cropById: Map<string, DetailCropLike>
-}): { loads: YieldDetailLoad[]; summary: YieldDetailSummary } {
+  combineEntries?: readonly CombineEntryLike[] | null
+}): { loads: YieldDetailLoad[]; summary: YieldDetailSummary; combineRows: CombineDetailRow[] } {
   const keysByYear = new Map<number, Set<string>>()
   for (const p of args.plantings) {
     const s = keysByYear.get(p.season_year) ?? new Set<string>()
@@ -101,19 +104,21 @@ export function buildDetailForPlantings(args: {
     keysByYear.set(p.season_year, s)
   }
   const all: YieldDetailLoad[] = []
+  const allCombine: CombineDetailRow[] = []
   for (const [seasonYear, keys] of keysByYear) {
-    all.push(
-      ...buildLoadDetail({
-        keys,
-        seasonYear,
-        loads: args.loads,
-        splits: args.splits,
-        cropById: args.cropById,
-      }).loads,
-    )
+    const built = buildLoadDetail({
+      keys,
+      seasonYear,
+      loads: args.loads,
+      splits: args.splits,
+      cropById: args.cropById,
+      combineEntries: args.combineEntries,
+    })
+    all.push(...built.loads)
+    allCombine.push(...built.combineRows)
   }
   all.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.loadId.localeCompare(b.loadId)))
-  return { loads: all, summary: summarizeDetail(all) }
+  return { loads: all, summary: summarizeDetail(all, allCombine), combineRows: allCombine }
 }
 
 // ---------------------------------------------------------------------------
@@ -219,18 +224,54 @@ function GrainSummaryStrip({ summary }: { summary: YieldDetailSummary }) {
         : `${fmtDate(summary.firstLoadDate)} — ${fmtDate(summary.lastLoadDate)}`
       : null
   const mix = destinationMix(summary)
+  const hasCombine = summary.fieldProductionDryBu !== summary.totalDryBu
   return (
     <div className="flex flex-wrap gap-2">
+      {hasCombine && <Stat label="Production (bu)" value={fmtNum(summary.fieldProductionDryBu)} />}
       <Stat label="Loads" value={String(summary.loadCount)} />
       <Stat label="Net lbs" value={fmtLbs(summary.totalNetLbs)} />
       <Stat label="Wet bu" value={fmtNum(summary.totalWetBu)} />
-      <Stat label="Dry bu" value={fmtNum(summary.totalDryBu)} />
+      <Stat label={hasCombine ? 'Weighed dry bu' : 'Dry bu'} value={fmtNum(summary.totalDryBu)} />
       <Stat label="Moisture (wtd)" value={summary.weightedMoisture != null ? `${summary.weightedMoisture.toFixed(1)}%` : '—'} />
       {summary.weightedTestWeight != null && (
         <Stat label="Test wt (wtd)" value={summary.weightedTestWeight.toFixed(1)} />
       )}
       {window && <Stat label="Harvest window" value={window} />}
       {mix && <Stat label="Where it went" value={mix} />}
+    </div>
+  )
+}
+
+// The labeled combine source row above a field's weighed-load list (062): the
+// authoritative entry, the netting against the loads listed below it, and the
+// never-clamped negative-net warning.
+function CombineEntryBanner({ rows, lookups }: { rows: readonly CombineDetailRow[]; lookups: DetailLookups }) {
+  if (rows.length === 0) return null
+  return (
+    <div className="space-y-1.5">
+      {rows.map((r) => {
+        const c = r.info
+        const warning = combineNegativeNetMessage(c)
+        const adjLabel = c.adjustmentBuPerAcre != null && c.adjustmentBuPerAcre !== 0
+          ? ` (adjusted ${c.adjustmentBuPerAcre > 0 ? '+' : ''}${fmtNum(c.adjustmentBuPerAcre, 1)} bu/ac)`
+          : ''
+        const binName = c.destinationBinId ? lookups.binNameById.get(c.destinationBinId) : null
+        return (
+          <div key={r.info.entryId} className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm space-y-0.5">
+            <div>
+              <span className="text-xs font-semibold uppercase tracking-wide text-emerald-800 mr-2">Combine entry</span>
+              <span className="font-semibold tabular-nums">{fmtNum(c.adjustedBu)} bu</span>
+              <span className="text-slate-600">{adjLabel} · {fmtDate(c.entryDate)}{c.harvestComplete ? '' : ' · still harvesting'}</span>
+            </div>
+            <div className="text-slate-600 tabular-nums">
+              {c.weighedBu > 0
+                ? `− ${fmtNum(c.weighedBu)} bu weighed loads → ${fmtNum(Math.max(0, c.remainderBu))} bu ${binName ? `to Bin ${binName}` : c.destinationBinId ? 'to storage' : 'not yet hauled or stored'}`
+                : binName ? `→ ${fmtNum(c.remainderBu)} bu to Bin ${binName}` : 'No weighed loads netted yet.'}
+            </div>
+            {warning && <p className="text-amber-700">{warning}</p>}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -324,6 +365,7 @@ function PerFieldBreakdown({
   cropById,
   lookups,
   allowLoadLinks,
+  combineEntries,
 }: {
   plantings: readonly DetailPlantingRef[]
   loads: readonly DetailLoadLike[]
@@ -331,6 +373,7 @@ function PerFieldBreakdown({
   cropById: Map<string, DetailCropLike>
   lookups: DetailLookups
   allowLoadLinks: boolean
+  combineEntries?: readonly CombineEntryLike[] | null
 }) {
   const rows = useMemo(() => {
     const m = new Map<string, { key: string; fieldId: string; cropId: string; seasonYear: number; acres: number; plantings: DetailPlantingRef[] }>()
@@ -345,13 +388,13 @@ function PerFieldBreakdown({
       .map((g) => ({
         ...g,
         fieldName: lookups.fieldNameById.get(g.fieldId) ?? '—',
-        detail: buildDetailForPlantings({ plantings: g.plantings, loads, splits, cropById }),
+        detail: buildDetailForPlantings({ plantings: g.plantings, loads, splits, cropById, combineEntries }),
       }))
       .sort((a, b) => {
         if (a.seasonYear !== b.seasonYear) return b.seasonYear - a.seasonYear
         return a.fieldName.localeCompare(b.fieldName)
       })
-  }, [plantings, loads, splits, cropById, lookups])
+  }, [plantings, loads, splits, cropById, lookups, combineEntries])
 
   const showYear = new Set(rows.map((r) => r.seasonYear)).size > 1
   const [openField, setOpenField] = useState<string | null>(null)
@@ -376,7 +419,7 @@ function PerFieldBreakdown({
           {rows.map((r) => {
             const isOpen = openField === r.key
             const s = r.detail.summary
-            const yld = r.acres > 0 ? s.totalDryBu / r.acres : null
+            const yld = r.acres > 0 ? s.fieldProductionDryBu / r.acres : null
             return (
               <Fragment key={r.key}>
                 <tr
@@ -390,16 +433,24 @@ function PerFieldBreakdown({
                   <td className="px-3 py-2 font-medium">{r.fieldName}</td>
                   {showYear && <td className="px-3 py-2">{r.seasonYear}</td>}
                   <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.acres)}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{fmtNum(s.totalDryBu)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {fmtNum(s.fieldProductionDryBu)}
+                    {r.detail.combineRows.length > 0 && (
+                      <span className="ml-1.5 text-xs rounded px-1.5 py-0.5 bg-emerald-100 text-emerald-800 whitespace-nowrap">combine</span>
+                    )}
+                  </td>
                   <td className="px-3 py-2 text-right tabular-nums font-semibold">{yld != null ? yld.toFixed(1) : '—'}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{s.weightedMoisture != null ? `${s.weightedMoisture.toFixed(1)}%` : '—'}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{s.loadCount}</td>
                 </tr>
                 {isOpen && (
                   <tr className="bg-slate-50">
-                    <td colSpan={colCount} className="px-3 py-3">
+                    <td colSpan={colCount} className="px-3 py-3 space-y-2">
+                      <CombineEntryBanner rows={r.detail.combineRows} lookups={lookups} />
                       {r.detail.loads.length === 0 ? (
-                        <p className="text-sm text-slate-500">No loads recorded yet for this field.</p>
+                        r.detail.combineRows.length === 0 && (
+                          <p className="text-sm text-slate-500">No loads recorded yet for this field.</p>
+                        )
                       ) : (
                         <LoadTable rows={r.detail.loads} lookups={lookups} allowLoadLinks={allowLoadLinks} />
                       )}
@@ -555,6 +606,7 @@ export function YieldRowDetail({
   perFieldBreakdown,
   flag,
   cotton,
+  combineEntries,
 }: {
   /** The row's constituent plantings — the SAME set its numbers rolled up from. */
   plantings: readonly DetailPlantingRef[]
@@ -570,10 +622,12 @@ export function YieldRowDetail({
   flag?: ReactNode
   /** Pass the shared cotton state when this row's crop is cotton. */
   cotton?: CottonDetailState | null
+  /** Combine yield entries (062) — labeled source rows with the netting. */
+  combineEntries?: readonly CombineEntryLike[] | null
 }) {
   const detail = useMemo(
-    () => buildDetailForPlantings({ plantings, loads, splits, cropById }),
-    [plantings, loads, splits, cropById],
+    () => buildDetailForPlantings({ plantings, loads, splits, cropById, combineEntries }),
+    [plantings, loads, splits, cropById, combineEntries],
   )
 
   if (cotton) {
@@ -588,7 +642,7 @@ export function YieldRowDetail({
   return (
     <div className="space-y-2 text-left">
       {flag && <div>{flag}</div>}
-      {detail.loads.length === 0 ? (
+      {detail.loads.length === 0 && detail.combineRows.length === 0 ? (
         <p className="text-sm text-slate-500">No loads recorded yet.</p>
       ) : (
         <>
@@ -601,9 +655,15 @@ export function YieldRowDetail({
               cropById={cropById}
               lookups={lookups}
               allowLoadLinks={allowLoadLinks}
+              combineEntries={combineEntries}
             />
           ) : (
-            <LoadTable rows={detail.loads} lookups={lookups} allowLoadLinks={allowLoadLinks} />
+            <>
+              <CombineEntryBanner rows={detail.combineRows} lookups={lookups} />
+              {detail.loads.length > 0 && (
+                <LoadTable rows={detail.loads} lookups={lookups} allowLoadLinks={allowLoadLinks} />
+              )}
+            </>
           )}
         </>
       )}
@@ -619,8 +679,25 @@ export function grainDetailExportSection(args: {
   title: string
   detailLoads: readonly YieldDetailLoad[]
   lookups: DetailLookups
+  combineRows?: readonly CombineDetailRow[]
 }): ExportSection {
-  const { title, detailLoads, lookups } = args
+  const { title, detailLoads, lookups, combineRows = [] } = args
+  // Combine entries lead the sheet as labeled source rows (netting in the
+  // Split column), mirroring the on-screen banner above the load list.
+  const combineExportRows: ExportSection['rows'] = combineRows.map((r) => [
+    fmtDate(r.info.entryDate),
+    'Combine entry',
+    '',
+    null,
+    null,
+    null,
+    null,
+    r.info.adjustedBu,
+    r.info.destinationBinId ? `Bin ${lookups.binNameById.get(r.info.destinationBinId) ?? ''}`.trim() : '',
+    r.info.weighedBu > 0
+      ? `adjusted total — ${Math.round(r.info.weighedBu).toLocaleString()} bu weighed → ${Math.round(Math.max(0, r.info.remainderBu)).toLocaleString()} bu remainder`
+      : 'adjusted total',
+  ])
   return {
     title,
     columns: [
@@ -635,18 +712,21 @@ export function grainDetailExportSection(args: {
       { label: 'Destination' },
       { label: 'Split' },
     ],
-    rows: detailLoads.map((l) => [
-      fmtDate(l.date),
-      l.ticket ?? '',
-      l.truckId ? lookups.truckNameById.get(l.truckId) ?? '' : '',
-      l.netLbs,
-      l.moisture,
-      l.testWeight,
-      l.wetBu,
-      l.dryBu,
-      destinationLabel(l, lookups),
-      l.split ? splitLabel(l.split) : '',
-    ]),
+    rows: [
+      ...combineExportRows,
+      ...detailLoads.map((l) => [
+        fmtDate(l.date),
+        l.ticket ?? '',
+        l.truckId ? lookups.truckNameById.get(l.truckId) ?? '' : '',
+        l.netLbs,
+        l.moisture,
+        l.testWeight,
+        l.wetBu,
+        l.dryBu,
+        destinationLabel(l, lookups),
+        l.split ? splitLabel(l.split) : '',
+      ] as ExportSection['rows'][number]),
+    ],
   }
 }
 

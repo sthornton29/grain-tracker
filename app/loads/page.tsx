@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { usePersistentState } from '@/lib/use-persistent-state'
+import { HARVEST_ENTRY_PATH_KEY, type HarvestEntryPath } from '@/lib/harvest-entry-path'
 import { splitFieldLabel } from '@/lib/load-splits'
 import ExportBar from '@/components/export-bar'
 import type { ExportPayload, ExportCell } from '@/lib/exports'
@@ -94,6 +96,8 @@ function csvEscape(v: unknown) {
 export default function LoadsPage() {
   const supabase = useMemo(() => createClient(), [])
   const router = useRouter()
+  // Last-used harvest-entry path (062): swaps which header button is primary.
+  const [entryPath] = usePersistentState<HarvestEntryPath>(HARVEST_ENTRY_PATH_KEY, 'load')
   const [rows, setRows] = useState<Row[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
   const [farms, setFarms] = useState<Farm[]>([])
@@ -453,7 +457,24 @@ export default function LoadsPage() {
         <h1 className="text-2xl font-bold flex-1">Loads</h1>
         <Link href="/loads/unpaid" className="rounded-lg bg-white border border-slate-300 px-4 py-2 text-sm">Unpaid</Link>
         <Link href="/loads/import" className="rounded-lg bg-white border border-slate-300 px-4 py-2 text-sm">Import CSV</Link>
-        <Link href="/loads/new" className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">+ New Load</Link>
+        {/* The last-used harvest-entry path gets the primary button — pure
+            emphasis, both paths always visible (062). */}
+        <Link
+          href="/loads/combine"
+          className={entryPath === 'combine'
+            ? 'rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold'
+            : 'rounded-lg bg-white border border-slate-300 px-4 py-2 text-sm'}
+        >
+          Yield from Combine
+        </Link>
+        <Link
+          href="/loads/new"
+          className={entryPath === 'combine'
+            ? 'rounded-lg bg-white border border-slate-300 px-4 py-2 text-sm'
+            : 'rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold'}
+        >
+          + New Load
+        </Link>
         <button onClick={exportCsv} className="rounded-lg bg-white border border-slate-300 px-4 py-2">Export CSV</button>
         {filtered.length > 0 && <ExportBar buildPayload={buildPayload} />}
       </div>

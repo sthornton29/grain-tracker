@@ -16,6 +16,7 @@ import {
 } from '@/lib/pdf-upload'
 import { imagesToPdf } from '@/lib/image-capture'
 import { practiceOf } from '@/lib/yields'
+import { rememberHarvestEntryPath } from '@/lib/harvest-entry-path'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
 import type { Bin, Buyer, Contract, Crop, Field, FieldPlanting, Truck } from '@/lib/types'
@@ -423,6 +424,7 @@ export default function ScanTicketsPage() {
       return
     }
     savedIdsRef.current = (data as Array<{ id: string }> | null)?.map((d) => d.id) ?? []
+    rememberHarvestEntryPath('load')
     // Drop saved rows; keep unready rows for the user to finish.
     const remaining = rows.filter((r) => statusFor(r) !== 'ready')
     setRows(remaining)

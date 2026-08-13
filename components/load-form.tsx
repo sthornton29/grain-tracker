@@ -7,6 +7,7 @@ import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { allocateSplits, validateSplitDrafts, type SplitDraft } from '@/lib/load-splits'
 import { practiceOf } from '@/lib/yields'
+import { rememberHarvestEntryPath } from '@/lib/harvest-entry-path'
 import { relinkSettlementLinesForLoad } from '@/lib/settlement-link'
 import type { Bin, Buyer, Contract, Crop, Field, FieldPlanting, Load, LoadSplit, Truck } from '@/lib/types'
 
@@ -603,6 +604,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
 
     // Leave submittingRef = true; we're navigating away. Resetting it here
     // would briefly re-enable the button before the route change commits.
+    rememberHarvestEntryPath('load')
     router.push('/loads')
     router.refresh()
   }

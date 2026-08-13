@@ -13,6 +13,7 @@ import {
 } from '@/lib/partner-api-server'
 import {
   buildProductionRecords,
+  type CombineEntryRow,
   type CropRow,
   type EntityRow,
   type FarmRow,
@@ -85,9 +86,19 @@ export async function GET(req: NextRequest) {
         supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').eq('org_id', org).order('id').range(f, t),
       ),
     ])
+    // Combine entries (062) net against weighed loads. A missing table (062
+    // not applied yet) degrades to none rather than failing the endpoint.
+    let combineEntries: CombineEntryRow[] = []
+    const combineResult = await supabase
+      .from('combine_yield_entries')
+      .select('field_id, crop_id, crop_year, adjusted_total_bushels, updated_at')
+      .eq('org_id', org)
+      .eq('crop_year', year)
+    if (!combineResult.error) combineEntries = (combineResult.data ?? []) as CombineEntryRow[]
+
     return NextResponse.json({
       data: buildProductionRecords({
-        plantings, loads, splits, ginReceipts, fields, farms, entities, crops, year, crop,
+        plantings, loads, splits, ginReceipts, combineEntries, fields, farms, entities, crops, year, crop,
       }),
     })
   } catch (e) {

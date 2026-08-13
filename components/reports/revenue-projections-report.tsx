@@ -19,7 +19,7 @@ import { useViewerAssumptions } from '@/lib/use-viewer-assumptions'
 import { resolveCropAssumptions } from '@/lib/viewer-assumptions'
 import { marketingReferenceContract, referenceMonthOptions, fallForwardOnMissingQuote, type ReferenceContract } from '@/lib/reference-contract'
 import { SupersededNotice } from '@/components/viewer-scenario'
-import { fieldCropAggregates, cropsWithCompleteHarvest } from '@/lib/yields'
+import { fieldCropAggregates, cropsWithCompleteHarvest, type CombineEntryLike } from '@/lib/yields'
 import { cropToCommodity } from '@/lib/contracts'
 import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
@@ -81,6 +81,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<SplitRow[]>([])
+  const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [policies, setPolicies] = useState<CropInsurancePolicy[]>([])
   const [scos, setScos] = useState<CropInsuranceSco[]>([])
   const [ecos, setEcos] = useState<CropInsuranceEco[]>([])
@@ -109,7 +110,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [cr, pl, ct, fp, op, ca, ld, po, sc, ec, hpe, cc, ba, el, apd, apay, ogp, sp, gr, cb, en, fa, fi] = await Promise.all([
+      const [cr, pl, ct, fp, op, ca, ld, po, sc, ec, hpe, cc, ba, el, apd, apay, ogp, sp, gr, cb, en, fa, fi, ce] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('field_plantings').select('*'),
         supabase.from('contracts').select('*'),
@@ -133,6 +134,8 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('id, entity_id'),
         supabase.from('fields').select('id, farm_id'),
+        // May not exist yet (migration 062): an error leaves data null → [].
+        supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
       ])
       setEntities((en.data as Entity[]) || [])
       setFarms((fa.data as Array<{ id: string; entity_id: string | null }>) || [])
@@ -147,6 +150,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       setAssumptions((ca.data as CropAssumption[]) || [])
       setLoads((ld.data as LoadRow[]) || [])
       setSplits((sp.data as SplitRow[]) || [])
+      setCombineEntries((ce.data as CombineEntryLike[]) || [])
       setPolicies((po.data as CropInsurancePolicy[]) || [])
       setScos((sc.data as CropInsuranceSco[]) || [])
       setEcos((ec.data as CropInsuranceEco[]) || [])
@@ -272,8 +276,8 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   // to the entity's fields. Drives actual production (by crop) and the
   // field-level harvest-completion check.
   const aggByKey = useMemo(
-    () => scope.fieldAgg(fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear })),
-    [loads, splits, cropById, cropYear, scope],
+    () => scope.fieldAgg(fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear, combineEntries })),
+    [loads, splits, combineEntries, cropById, cropYear, scope],
   )
 
   // Actual production (dry bushels) by crop for the year.

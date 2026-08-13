@@ -85,6 +85,39 @@ export type Crop = {
   // Whether this crop is grown as a double-crop (a second crop after a
   // spring-harvest crop). Set per crop under Settings → Crops.
   double_crop: boolean
+  // Combine-entry calibration default (062): the last-used ± bu/ac adjustment
+  // for this crop, pre-filling subsequent Yield from Combine entries until
+  // changed. Null = no default.
+  combine_adjustment_bu_per_acre: number | null
+}
+
+// ---------- Combine yield entries (062) ----------
+
+// A field × crop × crop-year's production as stated by the combine monitor
+// (dry basis) — the scale-less harvest entry path. adjusted_total_bushels is
+// THE number the app uses; lib/yields.ts nets weighed loads out of it
+// dynamically and posts the remainder to destination_bin_id when set.
+export type CombineYieldEntry = {
+  id: string
+  field_id: string
+  crop_id: string
+  crop_year: number
+  entry_mode: 'total_bushels' | 'yield_per_acre'
+  stated_yield_per_acre: number | null
+  stated_total_bushels: number
+  adjustment_bu_per_acre: number | null
+  adjusted_total_bushels: number
+  /** Optional irr/dry sub-entry for mixed-practice fields; written through to
+   *  the planting's manual breakout on save. Null = single combined figure. */
+  stated_irrigated_bushels: number | null
+  stated_dryland_bushels: number | null
+  destination_bin_id: string | null
+  harvest_complete: boolean
+  entry_date: string
+  notes: string | null
+  source: 'manual'
+  created_at: string
+  updated_at: string
 }
 
 export type BinTransfer = {

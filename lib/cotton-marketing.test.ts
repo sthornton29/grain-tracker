@@ -14,7 +14,7 @@ import type { Crop, CropAssumption, FuturesPosition } from '@/lib/types'
 const CY = 2026
 
 function crop(id: string, name: string): Crop {
-  return { id, name, base_moisture_pct: 0, base_lb_per_bushel: 0, harvest_category: 'fall', double_crop: false }
+  return { id, name, base_moisture_pct: 0, base_lb_per_bushel: 0, harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null }
 }
 function assumption(over: Partial<CropAssumption> & Pick<CropAssumption, 'crop_id'>): CropAssumption {
   return {

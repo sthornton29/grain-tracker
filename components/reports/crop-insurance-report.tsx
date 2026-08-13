@@ -17,7 +17,7 @@
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { analyzeYields, fieldCropAggregates, harvestStatusOf, withLoadBreakouts, type HarvestStatus } from '@/lib/yields'
+import { analyzeYields, fieldCropAggregates, harvestStatusOf, withLoadBreakouts, type CombineEntryLike, type HarvestStatus } from '@/lib/yields'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
@@ -108,6 +108,7 @@ export default function CropInsuranceReport() {
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
+  const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
 
   // Filters persist across visits (see usePersistentState).
@@ -125,7 +126,7 @@ export default function CropInsuranceReport() {
 
   useEffect(() => {
     ;(async () => {
-      const [cr, en, fa, fi, co, pl, lo, sp, ca] = await Promise.all([
+      const [cr, en, fa, fi, co, pl, lo, sp, ca, ce] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('*'),
@@ -135,6 +136,8 @@ export default function CropInsuranceReport() {
         supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id'),
         supabase.from('load_splits').select('*'),
         supabase.from('crop_assumptions').select('*'),
+        // May not exist yet (migration 062): an error leaves data null → [].
+        supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
       ])
       setCrops((cr.data as Crop[]) || [])
       setEntities((en.data as Entity[]) || [])
@@ -145,6 +148,7 @@ export default function CropInsuranceReport() {
       setLoads((lo.data as LoadRow[]) || [])
       setSplits((sp.data as LoadSplit[]) || [])
       setAssumptions((ca.data as CropAssumption[]) || [])
+      setCombineEntries((ce.data as CombineEntryLike[]) || [])
       // Default to the most recent crop year with plantings.
       const yrs = (pl.data as FieldPlanting[] | null)?.map((p) => p.season_year) ?? []
       if (yrs.length > 0) setCropYear(Math.max(...yrs))
@@ -178,8 +182,9 @@ export default function CropInsuranceReport() {
   const aggByKey = useMemo(
     () => fieldCropAggregates(loads, splits, cropById, {
       cropYear: cropYear === '' ? null : cropYear,
+      combineEntries,
     }),
-    [loads, splits, cropById, cropYear],
+    [loads, splits, cropById, cropYear, combineEntries],
   )
 
   const cropYearOptions = useMemo(
@@ -246,6 +251,7 @@ export default function CropInsuranceReport() {
           dryBu: agg?.dryBu ?? 0,
           lastLoadDate: agg?.lastLoadDate ?? null,
           override: p.yield_include_override,
+          combineComplete: agg?.combine?.harvestComplete,
         }
       }),
     )

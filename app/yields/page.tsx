@@ -17,7 +17,7 @@ import {
   grainDetailExportSection, cottonDetailExportSection,
 } from '@/components/yields-detail'
 import type { ExportColumn, ExportPayload, ExportSection } from '@/lib/exports'
-import type { Crop, CropAssumption, Entity, Farm, Field, FieldPlanting, FieldPlantingVariety, County, LoadSplit } from '@/lib/types'
+import type { CombineYieldEntry, Crop, CropAssumption, Entity, Farm, Field, FieldPlanting, FieldPlantingVariety, County, LoadSplit } from '@/lib/types'
 
 // Carries everything the drill-down needs (lib/yield-detail's DetailLoadLike)
 // on top of what the yield math uses — one fetch serves both.
@@ -76,6 +76,7 @@ export default function YieldsPage() {
   const [trucks, setTrucks] = useState<Array<{ id: string; name_or_number: string }>>([])
   const [bins, setBins] = useState<Array<{ id: string; name_or_number: string }>>([])
   const [buyers, setBuyers] = useState<Array<{ id: string; name: string }>>([])
+  const [combineEntries, setCombineEntries] = useState<CombineYieldEntry[]>([])
   const [loading, setLoading] = useState(true)
 
   // Filters persist in localStorage so the user returns to the same view and
@@ -128,7 +129,7 @@ export default function YieldsPage() {
 
   async function refresh() {
     setLoading(true)
-    const [en, fa, fi, cr, pl, lo, co, sp, vv, ca, tr, bi, bu] = await Promise.all([
+    const [en, fa, fi, cr, pl, lo, co, sp, vv, ca, tr, bi, bu, ce] = await Promise.all([
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
@@ -142,6 +143,9 @@ export default function YieldsPage() {
       supabase.from('trucks').select('id, name_or_number').order('name_or_number'),
       supabase.from('bins').select('id, name_or_number').order('name_or_number'),
       supabase.from('buyers').select('id, name').order('name'),
+      // Combine yield entries (062) — tolerate the table not existing yet
+      // (migration pending): error → no entries, the page still works.
+      supabase.from('combine_yield_entries').select('*'),
     ])
     setEntities((en.data as Entity[]) || [])
     setFarms((fa.data as Farm[]) || [])
@@ -156,6 +160,7 @@ export default function YieldsPage() {
     setTrucks((tr.data as Array<{ id: string; name_or_number: string }>) || [])
     setBins((bi.data as Array<{ id: string; name_or_number: string }>) || [])
     setBuyers((bu.data as Array<{ id: string; name: string }>) || [])
+    setCombineEntries((ce.data as CombineYieldEntry[]) || [])
     setLoading(false)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
@@ -215,10 +220,11 @@ export default function YieldsPage() {
 
   // Dry bushels + most-recent load date per field+crop+year (shared allocation
   // rules). dryBuFor() is the bushel lookup; aggByKey also carries the load
-  // dates the yield analysis needs.
+  // dates the yield analysis needs. Combine entries (062) make the combine
+  // authoritative for their field × crop × year, netting weighed loads.
   const aggByKey = useMemo(
-    () => fieldCropAggregates(loads, splits, cropById),
-    [loads, splits, cropById],
+    () => fieldCropAggregates(loads, splits, cropById, { combineEntries }),
+    [loads, splits, cropById, combineEntries],
   )
   const dryBuFor = (fieldId: string, cropId: string, year: number) =>
     aggByKey.get(`${fieldId}|${cropId}|${year}`)?.dryBu ?? 0
@@ -286,6 +292,7 @@ export default function YieldsPage() {
         dryBu: agg?.dryBu ?? 0,
         lastLoadDate: agg?.lastLoadDate ?? null,
         override: p.yield_include_override,
+        combineComplete: agg?.combine?.harvestComplete,
       }
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -607,8 +614,8 @@ export default function YieldsPage() {
       const details = cottonDetailsByYear(rowPlantings, cottonDetail.data)
       return cottonDetailExportSection({ title, details, showYear: details.length > 1 })
     }
-    const detail = buildDetailForPlantings({ plantings: rowPlantings, loads, splits, cropById })
-    return grainDetailExportSection({ title, detailLoads: detail.loads, lookups: detailLookups })
+    const detail = buildDetailForPlantings({ plantings: rowPlantings, loads, splits, cropById, combineEntries })
+    return grainDetailExportSection({ title, detailLoads: detail.loads, lookups: detailLookups, combineRows: detail.combineRows })
   }
 
   function buildEntityPayload(): ExportPayload {
@@ -1514,6 +1521,7 @@ export default function YieldsPage() {
                             cropById={cropById}
                             lookups={detailLookups}
                             allowLoadLinks={allowLoadLinks}
+                            combineEntries={combineEntries}
                             perFieldBreakdown={false}
                             flag={
                               overridden ? (
@@ -1683,6 +1691,7 @@ export default function YieldsPage() {
                                     cropById={cropById}
                                     lookups={detailLookups}
                                     allowLoadLinks={allowLoadLinks}
+                                    combineEntries={combineEntries}
                                     perFieldBreakdown
                                     cotton={isCottonCrop(r.cropName) ? cottonDetail : null}
                                   />
@@ -1780,6 +1789,7 @@ export default function YieldsPage() {
                             cropById={cropById}
                             lookups={detailLookups}
                             allowLoadLinks={allowLoadLinks}
+                            combineEntries={combineEntries}
                             perFieldBreakdown
                             cotton={isCottonCrop(r.cropName) ? cottonDetail : null}
                           />
