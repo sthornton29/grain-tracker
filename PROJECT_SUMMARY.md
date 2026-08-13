@@ -7,7 +7,7 @@
 > programs. **Not a SaaS product** — single-tenant, used on iPads in trucks by a
 > small team, so the UX favors fast capture and forgiving data entry.
 >
-> _Snapshot date: 2026-08-12. Schema at migration `061` (051–060 applied in production; 061 — the agronomist role: user_profiles AND organization_members role checks widened, assign_user_role RPC, RESTRICTIVE write-block on every table + SELECT allowlist limited to the Yields read set — applied once but **needs a re-run**: the 2026-08-12 amendment added the organization_members check, without which the 053 sync trigger rejects the first agronomist). `supabase/verify_052/053/054.sql` are read-only diagnostics; `docs/BETA_ACCEPTANCE.md` is the pre-invite isolation checklist._
+> _Snapshot date: 2026-08-13. Schema at migration `061`, all migrations applied in production (061 — the agronomist role: user_profiles AND organization_members role checks widened, assign_user_role RPC, RESTRICTIVE write-block on every table + SELECT allowlist limited to the Yields read set — re-run 2026-08-12 with the organization_members amendment and confirmed working: first agronomist invited and assigned). `supabase/verify_052/053/054.sql` are read-only diagnostics; `docs/BETA_ACCEPTANCE.md` is the pre-invite isolation checklist._
 
 ---
 
