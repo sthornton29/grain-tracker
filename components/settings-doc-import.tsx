@@ -86,7 +86,9 @@ export default function SettingsDocImport({
 
   const [source, setSource] = useState<DocumentSource | null>(null)
   const [busy, setBusy] = useState(false)
-  const [stage, setStage] = useState('')
+  // Null, not '' — DocumentCapture shows the stage INSTEAD of the button
+  // label whenever one is present, so an empty string blanks the button.
+  const [stage, setStage] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
   const [review, setReview] = useState<SettingsReview | null>(null)
@@ -131,7 +133,7 @@ export default function SettingsDocImport({
       setErr(e instanceof PdfTooLargeError ? 'That PDF is over the 20 MB limit — split it and try again.' : e instanceof Error ? e.message : 'Extraction failed.')
     } finally {
       setBusy(false)
-      setStage('')
+      setStage(null)
     }
   }
 
@@ -188,7 +190,7 @@ export default function SettingsDocImport({
       setErr(e instanceof Error ? e.message : 'Save failed.')
     } finally {
       setBusy(false)
-      setStage('')
+      setStage(null)
     }
   }
 

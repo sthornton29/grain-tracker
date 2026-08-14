@@ -115,8 +115,9 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
       <div className="flex flex-wrap items-center gap-2">
         {isCoarse ? (
           <>
+            {/* `||`, not `??`: an empty stage label must never blank a button. */}
             <button type="button" onClick={() => cameraRef.current?.click()} disabled={disabled} className={primary}>
-              {stageLabel ?? (compressing ? 'Adding…' : '📷 Take Photo')}
+              {stageLabel || (compressing ? 'Adding…' : '📷 Take Photo')}
             </button>
             <button type="button" onClick={() => libraryRef.current?.click()} disabled={disabled} className={secondary}>
               Choose from Photos
@@ -127,7 +128,7 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
           </>
         ) : (
           <button type="button" onClick={() => fileRef.current?.click()} disabled={disabled} className={primary}>
-            {stageLabel ?? (converting ? 'Converting…' : compressing ? 'Adding…' : (pdfLabel ?? 'Upload PDF, image, or Excel'))}
+            {stageLabel || (converting ? 'Converting…' : compressing ? 'Adding…' : (pdfLabel || 'Upload PDF, image, or Excel'))}
           </button>
         )}
       </div>
@@ -168,7 +169,7 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={extract} disabled={disabled} className={primary}>
-              {stageLabel ?? `Extract from ${images.length} photo${images.length === 1 ? '' : 's'}`}
+              {stageLabel || `Extract from ${images.length} photo${images.length === 1 ? '' : 's'}`}
             </button>
             <button
               type="button"
