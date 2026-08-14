@@ -15,10 +15,12 @@ import { renderHelpMarkdown } from '@/lib/help-markdown'
 import { HELP_OPEN_EVENT, type HelpOpenDetail } from '@/lib/help-bus'
 import SupportChat from '@/components/help/support-chat'
 import SupportForm from '@/components/help/support-form'
+import AssistantChat from '@/components/assistant/assistant-chat'
+import type { AppRole } from '@/lib/types'
 
-type Tab = 'topic' | 'browse' | 'chat' | 'support'
+type Tab = 'topic' | 'browse' | 'data' | 'chat' | 'support'
 
-export default function HelpDrawer() {
+export default function HelpDrawer({ role = 'owner' }: { role?: AppRole }) {
   const pathname = usePathname()
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<Tab>('topic')
@@ -77,7 +79,8 @@ export default function HelpDrawer() {
               {([
                 ['topic', 'This page'],
                 ['browse', 'All topics'],
-                ['chat', 'Ask the assistant'],
+                ['data', 'Ask Turnrow'],
+                ['chat', 'How-to chat'],
                 ['support', 'Contact support'],
               ] as Array<[Tab, string]>).map(([t, label]) => (
                 <button key={t} type="button" onClick={() => setTab(t)}
@@ -124,6 +127,17 @@ export default function HelpDrawer() {
                     ))}
                     {results.length === 0 && <li className="py-4 text-sm text-slate-400 text-center">No matches.</li>}
                   </ul>
+                </div>
+              )}
+
+              {tab === 'data' && (
+                <div className="h-full min-h-0 flex flex-col">
+                  <div className="flex justify-end pb-1">
+                    <a href="/assistant" className="text-[11px] text-brand-deep underline decoration-dotted">Open full page ↗</a>
+                  </div>
+                  <div className="flex-1 min-h-0">
+                    <AssistantChat role={role} />
+                  </div>
                 </div>
               )}
 

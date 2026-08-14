@@ -15,6 +15,7 @@ const items = [
   { href: '/settings/contracts', label: 'Contracts' },
   { href: '/settings/crop-insurance', label: 'Crop Insurance' },
   { href: '/settings/government-payments', label: 'Government Payments' },
+  { href: '/settings/organization', label: 'Organization' },
   { href: '/settings/users', label: 'Users & Modules' },
 ]
 

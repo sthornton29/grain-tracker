@@ -18,6 +18,7 @@ import type {
   CropInsuranceExtraction,
   FsaBaseAcresExtraction,
   GinReceiptExtraction,
+  LeaseAgreementExtraction,
   SettlementExtraction,
   TicketsExtraction,
 } from '@/lib/pdf-upload'
@@ -152,6 +153,26 @@ export function mergeGinReceipts(parts: GinReceiptExtraction[]): GinReceiptExtra
       parts.map((p) => p.bales ?? []),
       (b) => (b.pbi_number ? normalizePbi(String(b.pbi_number)) || null : null),
     ),
+  }
+}
+
+export function mergeLeaseAgreements(parts: LeaseAgreementExtraction[]): LeaseAgreementExtraction {
+  // One lease per document: scalars/objects from the first chunk that has
+  // them (terms usually front-load); list clauses concatenate deduped.
+  return {
+    landowner_name: firstValue(parts, (p) => p.landowner_name),
+    landowner_address: firstValue(parts, (p) => p.landowner_address),
+    farm_names: mergeList(parts.map((p) => p.farm_names ?? []), (s) => String(s).trim().toLowerCase() || null),
+    lease_type: firstValue(parts, (p) => p.lease_type),
+    share_terms: firstValue(parts, (p) => p.share_terms),
+    expense_terms: mergeList(parts.map((p) => p.expense_terms ?? []), (e) => `${e.category}|${e.landowner_pct}`),
+    pricing_method: firstValue(parts, (p) => p.pricing_method),
+    cash_terms: firstValue(parts, (p) => p.cash_terms),
+    flex_terms: mergeList(parts.map((p) => p.flex_terms ?? []), (f) => f.description.trim().toLowerCase() || null),
+    payment_timing: firstValue(parts, (p) => p.payment_timing),
+    crop_year: firstValue(parts, (p) => p.crop_year),
+    notes: firstValue(parts, (p) => p.notes),
+    source: firstValue(parts, (p) => p.source),
   }
 }
 

@@ -65,8 +65,8 @@ export default function SupportChat({ route, onEscalate }: {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <p className="text-xs text-slate-500 border-b border-slate-100 pb-2">
-        Answers come from Turnrow&rsquo;s documentation — for anything about your own account or numbers,
-        contact support.
+        Answers come from Turnrow&rsquo;s documentation — for questions about your own numbers,
+        use the <b>Ask Turnrow</b> tab.
       </p>
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto py-3 space-y-3">
         {messages.length === 0 && (

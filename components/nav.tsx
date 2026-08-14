@@ -41,7 +41,7 @@ export default function Nav({ cottonEnabled = false, role = 'owner' }: { cottonE
             )
           })}
         </div>
-        <HelpDrawer />
+        <HelpDrawer role={role} />
       </div>
     </nav>
   )

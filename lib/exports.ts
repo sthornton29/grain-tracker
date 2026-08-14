@@ -20,6 +20,8 @@
 // pays the download cost. Print uses the browser dialog + the `.print-area` /
 // `.no-print` CSS in app/globals.css.
 
+import { exportChrome, type ExportBranding } from '@/lib/branding'
+
 // ---------- formatting model ----------
 
 // CANONICAL metric → format mapping (the consistency contract — every report
@@ -109,6 +111,12 @@ export type ExportPayload = {
   singleSheet?: boolean
   /** PDF orientation; defaults to landscape for wide tables, portrait otherwise. */
   orientation?: 'portrait' | 'landscape'
+  /**
+   * Branding mode (lib/branding.ts). Default Turnrow chrome; `mode: 'org'`
+   * renders under the FARM'S identity with zero Turnrow marks — for
+   * landowner/lender-facing documents (Rent Settlement statements).
+   */
+  branding?: ExportBranding
 }
 
 // ---------- number formatting (single source of truth) ----------
@@ -213,7 +221,8 @@ const TONE_RGB: Record<Tone, [number, number, number]> = {
 }
 const toneArgb = (t: Tone) => 'FF' + TONE_RGB[t].map((n) => n.toString(16).padStart(2, '0')).join('').toUpperCase()
 
-const HEADER_FILL_ARGB = 'FF166534' // green-800 (matches nav / PDF head)
+// Header fills now come from exportChrome (lib/branding.ts): Turnrow green
+// by default, a neutral slate in org-branded mode.
 const SUBHEAD_FILL_ARGB = 'FFF1F5F9' // slate-100
 const SUBTOTAL_FILL_ARGB = 'FFF8FAFC' // slate-50
 const TOTAL_FILL_ARGB = 'FFE2E8F0' // slate-200
@@ -249,11 +258,15 @@ function excelColWidths(section: ExportSection): number[] {
 }
 
 function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSection, opts: { withTitle: boolean }): void {
+  const chrome = exportChrome(payload.branding)
   if (opts.withTitle) {
     ws.addRow([payload.title])
     ws.lastRow.font = { bold: true, size: 14 }
+    for (const line of chrome.headerLines) {
+      ws.addRow([line]); ws.lastRow.font = { color: { argb: 'FF64748B' }, size: 10 }
+    }
     if (payload.filters) { ws.addRow([payload.filters]); ws.lastRow.font = { color: { argb: 'FF64748B' } } }
-    ws.addRow([`Turnrow · Generated ${new Date().toLocaleString()}`])
+    ws.addRow([`${chrome.attributionPrefix} · Generated ${new Date().toLocaleString()}`])
     ws.lastRow.font = { color: { argb: 'FF94A3B8' }, size: 9 }
     ws.addRow([])
   }
@@ -274,7 +287,7 @@ function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSectio
       if (g.span > 1) ws.mergeCells(gr.number, col, gr.number, col + g.span - 1)
       const cell = gr.getCell(col)
       cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEADER_FILL_ARGB } }
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } }
       cell.alignment = { horizontal: 'center' }
       col += g.span
     }
@@ -285,7 +298,7 @@ function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSectio
   const headerRowNumber = headerRow.number
   headerRow.eachCell((cell: any, col: number) => {
     cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEADER_FILL_ARGB } }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } }
     cell.alignment = { horizontal: section.columns[col - 1]?.align === 'right' ? 'right' : 'left' }
   })
 
@@ -367,15 +380,17 @@ export async function exportToExcel(payload: ExportPayload): Promise<void> {
   // already render atop every section sheet, so only summary CARDS justify a
   // dedicated cover sheet (a report may also define its own "Summary" section).
   const multi = !payload.singleSheet && payload.sections.length > 1
+  const chrome = exportChrome(payload.branding)
   if (multi && payload.summary?.length) {
     const ws = addSheet('Summary', 'Summary')
     ws.addRow([payload.title]); ws.lastRow.font = { bold: true, size: 14 }
+    for (const line of chrome.headerLines) { ws.addRow([line]); ws.lastRow.font = { color: { argb: 'FF64748B' }, size: 10 } }
     if (payload.filters) { ws.addRow([payload.filters]); ws.lastRow.font = { color: { argb: 'FF64748B' } } }
-    ws.addRow([`Turnrow · Generated ${new Date().toLocaleString()}`]); ws.lastRow.font = { color: { argb: 'FF94A3B8' }, size: 9 }
+    ws.addRow([`${chrome.attributionPrefix} · Generated ${new Date().toLocaleString()}`]); ws.lastRow.font = { color: { argb: 'FF94A3B8' }, size: 9 }
     ws.addRow([])
     if (payload.summary?.length) {
       const hr = ws.addRow(['Metric', 'Value'])
-      hr.eachCell((c: any) => { c.font = { bold: true, color: { argb: 'FFFFFFFF' } }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEADER_FILL_ARGB } } })
+      hr.eachCell((c: any) => { c.font = { bold: true, color: { argb: 'FFFFFFFF' } }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } } })
       for (const card of payload.summary) {
         const r = ws.addRow([card.sub ? `${card.label} (${card.sub})` : card.label, card.value])
         r.getCell(2).alignment = { horizontal: 'right' }
@@ -420,12 +435,13 @@ export function pdfSafe(s: string): string {
     .replace(/≈/g, '~')
 }
 
-// The brand mark for PDF headers, as a data URL (jsPDF addImage input).
-// Browser-only; returns null on any failure so exports never block on it.
-async function brandMarkDataUrl(): Promise<string | null> {
+// The header logo (Turnrow mark, or the org's own logo in org-branded mode)
+// as a data URL (jsPDF addImage input). Browser-only; returns null on any
+// failure so exports never block on it.
+async function brandMarkDataUrl(url: string): Promise<string | null> {
   if (typeof window === 'undefined') return null
   try {
-    const res = await fetch('/brand/logo-mark.png')
+    const res = await fetch(url)
     if (!res.ok) return null
     const blob = await res.blob()
     return await new Promise<string | null>((resolve) => {
@@ -448,17 +464,19 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
   const pageHeight = doc.internal.pageSize.getHeight()
   const today = new Date().toLocaleString()
 
-  // Turnrow brand header: the mark + spaced-caps wordmark above the report
-  // title — these are lender-facing documents. Fetch failure (offline, asset
-  // missing) silently falls back to the wordmark alone.
-  const mark = await brandMarkDataUrl()
+  // Brand header: Turnrow chrome by default; `branding: 'org'` renders the
+  // FARM'S identity instead — org logo + display name, NO Turnrow marks
+  // (these can be documents the farm mails to a landowner or lender). Fetch
+  // failure (offline, asset missing) silently falls back to text alone.
+  const chrome = exportChrome(payload.branding)
+  const mark = chrome.logoAssetUrl ? await brandMarkDataUrl(chrome.logoAssetUrl) : null
   if (mark) {
     try { doc.addImage(mark, 'PNG', 40, 22, 18, 18) } catch { /* wordmark-only */ }
   }
   doc.setFontSize(9)
   doc.setFont('helvetica', 'bold')
-  doc.setTextColor(11, 74, 36) // brand forest
-  doc.text('TURNROW', mark ? 64 : 40, 34, { charSpace: 2.5 })
+  doc.setTextColor(...chrome.wordmarkColor)
+  doc.text(pdfSafe(chrome.wordmark), mark ? 64 : 40, 34, chrome.wordmarkSpaced ? { charSpace: 2.5 } : undefined)
   doc.setFont('helvetica', 'normal')
   doc.setTextColor(0)
 
@@ -470,6 +488,13 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
   doc.setTextColor(0)
 
   let cursorY = 76
+  for (const line of chrome.headerLines) {
+    doc.setFontSize(9)
+    doc.setTextColor(110)
+    doc.text(pdfSafe(line), 40, cursorY)
+    doc.setTextColor(0)
+    cursorY += 12
+  }
   if (payload.filters) {
     doc.setFontSize(10)
     doc.setTextColor(90)
@@ -520,7 +545,7 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
       head.push(section.groups.map((g) => ({
         content: pdfSafe(g.label),
         colSpan: g.span,
-        styles: { halign: 'center' as const, fillColor: [22, 101, 52] as [number, number, number], textColor: [255, 255, 255] as [number, number, number], fontStyle: 'bold' as const },
+        styles: { halign: 'center' as const, fillColor: chrome.pdfHeadFill as [number, number, number], textColor: [255, 255, 255] as [number, number, number], fontStyle: 'bold' as const },
       })))
     }
     head.push(cols.map((c) => pdfSafe(c.label)))
@@ -549,7 +574,7 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
       body,
       startY: cursorY + 4,
       styles: { fontSize: 9, cellPadding: 4, overflow: 'linebreak' },
-      headStyles: { fillColor: [22, 101, 52], textColor: [255, 255, 255] },
+      headStyles: { fillColor: chrome.pdfHeadFill, textColor: [255, 255, 255] },
       columnStyles: Object.fromEntries(cols.map((c, idx) => [idx, { halign: c.align ?? (c.format && c.format !== 'text' ? 'right' : 'left') }])),
       margin: { left: 40, right: 40 },
       rowPageBreak: 'avoid', // don't split a row across pages

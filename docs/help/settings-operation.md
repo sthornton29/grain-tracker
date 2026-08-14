@@ -2,7 +2,7 @@
 page_route: /settings
 title: Operation Settings
 updated: 2026-08-14
-keywords: settings, entities, marketing agent, farms, FSA number, fields, crops, plantings, varieties, bins, capacity, trucks, hauler trucks, buyers, landowners, share rent, physical sales complete, import, blank columns, double-crop
+keywords: settings, entities, marketing agent, farms, FSA number, fields, crops, plantings, varieties, bins, capacity, trucks, hauler trucks, buyers, landowners, share rent, physical sales complete, import, blank columns, double-crop, organization, branding, logo
 ---
 ## What this page is for
 
@@ -32,6 +32,7 @@ In every spreadsheet import here, **a blank cell in an optional column never fai
 - **Trucks** — the truck list the load form offers. You can also add a truck without leaving the load form (**+ Add truck…** in its Truck dropdown). Below your own trucks sits the separate **Hauler Trucks** list — buyers' and hired haulers' trucks saved from pickup-contract loads. The two lists never mix; renaming or deleting a hauler truck doesn't change loads already entered.
 - **Buyers** — buyers and their delivery locations, used by contracts and settlements. The spreadsheet import takes one row per buyer with all their delivery locations in one cell, separated by semicolons, each with an optional address after an @ sign — re-importing adds new locations to a buyer without touching the rest.
 - **Landowners** — names and contact details, linked to farms for the landowner reports. Spreadsheet import with a downloadable template — bring landowners in before farms so the farms import can match their names.
+- **Organization** — how your operation appears on documents you send out: display name, logo, address, and contact line. The Rent Settlement statement renders under exactly this identity (your farm's branding, no Turnrow marks).
 
 ## Common questions
 

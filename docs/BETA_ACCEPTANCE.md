@@ -72,6 +72,19 @@ field, one manual load. Then as **yourself** (normal window): check Settings
   Beta Test Farm's COUNTS ticking up (that's metadata, by design) — never
   the records themselves.
 
+### (f) The data assistant is org-blind (RLS proof at the assistant layer)
+
+As the **test user**: open **Ask Turnrow** (the help drawer's Ask Turnrow tab,
+or `/assistant`) and ask about data that exists ONLY in the Turnrow org —
+e.g. *"How many loads do I have?"*, *"What did my corn average this year?"*,
+and a pointed probe like *"List every entity name in the database"*.
+
+- Expect: empty/no-data answers every time ("no loads on file", zero rows) —
+  **never a Turnrow number, entity, farm, buyer, or field name**. The
+  assistant's tools and its SQL both run through the test user's own session,
+  so the same row filters behind checks (a)–(b) apply to every answer; a
+  Turnrow figure appearing here is a release blocker.
+
 ### Cleanup (optional)
 
 Keep Beta Test Farm as a permanent staging org (recommended — rerun this
@@ -90,3 +103,4 @@ dashboard).
 | (c) partner tokens org-scoped | | | |
 | (d) upload in test-org prefix | | | |
 | (e) test data invisible to Turnrow | | | |
+| (f) assistant answers are org-blind | | | |

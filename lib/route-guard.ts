@@ -30,11 +30,14 @@ const VIEWER_API_PATHS = [
 // operation data (every buyer settlement; the operation budget sandbox), so
 // viewers don't get them at all. reportGroupsFor() hides them from the
 // sidebar/landing via this same matrix.
-const VIEWER_BLOCKED_REPORTS = ['/reports/settlement-pdfs', '/reports/crop-budget']
+// rent-settlement: landowner finances + tables the viewer RLS blocks outright.
+const VIEWER_BLOCKED_REPORTS = ['/reports/settlement-pdfs', '/reports/crop-budget', '/reports/rent-settlement']
 
-// Help is NEVER restricted: every role gets the help center, the assistant,
-// and contact support.
-const HELP_PATHS = ['/help', '/api/support-chat', '/api/support-request']
+// Help is NEVER restricted: every role gets the help center, the assistants
+// (support chat AND the Ask Turnrow data assistant — its answers are scoped
+// by each role's own RLS, so opening the page leaks nothing), and contact
+// support.
+const HELP_PATHS = ['/help', '/api/support-chat', '/api/support-request', '/assistant', '/api/data-assistant']
 
 const startsAt = (pathname: string, base: string) =>
   pathname === base || pathname.startsWith(base + '/')

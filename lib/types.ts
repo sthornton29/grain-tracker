@@ -29,6 +29,46 @@ export type Farm = {
   landowner_id: string | null
   is_share_rent: boolean
   landlord_share_percentage: number | null
+  /** Cash rent $/acre (063) — the minimal lease term on the farm linkage. */
+  cash_rent_per_acre: number | null
+}
+
+// ---------- Rent settlement (069) ----------
+
+// A structured lease per landowner × farm set — AI-extracted from an uploaded
+// lease or entered by hand. The jsonb columns carry the typed shapes in
+// lib/rent-settlement.ts (parseLeaseTerms tolerates partial extractions).
+export type LeaseTerm = {
+  id: string
+  landowner_id: string
+  /** Farms covered; empty = every farm linked to the landowner. */
+  farm_ids: string[]
+  lease_type: 'crop_share' | 'cash' | 'flex'
+  share_terms: unknown
+  expense_terms: unknown
+  pricing_method: unknown
+  cash_terms: unknown
+  flex_terms: unknown
+  payment_timing: string | null
+  notes: string | null
+  source_file_url: string | null
+  source_file_path: string | null
+  source_file_name: string | null
+  created_at: string
+  updated_at: string
+}
+
+// A generated landowner settlement (069) — the full itemized statement
+// snapshot (lib/rent-settlement.ts SettlementStatement); regenerable.
+export type RentSettlement = {
+  id: string
+  landowner_id: string
+  lease_term_id: string | null
+  crop_year: number
+  statement: unknown
+  total_due: number | null
+  generated_at: string
+  created_at: string
 }
 export type Field = {
   id: string

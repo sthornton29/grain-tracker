@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-08-14 · version 0.1.0 · build 63e14fc. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-08-14 · version 0.1.0 · build 3d2c010. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -17,6 +17,41 @@ Turnrow tracks grain and cotton from the field through storage, contracts, settl
 - **No automatic price alerts or texts.** Market prices appear on-screen when pages load.
 - **US grain and cotton, US dollars, US programs only.**
 - **No self-serve signup.** New farms and new users join by invitation.
+
+# Ask Turnrow  (page: /assistant)
+
+## What this is for
+
+Ask Turnrow answers questions about **your own account's numbers** in plain English — "What's my average corn price this year?", "Which field yielded best?", "What's sitting in the bins?". It reads the same data your reports do, so its answers match what the report pages show. It also answers how-do-I questions about using Turnrow, and keeps the two kinds of answers clearly separate.
+
+## How to use it
+
+- Open the **?** in the top bar and pick the **Ask Turnrow** tab, or open the full page from that tab.
+- Type a question, or tap one of the suggested starters. Answers stream in; while it's checking your records you'll see what it's looking at ("Checking your yields…").
+- Every data answer notes it came **from your Turnrow data as of that moment**, with links to the report where you can verify the same number.
+- If your question could mean two things ("how much corn do I have" — in the bins? unsold? total production?), it asks which you mean instead of guessing.
+
+## What it can answer
+
+Marketing and average prices, yields by field/farm/crop/landowner, revenue projections, contract delivery progress, hedge positions, crop insurance estimates, government payment projections, grain cash flow, recent loads, and bin inventory — plus long-tail questions it can look up directly in your records. It always shows units and the crop year it used, and it never makes up a number: if the data isn't there, it says so.
+
+## Who can see what
+
+- The assistant only ever sees **your account's own records** — that separation is enforced by the database itself, not by the assistant's good manners. Nothing you ask or see is visible to any other operation.
+- Each user's answers follow their own role: a viewer's assistant sees only their granted entities; an agronomist's only yield data.
+
+## Common questions
+
+- **Is this the same as the help chat?** The Ask Turnrow tab answers questions about *your data*; the How-to chat answers questions about *using the software*. Ask Turnrow can handle both, and labels which is which.
+- **Why does it say a year I didn't ask about?** If you don't name a crop year it uses your most recent one with data — and tells you which.
+- **It says it hit a lookup limit.** One question gets a handful of data checks; ask a follow-up and it keeps digging.
+- **How many questions can I ask?** There's an hourly cap to keep things snappy — if you hit it, give it a little while.
+
+## If something looks wrong
+
+- If a number surprises you, open the linked report — that page is the source of truth, and the footer on each answer links straight to it.
+- Numbers that involve live futures quotes can differ slightly from the report pages: the assistant uses your stored positions and assumptions, and the reports layer live quotes on top.
+- Anything else, contact support.
 
 # Bin Inventory  (page: /inventory)
 
@@ -812,6 +847,37 @@ Cotton sections work in pounds and cents per pound, with a position bar covering
 
 Check the assumptions panel first — a "needs yield" badge means a crop has no yield entered, and profit shows "Set costs" until cost per acre exists. If a contract seems missing under an entity filter, remember agent-held contracts are shared by acres. Otherwise, contact support.
 
+# Rent Settlement  (page: /reports/rent-settlement)
+
+## What this page is for
+
+Settling up with a landowner at the end of the year. Put the lease on file once, and Turnrow builds the settlement statement from your records — the landowner's share of bushels (the same splits-aware production math as the Share Rent Report), actual sale prices where you marketed their share, and shared expenses — itemized line by line. The finished statement carries **your farm's name and logo** (set under Settings → Organization), not Turnrow's — it's your document to mail.
+
+## How to use it
+
+1. **Put the lease on file.** Tap **Upload lease (AI)** — a PDF or photos — and Turnrow reads the terms: who the landowner is, which farms, crop-share percentages (by crop if they differ), which expenses are split, how the landowner's grain is priced, payment timing, and any flex clauses. You review and correct every field before saving, and the lease document stays attached. Handshake lease with nothing written down? **Enter a lease by hand** — same form, no upload.
+2. **Generate a settlement.** Pick the lease and the crop year. Turnrow shows what your records supply — bushels by crop and the average settled price where you sold their share — then asks for **exactly what the lease needs that the records don't have**: a drying bill to split, a reference price to confirm, a flex bonus amount. Every one is a labeled blank; the statement won't generate until they're answered.
+3. **Check, save, and send.** The preview shows every line with where its number came from — *From farm records*, *Entered at settlement*, or *Reference price (confirmed)*. Save it (it's kept on this page and can be regenerated), and download the PDF to print or email.
+
+## Where the numbers come from
+
+- **Bushels** — your loads and combine entries for the lease's farms, split-aware, times the lease's share percentage.
+- **Prices** — settled sales of grain hauled off those farms when you market the landowner's share; a price you confirm when the lease names a reference (the **Look it up (AI)** button suggests a figure with its source — nothing is used until you accept it); no price at all when the landowner markets their own grain (the statement shows bushels).
+- **Expenses and flex adjustments** — always entered by you at settlement time, split per the lease.
+
+## Common questions
+
+- **The lease covers only some of a landowner's farms.** Check just those farms on the lease form; leaving all unchecked means every farm linked to that landowner.
+- **Different share on corn than beans?** Add per-crop percentages on the lease — they override the overall share.
+- **Can the landowner owe me?** Yes — when they market their own grain but owe their half of drying, the balance shows negative.
+- **How is this different from the Share Rent Report?** That report is bushels only, using the share percentage on each farm. This one applies the *lease's* terms and produces a dollars statement.
+
+## If something looks wrong
+
+- Bushels look low: check the crop year, and that the right farms are checked on the lease — and that the fields' loads are entered.
+- No settled price found: the sales may not be matched to settlements yet (check the ticket numbers), or the grain moved through a bin first — enter the price by hand.
+- Anything else, contact support.
+
 # Revenue Projections  (page: /reports/revenue-projections)
 
 ## What this page is for
@@ -1148,6 +1214,7 @@ In every spreadsheet import here, **a blank cell in an optional column never fai
 - **Trucks** — the truck list the load form offers. You can also add a truck without leaving the load form (**+ Add truck…** in its Truck dropdown). Below your own trucks sits the separate **Hauler Trucks** list — buyers' and hired haulers' trucks saved from pickup-contract loads. The two lists never mix; renaming or deleting a hauler truck doesn't change loads already entered.
 - **Buyers** — buyers and their delivery locations, used by contracts and settlements. The spreadsheet import takes one row per buyer with all their delivery locations in one cell, separated by semicolons, each with an optional address after an @ sign — re-importing adds new locations to a buyer without touching the rest.
 - **Landowners** — names and contact details, linked to farms for the landowner reports. Spreadsheet import with a downloadable template — bring landowners in before farms so the farms import can match their names.
+- **Organization** — how your operation appears on documents you send out: display name, logo, address, and contact line. The Rent Settlement statement renders under exactly this identity (your farm's branding, no Turnrow marks).
 
 ## Common questions
 

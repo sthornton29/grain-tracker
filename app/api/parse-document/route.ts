@@ -459,7 +459,48 @@ Respond ONLY in JSON with no other text, no markdown backticks:
   ]
 }`
 
-type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document'
+type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement'
+
+// Full lease-terms extraction for the Rent Settlement report — deeper than
+// the settings-document lease read (which only lifts share % / cash rent
+// onto the farm): this one captures the terms the settlement math composes
+// from (lib/rent-settlement.ts LeaseTermsShape).
+const LEASE_AGREEMENT_PROMPT = `This document is a FARM LEASE agreement (written lease, lease summary, or rental contract) between a landowner (landlord/lessor) and a farm operator (tenant/lessee). Extract its economic terms for generating landowner rent settlements. Use null for anything not stated — NEVER guess a number. Include a "source" snippet (few verbatim words, with page number when multi-page) for each major section.
+
+Extract:
+- landowner_name (the landlord/lessor — a person or an entity)
+- landowner_address (when shown)
+- farm_names: array of farm/tract/property names or FSA farm numbers the lease covers (as written)
+- lease_type: "crop_share" (landlord gets a % of the crop), "cash" (fixed $), or "flex" (cash base plus a bonus/adjustment tied to yield or price)
+- share_terms: { "default_pct": the landlord's share % of production (e.g. 33.33 for a 1/3 share) or null, "by_crop": { "<crop name>": pct } when different crops carry different shares, else {} }
+- expense_terms: array of shared input/expense clauses — [{ "category": "drying"|"hauling"|"inputs"|"storage"|"other", "landowner_pct": the % of that cost the LANDOWNER pays (e.g. 50 for "split 50/50"), "note": short quote }]. Only include expenses the lease actually shares.
+- pricing_method: how the landowner's grain gets priced —
+  { "method": "landowner_sells_own" } when the landlord's share is delivered to their own account and they market it themselves;
+  { "method": "operator_actual" } when the operator sells the landlord's share along with their own at actual sale prices;
+  { "method": "reference", "reference": { "description": "the stated reference, verbatim-ish, e.g. 'average October cash price posted at Farmers Elevator, Decatur'" } } when the lease names a posted/average/reference price.
+- cash_terms: { "per_acre": $ per acre or null, "total_annual": total $ per year or null } for cash or flex leases (null for pure crop-share)
+- flex_terms: array of flex/bonus clauses — [{ "description": "one sentence stating the trigger and amount, close to the lease wording" }]
+- payment_timing: when payment/settlement is due, as stated (e.g. "half March 1, half December 1", "within 30 days of harvest")
+- crop_year: the crop year or lease start year if stated, else null
+- notes: anything else economically relevant (bin use, government payment split, insurance obligations) — brief
+- source: overall provenance snippet
+
+Respond ONLY in JSON with no other text and no markdown backticks:
+{
+  "landowner_name": "string or null",
+  "landowner_address": "string or null",
+  "farm_names": ["string", ...],
+  "lease_type": "crop_share or cash or flex or null",
+  "share_terms": { "default_pct": number or null, "by_crop": { } },
+  "expense_terms": [ { "category": "string", "landowner_pct": number, "note": "string" } ],
+  "pricing_method": { "method": "landowner_sells_own or operator_actual or reference", "reference": { "description": "string" } or null } or null,
+  "cash_terms": { "per_acre": number or null, "total_annual": number or null } or null,
+  "flex_terms": [ { "description": "string" } ],
+  "payment_timing": "string or null",
+  "crop_year": number or null,
+  "notes": "string or null",
+  "source": "string or null"
+}`
 
 
 const COTTON_TICKET_PROMPT = `This document contains cotton MODULE/LOAD weight tickets (a gin's "Module List" or seed cotton weight tickets). Multi-page PDFs contain ONE LOAD PER PAGE - extract every load from every page.
@@ -584,6 +625,7 @@ const PROMPTS: Record<DocumentType, string> = {
   cotton_weight_ticket: COTTON_TICKET_PROMPT,
   gin_receipt: GIN_RECEIPT_PROMPT,
   cotton_marketing_document: COTTON_MARKETING_PROMPT,
+  lease_agreement: LEASE_AGREEMENT_PROMPT,
 }
 
 type ParseBody = {

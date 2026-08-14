@@ -84,7 +84,7 @@ describe('roleAllowsPath', () => {
 describe('help access', () => {
   it('help, the assistant, and contact support are open to EVERY role', () => {
     for (const role of ['owner', 'gin', 'viewer', 'agronomist'] as const) {
-      for (const p of ['/help', '/api/support-chat', '/api/support-request']) {
+      for (const p of ['/help', '/api/support-chat', '/api/support-request', '/assistant', '/api/data-assistant']) {
         expect(roleAllowsPath(role, p)).toBe(true)
       }
     }
