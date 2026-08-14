@@ -11,6 +11,11 @@ import { coerceAppRole } from '@/lib/app-role'
 // A NEW org's owner sees the first-run checklist above the tiles until the
 // basics exist — the existing settings pages and CSV/AI importers ARE the
 // onboarding; this just points at them in order.
+//
+// The Ask Turnrow strip below the tiles is deliberately LANDING-ONLY (not in
+// lib/nav-links.ts): /assistant never gets a top-nav tab — the nav row is
+// already tight on a phone, and the help drawer's "?" remains the everywhere
+// entry point.
 
 type ChecklistItem = { label: string; href: string; done: boolean; hint: string }
 
@@ -97,6 +102,25 @@ export default async function Home() {
           </Link>
         ))}
       </div>
+
+      <Link
+        href="/assistant"
+        className="group flex items-center gap-4 rounded-2xl bg-white p-5 shadow-md ring-1 ring-black/5 transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+      >
+        <span aria-hidden className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-brand text-white font-display text-sm font-bold">
+          AI
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="font-display text-lg font-bold tracking-tight text-slate-900">Ask Turnrow</span>
+          <span className="block text-sm text-slate-500">
+            Ask anything about your own numbers — &ldquo;What&rsquo;s my average corn price?&rdquo;, &ldquo;Which field yielded best?&rdquo;, &ldquo;What&rsquo;s in the bins?&rdquo;
+          </span>
+        </span>
+        <span className="flex items-center text-slate-400 transition-all duration-200 group-hover:translate-x-1 group-hover:text-brand-deep">
+          <span className="mr-1.5 text-[11px] font-semibold uppercase tracking-widest">Ask</span>
+          <span aria-hidden>→</span>
+        </span>
+      </Link>
     </div>
   )
 }
