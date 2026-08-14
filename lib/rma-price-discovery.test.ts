@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest'
 import {
   parseRmaRevenuePrices, pickPrimaryRow, rmaCommodityCode, stateFips,
   windowState, rmaSourceLabel, resolveTieredPrice, rmaCacheIsStale, rmaServiceUrl,
+  offerIdentityLabel,
 } from '@/lib/rma-price-discovery'
-import { resolveHarvestPriceByCrop } from '@/lib/crop-insurance'
+import { resolveHarvestPriceByCrop, resolveProjectedPrice, rmaToAppInsurancePrice } from '@/lib/crop-insurance'
 import type { CropInsurancePolicy, HarvestPriceEstimate } from '@/lib/types'
 
 // RMA Price Discovery: Atom parsing, state-keyed window facts, and the tier
@@ -35,6 +36,10 @@ const entry = (over: Partial<Record<string, string>>) => `
       <d:HarvestPriceBeginDate m:type="Edm.DateTime">${over.harvBegin ?? '2026-08-01T00:00:00'}</d:HarvestPriceBeginDate>
       <d:HarvestPriceEndDate m:type="Edm.DateTime">${over.harvEnd ?? '2026-08-31T00:00:00'}</d:HarvestPriceEndDate>
       <d:ApprovedPriceVolatilityPercent m:type="Edm.Decimal">0.1400</d:ApprovedPriceVolatilityPercent>
+      <d:ProjectedPriceExchangeCode>${over.exchange ?? 'CBOT'}</d:ProjectedPriceExchangeCode>
+      <d:ProjectedPriceMarketSymbolCode>${over.symbol ?? 'ZCU26'}</d:ProjectedPriceMarketSymbolCode>
+      <d:HarvestPriceExchangeCode>${over.exchange ?? 'CBOT'}</d:HarvestPriceExchangeCode>
+      <d:HarvestPriceMarketSymbolCode>${over.symbol ?? 'ZCU26'}</d:HarvestPriceMarketSymbolCode>
     </m:properties></content>
   </entry>`
 
@@ -81,6 +86,74 @@ describe('pickPrimaryRow', () => {
       entry({ projected: '4.4200' }),
     ))
     expect(pickPrimaryRow(rows)?.projectedPrice).toBe(4.42)
+  })
+
+  it('no rows → null (the route renders "no RMA offer", never a blank)', () => {
+    expect(pickPrimaryRow([])).toBeNull()
+  })
+})
+
+// The portal ground truth for AL · Conventional · SCD 2/28/2026 · Corn 2026
+// (verified live 2026-08-14): projected $4.42 Released (1/15–2/14), harvest In
+// Discovery 8/1–8/31, volatility 0.14, base contract ZCU26 (September — NOT
+// the Midwest DEC assumption). The app showed the $4.62 seed instead.
+describe('the Alabama corn case, end-to-end', () => {
+  const AL_ROWS = parseRmaRevenuePrices(feed(entry({}), entry({ practice: 'Organic', projected: '4.6800' })))
+  const chosen = pickPrimaryRow(AL_ROWS)!
+
+  it('the offer carries its own base contract: ZCU26 / CBOT, both windows', () => {
+    expect(chosen.projectedMarketSymbol).toBe('ZCU26')
+    expect(chosen.harvestMarketSymbol).toBe('ZCU26')
+    expect(chosen.harvestExchangeCode).toBe('CBOT')
+    expect(offerIdentityLabel({ ...chosen, stateAbbr: 'AL' })).toBe('AL · All (Non-High Amylose) · Conventional · SCD 2/28/2026')
+  })
+
+  it('harvest is in discovery in August (8/1–8/31), day-of-window correct', () => {
+    const ws = windowState({ status: chosen.harvestStatus, beginDate: chosen.harvestBeginDate, endDate: chosen.harvestEndDate, today: '2026-08-14' })!
+    expect(ws.status).toBe('in_discovery')
+    expect(ws.dayOfWindow).toBe(14)
+    expect(ws.windowDays).toBe(31)
+  })
+
+  it('the RMA $4.42 supersedes the seeded $4.62 with a notice — never masked, never silent', () => {
+    const estimates: HarvestPriceEstimate[] = [
+      // The 024 seed: dated 02-28, LATER than AL's window end — under the old
+      // latest-date rule it always won. Relabeled source='seed' by 065.
+      { id: 's', crop_id: 'corn', crop_year: 2026, price_type: 'projected', price: 4.62, source: 'seed', price_date: '2026-02-28', created_at: '' } as HarvestPriceEstimate,
+      { id: 'r', crop_id: 'corn', crop_year: 2026, price_type: 'projected', price: 4.42, source: 'RMA final', price_date: '2026-02-14', created_at: '' } as HarvestPriceEstimate,
+    ]
+    const res = resolveProjectedPrice(estimates, 'corn', 2026)!
+    expect(res).toMatchObject({ price: 4.42, source: 'rma', superseded: 4.62, supersededSource: 'seed' })
+  })
+
+  it('a user-typed manual value: superseded with notice by default, kept via keepManual', () => {
+    const estimates: HarvestPriceEstimate[] = [
+      { id: 'm', crop_id: 'corn', crop_year: 2026, price_type: 'projected', price: 4.55, source: 'manual', price_date: '2026-03-01', created_at: '' } as HarvestPriceEstimate,
+      { id: 'r', crop_id: 'corn', crop_year: 2026, price_type: 'projected', price: 4.42, source: 'RMA final', price_date: '2026-02-14', created_at: '' } as HarvestPriceEstimate,
+    ]
+    expect(resolveProjectedPrice(estimates, 'corn', 2026)!).toMatchObject({ price: 4.42, source: 'rma', superseded: 4.55, supersededSource: 'manual' })
+    expect(resolveProjectedPrice(estimates, 'corn', 2026, { keepManual: true })!).toMatchObject({ price: 4.55, source: 'manual' })
+  })
+
+  it('seed alone (no RMA yet) still resolves — labeled as the seed it is', () => {
+    const estimates: HarvestPriceEstimate[] = [
+      { id: 's', crop_id: 'corn', crop_year: 2026, price_type: 'projected', price: 4.62, source: 'seed', price_date: '2026-02-28', created_at: '' } as HarvestPriceEstimate,
+    ]
+    expect(resolveProjectedPrice(estimates, 'corn', 2026)!).toMatchObject({ price: 4.62, source: 'seed', superseded: null })
+  })
+})
+
+describe('unit boundary (the cotton-unit-bug lesson)', () => {
+  it('canola: RMA $/lb × 50 = the app’s $/bu — hand-verified 0.226 → 11.30', () => {
+    expect(rmaToAppInsurancePrice('Canola', 0.226)).toBeCloseTo(11.3, 10)
+  })
+  it('cotton and grains pass through ($/lb and $/bu native both sides)', () => {
+    expect(rmaToAppInsurancePrice('Cotton', 0.69)).toBe(0.69)
+    expect(rmaToAppInsurancePrice('Corn', 4.42)).toBe(4.42)
+  })
+  it('cotton (0021) and canola (0015) are in the commodity map — codes confirmed from the service’s own AL feed', () => {
+    expect(rmaCommodityCode('Cotton')).toBe('0021')
+    expect(rmaCommodityCode('Canola')).toBe('0015')
   })
 })
 

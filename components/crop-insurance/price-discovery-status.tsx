@@ -116,11 +116,32 @@ export default function PriceDiscoveryStatus({
             </thead>
             <tbody>
               {results.map((r) => {
+                if (r.no_offer) {
+                  return (
+                    <tr key={`${r.crop_id}|${r.state_code}`} className="border-t border-slate-100">
+                      <td className="px-2 py-1.5 font-medium whitespace-nowrap">{cropName(r.crop_id)}</td>
+                      <td className="px-2 py-1.5">{r.state_code}</td>
+                      <td colSpan={5} className="px-2 py-1.5 text-slate-500">
+                        No RMA revenue-price offer for {r.state_code} — prices stay on the estimate tier.
+                      </td>
+                    </tr>
+                  )
+                }
                 const pc = statusChip(r.projected_status)
                 const hc = statusChip(r.harvest_status)
                 return (
                   <tr key={`${r.crop_id}|${r.state_code}`} className="border-t border-slate-100">
-                    <td className="px-2 py-1.5 font-medium whitespace-nowrap">{cropName(r.crop_id)}</td>
+                    <td className="px-2 py-1.5 font-medium whitespace-nowrap">
+                      {cropName(r.crop_id)}
+                      {r.offer_identity && (
+                        <span className="block text-[10px] text-slate-400 font-normal">{r.offer_identity}</span>
+                      )}
+                      {r.harvest_market_symbol && (
+                        <span className="block text-[10px] text-slate-400 font-normal">
+                          Base contract {r.harvest_market_symbol}{r.harvest_exchange_code ? ` · ${r.harvest_exchange_code}` : ''}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-2 py-1.5">{r.state_code}</td>
                     <td className="px-2 py-1.5 whitespace-nowrap tabular-nums">
                       {r.projected_price != null ? fmtPrice(r.projected_price) : '—'}{' '}

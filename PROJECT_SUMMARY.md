@@ -7,7 +7,7 @@
 > programs. **Not a SaaS product** — single-tenant, used on iPads in trucks by a
 > small team, so the UX favors fast capture and forgiving data entry.
 >
-> _Snapshot date: 2026-08-14. Schema at migration `064` (051–061 applied in production; **pending manual apply: 062** — combine-monitor harvest entry: `combine_yield_entries` + `crops.combine_adjustment_bu_per_acre`, **063** — `farms.cash_rent_per_acre` (unified settings upload lease terms), **and 064** — `rma_price_cache`, the RMA Price Discovery cache (global reference table). The app tolerates all three being missing: combine features stay empty, cash rent only writes when a document states one, and RMA lookups degrade to the Barchart estimate tier). `supabase/verify_052/053/054.sql` are read-only diagnostics; `docs/BETA_ACCEPTANCE.md` is the pre-invite isolation checklist._
+> _Snapshot date: 2026-08-14. Schema at migration `065` (051–064 applied in production; **pending manual apply: 065** — RMA offer base-contract columns on `rma_price_cache` + the legacy projected-price seed relabel to `source='seed'`. Until 065 lands: RMA cache writes fail harmlessly (fresh data still serves uncached), and the 024 seeds still resolve as 'manual' — apply promptly so the source-aware precedence can demote them). `supabase/verify_052/053/054.sql` are read-only diagnostics; `docs/BETA_ACCEPTANCE.md` is the pre-invite isolation checklist._
 
 ---
 

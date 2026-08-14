@@ -49,21 +49,30 @@ export async function POST(req: NextRequest) {
   if (!Number.isFinite(cropYear)) {
     return NextResponse.json({ error: 'crop_year is required.' }, { status: 400 })
   }
-  const crops: CropInput[] = Array.isArray(body.crops)
+  const crops: Array<CropInput & { symbol_override?: string | null }> = Array.isArray(body.crops)
     ? (body.crops as unknown[])
         .map((c) => {
-          const o = c as { crop_id?: unknown; crop_name?: unknown }
-          return { crop_id: String(o.crop_id ?? ''), crop_name: String(o.crop_name ?? '') }
+          const o = c as { crop_id?: unknown; crop_name?: unknown; symbol_override?: unknown }
+          return {
+            crop_id: String(o.crop_id ?? ''), crop_name: String(o.crop_name ?? ''),
+            symbol_override: typeof o.symbol_override === 'string' && /^[A-Z]{1,3}[FGHJKMNQUVXZ]\d{2}$/.test(o.symbol_override) ? o.symbol_override : null,
+          }
         })
         .filter((c) => c.crop_id && c.crop_name)
     : []
   const force = body.force === true
 
-  // Map each crop to its harvest futures symbol; drop crops with no traded
-  // contract (e.g. Canola). Several crops can share a symbol only if they map
-  // to the same commodity, which they don't here, so symbol -> crop is 1:1.
+  // Map each crop to its harvest futures symbol. A caller-supplied
+  // symbol_override — the RMA offer's BASE CONTRACT (e.g. Alabama corn
+  // ZCU26) — beats the hard-coded new-crop month, which is the Midwest CEPP
+  // assumption and wrong for Southern offers. Crops with neither (e.g.
+  // Canola without an override) drop out.
   const withSymbol = crops
-    .map((c) => ({ ...c, symbol: harvestContractSymbol(c.crop_name, cropYear), label: harvestContractLabel(c.crop_name, cropYear) }))
+    .map((c) => ({
+      ...c,
+      symbol: c.symbol_override ?? harvestContractSymbol(c.crop_name, cropYear),
+      label: c.symbol_override ?? harvestContractLabel(c.crop_name, cropYear),
+    }))
     .filter((c): c is CropInput & { symbol: string; label: string } => !!c.symbol)
 
   if (withSymbol.length === 0) {
