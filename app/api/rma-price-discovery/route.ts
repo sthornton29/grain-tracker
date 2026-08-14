@@ -24,8 +24,10 @@ import { createClient } from '@/lib/supabase/server'
 import {
   parseRmaRevenuePrices, pickPrimaryRow, rmaCommodityCode, stateFips,
   rmaServiceUrl, rmaCacheIsStale, windowState, rmaSourceLabel, offerIdentityLabel,
-  type RmaPriceRow, type RmaWindowStatus,
+  type RmaPriceRow, type RmaWindowStatus, type RmaLookupResult,
 } from '@/lib/rma-price-discovery'
+
+export type { RmaLookupResult } from '@/lib/rma-price-discovery'
 import { rmaToAppInsurancePrice } from '@/lib/crop-insurance'
 
 export const runtime = 'nodejs'
@@ -33,33 +35,6 @@ export const maxDuration = 30
 
 type ReqCrop = { crop_id: string; crop_name: string }
 
-export type RmaLookupResult = {
-  crop_id: string
-  state_code: string // 2-letter
-  commodity_code: string
-  projected_price: number | null
-  projected_status: RmaWindowStatus | null
-  projected_begin_date: string | null
-  projected_end_date: string | null
-  projected_label: string | null
-  harvest_price: number | null
-  harvest_status: RmaWindowStatus | null
-  harvest_begin_date: string | null
-  harvest_end_date: string | null
-  harvest_label: string | null
-  volatility: number | null
-  fetched_at: string
-  /** The offer's base contracts (CEPP-keyed, e.g. AL corn ZCU26) — the
-   *  Barchart-estimate tier must quote THESE, never a hard-coded month. */
-  projected_market_symbol: string | null
-  harvest_market_symbol: string | null
-  harvest_exchange_code: string | null
-  /** Which offer was chosen (provenance): type · practice · SCD. */
-  offer_identity: string | null
-  /** True when RMA lists no offer for this crop × state — render "no RMA
-   *  offer for <state>", never a blank row. */
-  no_offer?: boolean
-}
 
 type CacheRow = {
   commodity_year: number; commodity_code: string; commodity_name: string
@@ -127,12 +102,23 @@ export async function POST(req: NextRequest) {
   const results: RmaLookupResult[] = []
   let note: string | undefined
 
+  // All crop x state combos run CONCURRENTLY, each RMA fetch under its own
+  // timeout — a force refresh across several commodities must never crawl
+  // serially into the function's 30s ceiling (a 504 here used to blank the
+  // client until the write-then-swap fix; now neither side can).
+  const combos: Array<{ crop: ReqCrop; code: string; st: string; fips: string }> = []
   for (const crop of crops) {
     const code = rmaCommodityCode(crop.crop_name)
     if (!code) continue
     for (const st of states) {
       const fips = stateFips(st)
       if (!fips) continue
+      combos.push({ crop, code, st, fips })
+    }
+  }
+
+  await Promise.all(combos.map(async ({ crop, code, st, fips }) => {
+    {
 
       // 1. Cache (the fsa_benchmark_cache lookup-miss pattern).
       const { data: cached } = await supabase
@@ -157,6 +143,7 @@ export async function POST(req: NextRequest) {
         try {
           const resp = await fetch(rmaServiceUrl({ commodityYear: cropYear, commodityCode: code, stateFips: fips }), {
             headers: { accept: 'application/atom+xml' },
+            signal: AbortSignal.timeout(10_000),
           })
           if (!resp.ok) throw new Error(`RMA returned ${resp.status}.`)
           const fresh = parseRmaRevenuePrices(await resp.text())
@@ -175,7 +162,7 @@ export async function POST(req: NextRequest) {
           console.error(`[rma-price-discovery] ${crop.crop_name}/${st}: ${e instanceof Error ? e.message : e}`)
           if (rows.length === 0) {
             note = 'Could not reach RMA Price Discovery — showing estimates instead.'
-            continue
+            return
           }
         }
       }
@@ -191,7 +178,7 @@ export async function POST(req: NextRequest) {
           projected_market_symbol: null, harvest_market_symbol: null, harvest_exchange_code: null,
           offer_identity: null, no_offer: true,
         })
-        continue
+        return
       }
       // Offer-selection diagnostics: which candidates existed, which won.
       console.log(`[rma-price-discovery] ${crop.crop_name}/${st}: ${rows.length} offer(s); chose ${primary.typeName} / ${primary.practiceName} / SCD ${primary.salesClosingDate ?? '-'}`)
@@ -251,7 +238,7 @@ export async function POST(req: NextRequest) {
         }, { onConflict: 'crop_id,crop_year,price_type,price_date' })
       }
     }
-  }
+  }))
 
   return NextResponse.json({ data: { results, note } })
 }

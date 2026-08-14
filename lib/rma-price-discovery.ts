@@ -334,6 +334,70 @@ export function rmaCacheIsStale(args: {
   return age > (anyOpen || anyPending ? RMA_REFRESH_IN_DISCOVERY_MS : RMA_REFRESH_IDLE_MS)
 }
 
+/** One crop × state lookup result as the API route returns it (the type lives
+ *  here so pure row-model code never imports from a route file). */
+export type RmaLookupResult = {
+  crop_id: string
+  state_code: string // 2-letter
+  commodity_code: string
+  projected_price: number | null
+  projected_status: RmaWindowStatus | null
+  projected_begin_date: string | null
+  projected_end_date: string | null
+  projected_label: string | null
+  harvest_price: number | null
+  harvest_status: RmaWindowStatus | null
+  harvest_begin_date: string | null
+  harvest_end_date: string | null
+  harvest_label: string | null
+  volatility: number | null
+  fetched_at: string
+  projected_market_symbol: string | null
+  harvest_market_symbol: string | null
+  harvest_exchange_code: string | null
+  offer_identity: string | null
+  no_offer?: boolean
+}
+
+/** The harvest price's phase, from the RMA window status. No status (no offer
+ *  / RMA unreachable) reads as pre-window: the estimate tier applies. */
+export type HarvestPhase = 'pre' | 'in' | 'post'
+export function harvestPhase(status: RmaWindowStatus | null | undefined): HarvestPhase {
+  if (status === 'in_discovery') return 'in'
+  if (status === 'released') return 'post'
+  return 'pre'
+}
+
+/** Non-destructive refresh: fetch-validate-THEN-swap. A failed, malformed, or
+ *  suspiciously-empty response keeps the previous results and reports why —
+ *  a refresh must never blank the window. `partial` merges by crop × state
+ *  (per-row refresh) instead of swapping the whole set. */
+export function mergeRmaResults(
+  prev: readonly RmaLookupResult[],
+  incoming: unknown,
+  opts?: { partial?: boolean },
+): { results: RmaLookupResult[]; error: string | null; note: string | null } {
+  const data = (incoming as { data?: { results?: unknown; note?: unknown } } | null)?.data
+  const note = typeof data?.note === 'string' ? data.note : null
+  const raw = data?.results
+  if (!Array.isArray(raw)) {
+    return { results: [...prev], error: 'Refresh failed — the RMA lookup returned no usable data.', note }
+  }
+  const valid = raw.filter((r): r is RmaLookupResult => {
+    const x = r as RmaLookupResult
+    return typeof x?.crop_id === 'string' && x.crop_id.length > 0 && typeof x?.state_code === 'string'
+  })
+  if (opts?.partial) {
+    const incomingKeys = new Set(valid.map((r) => `${r.crop_id}|${r.state_code}`))
+    if (valid.length === 0) return { results: [...prev], error: 'Refresh failed — no rows came back for this crop.', note }
+    return { results: [...prev.filter((r) => !incomingKeys.has(`${r.crop_id}|${r.state_code}`)), ...valid], error: null, note }
+  }
+  if (valid.length === 0 && prev.length > 0) {
+    return { results: [...prev], error: 'Refresh returned no rows — keeping the previous values.', note }
+  }
+  return { results: valid, error: null, note }
+}
+
 /** The offer's identity line for provenance chips:
  *  "AL · All (Non-High Amylose) · Conventional · SCD 2/28/2026". */
 export function offerIdentityLabel(r: Pick<RmaPriceRow, 'stateCode' | 'typeName' | 'practiceName' | 'salesClosingDate'> & { stateAbbr?: string }): string {

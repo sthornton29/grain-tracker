@@ -14,8 +14,7 @@ import PolicyAiImport from '@/components/crop-insurance/policy-ai-import'
 import CoverageCheck from '@/components/crop-insurance/coverage-check'
 import { PLAN_TYPE_SHORT, PRACTICE_LABEL, isAreaPlan, stackingWarnings } from '@/lib/crop-insurance'
 import { fmtPrice } from '@/lib/hedging'
-import ProjectedPricesEditor from '@/components/crop-insurance/projected-prices-editor'
-import PriceDiscoveryStatus from '@/components/crop-insurance/price-discovery-status'
+import PriceDiscovery from '@/components/crop-insurance/price-discovery'
 import { CountyAssumptionControl } from '@/components/crop-insurance/county-assumption-editor'
 import type {
   Crop, County, Entity, FieldPlanting, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco,
@@ -212,66 +211,6 @@ export default function CropInsuranceSettingsPage() {
         Coverage Check and per-practice indemnity line up.
       </p>
 
-      {conflicts.length > 0 && (
-        <div className="rounded-lg bg-amber-50 border border-amber-300 px-3 py-2 text-sm text-amber-900 space-y-0.5 max-w-3xl">
-          <div className="font-semibold">Stacking review (warnings only — your agent is the authority):</div>
-          {conflicts.map((w) => <div key={w.key}>· {w.message}</div>)}
-        </div>
-      )}
-
-      {/* Unified county-yield assumption (045): ONE source for every county-
-          triggered plan (SCO/ECO/STAX/ARP/AYP/MCO). Separate from ARC-CO. */}
-      <div className="bg-white rounded-xl shadow p-4 space-y-2">
-        <h2 className="font-semibold">My yield vs county (insurance)</h2>
-        <p className="text-xs text-slate-500 max-w-3xl">
-          The stable relationship between your yields and the county average — &ldquo;I typically run 15 bu/ac better
-          than the county&rdquo;. Estimated county yield = your expected/actual yield minus this differential; it drives
-          every county-triggered calculation (SCO/ECO/STAX/ARP/AYP/MCO). This is a
-          <strong> separate assumption from the ARC-CO expectation</strong>: ARC uses FSA benchmarks.
-        </p>
-        <div className="space-y-1">
-          {Array.from(new Map(policies.map((p) => [`${p.crop_id}|${p.county_id ?? ''}|${p.crop_year}`, p])).values()).map((p) => (
-            <div key={`${p.crop_id}|${p.county_id ?? ''}|${p.crop_year}`} className="flex items-center gap-2 flex-wrap text-sm">
-              <span className="font-medium w-56 truncate">{cropName(p.crop_id)} · {countyName(p.county_id)} · {p.crop_year}</span>
-              <CountyAssumptionControl
-                cropId={p.crop_id}
-                countyId={p.county_id}
-                cropYear={p.crop_year}
-                assumption={countyAssumptions.find((a) => a.crop_id === p.crop_id && a.crop_year === p.crop_year && (a.county_id ?? '') === (p.county_id ?? '')) ?? null}
-                yieldUnit={/cotton/i.test(cropName(p.crop_id)) ? 'lbs/ac' : 'bu/ac'}
-                onChanged={refresh}
-              />
-            </div>
-          ))}
-          {policies.length === 0 && <p className="text-sm text-slate-400">Assumptions appear here once policies exist.</p>}
-        </div>
-      </div>
-
-      <EntityFilter entities={entities} value={entityFilter} onChange={setEntityFilter} />
-
-      <div id="coverage-check" className="scroll-mt-4">
-        <CoverageCheck
-          crops={crops}
-          counties={counties}
-          entities={entities}
-          plantings={plantings}
-          policies={policies}
-          cropYearOptions={cropYearOptions}
-          defaultYear={cropYearOptions[0] ?? new Date().getFullYear()}
-          onChanged={refresh}
-        />
-      </div>
-
-      <PriceDiscoveryStatus
-        cropYear={cropYearOptions[0] ?? new Date().getFullYear()}
-        crops={crops}
-        policies={policies}
-        counties={counties}
-        onRefreshed={refresh}
-      />
-
-      <ProjectedPricesEditor crops={crops} estimates={estimates} onChange={refresh} />
-
       <PolicyAiImport
         crops={crops}
         counties={counties}
@@ -302,6 +241,18 @@ export default function CropInsuranceSettingsPage() {
           </form>
         )}
       </div>
+
+      {conflicts.length > 0 && (
+        <div className="rounded-lg bg-amber-50 border border-amber-300 px-3 py-2 text-sm text-amber-900 space-y-0.5 max-w-3xl">
+          <div className="font-semibold">Stacking review (warnings only — your agent is the authority):</div>
+          {conflicts.map((w) => <div key={w.key}>· {w.message}</div>)}
+        </div>
+      )}
+
+      <EntityFilter entities={entities} value={entityFilter} onChange={setEntityFilter} />
+
+
+
 
       {err && <p className="text-sm text-red-600">{err}</p>}
 
@@ -353,6 +304,59 @@ export default function CropInsuranceSettingsPage() {
           )
         })}
       </ul>
+
+      <PriceDiscovery
+        cropYear={cropYearOptions[0] ?? new Date().getFullYear()}
+        crops={crops}
+        plantings={plantings}
+        policies={policies}
+        counties={counties}
+        estimates={estimates}
+        onChanged={refresh}
+      />
+
+      <div id="coverage-check" className="scroll-mt-4">
+        <CoverageCheck
+          crops={crops}
+          counties={counties}
+          entities={entities}
+          plantings={plantings}
+          policies={policies}
+          cropYearOptions={cropYearOptions}
+          defaultYear={cropYearOptions[0] ?? new Date().getFullYear()}
+          onChanged={refresh}
+        />
+      </div>
+
+      {/* Unified county-yield assumption (045): ONE source for every county-
+          triggered plan (SCO/ECO/STAX/ARP/AYP/MCO). Separate from ARC-CO. */}
+      <div className="bg-white rounded-xl shadow p-4 space-y-2">
+        <h2 className="font-semibold">My yield vs county (insurance)</h2>
+        <p className="text-xs text-slate-500 max-w-3xl">
+          The stable relationship between your yields and the county average — &ldquo;I typically run 15 bu/ac better
+          than the county&rdquo;. Estimated county yield = your expected/actual yield minus this differential; it drives
+          every county-triggered calculation (SCO/ECO/STAX/ARP/AYP/MCO). This is a
+          <strong> separate assumption from the ARC-CO expectation</strong>: ARC uses FSA benchmarks.
+        </p>
+        <div className="space-y-1">
+          {Array.from(new Map(policies.map((p) => [`${p.crop_id}|${p.county_id ?? ''}|${p.crop_year}`, p])).values()).map((p) => (
+            <div key={`${p.crop_id}|${p.county_id ?? ''}|${p.crop_year}`} className="flex items-center gap-2 flex-wrap text-sm">
+              <span className="font-medium w-56 truncate">{cropName(p.crop_id)} · {countyName(p.county_id)} · {p.crop_year}</span>
+              <CountyAssumptionControl
+                cropId={p.crop_id}
+                countyId={p.county_id}
+                cropYear={p.crop_year}
+                assumption={countyAssumptions.find((a) => a.crop_id === p.crop_id && a.crop_year === p.crop_year && (a.county_id ?? '') === (p.county_id ?? '')) ?? null}
+                yieldUnit={/cotton/i.test(cropName(p.crop_id)) ? 'lbs/ac' : 'bu/ac'}
+                onChanged={refresh}
+              />
+            </div>
+          ))}
+          {policies.length === 0 && <p className="text-sm text-slate-400">Assumptions appear here once policies exist.</p>}
+        </div>
+      </div>
+
+
     </div>
   )
 }
