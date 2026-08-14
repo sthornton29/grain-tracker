@@ -37,6 +37,7 @@ import {
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import { fieldCropAggregates, withLoadBreakouts, type CombineEntryLike } from '@/lib/yields'
 import type { RmaLookupResult } from '@/app/api/rma-price-discovery/route'
+import { harvestTierLabel } from '@/lib/insurance-price-rows'
 import {
   SummaryCards, EmptyState, fmtUsd, signedTone, toneText,
   theadCls, grandTotalRowCls, type SummaryCardData,
@@ -249,45 +250,53 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   // calendar — Alabama's windows aren't Illinois's); the route mirrors
   // finals/running averages into harvest_price_estimates, so after it runs we
   // re-read those rows and the shared resolver picks the new tier up.
-  useEffect(() => {
-    if (cropYear === '' || reportCropIds.length === 0) { setRmaByCrop(new Map()); return }
+  async function fetchClaimsRma(force: boolean, onlyCropId: string | null) {
+    if (cropYear === '' || reportCropIds.length === 0) return
     const states = [...new Set(
       yearPolicies
         .map((p) => (p.county_id ? countyById.get(p.county_id)?.state_code : null))
         .filter((s): s is string => !!s),
     )]
     if (states.length === 0) return
-    const cropsPayload = reportCropIds
+    const cropsPayload = (onlyCropId ? [onlyCropId] : reportCropIds)
       .map((id) => ({ crop_id: id, crop_name: cropById.get(id)?.name ?? '' }))
       .filter((c) => c.crop_name)
-    let cancelled = false
-    ;(async () => {
-      setRmaBusy(true)
-      try {
-        const res = await fetch('/api/rma-price-discovery', {
-          method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ crop_year: cropYear, crops: cropsPayload, states, force: rmaRefresh > 0 }),
-        })
-        const json = await res.json().catch(() => null)
-        if (cancelled || !json?.data) return
-        const m = new Map<string, RmaLookupResult>()
-        // A crop with policies in several states keys to the state most of its
-        // policies sit in (first states entry wins ties via insertion order).
+    if (cropsPayload.length === 0) return
+    setRmaBusy(true)
+    try {
+      const res = await fetch('/api/rma-price-discovery', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ crop_year: cropYear, crops: cropsPayload, states, force }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!json?.data) return
+      // Non-destructive per-crop merge: a crop with policies in several states
+      // keys to the first states entry; a fetch_failed row never overwrites a
+      // previously-good one (write-then-swap, same rule as the settings window).
+      setRmaByCrop((prev) => {
+        const m = new Map(onlyCropId ? prev : [])
         for (const r of (json.data.results ?? []) as RmaLookupResult[]) {
-          if (!m.has(r.crop_id)) m.set(r.crop_id, r)
+          const existing = m.get(r.crop_id) ?? (onlyCropId ? null : prev.get(r.crop_id))
+          if (r.fetch_failed && existing && !existing.fetch_failed) continue
+          if (!m.has(r.crop_id) || m.get(r.crop_id)?.fetch_failed) m.set(r.crop_id, r)
         }
-        setRmaByCrop(m)
-        // Pick up the rows the route just mirrored.
-        const { data: est } = await supabase
-          .from('harvest_price_estimates').select('*').order('price_date', { ascending: false })
-        if (!cancelled && est) setPriceEstimates(est as HarvestPriceEstimate[])
-      } catch {
-        /* RMA unreachable — the tiering falls back to the estimate */
-      } finally {
-        if (!cancelled) setRmaBusy(false)
-      }
-    })()
-    return () => { cancelled = true }
+        // Full refresh that failed a crop entirely: keep its prior entry.
+        if (!onlyCropId) for (const [k, v] of prev) if (!m.has(k)) m.set(k, v)
+        return m
+      })
+      // Pick up the rows the route just mirrored.
+      const { data: est } = await supabase
+        .from('harvest_price_estimates').select('*').order('price_date', { ascending: false })
+      if (est) setPriceEstimates(est as HarvestPriceEstimate[])
+    } catch {
+      /* RMA unreachable — the tiering falls back to the estimate; prior chips stay */
+    } finally {
+      setRmaBusy(false)
+    }
+  }
+
+  useEffect(() => {
+    void fetchClaimsRma(rmaRefresh > 0, null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cropYear, reportCropIds, yearPolicies, countyById, cropById, rmaRefresh])
 
@@ -540,13 +549,11 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     )
   }
 
-  function harvestLabel(info: HarvestInfo | undefined): string {
-    if (!info) return '—'
-    if (info.isFinal) return `${fmtPrice(info.price)} ${info.rmaFinal ? '(RMA final)' : '(final)'}`
-    if (info.source === 'rma_discovery') return `${fmtPrice(info.price)} (${info.rmaLabel ?? 'RMA discovery'})`
-    if (info.source === 'projected') return `${fmtPrice(info.price)} (proj.)`
-    return `${fmtPrice(info.price)} (est.)`
-  }
+  // Shared tier vocabulary (lib/insurance-price-rows.ts) — identical chips on
+  // the settings Price Discovery window; the audit prints `text` verbatim.
+  const harvestTier = (info: HarvestInfo | undefined) =>
+    harvestTierLabel(info ? { ...info, contractLabel: info.label } : null)
+
 
   function toggle(id: string) {
     setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
@@ -616,7 +623,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
           return [
             cropName(p.crop_id), countyName(p.county_id), PLAN_TYPE_SHORT[p.plan_type], PRACTICE_LABEL[p.practice ?? 'non_irrigated'],
             Math.round(Number(p.coverage_level) * 100), isAreaPlan(p.plan_type) ? '' : Number(p.aph_yield),
-            Number(p.projected_price), Number(c.base.harvestPrice.toFixed(4)), `${c.harvest?.source ?? 'projected'}${c.harvest?.stale ? ' (not current)' : ''}`,
+            Number(p.projected_price), Number(c.base.harvestPrice.toFixed(4)), `${harvestTier(c.harvest).text}${c.harvest?.stale ? ' (not current)' : ''}`,
             Number(c.assumedYield.toFixed(1)), yieldBasis.source,
             audit.countyEstimate ? Number(audit.countyEstimate.value.toFixed(1)) : '', audit.countyEstimate?.source ?? '',
             Math.round(c.comp.base.revenueGuarantee), Math.round(c.comp.base.expectedRevenue),
@@ -714,8 +721,10 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         <>
           <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print">
             <strong>Estimated</strong> — based on current yield assumptions and futures prices. Final amounts are
-            determined by RMA after harvest.{priceNote ? ` ${priceNote}` : ''} For price and yield scenarios, use the{' '}
+            determined by RMA after harvest. Prices come from USDA RMA price discovery; estimates fill gaps before
+            windows open.{priceNote ? ` ${priceNote}` : ''} For price and yield scenarios, use the{' '}
             <Link href="/reports/income-sensitivity" className="underline font-semibold">Income Sensitivity Report</Link>.
+            {' '}<Link href="/settings/crop-insurance" className="underline font-semibold">Price details &amp; overrides →</Link>
             <button
               type="button"
               disabled={rmaBusy}
@@ -865,7 +874,29 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                       <td className="px-2 py-1 text-right">{Math.round(Number(p.coverage_level) * 100)}%</td>
                       <td className="px-2 py-1 text-right tabular-nums">{isAreaPlan(p.plan_type) ? '—' : Number(p.aph_yield).toFixed(1)}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{fmtPrice(p.projected_price)}</td>
-                      <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">{harvestLabel(c.harvest)}</td>
+                      <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">
+                        {c.harvest ? (
+                          <span
+                            title={(() => {
+                              const rma = rmaByCrop.get(c.policy.crop_id)
+                              return rma?.harvest_begin_date && rma?.harvest_end_date
+                                ? `Discovery window ${rma.harvest_begin_date} – ${rma.harvest_end_date}`
+                                : undefined
+                            })()}
+                          >
+                            {fmtPrice(c.harvest.price)}{' '}
+                            <span className={`text-xs rounded-full px-1.5 py-0.5 ${harvestTier(c.harvest).cls}`}>{harvestTier(c.harvest).text}</span>
+                            <button
+                              type="button"
+                              disabled={rmaBusy}
+                              onClick={() => void fetchClaimsRma(true, c.policy.crop_id)}
+                              title={`Refresh ${cropName(c.policy.crop_id)} from RMA now`}
+                              aria-label={`Refresh ${cropName(c.policy.crop_id)} from RMA`}
+                              className="ml-1 align-middle text-brand-deep hover:text-brand disabled:text-slate-300 no-print"
+                            >↻</button>
+                          </span>
+                        ) : '—'}
+                      </td>
                       <td className="px-2 py-1 text-right tabular-nums">{isAreaPlan(p.plan_type) ? '—' : c.assumedYield.toFixed(1)}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{bu(Number(p.insured_acres))}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{usd(c.comp.base.revenueGuarantee)}</td>
@@ -991,7 +1022,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                           <td className="px-2 py-1 text-right tabular-nums">{isAreaPlan(p.plan_type) ? '—' : Number(p.aph_yield).toFixed(1)}</td>
                           <td className="px-2 py-1 text-right tabular-nums">{fmtPrice(p.projected_price)}</td>
                           <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">
-                            {fmtPrice(c.base.harvestPrice)} <span className="text-slate-400">({c.harvest?.source ?? 'projected'}{c.harvest?.stale ? ', not current' : ''})</span>
+                            {fmtPrice(c.base.harvestPrice)} <span className={`text-xs rounded-full px-1.5 py-0.5 ${harvestTier(c.harvest).cls}`}>{harvestTier(c.harvest).text}{c.harvest?.stale ? ' · not current' : ''}</span>
                           </td>
                           <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">
                             {c.assumedYield.toFixed(1)} <span className="text-slate-400">({yieldSrcLabel[yieldBasis.source]}{Math.abs(yieldBasis.value - c.assumedYield) > 0.05 ? ` · audit ${yieldBasis.value.toFixed(1)}` : ''})</span>

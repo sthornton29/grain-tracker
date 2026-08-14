@@ -23,7 +23,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import {
   parseRmaRevenuePrices, pickPrimaryRow, rmaCommodityCode, stateFips,
-  rmaServiceUrl, rmaCacheIsStale, windowState, rmaSourceLabel, offerIdentityLabel,
+  rmaServiceUrl, rmaCacheIsStale, rmaCacheMissingContracts, windowState, rmaSourceLabel, offerIdentityLabel,
   type RmaPriceRow, type RmaWindowStatus, type RmaLookupResult,
 } from '@/lib/rma-price-discovery'
 
@@ -129,23 +129,33 @@ export async function POST(req: NextRequest) {
         .eq('state_code', fips)
       let rows = ((cached as CacheRow[] | null) ?? []).map(cacheToRow)
       const fetchedAt = ((cached as CacheRow[] | null) ?? [])[0]?.fetched_at ?? null
-      const stale = force || rows.length === 0 || fetchedAt == null || rows.some((r) =>
-        rmaCacheIsStale({
-          fetchedAt: fetchedAt!,
-          projectedStatus: r.projectedStatus,
-          harvestStatus: r.harvestStatus,
-        }),
-      )
+      const stale = force || rows.length === 0 || fetchedAt == null
+        // 064-era cache rows predate the contract columns — a null symbol on a
+        // cached row triggers a refetch so the base contract backfills (fixes
+        // the blank Base-contract cell on offers resolved from cache).
+        || rmaCacheMissingContracts(rows)
+        || rows.some((r) =>
+          rmaCacheIsStale({
+            fetchedAt: fetchedAt!,
+            projectedStatus: r.projectedStatus,
+            harvestStatus: r.harvestStatus,
+          }),
+        )
 
       // 2. Refresh from RMA when stale. Failures degrade to the cached rows
       //    (or nothing — the caller's tiering falls back to the estimate).
       if (stale) {
         try {
           const resp = await fetch(rmaServiceUrl({ commodityYear: cropYear, commodityCode: code, stateFips: fips }), {
-            headers: { accept: 'application/atom+xml' },
+            headers: {
+              accept: 'application/atom+xml, application/xml;q=0.9, */*;q=0.8',
+              // Some government hosts reject UA-less requests outright — send a
+              // plain identifying agent (same lesson as the FSA workbook fetch).
+              'user-agent': 'Mozilla/5.0 (compatible; TurnrowFarm/1.0; +https://turnrow.farm)',
+            },
             signal: AbortSignal.timeout(10_000),
           })
-          if (!resp.ok) throw new Error(`RMA returned ${resp.status}.`)
+          if (!resp.ok) throw new Error(`RMA returned ${resp.status} ${resp.statusText}.`)
           const fresh = parseRmaRevenuePrices(await resp.text())
           if (fresh.length > 0) {
             rows = fresh
@@ -161,7 +171,18 @@ export async function POST(req: NextRequest) {
         } catch (e) {
           console.error(`[rma-price-discovery] ${crop.crop_name}/${st}: ${e instanceof Error ? e.message : e}`)
           if (rows.length === 0) {
+            // Nothing cached AND the fetch failed: an EXPLICIT failure row —
+            // never a silent hole the UI would render as a bare "—". Distinct
+            // from no_offer (a successful query with zero rows).
             note = 'Could not reach RMA Price Discovery — showing estimates instead.'
+            results.push({
+              crop_id: crop.crop_id, state_code: st.toUpperCase(), commodity_code: code,
+              projected_price: null, projected_status: null, projected_begin_date: null, projected_end_date: null, projected_label: null,
+              harvest_price: null, harvest_status: null, harvest_begin_date: null, harvest_end_date: null, harvest_label: null,
+              volatility: null, fetched_at: new Date().toISOString(),
+              projected_market_symbol: null, harvest_market_symbol: null, harvest_exchange_code: null,
+              offer_identity: null, fetch_failed: true,
+            })
             return
           }
         }
@@ -180,8 +201,9 @@ export async function POST(req: NextRequest) {
         })
         return
       }
-      // Offer-selection diagnostics: which candidates existed, which won.
-      console.log(`[rma-price-discovery] ${crop.crop_name}/${st}: ${rows.length} offer(s); chose ${primary.typeName} / ${primary.practiceName} / SCD ${primary.salesClosingDate ?? '-'}`)
+      // Offer-selection diagnostics (dump-and-verify): every candidate
+      // type/practice/SCD tuple, then the chosen one.
+      console.log(`[rma-price-discovery] ${crop.crop_name}/${st}: ${rows.length} candidate(s): ${rows.map((r) => `${r.typeName}/${r.practiceName}/SCD ${r.salesClosingDate ?? '-'} (proj ${r.projectedStatus ?? '-'}, harv ${r.harvestStatus ?? '-'})`).join('; ')} → chose ${primary.typeName}/${primary.practiceName}/SCD ${primary.salesClosingDate ?? '-'}`)
 
       const today = new Date().toISOString().slice(0, 10)
       const pw = windowState({ status: primary.projectedStatus, beginDate: primary.projectedBeginDate, endDate: primary.projectedEndDate, today })

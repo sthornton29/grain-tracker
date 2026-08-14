@@ -31,6 +31,9 @@ export type PriceDiscoveryRow = {
   cropName: string
   stateCode: string | null
   noOffer: boolean
+  /** The last RMA fetch failed and nothing was cached — the row shows the
+   *  estimate tier with a failure note (distinct from a genuine no-offer). */
+  fetchFailed: boolean
   offerIdentity: string | null
   baseContract: string | null
   exchange: string | null
@@ -47,6 +50,27 @@ export type PriceDiscoveryRow = {
     label: string
     windowLabel: string | null
   }
+}
+
+/** The tier label + chip class for a resolved harvest price — the SAME
+ *  vocabulary on the Claims Monitor as the settings Price Discovery window
+ *  (and the audit columns print `text` verbatim). */
+export function harvestTierLabel(info: {
+  isFinal: boolean
+  rmaFinal?: boolean
+  source: 'final' | 'rma_discovery' | 'estimate' | 'projected'
+  rmaLabel?: string | null
+  contractLabel?: string | null
+} | null | undefined): { text: string; cls: string } {
+  if (!info) return { text: '—', cls: 'bg-slate-200 text-slate-600' }
+  if (info.isFinal) {
+    return info.rmaFinal
+      ? { text: 'RMA final', cls: 'bg-green-100 text-green-800' }
+      : { text: 'manual final', cls: 'bg-sky-100 text-sky-800' }
+  }
+  if (info.source === 'rma_discovery') return { text: info.rmaLabel ?? 'RMA discovery avg', cls: 'bg-sky-100 text-sky-800' }
+  if (info.source === 'projected') return { text: 'projected', cls: 'bg-slate-200 text-slate-600' }
+  return { text: info.contractLabel ? `est. — ${info.contractLabel} today` : 'est.', cls: 'bg-slate-200 text-slate-600' }
 }
 
 export function buildPriceDiscoveryRows(args: {
@@ -74,14 +98,14 @@ export function buildPriceDiscoveryRows(args: {
       const resolution = resolveProjectedPrice(args.estimates, crop.id, args.cropYear, {
         keepManual: args.keepManualProjected.has(crop.id),
       })
-      const phase = r?.no_offer ? 'pre' : harvestPhase(r?.harvest_status)
+      const phase = r?.no_offer || r?.fetch_failed ? 'pre' : harvestPhase(r?.harvest_status)
       const live = args.liveQuotes.get(crop.id)
       let harvestPrice: number | null = null
       let harvestLabel: string
-      if (r && !r.no_offer && phase === 'in') {
+      if (r && !r.no_offer && !r.fetch_failed && phase === 'in') {
         harvestPrice = r.harvest_price
         harvestLabel = r.harvest_label ?? 'RMA discovery avg'
-      } else if (r && !r.no_offer && phase === 'post') {
+      } else if (r && !r.no_offer && !r.fetch_failed && phase === 'post') {
         harvestPrice = r.harvest_price
         harvestLabel = 'RMA final'
       } else {
@@ -92,13 +116,14 @@ export function buildPriceDiscoveryRows(args: {
         const starts = r?.harvest_begin_date ? `discovery starts ${fmtMDY(r.harvest_begin_date)}` : null
         harvestLabel = live != null
           ? ['est.', contract ? `— ${contract} today` : null, starts ? `, ${starts}` : null].filter(Boolean).join(' ')
-          : starts ?? (r?.no_offer ? 'no RMA offer' : 'no estimate yet')
+          : starts ?? (r?.no_offer ? 'no RMA offer' : r?.fetch_failed ? 'est. — RMA unreachable' : 'no estimate yet')
       }
       rows.push({
         cropId: crop.id,
         cropName: crop.name,
         stateCode: r?.state_code ?? null,
         noOffer: r?.no_offer === true,
+        fetchFailed: r?.fetch_failed === true,
         offerIdentity: r?.offer_identity ?? null,
         baseContract: r?.harvest_market_symbol ?? null,
         exchange: r?.harvest_exchange_code ?? null,

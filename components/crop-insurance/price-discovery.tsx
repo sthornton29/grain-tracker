@@ -109,7 +109,9 @@ export default function PriceDiscovery({
       setResults(merged.results)
       setNote(merged.note)
       if (merged.error) {
-        setError(asOf ? `${merged.error} Showing values as of ${asOf}.` : merged.error)
+        const failedNames = [...new Set(merged.results.filter((r) => r.fetch_failed).map((r) => grownCrops.find((c) => c.id === r.crop_id)?.name ?? r.crop_id))]
+        const named = failedNames.length > 0 ? merged.error.replace(/\d+ crops?/, failedNames.join(', ')) : merged.error
+        setError(asOf ? `${named} Showing values as of ${asOf}.` : named)
       } else {
         // The route mirrored fresh rows into harvest_price_estimates.
         onChanged()
@@ -250,8 +252,10 @@ export default function PriceDiscovery({
                   </td>
                   <td className="px-2 py-2 text-xs text-slate-500 max-w-[16rem]">
                     {row.noOffer
-                      ? `No RMA offer for ${row.stateCode ?? 'your state'} — estimate tier applies.`
-                      : row.offerIdentity ?? (row.stateCode ?? '—')}
+                      ? `No RMA offer found for ${row.stateCode ?? 'your state'} — estimates and manual entry still apply.`
+                      : row.fetchFailed
+                        ? 'RMA unreachable — retry with ↻; estimates apply meanwhile.'
+                        : row.offerIdentity ?? (row.stateCode ?? '—')}
                   </td>
                   <td className="px-2 py-2 whitespace-nowrap font-mono text-xs">
                     {row.baseContract ?? '—'}

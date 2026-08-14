@@ -315,6 +315,12 @@ export function resolveTieredPrice(args: {
 // Cache staleness — daily during an open window, weekly otherwise.
 // ---------------------------------------------------------------------------
 
+/** 064-era cache rows predate the 065 contract columns — a resolved offer
+ *  with no market symbol needs one refetch to backfill its base contract. */
+export function rmaCacheMissingContracts(rows: ReadonlyArray<{ harvestMarketSymbol: string | null }>): boolean {
+  return rows.length > 0 && rows.some((r) => r.harvestMarketSymbol == null)
+}
+
 export const RMA_REFRESH_IN_DISCOVERY_MS = 24 * 60 * 60 * 1000
 export const RMA_REFRESH_IDLE_MS = 7 * 24 * 60 * 60 * 1000
 
@@ -356,7 +362,12 @@ export type RmaLookupResult = {
   harvest_market_symbol: string | null
   harvest_exchange_code: string | null
   offer_identity: string | null
+  /** RMA genuinely lists no offer for this crop × state (a SUCCESSFUL query
+   *  with zero rows) — calm, labeled; the estimate/manual tiers still apply. */
   no_offer?: boolean
+  /** The RMA fetch/parse failed AND nothing was cached — distinct from
+   *  no_offer: this raises the failure banner naming the crop. */
+  fetch_failed?: boolean
 }
 
 /** The harvest price's phase, from the RMA window status. No status (no offer
@@ -387,15 +398,29 @@ export function mergeRmaResults(
     const x = r as RmaLookupResult
     return typeof x?.crop_id === 'string' && x.crop_id.length > 0 && typeof x?.state_code === 'string'
   })
+  // A fetch_failed row never overwrites good prior data for its key — the
+  // failure is reported, the last-known values stay. no_offer rows are DATA
+  // (RMA truly lists nothing) and replace normally.
+  const prevByKey = new Map(prev.map((r) => [`${r.crop_id}|${r.state_code}`, r]))
+  const applied = valid.map((r) => {
+    if (!r.fetch_failed) return r
+    const kept = prevByKey.get(`${r.crop_id}|${r.state_code}`)
+    return kept && !kept.fetch_failed ? kept : r
+  })
+  const failedKeys = valid.filter((r) => r.fetch_failed).map((r) => `${r.crop_id}|${r.state_code}`)
+  const failureError = failedKeys.length > 0
+    ? `RMA could not be reached for ${failedKeys.length} crop${failedKeys.length === 1 ? '' : 's'} — showing the last-known values.`
+    : null
+
   if (opts?.partial) {
-    const incomingKeys = new Set(valid.map((r) => `${r.crop_id}|${r.state_code}`))
-    if (valid.length === 0) return { results: [...prev], error: 'Refresh failed — no rows came back for this crop.', note }
-    return { results: [...prev.filter((r) => !incomingKeys.has(`${r.crop_id}|${r.state_code}`)), ...valid], error: null, note }
+    const incomingKeys = new Set(applied.map((r) => `${r.crop_id}|${r.state_code}`))
+    if (applied.length === 0) return { results: [...prev], error: 'Refresh failed — no rows came back for this crop.', note }
+    return { results: [...prev.filter((r) => !incomingKeys.has(`${r.crop_id}|${r.state_code}`)), ...applied], error: failureError, note }
   }
-  if (valid.length === 0 && prev.length > 0) {
+  if (applied.length === 0 && prev.length > 0) {
     return { results: [...prev], error: 'Refresh returned no rows — keeping the previous values.', note }
   }
-  return { results: valid, error: null, note }
+  return { results: applied, error: failureError, note }
 }
 
 /** The offer's identity line for provenance chips:
