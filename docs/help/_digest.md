@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-08-14 · version 0.1.0 · build 1853ae4. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-08-14 · version 0.1.0 · build 32fb133. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -214,7 +214,8 @@ This is where your crop insurance policies live. Enter each policy once — plan
 ## What the controls do
 
 - **AI policy upload** — extracted rows are compared against what's already entered: identical policies show as "Already exists", changed ones show a field-by-field difference and update the existing policy in place (never duplicated), and only new combinations are added. You can tick the "covers all planted acres" attestation per row before saving.
-- **Projected prices** — the RMA projected price per crop and year, used to value guarantees.
+- **Price discovery (RMA)** — a status line per crop and state showing each price's discovery window, where it stands (not started, in discovery, final), the current value, and the volatility factor. Turnrow pulls these straight from RMA's published price-discovery data, keyed by the states your policies sit in — the windows genuinely differ by state and crop, so a Georgia window isn't an Illinois window. Values refresh on their own (daily while a window is open); the ↻ refreshes on demand.
+- **Projected prices** — the RMA projected price per crop and year, used to value guarantees. Once a state's discovery window closes, RMA's published projected price fills in automatically (marked RMA); typing a price yourself overrides it, and your manual entry always wins.
 - **County yield assumptions** — the "my yield vs county" differential per crop, county, and year: how much your yields run above the county average, in the crop's own unit. Estimated county yield equals your yield basis minus this differential, and it drives every county-triggered endorsement. This is separate from the ARC-CO expectation on the government pages. Values save when you leave the field.
 - **Coverage Check** — flags combinations with no policy, more planted than insured, or more insured than planted. Ticking **"covers all planted acres"** on a policy marks its combination Covered and quiets the acre-mismatch flag — but a combination with no policy at all is always flagged.
 - **Stacking warnings** — appear above the list when endorsement combinations need agent review (for example ECO with STAX). Warnings only; nothing is blocked.
@@ -744,7 +745,7 @@ The Claims Monitor estimates what each of your crop insurance policies would pay
 
 - **Everything here is an estimate.** The banner at the top says so: figures are based on current yield assumptions and futures prices, and final amounts are determined by RMA after harvest.
 - **Yields**: once a practice is harvested, the actual irrigated or dryland yield is used. Before that, your expected yield breakout from the Marketing page fills in, so irrigated and dryland can differ even pre-harvest.
-- **Harvest price**: today's live futures price for the discovery month is used until the official RMA harvest price is on file — then the official price takes over.
+- **Harvest price**: the label beside the price says exactly where it came from, and it upgrades as the season progresses — a futures estimate (est.) before the discovery window opens, RMA's own running average once the window is live (RMA discovery, with the day of the window), and (RMA final) the moment RMA publishes. A price you entered by hand shows (final); if RMA later publishes a different final, a notice shows both numbers and lets you keep yours — nothing is replaced silently.
 - **County pieces**: SCO, ECO, STAX, MCO, ARP, and AYP pay based on estimated county results, not your farm's. ARP and AYP rows are labeled "county-triggered — farm yield not used" because your own yield genuinely does not matter to them.
 - Indemnities are shown net of premium, so the number is what you'd actually expect to collect.
 - **Stacking warnings** appear when endorsement combinations need agent review (for example ECO alongside STAX). These are warnings only — your agent is the authority.
@@ -752,7 +753,7 @@ The Claims Monitor estimates what each of your crop insurance policies would pay
 ## Common questions
 
 - **Why does my SCO show a payment when my crop is fine?** County endorsements pay on the county, not on you. Check your "my yield vs county" differential — if it's blank or stale, the county estimate may be off.
-- **Why did the numbers change since yesterday?** The harvest price tracks the live futures market until RMA publishes the final.
+- **Why did the numbers change since yesterday?** Before the discovery window the harvest price tracks the live futures market; during the window it follows RMA's running average, which updates daily; after RMA publishes, it stops moving.
 - **Can I test other prices or yields?** Yes — on the Income Sensitivity Report, linked at the top.
 
 ## If something looks wrong

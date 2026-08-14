@@ -23,6 +23,7 @@ const VIEWER_API_PATHS = [
   '/api/mya-estimate',
   '/api/nass-monthly-prices',
   '/api/mya-monthly-lookup',
+  '/api/rma-price-discovery',
 ]
 
 // Report pages with NO entity dimension to scope by — they show whole-

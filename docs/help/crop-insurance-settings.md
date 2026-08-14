@@ -1,7 +1,7 @@
 ---
 page_route: /settings/crop-insurance
 title: Crop Insurance Settings
-updated: 2026-08-05
+updated: 2026-08-14
 keywords: crop insurance, policy, MPCI, RP, YP, ARP, AYP, SCO, ECO, STAX, MCO, APH, projected price, coverage check, practice, county yield, attestation
 ---
 ## What this page is for
@@ -19,7 +19,8 @@ This is where your crop insurance policies live. Enter each policy once — plan
 ## What the controls do
 
 - **AI policy upload** — extracted rows are compared against what's already entered: identical policies show as "Already exists", changed ones show a field-by-field difference and update the existing policy in place (never duplicated), and only new combinations are added. You can tick the "covers all planted acres" attestation per row before saving.
-- **Projected prices** — the RMA projected price per crop and year, used to value guarantees.
+- **Price discovery (RMA)** — a status line per crop and state showing each price's discovery window, where it stands (not started, in discovery, final), the current value, and the volatility factor. Turnrow pulls these straight from RMA's published price-discovery data, keyed by the states your policies sit in — the windows genuinely differ by state and crop, so a Georgia window isn't an Illinois window. Values refresh on their own (daily while a window is open); the ↻ refreshes on demand.
+- **Projected prices** — the RMA projected price per crop and year, used to value guarantees. Once a state's discovery window closes, RMA's published projected price fills in automatically (marked RMA); typing a price yourself overrides it, and your manual entry always wins.
 - **County yield assumptions** — the "my yield vs county" differential per crop, county, and year: how much your yields run above the county average, in the crop's own unit. Estimated county yield equals your yield basis minus this differential, and it drives every county-triggered endorsement. This is separate from the ARC-CO expectation on the government pages. Values save when you leave the field.
 - **Coverage Check** — flags combinations with no policy, more planted than insured, or more insured than planted. Ticking **"covers all planted acres"** on a policy marks its combination Covered and quiets the acre-mismatch flag — but a combination with no policy at all is always flagged.
 - **Stacking warnings** — appear above the list when endorsement combinations need agent review (for example ECO with STAX). Warnings only; nothing is blocked.

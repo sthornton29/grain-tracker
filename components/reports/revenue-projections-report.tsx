@@ -383,18 +383,25 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     })
   }, [cropYear, viewer.loading, viewerA.ready, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds, cottonProductionByCrop, cottonPhysical])
 
-  // Resolve a harvest price per crop for the MARKET path: final → estimate →
-  // projected. `source` distinguishes RMA-native prices ($/lb for cotton:
-  // 'final'/'projected') from futures-derived ones (¢/lb: 'estimate') so the
-  // caller can keep the cotton market price in ¢/lb.
-  function harvestPriceFor(cropId: string): { price: number; isFinal: boolean; source: 'final' | 'estimate' | 'projected' } {
+  // Resolve a harvest price per crop for the MARKET path: final → RMA
+  // in-discovery running average → estimate → projected. `source`
+  // distinguishes RMA-native prices ($/lb for cotton: 'final'/
+  // 'rma_discovery'/'projected') from futures-derived ones (¢/lb:
+  // 'estimate') so the caller can keep the cotton market price in ¢/lb.
+  function harvestPriceFor(cropId: string): { price: number; isFinal: boolean; source: 'final' | 'rma_discovery' | 'estimate' | 'projected' } {
     const pols = policies.filter((p) => p.crop_id === cropId && p.crop_year === cropYear)
     const policyFinal = pols.find((p) => p.harvest_price != null)?.harvest_price
     const storedFinal = priceEstimates.find((e) => e.crop_id === cropId && e.crop_year === cropYear && e.price_type === 'harvest_final')
     if (policyFinal != null || storedFinal) return { price: Number(policyFinal ?? storedFinal!.price), isFinal: true, source: 'final' }
+    // The RMA route rewrites this row daily while the window is open; stale
+    // rows (window closed / fetch broken) fall through to the estimate tier.
+    const discovery = priceEstimates.find((e) =>
+      e.crop_id === cropId && e.crop_year === cropYear && e.price_type === 'harvest_estimate' &&
+      e.source === 'rma_discovery' && e.price_date != null && Date.now() - Date.parse(e.price_date) <= 3 * 86_400_000)
+    if (discovery) return { price: Number(discovery.price), isFinal: false, source: 'rma_discovery' }
     const live = liveEstimates.get(cropId)
     if (live != null) return { price: live, isFinal: false, source: 'estimate' }
-    const storedEst = priceEstimates.find((e) => e.crop_id === cropId && e.crop_year === cropYear && e.price_type === 'harvest_estimate')
+    const storedEst = priceEstimates.find((e) => e.crop_id === cropId && e.crop_year === cropYear && e.price_type === 'harvest_estimate' && e.source !== 'rma_discovery')
     if (storedEst) return { price: Number(storedEst.price), isFinal: false, source: 'estimate' }
     const avgProjected = pols.length > 0 ? pols.reduce((s, p) => s + Number(p.projected_price), 0) / pols.length : 0
     return { price: avgProjected, isFinal: false, source: 'projected' }

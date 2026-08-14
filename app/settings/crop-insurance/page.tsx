@@ -15,6 +15,7 @@ import CoverageCheck from '@/components/crop-insurance/coverage-check'
 import { PLAN_TYPE_SHORT, PRACTICE_LABEL, isAreaPlan, stackingWarnings } from '@/lib/crop-insurance'
 import { fmtPrice } from '@/lib/hedging'
 import ProjectedPricesEditor from '@/components/crop-insurance/projected-prices-editor'
+import PriceDiscoveryStatus from '@/components/crop-insurance/price-discovery-status'
 import { CountyAssumptionControl } from '@/components/crop-insurance/county-assumption-editor'
 import type {
   Crop, County, Entity, FieldPlanting, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco,
@@ -260,6 +261,13 @@ export default function CropInsuranceSettingsPage() {
           onChanged={refresh}
         />
       </div>
+
+      <PriceDiscoveryStatus
+        cropYear={cropYearOptions[0] ?? new Date().getFullYear()}
+        crops={crops}
+        policies={policies}
+        counties={counties}
+      />
 
       <ProjectedPricesEditor crops={crops} estimates={estimates} onChange={refresh} />
 
