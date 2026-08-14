@@ -29,11 +29,16 @@ export default function PriceDiscoveryStatus({
   crops,
   policies,
   counties,
+  onRefreshed,
 }: {
   cropYear: number
   crops: readonly Crop[]
   policies: readonly CropInsurancePolicy[]
   counties: readonly County[]
+  /** Called after RMA data lands — the route mirrors rows into
+   *  harvest_price_estimates, so the host page re-reads them and the
+   *  Projected Prices editor updates immediately (no page reload). */
+  onRefreshed?: () => void
 }) {
   const [results, setResults] = useState<RmaLookupResult[]>([])
   const [busy, setBusy] = useState(false)
@@ -71,6 +76,7 @@ export default function PriceDiscoveryStatus({
         if (cancelled) return
         setResults((json?.data?.results ?? []) as RmaLookupResult[])
         if (typeof json?.data?.note === 'string') setNote(json.data.note)
+        onRefreshed?.()
       } catch {
         if (!cancelled) setNote('Could not reach RMA Price Discovery.')
       } finally {
@@ -93,11 +99,10 @@ export default function PriceDiscoveryStatus({
           type="button"
           disabled={busy}
           onClick={() => setRefresh((n) => n + 1)}
-          title="Refresh from RMA now"
-          aria-label="Refresh RMA prices"
-          className="text-brand-deep hover:text-brand disabled:text-slate-300"
+          title="Pull the latest RMA prices now"
+          className="rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-sm font-semibold text-brand-deep hover:bg-slate-50 disabled:opacity-50"
         >
-          <span className={busy ? 'inline-block animate-spin' : ''}>↻</span>
+          <span className={busy ? 'inline-block animate-spin' : ''}>↻</span> Refresh from RMA
         </button>
       </div>
       <p className="text-sm text-slate-500">

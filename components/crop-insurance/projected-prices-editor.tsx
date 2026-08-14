@@ -178,15 +178,14 @@ export default function ProjectedPricesEditor({
                       Save
                     </button>
                   </div>
-                  {/* RMA superseded a manual/seed value — say so, never silent. */}
+                  {/* RMA superseded a MANUAL value — say so, never silent.
+                      (Seeds demote without a note.) */}
                   {res?.source === 'rma' && res.superseded != null && (
                     <p className="text-xs text-sky-800 flex items-center gap-2">
-                      <span>RMA published ${res.price.toFixed(2)} — replaces {res.supersededSource === 'seed' ? 'the seeded' : 'your'} ${res.superseded.toFixed(2)}.</span>
-                      {res.supersededSource === 'manual' && (
-                        <button type="button" onClick={() => setKeep(c.id, true)} className="rounded border border-sky-300 px-1.5 py-0.5 font-semibold hover:bg-sky-50">
-                          Keep mine (${res.superseded.toFixed(2)})
-                        </button>
-                      )}
+                      <span>RMA published ${res.price.toFixed(2)} — replaces your ${res.superseded.toFixed(2)}.</span>
+                      <button type="button" onClick={() => setKeep(c.id, true)} className="rounded border border-sky-300 px-1.5 py-0.5 font-semibold hover:bg-sky-50">
+                        Keep mine (${res.superseded.toFixed(2)})
+                      </button>
                     </p>
                   )}
                   {/* Manual kept (or a seed showing) while RMA has a value. */}

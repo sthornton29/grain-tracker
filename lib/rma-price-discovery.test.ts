@@ -115,7 +115,7 @@ describe('the Alabama corn case, end-to-end', () => {
     expect(ws.windowDays).toBe(31)
   })
 
-  it('the RMA $4.42 supersedes the seeded $4.62 with a notice — never masked, never silent', () => {
+  it('the RMA $4.42 outranks the seeded $4.62 — silently (seeds get no notice)', () => {
     const estimates: HarvestPriceEstimate[] = [
       // The 024 seed: dated 02-28, LATER than AL's window end — under the old
       // latest-date rule it always won. Relabeled source='seed' by 065.
@@ -123,7 +123,7 @@ describe('the Alabama corn case, end-to-end', () => {
       { id: 'r', crop_id: 'corn', crop_year: 2026, price_type: 'projected', price: 4.42, source: 'RMA final', price_date: '2026-02-14', created_at: '' } as HarvestPriceEstimate,
     ]
     const res = resolveProjectedPrice(estimates, 'corn', 2026)!
-    expect(res).toMatchObject({ price: 4.42, source: 'rma', superseded: 4.62, supersededSource: 'seed' })
+    expect(res).toMatchObject({ price: 4.42, source: 'rma', superseded: null, supersededSource: null })
   })
 
   it('a user-typed manual value: superseded with notice by default, kept via keepManual', () => {

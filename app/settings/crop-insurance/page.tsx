@@ -267,6 +267,7 @@ export default function CropInsuranceSettingsPage() {
         crops={crops}
         policies={policies}
         counties={counties}
+        onRefreshed={refresh}
       />
 
       <ProjectedPricesEditor crops={crops} estimates={estimates} onChange={refresh} />

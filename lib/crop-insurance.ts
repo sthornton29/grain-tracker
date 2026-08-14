@@ -156,11 +156,12 @@ export function resolveProjectedPrice(
   const manual = latest('manual')
   const seed = latest('seed')
   if (rma && !(manual && opts?.keepManual)) {
-    const other = manual ?? seed
-    const superseded = other != null && Number(other.price) !== Number(rma.price) ? Number(other.price) : null
+    // Only a MANUAL value earns a supersede notice — seeds are wrong-for-your-
+    // state placeholders and are demoted silently, no ceremony.
+    const superseded = manual != null && Number(manual.price) !== Number(rma.price) ? Number(manual.price) : null
     return {
       price: Number(rma.price), source: 'rma', priceDate: rma.price_date,
-      superseded, supersededSource: superseded != null ? (manual ? 'manual' : 'seed') : null,
+      superseded, supersededSource: superseded != null ? 'manual' : null,
     }
   }
   if (manual) return { price: Number(manual.price), source: 'manual', priceDate: manual.price_date, superseded: null, supersededSource: null }
