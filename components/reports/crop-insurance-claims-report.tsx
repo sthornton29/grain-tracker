@@ -259,7 +259,10 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     )]
     if (states.length === 0) return
     const cropsPayload = (onlyCropId ? [onlyCropId] : reportCropIds)
-      .map((id) => ({ crop_id: id, crop_name: cropById.get(id)?.name ?? '' }))
+      .map((id) => {
+        const crop = cropById.get(id)
+        return { crop_id: id, crop_name: crop?.name ?? '', harvest_category: crop?.harvest_category, rma_type_override: crop?.rma_type_override }
+      })
       .filter((c) => c.crop_name)
     if (cropsPayload.length === 0) return
     setRmaBusy(true)

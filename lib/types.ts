@@ -89,6 +89,9 @@ export type Crop = {
   // for this crop, pre-filling subsequent Yield from Combine entries until
   // changed. Null = no default.
   combine_adjustment_bu_per_acre: number | null
+  // RMA insurance-type override (066) for dual-offer states (Idaho-style
+  // Winter+Spring wheat). Null = Auto: harvest_category decides.
+  rma_type_override: 'winter' | 'spring' | 'durum' | null
 }
 
 // ---------- Combine yield entries (062) ----------

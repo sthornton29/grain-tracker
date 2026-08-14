@@ -30,7 +30,7 @@ import type { Crop, Contract, CropAssumption } from '@/lib/types'
 // (lib/marketing page scenarioFor), so it never diverges either.
 
 function crop(id: string, name: string): Crop {
-  return { id, name, base_moisture_pct: 15, base_lb_per_bushel: 56, harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null }
+  return { id, name, base_moisture_pct: 15, base_lb_per_bushel: 56, harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null, rma_type_override: null }
 }
 function assumption(over: Partial<CropAssumption> & Pick<CropAssumption, 'crop_id'>): CropAssumption {
   return {

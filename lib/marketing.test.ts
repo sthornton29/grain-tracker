@@ -15,7 +15,7 @@ import type { Crop, Contract, CropAssumption, FuturesPosition, OptionPosition } 
 const CONTRACT_BU = 5000
 
 function crop(id: string, name: string): Crop {
-  return { id, name, base_moisture_pct: 15, base_lb_per_bushel: 56, harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null }
+  return { id, name, base_moisture_pct: 15, base_lb_per_bushel: 56, harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null, rma_type_override: null }
 }
 function planting(crop_id: string, acres: number, season_year = 2026): Planting {
   return { crop_id, season_year, planted_acres: acres }

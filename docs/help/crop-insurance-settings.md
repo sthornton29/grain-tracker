@@ -1,7 +1,7 @@
 ---
 page_route: /settings/crop-insurance
 title: Crop Insurance Settings
-updated: 2026-08-16
+updated: 2026-08-17
 keywords: crop insurance, policy, MPCI, RP, YP, ARP, AYP, SCO, ECO, STAX, MCO, APH, projected price, coverage check, practice, county yield, attestation
 ---
 ## What this page is for
@@ -22,6 +22,8 @@ This is where your crop insurance policies live. Enter each policy once — plan
 - **Crop Insurance Price Discovery** — one table for every insurance price, one row per crop you grow. Each row shows which RMA offer it is (your state, the practice, the sales-closing date), the futures contract that offer is actually priced on (a Southern corn offer can price on September, not December — Turnrow uses the offer's own contract), and both prices with a colored chip saying exactly where each number came from.
 - **The harvest price moves through three phases**, and the chip tells you which one you're in: before the discovery window it's an estimate from today's price of the offer's contract ("est. — ZCU26 today, discovery starts 8/1"); during the window it's RMA's own running average, updated daily ("RMA discovery avg… day 14 of 31"); after the window closes it's the published RMA final, and it stops moving.
 - **The projected price** fills in automatically from RMA once its window closes (green "RMA released" chip). Type your own number to override — Turnrow keeps yours and shows a note with what RMA published; "Reset to RMA" restores the published value. A crop with no RMA offer for your state says so and stays on the estimate.
+- **Winter crops run on an earlier calendar.** Fall-planted crops (winter wheat, canola) get their projected price the summer BEFORE planting and their final harvest price at early-summer harvest — so by fall both prices already show as RMA finals, with last year's dates on the windows. That's correct, not stale. Turnrow picks the winter offer automatically for spring-harvested crops; if your state carries both Winter and Spring offers, the "RMA type" selector on Settings → Crops pins the right one.
+- **The harvest price is editable here too** — type a value to enter your own harvest price (marked manual; it beats the running average and the estimate), and "Reset to RMA" restores the automatic value. If RMA later publishes a final that differs, you'll see the notice with a "keep mine" choice — kept manual values carry through the Claims Monitor and Income Sensitivity.
 - **"No RMA offer found"** on a row means RMA genuinely lists no revenue-price offer for that crop in your state — it's not an error. The estimate keeps working and you can still type a price. If a row instead says RMA was unreachable, that's a connection problem: your last-known values stay put and ↻ retries.
 - **Overrides live here.** The reports show where each price came from, but changing a price always happens on this page — the Claims Monitor links back here ("Price details & overrides").
 - **Refreshing is always safe** — ↻ pulls the latest from RMA (per row or all at once). If RMA can't be reached, your current values stay on screen with a note saying how fresh they are; a refresh never clears the table.

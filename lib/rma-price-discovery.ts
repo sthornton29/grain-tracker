@@ -181,15 +181,46 @@ export function parseRmaRevenuePrices(xml: string): RmaPriceRow[] {
   return rows
 }
 
+/** The RMA insurance type a crop maps to — TYPE IS A FIRST-CLASS DIMENSION of
+ *  the offer key (commodity × state × SCD × type). Explicit override wins;
+ *  Auto derives from harvest_category: 'spring'-HARVESTED crops are the
+ *  fall-planted winter types (winter wheat, fall canola — sold the summer
+ *  before planting, finalized at early-summer harvest); 'fall'-harvested
+ *  summer crops use their standard type. Null = no preference (single-type
+ *  commodities like corn/cotton). */
+export type RmaTypePreference = 'winter' | 'spring' | 'durum' | null
+export function rmaPreferredType(crop: {
+  harvest_category?: 'fall' | 'spring' | null
+  rma_type_override?: 'winter' | 'spring' | 'durum' | null
+}): RmaTypePreference {
+  if (crop.rma_type_override) return crop.rma_type_override
+  if (crop.harvest_category === 'spring') return 'winter'
+  return null
+}
+
+const typeMatches = (typeName: string, pref: RmaTypePreference): boolean => {
+  if (!pref) return false
+  if (pref === 'winter') return /winter|^fall\b/i.test(typeName)
+  if (pref === 'spring') return /spring/i.test(typeName)
+  return /durum/i.test(typeName)
+}
+
 /** Pick the row that stands for "the" price of a crop × state × year: the
- *  Conventional practice, preferring the catch-all type ("All …"), then the
- *  earliest sales-closing date (the primary offer). Organic and specialty
- *  types exist in the feed but aren't what the app's policies model. */
-export function pickPrimaryRow(rows: readonly RmaPriceRow[]): RmaPriceRow | null {
+ *  Conventional practice; within it, the crop's PREFERRED TYPE when one is
+ *  set (Winter/fall for spring-harvested crops — never assume a state's
+ *  offers are single-typed), else the catch-all type ("All …"); then the
+ *  earliest sales-closing date. Organic and specialty practices exist in the
+ *  feed but aren't what the app's policies model. */
+export function pickPrimaryRow(rows: readonly RmaPriceRow[], preferredType: RmaTypePreference = null): RmaPriceRow | null {
   const conventional = rows.filter((r) => /conventional/i.test(r.practiceName))
   const pool = conventional.length > 0 ? conventional : [...rows]
   if (pool.length === 0) return null
   pool.sort((a, b) => {
+    if (preferredType) {
+      const aPref = typeMatches(a.typeName, preferredType) ? 0 : 1
+      const bPref = typeMatches(b.typeName, preferredType) ? 0 : 1
+      if (aPref !== bPref) return aPref - bPref
+    }
     const aAll = /^all\b/i.test(a.typeName) ? 0 : 1
     const bAll = /^all\b/i.test(b.typeName) ? 0 : 1
     if (aAll !== bAll) return aAll - bAll

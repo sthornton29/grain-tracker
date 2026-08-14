@@ -23,7 +23,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import {
   parseRmaRevenuePrices, pickPrimaryRow, rmaCommodityCode, stateFips,
-  rmaServiceUrl, rmaCacheIsStale, rmaCacheMissingContracts, windowState, rmaSourceLabel, offerIdentityLabel,
+  rmaServiceUrl, rmaCacheIsStale, rmaCacheMissingContracts, windowState, rmaSourceLabel, offerIdentityLabel, rmaPreferredType,
   type RmaPriceRow, type RmaWindowStatus, type RmaLookupResult,
 } from '@/lib/rma-price-discovery'
 
@@ -33,7 +33,7 @@ import { rmaToAppInsurancePrice } from '@/lib/crop-insurance'
 export const runtime = 'nodejs'
 export const maxDuration = 30
 
-type ReqCrop = { crop_id: string; crop_name: string }
+type ReqCrop = { crop_id: string; crop_name: string; harvest_category?: 'fall' | 'spring' | null; rma_type_override?: 'winter' | 'spring' | 'durum' | null }
 
 
 type CacheRow = {
@@ -153,9 +153,14 @@ export async function POST(req: NextRequest) {
               // plain identifying agent (same lesson as the FSA workbook fetch).
               'user-agent': 'Mozilla/5.0 (compatible; TurnrowFarm/1.0; +https://turnrow.farm)',
             },
-            signal: AbortSignal.timeout(10_000),
+            // Government hosts answer slowly from cold — 20s per fetch still
+            // fits the 30s budget because combos run concurrently.
+            signal: AbortSignal.timeout(20_000),
           })
-          if (!resp.ok) throw new Error(`RMA returned ${resp.status} ${resp.statusText}.`)
+          if (!resp.ok) {
+            const bodyHead = (await resp.text().catch(() => '')).slice(0, 200)
+            throw new Error(`RMA returned ${resp.status} ${resp.statusText}. Body: ${bodyHead}`)
+          }
           const fresh = parseRmaRevenuePrices(await resp.text())
           if (fresh.length > 0) {
             rows = fresh
@@ -169,7 +174,9 @@ export async function POST(req: NextRequest) {
             if (cacheErr) console.error(`[rma-price-discovery] cache write failed (${crop.crop_name}/${st}): ${cacheErr.message}`)
           }
         } catch (e) {
-          console.error(`[rma-price-discovery] ${crop.crop_name}/${st}: ${e instanceof Error ? e.message : e}`)
+          // Dump-and-verify: the exact request that failed, so "unreachable"
+          // is never a mystery classification again.
+          console.error(`[rma-price-discovery] ${crop.crop_name}/${st}: ${e instanceof Error ? e.message : e} — request: ${rmaServiceUrl({ commodityYear: cropYear, commodityCode: code, stateFips: fips })}`)
           if (rows.length === 0) {
             // Nothing cached AND the fetch failed: an EXPLICIT failure row —
             // never a silent hole the UI would render as a bare "—". Distinct
@@ -188,7 +195,7 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      const primary = pickPrimaryRow(rows)
+      const primary = pickPrimaryRow(rows, rmaPreferredType(crop))
       if (!primary) {
         // RMA lists no offer for this crop x state - say so, never a blank.
         results.push({

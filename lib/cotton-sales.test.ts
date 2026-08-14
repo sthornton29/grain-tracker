@@ -298,7 +298,7 @@ describe('buildCottonPhysicalSummary', () => {
 
 // ---------- marketing row valuation ----------
 
-const cottonCrop: Crop = { id: 'cotton', name: 'Cotton', base_moisture_pct: 0, base_lb_per_bushel: 0, harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null, created_at: '' } as Crop
+const cottonCrop: Crop = { id: 'cotton', name: 'Cotton', base_moisture_pct: 0, base_lb_per_bushel: 0, harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null, rma_type_override: null, created_at: '' } as Crop
 const cottonAssumption = (over: Partial<CropAssumption> = {}): CropAssumption => ({
   id: 'a', crop_id: 'cotton', crop_year: 2026, expected_yield: 1000, harvest_complete: false,
   assumed_basis: 0, assumed_futures: null, cost_per_acre: null,

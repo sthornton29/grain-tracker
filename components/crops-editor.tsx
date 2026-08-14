@@ -62,6 +62,15 @@ export default function CropsEditor() {
     if (error) { setErr(error.message); refresh() }
   }
 
+  // RMA insurance type (066) — only matters where a state carries BOTH
+  // Winter and Spring offers of a commodity; Auto follows harvest category.
+  async function setRmaType(id: string, raw: string) {
+    const rma_type_override = raw === '' ? null : (raw as 'winter' | 'spring' | 'durum')
+    setRows((rs) => rs.map((r) => (r.id === id ? { ...r, rma_type_override } : r)))
+    const { error } = await supabase.from('crops').update({ rma_type_override }).eq('id', id)
+    if (error) { setErr(error.message); refresh() }
+  }
+
   async function remove(id: string) {
     if (!confirm('Delete this crop?')) return
     const { error } = await supabase.from('crops').delete().eq('id', id)
@@ -134,6 +143,18 @@ export default function CropsEditor() {
                   />
                   Double-crop
                 </label>
+                <select
+                  value={r.rma_type_override ?? ''}
+                  onChange={(e) => setRmaType(r.id, e.target.value)}
+                  className={`text-sm ${selectCls}`}
+                  aria-label={`${r.name} RMA insurance type`}
+                  title="RMA insurance type for price discovery — Auto follows the harvest category (spring-harvested crops use the Winter/fall offer)"
+                >
+                  <option value="">RMA type: Auto{r.harvest_category === 'spring' ? ' (Winter)' : ''}</option>
+                  <option value="winter">Winter</option>
+                  <option value="spring">Spring</option>
+                  <option value="durum">Durum</option>
+                </select>
                 <button
                   onClick={() => { setEditingId(r.id); setEditingName(r.name) }}
                   className="text-brand-deep"

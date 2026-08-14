@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   parseRmaRevenuePrices, pickPrimaryRow, rmaCommodityCode, stateFips,
   windowState, rmaSourceLabel, resolveTieredPrice, rmaCacheIsStale, rmaServiceUrl,
-  offerIdentityLabel,
+  offerIdentityLabel, rmaPreferredType,
 } from '@/lib/rma-price-discovery'
 import { resolveHarvestPriceByCrop, resolveProjectedPrice, rmaToAppInsurancePrice } from '@/lib/crop-insurance'
 import type { CropInsurancePolicy, HarvestPriceEstimate } from '@/lib/types'
@@ -291,5 +291,77 @@ describe('resolveHarvestPriceByCrop with RMA tiers', () => {
     }).get('corn')!
     expect(r.source).toBe('final')
     expect(r.price).toBe(4.71)
+  })
+})
+
+// Type is a first-class offer dimension (winter crops).
+describe('rmaPreferredType + typed pickPrimaryRow', () => {
+  it('Auto: spring-HARVESTED (fall-planted) crops map to the Winter/fall type; override wins', () => {
+    expect(rmaPreferredType({ harvest_category: 'spring' })).toBe('winter')
+    expect(rmaPreferredType({ harvest_category: 'fall' })).toBeNull()
+    expect(rmaPreferredType({ harvest_category: 'fall', rma_type_override: 'spring' })).toBe('spring')
+    expect(rmaPreferredType({ harvest_category: 'spring', rma_type_override: 'durum' })).toBe('durum')
+  })
+
+  it('a dual-type state (Idaho-style Winter+Spring wheat) selects by preference', () => {
+    const rows = parseRmaRevenuePrices(feed(
+      entry({ code: '0011', name: 'Wheat', type: 'Spring', projected: '6.1000' }),
+      entry({ code: '0011', name: 'Wheat', type: 'Winter', projected: '5.6300' }),
+    ))
+    expect(pickPrimaryRow(rows, 'winter')?.projectedPrice).toBe(5.63)
+    expect(pickPrimaryRow(rows, 'spring')?.projectedPrice).toBe(6.1)
+    // No preference: falls back to the existing SCD/type ordering.
+    expect(pickPrimaryRow(rows, null)).not.toBeNull()
+  })
+
+  it("canola's Fall type matches the winter preference (fall-planted)", () => {
+    const rows = parseRmaRevenuePrices(feed(
+      entry({ code: '0015', name: 'Canola', type: 'Fall', projected: '0.2260' }),
+      entry({ code: '0015', name: 'Canola', type: 'Fall Rapeseed', projected: '0.2780' }),
+    ))
+    expect(pickPrimaryRow(rows, 'winter')?.projectedPrice).toBe(0.226)
+  })
+})
+
+// The harvest manual override (settings window inline edit): manual final
+// beats the running average and every estimate; the RMA final supersedes it
+// with keep-mine; reset (deleting the manual row) restores automatic.
+describe('harvest manual override tiering', () => {
+  const now = new Date('2026-08-14T12:00:00Z')
+  const policy: CropInsurancePolicy = {
+    id: 'p1', crop_id: 'corn', crop_year: 2026, projected_price: 4.42, harvest_price: null,
+  } as unknown as CropInsurancePolicy
+  const manualRow = { id: 'm', crop_id: 'corn', crop_year: 2026, price_type: 'harvest_final', price: 4.6, source: 'manual', price_date: '2026-08-10', created_at: '' } as HarvestPriceEstimate
+  const discoveryRow = { id: 'd', crop_id: 'corn', crop_year: 2026, price_type: 'harvest_estimate', price: 4.42, source: 'rma_discovery', price_date: '2026-08-13', created_at: '' } as HarvestPriceEstimate
+  const rmaFinalRow = { id: 'r', crop_id: 'corn', crop_year: 2026, price_type: 'harvest_final', price: 4.71, source: 'RMA final', price_date: '2026-08-31', created_at: '' } as HarvestPriceEstimate
+
+  it('a typed manual final outranks the running average and the live estimate', () => {
+    const r = resolveHarvestPriceByCrop({
+      cropIds: ['corn'], cropYear: 2026, policies: [policy],
+      estimates: [manualRow, discoveryRow],
+      liveByCrop: new Map([['corn', { price: 4.5, stale: false, priceDate: '2026-08-14' }]]),
+      now,
+    }).get('corn')!
+    expect(r).toMatchObject({ price: 4.6, source: 'final' })
+    expect(r.rmaFinal).toBeUndefined()
+  })
+
+  it('an RMA final supersedes the manual with the notice; keep-mine restores it', () => {
+    const args = {
+      cropIds: ['corn'], cropYear: 2026, policies: [policy],
+      estimates: [manualRow, discoveryRow, rmaFinalRow], now,
+    }
+    expect(resolveHarvestPriceByCrop(args).get('corn')!)
+      .toMatchObject({ price: 4.71, source: 'final', rmaFinal: true, supersededManual: 4.6 })
+    expect(resolveHarvestPriceByCrop({ ...args, keepManualCropIds: new Set(['corn']) }).get('corn')!)
+      .toMatchObject({ price: 4.6, source: 'final' })
+  })
+
+  it('reset (manual row deleted) restores the automatic resolution', () => {
+    const r = resolveHarvestPriceByCrop({
+      cropIds: ['corn'], cropYear: 2026, policies: [policy],
+      estimates: [discoveryRow], now,
+    }).get('corn')!
+    expect(r).toMatchObject({ price: 4.42, source: 'rma_discovery' })
   })
 })

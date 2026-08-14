@@ -7,7 +7,7 @@
 > programs. **Not a SaaS product** — single-tenant, used on iPads in trucks by a
 > small team, so the UX favors fast capture and forgiving data entry.
 >
-> _Snapshot date: 2026-08-16. Schema at migration `065`, **all migrations applied in production** (065 confirmed 2026-08-15 — the seed relabel and offer base-contract columns are live). `supabase/verify_052/053/054.sql` are read-only diagnostics; `docs/BETA_ACCEPTANCE.md` is the pre-invite isolation checklist._
+> _Snapshot date: 2026-08-17. Schema at migration `066` (051–065 applied in production; **pending manual apply: 066** — `crops.rma_type_override`, the RMA insurance-type pick for dual-offer states; Auto derives from harvest_category, so most orgs never need it — until applied, the Crops-page RMA-type selector errors on save and everything else works). `supabase/verify_052/053/054.sql` are read-only diagnostics; `docs/BETA_ACCEPTANCE.md` is the pre-invite isolation checklist._
 
 ---
 

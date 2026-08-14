@@ -15,11 +15,11 @@ import type { Contract, Crop, CropAssumption, CropInsurancePolicy, CropInsurance
 
 const corn: Crop = {
   id: 'corn', name: 'Corn', base_moisture_pct: 15, base_lb_per_bushel: 56,
-  harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null,
+  harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null, rma_type_override: null,
 }
 const soybeans: Crop = {
   id: 'soy', name: 'Soybeans', base_moisture_pct: 13, base_lb_per_bushel: 60,
-  harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null,
+  harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null, rma_type_override: null,
 }
 
 function assumption(over: Partial<CropAssumption> = {}): CropAssumption {
@@ -416,7 +416,7 @@ describe('county yield scenario modes (differential semantics)', () => {
 describe('computeScenarioCell — cotton ¢/lb axis vs $/lb policy math', () => {
   const cotton: Crop = {
     id: 'cotton', name: 'Cotton', base_moisture_pct: 0, base_lb_per_bushel: 0,
-    harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null,
+    harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null, rma_type_override: null,
   } as Crop
 
   // 100 acres, APH 1,200 lbs, RP 75%, projected 0.68 $/lb, no premium so

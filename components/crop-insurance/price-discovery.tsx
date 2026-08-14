@@ -17,6 +17,8 @@ import { createClient } from '@/lib/supabase/client'
 import { fmtPrice } from '@/lib/hedging'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { mergeRmaResults, type RmaLookupResult } from '@/lib/rma-price-discovery'
+import { resolveHarvestPriceByCrop, type LiveHarvest } from '@/lib/crop-insurance'
+import { harvestTierLabel } from '@/lib/insurance-price-rows'
 import { buildPriceDiscoveryRows, type PriceDiscoveryRow } from '@/lib/insurance-price-rows'
 import type { County, Crop, CropInsurancePolicy, FieldPlanting, HarvestPriceEstimate } from '@/lib/types'
 
@@ -81,6 +83,64 @@ export default function PriceDiscovery({
     return ts.length > 0 ? ts[ts.length - 1].slice(0, 10) : null
   }, [results])
 
+  // Harvest keep-mine — SHARED with the Claims Monitor (same localStorage
+  // key), so keeping a manual final here is honored everywhere.
+  const [harvestKeepByYear, setHarvestKeepByYear] = usePersistentState<Record<string, string[]>>('ci-claims:keepManualHarvest', {})
+  const harvestKeepSet = useMemo(() => new Set(harvestKeepByYear[String(cropYear)] ?? []), [harvestKeepByYear, cropYear])
+  const setHarvestKeep = (cropId: string, keep: boolean) =>
+    setHarvestKeepByYear((prev) => {
+      const cur = new Set(prev[String(cropYear)] ?? [])
+      if (keep) cur.add(cropId); else cur.delete(cropId)
+      return { ...prev, [String(cropYear)]: [...cur] }
+    })
+  const [harvestDrafts, setHarvestDrafts] = useState<Record<string, string>>({})
+
+  // The SAME resolution every downstream consumer reads (RMA final > manual
+  // final w/ keep-mine > RMA discovery avg > live estimate > stored estimate
+  // > projected) — the harvest cell displays and edits against it.
+  const harvestResByCrop = useMemo(() => {
+    const liveByCrop = new Map<string, LiveHarvest>()
+    for (const [id, q] of liveQuotes) liveByCrop.set(id, { price: q.price, stale: false, priceDate: q.priceDate })
+    return resolveHarvestPriceByCrop({
+      cropIds: grownCrops.map((c) => c.id), cropYear,
+      policies: policies.filter((p) => p.crop_year === cropYear),
+      estimates, liveByCrop, crops: grownCrops,
+      keepManualCropIds: harvestKeepSet,
+    })
+  }, [grownCrops, cropYear, policies, estimates, liveQuotes, harvestKeepSet])
+
+  async function saveManualHarvest(row: PriceDiscoveryRow) {
+    const raw = (harvestDrafts[row.cropId] ?? '').trim()
+    setMsg(null)
+    const price = Number(raw)
+    if (raw === '' || !Number.isFinite(price) || price <= 0) { setMsg('Enter a positive harvest price.'); return }
+    setSaving(true)
+    const { error: e } = await supabase.from('harvest_price_estimates').upsert(
+      { crop_id: row.cropId, crop_year: cropYear, price_type: 'harvest_final', price, source: 'manual', price_date: new Date().toISOString().slice(0, 10) },
+      { onConflict: 'crop_id,crop_year,price_type,price_date' },
+    )
+    setSaving(false)
+    if (e) { setMsg(e.message); return }
+    // Typing over a published RMA final is the deliberate override — keep it.
+    if (harvestResByCrop.get(row.cropId)?.rmaFinal) setHarvestKeep(row.cropId, true)
+    setHarvestDrafts((d) => { const n = { ...d }; delete n[row.cropId]; return n })
+    onChanged()
+  }
+  async function resetHarvestToRma(row: PriceDiscoveryRow) {
+    setMsg(null)
+    setSaving(true)
+    const { error: e } = await supabase
+      .from('harvest_price_estimates')
+      .delete()
+      .eq('crop_id', row.cropId).eq('crop_year', cropYear).eq('price_type', 'harvest_final')
+      .eq('source', 'manual')
+    setSaving(false)
+    if (e) { setMsg(e.message); return }
+    setHarvestKeep(row.cropId, false)
+    setHarvestDrafts((d) => { const n = { ...d }; delete n[row.cropId]; return n })
+    onChanged()
+  }
+
   // "Keep mine" (manual projected kept over a published RMA value), per year.
   const [keepByYear, setKeepByYear] = usePersistentState<Record<string, string[]>>('crop-insurance:keepManualProjected', {})
   const keepSet = useMemo(() => new Set(keepByYear[String(cropYear)] ?? []), [keepByYear, cropYear])
@@ -94,7 +154,7 @@ export default function PriceDiscovery({
   async function fetchRma(force: boolean, onlyCropId: string | null) {
     if (grownCrops.length === 0 || states.length === 0) return
     const cropsPayload = (onlyCropId ? grownCrops.filter((c) => c.id === onlyCropId) : grownCrops)
-      .map((c) => ({ crop_id: c.id, crop_name: c.name }))
+      .map((c) => ({ crop_id: c.id, crop_name: c.name, harvest_category: c.harvest_category, rma_type_override: c.rma_type_override }))
     if (cropsPayload.length === 0) return
     setError(null)
     if (onlyCropId) setRowBusy(onlyCropId); else setBusy(true)
@@ -299,12 +359,52 @@ export default function PriceDiscovery({
                       </span>
                     )}
                   </td>
-                  <td className="px-2 py-2 min-w-[14rem]">
-                    <span className="tabular-nums">{row.harvest.price != null ? fmtPrice(row.harvest.price) : '—'}</span>{' '}
-                    <span className={`text-xs rounded-full px-2 py-0.5 ${chipCls[row.harvest.phase]}`}>{row.harvest.label}</span>
-                    {row.harvest.windowLabel && (
-                      <span className="block text-[10px] text-slate-400">window {row.harvest.windowLabel}</span>
-                    )}
+                  <td className="px-2 py-2 min-w-[16rem]">
+                    {(() => {
+                      const res = harvestResByCrop.get(row.cropId)
+                      const hDraft = row.cropId in harvestDrafts ? harvestDrafts[row.cropId] : (res?.price != null && res.price > 0 ? String(res.price) : '')
+                      const hDirty = row.cropId in harvestDrafts && harvestDrafts[row.cropId] !== (res?.price != null && res.price > 0 ? String(res.price) : '')
+                      const tier = harvestTierLabel(res ? {
+                        isFinal: res.source === 'final', rmaFinal: res.rmaFinal, source: res.source,
+                        rmaLabel: row.harvest.phase === 'in' ? row.harvest.label : null,
+                        contractLabel: row.baseContract,
+                      } : null)
+                      return (
+                        <>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-slate-400">$</span>
+                            <input
+                              type="number" step="0.01" min="0" inputMode="decimal"
+                              value={hDraft}
+                              onChange={(e) => setHarvestDrafts((d) => ({ ...d, [row.cropId]: e.target.value }))}
+                              placeholder="—"
+                              className="rounded-lg border border-slate-300 px-2 py-1 text-sm w-24 bg-white"
+                            />
+                            <span className="text-slate-400 text-xs">{/cotton/i.test(row.cropName) ? '/lb' : '/bu'}</span>
+                            {hDirty ? (
+                              <button type="button" disabled={saving} onClick={() => saveManualHarvest(row)} className="text-sm text-green-700 font-semibold disabled:opacity-40">Save</button>
+                            ) : (
+                              <span className={`text-xs rounded-full px-2 py-0.5 ${tier.cls}`}>{tier.text}</span>
+                            )}
+                          </div>
+                          {row.harvest.windowLabel && (
+                            <span className="block text-[10px] text-slate-400">window {row.harvest.windowLabel}</span>
+                          )}
+                          {res?.rmaFinal && res.supersededManual != null && (
+                            <span className="block text-xs text-sky-800">
+                              RMA final {fmtPrice(res.price)} — replaces your manual {fmtPrice(res.supersededManual)}.{' '}
+                              <button type="button" onClick={() => setHarvestKeep(row.cropId, true)} className="underline font-semibold">Keep mine</button>
+                            </span>
+                          )}
+                          {res && res.source === 'final' && !res.rmaFinal && (
+                            <span className="block text-xs text-slate-500">
+                              {harvestKeepSet.has(row.cropId) ? 'Using your manual final (an RMA final is published).' : 'Manual final.'}{' '}
+                              <button type="button" disabled={saving} onClick={() => resetHarvestToRma(row)} className="underline font-semibold disabled:opacity-50">Reset to RMA</button>
+                            </span>
+                          )}
+                        </>
+                      )
+                    })()}
                   </td>
                   <td className="px-2 py-2">
                     <button

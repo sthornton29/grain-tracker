@@ -265,3 +265,35 @@ describe('Claims Monitor tier chips match the settings vocabulary', () => {
     expect(harvestTierLabel(null).text).toBe('—')
   })
 })
+
+// Winter crops (CEPP ground truth): AL wheat = type Winter, ZWN base contract,
+// SCD 9/30, projected window 8/15-9/14 of the PRE-harvest year, harvest window
+// 6/1-6/30 of the harvest year - both Released for CY2026.
+describe('winter-crop typing and prior-year windows', () => {
+  const winter = rma({
+    crop_id: 'wheat', commodity_code: '0011',
+    projected_price: 5.63, projected_status: 'released',
+    projected_begin_date: '2025-08-15', projected_end_date: '2025-09-14',
+    harvest_price: 5.9, harvest_status: 'released',
+    harvest_begin_date: '2026-06-01', harvest_end_date: '2026-06-30',
+    harvest_market_symbol: 'ZWN26',
+    offer_identity: 'AL · Winter · Conventional · SCD 9/30/2025',
+  })
+
+  it('a CY2026 projected window ending 9/14/2025 is RELEASED — phase never computed from dates', () => {
+    // The status is RMA's own; a prior-calendar-year window must never read
+    // as "yet to start" just because its dates precede the commodity year.
+    const rows = buildPriceDiscoveryRows({
+      crops: [{ id: 'wheat', name: 'Wheat' }],
+      plantings: [{ crop_id: 'wheat', season_year: 2026 }],
+      policies: [], cropYear: 2026,
+      rmaResults: [winter],
+      estimates: [est({ crop_id: 'wheat', price: 5.63, source: 'RMA final', price_date: '2025-09-14' })],
+      keepManualProjected: new Set(), liveQuotes: new Map(),
+    })
+    expect(rows[0].projected.resolution).toMatchObject({ price: 5.63, source: 'rma' })
+    expect(rows[0].projected.windowLabel).toBe('8/15/2025-9/14/2025'.replace('-', '–'))
+    expect(rows[0].harvest).toMatchObject({ phase: 'post', price: 5.9, label: 'RMA final' })
+    expect(rows[0].baseContract).toBe('ZWN26')
+  })
+})

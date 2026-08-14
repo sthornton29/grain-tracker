@@ -189,6 +189,10 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   }, [cropYear, supabase])
 
   const [view, setView] = usePersistentState<ViewMode>('income-sens:view', 'revenue')
+  // Shared harvest keep-mine (settings window + Claims Monitor write it): a
+  // manual final the user explicitly kept over a published RMA final pins the
+  // scenario to the MANUAL value — otherwise the RMA final wins.
+  const [harvestKeepByYear] = usePersistentState<Record<string, string[]>>('ci-claims:keepManualHarvest', {})
   const [includeGov, setIncludeGov] = usePersistentState<boolean>('income-sens:gov', false)
   const [axes, setAxes] = usePersistentState<Record<string, AxisCfg>>('income-sens:axes', {})
   const [entityId, setEntityId] = usePersistentState('income-sens:entity', '')
@@ -443,11 +447,18 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       const split = harvestSplit.byCrop.get(cropId) ?? { fixedBu: 0, completedAcres: 0, remainingAcres: plantedAcres, state: 'pre' as const }
       const assumption = effAssumptions.find((a) => a.crop_id === cropId && a.crop_year === cropYear)
       const cropPolicies = scopedPolicies.filter((p) => p.crop_id === cropId && p.crop_year === cropYear)
-      // Once the RMA FINAL harvest price is on file (policy or stored final),
-      // insurance in every cell uses it — the same basis as the Claims Monitor.
+      // Once a FINAL harvest price is on file (policy, manual, or RMA), the
+      // insurance in every cell pins to it — the same basis as the Claims
+      // Monitor: the RMA final wins UNLESS the user explicitly kept a manual
+      // value over it (the shared keep-mine flag).
       const policyFinal = cropPolicies.find((p) => p.harvest_price != null)?.harvest_price
-      const storedFinal = priceEstimates.find((e) => e.crop_id === cropId && e.crop_year === cropYear && e.price_type === 'harvest_final')
-      const finalHarvestPrice = policyFinal != null ? Number(policyFinal) : storedFinal ? Number(storedFinal.price) : null
+      const cropFinals = priceEstimates.filter((e) => e.crop_id === cropId && e.crop_year === cropYear && e.price_type === 'harvest_final')
+      const rmaFinal = cropFinals.find((e) => /^rma/i.test(e.source ?? ''))
+      const manualFinal = policyFinal != null ? Number(policyFinal) : (cropFinals.find((e) => !/^rma/i.test(e.source ?? ''))?.price ?? null)
+      const keptManual = new Set(harvestKeepByYear[String(cropYear)] ?? []).has(cropId)
+      const finalHarvestPrice = rmaFinal && !(manualFinal != null && keptManual)
+        ? Number(rmaFinal.price)
+        : manualFinal != null ? Number(manualFinal) : null
       // County yield scenario (045): the shared assumption row for this crop
       // (first policy's county), the per-crop persisted mode, and the RMA-final
       // pin that disables both modes.
