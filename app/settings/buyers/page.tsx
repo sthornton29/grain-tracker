@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import { buyersImportConfig } from '@/lib/import-configs'
 import SettingsDocImport from '@/components/settings-doc-import'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { matchExistingBuyer, BUYER_FINDER_RADII, type BuyerFinderHit } from '@/lib/ai-lookups'
@@ -221,29 +222,7 @@ export default function BuyersPage() {
 
       <SettingsDocImport primaryTarget="buyers" title="Upload a Buyer List (AI)" onSaved={refresh} />
 
-      <CsvImport
-        config={{
-          tableName: 'buyers',
-          uniqueKey: 'name',
-          title: 'Import buyers & delivery locations from a spreadsheet',
-          note: 'One row per buyer. Put all of a buyer’s delivery locations in one cell, separated by semicolons; add an address after an @ sign — e.g. "North Elevator @ 105 Grain Rd, Decatur AL; River Terminal". Re-importing an existing buyer adds any NEW locations without touching the rest.',
-          columns: [
-            { key: 'name', label: 'buyer', required: true },
-            {
-              key: 'delivery_locations',
-              label: 'delivery_locations',
-              child: {
-                table: 'delivery_locations',
-                valueColumn: 'name',
-                parentKey: 'buyer_id',
-                splitOn: ';|',
-                detailColumn: 'address',
-              },
-            },
-          ],
-        }}
-        onImported={refresh}
-      />
+      <CsvImport config={buyersImportConfig()} onImported={refresh} />
 
       <form onSubmit={addBuyer} className="bg-white rounded-xl shadow p-4 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
         <input

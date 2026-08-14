@@ -36,6 +36,7 @@ type LoadRow = {
   to_bin_id: string | null
   to_buyer_id: string | null
   truck_id: string | null
+  hauler_truck: string | null
   ticket_number: string | null
   practice: 'irrigated' | 'dryland' | null
 }
@@ -135,7 +136,7 @@ export default function YieldsPage() {
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
-      supabase.from('loads').select('id, date, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, ticket_number, practice'),
+      supabase.from('loads').select('id, date, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, hauler_truck, ticket_number, practice'),
       supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('load_splits').select('*'),
       supabase.from('field_planting_varieties').select('*').order('variety'),

@@ -9,7 +9,8 @@ import { allocateSplits, validateSplitDrafts, type SplitDraft } from '@/lib/load
 import { practiceOf } from '@/lib/yields'
 import { rememberHarvestEntryPath } from '@/lib/harvest-entry-path'
 import { relinkSettlementLinesForLoad } from '@/lib/settlement-link'
-import type { Bin, Buyer, Contract, Crop, Field, FieldPlanting, Load, LoadSplit, Truck } from '@/lib/types'
+import { HaulerTruckField, TruckPicker, findExternalTruck } from '@/components/truck-picker'
+import type { Bin, Buyer, Contract, Crop, ExternalTruck, Field, FieldPlanting, Load, LoadSplit, Truck } from '@/lib/types'
 
 type Props = {
   initial?: Partial<Load>
@@ -25,6 +26,8 @@ type FormState = {
   date: string
   time: string
   truck_id: string
+  /** Hauler's truck (free text) on a pickup-contract load. */
+  hauler_truck: string
   crop_id: string
   crop_year: string
   gross_weight: string
@@ -59,6 +62,7 @@ function toForm(initial?: Partial<Load>): FormState {
     date: initial?.date ?? todayISO(),
     time: initial?.time ?? nowHHMM(),
     truck_id: initial?.truck_id ?? '',
+    hauler_truck: initial?.hauler_truck ?? '',
     crop_id: initial?.crop_id ?? '',
     crop_year: initial?.crop_year != null ? String(initial.crop_year) : '',
     gross_weight: initial?.gross_weight?.toString() ?? '',
@@ -112,6 +116,9 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     () => (initialSplits?.length ?? 0) > 0,
   )
   const [trucks, setTrucks] = useState<Truck[]>([])
+  const [externalTrucks, setExternalTrucks] = useState<ExternalTruck[]>([])
+  // "Save this truck" on a typed hauler truck — inserted on submit.
+  const [saveHaulerTruck, setSaveHaulerTruck] = useState(false)
   const [crops, setCrops] = useState<Crop[]>([])
   const [fields, setFields] = useState<Field[]>([])
   const [bins, setBins] = useState<Bin[]>([])
@@ -129,7 +136,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [t, c, f, b, by, ct, pl] = await Promise.all([
+      const [t, c, f, b, by, ct, pl, xt] = await Promise.all([
         supabase.from('trucks').select('*').order('name_or_number'),
         supabase.from('crops').select('*').order('name'),
         supabase.from('fields').select('*').order('name_or_number'),
@@ -137,8 +144,12 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         supabase.from('buyers').select('*').order('name'),
         supabase.from('contracts').select('*').order('contract_number'),
         supabase.from('field_plantings').select('*'),
+        // Saved hauler trucks for pickup contracts. Tolerates a missing table
+        // (067 not applied yet) — the picker just offers free text.
+        supabase.from('external_trucks').select('*').order('name'),
       ])
       setTrucks((t.data as Truck[]) || [])
+      setExternalTrucks((xt.data as ExternalTruck[]) || [])
       setCrops((c.data as Crop[]) || [])
       setFields((f.data as Field[]) || [])
       setBins((b.data as Bin[]) || [])
@@ -225,6 +236,9 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const buyerName = (id: string | null) => (id ? buyers.find((b) => b.id === id)?.name ?? '' : '')
   const selectedContract = contracts.find((c) => c.id === form.contract_id) ?? null
+  // Pickup contract: the buyer's trucks load at the farm, so the Truck field
+  // switches to the hauler-truck flow (free text + saved external trucks).
+  const isPickup = selectedContract?.delivery_type === 'pickup'
 
   // Fetch the contract's delivered dry bushels whenever the selection changes.
   useEffect(() => {
@@ -499,6 +513,9 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       date: form.date,
       time: form.time || null,
       truck_id: form.truck_id || null,
+      // Hauler truck only makes sense on a pickup contract; switching the
+      // load to a delivered contract clears it (classification rule).
+      hauler_truck: isPickup ? form.hauler_truck.trim() || null : null,
       crop_id: form.crop_id || null,
       crop_year: form.crop_year === '' ? null : Number(form.crop_year),
       gross_weight: num(form.gross_weight),
@@ -602,6 +619,21 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       }
     }
 
+    // "Save this truck" on a pickup load → external_trucks (NEVER the org's
+    // own trucks — see the classification rule in components/truck-picker).
+    // Best-effort: the load is already saved; a failed truck save only means
+    // the picker won't offer it next time.
+    if (isPickup && saveHaulerTruck && form.hauler_truck.trim() && !findExternalTruck(externalTrucks, form.hauler_truck)) {
+      try {
+        await supabase.from('external_trucks').insert({
+          name: form.hauler_truck.trim(),
+          buyer_id: selectedContract?.buyer_id ?? null,
+        })
+      } catch {
+        /* ignore — free text on the load is the source of truth */
+      }
+    }
+
     // Leave submittingRef = true; we're navigating away. Resetting it here
     // would briefly re-enable the button before the route change commits.
     rememberHarvestEntryPath('load')
@@ -630,10 +662,31 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className={labelCls}>
           Truck
-          <select value={form.truck_id} onChange={(e) => set('truck_id', e.target.value)} className={inputCls}>
-            <option value="">— select —</option>
-            {trucks.map((t) => <option key={t.id} value={t.id}>{t.name_or_number}</option>)}
-          </select>
+          {isPickup ? (
+            <div className="mt-1">
+              <HaulerTruckField
+                haulerTruck={form.hauler_truck}
+                truckId={form.truck_id}
+                onChangeHauler={(v) => set('hauler_truck', v)}
+                onChangeTruckId={(v) => set('truck_id', v)}
+                externalTrucks={externalTrucks}
+                trucks={trucks}
+                saveTruck={saveHaulerTruck}
+                onChangeSaveTruck={setSaveHaulerTruck}
+                className="w-full rounded-lg border border-slate-300 px-3 py-3 text-base bg-white"
+              />
+            </div>
+          ) : (
+            <TruckPicker
+              value={form.truck_id}
+              onChange={(id) => set('truck_id', id)}
+              trucks={trucks}
+              onCreated={(t) =>
+                setTrucks((ts) => [...ts, t].sort((a, b) => a.name_or_number.localeCompare(b.name_or_number)))
+              }
+              className={inputCls}
+            />
+          )}
         </label>
         <label className={labelCls}>
           Crop

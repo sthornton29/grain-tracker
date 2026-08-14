@@ -6,8 +6,7 @@ import CsvImport from '@/components/csv-import'
 import SettingsDocImport from '@/components/settings-doc-import'
 import EntitySelect from '@/components/entity-select'
 import LandownerPicker from '@/components/landowner-picker'
-import { defaultEntityId } from '@/lib/entity-default'
-import { normalizeCountyName } from '@/lib/fsa-benchmark-file'
+import { farmsImportConfig } from '@/lib/import-configs'
 import type { Entity, Farm, County, EntityCounty, Landowner } from '@/lib/types'
 
 const LAST_COUNTY_KEY = 'lastFarmCountyId'
@@ -205,51 +204,7 @@ export default function FarmsPage() {
 
       <SettingsDocImport primaryTarget="farms" title="Upload FSA Farm Records or a Lease (AI)" onSaved={refresh} />
 
-      <CsvImport
-        config={{
-          tableName: 'farms',
-          uniqueKey: 'name',
-          note: 'Entity and landowner match by name against what already exists — import entities and landowners first. If your operation has one entity, you can leave the entity column out — it’s filled in for you. Counties match by name + state together (two-letter state code, e.g. AL), so a "Lawrence" resolves to the right state’s Lawrence County. Share rent: yes/no, with the landlord share as a percent (e.g. 33.33) when yes.',
-          columns: [
-            { key: 'name', required: true },
-            // fallbackId auto-assigns the lone entity for single-entity
-            // operations (column may be omitted); multi-entity operations
-            // still get the required-column row error.
-            { key: 'entity_id', label: 'entity', required: true, fk: { table: 'entities', matchColumn: 'name', fallbackId: defaultEntityId(entities) } },
-            // Lookup-only: pairs with the county column below; never written
-            // to the farm row (farms carry county_id, not a state).
-            { key: 'state_code', label: 'state', virtual: true },
-            {
-              key: 'county_id',
-              label: 'county',
-              fk: {
-                table: 'counties',
-                matchColumn: 'name',
-                scopeKey: 'state_code',
-                scopeRequired: true,
-                scopeMissingError: 'county requires a state — add a state_code column',
-                // Same normalization as the rest of the app's county matching
-                // ("Lawrence County" ≡ "LAWRENCE" ≡ "Lawrence").
-                normalizeMatch: normalizeCountyName,
-              },
-            },
-            { key: 'fsa_number', label: 'fsa_number' },
-            { key: 'landowner_id', label: 'landowner', fk: { table: 'landowners', matchColumn: 'name' } },
-            { key: 'is_share_rent', label: 'share_rent', enum: ['yes', 'no', 'true', 'false', 'y', 'n'] },
-            { key: 'landlord_share_percentage', label: 'landlord_share_pct', type: 'number' },
-          ],
-          // The share-rent flag arrives as text; convert to the real boolean
-          // and keep the percentage only when share rent is on (the DB
-          // requires a percentage with the flag and forbids one without).
-          derive: (row) => {
-            const raw = row.is_share_rent
-            if (raw == null || raw === '') return {}
-            const sr = ['yes', 'true', 'y'].includes(String(raw).toLowerCase())
-            return { is_share_rent: sr, landlord_share_percentage: sr ? row.landlord_share_percentage ?? null : null }
-          },
-        }}
-        onImported={refresh}
-      />
+      <CsvImport config={farmsImportConfig(entities)} onImported={refresh} />
 
       <form onSubmit={add} className="space-y-2 bg-white p-4 rounded-xl shadow">
         <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr] gap-2">

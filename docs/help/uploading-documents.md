@@ -1,8 +1,8 @@
 ---
 page_route: /settings/uploads
 title: Uploading Documents
-updated: 2026-08-13
-keywords: upload, AI, documents, lease, FSA, 156EZ, plat map, acreage report, field list, photo, scan, import, cross-fill, review, confirm
+updated: 2026-08-14
+keywords: upload, AI, documents, lease, FSA, 156EZ, plat map, acreage report, field list, photo, scan, import, cross-fill, review, confirm, large document, many pages, timeout, progress
 ---
 ## What this is for
 
@@ -16,6 +16,12 @@ Most of what Turnrow needs to know about your operation is already written down 
 ## What the AI looks for
 
 One upload reads the WHOLE document, not just the page you started from. A lease, for example, usually names the landowner, the farm, and the share or cash-rent terms — all three land in your review, each grouped under the place it belongs, with the line of the document it came from shown beside it. Documents it handles well: lease agreements, FSA farm records (156EZ), plat maps and field lists, planting/acreage reports, insurance schedules, and plain lists — typed or handwritten.
+
+## Large documents
+
+- A long document (a thick FSA packet, a statement with pages of lines, a big photo batch) is read a few pages at a time — you'll see the progress as it goes ("Reading pages 9–16 of 24…"). This works the same on every upload button in Turnrow.
+- Something that appears on two of those page groups — the same farm, the same ticket — is recognized as one record, not two.
+- If a hiccup stops one group of pages, Turnrow retries it automatically. If it still can't be read, you keep everything that WAS read, with a note naming the pages that weren't — upload just those pages again rather than starting over.
 
 ## Everything requires your confirmation
 

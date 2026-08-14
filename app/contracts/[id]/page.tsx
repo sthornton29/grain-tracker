@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
+import { truckDisplay, truckExportLabel } from '@/lib/trucks'
 import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, effectiveContractType, type ContractType, type PricingStatus } from '@/lib/contracts'
 import ContractActions from './contract-actions'
 import ContractAttachments from '@/components/contract-attachments'
@@ -51,6 +52,7 @@ type LoadRow = {
   crop_id: string | null
   from_type: string | null
   truck: { name_or_number: string } | null
+  hauler_truck: string | null
   from_field: { name_or_number: string } | null
   from_bin: { name_or_number: string } | null
 }
@@ -75,7 +77,7 @@ async function fetchAllLoadsForContract(
     const { data, error } = await supabase
       .from('loads')
       .select(`
-        id, date, ticket_number, net_weight, moisture, dry_bushels_override, crop_id, from_type,
+        id, date, ticket_number, net_weight, moisture, dry_bushels_override, crop_id, from_type, hauler_truck,
         truck:trucks(name_or_number),
         from_field:fields!loads_from_field_id_fkey(name_or_number),
         from_bin:bins!loads_from_bin_id_fkey(name_or_number)
@@ -260,7 +262,7 @@ export default async function ContractDetailPage({ params }: { params: { id: str
             const ln = lineFor(l)
             const fromName = l.from_type === 'bin' ? l.from_bin?.name_or_number : l.from_field?.name_or_number
             return [
-              l.date, l.ticket_number ?? '', l.truck?.name_or_number ?? '', fromName ?? '',
+              l.date, l.ticket_number ?? '', truckExportLabel(l), fromName ?? '',
               l.net_weight ?? '', l.moisture ?? '', dryBu(l), ln ? Number(ln.net_bushels) : '', ln?.net_revenue != null ? Number(ln.net_revenue) : '',
             ]
           }),
@@ -377,7 +379,10 @@ export default async function ContractDetailPage({ params }: { params: { id: str
                       <tr key={l.id} className="border-t border-slate-100">
                         <td className="px-3 py-2 whitespace-nowrap">{l.date}</td>
                         <td className="px-3 py-2 whitespace-nowrap">{l.ticket_number ?? ''}</td>
-                        <td className="px-3 py-2 whitespace-nowrap">{l.truck?.name_or_number ?? ''}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          {truckDisplay(l).name}
+                          {truckDisplay(l).hauler && <span className="ml-1.5 text-[10px] uppercase tracking-wide bg-slate-100 text-slate-500 rounded px-1.5 py-0.5">hauler</span>}
+                        </td>
                         <td className="px-3 py-2 whitespace-nowrap">{fromName ?? ''}</td>
                         <td className="px-3 py-2 text-right">{l.net_weight != null ? fmt(Number(l.net_weight), 0) : ''}</td>
                         <td className="px-3 py-2 text-right">{l.moisture != null ? Number(l.moisture).toFixed(2) : ''}</td>

@@ -53,7 +53,15 @@ export type ColumnSpec = {
   label?: string
   required?: boolean
   type?: ColumnType
-  /** Optional default value when the row has no value for this column. */
+  /**
+   * Optional default value when the row has no value for this column.
+   *
+   * Blank-cell contract: a blank cell in a NON-required column never fails the
+   * row. Without a `default` here the key is omitted from the write entirely,
+   * so the DATABASE default applies (a NOT NULL DEFAULT false boolean lands
+   * false, a nullable column lands null, an optional FK stays unlinked). Only
+   * required columns may fail a row on a blank.
+   */
   default?: string | number | null
   /** Allowed literal values (case-insensitive match, canonicalized to lowercase). */
   enum?: string[]
@@ -97,6 +105,12 @@ export type ColumnSpec = {
      * Defaults to trim + lowercase.
      */
     normalizeMatch?: (value: string) => string
+    /**
+     * Extra columns to fetch from the FK table, exposed to derive() through
+     * DeriveContext.fkRow — e.g. the plantings import fetches fields.total_acres
+     * so a blank planted_acres can default to the field's full acres.
+     */
+    extraColumns?: string[]
     /**
      * Synonyms: lowercased incoming value → the canonical value to match on.
      * e.g. { soybeans: 'Soybean', beans: 'Soybean' } so a CSV "Soybeans" maps to
@@ -197,12 +211,32 @@ export type ImportConfig = {
    * Optional post-processing: given a row's resolved values, return extra/derived
    * columns to write (e.g. dryland_acres = planted - irrigated). On a sync update
    * it receives the existing row overlaid with the changed values, so derived
-   * fields stay consistent with whatever was actually provided.
+   * fields stay consistent with whatever was actually provided. Blank optional
+   * cells are ABSENT from the row (not null), so `row.x == null` means "not
+   * provided". The second argument exposes each fk column's resolved lookup row
+   * (see DeriveContext) for defaults that come from the referenced record.
    */
-  derive?: (row: Record<string, unknown>) => Record<string, unknown>
+  derive?: (row: Record<string, unknown>, ctx?: DeriveContext) => Record<string, unknown>
   /** When set, the importer runs this child column's values through the
    *  name-resolution pipeline before saving (see ChildResolution). */
   resolution?: ChildResolution
+  /**
+   * Per-cell preview annotation, shown appended to the raw cell value in the
+   * preview table (e.g. a blank planted-acres cell showing
+   * "→ 245 — from field acres"). Receives the column key and the row's raw
+   * cells keyed by column key. Return null for no annotation. Runs only on
+   * the preview rows; FK-resolution annotations (scoped FKs) take precedence.
+   */
+  previewAnnotate?: (colKey: string, rowCells: Record<string, string>) => { text: string; ok: boolean } | null
+}
+
+/**
+ * Passed to derive(): access to the FK lookup row each fk column resolved to
+ * (id + matchColumn + fk.extraColumns). Null when the cell was blank with no
+ * fallback, or the column isn't an fk column.
+ */
+export type DeriveContext = {
+  fkRow: (columnKey: string) => Record<string, unknown> | null
 }
 
 export type ImportResult = {
@@ -380,11 +414,20 @@ export async function runImport(
   const uniqueKeys = Array.isArray(config.uniqueKey) ? config.uniqueKey : [config.uniqueKey]
   const mode = opts.mode
 
-  // Pre-fetch FK lookup tables.
+  // Pre-fetch FK lookup tables. Two fk columns on the same table pool their
+  // extra columns (scope keys + derive extras) into one fetch.
   const fkTables = new Map<string, AnyRow[]>()
+  const fkExtraByTable = new Map<string, Set<string>>()
+  for (const col of config.columns) {
+    if (!col.fk) continue
+    const set = fkExtraByTable.get(col.fk.table) ?? new Set<string>()
+    if (col.fk.scopeKey) set.add(col.fk.scopeKey)
+    for (const c of col.fk.extraColumns ?? []) set.add(c)
+    fkExtraByTable.set(col.fk.table, set)
+  }
   for (const col of config.columns) {
     if (col.fk && !fkTables.has(col.fk.table)) {
-      const extra = col.fk.scopeKey ? [col.fk.scopeKey] : []
+      const extra = Array.from(fkExtraByTable.get(col.fk.table) ?? [])
       fkTables.set(col.fk.table, await fetchLookup(supabase, col.fk.table, col.fk.matchColumn, extra))
     }
   }
@@ -455,6 +498,8 @@ export async function runImport(
       // Columns whose incoming cell actually had a value. In sync mode only
       // these can update an existing row, so blanks never overwrite stored data.
       const provided = new Set<string>()
+      // Resolved FK lookup rows for this row, exposed to derive() (DeriveContext).
+      const fkRows: Record<string, AnyRow | null> = {}
       for (const col of config.columns) {
         const csvHeader = mapping[col.key]
         const idx = csvHeader ? headerIndex.get(csvHeader) ?? -1 : -1
@@ -468,10 +513,12 @@ export async function runImport(
               // Deliberately NOT marked provided: in sync mode a blank never
               // overwrites what's stored, same as every other column.
               payload[col.key] = col.fk.fallbackId
+              fkRows[col.key] = (fkTables.get(col.fk.table) || []).find((r) => r.id === col.fk!.fallbackId) ?? null
               continue
             }
             if (col.required) throw new Error(`${col.label ?? col.key} is required`)
-            payload[col.key] = null
+            // Blank optional FK: omit the key so the row simply stays unlinked
+            // (the DB default — null — applies). Never a row error.
             continue
           }
           const matchVal = col.fk.aliases?.[value.toLowerCase()] ?? value
@@ -488,8 +535,8 @@ export async function runImport(
               if (col.fk.scopeRequired) {
                 throw new Error(col.fk.scopeMissingError ?? `${col.label ?? col.key} "${value}" needs a ${col.fk.scopeKey} value`)
               }
-              // Legacy composite FKs: can't resolve without the scope value.
-              payload[col.key] = null
+              // Legacy composite FKs: can't resolve without the scope value —
+              // leave the key out so the row stays unlinked.
               continue
             }
             candidates = candidates.filter(
@@ -503,6 +550,7 @@ export async function runImport(
             throw new Error(`${col.label ?? col.key} "${value}"${scopeStr ? ` (${scopeStr})` : ''} matches multiple rows`)
           }
           payload[col.key] = candidates[0].id
+          fkRows[col.key] = candidates[0]
           provided.add(col.key)
         } else {
           const v = coerceValue(raw, col)
@@ -534,14 +582,20 @@ export async function runImport(
               children.push({ table: child.table, parentKey: child.parentKey, valueColumn: child.valueColumn, row: childRow })
             }
           } else {
+            // Blank optional cell without a config default: OMIT the key so the
+            // database default applies (NOT NULL DEFAULT columns keep their
+            // default instead of erroring on an explicit null).
+            if (v === null && !hasRaw) continue
             payload[col.key] = v
             if (hasRaw) provided.add(col.key)
           }
         }
       }
 
+      const ctx: DeriveContext = { fkRow: (k) => fkRows[k] ?? null }
+
       // Derived columns (e.g. dryland = planted - irrigated) for the insert path.
-      if (config.derive) Object.assign(payload, config.derive(payload))
+      if (config.derive) Object.assign(payload, config.derive(payload, ctx))
 
       // Lookup-only columns did their job (fk scoping) — never write them.
       for (const col of config.columns) {
@@ -575,7 +629,7 @@ export async function runImport(
         if (Object.keys(patch).length === 0 && childAdds.length === 0) { unchanged++; continue }
         // Recompute derived columns from the existing row overlaid with the
         // changes, so e.g. dryland tracks a changed planted/irrigated.
-        if (Object.keys(patch).length > 0 && config.derive) Object.assign(patch, config.derive({ ...existingRow, ...patch }))
+        if (Object.keys(patch).length > 0 && config.derive) Object.assign(patch, config.derive({ ...existingRow, ...patch }, ctx))
         toUpdate.push({ id: String(existingRow.id), patch, rowIndex: i, childAdds })
         continue
       }
@@ -593,12 +647,14 @@ export async function runImport(
     // Each inserted parent's id, aligned with toInsert, so child rows can be
     // linked back. Supabase preserves input order in the returned rows.
     const insertedIds: Array<string | null> = new Array(toInsert.length).fill(null)
-    // Insert in a single batch when possible.
-    const { data: batchData, error } = await supabase.from(config.tableName).insert(toInsert).select('id')
+    // Insert in a single batch when possible. Rows may carry different key
+    // sets (blank optionals are omitted) — defaultToNull: false makes the
+    // database fill missing keys with the column DEFAULT instead of null.
+    const { data: batchData, error } = await supabase.from(config.tableName).insert(toInsert, { defaultToNull: false }).select('id')
     if (error) {
       // Fall back to per-row inserts so partial progress still saves.
       for (let j = 0; j < toInsert.length; j++) {
-        const { data: oneData, error: e2 } = await supabase.from(config.tableName).insert(toInsert[j]).select('id').single()
+        const { data: oneData, error: e2 } = await supabase.from(config.tableName).insert([toInsert[j]], { defaultToNull: false }).select('id').single()
         if (e2 || !oneData) {
           failed.push({ rowIndex: toInsertCsvRow[j], reason: e2?.message ?? 'Insert failed' })
         } else {
@@ -625,7 +681,8 @@ export async function runImport(
     }
     for (const [table, rows] of childRows) {
       if (rows.length === 0) continue
-      const { error: cErr } = await supabase.from(table).insert(rows)
+      // Child rows also vary in shape (e.g. a variety with or without acres).
+      const { error: cErr } = await supabase.from(table).insert(rows, { defaultToNull: false })
       if (cErr) failed.push({ rowIndex: -1, reason: `${table}: ${cErr.message}` })
     }
   }

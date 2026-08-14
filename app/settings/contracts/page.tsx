@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
-import { defaultEntityId } from '@/lib/entity-default'
+import { contractsImportConfig } from '@/lib/import-configs'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import {
   ContractFields,
@@ -14,7 +14,9 @@ import {
   type ContractFormState,
 } from '@/components/contract-form'
 import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, basisFromCashFutures } from '@/lib/contracts'
-import { MAX_PDF_BYTES, PdfTooLargeError, parseDocument, uploadFileToStorage, type ContractExtraction } from '@/lib/pdf-upload'
+import { MAX_PDF_BYTES, PdfTooLargeError, uploadFileToStorage, type ContractExtraction } from '@/lib/pdf-upload'
+import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { mergeContracts } from '@/lib/parse-merge'
 import { imagesToPdf } from '@/lib/image-capture'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import { findBestMatch } from '@/lib/fuzzy'
@@ -110,9 +112,16 @@ export default function ContractsSettingsPage() {
     try {
       await new Promise((r) => setTimeout(r, 200))
       setAiStage('Extracting…')
-      const x = await parseDocument(src.kind === 'pdf' ? src.file : src.images, 'contract')
+      // Chunked parse for long contract packets: one contract per document,
+      // so later chunks only fill fields page 1 lacked (mergeContracts).
+      const { data: x, warning } = await parseDocumentChunked<ContractExtraction>(
+        src.kind === 'pdf' ? src.file : src.images,
+        'contract',
+        { onProgress: setAiStage, merge: mergeContracts },
+      )
       setForm(contractExtractionToForm(x, buyers, crops, form.entity_id))
       setSource(src)
+      if (warning) setErr(warning)
       setAiBanner('AI filled in the contract from the document. Review and edit anything below, then Add Contract — the document attaches automatically.')
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) setErr(e.message)
@@ -167,34 +176,7 @@ export default function ContractsSettingsPage() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Contracts</h1>
 
-      <CsvImport
-        config={{
-          tableName: 'contracts',
-          uniqueKey: 'contract_number',
-          note: 'Buyer, crop, and entity match by name against what already exists. If your operation has one entity, you can leave the entity column out — it’s filled in for you.',
-          columns: [
-            { key: 'contract_number', required: true },
-            { key: 'buyer_id', label: 'buyer', fk: { table: 'buyers', matchColumn: 'name' } },
-            { key: 'crop_id', label: 'crop', fk: { table: 'crops', matchColumn: 'name', aliases: { soybeans: 'Soybean', beans: 'Soybean', soy: 'Soybean' } } },
-            // fallbackId auto-assigns the lone entity for single-entity
-            // operations (column may be omitted). NOT required: contracts can
-            // legitimately be operation-level (null entity), and today's
-            // multi-entity import allows a blank entity — keep that behavior.
-            { key: 'entity_id', label: 'entity', fk: { table: 'entities', matchColumn: 'name', fallbackId: defaultEntityId(entities) } },
-            { key: 'crop_year', type: 'number' },
-            { key: 'contracted_bushels', type: 'number' },
-            { key: 'price_per_bushel', type: 'number' },
-            { key: 'cash_price', type: 'number' },
-            { key: 'contract_month' },
-            { key: 'delivery_type', enum: ['pickup', 'delivered'], default: 'pickup' },
-            { key: 'delivery_location_id', label: 'delivery_location', fk: { table: 'delivery_locations', matchColumn: 'name', scopeKey: 'buyer_id' } },
-            { key: 'delivery_start_date', type: 'date' },
-            { key: 'delivery_end_date', type: 'date' },
-            { key: 'notes' },
-          ],
-        }}
-        onImported={refresh}
-      />
+      <CsvImport config={contractsImportConfig(entities)} onImported={refresh} />
 
       <form onSubmit={add} className="space-y-2 bg-white p-4 rounded-xl shadow">
         <div className="flex items-center gap-3 flex-wrap border-b border-slate-100 pb-2">

@@ -36,6 +36,7 @@ type LoadRow = {
   to_bin_id: string | null
   to_buyer_id: string | null
   truck_id: string | null
+  hauler_truck: string | null
   ticket_number: string | null
 }
 
@@ -101,7 +102,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
         supabase.from('farms').select('*'),
         supabase.from('fields').select('*'),
         supabase.from('field_plantings').select('*'),
-        supabase.from('loads').select('id, date, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, ticket_number'),
+        supabase.from('loads').select('id, date, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, hauler_truck, ticket_number'),
         supabase.from('load_splits').select('*'),
         supabase.from('landowners').select('*').order('name'),
         supabase.from('trucks').select('id, name_or_number').order('name_or_number'),

@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
 import SettingsDocImport from '@/components/settings-doc-import'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { plantingsImportConfig } from '@/lib/import-configs'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { dismissalKey } from '@/lib/variety-resolution'
 import type { Crop, Farm, Field, FieldPlanting, FieldPlantingVariety, VarietyMatchDismissal } from '@/lib/types'
@@ -101,6 +102,8 @@ function FormFields({
   fieldLabel,
   seasonYearOptions,
   varietyOptionsByCrop,
+  plantings,
+  excludePlantingId,
 }: {
   value: Form
   onChange: (f: Form) => void
@@ -109,30 +112,60 @@ function FormFields({
   fieldLabel: (id: string) => string
   seasonYearOptions: number[]
   varietyOptionsByCrop: Map<string, string[]>
+  /** All plantings, for the same-field-same-year informational line. */
+  plantings: FieldPlanting[]
+  /** On the edit form: the planting being edited (excluded from the line). */
+  excludePlantingId?: string | null
 }) {
   const set = <K extends keyof Form>(k: K, v: Form[K]) => onChange({ ...value, [k]: v })
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
+  const cropNameById = useMemo(() => new Map(crops.map((c) => [c.id, c.name])), [crops])
   // Previously-used varieties for the selected crop, offered as a datalist so
   // the user can pick one or type a brand-new variety. Unique id per form
   // instance (add + edit forms can be on screen at once).
   const datalistId = `${useId()}-varieties`
   const varietyOptions = value.crop_id ? varietyOptionsByCrop.get(value.crop_id) ?? [] : []
 
-  // Default irrigated_acres to min(field.irrigated_acres, planted_acres) when
-  // the user picks a field or changes planted_acres — but only if the user
-  // hasn't typed an irrigated value yet. The override happens by leaving the
-  // field empty initially; once they type, we stop touching it.
+  // Picking a field seeds planted_acres from the field's total acres (a
+  // planting usually covers the whole field) and irrigated_acres from
+  // min(field.irrigated_acres, planted_acres) — but only into inputs the user
+  // hasn't typed in yet. Once they type, we stop touching the value.
   function onPickField(id: string) {
     const next: Form = { ...value, field_id: id }
-    if (value.irrigated_acres === '' && id) {
-      const f = fieldById.get(id)
-      const fieldIrr = f ? Number(f.irrigated_acres) || 0 : 0
-      const planted = Number(value.planted_acres || 0) || 0
+    const f = id ? fieldById.get(id) : undefined
+    if (value.planted_acres === '' && f && Number(f.total_acres) > 0) {
+      next.planted_acres = String(Number(f.total_acres))
+    }
+    if (value.irrigated_acres === '' && f) {
+      const fieldIrr = Number(f.irrigated_acres) || 0
+      const planted = Number(next.planted_acres || 0) || 0
       const seed = planted > 0 ? Math.min(fieldIrr, planted) : fieldIrr
       if (seed > 0) next.irrigated_acres = String(seed)
     }
     onChange(next)
   }
+
+  // The pre-fill hint stays visible while the value still equals the field's
+  // acres (typing anything else hides it).
+  const selectedField = value.field_id ? fieldById.get(value.field_id) : undefined
+  const plantedIsFieldSeed =
+    selectedField != null &&
+    value.planted_acres !== '' &&
+    Number(selectedField.total_acres) > 0 &&
+    Number(value.planted_acres) === Number(selectedField.total_acres)
+
+  // Other plantings already on this field for the picked season year. Shown as
+  // information, not a conflict — two crops on one field the same year is the
+  // normal double-crop shape, and both may claim the full acres.
+  const sameYearPlantings = useMemo(() => {
+    if (!value.field_id || value.season_year === '') return []
+    return plantings.filter(
+      (p) =>
+        p.field_id === value.field_id &&
+        String(p.season_year) === value.season_year &&
+        p.id !== excludePlantingId,
+    )
+  }, [plantings, value.field_id, value.season_year, excludePlantingId])
 
   function onChangePlanted(v: string) {
     const next: Form = { ...value, planted_acres: v }
@@ -234,6 +267,20 @@ function FormFields({
           />
         </label>
       </div>
+      {plantedIsFieldSeed && (
+        <p className="text-[11px] text-slate-500">
+          Planted acres pre-filled from the field&rsquo;s acres — type a value to override.
+        </p>
+      )}
+      {sameYearPlantings.length > 0 && (
+        <p className="text-xs text-sky-800 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2">
+          This field already has{' '}
+          {sameYearPlantings
+            .map((p) => `${cropNameById.get(p.crop_id) ?? 'a crop'} (${Number(p.planted_acres)} ac)`)
+            .join(' and ')}{' '}
+          for {value.season_year} — adding another crop is normal for double-crop; acres may overlap.
+        </p>
+      )}
       {invalid && (
         <p className="text-sm text-red-600">
           {irrigatedNegative(value.irrigated_acres)
@@ -542,76 +589,12 @@ export default function PlantingsPage() {
       <CsvImport
         defaultOpen
         recommended
-        config={{
-          tableName: 'field_plantings',
-          title: 'Import from Excel',
-          uniqueKey: ['field_id', 'crop_id', 'season_year'],
-          columns: [
-            { key: 'field_id', label: 'field', required: true, fk: { table: 'fields', matchColumn: 'name_or_number' } },
-            { key: 'crop_id', label: 'crop', required: true, fk: { table: 'crops', matchColumn: 'name', aliases: { soybeans: 'Soybean', beans: 'Soybean', soy: 'Soybean' } } },
-            { key: 'season_year', type: 'number', required: true },
-            { key: 'planted_acres', label: 'Total_Planted_Acres', type: 'number' },
-            { key: 'irrigated_acres', label: 'Irrigated_Acres_Planted', type: 'number', default: 0 },
-            { key: 'planting_date', type: 'date' },
-            { key: 'variety', child: { table: 'field_planting_varieties', valueColumn: 'variety', parentKey: 'planting_id', splitOn: ',;', amountColumn: 'acres' } },
-            { key: 'notes' },
-          ],
-          note: 'Download the Excel template — it opens pre-filled with your fields and has an Instructions tab that walks through filling it in.',
-          template: {
-            title: 'Field Plantings - Import Template',
-            overview: [
-              'The Data tab is already filled in with one row for every field you have set up, with the season year defaulted to the current year and the irrigated acres defaulted to each field\'s irrigated acres.',
-              'For every field you planted, enter the crop and Total_Planted_Acres (and adjust the other columns if needed). Leave the fields you did not plant untouched — rows you do not complete are ignored on import.',
-              'The season year is the harvest year (for example, wheat harvested in spring 2026 is season year 2026). When you are done, save the file and upload it on the Field Plantings page.',
-            ],
-            help: {
-              field_id: 'Pre-filled with each of your fields (matching Settings > Fields). Leave these as they are.',
-              crop_id: 'The crop you planted in this field, e.g. Corn, Soybean, or Wheat. "Soybeans", "Beans", and "Soy" all map to Soybean. Fill this in for every field you planted.',
-              season_year: 'The harvest year as a 4-digit number. Pre-filled with the current year; change it only for a different season.',
-              planted_acres: 'Total acres of this crop planted in the field. Fill this in for every field you planted.',
-              irrigated_acres: 'Pre-filled with the field\'s irrigated acres. Change it if this planting\'s irrigated acres differ, or set it to 0 (or blank) if this planting is all dryland.',
-              planting_date: 'Date planted, formatted YYYY-MM-DD. Optional.',
-              variety: 'Optional. To record several varieties in the same field, put them all in this one cell separated by ";" or ",", with each variety\'s acres after a colon. Example: P2089:70; DKC65-95:50',
-              notes: 'Anything else worth recording. Optional.',
-            },
-            tips: [
-              'The Data tab is pre-filled with your fields, the current year, and each field\'s irrigated acres — just complete the rows you planted and leave the rest. Rows you do not add a crop to are ignored.',
-              'Set Irrigated_Acres_Planted to 0 or blank for an all-dryland planting.',
-              'Multiple varieties in one field go in a single variety cell: P2089:70; DKC65-95:50',
-              'Rows are matched by field + crop + season year, so re-importing updates the matching row instead of creating a duplicate.',
-            ],
-            examples: [
-              ['North 40', 'Corn', '2026', '120', '80', '2026-04-15', 'P2089:120', 'first planting'],
-              ['South Bottom', 'Soybean', '2026', '90', '', '2026-05-01', 'AG38X8:50; P31A22:40', 'double-crop beans'],
-            ],
-            // Seed the Data tab with one row per existing field, defaulting the
-            // season year to the current year and irrigated acres to the field's
-            // irrigated acres. Rows the user never completes are ignored on
-            // import (see ignoreRowIfOnly below).
-            dataRows: fields.map((f) => ({
-              field_id: f.name_or_number,
-              season_year: String(currentYear()),
-              irrigated_acres: Number(f.irrigated_acres) > 0 ? String(f.irrigated_acres) : '',
-            })),
-          },
-          ignoreRowIfOnly: ['field_id', 'season_year', 'irrigated_acres'],
-          // Dryland = planted − irrigated, so a blank irrigated field counts as all dryland.
-          derive: (r) => {
-            const planted = Number(r.planted_acres) || 0
-            const irr = Number(r.irrigated_acres) || 0
-            return { dryland_acres: Math.max(0, planted - irr) }
-          },
-          // Route the variety column through the shared resolution pipeline:
-          // format variants link to the existing spelling, near names need a
-          // decision, new names are created once per file (per crop).
-          resolution: {
-            columnKey: 'variety',
-            scopeKey: 'crop_id',
-            noun: 'variety',
-            loadExisting: async () => varietyOptionsByCrop,
-            loadDismissed: async () => dismissedPairsByCrop,
-          },
-        }}
+        config={plantingsImportConfig({
+          fields,
+          currentYear: currentYear(),
+          varietyOptionsByCrop,
+          dismissedPairsByCrop,
+        })}
         onImported={refresh}
       />
 
@@ -619,7 +602,7 @@ export default function PlantingsPage() {
 
       <form onSubmit={add} className="bg-white rounded-xl shadow p-4 space-y-3">
         <h2 className="font-semibold">Add planting</h2>
-        <FormFields value={form} onChange={setForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} varietyOptionsByCrop={varietyOptionsByCrop} />
+        <FormFields value={form} onChange={setForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} varietyOptionsByCrop={varietyOptionsByCrop} plantings={plantings} />
         <button
           disabled={formInvalid(form)}
           className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50"
@@ -738,7 +721,7 @@ export default function PlantingsPage() {
                 <tr key={p.id} className="border-t border-slate-100 align-top">
                   {isEditing ? (
                     <td colSpan={10} className="px-3 py-3">
-                      <FormFields value={editForm} onChange={setEditForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} varietyOptionsByCrop={varietyOptionsByCrop} />
+                      <FormFields value={editForm} onChange={setEditForm} fields={fields} crops={crops} fieldLabel={fieldLabel} seasonYearOptions={seasonYearOptions} varietyOptionsByCrop={varietyOptionsByCrop} plantings={plantings} excludePlantingId={p.id} />
                       <div className="flex gap-2 mt-2">
                         <button
                           onClick={() => save(p.id)}

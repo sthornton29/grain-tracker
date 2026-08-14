@@ -11,8 +11,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { findBestMatch } from '@/lib/fuzzy'
-import { PdfTooLargeError, parseDocument, type CottonLoadsExtraction, type CottonLoadExtraction } from '@/lib/pdf-upload'
-import { splitPdfIntoBatches } from '@/lib/pdf-split'
+import { PdfTooLargeError, type CottonLoadsExtraction, type CottonLoadExtraction } from '@/lib/pdf-upload'
+import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { mergeCottonLoads } from '@/lib/parse-merge'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import { yardInventoryByField } from '@/lib/cotton'
 import type { CottonLoad, Gin, Farm, Field, Entity } from '@/lib/types'
@@ -123,21 +124,16 @@ export default function CottonLoadsPage() {
     setErr(null); setMsg(null); setSource(src); setAiRows([])
     setStage('Reading module tickets…')
     try {
-      const extracted: CottonLoadExtraction[] = []
-      if (src.kind === 'pdf') {
-        let batches: File[] = [src.file]
-        try { batches = await splitPdfIntoBatches(src.file, 4) } catch { batches = [src.file] }
-        for (let i = 0; i < batches.length; i++) {
-          setStage(batches.length > 1 ? `Extracting loads (batch ${i + 1} of ${batches.length})…` : 'Extracting loads…')
-          const data = (await parseDocument(batches[i], 'cotton_weight_ticket')) as CottonLoadsExtraction
-          if (Array.isArray(data.loads)) extracted.push(...data.loads)
-        }
-      } else {
-        setStage('Extracting loads…')
-        const data = (await parseDocument(src.images, 'cotton_weight_ticket')) as CottonLoadsExtraction
-        if (Array.isArray(data.loads)) extracted.push(...data.loads)
-      }
-      if (extracted.length === 0) { setErr('No loads found in this document.'); return }
+      // Chunked parse: page/photo batches with per-chunk retry; a load number
+      // repeated across a batch boundary resolves once (mergeCottonLoads).
+      const { data, warning } = await parseDocumentChunked<CottonLoadsExtraction>(
+        src.kind === 'pdf' ? src.file : src.images,
+        'cotton_weight_ticket',
+        { pagesPerBatch: 4, onProgress: setStage, merge: mergeCottonLoads },
+      )
+      const extracted: CottonLoadExtraction[] = Array.isArray(data.loads) ? data.loads : []
+      if (extracted.length === 0) { setErr(warning ?? 'No loads found in this document.'); return }
+      if (warning) setErr(warning)
       setAiRows(extracted.map(extractionToRow))
       setMsg(`Extracted ${extracted.length} load${extracted.length === 1 ? '' : 's'} — review and save.`)
     } catch (e: any) {

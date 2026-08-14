@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
 import { CONTRACT_TYPE_LABEL } from '@/lib/contracts'
+import { truckDisplay, truckExportLabel } from '@/lib/trucks'
 import LoadAttachments from '@/components/load-attachments'
 import LoadPdfBar from './load-pdf-bar'
 import DeleteLoadButton from './delete-load-button'
@@ -31,6 +32,7 @@ type LoadShape = {
   from_type: 'field' | 'bin' | null
   to_type: 'bin' | 'buyer' | null
   truck: { name_or_number: string } | null
+  hauler_truck: string | null
   crop: { name: string; base_moisture_pct: number | null; base_lb_per_bushel: number | null } | null
   from_field: { name_or_number: string; farm: { name: string; fsa_number: string | null } | null } | null
   from_bin: { name_or_number: string } | null
@@ -92,7 +94,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
     .select(`
       id, date, time, ticket_number, crop_year,
       gross_weight, tare_weight, net_weight, moisture, test_weight, dry_bushels_override,
-      from_type, to_type,
+      from_type, to_type, hauler_truck,
       truck:trucks(name_or_number),
       crop:crops(name, base_moisture_pct, base_lb_per_bushel),
       from_field:fields!loads_from_field_id_fkey(name_or_number, farm:farms(name, fsa_number)),
@@ -178,7 +180,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
     rows: [
       ['Date / time', dateTime],
       ['Ticket #', ticket ?? '—'],
-      ['Truck', load.truck?.name_or_number ?? '—'],
+      ['Truck', truckExportLabel(load) || '—'],
       ['Crop', load.crop?.name ?? '—'],
       ['Crop year', load.crop_year != null ? String(load.crop_year) : '—'],
       ['From', fromText],
@@ -289,7 +291,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
         <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2 px-4 py-3">
           <Def label="Date / time" value={dateTime} />
           <Def label="Ticket #" value={ticket ?? '—'} />
-          <Def label="Truck" value={load.truck?.name_or_number ?? '—'} />
+          <Def label="Truck" value={truckDisplay(load).name || '—'} sub={truckDisplay(load).hauler ? 'hauler' : undefined} />
           <Def label="Crop" value={`${load.crop?.name ?? '—'}${load.crop_year != null ? ` · ${load.crop_year} crop` : ''}`} />
           <Def label="From" value={fromText} />
           <Def label="To" value={toText} />

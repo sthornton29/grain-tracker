@@ -24,7 +24,8 @@ import DocumentCapture, { type DocumentSource } from '@/components/document-capt
 import { BuyerPicker } from '@/components/buyer-location-pickers'
 import EntitySelect from '@/components/entity-select'
 import { resolveUploadEntityId } from '@/lib/crop-insurance'
-import { parseDocument } from '@/lib/pdf-upload'
+import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { mergeCottonMarketing } from '@/lib/parse-merge'
 import { findBestMatch } from '@/lib/fuzzy'
 import { formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
 import { computeLoanPrincipal, equityOutcome, ldpRateCents } from '@/lib/cotton-sales'
@@ -89,15 +90,25 @@ export default function MarketingDocImport(props: Props) {
   // upload seam (single-entity ops auto-assign; derived per render, never cached).
   const singleEntityId = resolveUploadEntityId({ entities: props.entities, chosen: '' }) ?? ''
 
+  const [stage, setStage] = useState<string | null>(null)
+
   async function runParse(source: DocumentSource, category?: CottonMarketingCategory) {
     setBusy(true); setErr(null)
     try {
-      const r = await parseDocument(source.kind === 'pdf' ? source.file : source.images, 'cotton_marketing_document', category ? { category } : undefined)
+      // Chunked parse for long documents (a bale list can run pages): the
+      // merge takes the majority category, first-page scalars, and dedupes
+      // bale PBIs across chunk boundaries (mergeCottonMarketing).
+      const { data: r, warning } = await parseDocumentChunked<CottonMarketingExtraction>(
+        source.kind === 'pdf' ? source.file : source.images,
+        'cotton_marketing_document',
+        { category, onProgress: setStage, merge: mergeCottonMarketing },
+      )
+      if (warning) setErr(warning)
       setResult(r)
       setSrc(source)
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Extraction failed.')
-    } finally { setBusy(false) }
+    } finally { setBusy(false); setStage(null) }
   }
 
   function reset() { setSrc(null); setResult(null); setErr(null) }
@@ -125,7 +136,7 @@ export default function MarketingDocImport(props: Props) {
 
       {!result && (
         <>
-          <DocumentCapture onSource={(s) => void runParse(s)} busy={busy} stageLabel={busy ? 'Classifying & extracting…' : null} pdfLabel="Upload PDF or Image" />
+          <DocumentCapture onSource={(s) => void runParse(s)} busy={busy} stageLabel={busy ? stage ?? 'Classifying & extracting…' : null} pdfLabel="Upload PDF or Image" />
           <p className="text-xs text-slate-500">The AI classifies the document and extracts its fields in one pass. You review everything before anything saves.</p>
         </>
       )}

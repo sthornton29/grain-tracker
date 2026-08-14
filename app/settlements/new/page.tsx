@@ -9,9 +9,11 @@ import { findBestMatch } from '@/lib/fuzzy'
 import {
   MAX_PDF_BYTES,
   PdfTooLargeError,
-  parseDocument,
   uploadPdfToStorage,
+  type SettlementExtraction,
 } from '@/lib/pdf-upload'
+import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { mergeSettlements } from '@/lib/parse-merge'
 import { imagesToPdf } from '@/lib/image-capture'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
@@ -171,14 +173,22 @@ export default function NewSettlementPage() {
       // Give the user a beat to see the first stage label before it flips.
       await new Promise((r) => setTimeout(r, 250))
       setAiStage('Extracting data…')
-      const data = await parseDocument(src.kind === 'pdf' ? src.file : src.images, 'settlement')
+      // Chunked parse for long settlement statements: per-chunk retry, failed
+      // pages reported, line items repeated across a batch boundary resolve
+      // once (mergeSettlements — dedupe by ticket number).
+      const { data, warning } = await parseDocumentChunked<SettlementExtraction>(
+        src.kind === 'pdf' ? src.file : src.images,
+        'settlement',
+        { onProgress: setAiStage, merge: mergeSettlements },
+      )
 
       const extractedLines = Array.isArray(data.line_items) ? data.line_items : []
       if (extractedLines.length === 0) {
-        setErr('No records found in this document. The scan may be too blurry or the format may not be readable.')
+        setErr(warning ?? 'No records found in this document. The scan may be too blurry or the format may not be readable.')
         setAiStage(null)
         return
       }
+      if (warning) setErr(warning)
 
       // Fuzzy-match buyer to existing dropdown.
       const buyerHit = findBestMatch(data.buyer_name, buyers, (b) => b.name)

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import { entitiesImportConfig } from '@/lib/import-configs'
 import SettingsDocImport from '@/components/settings-doc-import'
 import type { Entity, County, EntityCounty } from '@/lib/types'
 
@@ -158,17 +159,7 @@ export default function EntitiesPage() {
 
       <SettingsDocImport primaryTarget="entities" title="Upload a Document (AI)" onSaved={refresh} />
 
-      <CsvImport
-        config={{
-          tableName: 'entities',
-          uniqueKey: 'name',
-          columns: [
-            { key: 'name', required: true },
-            { key: 'notes' },
-          ],
-        }}
-        onImported={refresh}
-      />
+      <CsvImport config={entitiesImportConfig()} onImported={refresh} />
 
       <form onSubmit={add} className="space-y-3 bg-white p-4 rounded-xl shadow">
         <div className="grid grid-cols-1 sm:grid-cols-[1fr_2fr] gap-2">

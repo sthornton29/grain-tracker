@@ -10,7 +10,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { findBestMatch } from '@/lib/fuzzy'
-import { PdfTooLargeError, parseDocument, type GinReceiptExtraction } from '@/lib/pdf-upload'
+import { PdfTooLargeError, type GinReceiptExtraction } from '@/lib/pdf-upload'
+import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { mergeGinReceipts } from '@/lib/parse-merge'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import { reconcileBaleCount, lintTurnoutPct } from '@/lib/cotton'
 import type { GinReceipt, Gin, Farm, Field, Entity, CottonLoad } from '@/lib/types'
@@ -85,8 +87,16 @@ export default function GinReceiptsPage() {
     setErr(null); setMsg(null); setSource(src); setX(null)
     setStage('Reading the Statement of Ginning…')
     try {
-      // A statement is one document (bale list may span pages) — single call.
-      const data = (await parseDocument(src.kind === 'pdf' ? src.file : src.images, 'gin_receipt')) as GinReceiptExtraction
+      // A statement is one document, but its bale list can run many pages —
+      // chunked parse keeps each call under the time limit; the merge takes
+      // header fields from the first page and dedupes loads/bales that repeat
+      // across a batch boundary (mergeGinReceipts).
+      const { data, warning } = await parseDocumentChunked<GinReceiptExtraction>(
+        src.kind === 'pdf' ? src.file : src.images,
+        'gin_receipt',
+        { onProgress: setStage, merge: mergeGinReceipts },
+      )
+      if (warning) setErr(warning)
       setX({ ...data, loads: data.loads ?? [], bales: data.bales ?? [] })
       const farm = (data.farm_number ? farms.find((f) => (f.fsa_number ?? '').trim() === data.farm_number!.trim()) : null)
         ?? (data.farm_name ? findBestMatch(data.farm_name, farms, (f) => f.name) : null)

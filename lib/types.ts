@@ -66,6 +66,15 @@ export type BinSite = {
   notes: string | null
 }
 export type Truck = { id: string; name_or_number: string }
+// A hauler's truck saved from a pickup-contract load (067) — org-scoped,
+// kept strictly separate from the operation's own trucks. buyer_id is the
+// pickup contract's buyer at save time (null = independent hauler).
+export type ExternalTruck = {
+  id: string
+  name: string
+  buyer_id: string | null
+  created_at: string
+}
 export type Buyer = { id: string; name: string }
 export type DeliveryLocation = {
   id: string
@@ -642,6 +651,10 @@ export type Load = {
   date: string
   time: string | null
   truck_id: string | null
+  /** Hauler's truck written on a pickup-contract load (067), free text — kept
+   *  as entered even if the saved external truck is later renamed/deleted.
+   *  Own trucks use truck_id; a load normally carries one or the other. */
+  hauler_truck: string | null
   crop_id: string | null
   gross_weight: number | null
   tare_weight: number | null

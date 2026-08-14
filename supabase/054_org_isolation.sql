@@ -54,7 +54,7 @@ begin
     'settlements', 'settlement_lines',
     'futures_positions', 'options_positions',
     'crop_assumptions', 'county_yield_assumptions', 'crop_year_sales_status',
-    'harvest_price_estimates', 'variety_match_dismissals', 'combine_yield_entries',
+    'harvest_price_estimates', 'variety_match_dismissals', 'combine_yield_entries', 'external_trucks',
     'crop_insurance_policies', 'crop_insurance_sco', 'crop_insurance_eco',
     'crop_insurance_stax', 'crop_insurance_mco',
     'farm_base_acres', 'arc_plc_elections', 'arc_plc_payments',

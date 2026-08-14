@@ -11,10 +11,12 @@
 
 import { useState } from 'react'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
-import { parseDocument } from '@/lib/pdf-upload'
+import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { mergeCottonMarketing } from '@/lib/parse-merge'
 import {
   parseBaleNumberList, partitionBaleAssignment,
   type AssignTarget, type BaleForAssign, type BaleListExtract, type BalePartition,
+  type CottonMarketingExtraction,
 } from '@/lib/cotton-doc-import'
 import type { CottonDisposition } from '@/lib/types'
 
@@ -64,7 +66,14 @@ export default function BaleFileAssign({ target, bales, dispositionByBale, loane
   async function onDocSource(src: DocumentSource) {
     setBusy(true); setErr(null); setPartition(null)
     try {
-      const result = await parseDocument(src.kind === 'pdf' ? src.file : src.images, 'cotton_marketing_document', { category: 'bale_list' })
+      // Chunked parse: a bale list can run many pages — batches keep each call
+      // under the time limit; PBIs repeated across a boundary dedupe in merge.
+      const { data: result, warning } = await parseDocumentChunked<CottonMarketingExtraction>(
+        src.kind === 'pdf' ? src.file : src.images,
+        'cotton_marketing_document',
+        { category: 'bale_list', merge: mergeCottonMarketing },
+      )
+      if (warning) setErr(warning)
       const pbis = ((result.extracted as BaleListExtract | null)?.bale_pbis ?? []).map(String)
       runPartition(pbis, `AI extracted ${pbis.length} bale numbers from the document`)
     } catch (e) {

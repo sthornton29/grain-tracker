@@ -9,6 +9,7 @@ import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { HARVEST_ENTRY_PATH_KEY, type HarvestEntryPath } from '@/lib/harvest-entry-path'
 import { splitFieldLabel } from '@/lib/load-splits'
+import { truckDisplay, truckExportLabel } from '@/lib/trucks'
 import ExportBar from '@/components/export-bar'
 import type { ExportPayload, ExportCell } from '@/lib/exports'
 import type { Entity, Farm, Field, FieldPlanting, County, LoadSplit } from '@/lib/types'
@@ -29,6 +30,8 @@ type Row = {
   dry_bushels_override: number | null
   from_field_id: string | null
   truck: { name_or_number: string } | null
+  /** Hauler's truck on a pickup-contract load (067) — shown with a badge. */
+  hauler_truck: string | null
   crop: { name: string; base_moisture_pct: number | null; base_lb_per_bushel: number | null } | null
   from_field: { name_or_number: string } | null
   from_bin: { name_or_number: string } | null
@@ -55,6 +58,7 @@ const SELECT = `
   gross_weight, tare_weight, net_weight, moisture, test_weight,
   dry_bushels_override,
   from_type, to_type, from_field_id, to_buyer_id, contract_id,
+  hauler_truck,
   truck:trucks(name_or_number),
   crop:crops(name, base_moisture_pct, base_lb_per_bushel),
   from_field:fields!loads_from_field_id_fkey(name_or_number),
@@ -284,7 +288,7 @@ export default function LoadsPage() {
     if (cropYear !== '' && r.crop_year !== cropYear) return false
     if (!q) return true
     const hay = [
-      r.ticket_number, r.truck?.name_or_number, r.crop?.name,
+      r.ticket_number, truckDisplay(r).name, r.crop?.name,
       fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number, r.date,
     ].filter(Boolean).join(' ').toLowerCase()
     return hay.includes(q.toLowerCase())
@@ -305,7 +309,9 @@ export default function LoadsPage() {
       switch (sortKey) {
         case 'date': av = a.date + ' ' + (a.time ?? ''); bv = b.date + ' ' + (b.time ?? ''); break
         case 'ticket': av = a.ticket_number; bv = b.ticket_number; break
-        case 'truck': av = a.truck?.name_or_number ?? null; bv = b.truck?.name_or_number ?? null; break
+        // Hauler trucks sort by their text but stay a distinct list visually
+        // (badge); own truck wins when both are somehow set (truckDisplay).
+        case 'truck': av = truckDisplay(a).name || null; bv = truckDisplay(b).name || null; break
         case 'crop': av = a.crop?.name ?? null; bv = b.crop?.name ?? null; break
         case 'net': av = a.net_weight; bv = b.net_weight; break
         case 'dry': av = bushelsFor(a).dryBushels; bv = bushelsFor(b).dryBushels; break
@@ -390,7 +396,7 @@ export default function LoadsPage() {
         : ''
       lines.push([
         r.date, r.time ?? '', r.ticket_number ?? '',
-        r.truck?.name_or_number ?? '', r.crop?.name ?? '',
+        truckExportLabel(r), r.crop?.name ?? '',
         fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number ?? '',
         r.gross_weight ?? '', r.tare_weight ?? '', r.net_weight ?? '',
         wetBushels != null ? wetBushels.toFixed(2) : '',
@@ -434,7 +440,7 @@ export default function LoadsPage() {
             : pay === 'unpaid' ? { v: 'Unpaid', tone: 'warning' as const }
             : ''
           return [
-            r.date, r.ticket_number ?? '', r.truck?.name_or_number ?? '', r.crop?.name ?? '',
+            r.date, r.ticket_number ?? '', truckExportLabel(r), r.crop?.name ?? '',
             fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number ?? '', payCell,
             r.gross_weight ?? '', r.tare_weight ?? '', r.net_weight ?? '',
             wetBushels ?? '', dryBushels ?? '', r.moisture ?? '', r.test_weight ?? '',
@@ -595,7 +601,17 @@ export default function LoadsPage() {
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap">{r.date}{r.time ? ` ${r.time.slice(0,5)}` : ''}</td>
                   <td className="px-3 py-2">{r.ticket_number}</td>
-                  <td className="px-3 py-2">{r.truck?.name_or_number}</td>
+                  <td className="px-3 py-2">
+                    {(() => {
+                      const t = truckDisplay(r)
+                      return (
+                        <>
+                          {t.name}
+                          {t.hauler && <span className="ml-1.5 text-[10px] uppercase tracking-wide bg-slate-100 text-slate-500 rounded px-1.5 py-0.5">hauler</span>}
+                        </>
+                      )
+                    })()}
+                  </td>
                   <td className="px-3 py-2">{r.crop?.name}</td>
                   <td className="px-3 py-2">
                     <span>{fromLabel(r, rSplits, fieldNameById)}</span>

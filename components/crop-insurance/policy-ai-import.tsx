@@ -9,8 +9,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { findBestMatch } from '@/lib/fuzzy'
-import { PdfTooLargeError, parseDocument, type CropInsurancePolicyExtraction } from '@/lib/pdf-upload'
-import { splitPdfIntoBatches } from '@/lib/pdf-split'
+import { PdfTooLargeError, type CropInsuranceExtraction, type CropInsurancePolicyExtraction } from '@/lib/pdf-upload'
+import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { mergeCropInsurance } from '@/lib/parse-merge'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
 import {
@@ -234,26 +235,19 @@ export default function PolicyAiImport({ crops, counties, entities, existingPoli
     setStage('Reading policy…')
     try {
       await new Promise((r) => setTimeout(r, 200))
-      // Split a multi-page policy packet into small batches so one long call
-      // can't time out (504); photos go in a single call.
-      const extracted: CropInsurancePolicyExtraction[] = []
-      if (src.kind === 'pdf') {
-        let batches: File[] = [src.file]
-        try { batches = await splitPdfIntoBatches(src.file, 4) } catch { batches = [src.file] }
-        for (let i = 0; i < batches.length; i++) {
-          setStage(batches.length > 1 ? `Extracting policies (batch ${i + 1} of ${batches.length})…` : 'Extracting policies…')
-          const data = await parseDocument(batches[i], 'crop_insurance_policy')
-          if (Array.isArray(data.policies)) extracted.push(...data.policies)
-        }
-      } else {
-        setStage('Extracting policies…')
-        const data = await parseDocument(src.images, 'crop_insurance_policy')
-        if (Array.isArray(data.policies)) extracted.push(...data.policies)
-      }
+      // Chunked parse (multi-page packets AND photo batches): per-chunk retry,
+      // boundary dedupe in the merge, failed pages reported instead of a 504.
+      const { data, warning } = await parseDocumentChunked<CropInsuranceExtraction>(
+        src.kind === 'pdf' ? src.file : src.images,
+        'crop_insurance_policy',
+        { pagesPerBatch: 4, onProgress: setStage, merge: mergeCropInsurance },
+      )
+      const extracted: CropInsurancePolicyExtraction[] = Array.isArray(data.policies) ? data.policies : []
       if (extracted.length === 0) {
-        setErr('No policies found in this document. The scan may be unclear or the format may not be readable.')
+        setErr(warning ?? 'No policies found in this document. The scan may be unclear or the format may not be readable.')
         return
       }
+      if (warning) setErr(warning)
       const next: Row[] = extracted.map((p) => {
         const { form, raw_crop, raw_county, raw_coverage_provided, raw_unit_provided } = extractionToForm(p)
         // Already-existing policies start unchecked (skipped); new rows and

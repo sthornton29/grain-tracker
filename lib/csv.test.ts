@@ -339,7 +339,7 @@ describe('runImport — FK resolution', () => {
     expect(res.failed).toEqual([{ rowIndex: 0, reason: 'Crop "Corn" matches multiple rows' }])
   })
 
-  it('sets the FK column to null when the cell is blank and not required', async () => {
+  it('omits an optional FK column when the cell is blank (unlinked, never an error)', async () => {
     const { client, inserted } = makeFakeClient({
       crops: [{ id: 'crop-corn', name: 'Corn' }],
       plantings: [],
@@ -355,7 +355,9 @@ describe('runImport — FK resolution', () => {
       mode: 'add',
     })
     expect(res.added).toBe(1)
-    expect(inserted.plantings[0].crop_id).toBeNull()
+    // Blank optional cells are OMITTED from the payload (not explicit null)
+    // so the database default applies — the blank-cell contract.
+    expect('crop_id' in inserted.plantings[0]).toBe(false)
   })
 
   it('fails the row when a required FK cell is blank', async () => {
@@ -418,7 +420,7 @@ describe('runImport — FK resolution', () => {
     expect(inserted.contracts[0].delivery_location_id).toBe('loc-2')
   })
 
-  it('nulls a scoped FK when the scope value is unresolved', async () => {
+  it('leaves a scoped FK unlinked when the scope value is unresolved', async () => {
     // Buyer is blank -> buyer_id is null -> scoped location cannot resolve and
     // is set to null (no error).
     const { client, inserted } = makeFakeClient({
@@ -450,8 +452,10 @@ describe('runImport — FK resolution', () => {
       { mode: 'add' }
     )
     expect(res.failed).toEqual([])
-    expect(inserted.contracts[0].buyer_id).toBeNull()
-    expect(inserted.contracts[0].delivery_location_id).toBeNull()
+    // Blank/unresolvable optional FKs are omitted so the row stays unlinked
+    // via the database default rather than an explicit null.
+    expect('buyer_id' in inserted.contracts[0]).toBe(false)
+    expect('delivery_location_id' in inserted.contracts[0]).toBe(false)
   })
 })
 

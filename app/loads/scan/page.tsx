@@ -10,10 +10,12 @@ import { findBestMatch } from '@/lib/fuzzy'
 import {
   MAX_PDF_BYTES,
   PdfTooLargeError,
-  parseDocument,
   uploadPdfToStorage,
   type TicketExtraction,
+  type TicketsExtraction,
 } from '@/lib/pdf-upload'
+import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { mergeTickets } from '@/lib/parse-merge'
 import { imagesToPdf } from '@/lib/image-capture'
 import { practiceOf } from '@/lib/yields'
 import { rememberHarvestEntryPath } from '@/lib/harvest-entry-path'
@@ -278,12 +280,20 @@ export default function ScanTicketsPage() {
     try {
       await new Promise((r) => setTimeout(r, 250))
       setAiStage('Extracting data…')
-      const data = await parseDocument(src.kind === 'pdf' ? src.file : src.images, 'tickets')
+      // Chunked parse for big ticket stacks (PDF pages or photo batches):
+      // per-chunk retry, failed pages reported, a ticket repeated across a
+      // batch boundary resolves once (mergeTickets).
+      const { data, warning } = await parseDocumentChunked<TicketsExtraction>(
+        src.kind === 'pdf' ? src.file : src.images,
+        'tickets',
+        { onProgress: setAiStage, merge: mergeTickets },
+      )
       const tickets = Array.isArray(data.tickets) ? data.tickets : []
       if (tickets.length === 0) {
-        setErr('No records found in this document. The scan may be too blurry or the format may not be readable.')
+        setErr(warning ?? 'No records found in this document. The scan may be too blurry or the format may not be readable.')
         return
       }
+      if (warning) setErr(warning)
       const next = tickets.map((t) => ticketToRow(t, crops, trucks, fields, bins, buyers, plantings))
       setRows(next)
       setBanner(`AI extracted ${next.length} ticket${next.length === 1 ? '' : 's'}. Please review before saving.`)

@@ -340,7 +340,16 @@ function LoadTable({
                 )}
               </td>
               <td className="px-3 py-2 whitespace-nowrap">
-                {l.truckId ? lookups.truckNameById.get(l.truckId) ?? '—' : '—'}
+                {l.truckId
+                  ? lookups.truckNameById.get(l.truckId) ?? '—'
+                  : l.haulerTruck
+                  ? (
+                    <>
+                      {l.haulerTruck}
+                      <span className="ml-1.5 text-[10px] uppercase tracking-wide bg-slate-100 text-slate-500 rounded px-1.5 py-0.5">hauler</span>
+                    </>
+                  )
+                  : '—'}
               </td>
               <td className="px-3 py-2 text-right tabular-nums">{fmtLbs(l.netLbs)}</td>
               <td className="px-3 py-2 text-right tabular-nums">{l.moisture != null ? `${l.moisture.toFixed(1)}%` : '—'}</td>
@@ -717,7 +726,7 @@ export function grainDetailExportSection(args: {
       ...detailLoads.map((l) => [
         fmtDate(l.date),
         l.ticket ?? '',
-        l.truckId ? lookups.truckNameById.get(l.truckId) ?? '' : '',
+        l.truckId ? lookups.truckNameById.get(l.truckId) ?? '' : l.haulerTruck ? `${l.haulerTruck} (hauler)` : '',
         l.netLbs,
         l.moisture,
         l.testWeight,

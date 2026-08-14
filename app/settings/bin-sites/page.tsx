@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import { binsImportConfig } from '@/lib/import-configs'
 import SettingsDocImport from '@/components/settings-doc-import'
 import EntitySelect from '@/components/entity-select'
 import { computeBushels } from '@/lib/shrink'
@@ -361,21 +362,7 @@ export default function BinSitesPage() {
 
       <SettingsDocImport primaryTarget="bin_sites" title="Upload a Bin List (AI)" onSaved={refresh} />
 
-      <CsvImport
-        config={{
-          tableName: 'bins',
-          uniqueKey: 'name_or_number',
-          title: 'Import bins from a spreadsheet',
-          note: 'One row per bin. Site matches by name against the sites above — add the sites first. If two entities have a site with the same name, rename one before importing (the match must be unambiguous).',
-          columns: [
-            { key: 'name_or_number', label: 'bin', required: true },
-            { key: 'bin_site_id', label: 'site', fk: { table: 'bin_sites', matchColumn: 'name' } },
-            { key: 'crop_id', label: 'crop', fk: { table: 'crops', matchColumn: 'name' } },
-            { key: 'capacity_bushels', label: 'capacity_bu', type: 'number' },
-          ],
-        }}
-        onImported={refresh}
-      />
+      <CsvImport config={binsImportConfig()} onImported={refresh} />
 
       {err && <p className="text-sm text-red-600">{err}</p>}
 

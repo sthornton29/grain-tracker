@@ -269,6 +269,22 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
     for (const [key, header] of Object.entries(mapping)) m.set(header, key)
     return m
   }, [mapping])
+
+  // Raw cells keyed by column key for each preview row, feeding the config's
+  // previewAnnotate hook (e.g. the plantings acres-from-field-acres hint).
+  const previewCells = useMemo(() => {
+    if (!config.previewAnnotate) return []
+    return rows.slice(0, 5).map((r) => {
+      const cells: Record<string, string> = {}
+      for (const c of config.columns) {
+        const h = mapping[c.key]
+        const idx = h ? headers.indexOf(h) : -1
+        cells[c.key] = idx >= 0 ? (r[idx] ?? '') : ''
+      }
+      return cells
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, mapping, headers])
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   // A required column is satisfied by a mapped header OR an auto-assign
   // fallback (a single-entity operation importing without an entity column).
@@ -463,7 +479,10 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
                           <tr key={i} className="border-t border-slate-100">
                             {headers.map((h, j) => {
                               const colKey = headerToColKey.get(h)
-                              const ann = colKey ? fkPreview?.get(`${colKey}|${i}`) : undefined
+                              let ann = colKey ? fkPreview?.get(`${colKey}|${i}`) : undefined
+                              if (!ann && colKey && config.previewAnnotate && previewCells[i]) {
+                                ann = config.previewAnnotate(colKey, previewCells[i]) ?? undefined
+                              }
                               return (
                                 <td key={j} className="px-2 py-1 whitespace-nowrap">
                                   {r[j] ?? ''}

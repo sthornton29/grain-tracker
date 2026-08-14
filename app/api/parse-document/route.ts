@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
 
 export const runtime = 'nodejs'
-export const maxDuration = 60
+// 300s is the Fluid-compute ceiling on every Vercel plan (Hobby included);
+// belt-and-braces for a single dense chunk. The real 504 fix is client-side
+// page batching (lib/parse-chunked.ts) — each chunk is its own request, so
+// no call should get anywhere near this. If a deploy ever rejects this value
+// (Fluid compute off), drop it back to 60; chunking still keeps parses safe.
+export const maxDuration = 300
 
 const MODEL = 'claude-sonnet-4-6'
 // Headroom for multi-record documents (e.g. a 156EZ packet or a multi-crop

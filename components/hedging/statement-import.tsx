@@ -12,10 +12,11 @@ import SourcePreview from '@/components/source-preview'
 import {
   MAX_PDF_BYTES,
   PdfTooLargeError,
-  parseDocument,
   type BrokerageStatementExtraction,
   type BrokerageClosedGroup,
 } from '@/lib/pdf-upload'
+import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { mergeBrokerage } from '@/lib/parse-merge'
 import {
   buildContractSymbol,
   normalizeCommodity,
@@ -419,7 +420,16 @@ export default function StatementImport({ entities, existingPositions, existingO
     try {
       await new Promise((r) => setTimeout(r, 200))
       setStage('Extracting positions…')
-      const data = await parseDocument(src.kind === 'pdf' ? src.file : src.images, 'brokerage_statement')
+      // Chunked parse for long statements: per-chunk retry, failed pages
+      // reported, and a position printed on two batched pages resolves once
+      // (mergeBrokerage — exact-repeat dedupe; the tolerant statement-matching
+      // still runs downstream).
+      const { data, warning } = await parseDocumentChunked<BrokerageStatementExtraction>(
+        src.kind === 'pdf' ? src.file : src.images,
+        'brokerage_statement',
+        { onProgress: setStage, merge: mergeBrokerage },
+      )
+      if (warning) setErr(warning)
       setExtraction(data)
       const open = (data.open_positions ?? []).map(buildOpenRow).filter((r): r is OpenRow => r !== null)
       const closed = buildClosedGroups(data)

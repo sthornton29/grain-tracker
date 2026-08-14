@@ -1,8 +1,8 @@
 ---
 page_route: /loads
 title: Loads
-updated: 2026-08-13
-keywords: loads, load log, tickets, scale, paid, unpaid, splits, export, delete, test weight, moisture, gross, tare, net, irrigated, dryland, practice, combine, yield monitor, no scales
+updated: 2026-08-14
+keywords: loads, load log, tickets, scale, paid, unpaid, splits, export, delete, test weight, moisture, gross, tare, net, irrigated, dryland, practice, combine, yield monitor, no scales, truck, hauler, pickup contract, buyer's truck, add truck
 ---
 ## What this page is for
 
@@ -13,6 +13,14 @@ The load log is the master list of every load you've hauled — to a bin or to a
 - To record a new load by hand, use **New Load** — pick the date, truck, crop, crop year, where it came from (field or bin), where it went (bin or buyer), and enter the weights. If a load carries grain from more than one field, add a split so each field gets credit for its share.
 - **Irrigated or dryland?** When the load's field has both irrigated and dryland acres, an optional Irrigated/Dryland choice appears (on New Load, Edit, ticket scanning, and on each line of a split load). Tag it if you know which ground the load came off — skip it if you don't. Fields that are all one practice never ask; Turnrow already knows. If you tag every load on a mixed field, the Yields page splits that field's bushels between irrigated and dryland automatically, so you won't be asked to allocate after harvest.
 - To enter a stack of tickets at once, use **Scan** (photograph or upload the tickets) or **Import** (upload a spreadsheet).
+- **A truck that isn't in the list?** Pick **+ Add truck…** right in the Truck dropdown — it saves to your truck list (the same one under Settings → Trucks) and is selected for this load.
+
+## Pickup trucks vs your trucks
+
+- When the load's contract is a **pickup** contract (the buyer's trucks load at your farm), the Truck field changes: type the hauler's truck as written on the ticket, or pick one you've saved before under **Hauler trucks**. Tick **Save this truck for future pickup loads** and it'll be in the list next time.
+- The rule is simple: a truck saved on a pickup load is a **hauler truck** (someone else's — a buyer's or hired hauler's); a truck saved anywhere else is **yours**. The two lists never mix, so your own truck list stays clean.
+- Hauling a pickup load yourself anyway? Your own trucks are still in the dropdown, under **Your trucks**.
+- In the load log and reports, hauler trucks show with a small **hauler** tag so you can tell them apart at a glance. Saved hauler trucks can be renamed or removed under Settings → Trucks (**Hauler Trucks**) — loads already entered keep the name as it was written.
 - Tap anywhere on a row to open that load's detail page. A small chevron on split loads expands the per-field breakdown right in the list.
 - Tick the checkboxes to select loads, then export the selection or delete them in bulk.
 

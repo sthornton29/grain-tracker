@@ -13,8 +13,9 @@ import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { findBestMatch } from '@/lib/fuzzy'
 import { mergeFsaLines, planBaseAcreSaves, describeBaseAcreConflict, type BaseAcreUpsertRow } from '@/lib/fsa-base-import'
-import { PdfTooLargeError, parseDocument, type FsaFarmExtraction } from '@/lib/pdf-upload'
-import { splitPdfIntoBatches } from '@/lib/pdf-split'
+import { PdfTooLargeError, type FsaBaseAcresExtraction, type FsaFarmExtraction } from '@/lib/pdf-upload'
+import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { mergeFsaBaseAcres } from '@/lib/parse-merge'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
 import type { Farm, CoveredCommodity, FarmBaseAcres, ArcPlcElectionType } from '@/lib/types'
@@ -171,26 +172,19 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
     try {
       await new Promise((r) => setTimeout(r, 200))
       // A whole 156EZ packet is many pages; one Anthropic call over all of them
-      // can time out (504). Split the PDF into small page-batches, parse each
-      // under the limit, and merge the farms. Photos go in a single call.
-      const extracted: FsaFarmExtraction[] = []
-      if (src.kind === 'pdf') {
-        let batches: File[] = [src.file]
-        try { batches = await splitPdfIntoBatches(src.file, 4) } catch { batches = [src.file] }
-        for (let i = 0; i < batches.length; i++) {
-          setStage(batches.length > 1 ? `Extracting base acres (batch ${i + 1} of ${batches.length})…` : 'Extracting base acres…')
-          const data = await parseDocument(batches[i], 'fsa_base_acres')
-          if (Array.isArray(data.farms)) extracted.push(...data.farms)
-        }
-      } else {
-        setStage('Extracting base acres…')
-        const data = await parseDocument(src.images, 'fsa_base_acres')
-        if (Array.isArray(data.farms)) extracted.push(...data.farms)
-      }
+      // can time out (504). Chunked parse: small page batches (photos too),
+      // per-chunk retry, failed pages reported, boundary repeats deduped.
+      const { data, warning } = await parseDocumentChunked<FsaBaseAcresExtraction>(
+        src.kind === 'pdf' ? src.file : src.images,
+        'fsa_base_acres',
+        { pagesPerBatch: 4, onProgress: setStage, merge: mergeFsaBaseAcres },
+      )
+      const extracted: FsaFarmExtraction[] = Array.isArray(data.farms) ? data.farms : []
       if (extracted.length === 0) {
-        setErr('No farms found in this document. The scan may be unclear or the format may not be readable.')
+        setErr(warning ?? 'No farms found in this document. The scan may be unclear or the format may not be readable.')
         return
       }
+      if (warning) setErr(warning)
       const next = mergeFarmRows(extracted.map(extractionToRow))
       setRows(next)
       const totalCmds = next.reduce((s, r) => s + r.commodities.length, 0)

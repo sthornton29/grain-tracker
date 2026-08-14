@@ -11,8 +11,8 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
-import { parseDocument, PdfTooLargeError } from '@/lib/pdf-upload'
-import { splitPdfIntoBatches } from '@/lib/pdf-split'
+import { PdfTooLargeError, type RawSettingsExtraction } from '@/lib/pdf-upload'
+import { parseDocumentChunked } from '@/lib/parse-chunked'
 import { fetchAllCounties } from '@/lib/counties'
 import { dismissalKey, type VarietyDecision } from '@/lib/variety-resolution'
 import {
@@ -102,23 +102,18 @@ export default function SettingsDocImport({
     setErr(null); setBanner(null); setReview(null); setSource(src)
     setBusy(true)
     try {
-      const parts: NormalizedSettingsExtraction[] = []
-      if (src.kind === 'pdf') {
-        let batches: File[]
-        try {
-          batches = await splitPdfIntoBatches(src.file, 4)
-        } catch {
-          batches = [src.file]
-        }
-        for (const [i, batch] of batches.entries()) {
-          setStage(batches.length > 1 ? `Reading the document — batch ${i + 1} of ${batches.length}…` : 'Reading the document…')
-          parts.push(normalizeSettingsExtraction(await parseDocument(batch, 'settings_document', { primaryTarget })))
-        }
-      } else {
-        setStage('Reading the photos…')
-        parts.push(normalizeSettingsExtraction(await parseDocument(src.images, 'settings_document', { primaryTarget })))
-      }
-      const merged = mergeSettingsExtractions(parts)
+      // Chunked parse: page batches with per-chunk retry and partial-failure
+      // reporting; records straddling a batch boundary dedupe in the merge.
+      const { data: merged, warning } = await parseDocumentChunked<RawSettingsExtraction, NormalizedSettingsExtraction>(
+        src.kind === 'pdf' ? src.file : src.images,
+        'settings_document',
+        {
+          primaryTarget,
+          onProgress: setStage,
+          merge: (parts) => mergeSettingsExtractions(parts.map(normalizeSettingsExtraction)),
+        },
+      )
+      if (warning) setBanner(warning)
       const built = buildSettingsReview(merged, ctxData, primaryTarget ?? null)
       if (built.sections.length === 0) {
         setBanner('Nothing settings-shaped was found in that document. Try a clearer copy, or enter it by hand below.')

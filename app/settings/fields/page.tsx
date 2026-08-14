@@ -4,6 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import { fieldsImportConfig } from '@/lib/import-configs'
 import SettingsDocImport from '@/components/settings-doc-import'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
@@ -191,19 +192,7 @@ export default function FieldsPage() {
         </Link>
       </div>
 
-      <CsvImport
-        config={{
-          tableName: 'fields',
-          uniqueKey: 'name_or_number',
-          columns: [
-            { key: 'name_or_number', label: 'name', required: true },
-            { key: 'farm_id', label: 'farm', fk: { table: 'farms', matchColumn: 'name' } },
-            { key: 'total_acres', type: 'number' },
-            { key: 'irrigated_acres', type: 'number' },
-          ],
-        }}
-        onImported={refresh}
-      />
+      <CsvImport config={fieldsImportConfig()} onImported={refresh} />
 
       <SettingsDocImport primaryTarget="fields" title="Upload a Field List (AI)" onSaved={refresh} />
 
