@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import SettingsDocImport from '@/components/settings-doc-import'
 import EntitySelect from '@/components/entity-select'
 import LandownerPicker from '@/components/landowner-picker'
 import { defaultEntityId } from '@/lib/entity-default'
@@ -201,6 +202,8 @@ export default function FarmsPage() {
           <strong>{farmsMissingCounty}</strong> farm{farmsMissingCounty === 1 ? '' : 's'} missing county assignments. Please update them.
         </div>
       )}
+
+      <SettingsDocImport primaryTarget="farms" title="Upload FSA Farm Records or a Lease (AI)" onSaved={refresh} />
 
       <CsvImport
         config={{

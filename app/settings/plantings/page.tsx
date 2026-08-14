@@ -3,7 +3,7 @@
 import { useEffect, useId, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
-import PlantingsAiImport from '@/components/plantings-ai-import'
+import SettingsDocImport from '@/components/settings-doc-import'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { dismissalKey } from '@/lib/variety-resolution'
@@ -615,17 +615,7 @@ export default function PlantingsPage() {
         onImported={refresh}
       />
 
-      <PlantingsAiImport
-        fields={fields}
-        crops={crops}
-        existingPlantings={plantings}
-        existingVarietiesByCrop={varietyOptionsByCrop}
-        existingVarietiesByPlanting={varietyNamesByPlanting}
-        dismissedPairsByCrop={dismissedPairsByCrop}
-        defaultYear={year}
-        fieldLabel={fieldLabel}
-        onImported={refresh}
-      />
+      <SettingsDocImport primaryTarget="plantings" title="Upload an Acreage / Planting Report (AI)" onSaved={refresh} />
 
       <form onSubmit={add} className="bg-white rounded-xl shadow p-4 space-y-3">
         <h2 className="font-semibold">Add planting</h2>

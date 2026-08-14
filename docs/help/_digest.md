@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-08-13 · version 0.1.0 · build 09aaa3b. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-08-14 · version 0.1.0 · build 1853ae4. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -283,7 +283,7 @@ This page holds the data that drives every ARC/PLC projection: your farms' base 
 ## How to use it
 
 - Pick the **Program year** at the top — everything on this page is keyed to it, and links from the reports arrive with the right year already selected.
-- Load **base acres** fastest with the FSA form import: upload your FSA base-acres document and the app extracts each farm's commodities, base acres, and PLC yields into a review table. FSA paperwork often repeats a farm and commodity across tracts and pages; duplicate lines are combined at review with a note showing what was merged. You confirm before anything saves.
+- Load **base acres** fastest with the FSA form import: upload your FSA base-acres document and the app extracts each farm's commodities, base acres, and PLC yields into a review table. FSA paperwork often repeats a farm and commodity across tracts and pages; duplicate lines are combined at review with a note showing what was merged. You confirm before anything saves. If the document names a farm that isn't in Turnrow yet, the review offers to **create that farm** right there — check the box and its base acres save with it (finish its county and entity later under Settings → Farms).
 - Enter or look up **MYA prices** per commodity and month. The **USDA lookup** pulls real published prices received by farmers; fetched months appear beside anything you typed, and already-entered months start unchecked so nothing is overwritten without your say-so. A WASDE midpoint can stand in before months publish, and a published final locks the row. If the lookup comes up empty, an AI lookup is offered as a clearly labeled fallback.
 - Enter **ARC-CO benchmarks** — the FSA benchmark price and county yield per commodity and county. The county picker starts with your own counties and can open to any state and county.
 - Review **Program Parameters** per year: the SCO trigger, the per-person payment limit, the sequestration percentage, and payment factors.
@@ -1084,7 +1084,7 @@ Buyers are the businesses you sell and haul to — elevators, river terminals, f
 
 - Type a name and **Add Buyer** to create one. Expand a buyer to add its delivery locations, each with an optional address.
 - **Find buyers near me** searches the web for elevators, terminals, and other buyers that handle your crops near a zip code you enter, within a radius you pick. Results come back as a checklist — tick the ones you actually sell to, edit a name if it isn't quite right, and add them. Anything you don't tick is discarded, and results already in your list are marked so you don't double up.
-- To bring in a whole list at once, use the spreadsheet import at the top — one row per buyer, locations in one cell separated by semicolons.
+- To bring in a whole list at once, use the spreadsheet import at the top — one row per buyer, locations in one cell separated by semicolons. There's also an **Upload (AI)** card that reads buyer names and delivery locations out of any document, alongside anything else it finds worth filing elsewhere.
 
 ## What the controls do
 
@@ -1112,6 +1112,10 @@ Settings is the hub where your operation's structure lives — the entities, far
 ## How to use it
 
 Work top-down the first time: entities, then farms, then fields, then crops and plantings. After that you'll only visit to add a field, a truck, or a new crop year's plantings.
+
+## Setting up from your paperwork
+
+Every setup page here has an **Upload (AI)** card, and the top of Settings has an **Upload any document (AI)** card that takes anything — leases, FSA farm records, plat maps, acreage reports, plain lists. One upload reads the whole document and sorts what it finds into the right places (a lease fills in the landowner, the farm, and the share terms together), grouped for your review — nothing saves until you check it. See the Uploading Documents topic for the full picture.
 
 ## What the controls do
 
@@ -1183,6 +1187,39 @@ Matches are remembered: once a line is tied to a load — automatically by ticke
 - Unmatched lines piling up: compare ticket numbers character for character — a leading zero or a typo on either side breaks the match.
 - Missing-loads section lists a load you know was paid: it's probably on a settlement you haven't entered yet.
 - Totals that won't reconcile after that: contact support.
+
+# Uploading Documents  (page: /settings/uploads)
+
+## What this is for
+
+Most of what Turnrow needs to know about your operation is already written down somewhere — leases, FSA farm records, plat maps, acreage reports, handwritten field lists. Instead of retyping them, upload the document and Turnrow reads it for you.
+
+## How to use it
+
+- Every setup page (Entities, Landowners, Farms, Fields, Plantings, Buyers, Bin Sites, Trucks) has an **Upload (AI)** card — use the one closest to what you're holding, or the **Upload any document (AI)** card at the top of Settings when you're not sure where something belongs.
+- Upload a PDF, a spreadsheet, or photos (snap multiple pages from your phone). Then review what was found.
+
+## What the AI looks for
+
+One upload reads the WHOLE document, not just the page you started from. A lease, for example, usually names the landowner, the farm, and the share or cash-rent terms — all three land in your review, each grouped under the place it belongs, with the line of the document it came from shown beside it. Documents it handles well: lease agreements, FSA farm records (156EZ), plat maps and field lists, planting/acreage reports, insurance schedules, and plain lists — typed or handwritten.
+
+## Everything requires your confirmation
+
+- Nothing is saved until you check it and press Save. Every row shows whether it's **already in Turnrow**, an **update** to something you have (with exactly what would change), **new**, or a **possible match** you must decide on.
+- Records that belong together save together — if a lease creates a landowner and their farm at once, the farm is linked to that landowner automatically. If anything fails partway, nothing from that upload is kept, so you can fix the problem and try again.
+- Uncheck anything you don't want. Unchecking something other rows depend on skips those rows too, with a note saying why.
+
+## Common questions
+
+- **The AI read a number wrong.** Leave that row unchecked and enter it by hand — or fix the source document and upload again. Re-uploading shows updates against what saved the first time, not duplicates.
+- **It found things I didn't expect.** That's the point — a lease mentions more than landowners. Collapsed sections below your main one show counts of everything else found; open them or ignore them.
+- **Does it replace typing things in?** No — every page keeps its normal add form and spreadsheet import. The upload is a head start, not the only door.
+
+## If something looks wrong
+
+- Blurry photos read poorly — retake in good light, one page per photo.
+- If a document extracts nothing, it may not contain settings information — numbers-only reports (settlements, brokerage statements) have their own upload buttons on their own pages.
+- Anything else, contact support.
 
 # Users & Roles  (page: /settings/users)
 

@@ -274,56 +274,42 @@ Respond ONLY in JSON with no other text and no markdown backticks:
   "notes": "string or null"
 }`
 
-const FIELDS_PROMPT = `This document lists a farm operation's fields and their acreage — it may be an FSA-578 Report of Acreage, a crop-insurance acreage report, or an informal field/acreage list. Extract every distinct field (or tract/field combination). For any value you cannot determine, use null — do not guess.
+// The unified settings extraction (replaces the per-page fields/plantings
+// prompts): ONE call classifies the document and extracts EVERY
+// settings-relevant thing in it, whatever page the upload started from. The
+// uploading page's primary_target only orders the review client-side (and adds
+// an attention line below) — it never limits extraction.
+const SETTINGS_DOCUMENT_PROMPT = `This document belongs to a farm operation's records. It may be: a lease agreement (landowner + farm + share or cash-rent terms), an FSA-156EZ or farm-records printout (farms + FSA numbers + county), a plat map or field list (fields + acres), a planting or acreage report such as an FSA-578 (plantings + varieties + irrigated/dryland), a crop-insurance schedule (county/practice acres corroboration), or a plain handwritten or spreadsheet list. It may be several of these at once.
 
-For each field, extract:
-- field_name (the field's name or number. If only a tract and field number are shown, combine them like "T1234 F2". Prefer a plain field name when one is present)
-- farm_name (the farm or operation name this field belongs to, if shown — else null)
-- total_acres (the field's total farmland/cropland acres as a number — else null)
-- irrigated_acres (acres under irrigation if the document distinguishes irrigated vs dryland practice — else null)
+Extract EVERY instance of ALL of the following that the document shows — not just one kind. For any value you cannot determine, use null — do not guess. Every extracted object must include a "source" string: a short verbatim snippet (a few words) from where you read it, with the page number when there is more than one page, e.g. "p2: 'Landlord shall receive 25%'".
 
-List each physical field once. If the same field appears on multiple crop lines, still report it a single time with its total acreage.
+- entities: business names that look like the OPERATOR'S OWN entities (LLCs, corporations, partnerships farming the ground — the tenant side of a lease, the operator on FSA records). NOT landlords, buyers, or agencies.
+- landowners: landlord / property-owner names, with phone/email/address when shown.
+- farms: named farms or FSA farm records. For each: name (or "Farm <number>" when only a number is shown), fsa_farm_number, county + state, the operator entity name if shown, the landowner name if shown, and lease terms where present — share_rent true/false, landlord_share_percentage (the landlord's crop share %), cash_rent_per_acre ($/acre when a cash rent is stated).
+- fields: individual fields/tracts. name (combine tract + field like "T1234 F2" when no plain name), farm_name and/or fsa_farm_number it belongs to, total_acres, irrigated_acres, county + state when shown. List each physical field ONCE even if it appears on several crop lines.
+- plantings: one row per field + crop + year. field_name, farm_name if shown, crop, crop_year, planted_acres, irrigated_acres (when the practice is distinguished), planting_date, and varieties as [{variety, acres}] — multiple varieties on one field+crop+year stay on the SAME row (per-variety acres when shown; a single variety with no own acres gets the planted_acres; none shown → []).
+- buyers: grain buyers/elevators/merchants the operation sells to, each with any delivery locations [{name, address}].
+- bin_sites: grain storage sites, each with its bins [{name, capacity_bushels}] when named.
+- gins: cotton gins (name, address, phone).
+- trucks: truck names/numbers from equipment or hauling lists.
+- crops: commodity names mentioned as grown (e.g. "Corn", "Cotton") — names only.
 
-Respond ONLY in JSON with no other text, no markdown backticks:
-{
-  "fields": [
-    {
-      "field_name": "string",
-      "farm_name": "string or null",
-      "total_acres": number or null,
-      "irrigated_acres": number or null
-    }
-  ]
-}`
-
-const PLANTINGS_PROMPT = `This document lists crops planted on fields for a season — it may be an FSA-578 Report of Acreage, a crop-insurance acreage report, or a planting schedule. Extract every planting line (one row per field + crop). For any value you cannot determine, use null — do not guess.
-
-For each planting, extract:
-- field_name (the field name or number the crop is planted on. Combine tract + field like "T1234 F2" if no plain name is shown)
-- crop (the commodity name, e.g. "Corn", "Soybeans", "Wheat", "Cotton")
-- season_year (the 4-digit crop/harvest year if shown — else null)
-- planted_acres (planted/reported acres for this field+crop as a number)
-- irrigated_acres (irrigated acres for this line if the practice is distinguished — else null)
-- planting_date (the planting/seeding date, format YYYY-MM-DD — else null)
-- varieties (a list of {variety, acres} for any hybrid/variety/seed names shown on this field+crop line. Use the per-variety acres when shown; if a single variety is listed without its own acres, set acres to the planted_acres; if no variety information is shown, return []. Example variety names: "P2089", "DKC65-95", "AG46X9", "Croplan 5380".)
-- notes (any short note worth keeping, e.g. an intended-use or practice code — else null)
-
-Multiple varieties on the same field+crop+year belong on the SAME row, inside the varieties array. Do not split a single field+crop line into multiple rows just because more than one variety is listed.
+Empty sections are [] — most documents fill only a few. Percentages: landlord_share_percentage is the LANDLORD's share as a number 0-100.
 
 Respond ONLY in JSON with no other text, no markdown backticks:
 {
-  "plantings": [
-    {
-      "field_name": "string",
-      "crop": "string or null",
-      "season_year": number or null,
-      "planted_acres": number or null,
-      "irrigated_acres": number or null,
-      "planting_date": "YYYY-MM-DD or null",
-      "varieties": [{"variety": "string", "acres": number or null}],
-      "notes": "string or null"
-    }
-  ]
+  "document_kinds": ["lease" | "fsa_farm_record" | "plat_map" | "field_list" | "acreage_report" | "insurance_schedule" | "list" | "other", ...],
+  "confidence": "high" | "medium" | "low",
+  "entities": [{"name": "string", "source": "string"}],
+  "landowners": [{"name": "string", "phone": "string or null", "email": "string or null", "address": "string or null", "source": "string"}],
+  "farms": [{"name": "string", "fsa_farm_number": "string or null", "county": "string or null", "state": "string or null", "entity_name": "string or null", "landowner_name": "string or null", "share_rent": boolean or null, "landlord_share_percentage": number or null, "cash_rent_per_acre": number or null, "source": "string"}],
+  "fields": [{"name": "string", "farm_name": "string or null", "fsa_farm_number": "string or null", "total_acres": number or null, "irrigated_acres": number or null, "county": "string or null", "state": "string or null", "source": "string"}],
+  "plantings": [{"field_name": "string", "farm_name": "string or null", "crop": "string or null", "crop_year": number or null, "planted_acres": number or null, "irrigated_acres": number or null, "planting_date": "YYYY-MM-DD or null", "varieties": [{"variety": "string", "acres": number or null}], "source": "string"}],
+  "buyers": [{"name": "string", "locations": [{"name": "string", "address": "string or null"}], "source": "string"}],
+  "bin_sites": [{"name": "string", "address": "string or null", "bins": [{"name": "string", "capacity_bushels": number or null}], "source": "string"}],
+  "gins": [{"name": "string", "address": "string or null", "phone": "string or null", "source": "string"}],
+  "trucks": [{"name": "string", "source": "string"}],
+  "crops": [{"name": "string", "source": "string"}]
 }`
 
 const CROP_INSURANCE_POLICY_PROMPT = `This is a crop insurance policy summary, premium billing statement, or coverage confirmation document. Extract all policy information from it.
@@ -468,7 +454,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
   ]
 }`
 
-type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document'
+type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document'
 
 
 const COTTON_TICKET_PROMPT = `This document contains cotton MODULE/LOAD weight tickets (a gin's "Module List" or seed cotton weight tickets). Multi-page PDFs contain ONE LOAD PER PAGE - extract every load from every page.
@@ -587,8 +573,7 @@ const PROMPTS: Record<DocumentType, string> = {
   tickets: TICKETS_PROMPT,
   brokerage_statement: BROKERAGE_PROMPT,
   contract: CONTRACT_PROMPT,
-  fields: FIELDS_PROMPT,
-  plantings: PLANTINGS_PROMPT,
+  settings_document: SETTINGS_DOCUMENT_PROMPT,
   crop_insurance_policy: CROP_INSURANCE_POLICY_PROMPT,
   fsa_base_acres: FSA_BASE_ACRES_PROMPT,
   cotton_weight_ticket: COTTON_TICKET_PROMPT,
@@ -604,6 +589,9 @@ type ParseBody = {
   // cotton_marketing_document only: a user-picked category selects the focused
   // re-extract prompt instead of classify-and-extract.
   category?: unknown
+  // settings_document only: the uploading page's section hint. Adds an
+  // attention line to the prompt — extraction always covers every section.
+  primary_target?: unknown
 }
 
 type ImageInput = { media_type: string; data: string }
@@ -704,6 +692,9 @@ export async function POST(req: NextRequest) {
       return badRequest('category must be one of: ' + Object.keys(COTTON_MARKETING_CATEGORY_PROMPTS).join(', ') + '.')
     }
     prompt = focused
+  }
+  if (docType === 'settings_document' && typeof body.primary_target === 'string' && /^[a-z_]{1,32}$/.test(body.primary_target)) {
+    prompt += `\n\nThe user uploaded this from the ${body.primary_target.replace(/_/g, ' ')} settings page, so pay particular attention to that section — but still extract every section the document supports.`
   }
 
   const client = new Anthropic({ apiKey })

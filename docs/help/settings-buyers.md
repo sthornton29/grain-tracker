@@ -1,7 +1,7 @@
 ---
 page_route: /settings/buyers
 title: Buyers & Delivery Locations
-updated: 2026-08-07
+updated: 2026-08-13
 keywords: buyers, delivery locations, elevators, terminals, gins, find buyers, near me, zip code, import, csv, duplicate
 ---
 ## What this page is for
@@ -12,7 +12,7 @@ Buyers are the businesses you sell and haul to — elevators, river terminals, f
 
 - Type a name and **Add Buyer** to create one. Expand a buyer to add its delivery locations, each with an optional address.
 - **Find buyers near me** searches the web for elevators, terminals, and other buyers that handle your crops near a zip code you enter, within a radius you pick. Results come back as a checklist — tick the ones you actually sell to, edit a name if it isn't quite right, and add them. Anything you don't tick is discarded, and results already in your list are marked so you don't double up.
-- To bring in a whole list at once, use the spreadsheet import at the top — one row per buyer, locations in one cell separated by semicolons.
+- To bring in a whole list at once, use the spreadsheet import at the top — one row per buyer, locations in one cell separated by semicolons. There's also an **Upload (AI)** card that reads buyer names and delivery locations out of any document, alongside anything else it finds worth filing elsewhere.
 
 ## What the controls do
 

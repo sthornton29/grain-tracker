@@ -4,7 +4,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
-import FieldsAiImport from '@/components/fields-ai-import'
+import SettingsDocImport from '@/components/settings-doc-import'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import type { Crop, Farm, Field, FieldPlanting, County, EntityCounty } from '@/lib/types'
@@ -205,7 +205,7 @@ export default function FieldsPage() {
         onImported={refresh}
       />
 
-      <FieldsAiImport farms={farms} existingFields={fields} onImported={refresh} />
+      <SettingsDocImport primaryTarget="fields" title="Upload a Field List (AI)" onSaved={refresh} />
 
       <form onSubmit={add} className="space-y-2">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">

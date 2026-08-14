@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import SettingsDocImport from '@/components/settings-doc-import'
 
 const items = [
   { href: '/settings/entities', label: 'Entities' },
@@ -21,6 +22,9 @@ export default function SettingsPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Settings</h1>
+      {/* The catch-all uploader: no target hint — the AI classifies and the
+          review presents whatever it found, most-populated section first. */}
+      <SettingsDocImport title="Upload any document (AI)" />
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
         {items.map((i) => (
           <Link key={i.href} href={i.href} className="bg-white rounded-xl shadow p-4 text-center font-semibold hover:bg-slate-50">
