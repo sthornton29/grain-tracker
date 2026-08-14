@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import SettingsDocImport from '@/components/settings-doc-import'
 import type { Entity, County, EntityCounty } from '@/lib/types'
 
 type Role = 'farming' | 'marketing_agent'
@@ -154,6 +155,8 @@ export default function EntitiesPage() {
       <p className="text-sm text-slate-500">
         Farming business entities (LLCs, partnerships, corporations) that own or operate the farms.
       </p>
+
+      <SettingsDocImport primaryTarget="entities" title="Upload a Document (AI)" onSaved={refresh} />
 
       <CsvImport
         config={{

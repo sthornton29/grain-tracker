@@ -34,7 +34,7 @@ export function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'fields' | 'plantings' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document'
+export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document'
 
 export type SettlementExtraction = {
   buyer_name: string | null
@@ -303,6 +303,11 @@ export type FsaBaseAcresExtraction = {
 // structurally satisfies this, so callers can pass captured images directly.
 export type ParseImage = { base64: string; mediaType: string }
 
+// The unified settings extraction's raw response (settings_document). The
+// typed sections + normalization live in lib/settings-extraction.ts.
+export type { RawSettingsExtraction } from '@/lib/settings-extraction'
+import type { RawSettingsExtraction } from '@/lib/settings-extraction'
+
 // parseDocument accepts either a single PDF File (the original path) or an array
 // of compressed photo pages. Both send the identical extraction prompt; only the
 // content blocks differ on the server.
@@ -310,8 +315,7 @@ export async function parseDocument(input: File | ParseImage[], documentType: 's
 export async function parseDocument(input: File | ParseImage[], documentType: 'tickets'): Promise<TicketsExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'brokerage_statement'): Promise<BrokerageStatementExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'contract'): Promise<ContractExtraction>
-export async function parseDocument(input: File | ParseImage[], documentType: 'fields'): Promise<FieldsExtraction>
-export async function parseDocument(input: File | ParseImage[], documentType: 'plantings'): Promise<PlantingsExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'settings_document', opts?: { primaryTarget?: string }): Promise<RawSettingsExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'crop_insurance_policy'): Promise<CropInsuranceExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'fsa_base_acres'): Promise<FsaBaseAcresExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'cotton_weight_ticket'): Promise<CottonLoadsExtraction>
@@ -320,8 +324,8 @@ export async function parseDocument(input: File | ParseImage[], documentType: 'c
 export async function parseDocument(
   input: File | ParseImage[],
   documentType: DocumentType,
-  opts?: { category?: CottonMarketingCategory },
-): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonLoadsExtraction | GinReceiptExtraction | CottonMarketingExtraction> {
+  opts?: { category?: CottonMarketingCategory; primaryTarget?: string },
+): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonLoadsExtraction | GinReceiptExtraction | CottonMarketingExtraction> {
   // Build the request body. Photos are compressed small enough to inline as
   // base64. A PDF, however, is uploaded to storage first and sent as a URL:
   // Vercel rejects serverless request bodies over 4.5 MB with a 413, well below
@@ -343,6 +347,7 @@ export async function parseDocument(
     cleanup = () => { void supabase.storage.from(PDF_BUCKET).remove([path]).then(() => {}, () => {}) }
   }
   if (opts?.category) payload.category = opts.category
+  if (opts?.primaryTarget) payload.primary_target = opts.primaryTarget
   try {
     const res = await fetch('/api/parse-document', {
       method: 'POST',
@@ -357,7 +362,7 @@ export async function parseDocument(
     if (!body || typeof body !== 'object' || !('data' in body)) {
       throw new Error('Malformed response from server.')
     }
-    return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | FieldsExtraction | PlantingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonMarketingExtraction
+    return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonMarketingExtraction
   } finally {
     cleanup?.()
   }

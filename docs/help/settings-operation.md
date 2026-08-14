@@ -1,7 +1,7 @@
 ---
 page_route: /settings
 title: Operation Settings
-updated: 2026-08-06
+updated: 2026-08-13
 keywords: settings, entities, marketing agent, farms, FSA number, fields, crops, plantings, varieties, bins, capacity, trucks, buyers, landowners, share rent, physical sales complete
 ---
 ## What this page is for
@@ -11,6 +11,10 @@ Settings is the hub where your operation's structure lives — the entities, far
 ## How to use it
 
 Work top-down the first time: entities, then farms, then fields, then crops and plantings. After that you'll only visit to add a field, a truck, or a new crop year's plantings.
+
+## Setting up from your paperwork
+
+Every setup page here has an **Upload (AI)** card, and the top of Settings has an **Upload any document (AI)** card that takes anything — leases, FSA farm records, plat maps, acreage reports, plain lists. One upload reads the whole document and sorts what it finds into the right places (a lease fills in the landowner, the farm, and the share terms together), grouped for your review — nothing saves until you check it. See the Uploading Documents topic for the full picture.
 
 ## What the controls do
 

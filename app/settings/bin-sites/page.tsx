@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import SettingsDocImport from '@/components/settings-doc-import'
 import EntitySelect from '@/components/entity-select'
 import { computeBushels } from '@/lib/shrink'
 import type {
@@ -357,6 +358,8 @@ export default function BinSitesPage() {
           <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Site</button>
         </div>
       </form>
+
+      <SettingsDocImport primaryTarget="bin_sites" title="Upload a Bin List (AI)" onSaved={refresh} />
 
       <CsvImport
         config={{

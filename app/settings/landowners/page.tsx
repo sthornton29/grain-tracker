@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import SettingsDocImport from '@/components/settings-doc-import'
 import type { Farm, Landowner } from '@/lib/types'
 
 type Draft = {
@@ -113,6 +114,8 @@ export default function LandownersPage() {
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Landowners</h1>
+
+      <SettingsDocImport primaryTarget="landowners" title="Upload a Lease or Landowner List (AI)" onSaved={refresh} />
 
       <CsvImport
         config={{

@@ -1,7 +1,7 @@
 ---
 page_route: /settings/government-payments
 title: Government Payments Settings
-updated: 2026-08-05
+updated: 2026-08-13
 keywords: base acres, PLC yield, elections, MYA, WASDE, benchmark, ARC-CO, program year, payment limit, sequestration, FSA import
 ---
 ## What this page is for
@@ -11,7 +11,7 @@ This page holds the data that drives every ARC/PLC projection: your farms' base 
 ## How to use it
 
 - Pick the **Program year** at the top — everything on this page is keyed to it, and links from the reports arrive with the right year already selected.
-- Load **base acres** fastest with the FSA form import: upload your FSA base-acres document and the app extracts each farm's commodities, base acres, and PLC yields into a review table. FSA paperwork often repeats a farm and commodity across tracts and pages; duplicate lines are combined at review with a note showing what was merged. You confirm before anything saves.
+- Load **base acres** fastest with the FSA form import: upload your FSA base-acres document and the app extracts each farm's commodities, base acres, and PLC yields into a review table. FSA paperwork often repeats a farm and commodity across tracts and pages; duplicate lines are combined at review with a note showing what was merged. You confirm before anything saves. If the document names a farm that isn't in Turnrow yet, the review offers to **create that farm** right there — check the box and its base acres save with it (finish its county and entity later under Settings → Farms).
 - Enter or look up **MYA prices** per commodity and month. The **USDA lookup** pulls real published prices received by farmers; fetched months appear beside anything you typed, and already-entered months start unchecked so nothing is overwritten without your say-so. A WASDE midpoint can stand in before months publish, and a published final locks the row. If the lookup comes up empty, an AI lookup is offered as a clearly labeled fallback.
 - Enter **ARC-CO benchmarks** — the FSA benchmark price and county yield per commodity and county. The county picker starts with your own counties and can open to any state and county.
 - Review **Program Parameters** per year: the SCO trigger, the per-person payment limit, the sequestration percentage, and payment factors.

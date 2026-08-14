@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
+import SettingsDocImport from '@/components/settings-doc-import'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { matchExistingBuyer, BUYER_FINDER_RADII, type BuyerFinderHit } from '@/lib/ai-lookups'
 import type { Buyer, DeliveryLocation } from '@/lib/types'
@@ -217,6 +218,8 @@ export default function BuyersPage() {
       <p className="text-sm text-slate-500">
         Each buyer can have one or more delivery locations (e.g., separate elevators). Expand a buyer to manage its locations.
       </p>
+
+      <SettingsDocImport primaryTarget="buyers" title="Upload a Buyer List (AI)" onSaved={refresh} />
 
       <CsvImport
         config={{

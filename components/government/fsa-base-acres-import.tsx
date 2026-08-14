@@ -48,6 +48,9 @@ type FarmRow = {
   raw_fsa: string | null
   raw_location: string | null
   matched: boolean
+  /** Cross-fill (settings-upload parity): no matching farm → offer to create
+   *  it inline instead of silently skipping the rows. */
+  createFarm: boolean
   commodities: CommodityRow[]
 }
 
@@ -112,6 +115,7 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
       raw_fsa: f.fsa_farm_number,
       raw_location: [f.county, f.state].filter(Boolean).join(', ') || null,
       matched: !!farm,
+      createFarm: false,
       commodities: cmds,
     }
   }
@@ -228,10 +232,24 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
       //    id, or `new:<name>` for a to-be-created commodity — so duplicate
       //    conflict keys are caught BEFORE anything is written.
       type Pending = BaseAcreUpsertRow & { election: '' | ArcPlcElectionType; notes: string | null }
+      // Cross-fill: create the checked not-in-Turnrow farms first, so their
+      // base acres save like any matched farm's. Named "Farm <FSA#>" — county
+      // and entity are set later on Settings → Farms (its banner nags).
+      const effRows = [...rows]
+      for (const [ri, r] of effRows.entries()) {
+        if (r.farm_id || !r.createFarm || !r.raw_fsa) continue
+        const { data, error } = await supabase
+          .from('farms')
+          .insert({ name: `Farm ${r.raw_fsa}`, fsa_number: r.raw_fsa })
+          .select('id')
+          .single()
+        if (error) throw new Error(`Creating Farm ${r.raw_fsa} failed: ${error.message}`)
+        effRows[ri] = { ...r, farm_id: (data as { id: string }).id }
+      }
       const pending: Pending[] = []
       const newNameByKey = new Map<string, string>()
       const unassignedByFarm = new Map<string, number>()
-      for (const r of rows) {
+      for (const r of effRows) {
         if (!r.farm_id) continue
         for (const c of r.commodities) {
           if (!c.include) continue
@@ -361,11 +379,23 @@ export default function FsaBaseAcresImport({ farms, commodities, existingBaseAcr
                   {r.matched
                     ? <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">Matched</span>
                     : <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">Pick a farm</span>}
-                  <select value={r.farm_id} onChange={(e) => setFarm(i, e.target.value)} className={`${inputCls} ml-auto`}>
+                  <select value={r.farm_id} disabled={r.createFarm} onChange={(e) => setFarm(i, e.target.value)} className={`${inputCls} ml-auto`}>
                     <option value="">— select farm —</option>
                     {farms.map((f) => <option key={f.id} value={f.id}>{f.name}{f.fsa_number ? ` (#${f.fsa_number})` : ''}</option>)}
                   </select>
                 </div>
+                {!r.matched && !r.farm_id && r.raw_fsa && (
+                  // This farm isn't in Turnrow yet — the document can fill it in.
+                  <label className="flex items-center gap-2 text-sm text-brand-deep">
+                    <input
+                      type="checkbox"
+                      checked={r.createFarm}
+                      onChange={(e) => setRows((prev) => prev.map((row, ri) => (ri === i ? { ...row, createFarm: e.target.checked } : row)))}
+                      className="h-4 w-4"
+                    />
+                    <span>Create farm <b>Farm {r.raw_fsa}</b> (FSA #{r.raw_fsa}{r.raw_location ? ` · ${r.raw_location}` : ''}) and save these base acres to it</span>
+                  </label>
+                )}
                 <div className="overflow-x-auto">
                 <table className="min-w-full text-xs">
                   <thead className="text-slate-500">
