@@ -46,7 +46,7 @@ describe('roleAllowsPath', () => {
   })
 
   it('viewer: only the read-only price-lookup APIs the reports call', () => {
-    for (const p of ['/api/market-prices', '/api/harvest-price-estimate', '/api/mya-estimate', '/api/nass-monthly-prices', '/api/mya-monthly-lookup']) {
+    for (const p of ['/api/market-prices', '/api/harvest-price-estimate', '/api/mya-estimate', '/api/nass-monthly-prices', '/api/mya-monthly-lookup', '/api/rma-price-discovery']) {
       expect(roleAllowsPath('viewer', p)).toBe(true)
     }
     expect(roleAllowsPath('viewer', '/api/options-prices')).toBe(false)

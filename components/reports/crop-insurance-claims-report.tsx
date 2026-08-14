@@ -36,6 +36,7 @@ import {
 } from '@/lib/crop-insurance-audit'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import { fieldCropAggregates, withLoadBreakouts, type CombineEntryLike } from '@/lib/yields'
+import type { RmaLookupResult } from '@/app/api/rma-price-discovery/route'
 import {
   SummaryCards, EmptyState, fmtUsd, signedTone, toneText,
   theadCls, grandTotalRowCls, type SummaryCardData,
@@ -72,9 +73,13 @@ type HarvestInfo = {
   price: number
   isFinal: boolean
   label: string | null // futures contract label, e.g. "DEC 26 Corn"
-  source: 'final' | 'estimate' | 'projected'
+  source: 'final' | 'rma_discovery' | 'estimate' | 'projected'
   stale: boolean
   priceDate: string | null
+  /** RMA provenance (064): the discovery-window label and supersede detail. */
+  rmaFinal?: boolean
+  rmaLabel?: string | null
+  supersededManual?: number | null
 }
 
 type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
@@ -229,6 +234,72 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     return () => { cancelled = true }
   }, [cropYear, reportCropIds, cropById])
 
+  // RMA Price Discovery (064): the authoritative tier above the Barchart
+  // estimate. States come from the policies' counties (never a hard-coded
+  // calendar — Alabama's windows aren't Illinois's); the route mirrors
+  // finals/running averages into harvest_price_estimates, so after it runs we
+  // re-read those rows and the shared resolver picks the new tier up.
+  const [rmaByCrop, setRmaByCrop] = useState<Map<string, RmaLookupResult>>(new Map())
+  const [rmaRefresh, setRmaRefresh] = useState(0)
+  const [rmaBusy, setRmaBusy] = useState(false)
+  useEffect(() => {
+    if (cropYear === '' || reportCropIds.length === 0) { setRmaByCrop(new Map()); return }
+    const states = [...new Set(
+      yearPolicies
+        .map((p) => (p.county_id ? countyById.get(p.county_id)?.state_code : null))
+        .filter((s): s is string => !!s),
+    )]
+    if (states.length === 0) return
+    const cropsPayload = reportCropIds
+      .map((id) => ({ crop_id: id, crop_name: cropById.get(id)?.name ?? '' }))
+      .filter((c) => c.crop_name)
+    let cancelled = false
+    ;(async () => {
+      setRmaBusy(true)
+      try {
+        const res = await fetch('/api/rma-price-discovery', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ crop_year: cropYear, crops: cropsPayload, states, force: rmaRefresh > 0 }),
+        })
+        const json = await res.json().catch(() => null)
+        if (cancelled || !json?.data) return
+        const m = new Map<string, RmaLookupResult>()
+        // A crop with policies in several states keys to the state most of its
+        // policies sit in (first states entry wins ties via insertion order).
+        for (const r of (json.data.results ?? []) as RmaLookupResult[]) {
+          if (!m.has(r.crop_id)) m.set(r.crop_id, r)
+        }
+        setRmaByCrop(m)
+        // Pick up the rows the route just mirrored.
+        const { data: est } = await supabase
+          .from('harvest_price_estimates').select('*').order('price_date', { ascending: false })
+        if (!cancelled && est) setPriceEstimates(est as HarvestPriceEstimate[])
+      } catch {
+        /* RMA unreachable — the tiering falls back to the estimate */
+      } finally {
+        if (!cancelled) setRmaBusy(false)
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cropYear, reportCropIds, yearPolicies, countyById, cropById, rmaRefresh])
+
+  // "Keep mine" decisions (manual final kept over a published RMA final),
+  // persisted per crop year — a UI preference, not data.
+  const [keepManualByYear, setKeepManualByYear] = usePersistentState<Record<string, string[]>>('ci-claims:keepManualHarvest', {})
+  const keepManualCropIds = useMemo(
+    () => new Set(cropYear === '' ? [] : keepManualByYear[String(cropYear)] ?? []),
+    [keepManualByYear, cropYear],
+  )
+  const setKeepManual = (cropId: string, keep: boolean) => {
+    if (cropYear === '') return
+    setKeepManualByYear((prev) => {
+      const cur = new Set(prev[String(cropYear)] ?? [])
+      if (keep) cur.add(cropId); else cur.delete(cropId)
+      return { ...prev, [String(cropYear)]: [...cur] }
+    })
+  }
+
   // Plantings with the load-derived irrigated/dryland breakout materialized —
   // a mixed field whose loads are all practice-tagged reads exactly like one
   // with a manual post-harvest allocation, so the per-practice yield basis
@@ -259,13 +330,19 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   // resolves the same way — this just adds the futures-contract label.
   const harvestByCrop = useMemo(() => {
     if (cropYear === '') return new Map<string, HarvestInfo>()
-    const resolved = resolveHarvestPriceByCrop({ cropIds: reportCropIds, cropYear, policies: yearPolicies, estimates: priceEstimates, liveByCrop: liveHarvestByCrop, crops })
+    const resolved = resolveHarvestPriceByCrop({ cropIds: reportCropIds, cropYear, policies: yearPolicies, estimates: priceEstimates, liveByCrop: liveHarvestByCrop, crops, keepManualCropIds })
     const m = new Map<string, HarvestInfo>()
     for (const [cropId, h] of resolved) {
-      m.set(cropId, { price: h.price, isFinal: h.source === 'final', label: harvestContractLabel(cropById.get(cropId)?.name, cropYear), source: h.source, stale: h.stale, priceDate: h.priceDate })
+      m.set(cropId, {
+        price: h.price, isFinal: h.source === 'final',
+        label: harvestContractLabel(cropById.get(cropId)?.name, cropYear),
+        source: h.source, stale: h.stale, priceDate: h.priceDate,
+        rmaFinal: h.rmaFinal, supersededManual: h.supersededManual,
+        rmaLabel: rmaByCrop.get(cropId)?.harvest_label ?? null,
+      })
     }
     return m
-  }, [reportCropIds, cropYear, yearPolicies, priceEstimates, liveHarvestByCrop, cropById, crops])
+  }, [reportCropIds, cropYear, yearPolicies, priceEstimates, liveHarvestByCrop, cropById, crops, keepManualCropIds, rmaByCrop])
 
   // Per-year program parameters (SCO trigger), with most-recent-year fallback.
   const programCfg = useMemo(
@@ -282,7 +359,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
     const projected = projectInsuranceIndemnities({
       cropYear, policies: yearPolicies, scos, ecos, staxes, mcos, countyAssumptions: effCountyAssumptions, assumptions: effAssumptions, plantings: effPlantings,
       actualYieldByCrop, harvestEstimates: priceEstimates, liveHarvestByCrop, crops,
-      scoTrigger: programCfg.scoTrigger,
+      scoTrigger: programCfg.scoTrigger, keepManualCropIds,
     })
     return projected.map((r) => ({
       policy: r.policy, comp: r.comp, harvest: harvestByCrop.get(r.policy.crop_id),
@@ -458,7 +535,8 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
 
   function harvestLabel(info: HarvestInfo | undefined): string {
     if (!info) return '—'
-    if (info.isFinal) return `${fmtPrice(info.price)} (final)`
+    if (info.isFinal) return `${fmtPrice(info.price)} ${info.rmaFinal ? '(RMA final)' : '(final)'}`
+    if (info.source === 'rma_discovery') return `${fmtPrice(info.price)} (${info.rmaLabel ?? 'RMA discovery'})`
     if (info.source === 'projected') return `${fmtPrice(info.price)} (proj.)`
     return `${fmtPrice(info.price)} (est.)`
   }
@@ -631,7 +709,44 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
             <strong>Estimated</strong> — based on current yield assumptions and futures prices. Final amounts are
             determined by RMA after harvest.{priceNote ? ` ${priceNote}` : ''} For price and yield scenarios, use the{' '}
             <Link href="/reports/income-sensitivity" className="underline font-semibold">Income Sensitivity Report</Link>.
+            <button
+              type="button"
+              disabled={rmaBusy}
+              onClick={() => setRmaRefresh((n) => n + 1)}
+              title="Refresh RMA discovery prices now"
+              aria-label="Refresh RMA discovery prices"
+              className="ml-1.5 align-middle text-amber-800 hover:text-amber-950 disabled:text-slate-300 no-print"
+            >
+              <span className={rmaBusy ? 'inline-block animate-spin' : ''}>↻</span>
+            </button>
           </div>
+
+          {/* RMA final superseding a differing manual entry: a notice with a
+              keep-mine escape — never a silent replacement. */}
+          {[...harvestByCrop.entries()].filter(([, h]) => h.supersededManual != null).map(([cropId, h]) => (
+            <div key={cropId} className="rounded-lg bg-sky-50 border border-sky-300 px-3 py-2 text-sm text-sky-900 no-print flex flex-wrap items-center gap-2">
+              <span>
+                <strong>{cropName(cropId)}:</strong> RMA published {fmtPrice(h.price)} — replaces your manual {fmtPrice(h.supersededManual!)}.
+              </span>
+              <button type="button" onClick={() => setKeepManual(cropId, true)} className="rounded border border-sky-400 px-2 py-0.5 text-xs font-semibold hover:bg-sky-100">
+                Keep mine ({fmtPrice(h.supersededManual!)})
+              </button>
+            </div>
+          ))}
+          {[...keepManualCropIds].map((cropId) => {
+            const rma = rmaByCrop.get(cropId)
+            if (!rma || rma.harvest_status !== 'released' || rma.harvest_price == null) return null
+            return (
+              <div key={cropId} className="rounded-lg bg-slate-50 border border-slate-300 px-3 py-2 text-sm text-slate-700 no-print flex flex-wrap items-center gap-2">
+                <span>
+                  <strong>{cropName(cropId)}:</strong> using your manual harvest price (RMA published {fmtPrice(rma.harvest_price)}).
+                </span>
+                <button type="button" onClick={() => setKeepManual(cropId, false)} className="rounded border border-slate-400 px-2 py-0.5 text-xs font-semibold hover:bg-slate-100">
+                  Use RMA {fmtPrice(rma.harvest_price)}
+                </button>
+              </div>
+            )
+          })}
 
           <SummaryCards cards={summaryCards} />
 

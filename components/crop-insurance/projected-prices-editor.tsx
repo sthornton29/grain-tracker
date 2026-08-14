@@ -40,6 +40,13 @@ export default function ProjectedPricesEditor({
   useEffect(() => { setDrafts({}); setMsg(null) }, [year])
 
   const savedFor = (cropId: string) => projectedPriceFromEstimates(estimates, cropId, year)
+  // The saved row's provenance: RMA-written rows (064 auto-fill) vs manual.
+  const savedSourceFor = (cropId: string): string | null => {
+    const rows = estimates
+      .filter((e) => e.crop_id === cropId && e.crop_year === year && e.price_type === 'projected')
+      .sort((a, b) => (b.price_date ?? '').localeCompare(a.price_date ?? ''))
+    return rows[0]?.source ?? null
+  }
   const draftValue = (cropId: string) => {
     if (cropId in drafts) return drafts[cropId]
     const v = savedFor(cropId)
@@ -80,8 +87,9 @@ export default function ProjectedPricesEditor({
       {open && (
         <>
           <p className="text-sm text-slate-500 max-w-3xl">
-            RMA announces the spring projected price for each crop in February. Enter them here per crop
-            year — the policy form and AI import auto-fill the projected price from these values.
+            RMA&rsquo;s published projected prices fill in automatically once each state&rsquo;s discovery window
+            closes (see Price discovery above) — typing a price here overrides them, and your manual entry
+            always wins. The policy form and AI import auto-fill the projected price from these values.
           </p>
           <label className="text-sm flex items-center gap-2">
             <span className="text-slate-500">Crop year</span>
@@ -100,9 +108,17 @@ export default function ProjectedPricesEditor({
             {crops.length === 0 && <p className="text-sm text-slate-400">No crops yet.</p>}
             {crops.map((c) => {
               const dirty = c.id in drafts && drafts[c.id] !== (savedFor(c.id) == null ? '' : String(savedFor(c.id)))
+              const src = savedSourceFor(c.id)
               return (
                 <div key={c.id} className="flex items-center gap-3 py-2">
-                  <span className="flex-1 text-sm font-medium">{c.name}</span>
+                  <span className="flex-1 text-sm font-medium">
+                    {c.name}
+                    {src && !dirty && (
+                      <span className={`ml-2 text-xs rounded-full px-2 py-0.5 ${/^rma/i.test(src) ? 'bg-green-100 text-green-800' : 'bg-slate-200 text-slate-600'}`}>
+                        {/^rma/i.test(src) ? 'RMA' : 'manual'}
+                      </span>
+                    )}
+                  </span>
                   <div className="flex items-center gap-1">
                     <span className="text-slate-400 text-sm">$</span>
                     <input

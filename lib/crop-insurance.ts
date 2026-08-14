@@ -1064,7 +1064,18 @@ export function sensitivityTable(args: {
 //            harvest_estimate → average projected price.
 
 export type LiveHarvest = { price: number; stale: boolean; priceDate: string | null }
-export type HarvestResolution = { price: number; source: 'final' | 'estimate' | 'projected'; stale: boolean; priceDate: string | null }
+export type HarvestResolution = {
+  price: number
+  source: 'final' | 'rma_discovery' | 'estimate' | 'projected'
+  stale: boolean
+  priceDate: string | null
+  /** 'final' tier detail: true when the final came from RMA Price Discovery
+   *  (vs a manually-entered policy harvest price / stored final). */
+  rmaFinal?: boolean
+  /** Set when an RMA-published final superseded a differing manual entry —
+   *  the UI shows "RMA published $X — replaces your manual $Y [keep mine]". */
+  supersededManual?: number | null
+}
 
 // Per-practice ACTUAL yield from the planting irrigated/dryland bushel breakout,
 // keyed `cropId|practice`. Only where the breakout is entered and acres > 0.
@@ -1124,17 +1135,27 @@ export function actualYieldByCropFromLoads(args: {
   return out
 }
 
-// Resolve the harvest price per crop: final → live Barchart estimate → most
-// recent stored harvest_estimate → average projected. `estimates` must be sorted
-// most-recent first (both callers order by price_date desc).
+// Resolve the harvest price per crop, tiered: RMA final ('harvest_final' rows
+// the RMA route writes, source 'RMA final') → manual final (policy
+// harvest_price / hand-stored final) → RMA in-discovery running average
+// ('harvest_estimate' rows with source 'rma_discovery') → live Barchart
+// estimate → most recent stored Barchart harvest_estimate → average projected.
+// `estimates` must be sorted most-recent first (callers order price_date desc).
+//
+// One deliberate inversion: an RMA-published final OUTRANKS a manual entry —
+// the published number is the fact — surfaced via supersededManual so the UI
+// shows a notice with a "keep mine" escape (keepManualCropIds), never a
+// silent replacement.
 //
 // Units: the result is in the policy's NATIVE $ per unit ($/bu, $/lb cotton).
-// Futures-DERIVED sources — the live CT quote and the stored 'harvest_estimate'
-// rows the /api/harvest-price-estimate route mirrors from Barchart — arrive in
-// ¢/lb for cotton and convert here; RMA-native sources (policy harvest_price,
-// 'harvest_final', projected) are already $/lb. `crops` supplies the id→name
+// Futures-DERIVED sources — the live CT quote and Barchart-mirrored
+// 'harvest_estimate' rows — arrive in ¢/lb for cotton and convert here;
+// RMA-native sources (policy harvest_price, 'harvest_final', the RMA
+// discovery rows, projected) are already $/lb. `crops` supplies the id→name
 // mapping the conversion needs; omitting it skips conversion (grains-only
 // callers/tests), and the computePolicy sanity guard backstops any miss.
+const RMA_DISCOVERY_FRESH_DAYS = 3
+
 export function resolveHarvestPriceByCrop(args: {
   cropIds: readonly string[]
   cropYear: number
@@ -1142,22 +1163,51 @@ export function resolveHarvestPriceByCrop(args: {
   estimates: readonly HarvestPriceEstimate[]
   liveByCrop?: ReadonlyMap<string, LiveHarvest>
   crops?: ReadonlyArray<Pick<Crop, 'id' | 'name'>>
+  /** Crops where the user pressed "keep mine" on the supersede notice. */
+  keepManualCropIds?: ReadonlySet<string>
+  /** Injectable for tests. */
+  now?: Date
 }): Map<string, HarvestResolution> {
   const nameById = new Map((args.crops ?? []).map((c) => [c.id, c.name]))
+  const nowMs = (args.now ?? new Date()).getTime()
   const m = new Map<string, HarvestResolution>()
   for (const cropId of args.cropIds) {
     const cropName = nameById.get(cropId)
     const pols = args.policies.filter((p) => p.crop_id === cropId && p.crop_year === args.cropYear)
     const avgProjected = pols.length > 0 ? pols.reduce((s, p) => s + Number(p.projected_price), 0) / pols.length : 0
     const policyFinal = pols.find((p) => p.harvest_price != null)?.harvest_price
-    const storedFinal = args.estimates.find((e) => e.crop_id === cropId && e.crop_year === args.cropYear && e.price_type === 'harvest_final')
-    if (policyFinal != null || storedFinal) {
-      m.set(cropId, { price: Number(policyFinal ?? storedFinal!.price), source: 'final', stale: false, priceDate: storedFinal?.price_date ?? null })
+    const finals = args.estimates.filter((e) => e.crop_id === cropId && e.crop_year === args.cropYear && e.price_type === 'harvest_final')
+    const rmaFinal = finals.find((e) => /^rma/i.test(e.source ?? ''))
+    const manualFinal = policyFinal != null ? Number(policyFinal) : (finals.find((e) => !/^rma/i.test(e.source ?? ''))?.price ?? null)
+
+    if (rmaFinal && !(manualFinal != null && args.keepManualCropIds?.has(cropId))) {
+      const rmaPrice = Number(rmaFinal.price)
+      m.set(cropId, {
+        price: rmaPrice, source: 'final', stale: false, priceDate: rmaFinal.price_date,
+        rmaFinal: true,
+        supersededManual: manualFinal != null && Number(manualFinal) !== rmaPrice ? Number(manualFinal) : null,
+      })
+      continue
+    }
+    if (manualFinal != null) {
+      m.set(cropId, { price: Number(manualFinal), source: 'final', stale: false, priceDate: finals.find((e) => !/^rma/i.test(e.source ?? ''))?.price_date ?? null })
+      continue
+    }
+    // RMA running average while the discovery window is open — fresher than
+    // any single-contract quote, but only trusted for a few days (the route
+    // rewrites it daily; an old row means the window closed or fetches broke).
+    const discovery = args.estimates.find((e) =>
+      e.crop_id === cropId && e.crop_year === args.cropYear &&
+      e.price_type === 'harvest_estimate' && e.source === 'rma_discovery' &&
+      e.price_date != null && nowMs - Date.parse(e.price_date) <= RMA_DISCOVERY_FRESH_DAYS * 86_400_000,
+    )
+    if (discovery) {
+      m.set(cropId, { price: Number(discovery.price), source: 'rma_discovery', stale: false, priceDate: discovery.price_date })
       continue
     }
     const live = args.liveByCrop?.get(cropId)
     if (live) { m.set(cropId, { price: centsToInsuranceDollars(cropName, live.price), source: 'estimate', stale: live.stale, priceDate: live.priceDate }); continue }
-    const storedEst = args.estimates.find((e) => e.crop_id === cropId && e.crop_year === args.cropYear && e.price_type === 'harvest_estimate')
+    const storedEst = args.estimates.find((e) => e.crop_id === cropId && e.crop_year === args.cropYear && e.price_type === 'harvest_estimate' && e.source !== 'rma_discovery')
     if (storedEst) { m.set(cropId, { price: centsToInsuranceDollars(cropName, Number(storedEst.price)), source: 'estimate', stale: true, priceDate: storedEst.price_date }); continue }
     m.set(cropId, { price: avgProjected, source: 'projected', stale: false, priceDate: null })
   }
@@ -1286,6 +1336,8 @@ export function projectInsuranceIndemnities(args: {
   // Harvest-price override in the policy's NATIVE unit ($/bu, $/lb cotton) —
   // a UI collecting cotton ¢/lb must convert via centsToInsuranceDollars first.
   harvestOverrideByCrop?: ReadonlyMap<string, number>
+  // Crops where the user kept their manual final over a published RMA final.
+  keepManualCropIds?: ReadonlySet<string>
   // 045: STAX/MCO endorsements + the shared county-yield assumption rows.
   staxes?: readonly CropInsuranceStax[]
   mcos?: readonly CropInsuranceMco[]
@@ -1295,6 +1347,7 @@ export function projectInsuranceIndemnities(args: {
   const cropIds = Array.from(new Set(yearPolicies.map((p) => p.crop_id)))
   const harvestByCrop = resolveHarvestPriceByCrop({
     cropIds, cropYear: args.cropYear, policies: yearPolicies, estimates: args.harvestEstimates, liveByCrop: args.liveHarvestByCrop, crops: args.crops,
+    keepManualCropIds: args.keepManualCropIds,
   })
   const practiceActual = practiceActualYieldByCrop(args.plantings, args.cropYear)
   const scoBy = new Map(args.scos.map((s) => [s.policy_id, s]))
