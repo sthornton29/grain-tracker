@@ -101,6 +101,15 @@ export function centsToInsuranceDollars(cropName: string | null | undefined, pri
   return cropToHedgeCommodity(cropName) === 'Cotton' ? price / 100 : price
 }
 
+// RMA-native → app-native units, the same one-boundary rule. RMA publishes
+// cotton in $/lb (matches the app's insurance convention — passthrough) and
+// CANOLA in $/lb while the app tracks canola in 50-lb bushels: ×50 here,
+// nowhere else. Grains pass through ($/bu both sides).
+export const CANOLA_LBS_PER_BUSHEL = 50
+export function rmaToAppInsurancePrice(cropName: string | null | undefined, rmaPrice: number): number {
+  return /canola|rapeseed/i.test(cropName ?? '') ? rmaPrice * CANOLA_LBS_PER_BUSHEL : rmaPrice
+}
+
 // Plausibility ceiling for the computePolicy sanity guard: no real MPCI
 // revenue guarantee approaches $3,000/acre and no real indemnity approaches
 // $2,500/acre — a breach means a ¢/lb value leaked into $-unit math (≈100×).
@@ -109,22 +118,63 @@ export const MAX_PLAUSIBLE_INDEMNITY_PER_ACRE = 2500
 export const UNIT_MISMATCH_WARNING =
   'Implausible indemnity — check price units on this policy (¢/lb vs $/lb).'
 
-// The RMA projected (spring) price for a crop + crop year, read from the
-// harvest_price_estimates table (price_type = 'projected'). RMA announces these
-// each February; the operator enters/edits them under Settings → Crop Insurance.
-// Returns the most recently dated projected row for that crop/year, or null when
-// none is on file. Replaces the old hard-coded PROJECTED_PRICES_2026 map.
+// The RMA projected (spring) price for a crop + crop year, resolved
+// SOURCE-AWARE from the harvest_price_estimates rows ('projected'):
+//
+//   RMA released ('RMA final', written by /api/rma-price-discovery)
+//     > manual (user-typed — superseded WITH A NOTICE, never silently;
+//       keepManual restores it)
+//     > seed (the 024-era national values, relabeled by 065 — they masked
+//       the real Alabama value under the old latest-date-wins rule and must
+//       never outrank RMA again)
+//
+// Latest price_date breaks ties within a source tier.
+export type ProjectedResolution = {
+  price: number
+  source: 'rma' | 'manual' | 'seed'
+  priceDate: string | null
+  /** Set when RMA superseded a differing manual/seed value. */
+  superseded: number | null
+  supersededSource: 'manual' | 'seed' | null
+}
+
+const projectedSourceOf = (source: string | null): 'rma' | 'manual' | 'seed' =>
+  /^rma/i.test(source ?? '') ? 'rma' : source === 'seed' ? 'seed' : 'manual'
+
+export function resolveProjectedPrice(
+  estimates: readonly HarvestPriceEstimate[],
+  cropId: string,
+  cropYear: number,
+  opts?: { keepManual?: boolean },
+): ProjectedResolution | null {
+  const rows = estimates.filter((e) => e.crop_id === cropId && e.crop_year === cropYear && e.price_type === 'projected')
+  if (rows.length === 0) return null
+  const latest = (src: 'rma' | 'manual' | 'seed') =>
+    rows.filter((e) => projectedSourceOf(e.source) === src)
+      .sort((a, b) => (b.price_date ?? '').localeCompare(a.price_date ?? ''))[0] ?? null
+  const rma = latest('rma')
+  const manual = latest('manual')
+  const seed = latest('seed')
+  if (rma && !(manual && opts?.keepManual)) {
+    const other = manual ?? seed
+    const superseded = other != null && Number(other.price) !== Number(rma.price) ? Number(other.price) : null
+    return {
+      price: Number(rma.price), source: 'rma', priceDate: rma.price_date,
+      superseded, supersededSource: superseded != null ? (manual ? 'manual' : 'seed') : null,
+    }
+  }
+  if (manual) return { price: Number(manual.price), source: 'manual', priceDate: manual.price_date, superseded: null, supersededSource: null }
+  if (seed) return { price: Number(seed.price), source: 'seed', priceDate: seed.price_date, superseded: null, supersededSource: null }
+  return null
+}
+
+// Back-compat price-only wrapper (policy-form auto-fill etc.).
 export function projectedPriceFromEstimates(
   estimates: readonly HarvestPriceEstimate[],
   cropId: string,
   cropYear: number,
 ): number | null {
-  let best: HarvestPriceEstimate | null = null
-  for (const e of estimates) {
-    if (e.crop_id !== cropId || e.crop_year !== cropYear || e.price_type !== 'projected') continue
-    if (best == null || e.price_date > best.price_date) best = e
-  }
-  return best ? Number(best.price) : null
+  return resolveProjectedPrice(estimates, cropId, cropYear)?.price ?? null
 }
 
 // The Barchart futures symbol whose current price estimates the harvest price,

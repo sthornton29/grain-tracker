@@ -23,9 +23,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import {
   parseRmaRevenuePrices, pickPrimaryRow, rmaCommodityCode, stateFips,
-  rmaServiceUrl, rmaCacheIsStale, windowState, rmaSourceLabel,
+  rmaServiceUrl, rmaCacheIsStale, windowState, rmaSourceLabel, offerIdentityLabel,
   type RmaPriceRow, type RmaWindowStatus,
 } from '@/lib/rma-price-discovery'
+import { rmaToAppInsurancePrice } from '@/lib/crop-insurance'
 
 export const runtime = 'nodejs'
 export const maxDuration = 30
@@ -48,6 +49,16 @@ export type RmaLookupResult = {
   harvest_label: string | null
   volatility: number | null
   fetched_at: string
+  /** The offer's base contracts (CEPP-keyed, e.g. AL corn ZCU26) — the
+   *  Barchart-estimate tier must quote THESE, never a hard-coded month. */
+  projected_market_symbol: string | null
+  harvest_market_symbol: string | null
+  harvest_exchange_code: string | null
+  /** Which offer was chosen (provenance): type · practice · SCD. */
+  offer_identity: string | null
+  /** True when RMA lists no offer for this crop × state — render "no RMA
+   *  offer for <state>", never a blank row. */
+  no_offer?: boolean
 }
 
 type CacheRow = {
@@ -60,6 +71,8 @@ type CacheRow = {
   harvest_price: number | null; harvest_status: string | null
   harvest_begin_date: string | null; harvest_end_date: string | null
   volatility: number | null; fetched_at: string
+  projected_exchange_code?: string | null; projected_market_symbol?: string | null
+  harvest_exchange_code?: string | null; harvest_market_symbol?: string | null
 }
 
 const rowToCache = (r: RmaPriceRow): Omit<CacheRow, 'fetched_at'> => ({
@@ -72,6 +85,8 @@ const rowToCache = (r: RmaPriceRow): Omit<CacheRow, 'fetched_at'> => ({
   harvest_price: r.harvestPrice, harvest_status: r.harvestStatus,
   harvest_begin_date: r.harvestBeginDate, harvest_end_date: r.harvestEndDate,
   volatility: r.volatility,
+  projected_exchange_code: r.projectedExchangeCode, projected_market_symbol: r.projectedMarketSymbol,
+  harvest_exchange_code: r.harvestExchangeCode, harvest_market_symbol: r.harvestMarketSymbol,
 })
 
 const cacheToRow = (c: CacheRow): RmaPriceRow => ({
@@ -86,6 +101,10 @@ const cacheToRow = (c: CacheRow): RmaPriceRow => ({
   harvestStatus: (c.harvest_status as RmaWindowStatus | null) ?? null,
   harvestBeginDate: c.harvest_begin_date, harvestEndDate: c.harvest_end_date,
   volatility: c.volatility != null ? Number(c.volatility) : null,
+  projectedExchangeCode: c.projected_exchange_code ?? null,
+  projectedMarketSymbol: c.projected_market_symbol ?? null,
+  harvestExchangeCode: c.harvest_exchange_code ?? null,
+  harvestMarketSymbol: c.harvest_market_symbol ?? null,
 })
 
 export async function POST(req: NextRequest) {
@@ -162,60 +181,74 @@ export async function POST(req: NextRequest) {
       }
 
       const primary = pickPrimaryRow(rows)
-      if (!primary) continue
+      if (!primary) {
+        // RMA lists no offer for this crop x state - say so, never a blank.
+        results.push({
+          crop_id: crop.crop_id, state_code: st.toUpperCase(), commodity_code: code,
+          projected_price: null, projected_status: null, projected_begin_date: null, projected_end_date: null, projected_label: null,
+          harvest_price: null, harvest_status: null, harvest_begin_date: null, harvest_end_date: null, harvest_label: null,
+          volatility: null, fetched_at: new Date().toISOString(),
+          projected_market_symbol: null, harvest_market_symbol: null, harvest_exchange_code: null,
+          offer_identity: null, no_offer: true,
+        })
+        continue
+      }
+      // Offer-selection diagnostics: which candidates existed, which won.
+      console.log(`[rma-price-discovery] ${crop.crop_name}/${st}: ${rows.length} offer(s); chose ${primary.typeName} / ${primary.practiceName} / SCD ${primary.salesClosingDate ?? '-'}`)
 
       const today = new Date().toISOString().slice(0, 10)
       const pw = windowState({ status: primary.projectedStatus, beginDate: primary.projectedBeginDate, endDate: primary.projectedEndDate, today })
       const hw = windowState({ status: primary.harvestStatus, beginDate: primary.harvestBeginDate, endDate: primary.harvestEndDate, today })
+      // RMA-native -> app-native units at the one boundary (canola $/lb -> $/bu).
+      const appProjected = primary.projectedPrice != null ? rmaToAppInsurancePrice(crop.crop_name, primary.projectedPrice) : null
+      const appHarvest = primary.harvestPrice != null ? rmaToAppInsurancePrice(crop.crop_name, primary.harvestPrice) : null
       results.push({
         crop_id: crop.crop_id,
         state_code: st.toUpperCase(),
         commodity_code: code,
-        projected_price: primary.projectedPrice,
+        projected_price: appProjected,
         projected_status: primary.projectedStatus,
         projected_begin_date: primary.projectedBeginDate,
         projected_end_date: primary.projectedEndDate,
         projected_label: pw ? rmaSourceLabel({ status: pw.status, dayOfWindow: pw.dayOfWindow, windowDays: pw.windowDays, asOf: today }) : null,
-        harvest_price: primary.harvestPrice,
+        harvest_price: appHarvest,
         harvest_status: primary.harvestStatus,
         harvest_begin_date: primary.harvestBeginDate,
         harvest_end_date: primary.harvestEndDate,
         harvest_label: hw ? rmaSourceLabel({ status: hw.status, dayOfWindow: hw.dayOfWindow, windowDays: hw.windowDays, asOf: today }) : null,
         volatility: primary.volatility,
         fetched_at: new Date().toISOString(),
+        projected_market_symbol: primary.projectedMarketSymbol,
+        harvest_market_symbol: primary.harvestMarketSymbol,
+        harvest_exchange_code: primary.harvestExchangeCode,
+        offer_identity: offerIdentityLabel({ ...primary, stateAbbr: st.toUpperCase() }),
       })
 
       // 3. Mirror into the org's estimate rows so the resolvers (and the
       //    Income Sensitivity pinning) see RMA values with zero special-casing.
-      if (primary.harvestStatus === 'released' && primary.harvestPrice != null) {
+      if (primary.harvestStatus === 'released' && appHarvest != null) {
         await supabase.from('harvest_price_estimates').upsert({
           crop_id: crop.crop_id, crop_year: cropYear, price_type: 'harvest_final',
-          price: primary.harvestPrice, source: 'RMA final',
+          price: appHarvest, source: 'RMA final',
           price_date: primary.harvestEndDate ?? today,
         }, { onConflict: 'crop_id,crop_year,price_type,price_date' })
-      } else if (primary.harvestStatus === 'in_discovery' && primary.harvestPrice != null) {
+      } else if (primary.harvestStatus === 'in_discovery' && appHarvest != null) {
         await supabase.from('harvest_price_estimates').upsert({
           crop_id: crop.crop_id, crop_year: cropYear, price_type: 'harvest_estimate',
-          price: primary.harvestPrice, source: 'rma_discovery',
+          price: appHarvest, source: 'rma_discovery',
           price_date: today,
         }, { onConflict: 'crop_id,crop_year,price_type,price_date' })
       }
-      if (primary.projectedStatus === 'released' && primary.projectedPrice != null) {
-        const { data: manualRows } = await supabase
-          .from('harvest_price_estimates')
-          .select('id')
-          .eq('crop_id', crop.crop_id)
-          .eq('crop_year', cropYear)
-          .eq('price_type', 'projected')
-          .eq('source', 'manual')
-          .limit(1)
-        if (!manualRows || manualRows.length === 0) {
-          await supabase.from('harvest_price_estimates').upsert({
-            crop_id: crop.crop_id, crop_year: cropYear, price_type: 'projected',
-            price: primary.projectedPrice, source: 'RMA final',
-            price_date: primary.projectedEndDate ?? today,
-          }, { onConflict: 'crop_id,crop_year,price_type,price_date' })
-        }
+      // ALWAYS mirror a Released projected price. The old only-when-no-manual
+      // guard let the 024 seeds (and any manual row) MASK the real state value;
+      // precedence now lives in resolveProjectedPrice (RMA > manual > seed),
+      // which surfaces the supersede as a notice instead of skipping the write.
+      if (primary.projectedStatus === 'released' && appProjected != null) {
+        await supabase.from('harvest_price_estimates').upsert({
+          crop_id: crop.crop_id, crop_year: cropYear, price_type: 'projected',
+          price: appProjected, source: 'RMA final',
+          price_date: primary.projectedEndDate ?? today,
+        }, { onConflict: 'crop_id,crop_year,price_type,price_date' })
       }
     }
   }

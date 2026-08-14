@@ -96,6 +96,13 @@ export type RmaPriceRow = {
   harvestBeginDate: string | null
   harvestEndDate: string | null
   volatility: number | null
+  /** The offer's BASE CONTRACT per window, straight from the CEPP-keyed data —
+   *  Barchart-compatible market symbols (Alabama corn = 'ZCU26', September;
+   *  never assume the Midwest DEC contract). */
+  projectedExchangeCode: string | null
+  projectedMarketSymbol: string | null
+  harvestExchangeCode: string | null
+  harvestMarketSymbol: string | null
 }
 
 const STATUS_MAP: Record<string, RmaWindowStatus> = {
@@ -165,6 +172,10 @@ export function parseRmaRevenuePrices(xml: string): RmaPriceRow[] {
       harvestBeginDate: toDate(tagValue(e, 'HarvestPriceBeginDate')),
       harvestEndDate: toDate(tagValue(e, 'HarvestPriceEndDate')),
       volatility: toNum(tagValue(e, 'ApprovedPriceVolatilityPercent')),
+      projectedExchangeCode: tagValue(e, 'ProjectedPriceExchangeCode'),
+      projectedMarketSymbol: tagValue(e, 'ProjectedPriceMarketSymbolCode'),
+      harvestExchangeCode: tagValue(e, 'HarvestPriceExchangeCode'),
+      harvestMarketSymbol: tagValue(e, 'HarvestPriceMarketSymbolCode'),
     })
   }
   return rows
@@ -321,6 +332,13 @@ export function rmaCacheIsStale(args: {
   // and only refresh weekly as a shape check.
   const anyPending = args.projectedStatus === 'yet_to_start' || args.harvestStatus === 'yet_to_start'
   return age > (anyOpen || anyPending ? RMA_REFRESH_IN_DISCOVERY_MS : RMA_REFRESH_IDLE_MS)
+}
+
+/** The offer's identity line for provenance chips:
+ *  "AL · All (Non-High Amylose) · Conventional · SCD 2/28/2026". */
+export function offerIdentityLabel(r: Pick<RmaPriceRow, 'stateCode' | 'typeName' | 'practiceName' | 'salesClosingDate'> & { stateAbbr?: string }): string {
+  const scd = r.salesClosingDate ? `SCD ${fmtMDY(r.salesClosingDate)}` : null
+  return [r.stateAbbr ?? r.stateCode, r.typeName, r.practiceName, scd].filter(Boolean).join(' · ')
 }
 
 /** The OData query for one crop year × commodity × state. */

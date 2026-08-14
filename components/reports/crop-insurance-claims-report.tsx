@@ -207,10 +207,20 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   const reportCropIds = useMemo(() => Array.from(new Set(yearPolicies.map((p) => p.crop_id))), [yearPolicies])
 
   // Fetch a running harvest-price estimate for each crop with a policy.
+  const [rmaByCrop, setRmaByCrop] = useState<Map<string, RmaLookupResult>>(new Map())
+  const [rmaRefresh, setRmaRefresh] = useState(0)
+  const [rmaBusy, setRmaBusy] = useState(false)
+
   useEffect(() => {
     if (cropYear === '' || reportCropIds.length === 0) { setLiveEstimates(new Map()); return }
+    // The offer's base contract (RMA, e.g. AL corn ZCU26) overrides the
+    // hard-coded new-crop month for the Barchart estimate tier.
     const cropsPayload = reportCropIds
-      .map((id) => ({ crop_id: id, crop_name: cropById.get(id)?.name ?? '' }))
+      .map((id) => ({
+        crop_id: id,
+        crop_name: cropById.get(id)?.name ?? '',
+        symbol_override: rmaByCrop.get(id)?.harvest_market_symbol ?? null,
+      }))
       .filter((c) => c.crop_name)
     let cancelled = false
     ;(async () => {
@@ -232,16 +242,13 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
       }
     })()
     return () => { cancelled = true }
-  }, [cropYear, reportCropIds, cropById])
+  }, [cropYear, reportCropIds, cropById, rmaByCrop])
 
   // RMA Price Discovery (064): the authoritative tier above the Barchart
   // estimate. States come from the policies' counties (never a hard-coded
   // calendar — Alabama's windows aren't Illinois's); the route mirrors
   // finals/running averages into harvest_price_estimates, so after it runs we
   // re-read those rows and the shared resolver picks the new tier up.
-  const [rmaByCrop, setRmaByCrop] = useState<Map<string, RmaLookupResult>>(new Map())
-  const [rmaRefresh, setRmaRefresh] = useState(0)
-  const [rmaBusy, setRmaBusy] = useState(false)
   useEffect(() => {
     if (cropYear === '' || reportCropIds.length === 0) { setRmaByCrop(new Map()); return }
     const states = [...new Set(
