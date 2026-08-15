@@ -87,7 +87,13 @@ export type PlantingRow = {
   planted_acres: number | string | null
   irrigated_acres: number | string | null
   dryland_acres: number | string | null
+  planting_date?: string | null
   updated_at?: string | null
+}
+export type PlantingVarietyRow = {
+  planting_id: string
+  variety: string
+  acres: number | string | null
 }
 export type LoadRow = {
   id: string
@@ -193,6 +199,10 @@ export type PartnerPlanting = {
   planted_acres: number
   irrigated_acres: number
   dryland_acres: number
+  /** Planting date (YYYY-MM-DD) when recorded. */
+  planting_date: string | null
+  /** Varieties recorded on this planting (may be empty). */
+  varieties: Array<{ variety: string; acres: number }>
   entity: string | null
   updated_at: string | null
 }
@@ -204,11 +214,18 @@ export function buildPlantingRecords(args: {
   entities: readonly EntityRow[]
   crops: readonly CropRow[]
   year: number
+  varieties?: readonly PlantingVarietyRow[]
 }): PartnerPlanting[] {
   const fieldById = new Map(args.fields.map((f) => [f.id, f]))
   const farmById = new Map(args.farms.map((f) => [f.id, f]))
   const entityById = new Map(args.entities.map((e) => [e.id, e]))
   const cropById = new Map(args.crops.map((c) => [c.id, c]))
+  const varietiesByPlanting = new Map<string, Array<{ variety: string; acres: number }>>()
+  for (const v of args.varieties ?? []) {
+    const list = varietiesByPlanting.get(v.planting_id) ?? []
+    list.push({ variety: v.variety, acres: num(v.acres) })
+    varietiesByPlanting.set(v.planting_id, list)
+  }
   return args.plantings
     .filter((p) => p.season_year === args.year)
     .map((p) => {
@@ -224,6 +241,8 @@ export function buildPlantingRecords(args: {
         planted_acres: num(p.planted_acres),
         irrigated_acres: num(p.irrigated_acres),
         dryland_acres: num(p.dryland_acres),
+        planting_date: p.planting_date ?? null,
+        varieties: varietiesByPlanting.get(p.id) ?? [],
         entity: entity?.name ?? null,
         updated_at: p.updated_at ?? null,
       }

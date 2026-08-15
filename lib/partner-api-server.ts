@@ -12,7 +12,7 @@
 //     revocable) — inserted by hand in the SQL editor for now.
 // Routes call resolvePartnerOrg() and add .eq('org_id', org) to every query.
 
-import { createHash } from 'crypto'
+import { createHash, randomBytes } from 'crypto'
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient as createSupabaseClient, type SupabaseClient } from '@supabase/supabase-js'
 import { bearerTokenFrom, checkPartnerAuth } from '@/lib/partner-api'
@@ -55,8 +55,129 @@ export async function resolvePartnerOrg(
     .eq('token_sha256', sha256Hex(token))
     .maybeSingle()
   const row = data as { org_id: string; revoked_at: string | null } | null
-  if (!row || row.revoked_at != null) return unauthorized
-  return row.org_id
+  if (row && row.revoked_at == null) return row.org_id
+
+  // A landowner-share token (070) is valid API auth but does NOT grant the
+  // farm-wide endpoints that call this resolver (settlements, hedging,
+  // crop-year-status) — those stay farmer-only.
+  const { data: shareRow } = await supabase
+    .from('partner_shares')
+    .select('id')
+    .eq('token_sha256', sha256Hex(token))
+    .maybeSingle()
+  if (shareRow) {
+    return NextResponse.json(
+      { error: 'This share does not include that data.', code: 'not_in_share_scope' },
+      { status: 403 },
+    )
+  }
+  return unauthorized
+}
+
+// ---------------------------------------------------------------------------
+// Landowner shares (070)
+// ---------------------------------------------------------------------------
+
+export type ShareScope = { id: string; landownerId: string; includeYields: boolean }
+export type PartnerAccess = { org: string; share: ShareScope | null }
+
+export const shareRevokedResponse = () =>
+  NextResponse.json(
+    {
+      error: 'Your farmer has ended or changed this share.',
+      code: 'share_revoked',
+    },
+    { status: 403 },
+  )
+
+/** Resolves a bearer token to { org, share }. Full-org tokens (legacy env
+ *  var + partner_api_tokens) return share: null; landowner-share tokens
+ *  (partner_shares) carry the landowner scope. A revoked share is a 403 with
+ *  code 'share_revoked' so the consumer can show a plain-language message. */
+export async function resolvePartnerAccess(
+  req: NextRequest,
+  supabase: SupabaseClient,
+): Promise<PartnerAccess | NextResponse> {
+  const unauthorized = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  const token = bearerTokenFrom(req.headers.get('authorization'))
+  if (!token) return unauthorized
+
+  if (checkPartnerAuth(req.headers.get('authorization'), process.env.PARTNER_API_TOKEN) === 'ok') {
+    const { data, error } = await supabase
+      .from('organizations').select('id').eq('slug', 'turnrow-farm').maybeSingle()
+    if (error || !data) {
+      return NextResponse.json({ error: 'Organization for the legacy partner token is missing — run migration 053.' }, { status: 500 })
+    }
+    return { org: (data as { id: string }).id, share: null }
+  }
+
+  const hash = sha256Hex(token)
+  const { data: full } = await supabase
+    .from('partner_api_tokens')
+    .select('org_id, revoked_at')
+    .eq('token_sha256', hash)
+    .maybeSingle()
+  const fullRow = full as { org_id: string; revoked_at: string | null } | null
+  if (fullRow && fullRow.revoked_at == null) return { org: fullRow.org_id, share: null }
+
+  const { data: share } = await supabase
+    .from('partner_shares')
+    .select('id, org_id, landowner_id, include_yields, revoked_at')
+    .eq('token_sha256', hash)
+    .maybeSingle()
+  const shareRow = share as {
+    id: string
+    org_id: string
+    landowner_id: string
+    include_yields: boolean
+    revoked_at: string | null
+  } | null
+  if (!shareRow) return unauthorized
+  if (shareRow.revoked_at != null) return shareRevokedResponse()
+  return {
+    org: shareRow.org_id,
+    share: {
+      id: shareRow.id,
+      landownerId: shareRow.landowner_id,
+      includeYields: shareRow.include_yields,
+    },
+  }
+}
+
+/** Field ids on the farms belonging to a share's landowner (the share's
+ *  visibility boundary). */
+export async function sharedFieldIds(
+  supabase: SupabaseClient,
+  org: string,
+  landownerId: string,
+): Promise<Set<string>> {
+  const farms = await fetchAll<{ id: string }>((f, t) =>
+    supabase
+      .from('farms')
+      .select('id')
+      .eq('org_id', org)
+      .eq('landowner_id', landownerId)
+      .order('id')
+      .range(f, t),
+  )
+  if (farms.length === 0) return new Set()
+  const farmIds = farms.map((f) => f.id)
+  const fields = await fetchAll<{ id: string }>((f, t) =>
+    supabase
+      .from('fields')
+      .select('id')
+      .eq('org_id', org)
+      .in('farm_id', farmIds)
+      .order('id')
+      .range(f, t),
+  )
+  return new Set(fields.map((f) => f.id))
+}
+
+/** A new high-entropy bearer token (returned to the client once; store only
+ *  its sha256). */
+export function mintShareToken(): string {
+  return `trps_${randomBytes(24).toString('hex')}`
 }
 
 export function createServiceClient(): SupabaseClient | null {

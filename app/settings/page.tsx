@@ -17,6 +17,7 @@ const items = [
   { href: '/settings/government-payments', label: 'Government Payments' },
   { href: '/settings/organization', label: 'Organization' },
   { href: '/settings/users', label: 'Users & Modules' },
+  { href: '/settings/shares', label: 'Landowner Shares' },
 ]
 
 export default function SettingsPage() {

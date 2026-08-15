@@ -3,7 +3,8 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import {
-  resolvePartnerOrg,
+  resolvePartnerAccess,
+  sharedFieldIds,
   createServiceClient,
   serviceClientMissingResponse,
   fetchAll,
@@ -17,6 +18,7 @@ import {
   type FarmRow,
   type FieldRow,
   type PlantingRow,
+  type PlantingVarietyRow,
 } from '@/lib/partner-api'
 
 export const runtime = 'nodejs'
@@ -25,8 +27,9 @@ export const dynamic = 'force-dynamic'
 export async function GET(req: NextRequest) {
   const supabase = createServiceClient()
   if (!supabase) return serviceClientMissingResponse()
-  const org = await resolvePartnerOrg(req, supabase)
-  if (org instanceof NextResponse) return org
+  const access = await resolvePartnerAccess(req, supabase)
+  if (access instanceof NextResponse) return access
+  const org = access.org
   const year = requireYearParam(req)
   if (year instanceof NextResponse) return year
 
@@ -35,7 +38,7 @@ export async function GET(req: NextRequest) {
       fetchAll<PlantingRow>((f, t) =>
         supabase
           .from('field_plantings')
-          .select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, updated_at')
+          .select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, planting_date, updated_at')
           .eq('org_id', org)
           .eq('season_year', year)
           .order('id')
@@ -59,9 +62,24 @@ export async function GET(req: NextRequest) {
         supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').eq('org_id', org).order('id').range(f, t),
       ),
     ])
-    return NextResponse.json({
-      data: buildPlantingRecords({ plantings, fields, farms, entities, crops, year }),
-    })
+    // Varieties per planting (022). A missing org_id column or table state
+    // degrades to an empty list rather than failing the endpoint.
+    let varieties: PlantingVarietyRow[] = []
+    if (plantings.length > 0) {
+      const varietyResult = await supabase
+        .from('field_planting_varieties')
+        .select('planting_id, variety, acres')
+        .eq('org_id', org)
+        .in('planting_id', plantings.map((p) => p.id))
+      if (!varietyResult.error) varieties = (varietyResult.data ?? []) as PlantingVarietyRow[]
+    }
+
+    let records = buildPlantingRecords({ plantings, fields, farms, entities, crops, year, varieties })
+    if (access.share) {
+      const allowed = await sharedFieldIds(supabase, org, access.share.landownerId)
+      records = records.filter((r) => allowed.has(r.field_id))
+    }
+    return NextResponse.json({ data: records })
   } catch (e) {
     return errorResponse(e)
   }

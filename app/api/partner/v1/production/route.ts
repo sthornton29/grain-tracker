@@ -4,7 +4,8 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import {
-  resolvePartnerOrg,
+  resolvePartnerAccess,
+  sharedFieldIds,
   createServiceClient,
   serviceClientMissingResponse,
   fetchAll,
@@ -30,8 +31,16 @@ export const dynamic = 'force-dynamic'
 export async function GET(req: NextRequest) {
   const supabase = createServiceClient()
   if (!supabase) return serviceClientMissingResponse()
-  const org = await resolvePartnerOrg(req, supabase)
-  if (org instanceof NextResponse) return org
+  const access = await resolvePartnerAccess(req, supabase)
+  if (access instanceof NextResponse) return access
+  const org = access.org
+  // The yields scope is the farmer's opt-in on the share.
+  if (access.share && !access.share.includeYields) {
+    return NextResponse.json(
+      { error: 'Yields are not included in this share.', code: 'yields_not_shared' },
+      { status: 403 },
+    )
+  }
   const year = requireYearParam(req)
   if (year instanceof NextResponse) return year
   const crop = req.nextUrl.searchParams.get('crop')
@@ -96,11 +105,14 @@ export async function GET(req: NextRequest) {
       .eq('crop_year', year)
     if (!combineResult.error) combineEntries = (combineResult.data ?? []) as CombineEntryRow[]
 
-    return NextResponse.json({
-      data: buildProductionRecords({
-        plantings, loads, splits, ginReceipts, combineEntries, fields, farms, entities, crops, year, crop,
-      }),
+    let records = buildProductionRecords({
+      plantings, loads, splits, ginReceipts, combineEntries, fields, farms, entities, crops, year, crop,
     })
+    if (access.share) {
+      const allowed = await sharedFieldIds(supabase, org, access.share.landownerId)
+      records = records.filter((r) => allowed.has(r.field_id))
+    }
+    return NextResponse.json({ data: records })
   } catch (e) {
     return errorResponse(e)
   }

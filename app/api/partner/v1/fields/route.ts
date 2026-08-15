@@ -3,7 +3,8 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import {
-  resolvePartnerOrg,
+  resolvePartnerAccess,
+  sharedFieldIds,
   createServiceClient,
   serviceClientMissingResponse,
   fetchAll,
@@ -17,8 +18,9 @@ export const dynamic = 'force-dynamic'
 export async function GET(req: NextRequest) {
   const supabase = createServiceClient()
   if (!supabase) return serviceClientMissingResponse()
-  const org = await resolvePartnerOrg(req, supabase)
-  if (org instanceof NextResponse) return org
+  const access = await resolvePartnerAccess(req, supabase)
+  if (access instanceof NextResponse) return access
+  const org = access.org
 
   try {
     const [fields, farms, entities] = await Promise.all([
@@ -37,7 +39,13 @@ export async function GET(req: NextRequest) {
         supabase.from('entities').select('id, name, updated_at').eq('org_id', org).order('id').range(f, t),
       ),
     ])
-    return NextResponse.json({ data: buildFieldRecords({ fields, farms, entities }) })
+    let records = buildFieldRecords({ fields, farms, entities })
+    // Landowner-share tokens see only the fields on that landowner's farms.
+    if (access.share) {
+      const allowed = await sharedFieldIds(supabase, org, access.share.landownerId)
+      records = records.filter((r) => allowed.has(r.id))
+    }
+    return NextResponse.json({ data: records })
   } catch (e) {
     return errorResponse(e)
   }
