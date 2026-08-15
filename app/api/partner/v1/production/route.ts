@@ -34,13 +34,6 @@ export async function GET(req: NextRequest) {
   const access = await resolvePartnerAccess(req, supabase)
   if (access instanceof NextResponse) return access
   const org = access.org
-  // The yields scope is the farmer's opt-in on the share.
-  if (access.share && !access.share.includeYields) {
-    return NextResponse.json(
-      { error: 'Yields are not included in this share.', code: 'yields_not_shared' },
-      { status: 403 },
-    )
-  }
   const year = requireYearParam(req)
   if (year instanceof NextResponse) return year
   const crop = req.nextUrl.searchParams.get('crop')
@@ -105,12 +98,17 @@ export async function GET(req: NextRequest) {
       .eq('crop_year', year)
     if (!combineResult.error) combineEntries = (combineResult.data ?? []) as CombineEntryRow[]
 
-    let records = buildProductionRecords({
+    let records: Array<Record<string, unknown>> = buildProductionRecords({
       plantings, loads, splits, ginReceipts, combineEntries, fields, farms, entities, crops, year, crop,
     })
     if (access.share) {
       const allowed = await sharedFieldIds(supabase, org, access.share.landownerId)
-      records = records.filter((r) => allowed.has(r.field_id))
+      records = records.filter((r) => allowed.has(r.field_id as string))
+      // Harvest status is always shared; the yields opt-in only controls the
+      // production quantities themselves.
+      if (!access.share.includeYields) {
+        records = records.map((r) => ({ ...r, production_units: null }))
+      }
     }
     return NextResponse.json({ data: records })
   } catch (e) {

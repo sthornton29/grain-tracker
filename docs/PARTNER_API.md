@@ -29,7 +29,6 @@ Error semantics:
 - 403 `share_revoked`: the farmer ended the share ("Your farmer has ended or
   changed this share."). Consumers should flip the connection to an error
   state and surface that message.
-- 403 `yields_not_shared`: `/production` called on a share without yields.
 - 403 `not_in_share_scope`: a share token hit a farmer-only endpoint.
 
 ## Share lifecycle
@@ -110,11 +109,13 @@ The year's plantings for the token's scope.
 `planting_date` and `varieties` may be null/empty when the farmer has not
 recorded them.
 
-### GET /production?year=YYYY[&crop=Name] (yields scope required for share tokens)
+### GET /production?year=YYYY[&crop=Name]
 
 Per field and crop production. "Harvested" is inferred from recorded
 production (loads / gin receipts / combine entries); `harvested_acres`
-equals planted acres once anything is produced, else 0.
+equals planted acres once anything is produced, else 0. Harvest status is
+always shared; on a share WITHOUT the yields scope, `production_units` is
+returned as null (quantities withheld, harvest progress intact).
 
 ```json
 {
