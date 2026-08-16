@@ -6,4 +6,6 @@ out
 *.tsbuildinfo
 next-env.d.ts
 .DS_Store
-.claude/
+# Local Claude Code state stays ignored, but project skills are shared.
+.claude/*
+!.claude/skills/
