@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-08-14 · version 0.1.0 · build 3d2c010. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-08-16 · version 0.1.0 · build 89503dc. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -406,9 +406,11 @@ The load log is the master list of every load you've hauled — to a bin or to a
 ## How to use it
 
 - To record a new load by hand, use **New Load** — pick the date, truck, crop, crop year, where it came from (field or bin), where it went (bin or buyer), and enter the weights. If a load carries grain from more than one field, add a split so each field gets credit for its share.
+- **New Load starts where you left off.** The form pre-fills the date, crop, crop year, From, and To from the last load you entered — whether that was field-to-bin, field-to-buyer, or bin-to-buyer — so a string of loads only needs weights and a ticket number. Every pre-fill can be changed. When the pre-filled date isn't today (say you're entering last night's tickets the next morning), a small note by the date says so — e.g. "Defaulted to 8/14 (your last load's date) — not today" — so nothing quietly lands on the wrong day. Change the date and the note goes away; each saved load becomes the starting point for the next.
 - **Irrigated or dryland?** When the load's field has both irrigated and dryland acres, an optional Irrigated/Dryland choice appears (on New Load, Edit, ticket scanning, and on each line of a split load). Tag it if you know which ground the load came off — skip it if you don't. Fields that are all one practice never ask; Turnrow already knows. If you tag every load on a mixed field, the Yields page splits that field's bushels between irrigated and dryland automatically, so you won't be asked to allocate after harvest.
 - To enter a stack of tickets at once, use **Scan** (photograph or upload the tickets) or **Import** (upload a spreadsheet).
 - **A truck that isn't in the list?** Pick **+ Add truck…** right in the Truck dropdown — it saves to your truck list (the same one under Settings → Trucks) and is selected for this load.
+- **A truck named wrong?** Tap the small ✎ next to the Truck dropdown to fix the name right there (works for hauler trucks on pickup loads too, and under Settings → Trucks). Renaming won't change past loads — they keep the truck name as it was entered; the new name applies to the picker and to loads you enter from now on.
 
 ## Pickup trucks vs your trucks
 

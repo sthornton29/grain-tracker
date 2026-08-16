@@ -9,6 +9,15 @@ import { allocateSplits, validateSplitDrafts, type SplitDraft } from '@/lib/load
 import { practiceOf } from '@/lib/yields'
 import { rememberHarvestEntryPath } from '@/lib/harvest-entry-path'
 import { relinkSettlementLinesForLoad } from '@/lib/settlement-link'
+import { getOrgId } from '@/lib/org'
+import { externalTruckInsert, truckLabelForSave } from '@/lib/trucks'
+import {
+  LAST_LOAD_DEFAULTS_SELECT,
+  applyLastLoadDefaults,
+  dateDefaultNote,
+  pickLastLoadDefaults,
+  type LastLoadDefaultsSource,
+} from '@/lib/load-defaults'
 import { HaulerTruckField, TruckPicker, findExternalTruck } from '@/components/truck-picker'
 import type { Bin, Buyer, Contract, Crop, ExternalTruck, Field, FieldPlanting, Load, LoadSplit, Truck } from '@/lib/types'
 
@@ -129,6 +138,10 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   const [busy, setBusy] = useState(false)
   const submittingRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
+  // Last-load date default (create mode): which date the seam applied, and
+  // whether the user touched the date before the default could land.
+  const [defaultedDate, setDefaultedDate] = useState<string | null>(null)
+  const dateTouchedRef = useRef(false)
   // Delivered-so-far (dry bushels) on the selected contract, for the fill
   // progress widget. Excludes the load being edited (added back live below).
   const [contractDelivered, setContractDelivered] = useState<{ dryBu: number; count: number } | null>(null)
@@ -160,40 +173,25 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     })()
   }, [supabase])
 
-  // On create, pre-fill crop + from/to + contract selections from the most recent load.
+  // On create, pre-fill date + crop + from/to + contract selections from the
+  // org's most recently ENTERED load (lib/load-defaults — the one seam for
+  // every source/destination shape, bin→buyer included; transfers skipped).
   useEffect(() => {
     if (mode !== 'create' || !refsLoaded) return
     ;(async () => {
+      // created_at, not the load's date: a session resumed the next morning
+      // must key off last night's entries. limit(10) leaves room to skip
+      // bin→bin transfer rows.
       const { data } = await supabase
         .from('loads')
-        .select('crop_id, crop_year, from_type, from_field_id, from_bin_id, to_type, to_bin_id, to_buyer_id, contract_id')
-        .order('date', { ascending: false })
-        .order('time', { ascending: false })
-        .limit(1)
-      const recent = data?.[0] as {
-        crop_id: string | null
-        crop_year: number | null
-        from_type: 'field' | 'bin' | null
-        from_field_id: string | null
-        from_bin_id: string | null
-        to_type: 'bin' | 'buyer' | null
-        to_bin_id: string | null
-        to_buyer_id: string | null
-        contract_id: string | null
-      } | undefined
+        .select(LAST_LOAD_DEFAULTS_SELECT)
+        .order('created_at', { ascending: false })
+        .limit(10)
+      const recent = pickLastLoadDefaults((data ?? []) as LastLoadDefaultsSource[])
       if (!recent) return
-      setForm((f) => ({
-        ...f,
-        crop_id: f.crop_id || (recent.crop_id ?? ''),
-        crop_year: f.crop_year || (recent.crop_year != null ? String(recent.crop_year) : ''),
-        from_type: f.from_type || (recent.from_type ?? ''),
-        from_field_id: f.from_field_id || (recent.from_field_id ?? ''),
-        from_bin_id: f.from_bin_id || (recent.from_bin_id ?? ''),
-        to_type: f.to_type || (recent.to_type ?? ''),
-        to_bin_id: f.to_bin_id || (recent.to_bin_id ?? ''),
-        to_buyer_id: f.to_buyer_id || (recent.to_buyer_id ?? ''),
-        contract_id: f.contract_id || (recent.contract_id ?? ''),
-      }))
+      const dateUntouched = !dateTouchedRef.current
+      if (dateUntouched && recent.date) setDefaultedDate(recent.date)
+      setForm((f) => applyLastLoadDefaults(f, recent, { dateUntouched }).form)
     })()
   }, [refsLoaded, mode, supabase])
 
@@ -279,10 +277,16 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   const pctDelivered = contractTotal > 0 ? Math.min(100, (deliveredBu / contractTotal) * 100) : 0
   const pctThisLoad = contractTotal > 0 ? Math.max(0, Math.min(100 - pctDelivered, (thisLoadBu / contractTotal) * 100)) : 0
 
-  // Only show bins designated to the selected crop; if no crop yet, show all.
+  // Only hide bins designated to a DIFFERENT crop; undesignated bins always
+  // show. Filtering undesignated bins out looked harmless, but it wiped the
+  // last-load defaults on bin-source loads: the seam would set crop +
+  // from_bin together, then the selection-drop effect below cleared the bin
+  // because an undesignated bin never matched the crop — the reason bin→buyer
+  // loads came up with an empty From while field-source defaults (backed by
+  // plantings) survived.
   const filteredBins = useMemo(() => {
     if (!form.crop_id) return bins
-    return bins.filter((b) => b.crop_id === form.crop_id)
+    return bins.filter((b) => b.crop_id == null || b.crop_id === form.crop_id)
   }, [bins, form.crop_id])
 
   // Only show fields with a planting that matches BOTH the selected crop and
@@ -365,8 +369,8 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     let q = supabase
       .from('loads')
       .select('from_field_id, from_bin_id, to_bin_id, to_buyer_id, contract_id')
-      .order('date', { ascending: false })
-      .order('time', { ascending: false })
+      // Entry order, matching the last-load defaults seam.
+      .order('created_at', { ascending: false })
       .limit(1)
     if (form.crop_id) q = q.eq('crop_id', form.crop_id)
     if (fromType) q = q.eq('from_type', fromType)
@@ -513,6 +517,16 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       date: form.date,
       time: form.time || null,
       truck_id: form.truck_id || null,
+      // Snapshot of the truck's name at save time (071) — past loads keep
+      // displaying it even if the truck is later renamed. Editing a load
+      // without changing its truck keeps the label as originally entered.
+      truck_label: truckLabelForSave({
+        truckId: form.truck_id || null,
+        trucks,
+        prior: mode === 'edit' && initial
+          ? { truck_id: initial.truck_id ?? null, truck_label: initial.truck_label ?? null }
+          : null,
+      }),
       // Hauler truck only makes sense on a pickup contract; switching the
       // load to a delivered contract clears it (classification rule).
       hauler_truck: isPickup ? form.hauler_truck.trim() || null : null,
@@ -543,6 +557,24 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         !useSplits && form.from_type === 'field' && isMixedField(form.from_field_id)
           ? form.practice || null
           : null,
+    }
+
+    // "Save this truck" on a pickup load → external_trucks (NEVER the org's
+    // own trucks — see the classification rule in components/truck-picker).
+    // Runs BEFORE the load insert so a failure is VISIBLE and retryable
+    // without duplicating the load; the free text on the load itself is
+    // unaffected either way. org_id stamped from the session (054 WITH CHECK).
+    if (isPickup && saveHaulerTruck && form.hauler_truck.trim() && !findExternalTruck(externalTrucks, form.hauler_truck)) {
+      const orgId = await getOrgId(supabase)
+      const { error: xtErr } = await supabase
+        .from('external_trucks')
+        .insert(externalTruckInsert(form.hauler_truck, selectedContract?.buyer_id ?? null, orgId))
+      if (xtErr) {
+        submittingRef.current = false
+        setBusy(false)
+        setError(`Couldn’t save the hauler truck for future loads: ${xtErr.message}. The load was not saved — try again, or untick “Save this truck”.`)
+        return
+      }
     }
 
     let savedLoadId: string | null = null
@@ -619,21 +651,6 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       }
     }
 
-    // "Save this truck" on a pickup load → external_trucks (NEVER the org's
-    // own trucks — see the classification rule in components/truck-picker).
-    // Best-effort: the load is already saved; a failed truck save only means
-    // the picker won't offer it next time.
-    if (isPickup && saveHaulerTruck && form.hauler_truck.trim() && !findExternalTruck(externalTrucks, form.hauler_truck)) {
-      try {
-        await supabase.from('external_trucks').insert({
-          name: form.hauler_truck.trim(),
-          buyer_id: selectedContract?.buyer_id ?? null,
-        })
-      } catch {
-        /* ignore — free text on the load is the source of truth */
-      }
-    }
-
     // Leave submittingRef = true; we're navigating away. Resetting it here
     // would briefly re-enable the button before the route change commits.
     rememberHarvestEntryPath('load')
@@ -651,7 +668,19 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       <div className="grid grid-cols-2 gap-3">
         <label className={labelCls}>
           Date
-          <input type="date" required value={form.date} onChange={(e) => set('date', e.target.value)} className={inputCls} />
+          <input
+            type="date"
+            required
+            value={form.date}
+            onChange={(e) => { dateTouchedRef.current = true; set('date', e.target.value) }}
+            className={inputCls}
+          />
+          {(() => {
+            // A next-morning session must never silently land on today: while
+            // the field holds a defaulted date that isn't today, say so.
+            const note = dateDefaultNote(defaultedDate, todayISO(), form.date)
+            return note ? <span className="mt-1 block text-xs text-amber-700">{note}</span> : null
+          })()}
         </label>
         <label className={labelCls}>
           Time
@@ -673,6 +702,9 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                 trucks={trucks}
                 saveTruck={saveHaulerTruck}
                 onChangeSaveTruck={setSaveHaulerTruck}
+                onExternalUpdated={(t) =>
+                  setExternalTrucks((xs) => xs.map((x) => (x.id === t.id ? t : x)).sort((a, b) => a.name.localeCompare(b.name)))
+                }
                 className="w-full rounded-lg border border-slate-300 px-3 py-3 text-base bg-white"
               />
             </div>
@@ -683,6 +715,9 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
               trucks={trucks}
               onCreated={(t) =>
                 setTrucks((ts) => [...ts, t].sort((a, b) => a.name_or_number.localeCompare(b.name_or_number)))
+              }
+              onUpdated={(t) =>
+                setTrucks((ts) => ts.map((x) => (x.id === t.id ? t : x)).sort((a, b) => a.name_or_number.localeCompare(b.name_or_number)))
               }
               className={inputCls}
             />

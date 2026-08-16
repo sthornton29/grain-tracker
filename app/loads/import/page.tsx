@@ -250,6 +250,8 @@ export default function LoadsImportPage() {
       date,
       time: timeRaw || null,
       truck_id: truck?.id ?? null,
+      // Truck name snapshot at save time (071) — renames never rewrite history.
+      truck_label: truck?.name_or_number ?? null,
       crop_id: crop?.id ?? null,
       crop_year: cropYear,
       gross_weight: gross,

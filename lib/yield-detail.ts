@@ -30,6 +30,8 @@ export type DetailLoadLike = {
   to_bin_id: string | null
   to_buyer_id: string | null
   truck_id: string | null
+  /** Truck name snapshot at save time (071) — display prefers it. */
+  truck_label?: string | null
   /** Hauler's truck on a pickup-contract load (067), free text. */
   hauler_truck?: string | null
   ticket_number: string | null
@@ -55,6 +57,9 @@ export type YieldDetailLoad = {
   date: string
   ticket: string | null
   truckId: string | null
+  /** Truck name snapshot at save time (071) — display prefers it over the
+   *  live name lookup, so renames never rewrite the drill-down's history. */
+  truckLabel: string | null
   /** Hauler's truck text when the load has no own truck (badge in the UI). */
   haulerTruck: string | null
   /** Net lbs attributed to this field (split loads: the pro-rated portion). */
@@ -170,7 +175,7 @@ export function buildLoadDetail(args: {
     if (!dryBushels) continue
     out.push({
       loadId: l.id, fieldId: l.from_field_id, cropId: l.crop_id,
-      date: l.date, ticket: l.ticket_number, truckId: l.truck_id, haulerTruck: l.hauler_truck ?? null,
+      date: l.date, ticket: l.ticket_number, truckId: l.truck_id, truckLabel: l.truck_label ?? null, haulerTruck: l.hauler_truck ?? null,
       netLbs: l.net_weight != null ? Number(l.net_weight) : null,
       moisture: l.moisture != null ? Number(l.moisture) : null,
       testWeight: l.test_weight != null ? Number(l.test_weight) : null,
@@ -205,7 +210,7 @@ export function buildLoadDetail(args: {
     const portionLbs = ratio != null && parentLbs != null ? Math.round(parentLbs * ratio) : null
     out.push({
       loadId: parent.id, fieldId: s.field_id, cropId: s.crop_id,
-      date: parent.date, ticket: parent.ticket_number, truckId: parent.truck_id, haulerTruck: parent.hauler_truck ?? null,
+      date: parent.date, ticket: parent.ticket_number, truckId: parent.truck_id, truckLabel: parent.truck_label ?? null, haulerTruck: parent.hauler_truck ?? null,
       netLbs: portionLbs,
       moisture: parent.moisture != null ? Number(parent.moisture) : null,
       testWeight: parent.test_weight != null ? Number(parent.test_weight) : null,

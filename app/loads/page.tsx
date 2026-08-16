@@ -30,6 +30,8 @@ type Row = {
   dry_bushels_override: number | null
   from_field_id: string | null
   truck: { name_or_number: string } | null
+  /** Truck name snapshot at save time (071) — display prefers it. */
+  truck_label: string | null
   /** Hauler's truck on a pickup-contract load (067) — shown with a badge. */
   hauler_truck: string | null
   crop: { name: string; base_moisture_pct: number | null; base_lb_per_bushel: number | null } | null
@@ -58,7 +60,7 @@ const SELECT = `
   gross_weight, tare_weight, net_weight, moisture, test_weight,
   dry_bushels_override,
   from_type, to_type, from_field_id, to_buyer_id, contract_id,
-  hauler_truck,
+  hauler_truck, truck_label,
   truck:trucks(name_or_number),
   crop:crops(name, base_moisture_pct, base_lb_per_bushel),
   from_field:fields!loads_from_field_id_fkey(name_or_number),

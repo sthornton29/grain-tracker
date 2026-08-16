@@ -32,6 +32,7 @@ type LoadShape = {
   from_type: 'field' | 'bin' | null
   to_type: 'bin' | 'buyer' | null
   truck: { name_or_number: string } | null
+  truck_label: string | null
   hauler_truck: string | null
   crop: { name: string; base_moisture_pct: number | null; base_lb_per_bushel: number | null } | null
   from_field: { name_or_number: string; farm: { name: string; fsa_number: string | null } | null } | null
@@ -94,7 +95,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
     .select(`
       id, date, time, ticket_number, crop_year,
       gross_weight, tare_weight, net_weight, moisture, test_weight, dry_bushels_override,
-      from_type, to_type, hauler_truck,
+      from_type, to_type, hauler_truck, truck_label,
       truck:trucks(name_or_number),
       crop:crops(name, base_moisture_pct, base_lb_per_bushel),
       from_field:fields!loads_from_field_id_fkey(name_or_number, farm:farms(name, fsa_number)),

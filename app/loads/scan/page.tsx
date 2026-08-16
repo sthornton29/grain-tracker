@@ -402,6 +402,8 @@ export default function ScanTicketsPage() {
           date: r.date,
           time: r.time || null,
           truck_id: r.truck_id || null,
+          // Truck name snapshot at save time (071) — renames never rewrite history.
+          truck_label: r.truck_id ? trucks.find((t) => t.id === r.truck_id)?.name_or_number ?? null : null,
           crop_id: r.crop_id || null,
           crop_year: cropYearNum,
           gross_weight: num(r.gross_weight),

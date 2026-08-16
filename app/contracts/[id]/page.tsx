@@ -53,6 +53,7 @@ type LoadRow = {
   from_type: string | null
   truck: { name_or_number: string } | null
   hauler_truck: string | null
+  truck_label: string | null
   from_field: { name_or_number: string } | null
   from_bin: { name_or_number: string } | null
 }
@@ -77,7 +78,7 @@ async function fetchAllLoadsForContract(
     const { data, error } = await supabase
       .from('loads')
       .select(`
-        id, date, ticket_number, net_weight, moisture, dry_bushels_override, crop_id, from_type, hauler_truck,
+        id, date, ticket_number, net_weight, moisture, dry_bushels_override, crop_id, from_type, hauler_truck, truck_label,
         truck:trucks(name_or_number),
         from_field:fields!loads_from_field_id_fkey(name_or_number),
         from_bin:bins!loads_from_bin_id_fkey(name_or_number)

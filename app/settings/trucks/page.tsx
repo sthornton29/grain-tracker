@@ -12,7 +12,13 @@ export default function Page() {
     <div className="space-y-4">
       <SettingsDocImport primaryTarget="trucks" title="Upload a Truck List (AI)" onSaved={() => setNonce((n) => n + 1)} />
       <CsvImport config={trucksImportConfig()} onImported={() => setNonce((n) => n + 1)} />
-      <SimpleCrud key={nonce} title="Trucks" table="trucks" labelColumn="name_or_number" placeholder="Truck name or number" />
+      <div className="space-y-1">
+        <SimpleCrud key={nonce} title="Trucks" table="trucks" labelColumn="name_or_number" placeholder="Truck name or number" />
+        {/* 071 snapshot rule — same promise the load form's edit modal makes. */}
+        <p className="text-xs text-slate-500">
+          Renaming a truck won&rsquo;t change past loads — they keep the truck name as it was entered. New loads use the new name.
+        </p>
+      </div>
       {/* Hauler trucks (067): OTHER PEOPLE'S trucks saved from pickup-contract
           loads — kept strictly separate from the operation's own trucks. */}
       <div className="space-y-1">

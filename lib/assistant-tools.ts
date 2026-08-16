@@ -700,7 +700,7 @@ async function getLoads(supabase: SupabaseClient, _ctx: AssistantContext, input:
   const limit = Math.min(Math.max(input.limit ?? 25, 1), 100)
   let q = supabase.from('loads').select(`
     id, date, time, ticket_number, crop_year, net_weight, moisture, test_weight, dry_bushels_override,
-    from_type, to_type, hauler_truck,
+    from_type, to_type, hauler_truck, truck_label,
     truck:trucks(name_or_number),
     crop:crops(name, base_moisture_pct, base_lb_per_bushel),
     from_field:fields!loads_from_field_id_fkey(name_or_number),
@@ -716,7 +716,7 @@ async function getLoads(supabase: SupabaseClient, _ctx: AssistantContext, input:
   type Row = {
     id: string; date: string; time: string | null; ticket_number: string | null; crop_year: number | null
     net_weight: number | null; moisture: number | null; test_weight: number | null; dry_bushels_override: number | null
-    from_type: string | null; to_type: string | null; hauler_truck: string | null
+    from_type: string | null; to_type: string | null; hauler_truck: string | null; truck_label: string | null
     truck: { name_or_number: string } | null
     crop: { name: string; base_moisture_pct: number | null; base_lb_per_bushel: number | null } | null
     from_field: { name_or_number: string } | null; from_bin: { name_or_number: string } | null

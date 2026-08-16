@@ -691,6 +691,10 @@ export type Load = {
   date: string
   time: string | null
   truck_id: string | null
+  /** Snapshot of the own truck's name at save time (071) — display prefers it
+   *  over the live FK name, so renaming a truck never rewrites past loads.
+   *  Null on pre-071 rows written since the backfill (display falls back). */
+  truck_label: string | null
   /** Hauler's truck written on a pickup-contract load (067), free text — kept
    *  as entered even if the saved external truck is later renamed/deleted.
    *  Own trucks use truck_id; a load normally carries one or the other. */
