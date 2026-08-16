@@ -1,12 +1,12 @@
 ---
 page_route: /
 title: Getting Started
-updated: 2026-08-06
+updated: 2026-08-16
 keywords: home, setup, checklist, new farm, onboarding, tiles, entities, farms, fields, crops, first loads, import, help, support, assistant, question mark
 ---
 ## What this page is for
 
-The home page is your launcher. Every tile opens one of the main areas of Turnrow — New Load, Loads, Bin Inventory, Contracts, Settlements, Yields, Hedging, Reports, and Settings — the same destinations as the green bar across the top. If your operation is brand new in Turnrow, a setup checklist appears above the tiles until the basics are in place.
+The home page is your launcher. The big green **New Load** button at the top starts a truck load — the thing you do most during harvest. Below it, a tile opens each of the other main areas of Turnrow — Loads, Bin Inventory, Contracts, Settlements, Yields, Hedging, Reports, and Settings — the same destinations as the green bar across the top. If your operation is brand new in Turnrow, a setup checklist appears above them until the basics are in place.
 
 ## How to use it
 

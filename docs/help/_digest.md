@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-08-16 · version 0.1.0 · build 89503dc. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-08-16 · version 0.1.0 · build 0b2e2c3. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -281,7 +281,7 @@ This is where your crop insurance policies live. Enter each policy once — plan
 
 ## What this page is for
 
-The home page is your launcher. Every tile opens one of the main areas of Turnrow — New Load, Loads, Bin Inventory, Contracts, Settlements, Yields, Hedging, Reports, and Settings — the same destinations as the green bar across the top. If your operation is brand new in Turnrow, a setup checklist appears above the tiles until the basics are in place.
+The home page is your launcher. The big green **New Load** button at the top starts a truck load — the thing you do most during harvest. Below it, a tile opens each of the other main areas of Turnrow — Loads, Bin Inventory, Contracts, Settlements, Yields, Hedging, Reports, and Settings — the same destinations as the green bar across the top. If your operation is brand new in Turnrow, a setup checklist appears above them until the basics are in place.
 
 ## How to use it
 

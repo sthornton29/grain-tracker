@@ -11,26 +11,27 @@ export type NavLink = {
   label: string
   /** One-line description for the landing tile. */
   sub: string
-  /** Landing-tile background — a full gradient class string (STATIC, so
+  /** The landing tile's "turnrow" tick — the module's wayfinding hue as a
+   *  small solid mark, not a background (STATIC full class string, so
    *  Tailwind's JIT sees it; nav styles itself). */
-  tileColor: string
+  tick: string
 }
 
 export const GRAIN_LINKS: NavLink[] = [
-  { href: '/loads/new', label: 'New Load', sub: 'Record a truck load', tileColor: 'bg-gradient-to-br from-brand to-brand-dark' },
-  { href: '/loads', label: 'Loads', sub: 'Search, edit, export', tileColor: 'bg-gradient-to-br from-slate-600 to-slate-800' },
-  { href: '/inventory', label: 'Bin Inventory', sub: 'Bushels on hand', tileColor: 'bg-gradient-to-br from-amber-600 to-amber-800' },
-  { href: '/contracts', label: 'Contracts', sub: 'Delivered vs contracted', tileColor: 'bg-gradient-to-br from-sky-600 to-sky-800' },
-  { href: '/settlements', label: 'Settlements', sub: 'Upload & reconcile payments', tileColor: 'bg-gradient-to-br from-teal-600 to-teal-800' },
-  { href: '/yields', label: 'Yields', sub: 'Bushels per acre by field', tileColor: 'bg-gradient-to-br from-emerald-600 to-emerald-800' },
-  { href: '/hedging', label: 'Hedging', sub: 'Futures & options positions', tileColor: 'bg-gradient-to-br from-indigo-600 to-indigo-800' },
-  { href: '/reports', label: 'Reports', sub: 'Cash flow, insurance, marketing…', tileColor: 'bg-gradient-to-br from-rose-600 to-rose-800' },
-  { href: '/settings', label: 'Settings', sub: 'Entities, farms, plantings…', tileColor: 'bg-gradient-to-br from-slate-500 to-slate-700' },
+  { href: '/loads/new', label: 'New Load', sub: 'Record a truck load', tick: 'bg-brand' },
+  { href: '/loads', label: 'Loads', sub: 'Search, edit, export', tick: 'bg-slate-400' },
+  { href: '/inventory', label: 'Bin Inventory', sub: 'Bushels on hand', tick: 'bg-amber-500' },
+  { href: '/contracts', label: 'Contracts', sub: 'Delivered vs contracted', tick: 'bg-sky-500' },
+  { href: '/settlements', label: 'Settlements', sub: 'Upload & reconcile payments', tick: 'bg-teal-500' },
+  { href: '/yields', label: 'Yields', sub: 'Bushels per acre by field', tick: 'bg-emerald-500' },
+  { href: '/hedging', label: 'Hedging', sub: 'Futures & options positions', tick: 'bg-indigo-500' },
+  { href: '/reports', label: 'Reports', sub: 'Cash flow, insurance, marketing…', tick: 'bg-rose-500' },
+  { href: '/settings', label: 'Settings', sub: 'Entities, farms, plantings…', tick: 'bg-slate-400' },
 ]
 
 // The Cotton module is ONE top-level tab; its three pages live in a
 // Reports-style sidebar (app/cotton/layout.tsx). Inserted after Hedging.
-export const COTTON_TAB: NavLink = { href: '/cotton/loads', label: 'Cotton', sub: 'Gin loads, bales, marketing', tileColor: 'bg-gradient-to-br from-fuchsia-700 to-fuchsia-900' }
+export const COTTON_TAB: NavLink = { href: '/cotton/loads', label: 'Cotton', sub: 'Gin loads, bales, marketing', tick: 'bg-fuchsia-600' }
 
 /** The exact link set for a user: gin operators see ONLY the Cotton tab;
  *  viewers (read-only stakeholders) see ONLY Yields and Reports;

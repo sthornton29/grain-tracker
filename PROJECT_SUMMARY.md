@@ -72,7 +72,12 @@ enabled (`app_settings.cotton_module_enabled`, toggled under Settings → Users 
 The three cotton pages live in a **Reports-style left sidebar** (`app/cotton/layout.tsx`) —
 the old green sub-nav bar is gone. **Gin-role** users see ONLY the Cotton tab (the sidebar
 inside gives them the three intake pages).
-The home page (`app/page.tsx`) is a tile launcher. There are **three layouts**: the root
+The home page (`app/page.tsx`) is a tile launcher: **New Load** renders as the page's one
+solid-kelly primary action bar (only for roles whose link set includes it), and the remaining
+links are quiet white cards — hairline border, Montserrat label, and a small "turnrow tick" in
+the module's wayfinding hue (`NavLink.tick`, a static class in `lib/nav-links.ts`) that extends
+on hover; the Ask Turnrow strip is the same card species with a kelly tick (landing-only,
+never a nav tab). There are **three layouts**: the root
 (auth + nav + PWA), `app/reports/layout.tsx`, and `app/cotton/layout.tsx` (left sidebars). The Reports navigation —
 group order, item order, display names, routes, descriptions — has a **single source of truth**
 in `app/reports/reports-nav.ts`; both the sidebar and the landing-page cards render from it.
