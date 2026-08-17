@@ -668,6 +668,21 @@ export function breakevenAvgPrice(
     : row.totalAvgPrice
 }
 
+// The dashboard's large headline "Total avg price" AT REST (no live What-If
+// typing): with a standing assumed-futures the headline re-derives from blended
+// revenue (the scenario delta is zero, so scenario.totalAvgPrice =
+// blendedRevenue ÷ production), otherwise it is the plain futures+basis
+// totalAvgPrice. Cotton rows' totalAvgPrice is already the blended effective
+// ¢/lb, so they pass through. Shared by the partner API's marketing-prices
+// endpoint (and its /settings/shares preview) so the number a landowner sees
+// is the very number the farmer's dashboard shows.
+export function headlineAvgPrice(
+  row: Pick<MarketingRow, 'unit' | 'assumedFutures' | 'totalProduction' | 'blendedRevenue' | 'totalAvgPrice'>,
+): number | null {
+  if (row.unit === 'lbs') return row.totalAvgPrice
+  return breakevenAvgPrice(row)
+}
+
 export function aggregateMarketing(rows: readonly MarketingRow[]): MarketingTotals {
   let acres = 0, totalProduction = 0, totalProductionLbs = 0, blendedRevenue = 0, totalCost = 0, hasCost = false
   for (const r of rows) {

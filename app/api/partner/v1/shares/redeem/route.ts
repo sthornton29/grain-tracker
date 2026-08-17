@@ -33,9 +33,11 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    // select('*') so a database without the 072 scope columns still redeems
+    // (the new scopes then read as false — fail closed).
     const { data } = await supabase
       .from('partner_shares')
-      .select('id, org_id, landowner_id, label, include_yields, code_expires_at, redeemed_at, revoked_at')
+      .select('*')
       .eq('share_code_sha256', sha256Hex(code.toUpperCase()))
       .maybeSingle()
     const share = data as {
@@ -44,6 +46,8 @@ export async function POST(req: NextRequest) {
       landowner_id: string
       label: string | null
       include_yields: boolean
+      share_projected_prices?: boolean | null
+      share_projected_yields?: boolean | null
       code_expires_at: string
       redeemed_at: string | null
       revoked_at: string | null
@@ -94,7 +98,14 @@ export async function POST(req: NextRequest) {
         operation_name: (orgRow as { name: string } | null)?.name ?? 'Farm operation',
         landowner_name: (landownerRow as { name: string } | null)?.name ?? null,
         label: share.label,
-        scopes: { fields: true, plantings: true, harvest: true, yields: share.include_yields },
+        scopes: {
+          fields: true,
+          plantings: true,
+          harvest: true,
+          yields: share.include_yields,
+          projected_prices: share.share_projected_prices ?? false,
+          projected_yields: share.share_projected_yields ?? false,
+        },
         field_count: fieldIds.size,
         api_version: 'v1',
       },

@@ -22,18 +22,30 @@ export type CottonPhysicalData = {
 export async function fetchCottonPhysical(
   supabase: SupabaseClient,
   cropYear: number,
+  // Service-role callers (the partner API) bypass RLS and MUST pass their org;
+  // session-client callers omit it and rely on the 054 policies as before.
+  opts?: { orgId?: string },
 ): Promise<CottonPhysicalData> {
+  const orgId = opts?.orgId
+  // The dynamic select string defeats supabase's literal-type parsing, so the
+  // builder is typed loosely here; every result is cast at its use site, as
+  // this module always has.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const from = (table: string, select: string): any => {
+    const q = supabase.from(table).select(select)
+    return orgId ? q.eq('org_id', orgId) : q
+  }
   const [balesQ, gradesQ, dispQ, contractsQ, poolQ, loansQ, loanBalesQ, ldpsQ, ldpBalesQ, feesQ] = await Promise.all([
-    supabase.from('cotton_bales').select('id, gin_receipt_id, crop_year, pbi_number, net_weight_lbs, created_at').eq('crop_year', cropYear),
-    supabase.from('cotton_bale_grades').select('bale_id, loan_value_cents_per_lb, loan_value_total, class_date'),
-    supabase.from('cotton_bale_dispositions').select('*'),
-    supabase.from('cotton_sales_contracts').select('*').eq('crop_year', cropYear),
-    supabase.from('cotton_pool_payments').select('*'),
-    supabase.from('ccc_loans').select('*').eq('crop_year', cropYear),
-    supabase.from('ccc_loan_bales').select('loan_id, bale_id'),
-    supabase.from('cotton_ldp_records').select('*').eq('crop_year', cropYear),
-    supabase.from('cotton_ldp_bales').select('ldp_id, bale_id'),
-    supabase.from('cotton_fees').select('*').eq('crop_year', cropYear),
+    from('cotton_bales', 'id, gin_receipt_id, crop_year, pbi_number, net_weight_lbs, created_at').eq('crop_year', cropYear),
+    from('cotton_bale_grades', 'bale_id, loan_value_cents_per_lb, loan_value_total, class_date'),
+    from('cotton_bale_dispositions', '*'),
+    from('cotton_sales_contracts', '*').eq('crop_year', cropYear),
+    from('cotton_pool_payments', '*'),
+    from('ccc_loans', '*').eq('crop_year', cropYear),
+    from('ccc_loan_bales', 'loan_id, bale_id'),
+    from('cotton_ldp_records', '*').eq('crop_year', cropYear),
+    from('cotton_ldp_bales', 'ldp_id, bale_id'),
+    from('cotton_fees', '*').eq('crop_year', cropYear),
   ])
 
   const bales = ((balesQ.data as CottonBale[]) || [])

@@ -78,7 +78,15 @@ export async function resolvePartnerOrg(
 // Landowner shares (070)
 // ---------------------------------------------------------------------------
 
-export type ShareScope = { id: string; landownerId: string; includeYields: boolean }
+export type ShareScope = {
+  id: string
+  landownerId: string
+  includeYields: boolean
+  // 072 lease-projection scopes — both default false; a pre-072 database
+  // (columns missing) reads as false via the ?? fallbacks below.
+  sharesProjectedPrices: boolean
+  sharesProjectedYields: boolean
+}
 export type PartnerAccess = { org: string; share: ShareScope | null }
 
 export const shareRevokedResponse = () =>
@@ -120,9 +128,11 @@ export async function resolvePartnerAccess(
   const fullRow = full as { org_id: string; revoked_at: string | null } | null
   if (fullRow && fullRow.revoked_at == null) return { org: fullRow.org_id, share: null }
 
+  // select('*') so a database without the 072 columns still resolves (the new
+  // scopes then read as false — fail closed, existing shares keep working).
   const { data: share } = await supabase
     .from('partner_shares')
-    .select('id, org_id, landowner_id, include_yields, revoked_at')
+    .select('*')
     .eq('token_sha256', hash)
     .maybeSingle()
   const shareRow = share as {
@@ -130,6 +140,8 @@ export async function resolvePartnerAccess(
     org_id: string
     landowner_id: string
     include_yields: boolean
+    share_projected_prices?: boolean | null
+    share_projected_yields?: boolean | null
     revoked_at: string | null
   } | null
   if (!shareRow) return unauthorized
@@ -140,6 +152,8 @@ export async function resolvePartnerAccess(
       id: shareRow.id,
       landownerId: shareRow.landowner_id,
       includeYields: shareRow.include_yields,
+      sharesProjectedPrices: shareRow.share_projected_prices ?? false,
+      sharesProjectedYields: shareRow.share_projected_yields ?? false,
     },
   }
 }

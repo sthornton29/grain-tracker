@@ -36,7 +36,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({
         operation_name: operationName,
         landowner_name: null,
-        scopes: { fields: true, plantings: true, harvest: true, yields: true },
+        scopes: {
+          fields: true,
+          plantings: true,
+          harvest: true,
+          yields: true,
+          projected_prices: true,
+          projected_yields: true,
+        },
         field_count: fields.length,
         api_version: 'v1',
       })
@@ -54,6 +61,8 @@ export async function GET(req: NextRequest) {
         plantings: true,
         harvest: true,
         yields: access.share.includeYields,
+        projected_prices: access.share.sharesProjectedPrices,
+        projected_yields: access.share.sharesProjectedYields,
       },
       field_count: fieldIds.size,
       api_version: 'v1',
