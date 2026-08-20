@@ -625,9 +625,9 @@ export default function YieldsPage() {
     if (showEntityYear) columns.push({ label: 'Year', format: 'text' })
     columns.push({ label: 'Acres', align: 'right', format: 'acres' })
     if (entityShowBreakdown) columns.push({ label: 'Irr ac', align: 'right', format: 'acres' }, { label: 'Dry ac', align: 'right', format: 'acres' })
-    columns.push({ label: 'Dry bu', align: 'right', format: 'bu' })
     if (entityShowBreakdown) columns.push({ label: 'Irrigated yield', align: 'right', format: 'yield' }, { label: 'Dryland yield', align: 'right', format: 'yield' })
     columns.push({ label: 'Yield (bu/ac)', align: 'right', format: 'yield' })
+    columns.push({ label: 'Dry bu', align: 'right', format: 'bu' })
 
     const sections: ExportSection[] = entityGroups.map((g) => {
       const rows: Array<Array<string | number | null>> = []
@@ -637,9 +637,9 @@ export default function YieldsPage() {
         if (showEntityYear) cells.push(r.seasonYear)
         cells.push(r.acres)
         if (entityShowBreakdown) cells.push(r.irrAc > 0 ? r.irrAc : '', r.dryAc > 0 ? r.dryAc : '')
-        cells.push(r.dryBu)
         if (entityShowBreakdown) cells.push(r.irrigatedYield ?? '', r.drylandYield ?? '')
         cells.push(r.yield ?? '')
+        cells.push(r.dryBu)
         rows.push(cells); rowMeta.push('data')
       }
       if (g.rows.length > 1) {
@@ -647,9 +647,9 @@ export default function YieldsPage() {
         if (showEntityYear) cells.push('')
         cells.push(g.acres)
         if (entityShowBreakdown) cells.push('', '')
-        cells.push(g.dryBu)
         if (entityShowBreakdown) cells.push('', '')
         cells.push('')
+        cells.push(g.dryBu)
         rows.push(cells); rowMeta.push('total')
       }
       return { title: `${g.groupName} — ${g.rows.length} crop${g.rows.length === 1 ? '' : 's'}`, columns, rows, rowMeta }
@@ -777,10 +777,10 @@ export default function YieldsPage() {
     ]
     if (showIrrigatedCol) columns.push({ label: 'Irr ac', align: 'right', format: 'acres' })
     if (showDrylandCol) columns.push({ label: 'Dry ac', align: 'right', format: 'acres' })
-    columns.push({ label: 'Dry bu', align: 'right', format: 'bu' })
     if (showIrrigatedCol) columns.push({ label: 'Irrigated yield', align: 'right', format: 'yield' })
     if (showDrylandCol) columns.push({ label: 'Dryland yield', align: 'right', format: 'yield' })
     if (showTotalCol) columns.push({ label: 'Yield (bu/ac)', align: 'right', format: 'yield' })
+    columns.push({ label: 'Dry bu', align: 'right', format: 'bu' })
 
     const rows = includedPlantings.map((p) => {
       const r = rowFor(p)
@@ -798,10 +798,10 @@ export default function YieldsPage() {
       ]
       if (showIrrigatedCol) cells.push(r.irrAc)
       if (showDrylandCol) cells.push(r.dryAc)
-      cells.push(r.dryBu)
       if (showIrrigatedCol) cells.push(irrY ?? '')
       if (showDrylandCol) cells.push(dryY ?? '')
       if (showTotalCol) cells.push(r.totalYield ?? '')
+      cells.push(r.dryBu)
       return cells
     })
     const sections: ExportSection[] = [{ columns, rows }]
@@ -822,11 +822,11 @@ export default function YieldsPage() {
     if (farmShowBreakdown) {
       columns.push({ label: 'Irr ac', align: 'right', format: 'acres' }, { label: 'Dry ac', align: 'right', format: 'acres' })
     }
-    columns.push({ label: 'Dry bu', align: 'right', format: 'bu' })
     if (farmShowBreakdown) {
       columns.push({ label: 'Irrigated yield', align: 'right', format: 'yield' }, { label: 'Dryland yield', align: 'right', format: 'yield' })
     }
     columns.push({ label: 'Yield (bu/ac)', align: 'right', format: 'yield' })
+    columns.push({ label: 'Dry bu', align: 'right', format: 'bu' })
 
     const rows = byFarm.map((r) => {
       const y = farmYields(r)
@@ -841,11 +841,11 @@ export default function YieldsPage() {
       if (farmShowBreakdown) {
         cells.push(r.irrAc > 0 ? r.irrAc : '', r.dryAc > 0 ? r.dryAc : '')
       }
-      cells.push(r.dryBu)
       if (farmShowBreakdown) {
         cells.push(y.irrigated ?? '', y.dryland ?? '')
       }
       cells.push(y.total ?? '')
+      cells.push(r.dryBu)
       return cells
     })
     const sections: ExportSection[] = [{ columns, rows }]
@@ -861,8 +861,8 @@ export default function YieldsPage() {
       { label: 'Year', format: 'text' },
       { label: 'Plantings', align: 'right', format: 'int' },
       { label: 'Acres', align: 'right', format: 'acres' },
-      { label: 'Dry bu', align: 'right', format: 'bu' },
       { label: 'Yield (bu/ac)', align: 'right', format: 'yield' },
+      { label: 'Dry bu', align: 'right', format: 'bu' },
     ]
     const rows = varietyAgg.map((r) => {
       const yld = r.acres > 0 ? r.dryBu / r.acres : null
@@ -872,8 +872,8 @@ export default function YieldsPage() {
         r.seasonYear,
         r.plantings,
         r.acres,
-        r.dryBu,
         yld ?? '',
+        r.dryBu,
       ]
     })
     return { title: 'Yields by Variety', filters: fieldFiltersLabel(), sections: [{ columns, rows }] }
@@ -969,10 +969,15 @@ export default function YieldsPage() {
   }
 
   // Override the auto harvest classification. value=true counts the field
-  // despite an unharvested/in-progress flag; value=null restores the automatic
-  // behavior.
+  // despite an in-progress flag (after the user confirms — the field then
+  // reads as finished, same as every other completed row); value=null restores
+  // the automatic behavior.
   async function setInclusionOverride(p: FieldPlanting, value: boolean | null) {
     if (!canEdit) return
+    if (value === true) {
+      const name = fieldById.get(p.field_id)?.name_or_number ?? 'this field'
+      if (!confirm(`Count ${name} as finished? Its current bushels will be treated as the field's final yield and included in the averages. You can undo this from the field's detail.`)) return
+    }
     setOverrideErr(null)
     setOverrideSavingId(p.id)
     const { error } = await supabase
@@ -1335,8 +1340,8 @@ export default function YieldsPage() {
                   {showVarietyYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
                   <th className="text-right px-3 py-2 whitespace-nowrap">Plantings</th>
                   <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
-                  <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
                   <th className="text-right px-3 py-2 whitespace-nowrap">Yield (bu/ac)</th>
+                  <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
                 </tr>
               </thead>
               <tbody>
@@ -1355,8 +1360,8 @@ export default function YieldsPage() {
                       {showVarietyYear && <td className="px-3 py-2">{r.seasonYear}</td>}
                       <td className="px-3 py-2 text-right">{r.plantings}</td>
                       <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
-                      <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
                       <td className="px-3 py-2 text-right font-semibold">{yld != null ? yld.toFixed(1) : '—'}</td>
+                      <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
                     </tr>
                   )
                 })}
@@ -1376,10 +1381,10 @@ export default function YieldsPage() {
                 <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
                 {showIrrigatedCol && <th className="text-right px-3 py-2 whitespace-nowrap">Irr ac</th>}
                 {showDrylandCol   && <th className="text-right px-3 py-2 whitespace-nowrap">Dry ac</th>}
-                <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
                 {showIrrigatedCol && <th className="text-right px-3 py-2 whitespace-nowrap">Irrigated yield</th>}
                 {showDrylandCol   && <th className="text-right px-3 py-2 whitespace-nowrap">Dryland yield</th>}
                 {showTotalCol     && <th className="text-right px-3 py-2 whitespace-nowrap">Yield (bu/ac)</th>}
+                <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
                 {yieldView === 'breakdown' && <th className="text-left px-3 py-2 whitespace-nowrap"></th>}
               </tr>
             </thead>
@@ -1415,11 +1420,6 @@ export default function YieldsPage() {
                               in progress
                             </span>
                           )}
-                          {overridden && (
-                            <span className="text-xs rounded px-2 py-0.5 bg-green-100 text-green-800">
-                              in progress · counted
-                            </span>
-                          )}
                           {exclusion === 'in_progress' && canEdit && (
                             <button
                               type="button"
@@ -1427,14 +1427,6 @@ export default function YieldsPage() {
                               onClick={() => setInclusionOverride(p, true)}
                               className="text-brand-deep text-xs underline disabled:opacity-50 no-print"
                             >Count anyway</button>
-                          )}
-                          {overridden && canEdit && (
-                            <button
-                              type="button"
-                              disabled={savingOverride}
-                              onClick={() => setInclusionOverride(p, null)}
-                              className="text-slate-500 text-xs underline disabled:opacity-50 no-print"
-                            >Reset</button>
                           )}
                         </div>
                       </td>
@@ -1447,7 +1439,6 @@ export default function YieldsPage() {
                       {showDrylandCol && (
                         <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>
                       )}
-                      <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
                       {showIrrigatedCol && (
                         <td className="px-3 py-2 text-right font-semibold">
                           {r.irrigatedYield != null
@@ -1471,6 +1462,7 @@ export default function YieldsPage() {
                           {r.totalYield != null ? r.totalYield.toFixed(1) : '—'}
                         </td>
                       )}
+                      <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
                       {yieldView === 'breakdown' && (
                         <td className="px-3 py-2 whitespace-nowrap">
                           {showAllocateButton && !isBreakoutOpen && canEdit && (() => {
@@ -1527,8 +1519,16 @@ export default function YieldsPage() {
                             perFieldBreakdown={false}
                             flag={
                               overridden ? (
-                                <span className="text-xs rounded px-2 py-0.5 bg-green-100 text-green-800">
-                                  in progress · counted
+                                <span className="inline-flex items-center gap-2 text-xs text-slate-500">
+                                  Counted as finished
+                                  {canEdit && (
+                                    <button
+                                      type="button"
+                                      disabled={savingOverride}
+                                      onClick={() => setInclusionOverride(p, null)}
+                                      className="text-brand-deep underline disabled:opacity-50 no-print"
+                                    >Undo</button>
+                                  )}
                                 </span>
                               ) : exclusion === 'in_progress' ? (
                                 <span className="text-xs rounded px-2 py-0.5 bg-amber-100 text-amber-800">
@@ -1656,10 +1656,10 @@ export default function YieldsPage() {
                         <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
                         {entityShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Irr ac</th>}
                         {entityShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Dry ac</th>}
-                        <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
                         {entityShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Irrigated yield</th>}
                         {entityShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Dryland yield</th>}
                         <th className="text-right px-3 py-2 whitespace-nowrap">Yield (bu/ac)</th>
+                        <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1678,10 +1678,10 @@ export default function YieldsPage() {
                               <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
                               {entityShowBreakdown && <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>}
                               {entityShowBreakdown && <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>}
-                              <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
                               {entityShowBreakdown && <td className="px-3 py-2 text-right font-semibold">{r.irrigatedYield != null ? r.irrigatedYield.toFixed(1) : '—'}</td>}
                               {entityShowBreakdown && <td className="px-3 py-2 text-right font-semibold">{r.drylandYield != null ? r.drylandYield.toFixed(1) : '—'}</td>}
                               <td className="px-3 py-2 text-right font-semibold">{r.yield != null ? r.yield.toFixed(1) : '—'}</td>
+                              <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
                             </tr>
                             {detailOpen && (
                               <tr className="bg-slate-50">
@@ -1713,10 +1713,10 @@ export default function YieldsPage() {
                           <td className="px-3 py-2 text-right">{fmtNum(g.acres)}</td>
                           {entityShowBreakdown && <td></td>}
                           {entityShowBreakdown && <td></td>}
-                          <td className="px-3 py-2 text-right">{fmtNum(g.dryBu)}</td>
                           {entityShowBreakdown && <td></td>}
                           {entityShowBreakdown && <td></td>}
                           <td className="px-3 py-2 text-right text-slate-400">—</td>
+                          <td className="px-3 py-2 text-right">{fmtNum(g.dryBu)}</td>
                         </tr>
                       </tfoot>
                     )}
@@ -1740,10 +1740,10 @@ export default function YieldsPage() {
                 <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
                 {farmShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Irr ac</th>}
                 {farmShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Dry ac</th>}
-                <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
                 {farmShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Irrigated yield</th>}
                 {farmShowBreakdown && <th className="text-right px-3 py-2 whitespace-nowrap">Dryland yield</th>}
                 <th className="text-right px-3 py-2 whitespace-nowrap">Yield (bu/ac)</th>
+                <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
               </tr>
             </thead>
             <tbody>
@@ -1770,7 +1770,6 @@ export default function YieldsPage() {
                       <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
                       {farmShowBreakdown && <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>}
                       {farmShowBreakdown && <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>}
-                      <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
                       {farmShowBreakdown && (
                         <td className="px-3 py-2 text-right font-semibold">{y.irrigated != null ? y.irrigated.toFixed(1) : '—'}</td>
                       )}
@@ -1780,6 +1779,7 @@ export default function YieldsPage() {
                       <td className="px-3 py-2 text-right font-semibold">
                         {y.total != null ? y.total.toFixed(1) : '—'}
                       </td>
+                      <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
                     </tr>
                     {detailOpen && (
                       <tr className="bg-slate-50">

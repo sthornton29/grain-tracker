@@ -1,7 +1,7 @@
 ---
 page_route: /yields
 title: Yields
-updated: 2026-08-13
+updated: 2026-08-20
 keywords: yields, bushels per acre, field, farm, entity, variety, landowner, irrigated, dryland, harvest, allocation, load tags, practice, season, export, detail, loads, tickets, moisture, test weight, split load, drill down, combine, yield monitor, no scales
 ---
 ## What this page is for
@@ -16,13 +16,17 @@ Yields turns your load log into bushels per acre. The same production can be vie
 - **Tap any row to open its detail.** A field row shows the loads behind its yield; a farm, entity, or landowner row shows its totals plus a field-by-field breakdown, and each field there opens further into its loads — two taps from a landowner to a scale ticket.
 - Export any view to a spreadsheet or a formatted report — the export carries exactly the columns you're showing on screen, and when a row's detail is open the export adds a Load Detail sheet for it.
 
+## Reading the table
+
+- Each view lists **Yield (bu/ac)** right after the acres, with **Dry bu** last — so the number you're usually after is visible without scrolling sideways on a phone or iPad.
+
 ## What the controls do
 
-- **Harvest status.** A field that hasn't been harvested, or is only partway through, is left out of the yield math — a half-harvested field would drag every average down. In-progress fields are labeled so you can see they're pending. If a field really is done but Turnrow can't tell (say the last loads went straight to town under a different crop year), tap **Count anyway** on that field to include it; tapping again puts it back to automatic.
+- **Harvest status.** A field that hasn't been harvested, or is only partway through, is left out of the yield math — a half-harvested field would drag every average down. In-progress fields are labeled so you can see they're pending. If a field really is done but Turnrow can't tell (say the last loads went straight to town under a different crop year), tap **Count anyway** on that field. Turnrow asks you to confirm, then treats the field as finished — it looks like every other completed field and its bushels go into the averages. Open the field's detail and tap **Undo** to put it back to automatic. A field whose last loads are only a few days old and whose yield runs well below the crop's average is the usual reason for an in-progress label; left alone, it clears on its own once the loads are about a week old.
 - **Allocate irr/dry.** A field with both irrigated and dryland acres has one pile of bushels but two practices. There are two ways to split it. The easy way: tag each load Irrigated or Dryland as you enter it — when every load on the field carries a tag, the split comes straight from the loads (the row shows **From load tags ✓**) and you're never asked to allocate. Otherwise, once the field's harvest is complete, an **Allocate irr/dry** button lets you split the field's dry bushels between the two — type one side and the other side fills in so the split always totals the field's bushels. If some loads are tagged, the allocation opens pre-filled from those tags so you only complete the remainder. A manual allocation, once saved, stays in charge even if load tags change later — clear it to go back to using the tags. Until the field is split one way or the other, it counts in the overall total but sits out of the irrigated and dryland columns.
 - **Allocate bushels (varieties).** A planting with a single variety credits all its bushels to that variety automatically. A planting with two or more varieties shows in the variety view only after you allocate its bushels among them — the page lists the plantings that still need allocation once their harvest is complete.
 - **By landowner** groups production by the landowner on each farm, split-aware, for rent conversations and year-end summaries.
-- **Row detail.** The detail's summary line shows load count, total pounds, wet and dry bushels, the average moisture and test weight (weighted by each load's pounds, so an 80,000-lb pair at 16.0 and 18.0 moisture averages by weight — not a simple midpoint), the first-to-last load dates, and how the bushels split between bins and buyers. The load list carries date, ticket, truck, weights, moisture, test weight, and destination; a load split across fields shows just this field's share with a badge like "split — 14,200 of 34,300 lbs". Fields flagged in-progress or counted by override carry the same flag on their detail, so the list always matches the number above it. Cotton fields show gin receipts, bales, turnout, and loan values in pounds instead of grain loads.
+- **Row detail.** The detail's summary line shows load count, total pounds, wet and dry bushels, the average moisture and test weight (weighted by each load's pounds, so an 80,000-lb pair at 16.0 and 18.0 moisture averages by weight — not a simple midpoint), the first-to-last load dates, and how the bushels split between bins and buyers. The load list carries date, ticket, truck, weights, moisture, test weight, and destination; a load split across fields shows just this field's share with a badge like "split — 14,200 of 34,300 lbs". Fields flagged in-progress carry the same flag on their detail, so the list always matches the number above it; a field you counted as finished shows a small note there with the Undo. Cotton fields show gin receipts, bales, turnout, and loan values in pounds instead of grain loads.
 
 ## Tracking harvest without scales
 
