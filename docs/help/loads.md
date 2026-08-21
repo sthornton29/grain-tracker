@@ -1,8 +1,8 @@
 ---
 page_route: /loads
 title: Loads
-updated: 2026-08-15
-keywords: loads, load log, tickets, scale, paid, unpaid, splits, export, delete, test weight, moisture, gross, tare, net, irrigated, dryland, practice, combine, yield monitor, no scales, truck, hauler, pickup contract, buyer's truck, add truck, rename truck, edit truck, wrong date, yesterday's date, defaults
+updated: 2026-08-21
+keywords: loads, load log, tickets, scale, paid, unpaid, splits, export, delete, test weight, moisture, gross, tare, net, irrigated, dryland, practice, combine, yield monitor, no scales, truck, hauler, pickup contract, buyer's truck, add truck, rename truck, edit truck, wrong date, yesterday's date, defaults, low tare, tare warning, use last tare, usual tare, empty weight
 ---
 ## What this page is for
 
@@ -42,6 +42,11 @@ The load log is the master list of every load you've hauled — to a bin or to a
 - **Weighed loads still count — once.** Any loads you did weigh from that field (sold to town, hauled on a scale) keep their full identity for contracts, settlements, and the load log, and are automatically netted out of the combine total — whether they were entered before or after the combine entry. If you picked a destination bin, only the netted remainder shows in that bin.
 - If your weighed loads ever add up to MORE than the combine entry, Turnrow warns you on the entry and on the Yields page — check the entry or the adjustment.
 - Whichever way you entered a field last, the Loads page makes that button the prominent one next time. Both are always available.
+
+## Tare weights: the warning and the shortcut
+
+- **"Tare … is well below this truck's usual …"** Turnrow learns each truck's normal empty weight from its past loads (the middle value of its tares, once the truck has at least three loads with a tare). If the tare you enter is half or less of that usual figure, a note appears under the Tare field — on New Load, Edit, and on each row of a ticket scan. It's a heads-up, not a stop: a typo or a mis-read scan on the tare makes the net weight (and the bushels, and what the buyer owes) look bigger than it is. Check the ticket; if the low number is real — a trailer dropped, a different tractor — just save. The note disappears as soon as the value is corrected, and saved loads that would have tripped it show a small **low tare?** tag in the load log so an old mistake is easy to find.
+- **Use last tare.** Once a truck is picked on New Load, a small **Use last tare: 31,220** link appears by the Tare field — that truck's tare from its most recent load (hover to see the date). One tap fills it in; you can still change it. It works for your trucks and hauler trucks alike, and stays out of the way when the truck has no earlier loads. It never fills in on its own: weighing the empty truck is the accurate number, and the shortcut is for when you know the truck hasn't changed.
 
 ## How the numbers work
 

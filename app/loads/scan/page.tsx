@@ -22,6 +22,8 @@ import { rememberHarvestEntryPath } from '@/lib/harvest-entry-path'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
 import type { Bin, Buyer, Contract, Crop, Field, FieldPlanting, Truck } from '@/lib/types'
+import { buildTareStatsIndex, lowTareWarning, truckTareKey, type TareHistoryLoad } from '@/lib/truck-tare'
+import { fetchTrucksTareHistory } from '@/lib/truck-tare-fetch'
 
 type Row = {
   // Original AI-extracted values, kept for display when no match found.
@@ -180,6 +182,10 @@ export default function ScanTicketsPage() {
   const [saving, setSaving] = useState(false)
   const [saveSummary, setSaveSummary] = useState<{ savedCount: number; remaining: number } | null>(null)
   const savedIdsRef = useRef<string[]>([])
+  // Tare history for the trucks on the review rows (lib/truck-tare): a
+  // mis-scanned tare gets the low-tare badge before save. Advisory only.
+  const [tareHistory, setTareHistory] = useState<TareHistoryLoad[]>([])
+  const fetchedTruckIdsRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     ;(async () => {
@@ -318,6 +324,21 @@ export default function ScanTicketsPage() {
     setErr(null)
     setSaveSummary(null)
   }
+
+  // Pull history for any truck newly present on the review rows (once per
+  // truck per session); the stats index recomputes from it.
+  useEffect(() => {
+    const missing = Array.from(new Set(rows.map((r) => r.truck_id).filter((id) => id && !fetchedTruckIdsRef.current.has(id))))
+    if (missing.length === 0) return
+    for (const id of missing) fetchedTruckIdsRef.current.add(id)
+    let cancelled = false
+    ;(async () => {
+      const loads = await fetchTrucksTareHistory(supabase, missing)
+      if (!cancelled) setTareHistory((prev) => [...prev, ...loads])
+    })()
+    return () => { cancelled = true }
+  }, [rows, supabase])
+  const tareStatsIndex = useMemo(() => buildTareStatsIndex(tareHistory), [tareHistory])
 
   function updateRow(i: number, patch: Partial<Row>) {
     setRows((rs) =>
@@ -587,9 +608,20 @@ export default function ScanTicketsPage() {
                       <td className="px-2 py-1" style={{ minWidth: 90 }}>
                         <input type="number" step="0.01" inputMode="decimal" value={r.gross_weight} onChange={(e) => updateRow(i, { gross_weight: e.target.value })} className={inputCls} />
                       </td>
-                      <td className="px-2 py-1" style={{ minWidth: 90 }}>
-                        <input type="number" step="0.01" inputMode="decimal" value={r.tare_weight} onChange={(e) => updateRow(i, { tare_weight: e.target.value })} className={inputCls} />
-                      </td>
+                      {(() => {
+                        const warn = lowTareWarning(num(r.tare_weight), tareStatsIndex.get(truckTareKey({ truck_id: r.truck_id }) ?? ''))
+                        return (
+                          <td className={`px-2 py-1 ${hl(!!warn)}`} style={{ minWidth: 90 }}>
+                            <input type="number" step="0.01" inputMode="decimal" value={r.tare_weight} onChange={(e) => updateRow(i, { tare_weight: e.target.value })} className={`${inputCls} ${warn ? 'border-amber-400' : ''}`} />
+                            {warn && (
+                              <div className="mt-1" title={warn}>
+                                <span className="inline-block rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 text-xs font-semibold">Low tare?</span>
+                                <div className="text-xs text-amber-800 mt-0.5" style={{ maxWidth: 220 }}>{warn}</div>
+                              </div>
+                            )}
+                          </td>
+                        )
+                      })()}
                       <td className={`px-2 py-1 ${hl((num(r.net_weight) ?? 0) <= 0)}`} style={{ minWidth: 90 }}>
                         <input type="number" step="0.01" inputMode="decimal" value={r.net_weight} onChange={(e) => updateRow(i, { net_weight: e.target.value })} className={inputCls} />
                       </td>

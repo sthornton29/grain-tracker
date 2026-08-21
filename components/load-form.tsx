@@ -19,6 +19,8 @@ import {
   type LastLoadDefaultsSource,
 } from '@/lib/load-defaults'
 import { HaulerTruckField, TruckPicker, findExternalTruck } from '@/components/truck-picker'
+import { lowTareWarning, truckTareKey, truckTareStats, type TareHistoryLoad } from '@/lib/truck-tare'
+import { fetchTruckTareHistory } from '@/lib/truck-tare-fetch'
 import type { Bin, Buyer, Contract, Crop, ExternalTruck, Field, FieldPlanting, Load, LoadSplit, Truck } from '@/lib/types'
 
 type Props = {
@@ -146,6 +148,41 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   // progress widget. Excludes the load being edited (added back live below).
   const [contractDelivered, setContractDelivered] = useState<{ dryBu: number; count: number } | null>(null)
   const [contractProgressLoading, setContractProgressLoading] = useState(false)
+  // The selected truck's tare history (lib/truck-tare) — feeds the low-tare
+  // warning and the "Use last tare" shortcut. Keyed so a stale fetch for a
+  // previously selected truck can't land on the current one.
+  const [tareHistory, setTareHistory] = useState<{ key: string; loads: TareHistoryLoad[] } | null>(null)
+
+  const isPickupForTare = !!form.contract_id && contracts.find((c) => c.id === form.contract_id)?.delivery_type === 'pickup'
+  const tareKey = truckTareKey(isPickupForTare && !form.truck_id ? { hauler_truck: form.hauler_truck } : { truck_id: form.truck_id })
+  useEffect(() => {
+    if (!tareKey) { setTareHistory(null); return }
+    let cancelled = false
+    // Hauler names are typed freely — wait for a pause before asking.
+    const delay = tareKey.startsWith('hauler:') ? 400 : 0
+    const t = setTimeout(async () => {
+      const loads = await fetchTruckTareHistory(
+        supabase,
+        tareKey.startsWith('own:') ? { truck_id: tareKey.slice(4) } : { hauler_truck: form.hauler_truck },
+      )
+      if (!cancelled) setTareHistory({ key: tareKey, loads })
+    }, delay)
+    return () => { cancelled = true; clearTimeout(t) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tareKey, supabase])
+  const tareStats = useMemo(
+    () => (tareHistory && tareHistory.key === tareKey
+      ? truckTareStats(tareHistory.loads, tareKey, { excludeLoadId: mode === 'edit' ? initial?.id ?? null : null })
+      : null),
+    [tareHistory, tareKey, mode, initial?.id],
+  )
+  const tareWarning = lowTareWarning(num(form.tare_weight), tareStats)
+  // "Use last tare" — a deliberate tap, never an auto-fill (weighing the
+  // empty truck is the accurate path). Hidden when the field already holds it.
+  const lastTareOffer =
+    mode === 'create' && tareStats?.lastTare != null && num(form.tare_weight) !== tareStats.lastTare
+      ? { tare: tareStats.lastTare, date: tareStats.lastTareDate }
+      : null
 
   useEffect(() => {
     ;(async () => {
@@ -1057,8 +1094,33 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
           <input type="number" inputMode="decimal" step="0.01" value={form.gross_weight} onChange={(e) => set('gross_weight', e.target.value)} className={inputCls} />
         </label>
         <label className={labelCls}>
-          Tare (lb)
-          <input type="number" inputMode="decimal" step="0.01" value={form.tare_weight} onChange={(e) => set('tare_weight', e.target.value)} className={inputCls} />
+          <span className="flex items-baseline justify-between gap-2">
+            <span>Tare (lb)</span>
+            {lastTareOffer && (
+              <button
+                type="button"
+                onClick={() => set('tare_weight', String(lastTareOffer.tare))}
+                title={lastTareOffer.date ? `From this truck's last load on ${new Date(lastTareOffer.date + 'T00:00:00').toLocaleDateString()}` : "From this truck's last load"}
+                className="text-xs font-medium text-brand-deep hover:underline whitespace-nowrap"
+              >
+                Use last tare: {Math.round(lastTareOffer.tare).toLocaleString()}
+              </button>
+            )}
+          </span>
+          <input
+            type="number"
+            inputMode="decimal"
+            step="0.01"
+            value={form.tare_weight}
+            onChange={(e) => set('tare_weight', e.target.value)}
+            aria-describedby={tareWarning ? 'tare-warning' : undefined}
+            className={`${inputCls} ${tareWarning ? 'border-amber-400 bg-amber-50' : ''}`}
+          />
+          {tareWarning && (
+            <span id="tare-warning" role="status" className="mt-1 block text-xs font-normal text-amber-800">
+              {tareWarning}
+            </span>
+          )}
         </label>
         <label className={labelCls}>
           Net (lb) <span className="text-xs text-slate-400">auto</span>

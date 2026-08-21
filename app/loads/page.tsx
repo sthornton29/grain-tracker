@@ -10,6 +10,7 @@ import { usePersistentState } from '@/lib/use-persistent-state'
 import { HARVEST_ENTRY_PATH_KEY, type HarvestEntryPath } from '@/lib/harvest-entry-path'
 import { splitFieldLabel } from '@/lib/load-splits'
 import { truckDisplay, truckExportLabel } from '@/lib/trucks'
+import { buildTareStatsIndex, lowTareWarning, truckTareKey } from '@/lib/truck-tare'
 import ExportBar from '@/components/export-bar'
 import type { ExportPayload, ExportCell } from '@/lib/exports'
 import type { Entity, Farm, Field, FieldPlanting, County, LoadSplit } from '@/lib/types'
@@ -30,6 +31,8 @@ type Row = {
   dry_bushels_override: number | null
   from_field_id: string | null
   truck: { name_or_number: string } | null
+  truck_id: string | null
+  created_at: string | null
   /** Truck name snapshot at save time (071) — display prefers it. */
   truck_label: string | null
   /** Hauler's truck on a pickup-contract load (067) — shown with a badge. */
@@ -60,7 +63,7 @@ const SELECT = `
   gross_weight, tare_weight, net_weight, moisture, test_weight,
   dry_bushels_override,
   from_type, to_type, from_field_id, to_buyer_id, contract_id,
-  hauler_truck, truck_label,
+  hauler_truck, truck_label, truck_id, created_at,
   truck:trucks(name_or_number),
   crop:crops(name, base_moisture_pct, base_lb_per_bushel),
   from_field:fields!loads_from_field_id_fkey(name_or_number),
@@ -324,6 +327,14 @@ export default function LoadsPage() {
     })
     return arr
   }, [filtered, sortKey, sortDir])
+
+  // Low-tare badge on saved loads (lib/truck-tare): each truck's baseline is
+  // the median tare across the loads currently listed, so past mistakes are
+  // findable. Subtle and never an alert — the warning proper lives on the
+  // forms at entry time.
+  const tareStatsIndex = useMemo(() => buildTareStatsIndex(rows), [rows])
+  const lowTareNote = (r: Row): string | null =>
+    lowTareWarning(r.tare_weight, tareStatsIndex.get(truckTareKey(r) ?? ''))
 
   function toggleExpanded(id: string) {
     setExpanded((s) => {
@@ -638,7 +649,15 @@ export default function LoadsPage() {
                       return null
                     })()}
                   </td>
-                  <td className="px-3 py-2 text-right">{r.net_weight?.toLocaleString() ?? ''}</td>
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                    {r.net_weight?.toLocaleString() ?? ''}
+                    {(() => {
+                      const note = lowTareNote(r)
+                      return note ? (
+                        <span className="ml-2 text-[11px] bg-amber-50 text-amber-800 rounded px-1.5 py-0.5" title={note}>low tare?</span>
+                      ) : null
+                    })()}
+                  </td>
                   <td className="px-3 py-2 text-right text-slate-500">{fmt(wetBushels)}</td>
                   <td className="px-3 py-2 text-right font-semibold">{fmt(dryBushels)}</td>
                   <td className="px-3 py-2 text-right">{r.moisture ?? ''}</td>
