@@ -33,6 +33,8 @@ import {
 } from '@/lib/reference-contract'
 import { normalizeBarchartPrice } from '@/lib/hedging'
 import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
+import type { CottonPhysicalInputs } from '@/lib/cotton-sales'
+import type { EntityMarketingInputs } from '@/lib/entity-marketing'
 import { fetchAll } from '@/lib/partner-api-server'
 import type {
   Contract,
@@ -49,7 +51,14 @@ import type {
 
 export type ProductionInputs = {
   crops: Crop[]
-  fields: Array<{ id: string; name_or_number: string }>
+  fields: Array<{ id: string; name_or_number: string; farm_id: string | null }>
+  /** Farm → entity, and the entities with their 051 role — the inputs
+   *  buildEntityScope needs for the per-entity partner rows. */
+  farms: Array<{ id: string; entity_id: string | null }>
+  entities: Array<{ id: string; name: string; entity_role: string | null }>
+  /** The year's gin receipts (raw — entity attribution scopes them). */
+  ginReceipts: GinReceiptRow[]
+  cottonBales: CottonBaleRow[]
   /** The crop year's plantings only. */
   plantings: FieldPlanting[]
   /** The crop year's assumptions only. */
@@ -81,7 +90,15 @@ type LoadRow = {
   practice: 'irrigated' | 'dryland' | null
 }
 type SplitRow = { load_id: string; field_id: string; crop_id: string; dry_bushels: number | null; practice: 'irrigated' | 'dryland' | null }
-type GinReceiptRow = { id: string; field_id: string | null; crop_year: number; total_bale_weight: number | string | null; bales_count: number | null }
+type GinReceiptRow = {
+  id: string
+  field_id: string | null
+  farm_id: string | null
+  entity_id: string | null
+  crop_year: number
+  total_bale_weight: number | string | null
+  bales_count: number | null
+}
 type CottonBaleRow = { gin_receipt_id: string; net_weight_lbs: number | null }
 type CombineRow = {
   id: string; field_id: string; crop_id: string; crop_year: number
@@ -97,11 +114,15 @@ export async function loadProductionInputs(
   org: string,
   cropYear: number,
 ): Promise<ProductionInputs> {
-  const [crops, fields, plantings, assumptions, loads, splits, ginReceipts, cottonBales] = await Promise.all([
+  const [crops, fields, farms, entities, plantings, assumptions, loads, splits, ginReceipts, cottonBales] = await Promise.all([
     fetchAll<Crop>((f, t) =>
       supabase.from('crops').select('*').eq('org_id', org).order('id').range(f, t)),
-    fetchAll<{ id: string; name_or_number: string }>((f, t) =>
-      supabase.from('fields').select('id, name_or_number').eq('org_id', org).order('id').range(f, t)),
+    fetchAll<{ id: string; name_or_number: string; farm_id: string | null }>((f, t) =>
+      supabase.from('fields').select('id, name_or_number, farm_id').eq('org_id', org).order('id').range(f, t)),
+    fetchAll<{ id: string; entity_id: string | null }>((f, t) =>
+      supabase.from('farms').select('id, entity_id').eq('org_id', org).order('id').range(f, t)),
+    fetchAll<{ id: string; name: string; entity_role: string | null }>((f, t) =>
+      supabase.from('entities').select('id, name, entity_role').eq('org_id', org).order('id').range(f, t)),
     fetchAll<FieldPlanting>((f, t) =>
       supabase.from('field_plantings').select('*').eq('org_id', org).eq('season_year', cropYear).order('id').range(f, t)),
     fetchAll<CropAssumption>((f, t) =>
@@ -119,7 +140,7 @@ export async function loadProductionInputs(
     fetchAll<GinReceiptRow>((f, t) =>
       supabase
         .from('gin_receipts')
-        .select('id, field_id, crop_year, total_bale_weight, bales_count')
+        .select('id, field_id, farm_id, entity_id, crop_year, total_bale_weight, bales_count')
         .eq('org_id', org)
         .eq('crop_year', cropYear)
         .order('id')
@@ -168,30 +189,42 @@ export async function loadProductionInputs(
   // Cotton: lint lbs per field (receipt totals, the /production convention) and
   // the crop-level total with the per-bale-weights-first fallback the
   // dashboard uses.
+  const cottonLbsByField = new Map<string, number>()
+  for (const rct of ginReceipts) {
+    if (rct.field_id) cottonLbsByField.set(rct.field_id, (cottonLbsByField.get(rct.field_id) ?? 0) + num(rct.total_bale_weight))
+  }
+  const cottonTotal = cottonTotals(ginReceipts, cottonBales)
+  const cottonProductionByCrop = new Map<string, { lintLbs: number; bales: number }>()
+  for (const c of crops) if (isCottonCrop(c.name)) cottonProductionByCrop.set(c.id, cottonTotal)
+
+  return {
+    crops, fields, farms, entities, ginReceipts, cottonBales, plantings, assumptions, doubleCropIds, aggByKey,
+    excluded: analysis.excluded, cropCompleteKeys, cottonLbsByField,
+    productionByCrop, harvestCompleteCropIds, cottonProductionByCrop,
+  }
+}
+
+/** Cotton lint lbs + bale count from a set of gin receipts — per-bale net
+ *  weights first, the receipt total as the fallback (the dashboard rule). */
+function cottonTotals(
+  receipts: readonly GinReceiptRow[],
+  bales: readonly CottonBaleRow[],
+): { lintLbs: number; bales: number } {
   const balesByReceipt = new Map<string, { lbs: number; count: number }>()
-  for (const b of cottonBales) {
+  for (const b of bales) {
     const g = balesByReceipt.get(b.gin_receipt_id) ?? { lbs: 0, count: 0 }
     g.lbs += num(b.net_weight_lbs)
     g.count += 1
     balesByReceipt.set(b.gin_receipt_id, g)
   }
-  const cottonLbsByField = new Map<string, number>()
   let lintLbs = 0
   let baleCount = 0
-  for (const rct of ginReceipts) {
-    if (rct.field_id) cottonLbsByField.set(rct.field_id, (cottonLbsByField.get(rct.field_id) ?? 0) + num(rct.total_bale_weight))
+  for (const rct of receipts) {
     const fromBales = balesByReceipt.get(rct.id)
     lintLbs += fromBales && fromBales.lbs > 0 ? fromBales.lbs : num(rct.total_bale_weight)
     baleCount += fromBales && fromBales.count > 0 ? fromBales.count : num(rct.bales_count)
   }
-  const cottonProductionByCrop = new Map<string, { lintLbs: number; bales: number }>()
-  for (const c of crops) if (isCottonCrop(c.name)) cottonProductionByCrop.set(c.id, { lintLbs, bales: baleCount })
-
-  return {
-    crops, fields, plantings, assumptions, doubleCropIds, aggByKey,
-    excluded: analysis.excluded, cropCompleteKeys, cottonLbsByField,
-    productionByCrop, harvestCompleteCropIds, cottonProductionByCrop,
-  }
+  return { lintLbs, bales: baleCount }
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +337,13 @@ async function resolveCurrentFutures(
 
 export type MarketingInputs = {
   production: ProductionInputs
+  /** Whole-operation rows (the dashboard with "All entities"). */
   rows: MarketingRow[]
+  /** The raw marketing position + the operation-wide quote/assumption inputs,
+   *  kept so computeEntityMarketingRows (lib/entity-marketing.ts) can
+   *  re-attribute them per farming entity exactly as the dashboard's entity
+   *  filter does. */
+  entityInputs: EntityMarketingInputs
 }
 
 export async function loadMarketingInputs(
@@ -327,9 +366,11 @@ export async function loadMarketingInputs(
   // Physical cotton marketing (044) — whole-operation summary; missing tables
   // degrade to none, like every other consumer.
   let cottonPhysicalByCrop = new Map<string, import('@/lib/cotton-sales').CottonPhysicalSummary>()
+  let cottonPhysicalInputs: CottonPhysicalInputs | null = null
   try {
     const raw = await fetchCottonPhysical(supabase, cropYear, { orgId: org })
     for (const c of crops) if (isCottonCrop(c.name)) cottonPhysicalByCrop.set(c.id, raw.summary)
+    cottonPhysicalInputs = raw.hasData ? raw.inputs : null
   } catch {
     cottonPhysicalByCrop = new Map()
   }
@@ -354,5 +395,26 @@ export async function loadMarketingInputs(
     cottonProductionByCrop: production.cottonProductionByCrop,
     cottonPhysicalByCrop,
   })
-  return { production, rows }
+  return {
+    production,
+    rows,
+    entityInputs: {
+      cropYear,
+      crops,
+      plantings,
+      fields: production.fields,
+      farms: production.farms,
+      entities: production.entities,
+      contracts,
+      futures,
+      options,
+      assumptions,
+      doubleCropIds: production.doubleCropIds,
+      aggByKey: production.aggByKey,
+      ginReceipts: production.ginReceipts,
+      cottonBales: production.cottonBales,
+      cottonPhysicalInputs,
+      currentFuturesByCrop,
+    },
+  }
 }

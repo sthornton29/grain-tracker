@@ -8,6 +8,8 @@ import {
   buildSettlementRecords,
   bearerTokenFrom,
   checkPartnerAuth,
+  farmingEntitiesForFields,
+  fieldEntityMap,
   type BaleDispositionRow,
   type BaleRow,
   type CccLoanRow,
@@ -171,7 +173,96 @@ describe('buildFieldRecords', () => {
     expect(r.farm_name).toBeNull()
     expect(r.farm_code).toBeNull()
     expect(r.entity).toBeNull()
+    expect(r.entity_id).toBeNull()
     expect(r.acres.total).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Entity structure of a multi-entity share: every field carries the id of
+// the FARMING entity that operates it; the handshake lists exactly those
+// entities with their shared field counts; a marketing-agent entity (051)
+// never appears even when a farm is mistakenly pointed at it.
+// ---------------------------------------------------------------------------
+
+describe('field → operating entity across a multi-entity share', () => {
+  const multiEntities: EntityRow[] = [
+    { id: 'e-north', name: 'North Farms LLC', entity_role: 'farming' },
+    { id: 'e-south', name: 'South Farms LP', entity_role: 'farming' },
+    { id: 'e-agent', name: 'Turnrow Marketing', entity_role: 'marketing_agent' },
+    { id: 'e-idle', name: 'Idle Holdings', entity_role: 'farming' }, // no fields
+  ]
+  const multiFarms: FarmRow[] = [
+    { id: 'fa-n', name: 'North Place', fsa_number: '1', entity_id: 'e-north' },
+    { id: 'fa-s', name: 'South Place', fsa_number: '2', entity_id: 'e-south' },
+    { id: 'fa-s2', name: 'South Annex', fsa_number: '3', entity_id: 'e-south' },
+    { id: 'fa-ag', name: 'Paper Farm', fsa_number: '4', entity_id: 'e-agent' },
+    { id: 'fa-none', name: 'Unassigned', fsa_number: '5', entity_id: null },
+  ]
+  const fieldOn = (id: string, farm_id: string | null): FieldRow => ({
+    id, farm_id, name_or_number: id, total_acres: 10, irrigated_acres: 0, dryland_acres: 10,
+  })
+  const multiFields: FieldRow[] = [
+    fieldOn('n1', 'fa-n'), fieldOn('n2', 'fa-n'),
+    fieldOn('s1', 'fa-s'), fieldOn('s2', 'fa-s2'), fieldOn('s3', 'fa-s2'),
+    fieldOn('ag1', 'fa-ag'),
+    fieldOn('x1', 'fa-none'), fieldOn('x2', null),
+  ]
+
+  it('every /fields record carries its farm entity id + name (stable join key)', () => {
+    const out = buildFieldRecords({ fields: multiFields, farms: multiFarms, entities: multiEntities })
+    const byId = new Map(out.map((r) => [r.id, r]))
+    expect(byId.get('n1')).toMatchObject({ entity_id: 'e-north', entity: 'North Farms LLC' })
+    expect(byId.get('n2')).toMatchObject({ entity_id: 'e-north', entity: 'North Farms LLC' })
+    expect(byId.get('s1')).toMatchObject({ entity_id: 'e-south', entity: 'South Farms LP' })
+    expect(byId.get('s3')).toMatchObject({ entity_id: 'e-south', entity: 'South Farms LP' })
+    expect(byId.get('x1')).toMatchObject({ entity_id: null, entity: null })
+    expect(byId.get('x2')).toMatchObject({ entity_id: null, entity: null })
+    // fieldEntityMap is the same field → entity resolution the yields/prices
+    // payloads use, so every endpoint agrees with /fields.
+    const map = fieldEntityMap({ fields: multiFields, farms: multiFarms })
+    for (const r of out) expect(map.get(r.id) ?? null).toBe(r.entity_id)
+  })
+
+  it('the handshake lists only FARMING entities with shared fields, each with its shared count', () => {
+    // A share covering two North fields, one South field, and the agent's field.
+    const shared = new Set(['n1', 'n2', 's2', 'ag1', 'x1'])
+    const out = farmingEntitiesForFields({ fieldIds: shared, fields: multiFields, farms: multiFarms, entities: multiEntities })
+    expect(out).toEqual([
+      { id: 'e-north', name: 'North Farms LLC', field_count: 2 },
+      { id: 'e-south', name: 'South Farms LP', field_count: 1 },
+    ])
+    // South's other fields are outside the share → not counted; Idle has no
+    // fields → absent; the agent never appears; no-entity fields count nowhere.
+    expect(out.some((e) => e.id === 'e-agent')).toBe(false)
+    expect(out.some((e) => e.id === 'e-idle')).toBe(false)
+  })
+
+  it('a full-org token (no field restriction) lists every farming entity that operates ground', () => {
+    const out = farmingEntitiesForFields({ fieldIds: null, fields: multiFields, farms: multiFarms, entities: multiEntities })
+    expect(out.map((e) => [e.id, e.field_count])).toEqual([
+      ['e-north', 2],
+      ['e-south', 3],
+    ])
+  })
+
+  it('plantings and production rows carry the same entity_id as /fields', () => {
+    const cropsLocal: CropRow[] = [{ id: 'c', name: 'Corn', base_moisture_pct: 15.5, base_lb_per_bushel: 56 }]
+    const plantingsLocal: PlantingRow[] = [
+      { id: 'p1', field_id: 'n1', crop_id: 'c', season_year: 2026, planted_acres: 10, irrigated_acres: 0, dryland_acres: 10 },
+      { id: 'p2', field_id: 's1', crop_id: 'c', season_year: 2026, planted_acres: 10, irrigated_acres: 0, dryland_acres: 10 },
+      { id: 'p3', field_id: 'x2', crop_id: 'c', season_year: 2026, planted_acres: 10, irrigated_acres: 0, dryland_acres: 10 },
+    ]
+    const pl = buildPlantingRecords({ plantings: plantingsLocal, fields: multiFields, farms: multiFarms, entities: multiEntities, crops: cropsLocal, year: 2026 })
+    expect(pl.find((r) => r.field_id === 'n1')!.entity_id).toBe('e-north')
+    expect(pl.find((r) => r.field_id === 's1')!.entity_id).toBe('e-south')
+    expect(pl.find((r) => r.field_id === 'x2')!.entity_id).toBeNull()
+    const pr = buildProductionRecords({
+      plantings: plantingsLocal, loads: [], splits: [], ginReceipts: [],
+      fields: multiFields, farms: multiFarms, entities: multiEntities, crops: cropsLocal, year: 2026,
+    })
+    expect(pr.find((r) => r.field_id === 'n1')!.entity_id).toBe('e-north')
+    expect(pr.find((r) => r.field_id === 's1')!.entity_id).toBe('e-south')
   })
 })
 

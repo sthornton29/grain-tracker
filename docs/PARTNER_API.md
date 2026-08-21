@@ -3,9 +3,32 @@
 Read-only REST API for partner software, primarily Turnrow Landowner.
 Base path: `https://turnrowgrain.com/api/partner/v1`. All responses are JSON.
 Written 2026-08-15 from the code, updated 2026-08-17 for the lease-projection
-scopes (source of truth: `app/api/partner/v1/*`, `lib/partner-api.ts`,
-`lib/partner-api-server.ts`, `lib/partner-marketing.ts`); update this file
-when those change.
+scopes and 2026-08-21 for operating entities (source of truth:
+`app/api/partner/v1/*`, `lib/partner-api.ts`, `lib/partner-api-server.ts`,
+`lib/partner-marketing.ts`, `lib/partner-marketing-server.ts`,
+`lib/entity-marketing.ts`); update this file when those change.
+
+## Operating entities (2026-08-21, additive)
+
+A farm tenant commonly operates through several legal entities. Every
+field belongs to a farm, and every farm belongs to ONE **farming entity** —
+the entity that farms that ground. Some tenants also have a
+**marketing-agent** entity that holds contracts and the hedge account on
+behalf of the farming entities; it holds paper, not ground, so it never
+appears as a field's entity and never appears in the entity lists below.
+
+- `/fields`, `/plantings`, `/production`, and `/projected-yields` rows carry
+  `entity_id` (stable uuid, the field's farm's entity) next to the existing
+  `entity` display name. Join any field-keyed row to its entity through
+  `/fields` by `field_id`, or read `entity_id` straight off the row. Null when
+  the farm has no entity assigned.
+- `/handshake` and `POST /shares/redeem` carry `entities`: the farming
+  entities behind the shared fields with each one's shared field count.
+- `/marketing-prices` adds `by_entity`: the same one-number-per-crop price,
+  per farming entity with shared fields.
+
+All of this is additive — existing consumers that ignore the new keys keep
+working unchanged.
 
 ## Authentication
 
@@ -69,6 +92,10 @@ Body: `{ "code": "TRW-XXXX-XXXX-XXXX" }` (case-insensitive).
     "scopes": { "fields": true, "plantings": true, "harvest": true, "yields": true,
                 "projected_prices": false, "projected_yields": false },
     "field_count": 42,
+    "entities": [
+      { "id": "uuid", "name": "Martin Farms LLC", "field_count": 30 },
+      { "id": "uuid", "name": "Martin Brothers LP", "field_count": 12 }
+    ],
     "api_version": "v1"
   }
 }
@@ -77,10 +104,19 @@ Body: `{ "code": "TRW-XXXX-XXXX-XXXX" }` (case-insensitive).
 Failures: 404 invalid code, 409 already used, 410 expired, 403 revoked.
 Redemption is one-time (guarded against concurrent redeems).
 
+`entities` is the share's entity structure: every FARMING entity that
+operates at least one shared field, sorted by name, with the number of shared
+fields it operates. Marketing-agent entities never appear. Fields whose farm
+has no entity are in `field_count` but in no entity's count, so the counts
+may sum to less than `field_count`. The list can change as the farmer
+reassigns farms — re-read it with `/handshake` rather than caching it.
+
 ### GET /handshake (bearer)
 
 Returns the same handshake object (minus `token`/`label`) for the current
-token. Use it to re-check scopes and detect revocation.
+token. Use it to re-check scopes, detect revocation, and refresh `entities`.
+Full-org tokens get every farming entity that operates ground, with
+org-wide field counts.
 
 ## Data endpoints
 
@@ -97,11 +133,17 @@ system.
 {
   "id": "uuid", "name": "North 40", "aliases": [],
   "farm_id": "uuid", "farm_name": "Home Place", "farm_code": "1234",
-  "entity": "Martin Farms LLC",
+  "entity_id": "uuid", "entity": "Martin Farms LLC",
   "acres": { "total": 40.0, "irrigated": 32.5, "dryland": 7.5 },
   "updated_at": "2026-05-01T12:00:00Z"
 }
 ```
+
+`entity_id` / `entity` are the field's **operating entity** — the farming
+entity its farm belongs to (stable id + display name; both null when the farm
+has no entity). The id matches `entities[].id` on the handshake and
+`by_entity[].entity_id` on `/marketing-prices`. A field never attributes to a
+marketing-agent entity.
 
 ### GET /plantings?year=YYYY (year required)
 
@@ -114,7 +156,7 @@ The year's plantings for the token's scope.
   "planted_acres": 40.0, "irrigated_acres": 32.5, "dryland_acres": 7.5,
   "planting_date": "2026-04-14",
   "varieties": [{ "variety": "P1197", "acres": 40.0 }],
-  "entity": "Martin Farms LLC", "updated_at": "..."
+  "entity_id": "uuid", "entity": "Martin Farms LLC", "updated_at": "..."
 }
 ```
 
@@ -131,7 +173,8 @@ returned as null (quantities withheld, harvest progress intact).
 
 ```json
 {
-  "field_id": "uuid", "field_name": "North 40", "entity": "Martin Farms LLC",
+  "field_id": "uuid", "field_name": "North 40",
+  "entity_id": "uuid", "entity": "Martin Farms LLC",
   "crop": "Corn", "crop_year": 2026,
   "planted_acres": 40.0, "harvested_acres": 40.0,
   "production_units": 7200, "unit": "bu",
@@ -145,18 +188,47 @@ lint lbs/ac for cotton).
 ### GET /marketing-prices?year=YYYY (year required; scope `projected_prices`)
 
 The operation's projected average price per crop the token may see (share
-tokens: crops planted that year on the share's fields; the price itself is
-always the whole operation's average). **One aggregate number per crop** —
-by design there are no components, no priced/unpriced split, no bushel
-quantities, and no cost or profit data anywhere on this endpoint, so the
-tenant's marketing position cannot be reconstructed from it. Share tokens
-without the scope get the 403 described above.
+tokens: crops planted that year on the share's fields). **One aggregate
+number per crop** — by design there are no components, no priced/unpriced
+split, no bushel quantities, no acre shares, and no cost or profit data
+anywhere on this endpoint, so the tenant's marketing position cannot be
+reconstructed from it. Share tokens without the scope get the 403 described
+above.
 
 ```json
-{ "crop": "Corn", "crop_year": 2026, "unit": "usd_per_bu",
-  "projected_avg_price": 4.63, "is_final": false,
-  "as_of": "2026-08-17T12:00:00.000Z" }
+{
+  "data": [
+    { "crop": "Corn", "crop_year": 2026, "unit": "usd_per_bu",
+      "projected_avg_price": 4.63, "is_final": false,
+      "as_of": "2026-08-21T12:00:00.000Z" }
+  ],
+  "by_entity": [
+    { "entity_id": "uuid", "entity_name": "Martin Farms LLC",
+      "crop": "Corn", "crop_year": 2026, "unit": "usd_per_bu",
+      "projected_avg_price": 4.58, "is_final": false,
+      "as_of": "2026-08-21T12:00:00.000Z" },
+    { "entity_id": "uuid", "entity_name": "Martin Brothers LP",
+      "crop": "Corn", "crop_year": 2026, "unit": "usd_per_bu",
+      "projected_avg_price": 4.71, "is_final": false,
+      "as_of": "2026-08-21T12:00:00.000Z" }
+  ]
+}
 ```
+
+- `data` (unchanged): the **whole operation's** average per crop.
+- `by_entity` (additive, 2026-08-21): the same number per **farming entity**
+  that operates shared fields — one row per entity × crop planted on that
+  entity's shared fields. It is the price the tenant's own Marketing
+  dashboard shows with that entity selected: the entity's own-name contracts
+  and hedges count wholly; positions held by a marketing-agent entity (or
+  recorded at the operation level) flow down to it pro rata by its share of
+  the crop's planted acres — same per-bushel prices, so the figure is a true
+  average for that entity's production. Only entities with shared fields
+  appear, and a crop whose per-entity price isn't computable is simply
+  omitted from `by_entity` (whereas `data` carries `null`) — never guessed.
+  Per-entity prices are not a breakdown of the whole-operation price and do
+  not average back to it; use `data` for the operation and `by_entity` for
+  the entity that farms a given field (`/fields.entity_id`).
 
 - `unit`: `usd_per_bu` for grains; `cents_per_lb` for cotton (its native
   marketing terms).
@@ -180,8 +252,8 @@ Fields are strictly the share's field set. Share tokens without the scope get
 the 403 described above.
 
 ```json
-{ "field_id": "uuid", "field_name": "North 40", "crop": "Corn",
-  "crop_year": 2026, "planted_acres": 100.0,
+{ "field_id": "uuid", "field_name": "North 40", "entity_id": "uuid",
+  "crop": "Corn", "crop_year": 2026, "planted_acres": 100.0,
   "yield_per_acre": 184.0, "unit": "bu_per_ac", "basis": "expected",
   "practices": [
     { "practice": "irrigated", "acres": 60.0, "yield_per_acre": 220.0 },
@@ -190,6 +262,8 @@ the 403 described above.
 ```
 
 - `unit`: `bu_per_ac` for grains; `lbs_per_ac` (lint) for cotton.
+- `entity_id`: the field's operating entity (same value as `/fields`), so a
+  yield row can be paired with its entity's `by_entity` price without a join.
 - `practices` is null for single-practice fields, and on `basis: "actual"`
   rows whenever the split isn't determinable.
 - A crop the tenant has set no yield expectation for is simply absent until
@@ -205,3 +279,5 @@ Farmer-facing financial/status endpoints; out of scope for landowner shares.
 - Sync per crop year with upserts; never delete prior years on sync.
 - A 403 `share_revoked` should flip the stored connection to an error state
   with the plain-language message, not retry loops.
+- Key entity-level data on `entity_id`, never on the display name — farmers
+  rename entities. Refresh the entity list from `/handshake` on each sync.

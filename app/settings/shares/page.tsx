@@ -35,6 +35,8 @@ type PriceRecord = {
   projected_avg_price: number | null
   is_final: boolean
 }
+type EntityPriceRecord = PriceRecord & { entity_id: string; entity_name: string }
+type ShareEntity = { id: string; name: string; field_count: number }
 type YieldRecord = {
   field_name: string
   crop: string
@@ -47,8 +49,11 @@ type YieldRecord = {
 type Preview = {
   landowner_name: string | null
   field_count: number
+  /** The farming entities behind the shared fields — how the share's entity
+   *  structure presents to the landowner. */
+  entities: ShareEntity[]
   scopes: { yields: boolean; projected_prices: boolean; projected_yields: boolean }
-  marketing_prices: { records: PriceRecord[] } | { denied: string }
+  marketing_prices: { records: PriceRecord[]; by_entity: EntityPriceRecord[] } | { denied: string }
   projected_yields: { records: YieldRecord[] } | { denied: string }
 }
 
@@ -77,6 +82,16 @@ function fmtPrice(r: PriceRecord): string {
   return r.unit === 'cents_per_lb'
     ? `$${(r.projected_avg_price / 100).toFixed(4)}/lb`
     : `$${r.projected_avg_price.toFixed(2)}/bu`
+}
+function PriceValue({ r }: { r: PriceRecord }) {
+  return (
+    <span className="flex items-baseline gap-2">
+      <span className="font-semibold tabular-nums">{fmtPrice(r)}</span>
+      <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${r.is_final ? 'bg-green-50 text-green-800' : 'bg-amber-50 text-amber-800'}`}>
+        {r.is_final ? 'final' : 'projected'}
+      </span>
+    </span>
+  )
 }
 function fmtYield(v: number, unit: YieldRecord['unit']): string {
   return `${v.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${unit === 'lbs_per_ac' ? 'lbs/ac' : 'bu/ac'}`
@@ -396,6 +411,22 @@ function SharePreview({ shareId, landowner, scopesKey }: { shareId: string; land
         )}
       </div>
 
+      {!loading && !error && preview && (
+        <div className="flex items-center gap-2 flex-wrap text-xs">
+          <span className="text-slate-500">Farmed by</span>
+          {preview.entities.length === 0 ? (
+            <span className="text-slate-500 italic">no entity on these farms yet — set one on each farm under Settings</span>
+          ) : (
+            preview.entities.map((e) => (
+              <span key={e.id} className="rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-slate-700">
+                <span className="font-medium">{e.name}</span>
+                <span className="text-slate-500"> · {e.field_count} field{e.field_count === 1 ? '' : 's'}</span>
+              </span>
+            ))
+          )}
+        </div>
+      )}
+
       {loading && <p className="text-sm text-slate-500">Loading the live preview…</p>}
       {error && <p className="text-sm text-red-600">{error}</p>}
 
@@ -410,19 +441,41 @@ function SharePreview({ shareId, landowner, scopesKey }: { shareId: string; land
             ) : prices && prices.records.length === 0 ? (
               <p className="text-sm text-slate-500">No crops on their shared fields this year.</p>
             ) : (
-              <ul className="divide-y divide-slate-100">
-                {prices?.records.map((r) => (
-                  <li key={r.crop} className="py-2 flex items-baseline justify-between gap-3">
-                    <span className="font-medium text-sm">{r.crop}</span>
-                    <span className="flex items-baseline gap-2">
-                      <span className="font-semibold tabular-nums">{fmtPrice(r)}</span>
-                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${r.is_final ? 'bg-green-50 text-green-800' : 'bg-amber-50 text-amber-800'}`}>
-                        {r.is_final ? 'final' : 'projected'}
-                      </span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              <>
+                <p className="text-xs text-slate-500 mb-1">Whole operation</p>
+                <ul className="divide-y divide-slate-100">
+                  {prices?.records.map((r) => (
+                    <li key={r.crop} className="py-2 flex items-baseline justify-between gap-3">
+                      <span className="font-medium text-sm">{r.crop}</span>
+                      <PriceValue r={r} />
+                    </li>
+                  ))}
+                </ul>
+                {prices && 'by_entity' in prices && prices.by_entity.length > 0 && (
+                  <div className="mt-3 space-y-2">
+                    {preview.entities.map((e) => {
+                      const rows = prices.by_entity.filter((r) => r.entity_id === e.id)
+                      return (
+                        <div key={e.id}>
+                          <p className="text-xs text-slate-500 mb-1">{e.name}</p>
+                          {rows.length === 0 ? (
+                            <p className="text-xs text-slate-400 italic">No price to show yet for this entity.</p>
+                          ) : (
+                            <ul className="divide-y divide-slate-100">
+                              {rows.map((r) => (
+                                <li key={r.crop} className="py-1.5 flex items-baseline justify-between gap-3">
+                                  <span className="text-sm">{r.crop}</span>
+                                  <PriceValue r={r} />
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </>
             )}
           </div>
 

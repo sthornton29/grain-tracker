@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-08-20 · version 0.1.0 · build 0e21881. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-08-21 · version 0.1.0 · build 1221d9b. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -1250,6 +1250,12 @@ Every share includes the landowner's **fields, plantings, and harvest progress**
 
 Open **Sharing & preview** on any share. The "What [your landowner] sees" panel is built by the very same part of Turnrow that answers their software, so it's not a mock-up — it *is* their screen. Flip a switch and the preview updates on the spot; anything you haven't shared shows the same "not shared" message they'd get. Use the year picker to check other crop years.
 
+## Which of your entities they see
+
+If you farm through more than one entity (an LLC and a partnership, say), the landowner sees **which entity farms each of their fields** — the entity on the farm the field belongs to (Settings → Farms). The preview's **Farmed by** line lists those entities with how many of the landowner's fields each one farms, so you can check the picture before they do.
+
+When projected prices are on, the landowner gets the whole operation's average per crop **and** the same single number for each entity that farms their ground. An entity's price counts that entity's own contracts and hedges in full, and its share of anything marketed for the operation as a whole (including by a marketing entity) — in line with the Marketing report with that entity selected. It is still one number per crop per entity and nothing more. An entity that exists only to market (no farms of its own) never appears, and a crop with no price to show for an entity is left off rather than guessed.
+
 ## How to connect a landowner
 
 1. Pick the landowner, choose your switches, and create the share.
@@ -1261,6 +1267,7 @@ Open **Sharing & preview** on any share. The "What [your landowner] sees" panel 
 - **Can a landowner work out my marketing position from a shared price?** No. The price is a single average per crop with nothing behind it — no contract, hedge, quantity, or cost detail is ever available to them, shared or not.
 - **How do I stop sharing?** Flip the switch off (that one kind of information stops immediately) or **End share** (their access ends entirely, right away).
 - **Which fields do they see?** Only fields on farms linked to that landowner (Settings → Farms is where that link lives).
+- **The preview says "no entity on these farms yet."** The landowner's farms have no entity set. Open each farm under Settings → Farms and choose the entity that farms it; the preview and the landowner's view update right away.
 - **The preview won't load.** Try again in a moment; if it keeps happening, contact support.
 
 # Settlements  (page: /settlements)

@@ -6,8 +6,10 @@
 // cannot leak: no components, no priced/unpriced split, no bushels, no
 // cost/profit — see lib/partner-marketing.ts. Share tokens require the
 // share_projected_prices scope (403 naming the scope otherwise) and see only
-// the crops planted on their shared fields; the price itself is always the
-// whole operation's average. Read-only.
+// the crops planted on their shared fields. `data` is the whole operation's
+// average; `by_entity` (additive) carries the same number per FARMING entity
+// with shared fields, computed through the reports' entity attribution seam
+// (lib/entity-marketing.ts). Read-only.
 
 import { NextRequest, NextResponse } from 'next/server'
 import {
@@ -18,8 +20,8 @@ import {
   requireYearParam,
   errorResponse,
 } from '@/lib/partner-api-server'
-import { loadMarketingInputs } from '@/lib/marketing-inputs'
-import { buildMarketingPriceRecords, shareScopeError } from '@/lib/partner-marketing'
+import { buildMarketingPricesPayload } from '@/lib/partner-marketing-server'
+import { shareScopeError } from '@/lib/partner-marketing'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -36,36 +38,9 @@ export async function GET(req: NextRequest) {
   if (year instanceof NextResponse) return year
 
   try {
-    const { production, rows } = await loadMarketingInputs(supabase, access.org, year)
-
-    let allowedCropIds: Set<string> | null = null
-    if (access.share) {
-      const fields = await sharedFieldIds(supabase, access.org, access.share.landownerId)
-      allowedCropIds = new Set(
-        production.plantings.filter((p) => fields.has(p.field_id)).map((p) => p.crop_id),
-      )
-    }
-
-    // Manual "physical sales complete" flags (050). A missing table simply
-    // means no crop is final yet.
-    let salesStatus: Array<{ crop_id: string; physical_sales_complete: boolean }> = []
-    const statusResult = await supabase
-      .from('crop_year_sales_status')
-      .select('crop_id, physical_sales_complete')
-      .eq('org_id', access.org)
-      .eq('crop_year', year)
-    if (!statusResult.error) {
-      salesStatus = (statusResult.data ?? []) as typeof salesStatus
-    }
-
-    const records = buildMarketingPriceRecords({
-      rows,
-      cropYear: year,
-      salesStatus,
-      allowedCropIds,
-      asOf: new Date().toISOString(),
-    })
-    return NextResponse.json({ data: records })
+    const fields = access.share ? await sharedFieldIds(supabase, access.org, access.share.landownerId) : null
+    const { data, by_entity } = await buildMarketingPricesPayload(supabase, access.org, year, fields)
+    return NextResponse.json({ data, by_entity })
   } catch (e) {
     return errorResponse(e)
   }

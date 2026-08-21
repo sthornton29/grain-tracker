@@ -100,6 +100,77 @@ export function buildMarketingPriceRecords(args: {
 }
 
 // ---------------------------------------------------------------------------
+// Marketing prices per FARMING entity — the same one-number-per-crop shape,
+// keyed by the entity that farms the shared ground
+// ---------------------------------------------------------------------------
+
+export type EntityMarketingPriceRecord = MarketingPriceRecord & {
+  entity_id: string
+  entity_name: string
+}
+
+/**
+ * One record per (farming entity with shared fields) × (crop planted on that
+ * entity's shared fields). The price is the entity's own projected average —
+ * the dashboard's headline with that entity selected (own-name marketing
+ * whole, agent-held/operation-level positions pro rata by acre share — see
+ * lib/entity-marketing.ts). Still ONE aggregate number: no acres, no shares,
+ * no components. A crop whose per-entity price isn't computable is omitted
+ * rather than guessed (unlike the whole-operation rows, which carry null).
+ */
+export function buildEntityMarketingPriceRecords(args: {
+  entities: ReadonlyArray<{ id: string; name: string; entity_role?: string | null }>
+  /** Rows for an entity, computed through the entity attribution seam. */
+  rowsForEntity: (entityId: string) => readonly MarketingRow[]
+  /** Entity id per shared field (field → farm → entity). Only fields the
+   *  consumer may see belong here (share tokens: the share's field set). */
+  sharedFieldEntity: ReadonlyMap<string, string | null>
+  /** The year's plantings, to find the crops planted on each entity's shared
+   *  fields. */
+  plantings: ReadonlyArray<{ field_id: string; crop_id: string; season_year: number }>
+  cropYear: number
+  salesStatus: ReadonlyArray<{ crop_id: string; physical_sales_complete: boolean }>
+  asOf: string
+}): EntityMarketingPriceRecord[] {
+  const finalByCrop = new Set(
+    args.salesStatus.filter((s) => s.physical_sales_complete).map((s) => s.crop_id),
+  )
+  // Crops planted on each entity's SHARED fields this year.
+  const cropsByEntity = new Map<string, Set<string>>()
+  for (const p of args.plantings) {
+    if (p.season_year !== args.cropYear) continue
+    const entityId = args.sharedFieldEntity.get(p.field_id)
+    if (entityId == null) continue
+    let set = cropsByEntity.get(entityId)
+    if (!set) cropsByEntity.set(entityId, (set = new Set()))
+    set.add(p.crop_id)
+  }
+  const out: EntityMarketingPriceRecord[] = []
+  const entities = [...args.entities]
+    .filter((e) => e.entity_role !== 'marketing_agent' && cropsByEntity.has(e.id))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
+  for (const entity of entities) {
+    const allowed = cropsByEntity.get(entity.id)!
+    for (const row of args.rowsForEntity(entity.id)) {
+      if (!allowed.has(row.cropId)) continue
+      const price = headlineAvgPrice(row)
+      if (price == null || !Number.isFinite(price)) continue
+      out.push({
+        entity_id: entity.id,
+        entity_name: entity.name,
+        crop: row.cropName,
+        crop_year: args.cropYear,
+        unit: row.unit === 'lbs' ? 'cents_per_lb' : 'usd_per_bu',
+        projected_avg_price: round2(price),
+        is_final: finalByCrop.has(row.cropId),
+        as_of: args.asOf,
+      })
+    }
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
 // Projected yields — per shared field × crop
 // ---------------------------------------------------------------------------
 
@@ -112,6 +183,8 @@ export type ProjectedYieldPractice = {
 export type ProjectedYieldRecord = {
   field_id: string
   field_name: string
+  /** The field's operating entity (joins to /fields.entity_id). */
+  entity_id: string | null
   crop: string
   crop_year: number
   planted_acres: number
@@ -184,8 +257,12 @@ export function buildProjectedYieldRecords(args: {
   /** Fields the consumer may see (share tokens: the share's field set).
    *  Null = no restriction (full-org tokens). */
   allowedFieldIds: ReadonlySet<string> | null
+  /** Operating entity per field (lib/partner-api.ts fieldEntityMap). Absent
+   *  ⇒ entity_id null on every row. */
+  fieldEntity?: ReadonlyMap<string, string | null>
 }): ProjectedYieldRecord[] {
   const fieldById = new Map(args.fields.map((f) => [f.id, f]))
+  const entityOf = (fieldId: string) => args.fieldEntity?.get(fieldId) ?? null
   const cropById = new Map(args.crops.map((c) => [c.id, c]))
   const out: ProjectedYieldRecord[] = []
 
@@ -222,6 +299,7 @@ export function buildProjectedYieldRecords(args: {
       out.push({
         field_id: p.field_id,
         field_name: field.name_or_number,
+        entity_id: entityOf(p.field_id),
         crop: crop.name,
         crop_year: args.cropYear,
         planted_acres: acresBase,
@@ -252,6 +330,7 @@ export function buildProjectedYieldRecords(args: {
     out.push({
       field_id: p.field_id,
       field_name: field.name_or_number,
+      entity_id: entityOf(p.field_id),
       crop: crop.name,
       crop_year: args.cropYear,
       planted_acres: acresBase,

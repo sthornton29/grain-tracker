@@ -13,14 +13,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createServiceClient, serviceClientMissingResponse, sharedFieldIds } from '@/lib/partner-api-server'
-import { loadMarketingInputs, loadProductionInputs } from '@/lib/marketing-inputs'
+import type { ProductionInputs } from '@/lib/marketing-inputs'
 import {
-  buildMarketingPriceRecords,
-  buildProjectedYieldRecords,
-  shareScopeError,
-  type MarketingPriceRecord,
-  type ProjectedYieldRecord,
-} from '@/lib/partner-marketing'
+  buildMarketingPricesPayload,
+  buildProjectedYieldsPayload,
+  loadShareEntities,
+  type MarketingPricesPayload,
+} from '@/lib/partner-marketing-server'
+import { shareScopeError, type ProjectedYieldRecord } from '@/lib/partner-marketing'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -87,56 +87,27 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     const pricesDenied = shareScopeError(scopeFlags, 'projected_prices')
     const yieldsDenied = shareScopeError(scopeFlags, 'projected_yields')
 
-    // Load the shared production assembly at most once for both panels.
-    let production: Awaited<ReturnType<typeof loadProductionInputs>> | null = null
+    const entities = await loadShareEntities(service, share.org_id, fields)
 
-    let marketingPrices: { records: MarketingPriceRecord[] } | { denied: string }
+    // Load the shared production assembly at most once for both panels.
+    let production: ProductionInputs | null = null
+
+    let marketingPrices:
+      | { records: MarketingPricesPayload['data']; by_entity: MarketingPricesPayload['by_entity'] }
+      | { denied: string }
     if (pricesDenied) {
       marketingPrices = { denied: pricesDenied.error }
     } else {
-      const mi = await loadMarketingInputs(service, share.org_id, year)
-      production = mi.production
-      const allowedCropIds = new Set(
-        mi.production.plantings.filter((p) => fields.has(p.field_id)).map((p) => p.crop_id),
-      )
-      let salesStatus: Array<{ crop_id: string; physical_sales_complete: boolean }> = []
-      const statusResult = await service
-        .from('crop_year_sales_status')
-        .select('crop_id, physical_sales_complete')
-        .eq('org_id', share.org_id)
-        .eq('crop_year', year)
-      if (!statusResult.error) salesStatus = (statusResult.data ?? []) as typeof salesStatus
-      marketingPrices = {
-        records: buildMarketingPriceRecords({
-          rows: mi.rows,
-          cropYear: year,
-          salesStatus,
-          allowedCropIds,
-          asOf: new Date().toISOString(),
-        }),
-      }
+      const payload = await buildMarketingPricesPayload(service, share.org_id, year, fields)
+      production = payload.production
+      marketingPrices = { records: payload.data, by_entity: payload.by_entity }
     }
 
     let projectedYields: { records: ProjectedYieldRecord[] } | { denied: string }
     if (yieldsDenied) {
       projectedYields = { denied: yieldsDenied.error }
     } else {
-      if (!production) production = await loadProductionInputs(service, share.org_id, year)
-      projectedYields = {
-        records: buildProjectedYieldRecords({
-          cropYear: year,
-          plantings: production.plantings,
-          fields: production.fields,
-          crops: production.crops,
-          assumptions: production.assumptions,
-          doubleCropIds: production.doubleCropIds,
-          aggByKey: production.aggByKey,
-          cottonLbsByField: production.cottonLbsByField,
-          excluded: production.excluded,
-          cropCompleteKeys: production.cropCompleteKeys,
-          allowedFieldIds: fields,
-        }),
-      }
+      projectedYields = { records: await buildProjectedYieldsPayload(service, share.org_id, year, fields, production) }
     }
 
     return NextResponse.json({
@@ -144,6 +115,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       label: share.label,
       revoked: share.revoked_at != null,
       field_count: fields.size,
+      entities,
       scopes: {
         yields: share.include_yields,
         projected_prices: scopeFlags.sharesProjectedPrices,

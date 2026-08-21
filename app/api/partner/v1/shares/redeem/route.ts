@@ -1,7 +1,8 @@
 // POST /api/partner/v1/shares/redeem — a landowner's software redeems the
 // one-time share code from their farmer. Mints the bearer token (returned
 // once, stored hashed) and returns the handshake: operation name, landowner
-// name, scopes, shared field count. No auth (the code IS the credential;
+// name, scopes, shared field count, and the farming entities behind the
+// shared fields. No auth (the code IS the credential;
 // codes are high-entropy, hashed at rest, and expire).
 
 import { NextRequest, NextResponse } from 'next/server'
@@ -13,6 +14,7 @@ import {
   mintShareToken,
   errorResponse,
 } from '@/lib/partner-api-server'
+import { loadShareEntities } from '@/lib/partner-marketing-server'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -91,6 +93,7 @@ export async function POST(req: NextRequest) {
       supabase.from('landowners').select('name').eq('id', share.landowner_id).maybeSingle(),
       sharedFieldIds(supabase, share.org_id, share.landowner_id),
     ])
+    const entities = await loadShareEntities(supabase, share.org_id, fieldIds)
 
     return NextResponse.json({
       token,
@@ -107,6 +110,7 @@ export async function POST(req: NextRequest) {
           projected_yields: share.share_projected_yields ?? false,
         },
         field_count: fieldIds.size,
+        entities,
         api_version: 'v1',
       },
     })

@@ -56,7 +56,14 @@ export function checkPartnerAuth(
 // Shared row shapes (narrow views of the DB rows the routes select)
 // ---------------------------------------------------------------------------
 
-export type EntityRow = { id: string; name: string; updated_at?: string | null }
+export type EntityRow = {
+  id: string
+  name: string
+  /** 051: 'farming' (default) or 'marketing_agent'. Optional so callers that
+   *  never loaded the column keep working (treated as farming). */
+  entity_role?: string | null
+  updated_at?: string | null
+}
 export type FarmRow = {
   id: string
   name: string
@@ -151,6 +158,11 @@ export type PartnerField = {
   farm_name: string | null
   /** The farm's FSA number — the closest thing to a farm code. */
   farm_code: string | null
+  /** The field's OPERATING entity — its farm's entity (farms.entity_id): a
+   *  stable id plus the display name; null when the farm has no entity.
+   *  Marketing-agent entities hold paper, not ground, so this is the farming
+   *  entity. */
+  entity_id: string | null
   entity: string | null
   acres: { total: number | null; irrigated: number | null; dryland: number | null }
   updated_at: string | null
@@ -174,6 +186,7 @@ export function buildFieldRecords(args: {
         farm_id: farm?.id ?? null,
         farm_name: farm?.name ?? null,
         farm_code: farm?.fsa_number ?? null,
+        entity_id: entity?.id ?? null,
         entity: entity?.name ?? null,
         acres: {
           total: f.total_acres == null ? null : num(f.total_acres),
@@ -184,6 +197,56 @@ export function buildFieldRecords(args: {
       }
     })
     .sort((a, b) => (a.farm_name ?? '').localeCompare(b.farm_name ?? '') || a.name.localeCompare(b.name))
+}
+
+// ---------------------------------------------------------------------------
+// Entity structure of a share (handshake / redeem / preview)
+// ---------------------------------------------------------------------------
+
+export type PartnerEntity = {
+  id: string
+  name: string
+  /** Fields of the share (or the whole org for a full-org token) whose farm
+   *  belongs to this entity. */
+  field_count: number
+}
+
+/** Operating entity per field id (field → farm → farms.entity_id). Fields on
+ *  a farm with no entity map to null. */
+export function fieldEntityMap(args: {
+  fields: ReadonlyArray<{ id: string; farm_id: string | null }>
+  farms: ReadonlyArray<{ id: string; entity_id: string | null }>
+}): Map<string, string | null> {
+  const farmEntity = new Map(args.farms.map((f) => [f.id, f.entity_id]))
+  const out = new Map<string, string | null>()
+  for (const f of args.fields) out.set(f.id, f.farm_id ? (farmEntity.get(f.farm_id) ?? null) : null)
+  return out
+}
+
+/** The FARMING entities that operate the given fields, with each entity's
+ *  field count, sorted by name. Marketing-agent entities (051) never appear —
+ *  they hold paper, not ground; if a farm is pointed at one, its fields
+ *  simply attribute to no entity here. Entities with zero fields in the set
+ *  are omitted, so a share's list is exactly the entities it exposes. */
+export function farmingEntitiesForFields(args: {
+  /** Null = every field (full-org tokens). */
+  fieldIds: ReadonlySet<string> | null
+  fields: ReadonlyArray<{ id: string; farm_id: string | null }>
+  farms: ReadonlyArray<{ id: string; entity_id: string | null }>
+  entities: readonly EntityRow[]
+}): PartnerEntity[] {
+  const entityById = new Map(args.entities.map((e) => [e.id, e]))
+  const counts = new Map<string, number>()
+  for (const [fieldId, entityId] of fieldEntityMap(args)) {
+    if (args.fieldIds != null && !args.fieldIds.has(fieldId)) continue
+    if (entityId == null) continue
+    const e = entityById.get(entityId)
+    if (!e || e.entity_role === 'marketing_agent') continue
+    counts.set(entityId, (counts.get(entityId) ?? 0) + 1)
+  }
+  return [...counts]
+    .map(([id, field_count]) => ({ id, name: entityById.get(id)!.name, field_count }))
+    .sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +266,8 @@ export type PartnerPlanting = {
   planting_date: string | null
   /** Varieties recorded on this planting (may be empty). */
   varieties: Array<{ variety: string; acres: number }>
+  /** The field's operating entity (see PartnerField.entity_id). */
+  entity_id: string | null
   entity: string | null
   updated_at: string | null
 }
@@ -243,6 +308,7 @@ export function buildPlantingRecords(args: {
         dryland_acres: num(p.dryland_acres),
         planting_date: p.planting_date ?? null,
         varieties: varietiesByPlanting.get(p.id) ?? [],
+        entity_id: entity?.id ?? null,
         entity: entity?.name ?? null,
         updated_at: p.updated_at ?? null,
       }
@@ -257,6 +323,8 @@ export function buildPlantingRecords(args: {
 export type PartnerProduction = {
   field_id: string
   field_name: string | null
+  /** The field's operating entity (see PartnerField.entity_id). */
+  entity_id: string | null
   entity: string | null
   crop: string | null
   crop_year: number
@@ -375,6 +443,7 @@ export function buildProductionRecords(args: {
     return {
       field_id: fieldId,
       field_name: field?.name_or_number ?? null,
+      entity_id: entity?.id ?? null,
       entity: entity?.name ?? null,
       crop: cropName,
       crop_year: args.year,

@@ -17,8 +17,8 @@ import {
   requireYearParam,
   errorResponse,
 } from '@/lib/partner-api-server'
-import { loadProductionInputs } from '@/lib/marketing-inputs'
-import { buildProjectedYieldRecords, shareScopeError } from '@/lib/partner-marketing'
+import { buildProjectedYieldsPayload } from '@/lib/partner-marketing-server'
+import { shareScopeError } from '@/lib/partner-marketing'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -34,24 +34,10 @@ export async function GET(req: NextRequest) {
   if (year instanceof NextResponse) return year
 
   try {
-    const production = await loadProductionInputs(supabase, access.org, year)
     const allowedFieldIds = access.share
       ? await sharedFieldIds(supabase, access.org, access.share.landownerId)
       : null
-
-    const records = buildProjectedYieldRecords({
-      cropYear: year,
-      plantings: production.plantings,
-      fields: production.fields,
-      crops: production.crops,
-      assumptions: production.assumptions,
-      doubleCropIds: production.doubleCropIds,
-      aggByKey: production.aggByKey,
-      cottonLbsByField: production.cottonLbsByField,
-      excluded: production.excluded,
-      cropCompleteKeys: production.cropCompleteKeys,
-      allowedFieldIds,
-    })
+    const records = await buildProjectedYieldsPayload(supabase, access.org, year, allowedFieldIds)
     return NextResponse.json({ data: records })
   } catch (e) {
     return errorResponse(e)

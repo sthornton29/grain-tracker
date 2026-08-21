@@ -56,7 +56,7 @@ export async function GET(req: NextRequest) {
         supabase.from('farms').select('id, name, fsa_number, entity_id, updated_at').eq('org_id', org).order('id').range(f, t),
       ),
       fetchAll<EntityRow>((f, t) =>
-        supabase.from('entities').select('id, name, updated_at').eq('org_id', org).order('id').range(f, t),
+        supabase.from('entities').select('id, name, entity_role, updated_at').eq('org_id', org).order('id').range(f, t),
       ),
       fetchAll<CropRow>((f, t) =>
         supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').eq('org_id', org).order('id').range(f, t),
