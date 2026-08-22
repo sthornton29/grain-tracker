@@ -347,29 +347,33 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     : viewerAllEntitiesLabel(viewer, entities)
 
   function buildExportPayload(): ExportPayload {
-    const cols: ExportPayload['sections'][number]['columns'] = [{ label: 'Farm' }, { label: 'FSA #' }, { label: 'Entity' }]
-    // Per commodity: base acres, the farm's election (PLC / ARC-CO — shown under
-    // each cell on screen), and the projected net payment.
+    // Same column order as the screen: totals first, then per commodity —
+    // base acres, the farm's election (PLC / ARC-CO — shown under each cell
+    // on screen), and the projected net payment.
+    const cols: ExportPayload['sections'][number]['columns'] = [
+      { label: 'Farm' }, { label: 'FSA #' }, { label: 'Entity' },
+      { label: 'Total Govt', align: 'right', format: 'usd0' }, { label: 'Total ARC/PLC', align: 'right', format: 'usd0' }, { label: 'Other', align: 'right', format: 'usd0' },
+    ]
     for (const c of shownCommodities) {
       cols.push({ label: `${c.name} Base Ac`, align: 'right', format: 'int' })
       cols.push({ label: `${c.name} Election` })
       cols.push({ label: `${c.name} Payment`, align: 'right', format: 'usd0' })
     }
-    cols.push({ label: 'Total ARC/PLC', align: 'right', format: 'usd0' }, { label: 'Other', align: 'right', format: 'usd0' }, { label: 'Total Govt', align: 'right', format: 'usd0' })
     const rows: ExportCell[][] = farmRows.map((r) => {
-      const cells: ExportCell[] = [r.farm.name, r.farm.fsa_number ?? '', entityById.get(r.farm.entity_id ?? '')?.name ?? '']
+      const cells: ExportCell[] = [
+        r.farm.name, r.farm.fsa_number ?? '', entityById.get(r.farm.entity_id ?? '')?.name ?? '',
+        Math.round(r.total), Math.round(r.arcPlcTotal), Math.round(r.other),
+      ]
       for (const c of shownCommodities) {
         const p = r.byCommodity.get(c.id)
         cells.push(p ? Math.round(p.baseAcres) : '')
         cells.push(p ? ELECTION_LABEL[p.election] : '')
         cells.push(p ? Math.round(p.result.net) : '')
       }
-      cells.push(Math.round(r.arcPlcTotal), Math.round(r.other), Math.round(r.total))
       return cells
     })
-    const totalRow: ExportCell[] = ['Total', '', '']
+    const totalRow: ExportCell[] = ['Total', '', '', Math.round(totals.grand), Math.round(totals.arcPlc), Math.round(totals.other)]
     for (const c of shownCommodities) { totalRow.push('', ''); totalRow.push(Math.round(totals.byCommodity.get(c.id) ?? 0)) }
-    totalRow.push(Math.round(totals.arcPlc), Math.round(totals.other), Math.round(totals.grand))
     rows.push(totalRow)
 
     const sections: ExportPayload['sections'] = []
@@ -626,20 +630,26 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
             <table className="min-w-full text-sm border-collapse">
               <thead className={theadCls}>
                 <tr>
-                  <th className="text-left px-2 py-1">Farm</th><th className="text-left px-2 py-1">FSA #</th><th className="text-left px-2 py-1">Entity</th>
-                  {shownCommodities.map((c) => <th key={c.id} className="text-right px-2 py-1 whitespace-nowrap">{c.name}</th>)}
+                  {/* Farm stays frozen on horizontal scroll (sticky inside the
+                      section's overflow-x-auto); totals sit before the per-crop
+                      amounts so the number that matters is never scrolled away. */}
+                  <th className="text-left px-2 py-1 sticky left-0 z-20 bg-slate-100 shadow-[1px_0_0_0_#cbd5e1]">Farm</th><th className="text-left px-2 py-1">FSA #</th><th className="text-left px-2 py-1">Entity</th>
+                  <th className="text-right px-2 py-1 whitespace-nowrap">Total Govt</th>
                   <th className="text-right px-2 py-1 whitespace-nowrap">Total ARC/PLC</th>
                   <th className="text-right px-2 py-1 whitespace-nowrap">Other</th>
-                  <th className="text-right px-2 py-1 whitespace-nowrap">Total Govt</th>
+                  {shownCommodities.map((c) => <th key={c.id} className="text-right px-2 py-1 whitespace-nowrap">{c.name}</th>)}
                   <th className="no-print" />
                 </tr>
               </thead>
               <tbody>
                 {farmRows.map((r) => (
                   <tr key={r.farm.id} className="border-t border-slate-100 align-top">
-                    <td className="px-2 py-1 font-semibold">{r.farm.name}</td>
+                    <td className="px-2 py-1 font-semibold sticky left-0 z-10 bg-white shadow-[1px_0_0_0_#cbd5e1]">{r.farm.name}</td>
                     <td className="px-2 py-1 font-mono text-xs">{r.farm.fsa_number ?? ''}</td>
                     <td className="px-2 py-1">{entityById.get(r.farm.entity_id ?? '')?.name ?? '—'}</td>
+                    <td className="px-2 py-1 text-right font-mono font-bold tabular-nums">{usd(r.total)}</td>
+                    <td className="px-2 py-1 text-right font-mono font-semibold tabular-nums">{usd(r.arcPlcTotal)}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.other)}</td>
                     {shownCommodities.map((c) => {
                       const p = r.byCommodity.get(c.id)
                       if (!p) return <td key={c.id} className="px-2 py-1 text-right tabular-nums text-slate-300">—</td>
@@ -658,18 +668,16 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
                         </td>
                       )
                     })}
-                    <td className="px-2 py-1 text-right font-mono font-semibold tabular-nums">{usd(r.arcPlcTotal)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.other)}</td>
-                    <td className="px-2 py-1 text-right font-mono font-bold tabular-nums">{usd(r.total)}</td>
                     <td className="px-2 py-1 no-print"><button onClick={() => toggle(r.farm.id)} className="text-brand-deep text-xs">{expanded.has(r.farm.id) ? 'Hide' : 'Detail'}</button></td>
                   </tr>
                 ))}
                 <tr className={grandTotalRowCls}>
-                  <td className="px-2 py-1" colSpan={3}>Total</td>
-                  {shownCommodities.map((c) => <td key={c.id} className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.byCommodity.get(c.id) ?? 0)}</td>)}
+                  <td className="px-2 py-1 sticky left-0 z-10 bg-slate-100 shadow-[1px_0_0_0_#cbd5e1]">Total</td>
+                  <td className="px-2 py-1" colSpan={2} />
+                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.grand)}</td>
                   <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.arcPlc)}</td>
                   <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.other)}</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.grand)}</td>
+                  {shownCommodities.map((c) => <td key={c.id} className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.byCommodity.get(c.id) ?? 0)}</td>)}
                   <td className="no-print" />
                 </tr>
               </tbody>
