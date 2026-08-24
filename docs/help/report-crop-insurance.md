@@ -1,7 +1,7 @@
 ---
 page_route: /reports/crop-insurance
 title: Crop Insurance Production Report
-updated: 2026-08-05
+updated: 2026-08-24
 keywords: crop insurance, production report, insurance agent, county, practice, irrigated, dryland, certified acres, yield, breakout, APH
 ---
 ## What this page is for
@@ -25,7 +25,7 @@ This report lays out your production the way your crop insurance agent needs it:
 ## How the numbers work
 
 - Production comes from your recorded loads, with split loads credited to the right fields.
-- A field planted **part irrigated and part dryland** needs its production divided between the two practices before it can appear here, because insurance treats the practices separately. The report will list the fields that need this and pause until you either enter the breakout on the Yields page or choose to count the whole field as dryland.
+- A field planted **part irrigated and part dryland** needs its production divided between the two practices before it can appear here, because insurance treats the practices separately. The report will list the fields that need this and pause until you either enter the breakout on the Yields page or choose to count the whole field as dryland. Mixed fields still being harvested are listed separately and never block the report — if one of them is actually finished, tap **Count anyway** next to it to treat its bushels as final.
 - That question is only asked **once a field's harvest is complete**. Fields still being harvested are left out entirely and noted, so a half-picked field never shows a misleading yield.
 - Yield per acre is production divided by certified acres for each county and practice combination.
 

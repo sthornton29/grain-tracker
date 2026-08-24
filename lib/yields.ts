@@ -434,17 +434,25 @@ export const IN_PROGRESS_STALE_DAYS = 5
 
 // Per crop:
 //   * a row with no bushels is "unharvested" → excluded.
-//   * EVERY field whose last load is within IN_PROGRESS_STALE_DAYS is a
-//     potential in-progress candidate — harvest often jumps between fields (or
-//     runs two combines), so "the single most recent field" is not required.
+//   * a harvested field is a potential in-progress candidate until harvest has
+//     visibly MOVED ON from it. The moved-on evidence is specifically:
+//       - a load from a DIFFERENT field dated strictly AFTER this field's last
+//         load (the real "we moved to the next field" signal — an earlier- or
+//         same-dated other-field load proves nothing), OR
+//       - more than IN_PROGRESS_STALE_DAYS of silence since the field's last
+//         load (nobody hauled anything more; its low number is its real yield).
+//     Days are counted calendar-date to calendar-date: load dates are date-only
+//     strings, so subtracting them from the raw clock would silently shorten
+//     the window by the local time of day and flip a field to completed partway
+//     through day 5.
 //     A candidate is "in_progress" → excluded when its yield is more than
 //     `threshold` below the baseline (its partial bushels would understate the
-//     true yield). The baseline is the weighted average of the crop's SETTLED
-//     fields (last load older than the window — clearly finished), so one
-//     partial field can't drag the bar down for another; when every harvested
-//     field is recent, it falls back to the other harvested fields. A field
-//     within `threshold` of the baseline, or whose last load is older than the
-//     stale window, counts as completed.
+//     true yield); a candidate within `threshold` of the baseline counts as
+//     completed — normal-yielding fields are never held back. The baseline is
+//     the weighted average of the crop's moved-on fields (harvest is done with
+//     them), so one partial frontier field can't drag the bar down for
+//     another; when harvest just started and nothing has been moved on from,
+//     it falls back to the other harvested fields.
 // Averages are weighted (Σ dry bu / Σ acres) over the survivors.
 export function analyzeYields(
   rows: readonly YieldInput[],
@@ -472,33 +480,45 @@ export function analyzeYields(
     }
 
     // Only flag in-progress when there are other harvested fields to compare
-    // against — otherwise we have no baseline.
+    // against — otherwise we have no baseline to call a yield "low".
     if (harvested.length >= 2) {
-      // Candidates = every field with a load inside the stale window. Harvest
-      // often jumps between fields (or runs two combines at once), so any
-      // recently-loaded field can still be mid-harvest — not just the newest.
-      const isRecent = (r: YieldInput) => {
-        if (!r.lastLoadDate) return false
-        const days = (now.getTime() - new Date(r.lastLoadDate).getTime()) / 86_400_000
-        return days <= IN_PROGRESS_STALE_DAYS
+      // Calendar-day distance from `now`'s local date to a load's date. Load
+      // dates are date-only strings (UTC midnight when parsed), so measuring
+      // against the raw clock would shorten the stale window by the local time
+      // of day — a field would flip to completed partway through day 5.
+      const pad2 = (n: number) => String(n).padStart(2, '0')
+      const today = Date.parse(`${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`)
+      const daysSince = (date: string) => Math.round((today - Date.parse(date.slice(0, 10))) / 86_400_000)
+      // "Moved on" = the evidence that harvest is DONE with this field: a load
+      // from a DIFFERENT field dated strictly after this field's last load
+      // (the real "we moved to the next field" signal), or 5+ days of silence.
+      // An other-field load dated earlier or the same day proves nothing —
+      // harvest jumps between fields (or runs two combines) within a day.
+      const movedOn = (r: YieldInput) => {
+        if (r.lastLoadDate == null) return true
+        if (daysSince(r.lastLoadDate) > IN_PROGRESS_STALE_DAYS) return true
+        const day = r.lastLoadDate.slice(0, 10)
+        return harvested.some((o) => o.id !== r.id && o.lastLoadDate != null && o.lastLoadDate.slice(0, 10) > day)
       }
-      const recent = harvested.filter(isRecent)
-      // Baseline = the SETTLED fields (last load older than the window — they
-      // have clearly finished), so one partial field can't drag the bar down
-      // for another partial field.
-      let settledBu = 0
-      let settledAc = 0
+      // Baseline = the moved-on fields (harvest is done with them), so one
+      // partial frontier field can't drag the bar down for another.
+      let doneBu = 0
+      let doneAc = 0
+      const frontier: YieldInput[] = []
       for (const r of harvested) {
-        if (isRecent(r)) continue
-        settledBu += r.dryBu
-        settledAc += r.acres
+        if (movedOn(r)) {
+          doneBu += r.dryBu
+          doneAc += r.acres
+        } else {
+          frontier.push(r)
+        }
       }
-      for (const cand of recent) {
-        let bu = settledBu
-        let ac = settledAc
-        if (settledAc <= 0) {
-          // Harvest just started and every field is recent — fall back to the
-          // other harvested fields so there is still a comparison.
+      for (const cand of frontier) {
+        let bu = doneBu
+        let ac = doneAc
+        if (doneAc <= 0) {
+          // Harvest just started and nothing has been moved on from — fall
+          // back to the other harvested fields so there is still a comparison.
           for (const r of harvested) {
             if (r.id === cand.id) continue
             bu += r.dryBu
@@ -565,27 +585,24 @@ export function analyzeYields(
   return { excluded, autoExcluded, averages, progress }
 }
 
-// Crop ids whose harvest is COMPLETE for a crop year: the crop has at least one
-// planting and every planting is harvest-complete (analyzeYields not-excluded, or
-// the crop-level harvest_complete flag via cropCompleteKeys). The Marketing
-// dashboard and Revenue Projections use this to switch a crop from the yield
-// ESTIMATE to ACTUAL harvested production once it's fully in the bin — so a poor
-// harvest stops showing estimate-based revenue/profit. Pure.
-export function cropsWithCompleteHarvest(args: {
-  plantings: ReadonlyArray<{
-    id: string; field_id: string; crop_id: string; season_year: number
-    planted_acres: number | string | null; yield_include_override?: boolean | null
-  }>
+/** The planting shape the season-level helpers below classify. */
+type SeasonPlanting = {
+  id: string; field_id: string; crop_id: string; season_year: number
+  planted_acres: number | string | null; yield_include_override?: boolean | null
+}
+
+// One shared mapping from planting rows + aggregates to the analyzeYields
+// input, so every season-level consumer classifies fields identically.
+function analyzeSeason<T extends SeasonPlanting>(args: {
+  plantings: ReadonlyArray<T>
   aggByKey: Map<string, FieldCropAgg>
   cropYear: number
-  cropCompleteKeys: ReadonlySet<string>
   now?: Date
-}): Set<string> {
-  const { plantings, aggByKey, cropYear, cropCompleteKeys, now } = args
-  const yearPlantings = plantings.filter((p) => p.season_year === cropYear)
+}): { yearPlantings: T[]; analysis: YieldAnalysis } {
+  const yearPlantings = args.plantings.filter((p) => p.season_year === args.cropYear)
   const analysis = analyzeYields(
     yearPlantings.map((p) => {
-      const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
+      const agg = args.aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
       return {
         id: p.id, cropId: p.crop_id, acres: Number(p.planted_acres ?? 0),
         dryBu: agg?.dryBu ?? 0, lastLoadDate: agg?.lastLoadDate ?? null,
@@ -593,8 +610,25 @@ export function cropsWithCompleteHarvest(args: {
         combineComplete: agg?.combine?.harvestComplete,
       }
     }),
-    IN_PROGRESS_THRESHOLD, now,
+    IN_PROGRESS_THRESHOLD, args.now,
   )
+  return { yearPlantings, analysis }
+}
+
+// Crop ids whose harvest is COMPLETE for a crop year: the crop has at least one
+// planting and every planting is harvest-complete (analyzeYields not-excluded, or
+// the crop-level harvest_complete flag via cropCompleteKeys). The Marketing
+// dashboard and Revenue Projections use this to switch a crop from the yield
+// ESTIMATE to ACTUAL harvested production once it's fully in the bin — so a poor
+// harvest stops showing estimate-based revenue/profit. Pure.
+export function cropsWithCompleteHarvest(args: {
+  plantings: ReadonlyArray<SeasonPlanting>
+  aggByKey: Map<string, FieldCropAgg>
+  cropYear: number
+  cropCompleteKeys: ReadonlySet<string>
+  now?: Date
+}): Set<string> {
+  const { yearPlantings, analysis } = analyzeSeason(args)
   const byCrop = new Map<string, typeof yearPlantings>()
   for (const p of yearPlantings) {
     const arr = byCrop.get(p.crop_id)
@@ -603,7 +637,30 @@ export function cropsWithCompleteHarvest(args: {
   }
   const out = new Set<string>()
   for (const [cropId, ps] of byCrop) {
-    if (ps.length > 0 && ps.every((p) => isHarvestComplete(p, analysis.excluded, cropCompleteKeys))) out.add(cropId)
+    if (ps.length > 0 && ps.every((p) => isHarvestComplete(p, analysis.excluded, args.cropCompleteKeys))) out.add(cropId)
+  }
+  return out
+}
+
+// Plantings still effectively in progress (after any "count anyway" override),
+// grouped by crop id — the fields holding a crop back from the estimate→actual
+// switch. Same inputs and classification as cropsWithCompleteHarvest, so a
+// surface that uses one can name the other's holdouts and offer the "count
+// anyway" override on them. Pure.
+export function inProgressPlantingsByCrop<T extends SeasonPlanting>(args: {
+  plantings: ReadonlyArray<T>
+  aggByKey: Map<string, FieldCropAgg>
+  cropYear: number
+  cropCompleteKeys: ReadonlySet<string>
+  now?: Date
+}): Map<string, T[]> {
+  const { yearPlantings, analysis } = analyzeSeason(args)
+  const out = new Map<string, T[]>()
+  for (const p of yearPlantings) {
+    if (harvestStatusOf(p, analysis.excluded, args.cropCompleteKeys) !== 'in_progress') continue
+    const arr = out.get(p.crop_id)
+    if (arr) arr.push(p)
+    else out.set(p.crop_id, [p])
   }
   return out
 }

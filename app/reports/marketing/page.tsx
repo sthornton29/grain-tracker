@@ -9,7 +9,8 @@ import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
 import CropYearSalesStatus from '@/components/crop-year-sales-status'
 import { buildMarketingExport } from '@/lib/marketing-export'
-import { fieldCropAggregates, cropsWithCompleteHarvest, type CombineEntryLike } from '@/lib/yields'
+import { fieldCropAggregates, cropsWithCompleteHarvest, inProgressPlantingsByCrop, type CombineEntryLike } from '@/lib/yields'
+import { roleCanEditYields } from '@/lib/app-role'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { cropToHedgeCommodity } from '@/lib/contracts'
 import { fmtPnl, formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
@@ -170,7 +171,7 @@ export default function MarketingPage() {
   const [entityId, setEntityId] = usePersistentState('marketing:entity', '')
   const [entities, setEntities] = useState<Entity[]>([])
   const [farms, setFarms] = useState<Array<{ id: string; entity_id: string | null }>>([])
-  const [fields, setFields] = useState<Array<{ id: string; farm_id: string | null }>>([])
+  const [fields, setFields] = useState<Array<{ id: string; farm_id: string | null; name_or_number: string | null }>>([])
 
   // Expanded crop sections (crop ids) — persisted per crop so a section the user
   // opened is still open when they come back.
@@ -191,11 +192,11 @@ export default function MarketingPage() {
         supabase.from('futures_positions').select('crop_year'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('id, entity_id'),
-        supabase.from('fields').select('id, farm_id'),
+        supabase.from('fields').select('id, farm_id, name_or_number'),
       ])
       setEntities((en.data as Entity[]) || [])
       setFarms((fa.data as Array<{ id: string; entity_id: string | null }>) || [])
-      setFields((fi.data as Array<{ id: string; farm_id: string | null }>) || [])
+      setFields((fi.data as Array<{ id: string; farm_id: string | null; name_or_number: string | null }>) || [])
       const set = new Set<number>()
       for (const r of (pl.data as Array<{ season_year: number | null }>) ?? []) if (r.season_year != null) set.add(r.season_year)
       for (const r of (ct.data as Array<{ crop_year: number | null }>) ?? []) if (r.crop_year != null) set.add(r.crop_year)
@@ -375,12 +376,40 @@ export default function MarketingPage() {
 
   // Crops fully in the bin (within the scoped fields) → use actual production
   // instead of the estimate.
+  const cropCompleteKeys = useMemo(() => {
+    const s = new Set<string>()
+    for (const a of effAssumptions) if (a.harvest_complete) s.add(`${a.crop_id}|${a.crop_year}`)
+    return s
+  }, [effAssumptions])
   const harvestCompleteIds = useMemo(() => {
     if (year == null) return new Set<string>()
-    const cropCompleteKeys = new Set<string>()
-    for (const a of effAssumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
     return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys })
-  }, [year, effAssumptions, scopedPlantings, aggByKey])
+  }, [year, cropCompleteKeys, scopedPlantings, aggByKey])
+
+  // Fields still reading "in progress" — they hold their crop on the yield
+  // ESTIMATE instead of actual production. Named here (with the same "count
+  // anyway" override the Yields page offers) so the user can see why a crop
+  // hasn't switched to actuals and fix a misjudged field on the spot.
+  const stillHarvesting = useMemo(() => {
+    if (year == null) return new Map<string, PlantingRow[]>()
+    return inProgressPlantingsByCrop({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys })
+  }, [year, cropCompleteKeys, scopedPlantings, aggByKey])
+  const canEditYields = roleCanEditYields(viewer.role)
+  const [countingId, setCountingId] = useState<string | null>(null)
+  const [countErr, setCountErr] = useState<string | null>(null)
+  async function countAnyway(p: PlantingRow, fieldName: string) {
+    if (year == null) return
+    if (!confirm(`Count ${fieldName} as finished? Its current bushels will be treated as the field's final yield. You can undo this from the field's detail on the Yields page.`)) return
+    setCountErr(null)
+    setCountingId(p.id)
+    const { error } = await supabase
+      .from('field_plantings')
+      .update({ yield_include_override: true })
+      .eq('id', p.id)
+    if (!error) await load(year)
+    setCountingId(null)
+    if (error) setCountErr(error.message)
+  }
 
   // Cotton actual production: lbs of lint from the entity's gin receipts —
   // per-bale net weights when the bales are on file, else the receipt total.
@@ -607,6 +636,41 @@ export default function MarketingPage() {
 
       {banner && <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">{banner}</div>}
       <SupersededNotice show={viewerA.superseded} onDismiss={viewerA.dismissSuperseded} />
+
+      {/* Fields still reading "in progress" keep their crop on the yield
+          estimate. Name them, with the same "count anyway" override the
+          Yields page offers, so a misjudged field can be fixed right here. */}
+      {year != null && !loading && stillHarvesting.size > 0 && (
+        <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print space-y-1">
+          {countErr && <p className="text-red-700">{countErr}</p>}
+          {[...stillHarvesting.entries()].map(([cropId, ps]) => {
+            const cropName = cropById.get(cropId)?.name ?? '—'
+            return (
+              <div key={cropId}>
+                <span className="font-semibold">{cropName}</span> still shows fields being harvested, so it
+                uses your yield estimate instead of actual production:{' '}
+                {ps.map((p, i) => {
+                  const fieldName = fields.find((f) => f.id === p.field_id)?.name_or_number ?? 'this field'
+                  return (
+                    <span key={p.id}>
+                      {i > 0 && ', '}
+                      <span className="font-medium">{fieldName}</span>
+                      {canEditYields && (
+                        <button
+                          type="button"
+                          disabled={countingId === p.id}
+                          onClick={() => countAnyway(p, fieldName)}
+                          className="ml-1.5 text-brand-deep underline disabled:opacity-50"
+                        >Count anyway</button>
+                      )}
+                    </span>
+                  )
+                })}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {year == null ? (
         <div className="bg-white rounded-xl shadow p-8 text-center text-slate-500">

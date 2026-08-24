@@ -1531,8 +1531,18 @@ export default function YieldsPage() {
                                   )}
                                 </span>
                               ) : exclusion === 'in_progress' ? (
-                                <span className="text-xs rounded px-2 py-0.5 bg-amber-100 text-amber-800">
-                                  in progress
+                                <span className="inline-flex items-center gap-2">
+                                  <span className="text-xs rounded px-2 py-0.5 bg-amber-100 text-amber-800">
+                                    in progress
+                                  </span>
+                                  {canEdit && (
+                                    <button
+                                      type="button"
+                                      disabled={savingOverride}
+                                      onClick={() => setInclusionOverride(p, true)}
+                                      className="text-brand-deep text-xs underline disabled:opacity-50 no-print"
+                                    >Count anyway</button>
+                                  )}
                                 </span>
                               ) : undefined
                             }

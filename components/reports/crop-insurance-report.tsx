@@ -21,6 +21,7 @@ import { analyzeYields, fieldCropAggregates, harvestStatusOf, withLoadBreakouts,
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
+import { roleCanEditYields } from '@/lib/app-role'
 import { useViewerAssumptions } from '@/lib/use-viewer-assumptions'
 import { resolveCropAssumptions } from '@/lib/viewer-assumptions'
 import { SupersededNotice } from '@/components/viewer-scenario'
@@ -161,6 +162,28 @@ export default function CropInsuranceReport() {
   useEffect(() => {
     setAcceptedAsDryland(false)
   }, [cropYear, entityId, cropIds])
+
+  // "Count anyway" on a still-harvesting field — the same persisted override
+  // the Yields page sets (field_plantings.yield_include_override), so the
+  // field counts as finished everywhere. Only the plantings are refetched.
+  const [overrideSavingId, setOverrideSavingId] = useState<string | null>(null)
+  const [overrideErr, setOverrideErr] = useState<string | null>(null)
+  async function countAnyway(p: FieldPlanting) {
+    const name = fieldById.get(p.field_id)?.name_or_number ?? 'this field'
+    if (!confirm(`Count ${name} as finished? Its current bushels will be treated as the field's final yield. You can undo this from the field's detail on the Yields page.`)) return
+    setOverrideErr(null)
+    setOverrideSavingId(p.id)
+    const { error } = await supabase
+      .from('field_plantings')
+      .update({ yield_include_override: true })
+      .eq('id', p.id)
+    if (!error) {
+      const pl = await supabase.from('field_plantings').select('*')
+      setPlantings((pl.data as FieldPlanting[]) || [])
+    }
+    setOverrideSavingId(null)
+    if (error) setOverrideErr(error.message)
+  }
 
   // Viewer role (052): grants prune the entity dropdown and name the export's
   // entity label; the viewer's private overrides layer over crop_assumptions.
@@ -711,8 +734,10 @@ export default function CropInsuranceReport() {
           <p className="text-sm text-slate-600">
             These have both irrigated and dryland acres but harvest isn&apos;t complete, so they don&apos;t
             need a breakout yet and won&apos;t block the report. Their production rolls into dryland for now;
-            enter the breakout on the Yields page once harvest finishes.
+            enter the breakout on the Yields page once harvest finishes. If a field here is actually
+            done, use Count anyway to treat its bushels as final.
           </p>
+          {overrideErr && <p className="text-sm text-red-700">{overrideErr}</p>}
           <ul className="text-sm text-slate-600 list-disc ml-6">
             {mixedStillHarvesting.map((p) => {
               const fld = fieldById.get(p.field_id)
@@ -721,6 +746,14 @@ export default function CropInsuranceReport() {
                 <li key={p.id}>
                   {fld?.name_or_number ?? '—'} — {crop?.name ?? '—'} (
                   {Number(p.irrigated_acres)} irr / {Number(p.dryland_acres)} dry ac)
+                  {roleCanEditYields(viewer.role) && (
+                    <button
+                      type="button"
+                      disabled={overrideSavingId === p.id}
+                      onClick={() => countAnyway(p)}
+                      className="ml-2 text-brand-deep underline disabled:opacity-50"
+                    >Count anyway</button>
+                  )}
                 </li>
               )
             })}
