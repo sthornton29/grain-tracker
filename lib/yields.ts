@@ -427,32 +427,41 @@ export type YieldAnalysis = {
 // treated as still-being-harvested (in progress) while its loads are recent.
 export const IN_PROGRESS_THRESHOLD = 0.15
 
-// ...but only while harvest is recent. Once the last load is older than this,
-// the field has clearly finished — its low number is its real yield, so it
-// moves to completed instead of sitting at "in progress" forever.
-export const IN_PROGRESS_STALE_DAYS = 5
+// ...until the field has sat quiet this long. This is a deliberately LONG,
+// conservative "clearly not coming back" fallback: operators routinely start a
+// field, move to another one for days, and come back to finish — so brief gaps
+// (and loads hitting other fields meanwhile) must never complete a low field.
+// Only after this much silence does its low number read as its real yield.
+export const IN_PROGRESS_STALE_DAYS = 10
 
 // Per crop:
 //   * a row with no bushels is "unharvested" → excluded.
-//   * a harvested field is a potential in-progress candidate until harvest has
-//     visibly MOVED ON from it. The moved-on evidence is specifically:
-//       - a load from a DIFFERENT field dated strictly AFTER this field's last
-//         load (the real "we moved to the next field" signal — an earlier- or
-//         same-dated other-field load proves nothing), OR
-//       - more than IN_PROGRESS_STALE_DAYS of silence since the field's last
-//         load (nobody hauled anything more; its low number is its real yield).
+//   * LOW YIELD is the primary in-progress signal, and it PERSISTS. A field
+//     whose yield is more than `threshold` below the crop's baseline is
+//     "in_progress" → excluded (its partial bushels would understate the true
+//     yield). A load from ANOTHER field dated later is NOT completion
+//     evidence — operators routinely start a field, move off to others for
+//     days, and come back to finish it. A low field leaves in-progress only
+//     via positive evidence harvest truly ended at that number:
+//       - the user's explicit "count anyway" override (always offered), OR
+//       - the field's combine-entry harvest_complete / the crop-level
+//         harvest-complete flag (applied by harvestStatusOf's callers), OR
+//       - more than IN_PROGRESS_STALE_DAYS (10) of silence since the field's
+//         last load — a long, conservative "clearly not coming back" fallback.
+//     A field at/above the baseline (within `threshold`) is complete as usual —
+//     the low-yield gate is what separates "partially harvested" from "done",
+//     and a normal-yielding field is never held in-progress by this logic.
+//     NOTE: a field that genuinely finished at a terrible number (a real crop
+//     failure) is indistinguishable from one abandoned mid-harvest — "count
+//     anyway" is the intended path to include it before the quiet window runs.
 //     Days are counted calendar-date to calendar-date: load dates are date-only
 //     strings, so subtracting them from the raw clock would silently shorten
 //     the window by the local time of day and flip a field to completed partway
-//     through day 5.
-//     A candidate is "in_progress" → excluded when its yield is more than
-//     `threshold` below the baseline (its partial bushels would understate the
-//     true yield); a candidate within `threshold` of the baseline counts as
-//     completed — normal-yielding fields are never held back. The baseline is
-//     the weighted average of the crop's moved-on fields (harvest is done with
-//     them), so one partial frontier field can't drag the bar down for
-//     another; when harvest just started and nothing has been moved on from,
-//     it falls back to the other harvested fields.
+//     through the last day.
+//     The baseline is the weighted average of the crop's SETTLED fields (quiet
+//     past the window — clearly finished), so one partial field can't drag the
+//     bar down for another; while every harvested field is still active, it
+//     falls back to the other harvested fields.
 // Averages are weighted (Σ dry bu / Σ acres) over the survivors.
 export function analyzeYields(
   rows: readonly YieldInput[],
@@ -485,40 +494,35 @@ export function analyzeYields(
       // Calendar-day distance from `now`'s local date to a load's date. Load
       // dates are date-only strings (UTC midnight when parsed), so measuring
       // against the raw clock would shorten the stale window by the local time
-      // of day — a field would flip to completed partway through day 5.
+      // of day — a field would flip to completed partway through the last day.
       const pad2 = (n: number) => String(n).padStart(2, '0')
       const today = Date.parse(`${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`)
       const daysSince = (date: string) => Math.round((today - Date.parse(date.slice(0, 10))) / 86_400_000)
-      // "Moved on" = the evidence that harvest is DONE with this field: a load
-      // from a DIFFERENT field dated strictly after this field's last load
-      // (the real "we moved to the next field" signal), or 5+ days of silence.
-      // An other-field load dated earlier or the same day proves nothing —
-      // harvest jumps between fields (or runs two combines) within a day.
-      const movedOn = (r: YieldInput) => {
-        if (r.lastLoadDate == null) return true
-        if (daysSince(r.lastLoadDate) > IN_PROGRESS_STALE_DAYS) return true
-        const day = r.lastLoadDate.slice(0, 10)
-        return harvested.some((o) => o.id !== r.id && o.lastLoadDate != null && o.lastLoadDate.slice(0, 10) > day)
-      }
-      // Baseline = the moved-on fields (harvest is done with them), so one
-      // partial frontier field can't drag the bar down for another.
-      let doneBu = 0
-      let doneAc = 0
-      const frontier: YieldInput[] = []
+      // Settled = quiet past the long window ("clearly not coming back").
+      // Deliberately NOT keyed on other fields' load dates: a later-dated load
+      // from another field is not proof this one finished — the operator may
+      // simply be working elsewhere before returning to finish it.
+      const isSettled = (r: YieldInput) =>
+        r.lastLoadDate == null || daysSince(r.lastLoadDate) > IN_PROGRESS_STALE_DAYS
+      // Baseline = the settled fields, so one partial field can't drag the bar
+      // down for another. Every not-yet-settled field is a candidate.
+      let settledBu = 0
+      let settledAc = 0
+      const active: YieldInput[] = []
       for (const r of harvested) {
-        if (movedOn(r)) {
-          doneBu += r.dryBu
-          doneAc += r.acres
+        if (isSettled(r)) {
+          settledBu += r.dryBu
+          settledAc += r.acres
         } else {
-          frontier.push(r)
+          active.push(r)
         }
       }
-      for (const cand of frontier) {
-        let bu = doneBu
-        let ac = doneAc
-        if (doneAc <= 0) {
-          // Harvest just started and nothing has been moved on from — fall
-          // back to the other harvested fields so there is still a comparison.
+      for (const cand of active) {
+        let bu = settledBu
+        let ac = settledAc
+        if (settledAc <= 0) {
+          // Harvest just started and nothing has settled yet — fall back to
+          // the other harvested fields so there is still a comparison.
           for (const r of harvested) {
             if (r.id === cand.id) continue
             bu += r.dryBu
