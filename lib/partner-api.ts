@@ -11,6 +11,7 @@
 import { computeBushels } from '@/lib/shrink'
 import { isCottonCrop } from '@/lib/marketing'
 import { contractUnit, quantityFor } from '@/lib/hedging'
+import { analyzeYields, harvestStatusOf, type HarvestStatus } from '@/lib/yields'
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -95,6 +96,9 @@ export type PlantingRow = {
   irrigated_acres: number | string | null
   dryland_acres: number | string | null
   planting_date?: string | null
+  /** The "count anyway" override (023) — feeds the harvest_status
+   *  classification so the API mirrors the Yields page exactly. */
+  yield_include_override?: boolean | null
   updated_at?: string | null
 }
 export type PlantingVarietyRow = {
@@ -132,7 +136,18 @@ export type CombineEntryRow = {
   crop_id: string
   crop_year: number
   adjusted_total_bushels: number | string
+  /** The entry's explicit done-marker (062): true forces the field complete,
+   *  false forces in_progress — same as the Yields page. */
+  harvest_complete?: boolean | null
+  entry_date?: string | null
   updated_at?: string | null
+}
+/** crop_assumptions subset: the crop-level harvest-complete flag that forces
+ *  every field of the crop × year to classify complete. */
+export type CropAssumptionStatusRow = {
+  crop_id: string
+  crop_year: number
+  harvest_complete: boolean | null
 }
 
 const num = (v: number | string | null | undefined): number => {
@@ -329,10 +344,16 @@ export type PartnerProduction = {
   crop: string | null
   crop_year: number
   planted_acres: number | null
-  /** Planted acres once the field has produced anything, else 0 — Grain
-   *  Tracker records production per load, not a per-field harvested-acre
-   *  figure, so "harvested" is inferred from production > 0. */
+  /** Follows harvest_status: equal to planted_acres when the field classifies
+   *  complete, else 0 — Grain Tracker records production per load, not a
+   *  per-field harvested-acre figure, so it cannot know acres-harvested-to-
+   *  date for an in-progress field. Consumers must not divide by this until
+   *  harvest_status is 'complete'. Null when no planting row exists. */
   harvested_acres: number | null
+  /** The same classification the Yields page shows (harvestStatusOf /
+   *  analyzeYields, incl. the crop-level harvest-complete flags, the
+   *  combine-entry harvest_complete flags, and the "count anyway" override). */
+  harvest_status: HarvestStatus
   production_units: number
   unit: 'bu' | 'lbs'
   updated_at: string | null
@@ -351,12 +372,17 @@ export function buildProductionRecords(args: {
   splits: readonly SplitRow[]
   ginReceipts: readonly GinReceiptRow[]
   combineEntries?: readonly CombineEntryRow[] | null
+  /** Crop-level harvest-complete flags — forces every field of the crop
+   *  complete, exactly like the Yields page. */
+  cropAssumptions?: readonly CropAssumptionStatusRow[] | null
   fields: readonly FieldRow[]
   farms: readonly FarmRow[]
   entities: readonly EntityRow[]
   crops: readonly CropRow[]
   year: number
   crop?: string | null
+  /** For deterministic tests only — analyzeYields' reference clock. */
+  now?: Date
 }): PartnerProduction[] {
   const fieldById = new Map(args.fields.map((f) => [f.id, f]))
   const farmById = new Map(args.farms.map((f) => [f.id, f]))
@@ -364,16 +390,24 @@ export function buildProductionRecords(args: {
   const cropById = new Map(args.crops.map((c) => [c.id, c]))
   const loadById = new Map(args.loads.map((l) => [l.id, l]))
 
-  // field|crop → { units, updated_at }
-  const agg = new Map<string, { units: number; updatedAt: string | null }>()
-  const bump = (fieldId: string, cropId: string, units: number, updatedAt: string | null | undefined) => {
+  // field|crop → { units, updated_at, last contributing load date }. The date
+  // feeds the same in-progress classification the Yields page runs.
+  const agg = new Map<string, { units: number; updatedAt: string | null; lastDate: string | null }>()
+  const bump = (
+    fieldId: string,
+    cropId: string,
+    units: number,
+    updatedAt: string | null | undefined,
+    date: string | null | undefined,
+  ) => {
     const key = `${fieldId}|${cropId}`
     const cur = agg.get(key)
     if (cur) {
       cur.units += units
       cur.updatedAt = maxIso(cur.updatedAt, updatedAt)
+      if (date != null && (cur.lastDate == null || date > cur.lastDate)) cur.lastDate = date
     } else {
-      agg.set(key, { units, updatedAt: updatedAt ?? null })
+      agg.set(key, { units, updatedAt: updatedAt ?? null, lastDate: date ?? null })
     }
   }
 
@@ -394,17 +428,17 @@ export function buildProductionRecords(args: {
       dryBushelsOverride: l.dry_bushels_override,
     })
     if (!dryBushels) continue
-    bump(l.from_field_id, l.crop_id, dryBushels, l.updated_at)
+    bump(l.from_field_id, l.crop_id, dryBushels, l.updated_at, l.date)
   }
   for (const s of args.splits) {
     const parent = loadById.get(s.load_id)
     if (!parent || parent.crop_year !== args.year || s.dry_bushels == null) continue
     if (combineFields.has(`${s.field_id}|${s.crop_id}`)) continue
-    bump(s.field_id, s.crop_id, num(s.dry_bushels), parent.updated_at)
+    bump(s.field_id, s.crop_id, num(s.dry_bushels), parent.updated_at, parent.date)
   }
   for (const e of yearEntries) {
     const bu = num(e.adjusted_total_bushels)
-    if (bu) bump(e.field_id, e.crop_id, bu, e.updated_at)
+    if (bu) bump(e.field_id, e.crop_id, bu, e.updated_at, e.entry_date)
   }
 
   // Cotton lint lbs per field from gin receipts → the field's cotton planting.
@@ -420,6 +454,43 @@ export function buildProductionRecords(args: {
     }
   }
 
+  // --- Harvest status: the SAME classification the Yields page runs ---------
+  // analyzeYields over the year's plantings (dry bushels + last load date from
+  // the aggregation above, which matches fieldCropAggregates' math), with the
+  // "count anyway" override, the combine-entry harvest_complete flag, and the
+  // crop-level harvest-complete keys — so a partner sees exactly what the
+  // Yields page shows. Cotton plantings run through the same grain-load
+  // classification the Yields page uses (their lint lbs come from gin
+  // receipts), so they typically read unharvested/in-progress until the
+  // crop-level harvest-complete flag is set.
+  const cropCompleteKeys = new Set<string>()
+  for (const a of args.cropAssumptions ?? []) {
+    if (a.harvest_complete && a.crop_year === args.year) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
+  }
+  const combineCompleteByKey = new Map<string, boolean>()
+  for (const e of yearEntries) {
+    if (typeof e.harvest_complete === 'boolean') combineCompleteByKey.set(`${e.field_id}|${e.crop_id}`, e.harvest_complete)
+  }
+  const yearPlantings = args.plantings.filter((p) => p.season_year === args.year)
+  const analysis = analyzeYields(
+    yearPlantings.map((p) => {
+      const a = agg.get(`${p.field_id}|${p.crop_id}`)
+      return {
+        id: p.id,
+        cropId: p.crop_id,
+        acres: num(p.planted_acres),
+        dryBu: a?.units ?? 0,
+        lastLoadDate: a?.lastDate ?? null,
+        override: p.yield_include_override ?? null,
+        combineComplete: combineCompleteByKey.get(`${p.field_id}|${p.crop_id}`),
+      }
+    }),
+    undefined,
+    args.now ?? new Date(),
+  )
+  const statusOf = (p: PlantingRow): HarvestStatus =>
+    harvestStatusOf({ id: p.id, crop_id: p.crop_id, season_year: p.season_year }, analysis.excluded, cropCompleteKeys)
+
   const cropFilter = (name: string | null): boolean =>
     !args.crop || (name ?? '').toLowerCase() === args.crop.toLowerCase()
 
@@ -431,6 +502,7 @@ export function buildProductionRecords(args: {
     cropId: string,
     plantedAcres: number | null,
     plantingUpdatedAt: string | null | undefined,
+    status: HarvestStatus,
   ): PartnerProduction | null => {
     const field = fieldById.get(fieldId)
     const farm = field?.farm_id ? farmById.get(field.farm_id) : undefined
@@ -448,24 +520,30 @@ export function buildProductionRecords(args: {
       crop: cropName,
       crop_year: args.year,
       planted_acres: plantedAcres,
-      harvested_acres: plantedAcres == null ? null : units > 0 ? plantedAcres : 0,
+      // Follows the status: complete → planted acres, otherwise 0 — the app
+      // cannot know acres-harvested-to-date mid-field. production_units still
+      // flows on in-progress rows so partners can show progress.
+      harvested_acres: plantedAcres == null ? null : status === 'complete' ? plantedAcres : 0,
+      harvest_status: status,
       production_units: Math.round(units * 100) / 100,
       unit: cotton ? 'lbs' : 'bu',
       updated_at: maxIso(a?.updatedAt, plantingUpdatedAt),
     }
   }
 
-  for (const p of args.plantings) {
-    if (p.season_year !== args.year) continue
+  for (const p of yearPlantings) {
     covered.add(`${p.field_id}|${p.crop_id}`)
-    const row = rowFor(p.field_id, p.crop_id, num(p.planted_acres), p.updated_at)
+    const row = rowFor(p.field_id, p.crop_id, num(p.planted_acres), p.updated_at, statusOf(p))
     if (row) out.push(row)
   }
-  // Production with no planting row (data-entry gap) still reports — acres null.
+  // Production with no planting row (data-entry gap) still reports — acres
+  // null. There is no planting to classify (the Yields page shows no such
+  // row), so the recorded production reads complete; harvested_acres stays
+  // null, so nothing divides by it either way.
   for (const key of agg.keys()) {
     if (covered.has(key)) continue
     const [fieldId, cropId] = key.split('|')
-    const row = rowFor(fieldId, cropId, null, null)
+    const row = rowFor(fieldId, cropId, null, null, 'complete')
     if (row) out.push(row)
   }
 

@@ -297,12 +297,27 @@ describe('buildProductionRecords', () => {
     const corn = out.find((r) => r.crop === 'Corn')!
     expect(corn).toMatchObject({
       field_id: 'f1', entity: 'Prairie Farms LLC', crop_year: 2026,
-      planted_acres: 80, harvested_acres: 80, production_units: 1000, unit: 'bu',
+      planted_acres: 80, harvested_acres: 80, harvest_status: 'complete',
+      production_units: 1000, unit: 'bu',
     })
     // updated_at = newest of planting + contributing loads.
     expect(corn.updated_at).toBe('2026-09-15T18:00:00Z')
+    // Cotton classifies through the same grain-load analysis the Yields page
+    // runs (its lint lbs come from gin receipts), so with no loads and no
+    // crop-level harvest-complete flag it reads unharvested — the lint still
+    // flows, but harvested_acres follows the status.
     const cotton = out.find((r) => r.crop === 'Cotton')!
-    expect(cotton).toMatchObject({ field_id: 'f2', production_units: 48000, unit: 'lbs' })
+    expect(cotton).toMatchObject({
+      field_id: 'f2', production_units: 48000, unit: 'lbs',
+      harvest_status: 'unharvested', harvested_acres: 0,
+    })
+    // The crop-level flag completes it, exactly like the Yields page.
+    const done = buildProductionRecords({
+      ...args, year: 2026,
+      cropAssumptions: [{ crop_id: 'c-cotton', crop_year: 2026, harvest_complete: true }],
+    }).find((r) => r.crop === 'Cotton')!
+    expect(done.harvest_status).toBe('complete')
+    expect(done.harvested_acres).toBe(120)
   })
 
   it('excludes bin-sourced loads and other years', () => {
@@ -316,6 +331,7 @@ describe('buildProductionRecords', () => {
     const corn = out.find((r) => r.crop === 'Corn')!
     expect(corn.production_units).toBe(0)
     expect(corn.harvested_acres).toBe(0)
+    expect(corn.harvest_status).toBe('unharvested')
     expect(corn.planted_acres).toBe(80)
   })
 
@@ -340,6 +356,117 @@ describe('buildProductionRecords', () => {
     })
     const corn = out.find((r) => r.crop === 'Corn')!
     expect(corn.production_units).toBe(950)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// /production — harvest_status (the same classification the Yields page shows)
+// ---------------------------------------------------------------------------
+
+describe('buildProductionRecords — harvest_status', () => {
+  const NOW = new Date('2026-09-20T12:00:00Z')
+  const pf = (id: string): FieldRow => ({
+    id, farm_id: 'fa1', name_or_number: id, total_acres: 100, irrigated_acres: 0, dryland_acres: 100,
+  })
+  const pl = (id: string, field_id: string, override: boolean | null = null): PlantingRow => ({
+    id, field_id, crop_id: 'c-corn', season_year: 2026,
+    planted_acres: 100, irrigated_acres: 0, dryland_acres: 100,
+    yield_include_override: override,
+  })
+  const ld = (id: string, field_id: string, date: string, bu: number): LoadRow => ({
+    id, date, net_weight: null, moisture: null, crop_id: 'c-corn', crop_year: 2026,
+    dry_bushels_override: bu, from_type: 'field', from_field_id: field_id,
+    updated_at: `${date}T18:00:00Z`,
+  })
+  const base = {
+    splits: [] as SplitRow[], ginReceipts: [] as GinReceiptRow[],
+    fields: [pf('fx'), pf('fy'), pf('fz')], farms, entities, crops,
+    year: 2026, now: NOW,
+  }
+  const rowOf = (out: ReturnType<typeof buildProductionRecords>, fieldId: string) =>
+    out.find((r) => r.field_id === fieldId)!
+
+  it('a low, recently-loaded field is in_progress — a later-dated other-field load does NOT complete it', () => {
+    // fx settled at 200 bu/ac (load 15 days before NOW); fy low at 50 bu/ac
+    // with a recent load; fz loaded AFTER fy (the Parker case). fy stays in
+    // progress — harvested_acres 0, but production_units still flow so the
+    // partner can show progress.
+    const out = buildProductionRecords({
+      ...base,
+      plantings: [pl('pA', 'fx'), pl('pB', 'fy'), pl('pC', 'fz')],
+      loads: [ld('l1', 'fx', '2026-09-05', 20000), ld('l2', 'fy', '2026-09-17', 5000), ld('l3', 'fz', '2026-09-19', 18000)],
+    })
+    expect(rowOf(out, 'fy')).toMatchObject({
+      harvest_status: 'in_progress', harvested_acres: 0, production_units: 5000, planted_acres: 100,
+    })
+    expect(rowOf(out, 'fx')).toMatchObject({ harvest_status: 'complete', harvested_acres: 100 })
+    expect(rowOf(out, 'fz')).toMatchObject({ harvest_status: 'complete', harvested_acres: 100 })
+  })
+
+  it('the "count anyway" override completes the field (yield_include_override)', () => {
+    const out = buildProductionRecords({
+      ...base,
+      plantings: [pl('pA', 'fx'), pl('pB', 'fy', true)],
+      loads: [ld('l1', 'fx', '2026-09-05', 20000), ld('l2', 'fy', '2026-09-17', 5000)],
+    })
+    expect(rowOf(out, 'fy')).toMatchObject({ harvest_status: 'complete', harvested_acres: 100 })
+  })
+
+  it('the crop-level harvest-complete flag completes every field of the crop', () => {
+    const out = buildProductionRecords({
+      ...base,
+      plantings: [pl('pA', 'fx'), pl('pB', 'fy')],
+      loads: [ld('l1', 'fx', '2026-09-05', 20000), ld('l2', 'fy', '2026-09-17', 5000)],
+      cropAssumptions: [{ crop_id: 'c-corn', crop_year: 2026, harvest_complete: true }],
+    })
+    expect(rowOf(out, 'fy')).toMatchObject({ harvest_status: 'complete', harvested_acres: 100 })
+  })
+
+  it('the combine-entry harvest_complete flag forces the classification both ways', () => {
+    // false → still harvesting even though the numbers look settled…
+    const stillGoing = buildProductionRecords({
+      ...base,
+      plantings: [pl('pA', 'fx')],
+      loads: [],
+      combineEntries: [{
+        field_id: 'fx', crop_id: 'c-corn', crop_year: 2026, adjusted_total_bushels: 20000,
+        harvest_complete: false, entry_date: '2026-09-05', updated_at: '2026-09-05T18:00:00Z',
+      }],
+    })
+    expect(rowOf(stillGoing, 'fx')).toMatchObject({
+      harvest_status: 'in_progress', harvested_acres: 0, production_units: 20000,
+    })
+    // …true → complete even at a low, recent number.
+    const done = buildProductionRecords({
+      ...base,
+      plantings: [pl('pA', 'fx'), pl('pB', 'fy')],
+      loads: [ld('l1', 'fx', '2026-09-05', 20000)],
+      combineEntries: [{
+        field_id: 'fy', crop_id: 'c-corn', crop_year: 2026, adjusted_total_bushels: 5000,
+        harvest_complete: true, entry_date: '2026-09-18', updated_at: '2026-09-18T18:00:00Z',
+      }],
+    })
+    expect(rowOf(done, 'fy')).toMatchObject({ harvest_status: 'complete', harvested_acres: 100 })
+  })
+
+  it('a low field completes on its own after the long quiet window (10+ days)', () => {
+    const out = buildProductionRecords({
+      ...base,
+      plantings: [pl('pA', 'fx'), pl('pB', 'fy')],
+      loads: [ld('l1', 'fx', '2026-09-05', 20000), ld('l2', 'fy', '2026-09-09', 5000)], // 11 quiet days
+    })
+    expect(rowOf(out, 'fy')).toMatchObject({ harvest_status: 'complete', harvested_acres: 100 })
+  })
+
+  it('production with no planting row reports complete with null acres', () => {
+    const out = buildProductionRecords({
+      ...base,
+      plantings: [],
+      loads: [ld('l1', 'fz', '2026-09-15', 1200)],
+    })
+    expect(rowOf(out, 'fz')).toMatchObject({
+      harvest_status: 'complete', harvested_acres: null, planted_acres: null, production_units: 1200,
+    })
   })
 })
 

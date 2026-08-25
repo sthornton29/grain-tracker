@@ -15,6 +15,7 @@ import {
 import {
   buildProductionRecords,
   type CombineEntryRow,
+  type CropAssumptionStatusRow,
   type CropRow,
   type EntityRow,
   type FarmRow,
@@ -43,7 +44,7 @@ export async function GET(req: NextRequest) {
       fetchAll<PlantingRow>((f, t) =>
         supabase
           .from('field_plantings')
-          .select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, updated_at')
+          .select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, yield_include_override, updated_at')
           .eq('org_id', org)
           .eq('season_year', year)
           .order('id')
@@ -88,18 +89,29 @@ export async function GET(req: NextRequest) {
         supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').eq('org_id', org).order('id').range(f, t),
       ),
     ])
-    // Combine entries (062) net against weighed loads. A missing table (062
-    // not applied yet) degrades to none rather than failing the endpoint.
+    // Combine entries (062) net against weighed loads and carry the explicit
+    // harvest_complete done-marker. A missing table (062 not applied yet)
+    // degrades to none rather than failing the endpoint.
     let combineEntries: CombineEntryRow[] = []
     const combineResult = await supabase
       .from('combine_yield_entries')
-      .select('field_id, crop_id, crop_year, adjusted_total_bushels, updated_at')
+      .select('field_id, crop_id, crop_year, adjusted_total_bushels, harvest_complete, entry_date, updated_at')
       .eq('org_id', org)
       .eq('crop_year', year)
     if (!combineResult.error) combineEntries = (combineResult.data ?? []) as CombineEntryRow[]
 
+    // Crop-level harvest-complete flags — force every field of the crop × year
+    // to classify complete, exactly like the Yields page.
+    let cropAssumptions: CropAssumptionStatusRow[] = []
+    const assumptionResult = await supabase
+      .from('crop_assumptions')
+      .select('crop_id, crop_year, harvest_complete')
+      .eq('org_id', org)
+      .eq('crop_year', year)
+    if (!assumptionResult.error) cropAssumptions = (assumptionResult.data ?? []) as CropAssumptionStatusRow[]
+
     let records: Array<Record<string, unknown>> = buildProductionRecords({
-      plantings, loads, splits, ginReceipts, combineEntries, fields, farms, entities, crops, year, crop,
+      plantings, loads, splits, ginReceipts, combineEntries, cropAssumptions, fields, farms, entities, crops, year, crop,
     })
     if (access.share) {
       const allowed = await sharedFieldIds(supabase, org, access.share.landownerId)

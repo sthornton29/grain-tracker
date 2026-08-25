@@ -165,11 +165,28 @@ recorded them.
 
 ### GET /production?year=YYYY[&crop=Name]
 
-Per field and crop production. "Harvested" is inferred from recorded
-production (loads / gin receipts / combine entries); `harvested_acres`
-equals planted acres once anything is produced, else 0. Harvest status is
-always shared; on a share WITHOUT the yields scope, `production_units` is
-returned as null (quantities withheld, harvest progress intact).
+Per field and crop production. Each row carries `harvest_status` —
+`"complete" | "in_progress" | "unharvested"` — sourced from the same
+classification the tenant's Yields page shows (the low-yield in-progress
+heuristic plus the crop-level harvest-complete flags, the combine-entry
+harvest_complete flags, and the farmer's explicit "count anyway"
+overrides), so a partner sees exactly what the farmer sees.
+
+`harvested_acres` follows the status: equal to `planted_acres` when
+`harvest_status` is `"complete"`, else 0 (Grain Tracker records production
+per load, not a per-field harvested-acre figure, so it cannot know
+acres-harvested-to-date for an in-progress field). **Do not divide by
+`harvested_acres` until `harvest_status` is `"complete"`.**
+`production_units` still flows on in-progress rows so partners can show
+harvest progress. Rows with production but no planting record report
+`"complete"` with null acres. Cotton fields classify through the same
+analysis (their lint lbs come from gin receipts), so they typically read
+unharvested until the farmer marks the crop's harvest complete — the lint
+poundage flows regardless.
+
+Harvest status is always shared; on a share WITHOUT the yields scope,
+`production_units` is returned as null (quantities withheld, harvest
+progress intact).
 
 ```json
 {
@@ -177,13 +194,18 @@ returned as null (quantities withheld, harvest progress intact).
   "entity_id": "uuid", "entity": "Martin Farms LLC",
   "crop": "Corn", "crop_year": 2026,
   "planted_acres": 40.0, "harvested_acres": 40.0,
+  "harvest_status": "complete",
   "production_units": 7200, "unit": "bu",
   "updated_at": "..."
 }
 ```
 
 Yield per acre = `production_units / harvested_acres` (bu/ac for grains,
-lint lbs/ac for cotton).
+lint lbs/ac for cotton) — valid only once `harvest_status` is
+`"complete"`. The field is additive: existing consumers that ignore it
+keep working, though `harvested_acres` on a partially-harvested field is
+now 0 (previously it read as planted acres as soon as any load existed —
+the very number consumers must not average against).
 
 ### GET /marketing-prices?year=YYYY (year required; scope `projected_prices`)
 
