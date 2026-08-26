@@ -53,10 +53,13 @@ checks(seq, migration, evidence, applied) as (values
   ( 25, '025_government_payments',            'table arc_plc_payments',                         exists (select 1 from tbls where t = 'arc_plc_payments')),
   ( 26, '026_unassigned_base',                'farm_base_acres.is_unassigned',                  exists (select 1 from cols where t = 'farm_base_acres' and c = 'is_unassigned')),
   -- 027 is a data seed (no schema artifact). The row probe runs through
-  -- query_to_xml so the script still parses & reports if 025's table is absent.
+  -- query_to_xml so the script still parses & reports if 025's table is
+  -- absent. The inner query always returns exactly ONE row (an exists flag) —
+  -- a zero-row query would make query_to_xml return an empty document, which
+  -- xpath() refuses to parse.
   ( 27, '027_canola_sesame',                  'covered_commodities row ''Canola''',
         case when exists (select 1 from tbls where t = 'covered_commodities')
-             then (xpath('/row', query_to_xml('select 1 from public.covered_commodities where name ilike ''canola'' limit 1', false, true, '')))[1] is not null
+             then (xpath('/row/ok/text()', query_to_xml('select (exists (select 1 from public.covered_commodities where name ilike ''canola''))::int as ok', false, true, '')))[1]::text = '1'
              else false end),
   ( 28, '028_harvest_category',               'crops.harvest_category',                         exists (select 1 from cols where t = 'crops' and c = 'harvest_category')),
   ( 29, '029_marketing_yield_breakout',       'crop_assumptions.expected_yield_irr',            exists (select 1 from cols where t = 'crop_assumptions' and c = 'expected_yield_irr')),
@@ -82,7 +85,7 @@ checks(seq, migration, evidence, applied) as (values
   -- — either way there is nothing to run. Probes via query_to_xml like 027.
   ( 46, '046_cotton_insurance_price_units',   'no ¢-scale cotton insurance prices remain',
         case when exists (select 1 from tbls where t = 'crop_insurance_policies') and exists (select 1 from tbls where t = 'harvest_price_estimates')
-             then (xpath('/row', query_to_xml('select 1 where exists (select 1 from public.crop_insurance_policies p join public.crops c on c.id = p.crop_id where c.name ilike ''%cotton%'' and c.name not ilike ''%seed%'' and (p.projected_price > 5 or p.harvest_price > 5)) or exists (select 1 from public.harvest_price_estimates e join public.crops c on c.id = e.crop_id where c.name ilike ''%cotton%'' and c.name not ilike ''%seed%'' and e.price_type in (''projected'', ''harvest_final'') and e.price > 5)', false, true, '')))[1] is null
+             then (xpath('/row/bad/text()', query_to_xml('select (exists (select 1 from public.crop_insurance_policies p join public.crops c on c.id = p.crop_id where c.name ilike ''%cotton%'' and c.name not ilike ''%seed%'' and (p.projected_price > 5 or p.harvest_price > 5)) or exists (select 1 from public.harvest_price_estimates e join public.crops c on c.id = e.crop_id where c.name ilike ''%cotton%'' and c.name not ilike ''%seed%'' and e.price_type in (''projected'', ''harvest_final'') and e.price > 5))::int as bad', false, true, '')))[1]::text = '0'
              else false end),
   ( 47, '047_county_yield_differential',      'county_yield_assumptions.yield_differential',    exists (select 1 from cols where t = 'county_yield_assumptions' and c = 'yield_differential')),
   ( 48, '048_crop_budget_planner',            'table budget_scenarios',                         exists (select 1 from tbls where t = 'budget_scenarios')),
