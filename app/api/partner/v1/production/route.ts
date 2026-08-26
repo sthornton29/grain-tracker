@@ -105,7 +105,7 @@ export async function GET(req: NextRequest) {
     let cropAssumptions: CropAssumptionStatusRow[] = []
     const assumptionResult = await supabase
       .from('crop_assumptions')
-      .select('crop_id, crop_year, harvest_complete')
+      .select('crop_id, crop_year, harvest_complete, expected_yield, expected_yield_irr, expected_yield_dry')
       .eq('org_id', org)
       .eq('crop_year', year)
     if (!assumptionResult.error) cropAssumptions = (assumptionResult.data ?? []) as CropAssumptionStatusRow[]

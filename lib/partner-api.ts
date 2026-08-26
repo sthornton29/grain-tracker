@@ -11,7 +11,7 @@
 import { computeBushels } from '@/lib/shrink'
 import { isCottonCrop } from '@/lib/marketing'
 import { contractUnit, quantityFor } from '@/lib/hedging'
-import { analyzeYields, harvestStatusOf, type HarvestStatus } from '@/lib/yields'
+import { analyzeYields, expectedYieldForPlanting, harvestStatusOf, type HarvestStatus } from '@/lib/yields'
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -143,11 +143,15 @@ export type CombineEntryRow = {
   updated_at?: string | null
 }
 /** crop_assumptions subset: the crop-level harvest-complete flag that forces
- *  every field of the crop × year to classify complete. */
+ *  every field of the crop × year to classify complete, plus the expected
+ *  yields powering the thin-peers comparison tier (same as the Yields page). */
 export type CropAssumptionStatusRow = {
   crop_id: string
   crop_year: number
   harvest_complete: boolean | null
+  expected_yield?: number | string | null
+  expected_yield_irr?: number | string | null
+  expected_yield_dry?: number | string | null
 }
 
 const num = (v: number | string | null | undefined): number => {
@@ -464,8 +468,11 @@ export function buildProductionRecords(args: {
   // receipts), so they typically read unharvested/in-progress until the
   // crop-level harvest-complete flag is set.
   const cropCompleteKeys = new Set<string>()
+  const assumptionByCrop = new Map<string, CropAssumptionStatusRow>()
   for (const a of args.cropAssumptions ?? []) {
-    if (a.harvest_complete && a.crop_year === args.year) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
+    if (a.crop_year !== args.year) continue
+    assumptionByCrop.set(a.crop_id, a)
+    if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
   }
   const combineCompleteByKey = new Map<string, boolean>()
   for (const e of yearEntries) {
@@ -475,6 +482,7 @@ export function buildProductionRecords(args: {
   const analysis = analyzeYields(
     yearPlantings.map((p) => {
       const a = agg.get(`${p.field_id}|${p.crop_id}`)
+      const assumption = assumptionByCrop.get(p.crop_id)
       return {
         id: p.id,
         cropId: p.crop_id,
@@ -483,6 +491,12 @@ export function buildProductionRecords(args: {
         lastLoadDate: a?.lastDate ?? null,
         override: p.yield_include_override ?? null,
         combineComplete: combineCompleteByKey.get(`${p.field_id}|${p.crop_id}`),
+        expectedYield: assumption
+          ? expectedYieldForPlanting(
+              { crop_id: assumption.crop_id, crop_year: assumption.crop_year, expected_yield: assumption.expected_yield ?? null, expected_yield_irr: assumption.expected_yield_irr, expected_yield_dry: assumption.expected_yield_dry },
+              p,
+            )
+          : null,
       }
     }),
     undefined,

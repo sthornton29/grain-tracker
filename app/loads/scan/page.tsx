@@ -450,7 +450,15 @@ export default function ScanTicketsPage() {
         }
       })
 
-    const { data, error } = await supabase.from('loads').insert(payloads).select('id')
+    // Stamp who entered them (073 — per-user last-load defaults). Retries
+    // without the column so an unapplied migration degrades, never fails.
+    const { data: { user } } = await supabase.auth.getUser()
+    const stamped = user?.id ? payloads.map((p) => ({ ...p, created_by: user.id })) : payloads
+    let res = await supabase.from('loads').insert(stamped).select('id')
+    if (res.error && user?.id && res.error.message.includes('created_by')) {
+      res = await supabase.from('loads').insert(payloads).select('id')
+    }
+    const { data, error } = res
     setSaving(false)
     if (error) {
       setErr(`Could not save: ${error.message}`)

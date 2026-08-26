@@ -7,7 +7,7 @@ import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { roleCanEditYields } from '@/lib/app-role'
 import { roleAllowsPath } from '@/lib/route-guard'
-import { fieldCropAggregates, analyzeYields, isHarvestComplete, groupYieldAggregates, practiceOf, resolvePracticeBreakout, type HarvestProgress, type GroupYieldAgg, type GroupYieldPlanting, type PracticeBreakout } from '@/lib/yields'
+import { fieldCropAggregates, analyzeYields, expectedYieldForPlanting, isHarvestComplete, groupYieldAggregates, practiceOf, resolvePracticeBreakout, type HarvestProgress, type GroupYieldAgg, type GroupYieldPlanting, type PracticeBreakout } from '@/lib/yields'
 import { isCottonCrop } from '@/lib/marketing'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
@@ -284,21 +284,27 @@ export default function YieldsPage() {
   // Drop unharvested and in-progress fields from the yield numbers (per crop,
   // over the currently-filtered plantings). The by-field table still shows them,
   // flagged; every rollup, average, and export uses `includedPlantings`.
-  const yieldAnalysis = useMemo(() => analyzeYields(
-    visible.map((p) => {
-      const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
-      return {
-        id: p.id,
-        cropId: p.crop_id,
-        acres: Number(p.planted_acres),
-        dryBu: agg?.dryBu ?? 0,
-        lastLoadDate: agg?.lastLoadDate ?? null,
-        override: p.yield_include_override,
-        combineComplete: agg?.combine?.harvestComplete,
-      }
-    }),
+  const yieldAnalysis = useMemo(() => {
+    // crop_assumptions by crop|year — the thin-peers expected-yield bar, so
+    // the crop's FIRST field can classify in-progress with no peers yet.
+    const assumptionByKey = new Map(assumptions.map((a) => [`${a.crop_id}|${a.crop_year}`, a]))
+    return analyzeYields(
+      visible.map((p) => {
+        const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
+        return {
+          id: p.id,
+          cropId: p.crop_id,
+          acres: Number(p.planted_acres),
+          dryBu: agg?.dryBu ?? 0,
+          lastLoadDate: agg?.lastLoadDate ?? null,
+          override: p.yield_include_override,
+          combineComplete: agg?.combine?.harvestComplete,
+          expectedYield: expectedYieldForPlanting(assumptionByKey.get(`${p.crop_id}|${p.season_year}`), p),
+        }
+      }),
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ), [plantings, aggByKey, fieldById, farmById, year, cropId, farmId, entityId, countyId, view, practiceFilter, viewer.isViewer, viewer.grantedIds])
+  }, [plantings, assumptions, aggByKey, fieldById, farmById, year, cropId, farmId, entityId, countyId, view, practiceFilter, viewer.isViewer, viewer.grantedIds])
   const excludedFields = yieldAnalysis.excluded
   const includedPlantings = visible.filter((p) => !excludedFields.has(p.id))
 
@@ -1543,6 +1549,12 @@ export default function YieldsPage() {
                                       className="text-brand-deep text-xs underline disabled:opacity-50 no-print"
                                     >Count anyway</button>
                                   )}
+                                </span>
+                              ) : yieldAnalysis.noBaseline.has(p.id) ? (
+                                // Classification defaulted: nothing to judge this
+                                // field against yet — say so instead of a silent ✓.
+                                <span className="text-xs text-slate-500">
+                                  Counted as finished — no other harvested fields and no yield estimate to compare against yet.
                                 </span>
                               ) : undefined
                             }

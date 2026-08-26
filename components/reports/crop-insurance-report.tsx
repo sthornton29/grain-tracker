@@ -17,7 +17,7 @@
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { analyzeYields, fieldCropAggregates, harvestStatusOf, withLoadBreakouts, type CombineEntryLike, type HarvestStatus } from '@/lib/yields'
+import { analyzeYields, expectedYieldForPlanting, fieldCropAggregates, harvestStatusOf, withLoadBreakouts, type CombineEntryLike, type HarvestStatus } from '@/lib/yields'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
@@ -264,6 +264,7 @@ export default function CropInsuranceReport() {
   // uses (analyzeYields + the crop-level harvest-complete override). Only
   // complete fields can need (or block on) a production breakout.
   const harvestStatusById = useMemo(() => {
+    const assumptionByKey = new Map(effAssumptions.map((a) => [`${a.crop_id}|${a.crop_year}`, a]))
     const analysis = analyzeYields(
       yearPlantings.map((p) => {
         const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
@@ -275,13 +276,14 @@ export default function CropInsuranceReport() {
           lastLoadDate: agg?.lastLoadDate ?? null,
           override: p.yield_include_override,
           combineComplete: agg?.combine?.harvestComplete,
+          expectedYield: expectedYieldForPlanting(assumptionByKey.get(`${p.crop_id}|${p.season_year}`), p),
         }
       }),
     )
     const m = new Map<string, HarvestStatus>()
     for (const p of yearPlantings) m.set(p.id, harvestStatusOf(p, analysis.excluded, cropCompleteKeys))
     return m
-  }, [yearPlantings, aggByKey, cropCompleteKeys])
+  }, [yearPlantings, aggByKey, cropCompleteKeys, effAssumptions])
 
   const isMixedNoBreakout = (p: FieldPlanting) =>
     (Number(p.irrigated_acres) || 0) > 0 && (Number(p.dryland_acres) || 0) > 0 && !p.yield_breakout_entered

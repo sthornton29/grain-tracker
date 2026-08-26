@@ -22,6 +22,7 @@ import { buildDoubleCropSet } from '@/lib/plantings'
 import {
   analyzeYields,
   cropsWithCompleteHarvest,
+  expectedYieldForPlanting,
   fieldCropAggregates,
   type ExclusionReason,
   type FieldCropAgg,
@@ -170,6 +171,7 @@ export async function loadProductionInputs(
   const cropCompleteKeys = new Set<string>()
   for (const a of assumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
 
+  const assumptionByCrop = new Map(assumptions.map((a) => [a.crop_id, a]))
   const analysis = analyzeYields(
     plantings.map((p) => {
       const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
@@ -181,10 +183,11 @@ export async function loadProductionInputs(
         lastLoadDate: agg?.lastLoadDate ?? null,
         override: p.yield_include_override ?? null,
         combineComplete: agg?.combine?.harvestComplete,
+        expectedYield: expectedYieldForPlanting(assumptionByCrop.get(p.crop_id), p),
       }
     }),
   )
-  const harvestCompleteCropIds = cropsWithCompleteHarvest({ plantings, aggByKey, cropYear, cropCompleteKeys })
+  const harvestCompleteCropIds = cropsWithCompleteHarvest({ plantings, aggByKey, cropYear, cropCompleteKeys, assumptions })
 
   // Cotton: lint lbs per field (receipt totals, the /production convention) and
   // the crop-level total with the per-bale-weights-first fallback the

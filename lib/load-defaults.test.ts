@@ -18,6 +18,7 @@ import {
   dateDefaultNote,
   isTransferShape,
   pickLastLoadDefaults,
+  pickPerUserLastLoadDefaults,
   type DefaultableForm,
   type LastLoadDefaultsSource,
 } from './load-defaults'
@@ -111,6 +112,23 @@ describe('applyLastLoadDefaults — all three load shapes', () => {
     )
     expect(form.date).toBe('2026-08-10')
     expect(defaultedDate).toBeNull()
+  })
+})
+
+describe('pickPerUserLastLoadDefaults — per-user tiering (073)', () => {
+  it("the user's own newest non-transfer load wins over the org's newer one", () => {
+    // Someone else entered binToBuyer AFTER my fieldToBin — my own still wins.
+    expect(pickPerUserLastLoadDefaults({ mine: [fieldToBin], org: [binToBuyer, fieldToBin] })).toBe(fieldToBin)
+  })
+  it('transfers are skipped within the user tier before falling back', () => {
+    // My only load is a bin→bin transfer → not a session source → org tier.
+    expect(pickPerUserLastLoadDefaults({ mine: [transfer], org: [binToBuyer] })).toBe(binToBuyer)
+  })
+  it("falls back to the org's last load only when the user has none yet", () => {
+    expect(pickPerUserLastLoadDefaults({ mine: [], org: [binToBuyer] })).toBe(binToBuyer)
+  })
+  it('nothing anywhere → null (form keeps its blank defaults)', () => {
+    expect(pickPerUserLastLoadDefaults({ mine: [], org: [transfer] })).toBeNull()
   })
 })
 

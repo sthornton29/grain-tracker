@@ -297,7 +297,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     if (cropYear === '') return new Set<string>()
     const cropCompleteKeys = new Set<string>()
     for (const a of effAssumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
-    return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys })
+    return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions: effAssumptions })
   }, [scopedPlantings, aggByKey, cropYear, effAssumptions])
 
   // Current futures per crop to value unpriced bushels in blended revenue — the

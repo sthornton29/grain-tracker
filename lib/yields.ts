@@ -388,6 +388,12 @@ export type YieldInput = {
    *  Undefined = no combine entry; the automatic classification applies.
    *  Callers set this from agg.combine?.harvestComplete. */
   combineComplete?: boolean
+  /** The crop's expected yield for THIS planting (per-practice where the
+   *  assumptions carry a breakout — see expectedYieldForPlanting). The
+   *  comparison bar when the crop has too few harvested peer fields, so the
+   *  FIRST field cut can still classify in-progress. Null/undefined = no
+   *  estimate entered. */
+  expectedYield?: number | null
 }
 
 export type CropAverage = {
@@ -421,18 +427,30 @@ export type YieldAnalysis = {
   averages: Map<string, CropAverage>
   /** Crop id → harvest completion (acres completed / in-progress / remaining). */
   progress: Map<string, HarvestProgress>
+  /** Row ids that stayed complete ONLY because nothing existed to judge them
+   *  against — no harvested peer fields and no expected yield entered. The
+   *  drill-down surfaces this state so a defaulted classification is visible. */
+  noBaseline: Set<string>
 }
 
 // A field whose yield is more than this far below its crop's settled average is
 // treated as still-being-harvested (in progress) while its loads are recent.
 export const IN_PROGRESS_THRESHOLD = 0.15
 
-// ...until the field has sat quiet this long. This is a deliberately LONG,
-// conservative "clearly not coming back" fallback: operators routinely start a
-// field, move to another one for days, and come back to finish — so brief gaps
-// (and loads hitting other fields meanwhile) must never complete a low field.
-// Only after this much silence does its low number read as its real yield.
+// ...until the CROP has sat quiet this long. The inactivity clock is
+// crop-wide: a low field completes by silence only when no loads for its crop
+// have arrived ANYWHERE for more than this window (harvest genuinely paused or
+// over) — never merely because ITS OWN loads stopped. Operators routinely
+// start a field, work others for days, and come back to finish, so while crop
+// loads are still arriving a below-normal field stays in progress regardless
+// of how long since its own last load.
 export const IN_PROGRESS_STALE_DAYS = 10
+
+// With fewer than this many OTHER harvested fields, the peer comparison is too
+// thin to call a yield "low" — the crop's expected yield (crop_assumptions,
+// per-practice where broken out) stands in as the bar, so the first field cut
+// can still classify in-progress instead of defaulting complete.
+export const IN_PROGRESS_MIN_PEERS = 2
 
 // Per crop:
 //   * a row with no bushels is "unharvested" → excluded.
@@ -457,11 +475,19 @@ export const IN_PROGRESS_STALE_DAYS = 10
 //     Days are counted calendar-date to calendar-date: load dates are date-only
 //     strings, so subtracting them from the raw clock would silently shorten
 //     the window by the local time of day and flip a field to completed partway
-//     through the last day.
-//     The baseline is the weighted average of the crop's SETTLED fields (quiet
-//     past the window — clearly finished), so one partial field can't drag the
-//     bar down for another; while every harvested field is still active, it
-//     falls back to the other harvested fields.
+//     through the last day. The silence window is CROP-WIDE (see
+//     IN_PROGRESS_STALE_DAYS): the crop quiet 10+ days completes everything;
+//     while its loads still arrive anywhere, every harvested field is judged.
+//     The baseline hierarchy per candidate:
+//       1. with >= IN_PROGRESS_MIN_PEERS other harvested fields: their
+//          weighted average — preferring the RESTING ones (own loads quiet
+//          past the window; harvest has probably finished with them), so one
+//          partial field can't drag the bar down for another;
+//       2. with thinner peers: the planting's expected yield
+//          (crop_assumptions via expectedYieldForPlanting) — so the FIRST
+//          field cut classifies correctly; failing that, whatever peers exist;
+//       3. with neither: the field cannot be judged — it stays complete and
+//          is reported in `noBaseline` so the UI can say why.
 // Averages are weighted (Σ dry bu / Σ acres) over the survivors.
 export function analyzeYields(
   rows: readonly YieldInput[],
@@ -472,6 +498,7 @@ export function analyzeYields(
   const autoExcluded = new Map<string, ExclusionReason>()
   const averages = new Map<string, CropAverage>()
   const progress = new Map<string, HarvestProgress>()
+  const noBaseline = new Set<string>()
 
   const byCrop = new Map<string, YieldInput[]>()
   for (const r of rows) {
@@ -488,9 +515,7 @@ export function analyzeYields(
       else autoExcluded.set(r.id, 'unharvested')
     }
 
-    // Only flag in-progress when there are other harvested fields to compare
-    // against — otherwise we have no baseline to call a yield "low".
-    if (harvested.length >= 2) {
+    if (harvested.length >= 1) {
       // Calendar-day distance from `now`'s local date to a load's date. Load
       // dates are date-only strings (UTC midnight when parsed), so measuring
       // against the raw clock would shorten the stale window by the local time
@@ -498,41 +523,57 @@ export function analyzeYields(
       const pad2 = (n: number) => String(n).padStart(2, '0')
       const today = Date.parse(`${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`)
       const daysSince = (date: string) => Math.round((today - Date.parse(date.slice(0, 10))) / 86_400_000)
-      // Settled = quiet past the long window ("clearly not coming back").
-      // Deliberately NOT keyed on other fields' load dates: a later-dated load
-      // from another field is not proof this one finished — the operator may
-      // simply be working elsewhere before returning to finish it.
-      const isSettled = (r: YieldInput) =>
-        r.lastLoadDate == null || daysSince(r.lastLoadDate) > IN_PROGRESS_STALE_DAYS
-      // Baseline = the settled fields, so one partial field can't drag the bar
-      // down for another. Every not-yet-settled field is a candidate.
-      let settledBu = 0
-      let settledAc = 0
-      const active: YieldInput[] = []
-      for (const r of harvested) {
-        if (isSettled(r)) {
-          settledBu += r.dryBu
-          settledAc += r.acres
-        } else {
-          active.push(r)
-        }
-      }
-      for (const cand of active) {
-        let bu = settledBu
-        let ac = settledAc
-        if (settledAc <= 0) {
-          // Harvest just started and nothing has settled yet — fall back to
-          // the other harvested fields so there is still a comparison.
-          for (const r of harvested) {
-            if (r.id === cand.id) continue
-            bu += r.dryBu
-            ac += r.acres
+      // The inactivity clock is CROP-WIDE: fields complete by silence only
+      // when no loads for the crop have arrived ANYWHERE (in the analyzed
+      // scope) for more than the window — harvest genuinely paused or over.
+      // While crop loads are still arriving, a below-normal field stays in
+      // progress no matter how long since ITS OWN last load: the combine
+      // routinely leaves a field for days and comes back to finish it.
+      const cropLast = harvested.reduce<string | null>((max, r) => {
+        const d = r.lastLoadDate ? r.lastLoadDate.slice(0, 10) : null
+        return d != null && (max == null || d > max) ? d : max
+      }, null)
+      const cropActive = cropLast != null && daysSince(cropLast) <= IN_PROGRESS_STALE_DAYS
+      if (cropActive) {
+        // "Resting" fields — own loads quiet past the window — are the
+        // preferred peer baseline (harvest has probably finished with them),
+        // though while the crop is active they remain candidates themselves.
+        const isResting = (r: YieldInput) =>
+          r.lastLoadDate == null || daysSince(r.lastLoadDate) > IN_PROGRESS_STALE_DAYS
+        for (const cand of harvested) {
+          const others = harvested.filter((r) => r.id !== cand.id)
+          let bu = 0
+          let ac = 0
+          for (const r of others) {
+            if (isResting(r)) {
+              bu += r.dryBu
+              ac += r.acres
+            }
           }
-        }
-        const baseline = ac > 0 ? bu / ac : null
-        const candYield = cand.acres > 0 ? cand.dryBu / cand.acres : null
-        if (baseline != null && candYield != null && candYield < baseline * (1 - threshold)) {
-          autoExcluded.set(cand.id, 'in_progress')
+          if (ac <= 0) {
+            for (const r of others) {
+              bu += r.dryBu
+              ac += r.acres
+            }
+          }
+          const peerBaseline = ac > 0 ? bu / ac : null
+          // Thin peers → the planting's expected yield stands in, so the
+          // first field cut classifies correctly; failing that, whatever
+          // peers exist; with neither the field cannot be judged.
+          const baseline =
+            others.length >= IN_PROGRESS_MIN_PEERS
+              ? peerBaseline
+              : cand.expectedYield != null && cand.expectedYield > 0
+              ? cand.expectedYield
+              : peerBaseline
+          if (baseline == null) {
+            noBaseline.add(cand.id)
+            continue
+          }
+          const candYield = cand.acres > 0 ? cand.dryBu / cand.acres : null
+          if (candYield != null && candYield < baseline * (1 - threshold)) {
+            autoExcluded.set(cand.id, 'in_progress')
+          }
         }
       }
     }
@@ -586,24 +627,71 @@ export function analyzeYields(
     })
   }
 
-  return { excluded, autoExcluded, averages, progress }
+  return { excluded, autoExcluded, averages, progress, noBaseline }
+}
+
+/** The crop_assumptions slice the expected-yield fallback reads. */
+export type ExpectedYieldAssumption = {
+  crop_id: string
+  crop_year: number
+  expected_yield: number | string | null
+  expected_yield_irr?: number | string | null
+  expected_yield_dry?: number | string | null
+}
+
+// The expected yield to judge ONE planting against (the thin-peers fallback
+// bar): per-practice where the assumptions carry a breakout — pure-irrigated
+// and pure-dryland plantings read their side (blank side falls back to the
+// overall, the app-wide breakout convention), mixed plantings acre-weight the
+// two sides. Null when no usable number is entered. Pure.
+export function expectedYieldForPlanting(
+  a: ExpectedYieldAssumption | null | undefined,
+  p: { irrigated_acres: number | string | null; dryland_acres: number | string | null },
+): number | null {
+  if (!a) return null
+  const numOrNull = (v: number | string | null | undefined): number | null => {
+    if (v == null || v === '') return null
+    const n = Number(v)
+    return Number.isFinite(n) && n > 0 ? n : null
+  }
+  const overall = numOrNull(a.expected_yield)
+  const irr = numOrNull(a.expected_yield_irr) ?? overall
+  const dry = numOrNull(a.expected_yield_dry) ?? overall
+  const practice = practiceOf(p)
+  if (practice === 'pure-irr') return irr
+  if (practice === 'pure-dry') return dry
+  const irrAc = Number(p.irrigated_acres) || 0
+  const dryAc = Number(p.dryland_acres) || 0
+  if (irr == null || dry == null) return overall
+  const totalAc = irrAc + dryAc
+  return totalAc > 0 ? (irr * irrAc + dry * dryAc) / totalAc : overall
 }
 
 /** The planting shape the season-level helpers below classify. */
 type SeasonPlanting = {
   id: string; field_id: string; crop_id: string; season_year: number
   planted_acres: number | string | null; yield_include_override?: boolean | null
+  /** Optional practice acres — enable the per-practice expected-yield bar. */
+  irrigated_acres?: number | string | null
+  dryland_acres?: number | string | null
 }
 
 // One shared mapping from planting rows + aggregates to the analyzeYields
 // input, so every season-level consumer classifies fields identically.
+// `assumptions` (crop_assumptions rows) power the thin-peers expected-yield
+// fallback; omitting them just disables that comparison tier.
 function analyzeSeason<T extends SeasonPlanting>(args: {
   plantings: ReadonlyArray<T>
   aggByKey: Map<string, FieldCropAgg>
   cropYear: number
+  assumptions?: readonly ExpectedYieldAssumption[] | null
   now?: Date
 }): { yearPlantings: T[]; analysis: YieldAnalysis } {
   const yearPlantings = args.plantings.filter((p) => p.season_year === args.cropYear)
+  const assumptionByCrop = new Map<string, ExpectedYieldAssumption>()
+  for (const a of args.assumptions ?? []) {
+    if (a.crop_year === args.cropYear) assumptionByCrop.set(a.crop_id, a)
+  }
   const analysis = analyzeYields(
     yearPlantings.map((p) => {
       const agg = args.aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
@@ -612,6 +700,10 @@ function analyzeSeason<T extends SeasonPlanting>(args: {
         dryBu: agg?.dryBu ?? 0, lastLoadDate: agg?.lastLoadDate ?? null,
         override: p.yield_include_override ?? null,
         combineComplete: agg?.combine?.harvestComplete,
+        expectedYield: expectedYieldForPlanting(assumptionByCrop.get(p.crop_id), {
+          irrigated_acres: p.irrigated_acres ?? null,
+          dryland_acres: p.dryland_acres ?? null,
+        }),
       }
     }),
     IN_PROGRESS_THRESHOLD, args.now,
@@ -630,6 +722,7 @@ export function cropsWithCompleteHarvest(args: {
   aggByKey: Map<string, FieldCropAgg>
   cropYear: number
   cropCompleteKeys: ReadonlySet<string>
+  assumptions?: readonly ExpectedYieldAssumption[] | null
   now?: Date
 }): Set<string> {
   const { yearPlantings, analysis } = analyzeSeason(args)
@@ -656,6 +749,7 @@ export function inProgressPlantingsByCrop<T extends SeasonPlanting>(args: {
   aggByKey: Map<string, FieldCropAgg>
   cropYear: number
   cropCompleteKeys: ReadonlySet<string>
+  assumptions?: readonly ExpectedYieldAssumption[] | null
   now?: Date
 }): Map<string, T[]> {
   const { yearPlantings, analysis } = analyzeSeason(args)

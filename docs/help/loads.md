@@ -1,7 +1,7 @@
 ---
 page_route: /loads
 title: Loads
-updated: 2026-08-21
+updated: 2026-08-26
 keywords: loads, load log, tickets, scale, paid, unpaid, splits, export, delete, test weight, moisture, gross, tare, net, irrigated, dryland, practice, combine, yield monitor, no scales, truck, hauler, pickup contract, buyer's truck, add truck, rename truck, edit truck, wrong date, yesterday's date, defaults, low tare, tare warning, use last tare, usual tare, empty weight
 ---
 ## What this page is for
@@ -11,7 +11,8 @@ The load log is the master list of every load you've hauled — to a bin or to a
 ## How to use it
 
 - To record a new load by hand, use **New Load** — pick the date, truck, crop, crop year, where it came from (field or bin), where it went (bin or buyer), and enter the weights. If a load carries grain from more than one field, add a split so each field gets credit for its share.
-- **New Load starts where you left off.** The form pre-fills the date, crop, crop year, From, and To from the last load you entered — whether that was field-to-bin, field-to-buyer, or bin-to-buyer — so a string of loads only needs weights and a ticket number. Every pre-fill can be changed. When the pre-filled date isn't today (say you're entering last night's tickets the next morning), a small note by the date says so — e.g. "Defaulted to 8/14 (your last load's date) — not today" — so nothing quietly lands on the wrong day. Change the date and the note goes away; each saved load becomes the starting point for the next.
+- **New Load starts where YOU left off.** The form pre-fills the date, crop, crop year, From, and To from the last load **you** entered — whether that was field-to-bin, field-to-buyer, or bin-to-buyer — so a string of loads only needs weights and a ticket number. Two people entering different load types at the same time each get their own pre-fills; only when you haven't entered any loads yet does the form borrow the operation's last load. Every pre-fill can be changed. When the pre-filled date isn't today (say you're entering last night's tickets the next morning), a small note by the date says so — e.g. "Defaulted to 8/14 (your last load's date) — not today" — so nothing quietly lands on the wrong day. Change the date and the note goes away; each saved load becomes the starting point for the next.
+- **Save & New is the harvest workhorse.** It saves the load and immediately gives you a fresh form for the next one — date, crop, From/To, contract, and truck carried over, weights and ticket cleared — with a quick green "Saved — ticket 1234" confirmation at the bottom. Use plain **Save** when you're done and want to go back to the load log.
 - **Irrigated or dryland?** When the load's field has both irrigated and dryland acres, an optional Irrigated/Dryland choice appears (on New Load, Edit, ticket scanning, and on each line of a split load). Tag it if you know which ground the load came off — skip it if you don't. Fields that are all one practice never ask; Turnrow already knows. If you tag every load on a mixed field, the Yields page splits that field's bushels between irrigated and dryland automatically, so you won't be asked to allocate after harvest.
 - To enter a stack of tickets at once, use **Scan** (photograph or upload the tickets) or **Import** (upload a spreadsheet).
 - **A truck that isn't in the list?** Pick **+ Add truck…** right in the Truck dropdown — it saves to your truck list (the same one under Settings → Trucks) and is selected for this load.
@@ -46,7 +47,7 @@ The load log is the master list of every load you've hauled — to a bin or to a
 ## Tare weights: the warning and the shortcut
 
 - **"Tare … is well below this truck's usual …"** Turnrow learns each truck's normal empty weight from its past loads (the middle value of its tares, once the truck has at least three loads with a tare). If the tare you enter is half or less of that usual figure, a note appears under the Tare field — on New Load, Edit, and on each row of a ticket scan. It's a heads-up, not a stop: a typo or a mis-read scan on the tare makes the net weight (and the bushels, and what the buyer owes) look bigger than it is. Check the ticket; if the low number is real — a trailer dropped, a different tractor — just save. The note disappears as soon as the value is corrected, and saved loads that would have tripped it show a small **low tare?** tag in the load log so an old mistake is easy to find.
-- **Use last tare.** Once a truck is picked on New Load, a small **Use last tare: 31,220** link appears by the Tare field — that truck's tare from its most recent load (hover to see the date). One tap fills it in; you can still change it. It works for your trucks and hauler trucks alike, and stays out of the way when the truck has no earlier loads. It never fills in on its own: weighing the empty truck is the accurate number, and the shortcut is for when you know the truck hasn't changed.
+- **Use last tare.** Once a truck is picked on New Load, a small **Use last tare: 31,220** button appears by the Tare field — that truck's tare from its most recent load (hover to see the date). One tap fills it in; you can still change it. It works for your trucks and hauler trucks alike, and stays out of the way when the truck has no earlier loads. It never fills in on its own: weighing the empty truck is the accurate number, and the shortcut is for when you know the truck hasn't changed.
 
 ## How the numbers work
 

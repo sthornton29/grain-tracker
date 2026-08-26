@@ -383,8 +383,8 @@ export default function MarketingPage() {
   }, [effAssumptions])
   const harvestCompleteIds = useMemo(() => {
     if (year == null) return new Set<string>()
-    return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys })
-  }, [year, cropCompleteKeys, scopedPlantings, aggByKey])
+    return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys, assumptions: effAssumptions })
+  }, [year, cropCompleteKeys, scopedPlantings, aggByKey, effAssumptions])
 
   // Fields still reading "in progress" — they hold their crop on the yield
   // ESTIMATE instead of actual production. Named here (with the same "count
@@ -392,8 +392,8 @@ export default function MarketingPage() {
   // hasn't switched to actuals and fix a misjudged field on the spot.
   const stillHarvesting = useMemo(() => {
     if (year == null) return new Map<string, PlantingRow[]>()
-    return inProgressPlantingsByCrop({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys })
-  }, [year, cropCompleteKeys, scopedPlantings, aggByKey])
+    return inProgressPlantingsByCrop({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys, assumptions: effAssumptions })
+  }, [year, cropCompleteKeys, scopedPlantings, aggByKey, effAssumptions])
   const canEditYields = roleCanEditYields(viewer.role)
   const [countingId, setCountingId] = useState<string | null>(null)
   const [countErr, setCountErr] = useState<string | null>(null)

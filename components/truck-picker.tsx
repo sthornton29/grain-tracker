@@ -23,15 +23,22 @@
 // loads only — past loads keep the label captured when they were entered
 // (loads.truck_label / loads.hauler_truck). Both edit modals say so.
 //
-// NESTED-FORM WARNING: unlike the buyer/location pickers (whose hosts are
-// div-based), these live INSIDE the load page's real <form>. A submit fired
-// in a modal's nested <form> BUBBLES to the outer form in React's synthetic
-// event system — without stopPropagation the outer form would save a
-// half-entered load and navigate away, discarding the modal's result and
-// swallowing its errors. Every modal submit handler here must call
-// e.stopPropagation() alongside e.preventDefault().
+// MODAL PLACEMENT: these pickers live INSIDE the load page's real <form>,
+// under the Truck field's <label>. The modals are therefore PORTALED to
+// document.body — rendered in place they inherit two native behaviors that
+// break them on touch devices:
+//   * label activation: a tap on any NON-interactive part of a modal (the
+//     backdrop, title, padding) forwards a click to the label's control — the
+//     truck <select> — so on an iPad the select's picker wheel opens OVER the
+//     edit modal while the backdrop tap closes it, and the rename is
+//     abandoned (with any error trapped in the collapsing modal);
+//   * nested <form> submit bubbling: a submit fired in the modal's form would
+//     bubble to the outer load form and save a half-entered load.
+// The portal removes both structurally; the modal submit handlers keep
+// e.stopPropagation() alongside e.preventDefault() as defense in depth.
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { createClient } from '@/lib/supabase/client'
 import { getOrgId } from '@/lib/org'
 import { findExternalTruck, ownTruckInsert } from '@/lib/trucks'
@@ -46,13 +53,19 @@ const INPUT = 'w-full rounded-lg border border-slate-300 px-3 py-2'
 const RENAME_RULE = 'Renaming won’t change past loads — they keep the truck name as it was entered.'
 
 function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
-  return (
+  // Portal target only exists client-side; modals open on interaction, so the
+  // first client render is always in time.
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
+  if (!mounted) return null
+  return createPortal(
     <div className="fixed inset-0 z-30 bg-black/40 flex items-center justify-center p-4 no-print" onClick={onClose}>
       <div className="bg-white rounded-xl shadow-xl p-4 w-full max-w-md space-y-3" onClick={(e) => e.stopPropagation()}>
         <h3 className="font-semibold text-lg">{title}</h3>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 

@@ -180,7 +180,7 @@ async function loadMarketingBundle(
   }
   const cropCompleteKeys = new Set<string>()
   for (const a of assumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
-  const harvestCompleteIds = cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys })
+  const harvestCompleteIds = cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions })
   // Cotton actuals + physical marketing, exactly as the dashboard derives them.
   const balesByReceipt = new Map<string, { lbs: number; count: number }>()
   for (const b of cottonBales) {

@@ -316,11 +316,19 @@ export default function LoadsImportPage() {
 
     let ok = 0
     if (toInsert.length > 0) {
-      const { error } = await supabase.from('loads').insert(toInsert.map((x) => x.payload))
+      // Stamp who imported them (073 — per-user last-load defaults). If the
+      // column isn't applied yet, the existing per-row fallback path retries
+      // each row without it, so an unapplied migration degrades, never fails.
+      const { data: { user } } = await supabase.auth.getUser()
+      const stamp = (p: Record<string, unknown>) => (user?.id ? { ...p, created_by: user.id } : p)
+      const { error } = await supabase.from('loads').insert(toInsert.map((x) => stamp(x.payload)))
       if (error) {
         // Fall back per-row so partial progress still saves.
         for (const { rowIdx, payload } of toInsert) {
-          const { error: e2 } = await supabase.from('loads').insert(payload)
+          let { error: e2 } = await supabase.from('loads').insert(stamp(payload))
+          if (e2 && user?.id && e2.message.includes('created_by')) {
+            ;({ error: e2 } = await supabase.from('loads').insert(payload))
+          }
           if (e2) failed.push({ rowIdx, reason: e2.message })
           else ok++
         }

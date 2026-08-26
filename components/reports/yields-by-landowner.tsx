@@ -6,7 +6,7 @@ import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { roleAllowsPath } from '@/lib/route-guard'
-import { fieldCropAggregates, analyzeYields, type CombineEntryLike } from '@/lib/yields'
+import { fieldCropAggregates, analyzeYields, expectedYieldForPlanting, type CombineEntryLike, type ExpectedYieldAssumption } from '@/lib/yields'
 import { isCottonCrop } from '@/lib/marketing'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import { EmptyState, theadCls, subtotalRowCls } from '@/components/reports/report-kit'
@@ -83,6 +83,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
   const [splits, setSplits] = useState<LoadSplit[]>([])
   const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [landowners, setLandowners] = useState<Landowner[]>([])
+  const [assumptions, setAssumptions] = useState<ExpectedYieldAssumption[]>([])
   // Light name lookups (id + name only) for the drill-down's load list.
   const [trucks, setTrucks] = useState<Array<{ id: string; name_or_number: string }>>([])
   const [bins, setBins] = useState<Array<{ id: string; name_or_number: string }>>([])
@@ -97,7 +98,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [cr, en, fa, fi, pl, lo, sp, lan, tr, bi, bu, ce] = await Promise.all([
+      const [cr, en, fa, fi, pl, lo, sp, lan, tr, bi, bu, ce, ca] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('*'),
@@ -111,6 +112,8 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
         supabase.from('buyers').select('id, name').order('name'),
         // May not exist yet (migration 062): an error leaves data null → [].
         supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
+        // Expected yields — the thin-peers comparison tier in analyzeYields.
+        supabase.from('crop_assumptions').select('crop_id, crop_year, expected_yield, expected_yield_irr, expected_yield_dry'),
       ])
       setCrops((cr.data as Crop[]) || [])
       setEntities((en.data as Entity[]) || [])
@@ -124,6 +127,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
       setBins((bi.data as Array<{ id: string; name_or_number: string }>) || [])
       setBuyers((bu.data as Array<{ id: string; name: string }>) || [])
       setCombineEntries((ce.data as CombineEntryLike[]) || [])
+      setAssumptions((ca.data as ExpectedYieldAssumption[]) || [])
       setLoading(false)
     })()
   }, [supabase])
@@ -197,20 +201,24 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
 
   // Drop unharvested / in-progress fields from the rolled-up numbers and the
   // average-yield header (per crop, over the filtered plantings).
-  const yieldAnalysis = useMemo(() => analyzeYields(
-    filteredPlantings.map((p) => {
-      const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
-      return {
-        id: p.id,
-        cropId: p.crop_id,
-        acres: Number(p.planted_acres),
-        dryBu: agg?.dryBu ?? 0,
-        lastLoadDate: agg?.lastLoadDate ?? null,
-        override: p.yield_include_override,
-        combineComplete: agg?.combine?.harvestComplete,
-      }
-    }),
-  ), [filteredPlantings, aggByKey])
+  const yieldAnalysis = useMemo(() => {
+    const assumptionByKey = new Map(assumptions.map((a) => [`${a.crop_id}|${a.crop_year}`, a]))
+    return analyzeYields(
+      filteredPlantings.map((p) => {
+        const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
+        return {
+          id: p.id,
+          cropId: p.crop_id,
+          acres: Number(p.planted_acres),
+          dryBu: agg?.dryBu ?? 0,
+          lastLoadDate: agg?.lastLoadDate ?? null,
+          override: p.yield_include_override,
+          combineComplete: agg?.combine?.harvestComplete,
+          expectedYield: expectedYieldForPlanting(assumptionByKey.get(`${p.crop_id}|${p.season_year}`), p),
+        }
+      }),
+    )
+  }, [filteredPlantings, aggByKey, assumptions])
 
   // Build per-landowner aggregation.
   const groups = useMemo<LandownerGroup[]>(() => {

@@ -78,7 +78,7 @@ export function computeEntityMarketingRows(inputs: EntityMarketingInputs, entity
 
   const cropCompleteKeys = new Set<string>()
   for (const a of inputs.assumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
-  const harvestCompleteCropIds = cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys })
+  const harvestCompleteCropIds = cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions: inputs.assumptions })
 
   // Cotton actuals from the entity's gin receipts (per-bale weights first).
   const balesByReceipt = new Map<string, { lbs: number; count: number }>()

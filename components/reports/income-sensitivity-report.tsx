@@ -381,7 +381,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   // Harvested-fact vs still-in-the-field, per crop and per planting.
   const harvestSplit = useMemo(() => {
     if (cropYear === '') return { byCrop: new Map<string, HarvestSplit>(), statusByPlanting: new Map<string, 'complete' | 'in_progress' | 'unharvested'>() }
-    return splitHarvestByCrop({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys })
+    return splitHarvestByCrop({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions: effAssumptions })
   }, [scopedPlantings, aggByKey, cropYear, cropCompleteKeys])
 
   // Expected yield on the REMAINING (not-yet-complete) acres, per crop — the

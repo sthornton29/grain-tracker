@@ -16,6 +16,7 @@ import {
   applyLastLoadDefaults,
   dateDefaultNote,
   pickLastLoadDefaults,
+  pickPerUserLastLoadDefaults,
   type LastLoadDefaultsSource,
 } from '@/lib/load-defaults'
 import { HaulerTruckField, TruckPicker, findExternalTruck } from '@/components/truck-picker'
@@ -140,6 +141,16 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   const [busy, setBusy] = useState(false)
   const submittingRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
+  // "Save & New": set by the button's click (fires before submit), read once
+  // after a successful save; the flash confirms the save without navigating.
+  const saveAndNewRef = useRef(false)
+  const [justSaved, setJustSaved] = useState<string | null>(null)
+  const [tareRefresh, setTareRefresh] = useState(0)
+  useEffect(() => {
+    if (!justSaved) return
+    const t = setTimeout(() => setJustSaved(null), 5000)
+    return () => clearTimeout(t)
+  }, [justSaved])
   // Last-load date default (create mode): which date the seam applied, and
   // whether the user touched the date before the default could land.
   const [defaultedDate, setDefaultedDate] = useState<string | null>(null)
@@ -169,7 +180,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     }, delay)
     return () => { cancelled = true; clearTimeout(t) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tareKey, supabase])
+  }, [tareKey, supabase, tareRefresh])
   const tareStats = useMemo(
     () => (tareHistory && tareHistory.key === tareKey
       ? truckTareStats(tareHistory.loads, tareKey, { excludeLoadId: mode === 'edit' ? initial?.id ?? null : null })
@@ -211,20 +222,40 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   }, [supabase])
 
   // On create, pre-fill date + crop + from/to + contract selections from the
-  // org's most recently ENTERED load (lib/load-defaults — the one seam for
-  // every source/destination shape, bin→buyer included; transfers skipped).
+  // most recently ENTERED load (lib/load-defaults — the one seam for every
+  // source/destination shape, bin→buyer included; transfers skipped).
   useEffect(() => {
     if (mode !== 'create' || !refsLoaded) return
     ;(async () => {
       // created_at, not the load's date: a session resumed the next morning
       // must key off last night's entries. limit(10) leaves room to skip
       // bin→bin transfer rows.
-      const { data } = await supabase
-        .from('loads')
-        .select(LAST_LOAD_DEFAULTS_SELECT)
-        .order('created_at', { ascending: false })
-        .limit(10)
-      const recent = pickLastLoadDefaults((data ?? []) as LastLoadDefaultsSource[])
+      //
+      // PER-USER (073): my own last-entered load wins — two people entering
+      // different load types must not stomp each other's pre-fills. The org
+      // tier is the fallback when I have no loads yet (or when created_by
+      // isn't applied yet — the mine-query errors and we degrade to org).
+      const { data: { user } } = await supabase.auth.getUser()
+      let mine: LastLoadDefaultsSource[] = []
+      if (user?.id) {
+        const res = await supabase
+          .from('loads')
+          .select(LAST_LOAD_DEFAULTS_SELECT)
+          .eq('created_by', user.id)
+          .order('created_at', { ascending: false })
+          .limit(10)
+        if (!res.error) mine = (res.data ?? []) as LastLoadDefaultsSource[]
+      }
+      let org: LastLoadDefaultsSource[] = []
+      if (pickLastLoadDefaults(mine) == null) {
+        const { data } = await supabase
+          .from('loads')
+          .select(LAST_LOAD_DEFAULTS_SELECT)
+          .order('created_at', { ascending: false })
+          .limit(10)
+        org = (data ?? []) as LastLoadDefaultsSource[]
+      }
+      const recent = pickPerUserLastLoadDefaults({ mine, org })
       if (!recent) return
       const dateUntouched = !dateTouchedRef.current
       if (dateUntouched && recent.date) setDefaultedDate(recent.date)
@@ -617,7 +648,16 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     let savedLoadId: string | null = null
     let err: { message: string } | null = null
     if (mode === 'create') {
-      const res = await supabase.from('loads').insert(payload).select('id').single()
+      // Stamp who entered it (073 — powers the per-user last-load defaults).
+      // If created_by isn't applied yet the insert retries without it, so a
+      // late migration apply degrades to org-level defaults, never a failure.
+      const { data: { user } } = await supabase.auth.getUser()
+      let res = user?.id
+        ? await supabase.from('loads').insert({ ...payload, created_by: user.id }).select('id').single()
+        : await supabase.from('loads').insert(payload).select('id').single()
+      if (res.error && user?.id && res.error.message.includes('created_by')) {
+        res = await supabase.from('loads').insert(payload).select('id').single()
+      }
       err = res.error
       savedLoadId = (res.data as { id: string } | null)?.id ?? null
     } else if (initial?.id) {
@@ -688,11 +728,51 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       }
     }
 
+    rememberHarvestEntryPath('load')
+
+    // "Save & New" — stay on the form for the next load of the session.
+    if (mode === 'create' && saveAndNewRef.current) {
+      saveAndNewRef.current = false
+      startNextLoad(payload.ticket_number)
+      return
+    }
+
     // Leave submittingRef = true; we're navigating away. Resetting it here
     // would briefly re-enable the button before the route change commits.
-    rememberHarvestEntryPath('load')
     router.push('/loads')
     router.refresh()
+  }
+
+  // Present a fresh form immediately after "Save & New". The session fields
+  // (date/crop/year/from/to/contract — exactly what the defaults seam seeds)
+  // stay as they are: the load just saved is now MY latest load, so keeping
+  // them equals re-running the seam without a refetch. Truck stays too (the
+  // same driver usually enters their own truck's loads back to back). The
+  // per-load fields — weights, moisture, test weight, ticket, time — clear.
+  function startNextLoad(ticket: string | null) {
+    setForm((f) => ({
+      ...f,
+      time: nowHHMM(),
+      gross_weight: '',
+      tare_weight: '',
+      net_weight: '',
+      moisture: '',
+      test_weight: '',
+      dry_bushels_override: '',
+      ticket_number: '',
+      practice: '',
+    }))
+    // Splits describe the load just saved, not the next one.
+    setSplitMode(false)
+    setSplits([])
+    setLastSplitManual(false)
+    setSaveHaulerTruck(false)
+    setJustSaved(ticket ? `Saved — ticket ${ticket}` : 'Load saved')
+    setTareRefresh((n) => n + 1) // the saved tare joins the truck's baseline
+    submittingRef.current = false
+    setBusy(false)
+    setError(null)
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   const inputCls = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 text-base bg-white'
@@ -1101,7 +1181,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                 type="button"
                 onClick={() => set('tare_weight', String(lastTareOffer.tare))}
                 title={lastTareOffer.date ? `From this truck's last load on ${new Date(lastTareOffer.date + 'T00:00:00').toLocaleDateString()}` : "From this truck's last load"}
-                className="text-xs font-medium text-brand-deep hover:underline whitespace-nowrap"
+                className="shrink-0 rounded-lg border border-brand/60 bg-white px-2.5 py-1.5 text-xs font-semibold text-brand-deep hover:bg-brand/10 active:bg-brand/20 whitespace-nowrap"
               >
                 Use last tare: {Math.round(lastTareOffer.tare).toLocaleString()}
               </button>
@@ -1198,15 +1278,43 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       </label>
 
       {error && <p className="text-sm text-red-600">{error}</p>}
+      {justSaved && (
+        <p aria-live="polite" className="rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-sm font-medium text-green-800">
+          {justSaved} — ready for the next one.
+        </p>
+      )}
 
       <div className="flex gap-3 sticky bottom-3">
-        <button
-          type="submit"
-          disabled={busy}
-          className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-4 shadow disabled:opacity-60"
-        >
-          {busy ? 'Saving…' : mode === 'create' ? 'Save Load' : 'Update Load'}
-        </button>
+        {mode === 'create' ? (
+          <>
+            {/* The harvest-entry workhorse: save, then a fresh form seeded
+                from this load — so it leads, full-primary. */}
+            <button
+              type="submit"
+              disabled={busy}
+              onClick={() => { saveAndNewRef.current = true }}
+              className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-4 shadow disabled:opacity-60"
+            >
+              {busy ? 'Saving…' : 'Save & New'}
+            </button>
+            <button
+              type="submit"
+              disabled={busy}
+              onClick={() => { saveAndNewRef.current = false }}
+              className="rounded-xl bg-white border-2 border-brand text-brand-deep font-semibold px-5 py-4 disabled:opacity-60"
+            >
+              Save
+            </button>
+          </>
+        ) : (
+          <button
+            type="submit"
+            disabled={busy}
+            className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-4 shadow disabled:opacity-60"
+          >
+            {busy ? 'Saving…' : 'Update Load'}
+          </button>
+        )}
         <button
           type="button"
           onClick={() => router.back()}

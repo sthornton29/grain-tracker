@@ -1,6 +1,13 @@
-// Last-load defaults — the ONE seam that seeds a new load from the org's most
+// Last-load defaults — the ONE seam that seeds a new load from the most
 // recently ENTERED load (by created_at, not the load's own date: a hauling
 // session resumed the next morning must key off last night's entries).
+//
+// PER-USER (073): defaults follow the CURRENT USER's own last-entered load
+// (loads.created_by), so two people entering different load types don't
+// stomp each other's pre-fills. Only when the user has no loads yet does the
+// seam fall back to the org's last load. The form fetches the two tiers
+// separately (the user's newest rows, then the org's) and picks via
+// pickPerUserLastLoadDefaults.
 //
 // Covers every source/destination shape the form can produce — field→bin,
 // field→buyer, and bin→buyer alike (the old inline version applied to bin
@@ -56,6 +63,15 @@ export function pickLastLoadDefaults<T extends { from_type: string | null; to_ty
   rows: T[],
 ): T | null {
   return rows.find((l) => !isTransferShape(l)) ?? null
+}
+
+/** Per-user tiering (073): the user's own newest non-transfer load wins;
+ *  the org's newest is the fallback only when the user has none yet.
+ *  Both lists must be ordered newest-entered first. */
+export function pickPerUserLastLoadDefaults<T extends { from_type: string | null; to_type: string | null }>(
+  args: { mine: T[]; org: T[] },
+): T | null {
+  return pickLastLoadDefaults(args.mine) ?? pickLastLoadDefaults(args.org)
 }
 
 export function applyLastLoadDefaults<F extends DefaultableForm>(

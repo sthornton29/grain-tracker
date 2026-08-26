@@ -5,7 +5,7 @@ import CottonYieldsSection from '@/components/reports/cotton-yields-section'
 import { createClient } from '@/lib/supabase/client'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
-import { fieldCropAggregates, analyzeYields, type CombineEntryLike } from '@/lib/yields'
+import { fieldCropAggregates, analyzeYields, expectedYieldForPlanting, type CombineEntryLike, type ExpectedYieldAssumption } from '@/lib/yields'
 import { isCottonCrop } from '@/lib/marketing'
 import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
@@ -45,6 +45,7 @@ export default function SeasonSummaryPage() {
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
   const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
+  const [assumptions, setAssumptions] = useState<ExpectedYieldAssumption[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
   const [farms, setFarms] = useState<Array<{ id: string; entity_id: string | null }>>([])
   const [fields, setFields] = useState<Array<{ id: string; farm_id: string | null }>>([])
@@ -55,7 +56,7 @@ export default function SeasonSummaryPage() {
 
   async function refresh() {
     setLoading(true)
-    const [cr, pl, lo, sp, en, fa, fi, ce] = await Promise.all([
+    const [cr, pl, lo, sp, en, fa, fi, ce, ca] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
       supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id'),
@@ -65,6 +66,8 @@ export default function SeasonSummaryPage() {
       supabase.from('fields').select('id, farm_id'),
       // May not exist yet (migration 062): an error leaves data null → [].
       supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
+      // Expected yields — the thin-peers comparison tier in analyzeYields.
+      supabase.from('crop_assumptions').select('crop_id, crop_year, expected_yield, expected_yield_irr, expected_yield_dry'),
     ])
     setCrops((cr.data as Crop[]) || [])
     setPlantings((pl.data as FieldPlanting[]) || [])
@@ -74,6 +77,7 @@ export default function SeasonSummaryPage() {
     setFarms((fa.data as Array<{ id: string; entity_id: string | null }>) || [])
     setFields((fi.data as Array<{ id: string; farm_id: string | null }>) || [])
     setCombineEntries((ce.data as CombineEntryLike[]) || [])
+    setAssumptions((ca.data as ExpectedYieldAssumption[]) || [])
     setLoading(false)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
@@ -113,21 +117,25 @@ export default function SeasonSummaryPage() {
 
   // Unharvested / in-progress fields are excluded from the season's production
   // and yield (per crop). Acreage columns still count every planted field.
-  const yieldAnalysis = useMemo(() => analyzeYields(
-    yearPlantings.map((p) => {
-      const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
-      return {
-        id: p.id,
-        cropId: p.crop_id,
-        acres: Number(p.planted_acres),
-        dryBu: agg?.dryBu ?? 0,
-        lastLoadDate: agg?.lastLoadDate ?? null,
-        override: p.yield_include_override,
-        combineComplete: agg?.combine?.harvestComplete,
-      }
-    }),
+  const yieldAnalysis = useMemo(() => {
+    const assumptionByCrop = new Map(assumptions.filter((a) => a.crop_year === year).map((a) => [a.crop_id, a]))
+    return analyzeYields(
+      yearPlantings.map((p) => {
+        const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
+        return {
+          id: p.id,
+          cropId: p.crop_id,
+          acres: Number(p.planted_acres),
+          dryBu: agg?.dryBu ?? 0,
+          lastLoadDate: agg?.lastLoadDate ?? null,
+          override: p.yield_include_override,
+          combineComplete: agg?.combine?.harvestComplete,
+          expectedYield: expectedYieldForPlanting(assumptionByCrop.get(p.crop_id), p),
+        }
+      }),
+    )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  ), [plantings, aggByKey, year, scope])
+  }, [plantings, assumptions, aggByKey, year, scope])
 
   type Agg = {
     cropName: string

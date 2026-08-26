@@ -29,7 +29,7 @@ import {
   type PolicyInputs, type Practice, type CountyAssumptionLike,
 } from '@/lib/crop-insurance'
 import { cropToHedgeCommodity } from '@/lib/contracts'
-import { analyzeYields, harvestStatusOf, IN_PROGRESS_THRESHOLD, type FieldCropAgg, type HarvestStatus } from '@/lib/yields'
+import { analyzeYields, expectedYieldForPlanting, harvestStatusOf, IN_PROGRESS_THRESHOLD, type ExpectedYieldAssumption, type FieldCropAgg, type HarvestStatus } from '@/lib/yields'
 import type {
   Contract, Crop, CropAssumption, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco,
   CropInsuranceStax, CropInsuranceMco,
@@ -105,6 +105,8 @@ type SplitPlanting = {
   season_year: number
   planted_acres: number | string | null
   yield_include_override?: boolean | null
+  irrigated_acres?: number | string | null
+  dryland_acres?: number | string | null
 }
 
 // Split each crop's acres into harvested-fact vs still-in-the-field, using the
@@ -122,6 +124,8 @@ export function splitHarvestByCrop(args: {
   aggByKey: Map<string, FieldCropAgg>
   cropYear: number
   cropCompleteKeys: ReadonlySet<string>
+  /** crop_assumptions rows — the thin-peers expected-yield comparison tier. */
+  assumptions?: readonly ExpectedYieldAssumption[] | null
   now?: Date
 }): { byCrop: Map<string, HarvestSplit>; statusByPlanting: Map<string, HarvestStatus> } {
   const aggByFieldCrop = new Map<string, FieldCropAgg>()
@@ -138,6 +142,10 @@ export function splitHarvestByCrop(args: {
     }
   }
   const yearPlantings = args.plantings.filter((p) => p.season_year === args.cropYear)
+  const assumptionByCrop = new Map<string, ExpectedYieldAssumption>()
+  for (const a of args.assumptions ?? []) {
+    if (a.crop_year === args.cropYear) assumptionByCrop.set(a.crop_id, a)
+  }
   const analysis = analyzeYields(
     yearPlantings.map((p) => {
       const agg = aggByFieldCrop.get(`${p.field_id}|${p.crop_id}`)
@@ -146,6 +154,10 @@ export function splitHarvestByCrop(args: {
         dryBu: agg?.dryBu ?? 0, lastLoadDate: agg?.lastLoadDate ?? null,
         override: p.yield_include_override ?? null,
         combineComplete: agg?.combine?.harvestComplete,
+        expectedYield: expectedYieldForPlanting(assumptionByCrop.get(p.crop_id), {
+          irrigated_acres: p.irrigated_acres ?? null,
+          dryland_acres: p.dryland_acres ?? null,
+        }),
       }
     }),
     IN_PROGRESS_THRESHOLD, args.now ?? new Date(),
