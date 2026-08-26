@@ -1288,7 +1288,8 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         {mode === 'create' ? (
           <>
             {/* The harvest-entry workhorse: save, then a fresh form seeded
-                from this load — so it leads, full-primary. */}
+                from this load — so it leads, full-primary. Both save buttons
+                share the row equally (flex-1). */}
             <button
               type="submit"
               disabled={busy}
@@ -1301,7 +1302,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
               type="submit"
               disabled={busy}
               onClick={() => { saveAndNewRef.current = false }}
-              className="rounded-xl bg-white border-2 border-brand text-brand-deep font-semibold px-5 py-4 disabled:opacity-60"
+              className="flex-1 rounded-xl bg-white border-2 border-brand text-brand-deep font-semibold py-4 disabled:opacity-60"
             >
               Save
             </button>
