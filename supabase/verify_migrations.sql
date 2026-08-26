@@ -8,8 +8,8 @@
 -- How to read the result:
 --   Row 1 is the verdict. Any '✗ MISSING' row names the migration file to run
 --   (supabase/NNN_*.sql) — run them in ascending order.
---   '– data-only' rows (046) rewrite existing rows and leave no schema
---   fingerprint, so they cannot be verified structurally.
+--   046 is data-only, so it is checked by the data state it guarantees (no
+--   ¢-scale cotton insurance price remains) rather than a schema artifact.
 --
 -- Companion deep-dives (also read-only): verify_052.sql (viewer RLS census),
 -- verify_053.sql / verify_054.sql (multi-tenant org isolation).
@@ -76,7 +76,14 @@ checks(seq, migration, evidence, applied) as (values
   ( 43, '043_variety_match_dismissals',       'table variety_match_dismissals',                 exists (select 1 from tbls where t = 'variety_match_dismissals')),
   ( 44, '044_cotton_physical_marketing',      'table cotton_sales_contracts',                   exists (select 1 from tbls where t = 'cotton_sales_contracts')),
   ( 45, '045_area_plans_county_assumption',   'table county_yield_assumptions',                 exists (select 1 from tbls where t = 'county_yield_assumptions')),
-  ( 46, '046_cotton_insurance_price_units',   'data-only unit rewrite — no fingerprint',        null::boolean),
+  -- 046 is a data-only rewrite (¢/lb → $/lb on upland cotton insurance
+  -- prices), so it is verified by the STATE it guarantees: no cotton policy /
+  -- RMA-native estimate price > 5 remains. ✓ also means "never had bad data"
+  -- — either way there is nothing to run. Probes via query_to_xml like 027.
+  ( 46, '046_cotton_insurance_price_units',   'no ¢-scale cotton insurance prices remain',
+        case when exists (select 1 from tbls where t = 'crop_insurance_policies') and exists (select 1 from tbls where t = 'harvest_price_estimates')
+             then (xpath('/row', query_to_xml('select 1 where exists (select 1 from public.crop_insurance_policies p join public.crops c on c.id = p.crop_id where c.name ilike ''%cotton%'' and c.name not ilike ''%seed%'' and (p.projected_price > 5 or p.harvest_price > 5)) or exists (select 1 from public.harvest_price_estimates e join public.crops c on c.id = e.crop_id where c.name ilike ''%cotton%'' and c.name not ilike ''%seed%'' and e.price_type in (''projected'', ''harvest_final'') and e.price > 5)', false, true, '')))[1] is null
+             else false end),
   ( 47, '047_county_yield_differential',      'county_yield_assumptions.yield_differential',    exists (select 1 from cols where t = 'county_yield_assumptions' and c = 'yield_differential')),
   ( 48, '048_crop_budget_planner',            'table budget_scenarios',                         exists (select 1 from tbls where t = 'budget_scenarios')),
   ( 49, '049_budget_practice_breakout',       'budget_lines.cropping',                          exists (select 1 from cols where t = 'budget_lines' and c = 'cropping')),
