@@ -2,44 +2,45 @@
 page_route: /reports/buyer-discounts
 title: Buyer Discount Comparison
 updated: 2026-08-28
-keywords: buyer, discounts, comparison, moisture, drying, test weight, shrink, dockage, discount schedule, cents per bushel, audit, quality adjusted
+keywords: buyer, discounts, comparison, lost revenue, moisture, drying, test weight, shrink, dockage, discount schedule, cents per bushel, contracted bushels, audit, quality adjusted
 ---
 ## What this page is for
 
-Every buyer takes something off your check — drying, test weight, dockage, and the weight their scale shrinks away. This report puts your buyers side by side, in cents per bushel, so you can see what each one really costs to sell to. The idea is simple: same crop, same year, similar grain — so a pattern where one buyer consistently deducts more is the buyer, not the grain.
+Every buyer takes something off what you gross — but they don't take it the same way. One prints drying charges in dollars, another quietly pays you on fewer bushels than your scale says, a third does both. This report puts them all on one honest yardstick: **lost revenue from discounting, in cents per bushel**, by buyer, crop, and crop year. Price discounts count as the dollars taken off the check; volume cuts count as the bushels paid below your FSA-standard dry bushels, valued at that settlement's own price. One number, every mechanism.
 
-## How to use it
+## The lead number: lost ¢ per contracted bushel
 
-Pick a crop year (required) and, if you like, a single crop. Four sections build on each other:
+When a settlement's loads deliver against a contract, the fairest denominator is the **contract's bushels** — that's the deal you priced, and it's what the discounting eroded. The lead column divides each buyer's lost dollars by their contracts' bushels (weighted across contracts); rank 1 is the cheapest buyer to sell to. Beside it, **lost ¢ per settled bushel** covers every settlement — and stands in (marked *spot/unlinked*) for buyers whose settlements have no contract behind them.
 
-- **Actual discounts by buyer** — one row per buyer per crop: how many settlements, how many bushels, the total discounts in ¢/bu, that total broken out by type (moisture/drying, test weight, damage, foreign material/dockage, other), the weight taken beyond standard shrink, and the gross-to-net price. Buyers are ranked by total cost per bushel, and each buyer's costliest deduction type is highlighted. Tap a buyer's row to see the settlements behind it.
-- **Quality-adjusted** — the honest layer. Raw averages can just mean you hauled wetter grain to one buyer, so this table divides each buyer's moisture/drying charges by how many points over base your grain actually ran, and their test-weight charges by how many pounds light it was. That gives a charge **per point** and **per pound** — like for like. Each buyer's average moisture and test weight sit beside the rates so you can judge whether two buyers really saw similar grain; when they did, the report says it plainly ("Buyer A charged 2.1¢ per point of moisture; Buyer B charged 3.4¢ on similar grain").
-- **Published discount schedules** — upload each buyer's posted discount sheet (see below) and this table lines their rules up per factor: the pre-season "who's punitive on test weight this year" view.
-- **Expected vs actual** — for each settlement, the buyer's own published rules are applied to your matched loads' known moisture and test weight, and the result is compared to what they actually charged. A red flag means the charge ran materially above their own sheet — worth a phone call. Schedules carry effective dates, and the check always uses the schedule that was in force on the settlement date.
+The category columns split the loss by type — moisture/drying, test weight, damage, FM/dockage, other, and **weight deduction** (pay-bushels taken beyond standard shrink that the statement didn't break out). The costliest type per buyer is highlighted. Tap a buyer's row to open its contracts, and each contract's settlements underneath.
 
-## Uploading a discount schedule
+## The other sections
 
-Use **Upload discount schedule (AI)** at the bottom of this report (or on Settings → Buyers). Take a photo or upload the buyer's discount sheet; Turnrow reads the rules — where charges start, the rate per point or the bracket scale, rejection points — and shows them for review. Pick the buyer, crop, and effective date, then confirm. Nothing is saved until you confirm, and the sheet's own text stays attached to the record. When a buyer posts a new sheet mid-season, upload it too — the effective dates keep both in play, each applied to its own dates.
+- **Quality-adjusted detail** (collapsed by default) — corrects for the grain each buyer actually saw: their moisture/drying charges per point over base, their test-weight charges per pound light, with each buyer's average moisture and test weight shown so you can judge whether two buyers really got similar grain.
+- **Published discount schedules** — each buyer's posted sheet side by side per factor. Schedules live with the buyer on Settings → Buyers (crop, effective date, the original document attached).
+- **Expected vs actual** — the buyer's own published rules applied to your matched loads' known moisture and test weight, next to what they actually charged. A red flag means the charge ran materially above their own sheet — worth a phone call. Schedules carry effective dates, and the check always uses the sheet in force on the settlement date.
 
 ## How the numbers work
 
-- All ¢/bu figures divide by the buyer's **settled (pay) bushels**.
-- **Total disc ¢/bu** comes from the settlement lines' discount totals — the per-type columns come from the itemized discount lines on each settlement (entered by the AI upload or by hand on the settlement's page). A buyer marked "partly itemized" has settlements without that breakdown, so their per-type columns understate.
-- **Excess shrink** is the gap between your FSA-standard dry bushels and the bushels the buyer paid on, priced at that settlement's own price. It's a real cost the price discounts never show — a buyer with mild discounts but a hungry scale shows up here.
-- **Total cost ¢/bu** = price discounts + excess shrink; the ranking uses it.
-- Settlements join a crop and crop year through their matched loads, so a settlement with no matched loads doesn't appear.
+- **Lost revenue** = itemized price discounts (dollars off the check) **plus** the gap between your FSA-standard dry bushels and the buyer's pay bushels, valued at that settlement's own prices. When a statement itemizes its weight deductions (shrink pounds, FM weight), those lines say *which column* the gap lands in — the dollars are never counted twice.
+- Settlements join a crop, crop year, and contract through their **matched loads** — a settlement with no matched loads doesn't appear. A buyer who paid on *more* bushels than standard shrink shows a negative (green) weight deduction.
+- Category columns come from the itemized discount lines on each settlement (the AI upload fills them; you can add or fix them on the settlement's page). Un-itemized settlements still count in the totals, with their volume gap under Weight deduction.
 
 For **read-only users**, the report covers the settlements whose matched loads belong to your granted entities.
 
+## You can also just ask
+
+The **Ask Turnrow** assistant answers from this same data: "What will [buyer] dock me for 17% corn?" reads the buyer's stored schedule (the app does the tier math, not the assistant), and "Who was cheapest on light test weight last year?" reads the settlement actuals behind this report.
+
 ## Common questions
 
-- **A buyer's per-type columns are empty but their total isn't.** Their settlements haven't been itemized. Open a settlement, and add its deduction lines in the Discounts section — the columns fill in.
-- **Why is a buyer missing?** None of their settlements' lines matched to loads in the selected crop year. Match the lines on the settlement's page first.
-- **The quality-adjusted table says it needs more data.** It can only rate buyers from itemized settlements whose matched loads carry moisture or test-weight readings — those come from your scale tickets on the Loads page.
-- **The audit flagged a settlement — now what?** Open it, look at the flagged factor's expected vs charged figures, and check the original statement against the buyer's sheet. Flags are a reason to ask, not proof of a mistake — a load's grade sheet may show damage yours doesn't.
+- **Why does the lead column show an asterisk for a buyer?** Their settlements aren't linked to any contract — the settled-bushel figure stands in, and the row is marked spot/unlinked.
+- **A buyer looks cheap here but their check always feels light.** Check their Weight deduction column — volume-style discounting never shows up as a price discount, but it shows up here.
+- **Why is a buyer's moisture/drying column empty but their total isn't?** Their settlements aren't itemized. Open one and add its deduction lines in the Discounts section.
+- **The audit flagged a settlement — now what?** Open it and compare the flagged factor's expected vs charged figures against the original statement. Flags are a reason to ask, not proof of a mistake.
 
 ## If something looks wrong
 
-- Rates that look extreme usually trace to one small settlement — tap the buyer's row and check the settlements behind it.
-- If a schedule's rules read wrong, delete it on Settings → Buyers and re-upload, correcting the rules on the review screen before confirming.
+- A number that looks extreme usually traces to one small settlement — open the buyer's drill-down and check the settlements behind it.
+- If a schedule's rules read wrong, delete it on the buyer's card (Settings → Buyers) and re-upload, correcting the rules on the review screen before confirming.
 - Numbers that won't reconcile after that: contact support.

@@ -55,7 +55,7 @@ begin
     'settlement_discount_items', 'buyer_discount_schedules', 'buyer_discount_schedule_rules',
     'futures_positions', 'options_positions',
     'crop_assumptions', 'county_yield_assumptions', 'crop_year_sales_status',
-    'harvest_price_estimates', 'variety_match_dismissals', 'combine_yield_entries', 'external_trucks', 'assistant_usage', 'lease_terms', 'rent_settlements',
+    'harvest_price_estimates', 'variety_match_dismissals', 'combine_yield_entries', 'external_trucks', 'assistant_usage', 'lease_terms', 'rent_settlements', 'org_dryers',
     'crop_insurance_policies', 'crop_insurance_sco', 'crop_insurance_eco',
     'crop_insurance_stax', 'crop_insurance_mco',
     'farm_base_acres', 'arc_plc_elections', 'arc_plc_payments',
@@ -95,7 +95,8 @@ begin
   foreach t in array array[
     'counties', 'covered_commodities', 'commodity_specs', 'market_prices',
     'program_year_config', 'arc_benchmark_data', 'mya_monthly_prices',
-    'fsa_benchmark_cache', 'fsa_benchmark_fetches', 'awp_weekly', 'arc_plc_price_data'
+    'fsa_benchmark_cache', 'fsa_benchmark_fetches', 'awp_weekly', 'arc_plc_price_data',
+    'dryer_models' -- 076 (creates its own policies too; listed for the re-run path)
   ] loop
     if not exists (select 1 from pg_policies where tablename = t and policyname = t || '_global_owner_write') then
       execute format('create policy %I on public.%I as restrictive for insert to authenticated with check (auth.uid() is not null and public.app_role() = ''owner'')', t || '_global_owner_write', t);

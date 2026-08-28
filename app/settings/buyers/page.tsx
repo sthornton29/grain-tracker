@@ -8,7 +8,7 @@ import SettingsDocImport from '@/components/settings-doc-import'
 import DiscountScheduleImport from '@/components/discount-schedule-import'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { matchExistingBuyer, BUYER_FINDER_RADII, type BuyerFinderHit } from '@/lib/ai-lookups'
-import type { Buyer, DeliveryLocation } from '@/lib/types'
+import type { Buyer, BuyerDiscountSchedule, DeliveryLocation } from '@/lib/types'
 
 type LocForm = { name: string; address: string }
 const emptyLoc: LocForm = { name: '', address: '' }
@@ -22,7 +22,13 @@ export default function BuyersPage() {
   const supabase = useMemo(() => createClient(), [])
   const [buyers, setBuyers] = useState<Buyer[]>([])
   const [locs, setLocs] = useState<DeliveryLocation[]>([])
-  const [cropNames, setCropNames] = useState<string[]>([])
+  const [cropList, setCropList] = useState<Array<{ id: string; name: string }>>([])
+  // Discount schedules (074) live WITH the buyer — listed and uploaded per
+  // buyer here; the Buyer Discount Comparison report and the Dryer Math tool
+  // read from this one home.
+  const [schedules, setSchedules] = useState<BuyerDiscountSchedule[]>([])
+  const [scheduleRuleCounts, setScheduleRuleCounts] = useState<Map<string, number>>(new Map())
+  const [uploadOpenBuyerId, setUploadOpenBuyerId] = useState<string | null>(null)
   // AI buyer finder state. Zip + radius persist so the next search starts
   // where the last one left off.
   const [finderOpen, setFinderOpen] = useState(false)
@@ -44,16 +50,43 @@ export default function BuyersPage() {
   const [err, setErr] = useState<string | null>(null)
 
   async function refresh() {
-    const [b, l, c] = await Promise.all([
+    const [b, l, c, s, r] = await Promise.all([
       supabase.from('buyers').select('*').order('name'),
       supabase.from('delivery_locations').select('*').order('name'),
-      supabase.from('crops').select('name').order('name'),
+      supabase.from('crops').select('id, name').order('name'),
+      supabase.from('buyer_discount_schedules').select('*').order('effective_date', { ascending: false }),
+      supabase.from('buyer_discount_schedule_rules').select('id, schedule_id'),
     ])
     setBuyers((b.data as Buyer[]) || [])
     setLocs((l.data as DeliveryLocation[]) || [])
-    setCropNames(((c.data as Array<{ name: string }>) || []).map((x) => x.name))
+    setCropList((c.data as Array<{ id: string; name: string }>) || [])
+    setSchedules((s.data as BuyerDiscountSchedule[]) || [])
+    const counts = new Map<string, number>()
+    for (const row of ((r.data as Array<{ schedule_id: string }>) || [])) {
+      counts.set(row.schedule_id, (counts.get(row.schedule_id) ?? 0) + 1)
+    }
+    setScheduleRuleCounts(counts)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
+
+  const cropNames = useMemo(() => cropList.map((c) => c.name), [cropList])
+  const cropNameById = useMemo(() => new Map(cropList.map((c) => [c.id, c.name])), [cropList])
+  const schedulesByBuyer = useMemo(() => {
+    const m = new Map<string, BuyerDiscountSchedule[]>()
+    for (const s of schedules) {
+      const arr = m.get(s.buyer_id) ?? []
+      arr.push(s)
+      m.set(s.buyer_id, arr)
+    }
+    return m
+  }, [schedules])
+
+  async function removeSchedule(s: BuyerDiscountSchedule) {
+    if (!confirm('Delete this discount schedule? Its rules are deleted too, and the reports stop auditing against it.')) return
+    const { error } = await supabase.from('buyer_discount_schedules').delete().eq('id', s.id)
+    if (error) { setErr(error.message); return }
+    refresh()
+  }
 
   const locsByBuyer = useMemo(() => {
     const m = new Map<string, DeliveryLocation[]>()
@@ -224,8 +257,6 @@ export default function BuyersPage() {
       <SettingsDocImport primaryTarget="buyers" title="Upload a Buyer List (AI)" onSaved={refresh} />
 
       <CsvImport config={buyersImportConfig()} onImported={refresh} />
-
-      <DiscountScheduleImport showList />
 
       <form onSubmit={addBuyer} className="bg-white rounded-xl shadow p-4 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
         <input
@@ -398,13 +429,16 @@ export default function BuyersPage() {
                     <div className="font-semibold">{b.name}</div>
                     <div className="text-sm text-slate-500">
                       {list.length} delivery location{list.length === 1 ? '' : 's'}
+                      {(schedulesByBuyer.get(b.id)?.length ?? 0) > 0 && (
+                        <> · {schedulesByBuyer.get(b.id)!.length} discount schedule{schedulesByBuyer.get(b.id)!.length === 1 ? '' : 's'}</>
+                      )}
                     </div>
                   </div>
                   <button
-                    onClick={() => setExpandedBuyerId(isExpanded ? null : b.id)}
+                    onClick={() => { setExpandedBuyerId(isExpanded ? null : b.id); setUploadOpenBuyerId(null) }}
                     className="text-slate-600 text-sm"
                   >
-                    {isExpanded ? 'Hide locations' : 'Show locations'}
+                    {isExpanded ? 'Hide details' : 'Locations & schedules'}
                   </button>
                   <button
                     onClick={() => { setEditingBuyerId(b.id); setEditBuyerName(b.name) }}
@@ -476,6 +510,60 @@ export default function BuyersPage() {
                       ))}
                     </ul>
                   )}
+
+                  {/* Discount schedules attached to THIS buyer (074) — the one
+                      home the comparison report and dryer tool read from. */}
+                  <div className="pt-2 space-y-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="text-sm font-semibold flex-1">Discount schedules</div>
+                      <button
+                        type="button"
+                        onClick={() => setUploadOpenBuyerId(uploadOpenBuyerId === b.id ? null : b.id)}
+                        className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-1.5"
+                      >
+                        {uploadOpenBuyerId === b.id ? 'Hide upload' : 'Upload discount schedule (AI)'}
+                      </button>
+                    </div>
+                    {(schedulesByBuyer.get(b.id) ?? []).length === 0 ? (
+                      <p className="text-sm text-slate-400">
+                        None on file — upload the buyer&rsquo;s posted discount sheet and Turnrow reads its rules. The
+                        Buyer Discount Comparison report and the Grain Dryer Math tool use them.
+                      </p>
+                    ) : (
+                      <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg">
+                        {(schedulesByBuyer.get(b.id) ?? []).map((s) => (
+                          <li key={s.id} className="px-3 py-2 flex items-start gap-3">
+                            <div className="flex-1 min-w-0">
+                              <div className="font-medium text-sm">
+                                {cropNameById.get(s.crop_id) ?? 'Crop'}
+                                <span className="text-slate-500 font-normal"> · effective {s.effective_date}</span>
+                              </div>
+                              <div className="text-xs text-slate-500">
+                                {scheduleRuleCounts.get(s.id) ?? 0} rule{(scheduleRuleCounts.get(s.id) ?? 0) === 1 ? '' : 's'}
+                                {s.source_pdf_url && (
+                                  <> · <a href={s.source_pdf_url} target="_blank" rel="noreferrer" className="text-brand-deep">original ↗</a></>
+                                )}
+                              </div>
+                              {s.schedule_text && (
+                                <details className="text-xs text-slate-500 mt-1">
+                                  <summary className="cursor-pointer">Schedule text</summary>
+                                  <pre className="whitespace-pre-wrap font-sans mt-1">{s.schedule_text}</pre>
+                                </details>
+                              )}
+                            </div>
+                            <button type="button" onClick={() => removeSchedule(s)} className="text-red-600 text-sm">Delete</button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {uploadOpenBuyerId === b.id && (
+                      <DiscountScheduleImport
+                        bare
+                        lockedBuyerId={b.id}
+                        onChanged={() => { setUploadOpenBuyerId(null); refresh() }}
+                      />
+                    )}
+                  </div>
                 </div>
               )}
             </li>

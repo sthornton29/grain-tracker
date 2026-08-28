@@ -339,6 +339,9 @@ export type SettlementDiscountItem = {
   amount: number
   rate_note: string | null
   quantity_basis: string | null
+  /** 075: 'price' (dollars off the check) vs 'weight' (an itemized volume
+   *  deduction — categorizes the shrink-gap, never summed as dollars). */
+  deduction_kind: 'price' | 'weight'
   created_at: string
 }
 

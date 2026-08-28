@@ -53,9 +53,20 @@ export function coerceDiscountCategory(s: string | null | undefined): DiscountCa
   return isDiscountCategory(v) ? v : 'other'
 }
 
+export type DeductionKind = 'price' | 'weight'
+
+/** 'weight' only when the extraction/user explicitly says so — everything
+ *  else (including pre-075 rows with no kind) is a price deduction. */
+export function coerceDeductionKind(s: string | null | undefined): DeductionKind {
+  return s === 'weight' ? 'weight' : 'price'
+}
+
 export type DiscountItemLike = {
   category: string
   amount: number | string | null
+  /** 075: 'price' (dollars off the check) vs 'weight' (an itemized volume
+   *  deduction — informational, never summed as dollars). Absent = price. */
+  deduction_kind?: string | null
 }
 
 const num = (v: number | string | null | undefined): number => {
@@ -70,20 +81,57 @@ export function centsPerBu(amountDollars: number, settledBu: number): number | n
   return (amountDollars / settledBu) * 100
 }
 
-/** Sum the itemized lines and compare with the settlement's stated discount
- *  total (Σ settlement_lines.discounts). Flags a mismatch beyond a cent-level
- *  tolerance: $0.50 or 0.5% of the stated total, whichever is larger — real
- *  statements round each line, so exact equality is too strict. */
+/** Sum the itemized PRICE lines and compare with the settlement's stated
+ *  discount total (Σ settlement_lines.discounts). Weight-kind items (075)
+ *  are volume deductions — they were never dollars off the check, so they
+ *  stay out of the sum. Flags a mismatch beyond a cent-level tolerance:
+ *  $0.50 or 0.5% of the stated total, whichever is larger — real statements
+ *  round each line, so exact equality is too strict. */
 export function sumCheck(
   items: ReadonlyArray<DiscountItemLike>,
   statedTotalDollars: number,
 ): { itemizedTotal: number; delta: number; mismatch: boolean } {
-  const itemizedTotal = items.reduce((s, i) => s + num(i.amount), 0)
+  const priceItems = items.filter((i) => coerceDeductionKind(i.deduction_kind) === 'price')
+  const itemizedTotal = priceItems.reduce((s, i) => s + num(i.amount), 0)
   const delta = itemizedTotal - statedTotalDollars
   const tolerance = Math.max(0.5, Math.abs(statedTotalDollars) * 0.005)
-  // No itemization at all isn't a "mismatch" — there's just nothing to check.
-  const mismatch = items.length > 0 && Math.abs(delta) > tolerance
+  // No price itemization at all isn't a "mismatch" — nothing to check.
+  const mismatch = priceItems.length > 0 && Math.abs(delta) > tolerance
   return { itemizedTotal, delta, mismatch }
+}
+
+export type NormalizedDiscountItem = {
+  category: DiscountCategory
+  description: string | null
+  amount: number
+  rate_note: string | null
+  quantity_basis: string | null
+  deduction_kind: DeductionKind
+}
+
+/** Pin an extraction's (or hand-entered) discount lines to the storage
+ *  shape: category coerced to the enum (unknowns → 'other', never guessed
+ *  into a real category), kind coerced ('weight' only when stated), amount
+ *  numeric, empty strings → null. */
+export function normalizeExtractedDiscountItems(
+  raw: ReadonlyArray<{
+    category?: string | null
+    description?: string | null
+    amount?: number | string | null
+    rate_note?: string | null
+    quantity_basis?: string | null
+    deduction_kind?: string | null
+  }> | null | undefined,
+): NormalizedDiscountItem[] {
+  if (!Array.isArray(raw)) return []
+  return raw.map((i) => ({
+    category: coerceDiscountCategory(i.category),
+    description: (i.description ?? '').trim() || null,
+    amount: num(i.amount),
+    rate_note: (i.rate_note ?? '').trim() || null,
+    quantity_basis: (i.quantity_basis ?? '').trim() || null,
+    deduction_kind: coerceDeductionKind(i.deduction_kind),
+  }))
 }
 
 /** Dollars per category across a settlement's items. */

@@ -21,6 +21,7 @@ import {
   DISCOUNT_CATEGORIES,
   DISCOUNT_CATEGORY_LABELS,
   centsPerBu,
+  coerceDeductionKind,
   coerceDiscountCategory,
   sumCheck,
 } from '@/lib/settlement-discounts'
@@ -51,17 +52,20 @@ const emptyRow = (): RowDraft => ({
   notes: '',
 })
 
-// One itemized discount line (074) — the statement's own deduction lines,
-// AI-extracted or typed, saved to settlement_discount_items with the lines.
+// One itemized discount line (074/075) — the statement's own deduction
+// lines, AI-extracted or typed, saved to settlement_discount_items with the
+// lines. kind 'price' = dollars off the check; 'weight' = a volume
+// deduction (informational — the app values the shrink gap itself).
 type DiscountDraft = {
   category: string
   description: string
   amount: string
   rate_note: string
   quantity_basis: string
+  deduction_kind: string
 }
 
-const emptyDiscount = (): DiscountDraft => ({ category: 'other', description: '', amount: '', rate_note: '', quantity_basis: '' })
+const emptyDiscount = (): DiscountDraft => ({ category: 'other', description: '', amount: '', rate_note: '', quantity_basis: '', deduction_kind: 'price' })
 
 function num(s: string): number | null {
   if (s == null || s === '') return null
@@ -234,6 +238,7 @@ export default function NewSettlementPage() {
         amount: di.amount != null ? String(di.amount) : '',
         rate_note: di.rate_note ?? '',
         quantity_basis: di.quantity_basis ?? '',
+        deduction_kind: coerceDeductionKind(di.deduction_kind),
       })))
       setAiBanner(
         `AI extracted ${nextRows.length} line item${nextRows.length === 1 ? '' : 's'}` +
@@ -332,6 +337,7 @@ export default function NewSettlementPage() {
         amount: num(d.amount) ?? 0,
         rate_note: d.rate_note.trim() || null,
         quantity_basis: d.quantity_basis.trim() || null,
+        deduction_kind: coerceDeductionKind(d.deduction_kind),
       }))
     if (items.length > 0) {
       const { error: dErr } = await supabase.from('settlement_discount_items').insert(items)
@@ -523,7 +529,7 @@ export default function NewSettlementPage() {
 
           {(() => {
             const lineDiscTotal = rows.reduce((s, r) => s + (num(r.discounts) ?? 0), 0)
-            const check = sumCheck(discountRows.map((d) => ({ category: d.category, amount: num(d.amount) ?? 0 })), lineDiscTotal)
+            const check = sumCheck(discountRows.map((d) => ({ category: d.category, amount: num(d.amount) ?? 0, deduction_kind: d.deduction_kind })), lineDiscTotal)
             return check.mismatch ? (
               <p className="text-sm rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-amber-900">
                 The itemized lines add to ${fmt(check.itemizedTotal)}, but the line discounts total ${fmt(lineDiscTotal)}.
@@ -541,14 +547,15 @@ export default function NewSettlementPage() {
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-100 text-slate-700">
                   <tr>
-                    {['Type', 'Statement wording', '$', '¢/bu', 'Rate', ''].map((h, i) => (
+                    {['Type', 'Kind', 'Statement wording', '$', '¢/bu', 'Rate', ''].map((h, i) => (
                       <th key={h || i} className={`px-2 py-2 whitespace-nowrap ${h === '$' || h === '¢/bu' ? 'text-right' : 'text-left'}`}>{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {discountRows.map((d, i) => {
-                    const cents = centsPerBu(num(d.amount) ?? 0, totals.netBu)
+                    const isWeight = d.deduction_kind === 'weight'
+                    const cents = isWeight ? null : centsPerBu(num(d.amount) ?? 0, totals.netBu)
                     return (
                       <tr key={i} className="border-t border-slate-100 align-top">
                         <td className="px-2 py-1">
@@ -558,6 +565,17 @@ export default function NewSettlementPage() {
                             className={inputCls}
                           >
                             {DISCOUNT_CATEGORIES.map((c) => <option key={c} value={c}>{DISCOUNT_CATEGORY_LABELS[c]}</option>)}
+                          </select>
+                        </td>
+                        <td className="px-2 py-1">
+                          <select
+                            value={d.deduction_kind}
+                            onChange={(e) => setDiscountRows((ds) => ds.map((x, j) => (i === j ? { ...x, deduction_kind: e.target.value } : x)))}
+                            className={inputCls}
+                            title="Price = dollars off the check. Weight = bushels/pounds taken instead — Turnrow values that from its own load reconciliation."
+                          >
+                            <option value="price">Price $</option>
+                            <option value="weight">Weight</option>
                           </select>
                         </td>
                         <td className="px-2 py-1" style={{ minWidth: 160 }}>

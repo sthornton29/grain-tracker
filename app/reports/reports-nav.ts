@@ -79,6 +79,7 @@ export const REPORT_GROUPS: ReportNavGroup[] = [
   {
     title: 'Operational Reports',
     reports: [
+      { label: 'Grain Dryer Math', href: '/reports/dryer-math', description: 'What drying really costs per bushel: fuel and shrink by incoming moisture for your dryer, the price of overdrying past base, and dry-it-or-haul-it-wet against a buyer\'s discount schedule.' },
       { label: 'Load Log', href: '/loads', external: true, description: 'The full load log — search, filter, and export. Opens the standalone Loads page.' },
       { label: 'Contract Tracker', href: '/contracts', external: true, description: 'Delivered vs. contracted with pricing and payment status. Opens the standalone Contracts page.' },
       { label: 'Unpaid Loads', href: '/loads/unpaid', external: true, description: 'Buyer-delivered loads with no matching settlement line. Opens the standalone page.' },

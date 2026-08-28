@@ -63,6 +63,9 @@ export type SettlementDiscountItemExtraction = {
   amount: number | null
   rate_note: string | null
   quantity_basis: string | null
+  // 075: 'price' (dollars off the check) vs 'weight' (a volume deduction).
+  // Absent on older parses; coerceDeductionKind reads absent as 'price'.
+  deduction_kind?: string | null
 }
 
 export type SettlementExtraction = {

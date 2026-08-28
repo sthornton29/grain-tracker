@@ -98,11 +98,11 @@ export function mergeSettlements(parts: SettlementExtraction[]): SettlementExtra
   // them into one item, keeping the first non-null rate/basis text.
   const deduped = mergeList(
     parts.map((p) => p.discount_items ?? []),
-    (i) => `${norm(i.category)}|${norm(i.description)}|${i.amount ?? ''}`,
+    (i) => `${norm(i.deduction_kind) || 'price'}|${norm(i.category)}|${norm(i.description)}|${i.amount ?? ''}`,
   )
   const byKey = new Map<string, SettlementDiscountItemExtraction>()
   for (const i of deduped) {
-    const key = `${norm(i.category)}|${norm(i.description)}`
+    const key = `${norm(i.deduction_kind) || 'price'}|${norm(i.category)}|${norm(i.description)}`
     const prev = byKey.get(key)
     if (!prev) {
       byKey.set(key, { ...i })

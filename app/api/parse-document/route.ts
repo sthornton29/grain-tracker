@@ -38,14 +38,15 @@ Also extract these document-level fields:
 - settlement_date (the date on the settlement, format YYYY-MM-DD)
 - settlement_number (any reference number, check number, or settlement ID — null if not found)
 
-ALSO itemize EVERY discount, deduction, or fee line the statement shows into document-level discount_items — moisture shrink, drying charges, test weight, damage, heat damage, foreign material, dockage, splits, sprout damage, musty/sour, checkoff and other fees. For each distinct discount line:
-- category: exactly one of "moisture_shrink" | "drying" | "test_weight" | "damage" | "heat_damage" | "foreign_material" | "dockage" | "splits" | "sprout" | "musty_sour" | "other" (checkoff and service fees are "other")
-- description: the statement's OWN wording for the line, verbatim (e.g. "DRYING CHG", "TW DISC 53.4#")
-- amount: the total dollars deducted for that line across the whole statement, as a positive number
+ALSO itemize the statement's discounts into document-level discount_items. IMPORTANT: every buyer formats discounts differently — some print named line items, some use footnote codes explained at the bottom, some put discounts as columns on the grade line, some bury weight adjustments inside the bushel math (gross bushels quietly reduced to pay bushels), and some print only a combined "LESS DISCOUNTS" total. Read the WHOLE statement for all of these forms. For each deduction you can attribute:
+- category: exactly one of "moisture_shrink" | "drying" | "test_weight" | "damage" | "heat_damage" | "foreign_material" | "dockage" | "splits" | "sprout" | "musty_sour" | "other". NEVER force a category — when a line doesn't clearly fit one (checkoff, service fees, codes you can't resolve), use "other" and keep the statement's exact wording in description rather than guessing.
+- description: the statement's OWN wording for the line, verbatim (e.g. "DRYING CHG", "TW DISC 53.4#", "LESS DISCOUNTS", a footnote code with its legend text)
+- deduction_kind: "price" when the line is DOLLARS subtracted from the check (charges, docks, fees, a combined less-discounts total); "weight" when the line reduces WEIGHT or BUSHELS instead (shrink lbs, FM weight removed, dockage weight). Detect volume-style discounting by comparing the stated gross weights/bushels against the pay weights/bushels: when pay bushels are below gross beyond the printed shrink math, emit a "weight" item describing it, with the implied lbs or bushels in quantity_basis.
+- amount: for "price" items, the total dollars deducted across the whole statement (positive number). For "weight" items, the dollar value ONLY if the statement itself prices the weight taken; otherwise 0 (the app values weight deductions from its own reconciliation — never invent a dollar figure).
 - rate_note: the rate exactly as printed, e.g. "4¢/lb under 54" or "$.025 per 1/2% over 15%" — null when no rate is shown
-- quantity_basis: what the rate was applied to when shown, e.g. "1,024.5 bu @ 17.2%" — null otherwise
+- quantity_basis: what the deduction applied to when shown — "1,024.5 bu @ 17.2%" for a price charge, "612 lbs shrink" / "14.6 bu" for a weight deduction — null otherwise
 
-If the statement itemizes discounts per ticket line, SUM each distinct category+description across the document into ONE discount_items entry (the per-line "discounts" fields above stay per-line totals — discount_items is the document-level breakdown). The discount_items amounts should add up to the total of the per-line discounts; extract the numbers as printed and do not force them to balance. If the statement shows no discount detail at all, discount_items is [].
+If the statement itemizes discounts per ticket line, SUM each distinct category+description across the document into ONE discount_items entry (the per-line "discounts" fields above stay per-line totals — discount_items is the document-level breakdown). The "price" discount_items amounts should add up to the total of the per-line discounts; extract the numbers exactly as printed and DO NOT force them to balance — a gap is meaningful (the app flags it for the user). If the statement shows no discount detail at all, discount_items is [].
 
 Respond ONLY in JSON with no other text, no markdown backticks. Use this exact format:
 {
@@ -64,6 +65,7 @@ Respond ONLY in JSON with no other text, no markdown backticks. Use this exact f
     {
       "category": "string (one of the categories above)",
       "description": "string",
+      "deduction_kind": "price or weight",
       "amount": number,
       "rate_note": "string or null",
       "quantity_basis": "string or null"

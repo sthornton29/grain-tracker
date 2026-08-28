@@ -52,6 +52,18 @@ import { applyCombineRemainders, applyTransfers, cellFor, cellTotal, type OnHand
 import { truckExportLabel } from '@/lib/trucks'
 import { validateAssistantSql } from '@/lib/assistant-sql'
 import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
+import {
+  factorMeasurement,
+  isRejected,
+  parseTiers,
+  ruleCentsPerBu,
+  scheduleInForce,
+  summarizeRule,
+  type RuleBasis,
+  type ScheduleRuleShape,
+} from '@/lib/discount-schedules'
+import { DISCOUNT_CATEGORY_LABELS, coerceDiscountCategory } from '@/lib/settlement-discounts'
+import { buildLostRevenueRows, LOST_GROUP_LABELS, LOST_GROUP_ORDER, type LostRevenueSettlement } from '@/lib/lost-revenue'
 import type {
   AppRole,
   Contract,
@@ -823,6 +835,261 @@ async function queryData(supabase: SupabaseClient, _ctx: AssistantContext, input
   return { row_count: Array.isArray(rows) ? rows.length : 0, rows, note: 'Raw table values — weights are lb; dry bushels need the shrink math (prefer the curated tools for derived numbers).' }
 }
 
+// ---------- buyer discount schedules + history (074/075) ----------
+
+type StoredRule = {
+  schedule_id: string; factor: string; basis: string; base_value: number | string | null
+  direction: string; rate_per_unit: number | string | null; tiers: unknown
+  cumulative: boolean | null; rejection_at: number | string | null; note: string | null
+}
+
+function shapeRule(r: StoredRule): ScheduleRuleShape {
+  return {
+    factor: coerceDiscountCategory(r.factor),
+    basis: (r.basis === 'weight_shrink_pct' || r.basis === 'pct_of_price' ? r.basis : 'cents_per_bu') as RuleBasis,
+    base_value: r.base_value != null ? num(r.base_value) : null,
+    direction: r.direction === 'below' ? 'below' : 'above',
+    rate_per_unit: r.rate_per_unit != null ? num(r.rate_per_unit) : null,
+    tiers: parseTiers(r.tiers),
+    cumulative: r.cumulative === true,
+    rejection_at: r.rejection_at != null ? num(r.rejection_at) : null,
+    note: r.note,
+  }
+}
+
+function resolveByName<T extends { id: string; name: string }>(rows: T[], name: string | undefined): T | null {
+  if (!name?.trim()) return null
+  const q = name.trim().toLowerCase()
+  return rows.find((r) => r.name.trim().toLowerCase() === q)
+    ?? rows.find((r) => r.name.trim().toLowerCase().includes(q))
+    ?? null
+}
+
+async function getBuyerDiscountSchedule(
+  supabase: SupabaseClient,
+  _ctx: AssistantContext,
+  input: { buyer: string; crop?: string; moisture?: number; test_weight?: number; price_per_bu?: number },
+) {
+  const [buyers, crops, schedules, rules] = await Promise.all([
+    all<{ id: string; name: string }>(supabase.from('buyers').select('id, name')),
+    all<{ id: string; name: string; base_moisture_pct: number | string | null }>(supabase.from('crops').select('id, name, base_moisture_pct')),
+    all<{ id: string; buyer_id: string; crop_id: string; effective_date: string; schedule_text: string | null }>(
+      supabase.from('buyer_discount_schedules').select('id, buyer_id, crop_id, effective_date, schedule_text')),
+    all<StoredRule>(supabase.from('buyer_discount_schedule_rules').select('schedule_id, factor, basis, base_value, direction, rate_per_unit, tiers, cumulative, rejection_at, note')),
+  ])
+  const buyer = resolveByName(buyers, input.buyer)
+  if (!buyer) return { error: `No buyer named "${input.buyer}". Buyers: ${buyers.map((b) => b.name).join(', ') || 'none'}.` }
+  const buyerSchedules = schedules.filter((s) => s.buyer_id === buyer.id)
+  if (buyerSchedules.length === 0) {
+    return { buyer: buyer.name, schedules: [], note: 'No discount schedules uploaded for this buyer. Upload one on Settings → Buyers or the Buyer Discount Comparison report.' }
+  }
+  let crop = resolveByName(crops, input.crop)
+  if (!crop) {
+    const cropIds = [...new Set(buyerSchedules.map((s) => s.crop_id))]
+    if (cropIds.length === 1) crop = crops.find((c) => c.id === cropIds[0]) ?? null
+    else {
+      return {
+        buyer: buyer.name,
+        note: `This buyer has schedules for more than one crop — say which: ${cropIds.map((id) => crops.find((c) => c.id === id)?.name ?? id).join(', ')}.`,
+      }
+    }
+  }
+  if (!crop) return { error: 'Could not resolve the crop.' }
+  const today = new Date().toISOString().slice(0, 10)
+  let sched = scheduleInForce(buyerSchedules, buyer.id, crop.id, today)
+  let dateNote: string | null = null
+  if (!sched) {
+    const forCrop = buyerSchedules.filter((s) => s.crop_id === crop!.id)
+    if (forCrop.length === 0) return { buyer: buyer.name, crop: crop.name, schedules: [], note: `No ${crop.name} schedule on file for ${buyer.name}.` }
+    sched = forCrop.sort((a, b) => b.effective_date.localeCompare(a.effective_date))[0]
+    dateNote = `The only schedule on file is dated ${sched.effective_date} — not yet in force today.`
+  }
+  const shaped = rules.filter((r) => r.schedule_id === sched!.id).map(shapeRule)
+  const price = input.price_per_bu != null && Number.isFinite(Number(input.price_per_bu)) ? Number(input.price_per_bu) : null
+  const needsPrice = shaped.some((r) => r.basis !== 'cents_per_bu')
+
+  // Apply the schedule to the given readings IN CODE (the tier walk lives in
+  // lib/discount-schedules.ts) — the model never does this arithmetic.
+  const readings: Array<{ factor: string; measurement: 'moisture' | 'test_weight'; value: number; cents_per_bu: number | null; rejected: boolean }> = []
+  for (const rule of shaped) {
+    const which = factorMeasurement(rule.factor)
+    if (!which) continue
+    const value = which === 'moisture' ? input.moisture : input.test_weight
+    if (value == null || !Number.isFinite(Number(value))) continue
+    const cents = rule.basis === 'cents_per_bu' || price != null
+      ? ruleCentsPerBu(rule, Number(value), price ?? 0)
+      : null
+    readings.push({
+      factor: DISCOUNT_CATEGORY_LABELS[rule.factor],
+      measurement: which,
+      value: Number(value),
+      cents_per_bu: cents != null ? r2(cents) : null,
+      rejected: isRejected(rule, Number(value)),
+    })
+  }
+  const totalCents = readings.reduce((t, x) => t + (x.cents_per_bu ?? 0), 0)
+  return {
+    buyer: buyer.name,
+    crop: crop.name,
+    effective_date: sched.effective_date,
+    rules: shaped.map((r) => ({
+      factor: DISCOUNT_CATEGORY_LABELS[r.factor],
+      rule: summarizeRule(r),
+      basis: r.basis,
+      rejection_at: r.rejection_at,
+    })),
+    computed: readings.length > 0
+      ? { readings, total_cents_per_bu: r2(totalCents), computed_in_code: true }
+      : null,
+    schedule_text: sched.schedule_text,
+    note: [
+      dateNote,
+      needsPrice && price == null ? 'Some rules charge a % of weight/price — pass price_per_bu to monetize those.' : null,
+      'Rates computed by the app\'s rule engine (bracket/tier-walk semantics included) — do not re-derive them by hand.',
+    ].filter(Boolean).join(' ') || undefined,
+  }
+}
+
+async function getBuyerDiscountHistory(
+  supabase: SupabaseClient,
+  ctx: AssistantContext,
+  input: { crop_year: number; buyer?: string; crop?: string },
+) {
+  const [buyers, crops, settlements, items, loads, contracts, bits, splits] = await Promise.all([
+    all<{ id: string; name: string }>(supabase.from('buyers').select('id, name')),
+    all<Crop>(supabase.from('crops').select('*')),
+    all<{ id: string; buyer_id: string; settlement_date: string; settlement_number: string | null; settlement_lines: Array<{ load_id: string | null; ticket_number: string | null; net_bushels: number | string | null; net_revenue: number | string | null; price_per_bushel: number | string | null }> }>(
+      supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_number, settlement_lines(load_id, ticket_number, net_bushels, net_revenue, price_per_bushel)')),
+    all<{ settlement_id: string; category: string; amount: number | string | null; deduction_kind?: string | null }>(
+      supabase.from('settlement_discount_items').select('*')),
+    allPaged<{ id: string; to_buyer_id: string | null; ticket_number: string | null; crop_id: string | null; crop_year: number | null; contract_id: string | null; net_weight: number | string | null; moisture: number | string | null; dry_bushels_override: number | string | null; from_type: string | null; from_field_id: string | null }>(
+      supabase, 'loads', 'id, to_buyer_id, ticket_number, crop_id, crop_year, contract_id, net_weight, moisture, dry_bushels_override, from_type, from_field_id'),
+    all<{ id: string; contract_number: string; contracted_bushels: number | string | null; entity_id: string | null }>(
+      supabase.from('contracts').select('id, contract_number, contracted_bushels, entity_id')),
+    fetchScopeBits(supabase),
+    all<{ load_id: string; field_id: string }>(supabase.from('load_splits').select('load_id, field_id')),
+  ])
+  const wantBuyer = resolveByName(buyers, input.buyer)
+  if (input.buyer && !wantBuyer) return { error: `No buyer named "${input.buyer}". Buyers: ${buyers.map((b) => b.name).join(', ') || 'none'}.` }
+  const wantCrop = resolveByName(crops, input.crop)
+  if (input.crop && !wantCrop) return { error: `No crop named "${input.crop}".` }
+
+  const cropById = new Map(crops.map((c) => [c.id, c]))
+  const loadById = new Map(loads.map((l) => [l.id, l]))
+  const byTicket = new Map<string, typeof loads>()
+  for (const l of loads) {
+    const t = (l.ticket_number ?? '').trim().toLowerCase()
+    if (!t || !l.to_buyer_id) continue
+    const key = `${l.to_buyer_id}|${t}`
+    const arr = byTicket.get(key)
+    if (arr) arr.push(l); else byTicket.set(key, [l])
+  }
+  // Viewer parity with the report: settlements count only when a matched
+  // load traces to a granted entity (field→farm→entity, contract fallback).
+  const scope = buildEntityScope({ entityId: '', farms: bits.farms, fields: bits.fields, entities: bits.entities, grantedEntityIds: ctx.grantedEntityIds })
+  const splitFields = new Map<string, string[]>()
+  for (const sp of splits) {
+    const arr = splitFields.get(sp.load_id)
+    if (arr) arr.push(sp.field_id); else splitFields.set(sp.load_id, [sp.field_id])
+  }
+  const contractEntity = new Map(contracts.map((c) => [c.id, c.entity_id]))
+  const inScope = (l: (typeof loads)[number]): boolean => {
+    if (!scope.active) return true
+    const fieldIds = splitFields.get(l.id) ?? (l.from_type === 'field' && l.from_field_id ? [l.from_field_id] : [])
+    if (fieldIds.some((id) => scope.fieldIds!.has(id))) return true
+    if (l.contract_id) { const e = contractEntity.get(l.contract_id); return e != null && scope.selectedEntityIds!.has(e) }
+    return false
+  }
+
+  const mode = <K,>(vals: Array<K | null>): K | null => {
+    const counts = new Map<K, number>()
+    for (const v of vals) if (v != null) counts.set(v, (counts.get(v) ?? 0) + 1)
+    let best: K | null = null; let n = 0
+    for (const [v, c] of counts) if (c > n) { n = c; best = v }
+    return best
+  }
+  const itemsBySettlement = new Map<string, Array<{ category: string; amount: number; deduction_kind?: string | null }>>()
+  for (const i of items) {
+    const arr = itemsBySettlement.get(i.settlement_id) ?? []
+    arr.push({ category: i.category, amount: num(i.amount), deduction_kind: i.deduction_kind })
+    itemsBySettlement.set(i.settlement_id, arr)
+  }
+
+  const byCrop = new Map<string, LostRevenueSettlement[]>()
+  for (const s of settlements) {
+    if (wantBuyer && s.buyer_id !== wantBuyer.id) continue
+    const lines = s.settlement_lines ?? []
+    const matched: Array<{ line: (typeof lines)[number]; load: (typeof loads)[number] }> = []
+    for (const ln of lines) {
+      let load = ln.load_id ? loadById.get(ln.load_id) : undefined
+      if (!load) {
+        const t = (ln.ticket_number ?? '').trim().toLowerCase()
+        const cands = t ? byTicket.get(`${s.buyer_id}|${t}`) ?? [] : []
+        if (cands.length === 1) load = cands[0]
+      }
+      if (load) matched.push({ line: ln, load })
+    }
+    if (mode(matched.map((m) => m.load.crop_year)) !== input.crop_year) continue
+    const cropId = mode(matched.map((m) => m.load.crop_id))
+    if (wantCrop && cropId !== wantCrop.id) continue
+    if (scope.active && !matched.some((m) => inScope(m.load))) continue
+    const rec: LostRevenueSettlement = {
+      id: s.id,
+      buyerId: s.buyer_id,
+      settlementDate: s.settlement_date,
+      settlementNumber: s.settlement_number,
+      settledBu: lines.reduce((t, l) => t + num(l.net_bushels), 0),
+      items: itemsBySettlement.get(s.id) ?? [],
+      contractId: mode(matched.map((m) => m.load.contract_id)),
+      loads: matched.map(({ line, load }) => {
+        const crop = load.crop_id ? cropById.get(load.crop_id) : undefined
+        const { dryBushels } = computeBushels({
+          netWeightLb: load.net_weight != null ? num(load.net_weight) : null,
+          moisturePct: load.moisture != null ? num(load.moisture) : null,
+          baseMoisturePct: crop?.base_moisture_pct != null ? num(crop.base_moisture_pct) : null,
+          baseLbPerBushel: crop?.base_lb_per_bushel != null ? num(crop.base_lb_per_bushel) : null,
+          dryBushelsOverride: load.dry_bushels_override != null ? num(load.dry_bushels_override) : null,
+        })
+        const bu = num(line.net_bushels)
+        return {
+          bu,
+          ourDryBu: dryBushels,
+          pricePerBu: line.price_per_bushel != null ? num(line.price_per_bushel) : bu > 0 ? num(line.net_revenue) / bu : null,
+        }
+      }),
+    }
+    const key = cropId ?? '__none__'
+    const arr = byCrop.get(key)
+    if (arr) arr.push(rec); else byCrop.set(key, [rec])
+  }
+
+  const contractsById = new Map(contracts.map((c) => [c.id, { id: c.id, number: c.contract_number, bushels: num(c.contracted_bushels) }]))
+  const buyerName = (id: string) => buyers.find((b) => b.id === id)?.name ?? id
+  const out = [...byCrop.entries()].map(([cropId, group]) => ({
+    crop: cropById.get(cropId)?.name ?? 'Unassigned crop',
+    buyers: buildLostRevenueRows(group, contractsById).map((r) => ({
+      buyer: buyerName(r.buyerId),
+      rank: r.rank,
+      lost_cents_per_contracted_bu: r.leadCentsPerContractedBu != null ? r2(r.leadCentsPerContractedBu) : null,
+      lost_cents_per_settled_bu: r.centsPerSettledBu != null ? r2(r.centsPerSettledBu) : null,
+      spot_unlinked_only: r.spotOnly,
+      settlements: r.settlements,
+      settled_bu: r0(r.settledBu),
+      contracted_bu: r0(r.contractedBu),
+      total_lost_dollars: r2(r.totalLostDollars),
+      by_category_cents_per_settled_bu: Object.fromEntries(LOST_GROUP_ORDER.map((g) => [LOST_GROUP_LABELS[g], r2(r.groupCents[g])])),
+    })),
+  }))
+  if (out.length === 0) {
+    return { crop_year: input.crop_year, groups: [], note: 'No settlements with matched loads for that crop year (and filters). Settlements join a crop year through their matched loads.' }
+  }
+  return {
+    crop_year: input.crop_year,
+    groups: out,
+    note: 'Lost revenue normalizes price discounts AND pay-bushel shrink beyond FSA-standard to dollars — rank 1 = cheapest per contracted bushel (spot-only buyers rank on the settled-bu figure). Same math as the Buyer Discount Comparison report.',
+  }
+}
+
 // ---------- tool registry + role gating ----------
 
 type ToolImpl = (supabase: SupabaseClient, ctx: AssistantContext, input: never) => Promise<unknown>
@@ -838,6 +1105,8 @@ const IMPLS: Record<string, ToolImpl> = {
   get_cash_flow: getCashFlow as ToolImpl,
   get_loads: getLoads as ToolImpl,
   get_bin_inventory: getBinInventory as ToolImpl,
+  get_buyer_discount_schedule: getBuyerDiscountSchedule as ToolImpl,
+  get_buyer_discount_history: getBuyerDiscountHistory as ToolImpl,
   query_data: queryData as ToolImpl,
 }
 
@@ -895,6 +1164,34 @@ export const ASSISTANT_TOOLS: Anthropic.Tool[] = [
     input_schema: { type: 'object', properties: {} },
   },
   {
+    name: 'get_buyer_discount_schedule',
+    description: 'A buyer\'s posted discount schedule for a crop (the sheet in force today): the structured per-factor rules, and — when moisture and/or test_weight readings are passed — the discount COMPUTED BY THE APP\'S RULE ENGINE (bracket and tier-walk semantics) in ¢/bu. Use it for "what will X dock me for 17% corn?" — never re-derive tier math yourself.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        buyer: { type: 'string', description: 'Buyer/elevator name' },
+        crop: { type: 'string', description: 'Crop name (optional when the buyer has schedules for only one crop)' },
+        moisture: { type: 'number', description: 'Optional moisture % to price, e.g. 17' },
+        test_weight: { type: 'number', description: 'Optional test weight lb to price, e.g. 53.5' },
+        price_per_bu: { type: 'number', description: 'Optional $/bu, needed to monetize weight-shrink or %-of-price rules' },
+      },
+      required: ['buyer'],
+    },
+  },
+  {
+    name: 'get_buyer_discount_history',
+    description: 'What each buyer\'s discounting actually COST per bushel for a crop year, from settled statements: lost ¢ per contracted bushel (lead, rank 1 = cheapest), lost ¢ per settled bushel, and the breakdown by category (moisture/drying, test weight, damage, FM/dockage, other, weight deduction beyond FSA-standard shrink). Use it for "who was cheapest on light test weight last year?". Same math as the Buyer Discount Comparison report.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        crop_year: cropYearProp,
+        buyer: { type: 'string', description: 'Optional buyer name filter' },
+        crop: { type: 'string', description: 'Optional crop name filter' },
+      },
+      required: ['crop_year'],
+    },
+  },
+  {
     name: 'query_data',
     description: 'Long-tail questions the other tools do not cover: run ONE read-only SQL SELECT against the account\'s own tables (schema provided in the system prompt). Returns up to 500 rows. Only the user\'s own data is visible. Prefer the curated tools for derived numbers (dry bushels, prices, projections).',
     input_schema: { type: 'object', properties: { sql: { type: 'string', description: 'A single SELECT (or WITH…SELECT) statement' }, purpose: { type: 'string', description: 'One line on what this answers' } }, required: ['sql'] },
@@ -908,7 +1205,9 @@ export function toolNamesForRole(role: AppRole): string[] {
   if (role === 'agronomist') return ['get_yields', 'get_loads', 'query_data']
   if (role === 'gin') return ['query_data']
   if (role === 'viewer') {
-    return ['get_marketing_summary', 'get_yields', 'get_revenue_projection', 'get_contracts', 'get_hedging_positions', 'get_insurance_estimates', 'get_government_payments', 'get_loads', 'query_data']
+    // Buyer discount tools mirror the viewer-included report (entity-scoped
+    // through matched loads inside the tool, same as the report).
+    return ['get_marketing_summary', 'get_yields', 'get_revenue_projection', 'get_contracts', 'get_hedging_positions', 'get_insurance_estimates', 'get_government_payments', 'get_loads', 'get_buyer_discount_schedule', 'get_buyer_discount_history', 'query_data']
   }
   return ASSISTANT_TOOLS.map((t) => t.name)
 }
@@ -947,6 +1246,8 @@ export function toolStatusLabel(name: string): string {
     get_cash_flow: 'Building your cash flow…',
     get_loads: 'Looking through your loads…',
     get_bin_inventory: 'Checking your bins…',
+    get_buyer_discount_schedule: 'Reading the buyer’s discount sheet…',
+    get_buyer_discount_history: 'Comparing your buyers’ discounts…',
     query_data: 'Looking that up in your data…',
   }
   return map[name] ?? 'Checking your data…'

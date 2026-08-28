@@ -77,8 +77,11 @@ export type ComparisonSettlement = {
   /** Σ line discounts — the authoritative total. */
   discountTotal: number
   netRevenue: number
-  /** Itemized discount lines ({category, amount $}); [] when not itemized. */
-  items: ReadonlyArray<{ category: string; amount: number }>
+  /** Itemized discount lines ({category, amount $}); [] when not itemized.
+   *  deduction_kind (075): 'weight' items are volume deductions — the
+   *  per-dollar aggregations here skip them (their dollars are informational,
+   *  valued once by the reconciliation seam in lib/lost-revenue.ts). */
+  items: ReadonlyArray<{ category: string; amount: number; deduction_kind?: string | null }>
   /** The settlement's MATCHED lines with their loads' quality readings. */
   loads: ReadonlyArray<ComparisonLoad>
 }
@@ -136,6 +139,7 @@ export function buildBuyerActuals(settlements: ReadonlyArray<ComparisonSettlemen
     a.netRevenue += s.netRevenue
     a.discountDollars += s.discountTotal
     for (const i of s.items) {
+      if (i.deduction_kind === 'weight') continue // no check dollars — see the type note
       a.itemizedDollars += i.amount
       a.groupDollars[categoryGroup(i.category)] += i.amount
     }
@@ -231,6 +235,7 @@ export function buildQualityAdjusted(
     let moistureDollars = 0
     let twDollars = 0
     for (const i of s.items) {
+      if (i.deduction_kind === 'weight') continue // volume deductions carry no check dollars
       const g = categoryGroup(i.category)
       if (g === 'moistureDrying') moistureDollars += i.amount
       if (g === 'testWeight') twDollars += i.amount

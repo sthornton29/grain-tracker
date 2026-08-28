@@ -63,13 +63,20 @@ function toDraft(r: DiscountScheduleRuleExtraction): RuleDraft {
 export default function DiscountScheduleImport({
   showList = false,
   onChanged,
+  lockedBuyerId,
+  bare = false,
 }: {
   /** Also list the schedules on file (per buyer/crop) with delete. */
   showList?: boolean
   onChanged?: () => void
+  /** Pin the schedule to ONE buyer (the per-buyer card on Settings →
+   *  Buyers): the buyer select is preset and locked. */
+  lockedBuyerId?: string
+  /** Render without the outer card/header (embedding inside another card). */
+  bare?: boolean
 }) {
   const supabase = useMemo(() => createClient(), [])
-  const [open, setOpen] = useState(showList)
+  const [open, setOpen] = useState(showList || bare)
   const [buyers, setBuyers] = useState<Buyer[]>([])
   const [crops, setCrops] = useState<Crop[]>([])
   const [schedules, setSchedules] = useState<BuyerDiscountSchedule[]>([])
@@ -129,7 +136,7 @@ export default function DiscountScheduleImport({
         return
       }
       const buyerHit = findBestMatch(data.buyer_name, buyers, (b) => b.name)
-      setBuyerId(buyerHit?.id ?? '')
+      setBuyerId(lockedBuyerId ?? buyerHit?.id ?? '')
       const cropHit = findBestMatch(data.crop, crops, (c) => c.name)
       setCropId(cropHit?.id ?? '')
       setEffectiveDate(
@@ -230,6 +237,14 @@ export default function DiscountScheduleImport({
   const cropName = (id: string) => crops.find((c) => c.id === id)?.name ?? '—'
   const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm'
 
+  if (bare) {
+    return (
+      <div className="space-y-3 no-print">
+        {renderBody()}
+      </div>
+    )
+  }
+
   return (
     <div className="bg-white rounded-xl shadow p-4 space-y-3 no-print">
       <div className="flex items-center gap-2 flex-wrap">
@@ -237,7 +252,8 @@ export default function DiscountScheduleImport({
           <div className="font-semibold">Buyer discount schedules</div>
           <div className="text-sm text-slate-500">
             Upload a buyer&rsquo;s posted discount sheet and Turnrow reads its rules — then the Buyer Discount Comparison
-            report can check what you were charged against what the sheet says.
+            report and the Grain Dryer Math tool can use what the sheet says. Schedules live with the buyer
+            (Settings → Buyers).
           </div>
         </div>
         {!showList && (
@@ -250,8 +266,12 @@ export default function DiscountScheduleImport({
           </button>
         )}
       </div>
+      {renderBody()}
+    </div>
+  )
 
-      {(open || rules != null) && (
+  function renderBody() {
+    return (open || rules != null) && (
         <div className="space-y-3">
           {rules == null && (
             <DocumentCapture
@@ -272,7 +292,7 @@ export default function DiscountScheduleImport({
               <div className="flex flex-wrap items-end gap-2">
                 <label className="text-sm text-slate-700">
                   Buyer
-                  <select value={buyerId} onChange={(e) => setBuyerId(e.target.value)} className={`block mt-0.5 ${inputCls}`}>
+                  <select value={buyerId} onChange={(e) => setBuyerId(e.target.value)} disabled={!!lockedBuyerId} className={`block mt-0.5 ${inputCls} disabled:bg-slate-100`}>
                     <option value="">— select —</option>
                     {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
                   </select>
@@ -414,7 +434,6 @@ export default function DiscountScheduleImport({
             )
           )}
         </div>
-      )}
-    </div>
-  )
+      )
+  }
 }

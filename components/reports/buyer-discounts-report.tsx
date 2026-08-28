@@ -1,16 +1,23 @@
 'use client'
 
-// Buyer Discount Comparison — actual settlement discounts per buyer, the
-// quality-adjusted per-point rates, uploaded discount schedules side by
-// side, and the expected-vs-actual audit. Math lives in
-// lib/buyer-comparison.ts and lib/discount-schedules.ts (unit-tested);
-// this component assembles the data and renders/exports it.
+// Buyer Discount Comparison — rebuilt around ONE unified measure: total
+// LOST REVENUE from discounting, in ¢/bu, by buyer × crop × crop year.
+// Buyers discount inconsistently (price cuts, volume cuts, both), so every
+// mechanism is normalized to dollars lost (lib/lost-revenue.ts):
+//   * price-type — itemized settlement_discount_items dollars, by category;
+//   * volume-type — pay-bushels below FSA-standard dry bushels, valued at
+//     the settlement's own prices (categorized by the statement's weight
+//     itemization where present, else "Weight deduction").
+// LEAD METRIC: lost ¢ per CONTRACTED bushel (settlements link to contracts
+// through their matched loads; weighted across the buyer's contracts).
+// Companion: lost ¢ per settled bushel — also the fallback for spot/
+// unlinked settlements. Secondary detail: the quality-adjusted per-point
+// rates (lib/buyer-comparison.ts). Schedules + the expected-vs-actual audit
+// read from the schedules attached to buyers (Settings → Buyers).
 //
-// Scoping: settlements have no entity column — a settlement joins the entity
-// world through its MATCHED loads (field → farm → entity, with the load's
-// contract entity as fallback). Viewers (052) get exactly that scope over
-// their granted entities; settlements whose matched loads all fall outside
-// the grants drop out.
+// Scoping: settlements join the entity world through their MATCHED loads
+// (field → farm → entity, contract-entity fallback); viewers (052) get
+// exactly that scope over their granted entities.
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
@@ -18,15 +25,19 @@ import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { formatNumber, type ExportPayload, type ExportSection } from '@/lib/exports'
 import {
-  buildBuyerActuals,
   buildQualityAdjusted,
   categoryGroup,
-  costliestGroups,
   qualityVerdict,
-  CATEGORY_GROUP_LABELS,
-  type CategoryGroup,
   type ComparisonSettlement,
 } from '@/lib/buyer-comparison'
+import {
+  buildLostRevenueRows,
+  costliestLostGroups,
+  LOST_GROUP_LABELS,
+  LOST_GROUP_ORDER,
+  type ContractInfo,
+  type LostGroup,
+} from '@/lib/lost-revenue'
 import {
   expectedDiscountDollars,
   factorMeasurement,
@@ -37,7 +48,7 @@ import {
   type RuleBasis,
   type ScheduleRuleShape,
 } from '@/lib/discount-schedules'
-import { DISCOUNT_CATEGORY_LABELS, coerceDiscountCategory, type DiscountCategory } from '@/lib/settlement-discounts'
+import { DISCOUNT_CATEGORY_LABELS, coerceDeductionKind, coerceDiscountCategory, type DiscountCategory } from '@/lib/settlement-discounts'
 import { buildEntityScope } from '@/lib/entity-scope'
 import { useViewerScope, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import {
@@ -85,8 +96,11 @@ type LoadRow = {
   from_field_id: string | null
 }
 
-type ItemRow = { settlement_id: string; category: string; amount: number | string | null }
-type ContractRow = { id: string; entity_id: string | null }
+type ItemRow = { settlement_id: string; category: string; amount: number | string | null; deduction_kind?: string | null }
+type ContractRow = { id: string; entity_id: string | null; contract_number: string | null; contracted_bushels: number | string | null }
+
+// The report's working settlement: the comparison shape + contract linkage.
+type WorkingSettlement = ComparisonSettlement & { cropId: string | null; cropYear: number | null; contractId: string | null }
 
 const N = (v: number | string | null | undefined): number | null => {
   if (v == null || v === '') return null
@@ -97,8 +111,6 @@ const N0 = (v: number | string | null | undefined): number => N(v) ?? 0
 
 const fmtCents = (n: number | null | undefined, d = 1) =>
   n == null || !Number.isFinite(Number(n)) ? '—' : `${Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}¢`
-
-const GROUP_ORDER: CategoryGroup[] = ['moistureDrying', 'testWeight', 'damage', 'fmDockage', 'other']
 
 export default function BuyerDiscountsReport({
   onPayloadChange,
@@ -121,11 +133,11 @@ export default function BuyerDiscountsReport({
   const [contracts, setContracts] = useState<ContractRow[]>([])
   const [schedules, setSchedules] = useState<BuyerDiscountSchedule[]>([])
   const [scheduleRules, setScheduleRules] = useState<BuyerDiscountScheduleRule[]>([])
-  const [refreshKey, setRefreshKey] = useState(0)
 
   const [cropYear, setCropYear] = useState<number | ''>('')
   const [cropId, setCropId] = useState('')
   const [expandedBuyer, setExpandedBuyer] = useState<string | null>(null)
+  const [showQuality, setShowQuality] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -133,7 +145,7 @@ export default function BuyerDiscountsReport({
       setLoading(true)
       const [sRes, iRes, lRes, bRes, cRes, eRes, fRes, fdRes, spRes, coRes, schRes, ruleRes] = await Promise.all([
         supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_number, settlement_lines(id, load_id, ticket_number, net_bushels, gross_revenue, discounts, net_revenue, price_per_bushel)'),
-        supabase.from('settlement_discount_items').select('settlement_id, category, amount'),
+        supabase.from('settlement_discount_items').select('*'),
         supabase.from('loads').select('id, to_buyer_id, ticket_number, crop_id, crop_year, contract_id, moisture, test_weight, net_weight, dry_bushels_override, from_type, from_field_id').eq('to_type', 'buyer'),
         supabase.from('buyers').select('*').order('name'),
         supabase.from('crops').select('*').order('name'),
@@ -141,7 +153,7 @@ export default function BuyerDiscountsReport({
         supabase.from('farms').select('*'),
         supabase.from('fields').select('*'),
         supabase.from('load_splits').select('*'),
-        supabase.from('contracts').select('id, entity_id'),
+        supabase.from('contracts').select('id, entity_id, contract_number, contracted_bushels'),
         supabase.from('buyer_discount_schedules').select('*'),
         supabase.from('buyer_discount_schedule_rules').select('*'),
       ])
@@ -155,17 +167,21 @@ export default function BuyerDiscountsReport({
       setFarms((fRes.data as Farm[]) || [])
       setFields((fdRes.data as Field[]) || [])
       setSplits((spRes.data as LoadSplit[]) || [])
-      setContracts((coRes.data as ContractRow[]) || [])
+      setContracts((coRes.data as unknown as ContractRow[]) || [])
       setSchedules((schRes.data as BuyerDiscountSchedule[]) || [])
       setScheduleRules((ruleRes.data as BuyerDiscountScheduleRule[]) || [])
       setLoading(false)
     })()
     return () => { cancelled = true }
-  }, [supabase, refreshKey])
+  }, [supabase])
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const buyerName = (id: string) => buyers.find((b) => b.id === id)?.name ?? '—'
   const loadById = useMemo(() => new Map(loads.map((l) => [l.id, l])), [loads])
+  const contractsById = useMemo(
+    () => new Map<string, ContractInfo>(contracts.map((c) => [c.id, { id: c.id, number: c.contract_number, bushels: N0(c.contracted_bushels) }])),
+    [contracts],
+  )
 
   // Unambiguous ticket → load per buyer (same rule as the Settlements pages).
   const buyerLoadsByTicket = useMemo(() => {
@@ -181,8 +197,7 @@ export default function BuyerDiscountsReport({
     return m
   }, [loads])
 
-  // Viewer entity scope over the granted entities ('' = all of them). Owners
-  // pass no grants and the scope is inactive (pure pass-through).
+  // Viewer entity scope over the granted entities ('' = all of them).
   const scope = useMemo(
     () => buildEntityScope({ entityId: '', farms, fields, entities, grantedEntityIds: viewer.grantedIds }),
     [farms, fields, entities, viewer.grantedIds],
@@ -203,19 +218,18 @@ export default function BuyerDiscountsReport({
     return false
   }
 
-  // ---- assemble ComparisonSettlement records, tagged by crop ----
+  // ---- assemble working settlements, tagged by crop/year/contract ----
   const assembled = useMemo(() => {
-    const itemsBySettlement = new Map<string, Array<{ category: string; amount: number }>>()
+    const itemsBySettlement = new Map<string, Array<{ category: string; amount: number; deduction_kind?: string | null }>>()
     for (const i of items) {
       const arr = itemsBySettlement.get(i.settlement_id) ?? []
-      arr.push({ category: i.category, amount: N0(i.amount) })
+      arr.push({ category: i.category, amount: N0(i.amount), deduction_kind: coerceDeductionKind(i.deduction_kind) })
       itemsBySettlement.set(i.settlement_id, arr)
     }
 
-    const out: Array<ComparisonSettlement & { cropId: string | null; cropYear: number | null }> = []
+    const out: WorkingSettlement[] = []
     for (const s of settlementRows) {
       const lines = s.settlement_lines ?? []
-      // Resolve each line to a load: the saved FK, else its unambiguous ticket.
       const matched: Array<{ line: SettlementRow['settlement_lines'][number]; load: LoadRow }> = []
       for (const ln of lines) {
         let load: LoadRow | undefined
@@ -230,11 +244,8 @@ export default function BuyerDiscountsReport({
         if (load) matched.push({ line: ln, load })
       }
 
-      // Viewer scope: at least one matched load must be in scope.
       if (scope.active && !matched.some((m) => loadInScope(m.load))) continue
 
-      // The settlement's crop and crop year: the matched loads' most common
-      // value (a settlement covers one delivery stream in practice).
       const mode = <K,>(vals: Array<K | null>): K | null => {
         const counts = new Map<K, number>()
         for (const v of vals) if (v != null) counts.set(v, (counts.get(v) ?? 0) + 1)
@@ -242,8 +253,6 @@ export default function BuyerDiscountsReport({
         for (const [v, c] of counts) if (c > n) { n = c; best = v }
         return best
       }
-      const sCropId = mode(matched.map((m) => m.load.crop_id))
-      const sCropYear = mode(matched.map((m) => m.load.crop_year))
 
       out.push({
         id: s.id,
@@ -273,15 +282,15 @@ export default function BuyerDiscountsReport({
             pricePerBu: N(line.price_per_bushel) ?? (bu > 0 ? N0(line.net_revenue) / bu : null),
           }
         }),
-        cropId: sCropId,
-        cropYear: sCropYear,
+        cropId: mode(matched.map((m) => m.load.crop_id)),
+        cropYear: mode(matched.map((m) => m.load.crop_year)),
+        contractId: mode(matched.map((m) => m.load.contract_id)),
       })
     }
     return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settlementRows, items, loadById, buyerLoadsByTicket, cropById, scope, splits, contractEntity])
 
-  // Crop-year options come from the settlements themselves; default = latest.
   const yearOptions = useMemo(() => {
     const ys = [...new Set(assembled.map((s) => s.cropYear).filter((y): y is number => y != null))]
     ys.sort((a, b) => b - a)
@@ -300,9 +309,8 @@ export default function BuyerDiscountsReport({
     return crops.filter((c) => ids.has(c.id))
   }, [assembled, cropYear, crops])
 
-  // Per-crop groups (the comparison only means anything within one crop).
   const byCrop = useMemo(() => {
-    const m = new Map<string, Array<(typeof inYear)[number]>>()
+    const m = new Map<string, WorkingSettlement[]>()
     for (const s of inYear) {
       const key = s.cropId ?? '__none__'
       const arr = m.get(key)
@@ -310,6 +318,29 @@ export default function BuyerDiscountsReport({
     }
     return [...m.entries()].sort((a, b) => (cropById.get(a[0])?.name ?? 'z').localeCompare(cropById.get(b[0])?.name ?? 'z'))
   }, [inYear, cropById])
+
+  // ---- the lead view: lost revenue per contracted bushel ----
+  const perCropLost = useMemo(
+    () => byCrop.map(([cid, group]) => ({ cropId: cid, rows: buildLostRevenueRows(group, contractsById) })),
+    [byCrop, contractsById],
+  )
+  // Settlements by id for the drill-down (rows carry LostRevenueSettlement).
+  const settlementById = useMemo(() => new Map(inYear.map((s) => [s.id, s])), [inYear])
+
+  // ---- secondary detail: quality-adjusted per-point rates ----
+  const perCropQuality = useMemo(
+    () => byCrop.map(([cid, group]) => {
+      const crop = cropById.get(cid)
+      return {
+        cropId: cid,
+        rows: buildQualityAdjusted(group, {
+          baseMoisturePct: N(crop?.base_moisture_pct ?? null),
+          baseLbPerBushel: N(crop?.base_lb_per_bushel ?? null),
+        }),
+      }
+    }),
+    [byCrop, cropById],
+  )
 
   // ---- schedules: parsed rules per schedule ----
   const rulesBySchedule = useMemo(() => {
@@ -332,11 +363,8 @@ export default function BuyerDiscountsReport({
     return m
   }, [scheduleRules])
 
-  // The expected-vs-actual audit, per itemized settlement with a schedule in
-  // force at its date. Compares the moisture/drying and test-weight buckets —
-  // the factors our loads actually measure.
   type AuditRow = {
-    settlement: (typeof inYear)[number]
+    settlement: WorkingSettlement
     scheduleDate: string
     group: 'moistureDrying' | 'testWeight'
     expectedCents: number
@@ -361,11 +389,10 @@ export default function BuyerDiscountsReport({
         { group: 'testWeight', factors: ['test_weight'] },
       ]
       for (const g of groups) {
-        // Only audit a bucket the schedule actually prices.
         if (!rules.some((r) => g.factors.includes(r.factor) && factorMeasurement(r.factor) != null)) continue
         const expDollars = g.factors.reduce((t, f) => t + (expected.get(f) ?? 0), 0)
         const actDollars = s.items
-          .filter((i) => categoryGroup(i.category) === g.group)
+          .filter((i) => coerceDeductionKind(i.deduction_kind) === 'price' && categoryGroup(i.category) === g.group)
           .reduce((t, i) => t + i.amount, 0)
         const expectedCents = (expDollars / matchedBu) * 100
         const actualCents = (actDollars / matchedBu) * 100
@@ -377,8 +404,6 @@ export default function BuyerDiscountsReport({
     return out
   }, [inYear, schedules, rulesBySchedule])
 
-  // Schedule side-by-side for the crop filter (or every crop with schedules):
-  // per crop, the LATEST schedule per buyer, rules by factor across buyers.
   const scheduleComparison = useMemo(() => {
     const relevantCrops = cropId ? [cropId] : [...new Set(schedules.map((s) => s.crop_id))]
     const blocks: Array<{
@@ -405,8 +430,8 @@ export default function BuyerDiscountsReport({
   }, [schedules, rulesBySchedule, cropId, buyers])
 
   // ---- summary + export ----
-  const totalBu = inYear.reduce((t, s) => t + s.settledBu, 0)
-  const totalDisc = inYear.reduce((t, s) => t + s.discountTotal, 0)
+  const totalSettledBu = inYear.reduce((t, s) => t + s.settledBu, 0)
+  const totalLost = perCropLost.reduce((t, g) => t + g.rows.reduce((u, r) => u + r.totalLostDollars, 0), 0)
   const grantLabel = viewerAllEntitiesLabel(viewer, entities)
 
   function filterSummary(): string {
@@ -418,51 +443,34 @@ export default function BuyerDiscountsReport({
     return parts.join(' · ')
   }
 
-  const perCropActuals = useMemo(
-    () => byCrop.map(([cid, group]) => ({ cropId: cid, rows: buildBuyerActuals(group) })),
-    [byCrop],
-  )
-  const perCropQuality = useMemo(
-    () => byCrop.map(([cid, group]) => {
-      const crop = cropById.get(cid)
-      return {
-        cropId: cid,
-        rows: buildQualityAdjusted(group, {
-          baseMoisturePct: N(crop?.base_moisture_pct ?? null),
-          baseLbPerBushel: N(crop?.base_lb_per_bushel ?? null),
-        }),
-      }
-    }),
-    [byCrop, cropById],
-  )
-
   useEffect(() => {
     onPayloadChange(() => buildPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [perCropActuals, perCropQuality, auditRows, scheduleComparison, cropYear, cropId])
+  }, [perCropLost, perCropQuality, auditRows, scheduleComparison, cropYear, cropId])
 
   function buildPayload(): ExportPayload {
     const cropLabel = (cid: string) => cropById.get(cid)?.name ?? 'Unassigned crop'
-    const actualsSection: ExportSection = {
-      title: 'Actual discounts by buyer',
+    const lostSection: ExportSection = {
+      title: 'Lost revenue by buyer',
       columns: [
         { label: 'Crop' }, { label: 'Buyer' },
         { label: 'Settlements', align: 'right', format: 'int' },
-        { label: 'Bushels', align: 'right', format: 'bu' },
-        { label: 'Total disc ¢/bu', align: 'right', format: 'dec1' },
-        ...GROUP_ORDER.map((g) => ({ label: `${CATEGORY_GROUP_LABELS[g]} ¢/bu`, align: 'right' as const, format: 'dec1' as const })),
-        { label: 'Excess shrink ¢/bu', align: 'right', format: 'dec1' },
-        { label: 'Gross $/bu', align: 'right', format: 'price' },
-        { label: 'Net $/bu', align: 'right', format: 'price' },
-        { label: 'Total cost ¢/bu', align: 'right', format: 'dec1' },
+        { label: 'Settled bu', align: 'right', format: 'bu' },
+        { label: 'Contracted bu', align: 'right', format: 'bu' },
+        { label: 'Lost ¢/contracted bu', align: 'right', format: 'dec1' },
+        { label: 'Lost ¢/settled bu', align: 'right', format: 'dec1' },
+        ...LOST_GROUP_ORDER.map((g) => ({ label: `${LOST_GROUP_LABELS[g]} ¢/bu`, align: 'right' as const, format: 'dec1' as const })),
+        { label: 'Total lost $', align: 'right', format: 'usd0' },
         { label: 'Rank', align: 'right', format: 'int' },
       ],
-      rows: perCropActuals.flatMap(({ cropId: cid, rows }) =>
+      rows: perCropLost.flatMap(({ cropId: cid, rows }) =>
         rows.map((r) => [
-          cropLabel(cid), buyerName(r.buyerId), r.settlements, r.settledBu,
-          r.discountCentsPerBu,
-          ...GROUP_ORDER.map((g) => r.groupCents[g]),
-          r.excessShrinkCentsPerBu, r.grossPerBu, r.netPerBu, r.totalCostCentsPerBu, r.rank,
+          cropLabel(cid),
+          r.spotOnly ? `${buyerName(r.buyerId)} (spot/unlinked)` : buyerName(r.buyerId),
+          r.settlements, r.settledBu, r.contractedBu > 0 ? r.contractedBu : null,
+          r.leadCentsPerContractedBu, r.centsPerSettledBu,
+          ...LOST_GROUP_ORDER.map((g) => r.groupCents[g]),
+          r.totalLostDollars, r.rank,
         ]),
       ),
     }
@@ -520,11 +528,11 @@ export default function BuyerDiscountsReport({
       filters: filterSummary(),
       summary: [
         { label: 'Settlements', value: formatNumber(inYear.length, 'int') },
-        { label: 'Bushels settled', value: formatNumber(totalBu, 'bu') },
-        { label: 'Total discounts', value: formatNumber(totalDisc, 'usd0') },
-        { label: 'Avg discount ¢/bu', value: totalBu > 0 ? fmtNum((totalDisc / totalBu) * 100, 1) : '—' },
+        { label: 'Bushels settled', value: formatNumber(totalSettledBu, 'bu') },
+        { label: 'Total lost revenue', value: formatNumber(totalLost, 'usd0') },
+        { label: 'Avg lost ¢/settled bu', value: totalSettledBu > 0 ? fmtNum((totalLost / totalSettledBu) * 100, 1) : '—' },
       ],
-      sections: [actualsSection, qualitySection, scheduleSection, auditSection].filter((s) => s.rows.length > 0),
+      sections: [lostSection, qualitySection, scheduleSection, auditSection].filter((s) => s.rows.length > 0),
     }
   }
 
@@ -570,16 +578,18 @@ export default function BuyerDiscountsReport({
       </ReportFilterBar>
 
       <p className="text-sm text-slate-600 max-w-3xl">
-        Same crop, same year, similar grain — so a systematic difference in what two buyers deduct is the buyer,
-        not the grain. The quality-adjusted section below corrects for the grain you actually hauled each one.
+        Same crop, same year, similar grain — so a systematic difference in what two buyers take is the buyer, not the
+        grain. Every mechanism is normalized to <span className="font-medium">lost revenue</span>: price discounts in
+        dollars off the check, plus pay-bushels taken beyond FSA-standard shrink valued at that settlement&rsquo;s own
+        price. The lead figure is lost ¢ per <span className="font-medium">contracted</span> bushel.
         {grantLabel && <span className="text-slate-400"> Scope: {grantLabel}.</span>}
       </p>
 
       <SummaryCards cards={[
         { label: 'Settlements', value: fmtInt(inYear.length) },
-        { label: 'Bushels settled', value: fmtInt(totalBu) },
-        { label: 'Total discounts', value: `$${fmtInt(totalDisc)}` },
-        { label: 'Avg discount ¢/bu', value: totalBu > 0 ? fmtCents((totalDisc / totalBu) * 100) : '—', tone: 'warning' },
+        { label: 'Bushels settled', value: fmtInt(totalSettledBu) },
+        { label: 'Total lost revenue', value: `$${fmtInt(totalLost)}`, tone: 'unfavorable' },
+        { label: 'Avg lost ¢/settled bu', value: totalSettledBu > 0 ? fmtCents((totalLost / totalSettledBu) * 100) : '—', tone: 'warning' },
       ]} />
 
       {inYear.length === 0 ? (
@@ -591,15 +601,16 @@ export default function BuyerDiscountsReport({
         />
       ) : (
         <>
-          {/* ---- Actuals ---- */}
-          {perCropActuals.map(({ cropId: cid, rows }) => (
+          {/* ---- Lost revenue (lead view) ---- */}
+          {perCropLost.map(({ cropId: cid, rows }) => (
             <div key={cid} className="space-y-1">
               <h2 className="font-semibold">
-                Actual discounts — {cropById.get(cid)?.name ?? 'Unassigned crop'}
+                Lost revenue — {cropById.get(cid)?.name ?? 'Unassigned crop'}
               </h2>
-              <p className="text-xs text-slate-500">
-                Ranked by total cost per bushel (price discounts + weight taken beyond standard shrink).
-                The costliest itemized factor per buyer is highlighted.
+              <p className="text-xs text-slate-500 max-w-3xl">
+                Ranked on lost ¢ per contracted bushel (rank 1 = cheapest buyer). Rows marked spot/unlinked have no
+                contract behind their settlements and rank on the settled-bushel figure. The costliest category per
+                buyer is highlighted. Tap a buyer to open its contracts and settlements.
               </p>
               <div className="overflow-x-auto bg-white rounded-xl shadow">
                 <table className="min-w-full text-sm border-collapse">
@@ -607,78 +618,105 @@ export default function BuyerDiscountsReport({
                     <tr>
                       <th className={`${textCell} text-left font-semibold`}>Buyer</th>
                       <th className={`${numCell} font-semibold`}>Stmts</th>
-                      <th className={`${numCell} font-semibold`}>Bushels</th>
-                      <th className={`${numCell} font-semibold`}>Total disc ¢/bu</th>
-                      {GROUP_ORDER.map((g) => (
-                        <th key={g} className={`${numCell} font-semibold`}>{CATEGORY_GROUP_LABELS[g]}</th>
+                      <th className={`${numCell} font-semibold`}>Settled bu</th>
+                      <th className={`${numCell} font-semibold`}>Contracted bu</th>
+                      <th className={`${numCell} font-semibold`}>Lost ¢/contracted bu</th>
+                      <th className={`${numCell} font-semibold`}>Lost ¢/settled bu</th>
+                      {LOST_GROUP_ORDER.map((g) => (
+                        <th key={g} className={`${numCell} font-semibold`}>{LOST_GROUP_LABELS[g]}</th>
                       ))}
-                      <th className={`${numCell} font-semibold`}>Excess shrink</th>
-                      <th className={`${numCell} font-semibold`}>Gross → net $/bu</th>
-                      <th className={`${numCell} font-semibold`}>Total cost ¢/bu</th>
                       <th className={`${numCell} font-semibold`}>Rank</th>
                     </tr>
                   </thead>
                   <tbody>
                     {rows.map((r) => {
-                      const hot = new Set(costliestGroups(r))
-                      const group = byCrop.find(([k]) => k === cid)?.[1] ?? []
-                      const mine = group.filter((s) => s.buyerId === r.buyerId)
+                      const hot = new Set<LostGroup>(costliestLostGroups(r))
                       const isOpen = expandedBuyer === `${cid}|${r.buyerId}`
                       return (
-                        <BuyerRowGroup key={r.buyerId} open={isOpen}>
+                        <RowGroup key={r.buyerId}>
                           <tr
                             className="border-t border-slate-100 cursor-pointer hover:bg-slate-50"
                             onClick={() => setExpandedBuyer(isOpen ? null : `${cid}|${r.buyerId}`)}
-                            title="Tap to see this buyer's settlements"
+                            title="Tap to see this buyer's contracts and settlements"
                           >
                             <td className={textCell}>
                               <span className="font-medium">{buyerName(r.buyerId)}</span>
                               <span className="text-slate-400 text-xs ml-1">{isOpen ? '▾' : '▸'}</span>
-                              {r.itemizedCoverage < 0.95 && r.discountCentsPerBu > 0 && (
-                                <span className="ml-1.5 text-[10px] uppercase tracking-wide bg-slate-100 text-slate-500 rounded px-1.5 py-0.5" title="Some of this buyer's settlements aren't itemized, so the per-category columns understate them">
-                                  partly itemized
+                              {r.spotOnly && (
+                                <span className="ml-1.5 text-[10px] uppercase tracking-wide bg-slate-100 text-slate-500 rounded px-1.5 py-0.5" title="No contract linked to these settlements — the lead figure falls back to lost ¢ per settled bushel">
+                                  spot/unlinked
                                 </span>
                               )}
                             </td>
                             <td className={numCell}>{fmtInt(r.settlements)}</td>
                             <td className={numCell}>{fmtInt(r.settledBu)}</td>
-                            <td className={`${numCell} font-semibold`}>{fmtCents(r.discountCentsPerBu)}</td>
-                            {GROUP_ORDER.map((g) => (
-                              <td key={g} className={`${numCell} ${hot.has(g) ? 'text-amber-700 font-semibold' : r.groupCents[g] > 0 ? '' : 'text-slate-300'}`}>
-                                {r.groupCents[g] > 0 ? fmtCents(r.groupCents[g]) : '—'}
+                            <td className={numCell}>{r.contractedBu > 0 ? fmtInt(r.contractedBu) : <span className="text-slate-300">—</span>}</td>
+                            <td className={`${numCell} font-semibold ${r.rank === 1 ? 'text-green-700' : r.rank === rows.length && rows.length > 1 ? 'text-red-700' : ''}`}>
+                              {r.leadCentsPerContractedBu != null ? fmtCents(r.leadCentsPerContractedBu) : (
+                                <span title="Spot/unlinked — the settled-bu figure stands in">{fmtCents(r.centsPerSettledBu)}*</span>
+                              )}
+                            </td>
+                            <td className={numCell}>{fmtCents(r.centsPerSettledBu)}</td>
+                            {LOST_GROUP_ORDER.map((g) => (
+                              <td key={g} className={`${numCell} ${hot.has(g) ? 'text-amber-700 font-semibold' : Math.abs(r.groupCents[g]) > 0.05 ? '' : 'text-slate-300'} ${r.groupCents[g] < -0.05 ? 'text-green-700' : ''}`}>
+                                {Math.abs(r.groupCents[g]) > 0.05 ? fmtCents(r.groupCents[g]) : '—'}
                               </td>
                             ))}
-                            <td className={`${numCell} ${r.excessShrinkCentsPerBu > 0.05 ? 'text-red-700 font-semibold' : r.excessShrinkCentsPerBu < -0.05 ? 'text-green-700' : 'text-slate-400'}`}>
-                              {fmtCents(r.excessShrinkCentsPerBu)}
-                            </td>
-                            <td className={numCell}>${fmtNum(r.grossPerBu)} → ${fmtNum(r.netPerBu)}</td>
-                            <td className={`${numCell} font-semibold ${r.rank === 1 ? 'text-green-700' : r.rank === rows.length && rows.length > 1 ? 'text-red-700' : ''}`}>
-                              {fmtCents(r.totalCostCentsPerBu)}
-                            </td>
                             <td className={numCell}>{r.rank}</td>
                           </tr>
                           {isOpen && (
                             <tr className="bg-slate-50/70">
                               <td colSpan={13} className="px-4 py-2">
-                                <div className="text-xs text-slate-500 mb-1">Settlements behind this row:</div>
-                                <ul className="text-sm space-y-0.5">
-                                  {mine.map((s) => (
-                                    <li key={s.id}>
-                                      <Link href={`/settlements/${s.id}`} className="text-brand-deep hover:underline">
-                                        {s.settlementDate} · {s.settlementNumber ? `#${s.settlementNumber}` : 'no number'}
-                                      </Link>
-                                      <span className="text-slate-500">
-                                        {' '}· {fmtInt(s.settledBu)} bu · discounts ${fmtNum(s.discountTotal)}
-                                        {s.settledBu > 0 && <> ({fmtCents((s.discountTotal / s.settledBu) * 100)}/bu)</>}
-                                        {s.items.length === 0 && <span className="text-slate-400"> · not itemized</span>}
+                                {r.contracts.map((c) => (
+                                  <div key={c.contractId} className="mb-2">
+                                    <div className="text-sm font-medium">
+                                      Contract {c.contractNumber ? `#${c.contractNumber}` : c.contractId.slice(0, 8)}
+                                      <span className="text-slate-500 font-normal">
+                                        {' '}· {fmtInt(c.contractBushels)} bu contracted · lost ${fmtNum(c.lostDollars)}
+                                        {c.centsPerContractedBu != null && <> ({fmtCents(c.centsPerContractedBu)}/contracted bu)</>}
                                       </span>
-                                    </li>
-                                  ))}
-                                </ul>
+                                    </div>
+                                    <ul className="text-sm space-y-0.5 ml-4 mt-0.5">
+                                      {c.settlements.map(({ settlement: sRef, lost }) => {
+                                        const s = settlementById.get(sRef.id)
+                                        return (
+                                          <li key={sRef.id}>
+                                            <Link href={`/settlements/${sRef.id}`} className="text-brand-deep hover:underline">
+                                              {sRef.settlementDate} · {sRef.settlementNumber ? `#${sRef.settlementNumber}` : 'no number'}
+                                            </Link>
+                                            <span className="text-slate-500">
+                                              {' '}· {fmtInt(sRef.settledBu)} bu · lost ${fmtNum(lost.totalDollars)}
+                                              {sRef.settledBu > 0 && <> ({fmtCents((lost.totalDollars / sRef.settledBu) * 100)}/bu)</>}
+                                              {s && s.items.length === 0 && <span className="text-slate-400"> · not itemized</span>}
+                                            </span>
+                                          </li>
+                                        )
+                                      })}
+                                    </ul>
+                                  </div>
+                                ))}
+                                {r.unlinked.length > 0 && (
+                                  <div>
+                                    <div className="text-sm font-medium">Spot / unlinked settlements</div>
+                                    <ul className="text-sm space-y-0.5 ml-4 mt-0.5">
+                                      {r.unlinked.map(({ settlement: sRef, lost }) => (
+                                        <li key={sRef.id}>
+                                          <Link href={`/settlements/${sRef.id}`} className="text-brand-deep hover:underline">
+                                            {sRef.settlementDate} · {sRef.settlementNumber ? `#${sRef.settlementNumber}` : 'no number'}
+                                          </Link>
+                                          <span className="text-slate-500">
+                                            {' '}· {fmtInt(sRef.settledBu)} bu · lost ${fmtNum(lost.totalDollars)}
+                                            {sRef.settledBu > 0 && <> ({fmtCents((lost.totalDollars / sRef.settledBu) * 100)}/bu)</>}
+                                          </span>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
                               </td>
                             </tr>
                           )}
-                        </BuyerRowGroup>
+                        </RowGroup>
                       )
                     })}
                   </tbody>
@@ -687,77 +725,82 @@ export default function BuyerDiscountsReport({
             </div>
           ))}
 
-          {/* ---- Quality-adjusted ---- */}
-          {perCropQuality.map(({ cropId: cid, rows }) => {
-            const crop = cropById.get(cid)
-            const withRates = rows.filter((r) => r.moistureCentsPerPoint != null || r.testWeightCentsPerLb != null)
-            return (
-              <div key={`q-${cid}`} className="space-y-1">
-                <h2 className="font-semibold">Quality-adjusted — {crop?.name ?? 'Unassigned crop'}</h2>
-                <p className="text-xs text-slate-500 max-w-3xl">
-                  Raw averages can just mean you hauled wetter grain to one buyer. These rates divide each buyer&rsquo;s
-                  itemized moisture/drying and test-weight charges by how far their grain actually ran over
-                  {crop?.base_moisture_pct != null ? ` ${fmtNum(Number(crop.base_moisture_pct), 1)}% moisture` : ' base moisture'} or under
-                  {crop?.base_lb_per_bushel != null ? ` ${fmtNum(Number(crop.base_lb_per_bushel), 0)} lb` : ' standard weight'} —
-                  the charge per point, like for like. Each buyer&rsquo;s average grain is shown so you can judge comparability.
-                </p>
-                {withRates.length === 0 ? (
-                  <p className="text-sm text-slate-400 bg-white rounded-xl shadow px-4 py-3">
-                    Needs itemized settlements with matched loads carrying moisture or test-weight readings.
-                  </p>
-                ) : (
-                  <>
-                    <div className="overflow-x-auto bg-white rounded-xl shadow">
-                      <table className="min-w-full text-sm border-collapse">
-                        <thead className={theadCls}>
-                          <tr>
-                            <th className={`${textCell} text-left font-semibold`}>Buyer</th>
-                            <th className={`${numCell} font-semibold`}>Avg moisture</th>
-                            <th className={`${numCell} font-semibold`}>Avg test wt</th>
-                            <th className={`${numCell} font-semibold`}>Moisture + drying ¢/point</th>
-                            <th className={`${numCell} font-semibold`}>Test weight ¢/lb light</th>
-                            <th className={`${numCell} font-semibold`}>Rated bu</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {rows.map((r) => (
-                            <tr key={r.buyerId} className="border-t border-slate-100">
-                              <td className={textCell}>{buyerName(r.buyerId)}</td>
-                              <td className={numCell}>{r.avgMoisture != null ? `${fmtNum(r.avgMoisture, 1)}%` : '—'}</td>
-                              <td className={numCell}>{r.avgTestWeight != null ? `${fmtNum(r.avgTestWeight, 1)} lb` : '—'}</td>
-                              <td className={numCell}>{fmtCents(r.moistureCentsPerPoint)}</td>
-                              <td className={numCell}>{fmtCents(r.testWeightCentsPerLb)}</td>
-                              <td className={numCell}>{fmtInt(r.ratedBu)}</td>
+          {/* ---- Quality-adjusted (secondary detail) ---- */}
+          <div className="space-y-1">
+            <button
+              type="button"
+              onClick={() => setShowQuality((v) => !v)}
+              className="font-semibold text-left"
+            >
+              {showQuality ? '▾' : '▸'} Quality-adjusted detail
+              <span className="text-xs text-slate-500 font-normal ml-2">
+                ¢ per point of moisture / per pound of test weight — corrects for the grain each buyer actually saw
+              </span>
+            </button>
+            {showQuality && perCropQuality.map(({ cropId: cid, rows }) => {
+              const crop = cropById.get(cid)
+              const withRates = rows.filter((r) => r.moistureCentsPerPoint != null || r.testWeightCentsPerLb != null)
+              return (
+                <div key={`q-${cid}`} className="space-y-1">
+                  <h3 className="text-sm font-semibold text-slate-700 mt-2">{crop?.name ?? 'Unassigned crop'}</h3>
+                  {withRates.length === 0 ? (
+                    <p className="text-sm text-slate-400 bg-white rounded-xl shadow px-4 py-3">
+                      Needs itemized settlements with matched loads carrying moisture or test-weight readings.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="overflow-x-auto bg-white rounded-xl shadow">
+                        <table className="min-w-full text-sm border-collapse">
+                          <thead className={theadCls}>
+                            <tr>
+                              <th className={`${textCell} text-left font-semibold`}>Buyer</th>
+                              <th className={`${numCell} font-semibold`}>Avg moisture</th>
+                              <th className={`${numCell} font-semibold`}>Avg test wt</th>
+                              <th className={`${numCell} font-semibold`}>Moisture + drying ¢/point</th>
+                              <th className={`${numCell} font-semibold`}>Test weight ¢/lb light</th>
+                              <th className={`${numCell} font-semibold`}>Rated bu</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    {(['moisture', 'testWeight'] as const).map((which) => {
-                      const verdict = qualityVerdict(rows, buyerName, which)
-                      return verdict ? (
-                        <p key={which} className="text-sm text-slate-700 bg-white rounded-xl shadow px-4 py-2">
-                          {verdict}
-                        </p>
-                      ) : null
-                    })}
-                  </>
-                )}
-              </div>
-            )
-          })}
+                          </thead>
+                          <tbody>
+                            {rows.map((r) => (
+                              <tr key={r.buyerId} className="border-t border-slate-100">
+                                <td className={textCell}>{buyerName(r.buyerId)}</td>
+                                <td className={numCell}>{r.avgMoisture != null ? `${fmtNum(r.avgMoisture, 1)}%` : '—'}</td>
+                                <td className={numCell}>{r.avgTestWeight != null ? `${fmtNum(r.avgTestWeight, 1)} lb` : '—'}</td>
+                                <td className={numCell}>{fmtCents(r.moistureCentsPerPoint)}</td>
+                                <td className={numCell}>{fmtCents(r.testWeightCentsPerLb)}</td>
+                                <td className={numCell}>{fmtInt(r.ratedBu)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {(['moisture', 'testWeight'] as const).map((which) => {
+                        const verdict = qualityVerdict(rows, buyerName, which)
+                        return verdict ? (
+                          <p key={which} className="text-sm text-slate-700 bg-white rounded-xl shadow px-4 py-2">
+                            {verdict}
+                          </p>
+                        ) : null
+                      })}
+                    </>
+                  )}
+                </div>
+              )
+            })}
+          </div>
 
           {/* ---- Published schedules ---- */}
           <div className="space-y-1">
             <h2 className="font-semibold">Published discount schedules</h2>
             <p className="text-xs text-slate-500 max-w-3xl">
-              Each buyer&rsquo;s posted sheet, side by side per factor — the pre-season &ldquo;who&rsquo;s punitive on
-              test weight this year&rdquo; view. Schedules carry effective dates; the audit below always uses the
-              schedule in force at each settlement&rsquo;s date.
+              Each buyer&rsquo;s posted sheet, side by side per factor. Schedules live with the buyer (Settings →
+              Buyers); they carry effective dates, and the audit below always uses the schedule in force at each
+              settlement&rsquo;s date.
             </p>
             {scheduleComparison.length === 0 ? (
               <p className="text-sm text-slate-400 bg-white rounded-xl shadow px-4 py-3">
-                No discount schedules uploaded yet — use &ldquo;Upload discount schedule (AI)&rdquo; below or on the Buyers settings page.
+                No discount schedules uploaded yet — use &ldquo;Upload discount schedule (AI)&rdquo; below or on the buyer&rsquo;s card in Settings → Buyers.
               </p>
             ) : scheduleComparison.map((block) => (
               <div key={block.cropId} className="overflow-x-auto bg-white rounded-xl shadow">
@@ -847,15 +890,16 @@ export default function BuyerDiscountsReport({
       )}
 
       <p className="text-xs text-slate-400 max-w-3xl">
-        Settlements join a crop and year through their matched loads; unmatched settlements don&rsquo;t appear here.
-        Per-category columns come from itemized discounts — settlements without itemization count in the totals but
-        can&rsquo;t be broken out (open one and add its discount lines to complete the picture).
+        Settlements join a crop, crop year, and contract through their matched loads; unmatched settlements don&rsquo;t
+        appear here. Category columns come from itemized discounts (weight-type items categorize the shrink gap without
+        double counting); settlements without itemization still count in totals, with their volume gap under Weight
+        deduction. Open a settlement to add its discount lines and complete the picture.
       </p>
     </div>
   )
 }
 
-// Wrapper so the buyer row + its expansion render as siblings inside <tbody>.
-function BuyerRowGroup({ children }: { children: React.ReactNode; open: boolean }) {
+// Wrapper so a buyer row + its expansion render as siblings inside <tbody>.
+function RowGroup({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }

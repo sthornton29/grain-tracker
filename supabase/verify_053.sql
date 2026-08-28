@@ -22,7 +22,7 @@ insert into _tenant_tables values
   ('settlement_discount_items'), ('buyer_discount_schedules'), ('buyer_discount_schedule_rules'),
   ('futures_positions'), ('options_positions'),
   ('crop_assumptions'), ('county_yield_assumptions'), ('crop_year_sales_status'),
-  ('harvest_price_estimates'), ('variety_match_dismissals'), ('combine_yield_entries'), ('external_trucks'), ('assistant_usage'), ('lease_terms'), ('rent_settlements'),
+  ('harvest_price_estimates'), ('variety_match_dismissals'), ('combine_yield_entries'), ('external_trucks'), ('assistant_usage'), ('lease_terms'), ('rent_settlements'), ('org_dryers'),
   ('crop_insurance_policies'), ('crop_insurance_sco'), ('crop_insurance_eco'),
   ('crop_insurance_stax'), ('crop_insurance_mco'),
   ('farm_base_acres'), ('arc_plc_elections'), ('arc_plc_payments'),

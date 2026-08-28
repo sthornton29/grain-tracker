@@ -12,6 +12,7 @@ import {
   DISCOUNT_CATEGORIES,
   DISCOUNT_CATEGORY_LABELS,
   centsPerBu,
+  coerceDeductionKind,
   coerceDiscountCategory,
   effectivePriceWalk,
   excessShrink,
@@ -25,9 +26,10 @@ type ItemDraft = {
   amount: string
   rate_note: string
   quantity_basis: string
+  deduction_kind: string
 }
 
-const emptyDraft = (): ItemDraft => ({ category: 'other', description: '', amount: '', rate_note: '', quantity_basis: '' })
+const emptyDraft = (): ItemDraft => ({ category: 'other', description: '', amount: '', rate_note: '', quantity_basis: '', deduction_kind: 'price' })
 
 const fmt = (n: number | null | undefined, d = 2) =>
   n == null ? '—' : Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })
@@ -77,6 +79,7 @@ export default function DiscountsBlock({
       amount: String(item.amount ?? ''),
       rate_note: item.rate_note ?? '',
       quantity_basis: item.quantity_basis ?? '',
+      deduction_kind: coerceDeductionKind(item.deduction_kind),
     })
   }
 
@@ -87,6 +90,7 @@ export default function DiscountsBlock({
       amount: Number(draft.amount) || 0,
       rate_note: draft.rate_note.trim() || null,
       quantity_basis: draft.quantity_basis.trim() || null,
+      deduction_kind: coerceDeductionKind(draft.deduction_kind),
     }
   }
 
@@ -131,6 +135,15 @@ export default function DiscountsBlock({
           className="rounded-lg border border-slate-300 px-2 py-1 text-sm"
         >
           {DISCOUNT_CATEGORIES.map((c) => <option key={c} value={c}>{DISCOUNT_CATEGORY_LABELS[c]}</option>)}
+        </select>
+        <select
+          value={draft.deduction_kind}
+          onChange={(e) => setDraft((d) => ({ ...d, deduction_kind: e.target.value }))}
+          className="rounded-lg border border-slate-300 px-2 py-1 text-sm mt-1 block"
+          title="Price = dollars off the check. Weight = bushels/pounds taken instead — valued from the load reconciliation, not this line."
+        >
+          <option value="price">Price $</option>
+          <option value="weight">Weight</option>
         </select>
       </td>
       <td className="px-3 py-2">
@@ -219,13 +232,29 @@ export default function DiscountsBlock({
               {items.map((item) => (
                 editingId === item.id ? <EditorRowWrap key={item.id}>{editorRow}</EditorRowWrap> : (
                   <tr key={item.id} className="border-t border-slate-100">
-                    <td className="px-3 py-2 whitespace-nowrap">{DISCOUNT_CATEGORY_LABELS[coerceDiscountCategory(item.category)]}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {DISCOUNT_CATEGORY_LABELS[coerceDiscountCategory(item.category)]}
+                      {coerceDeductionKind(item.deduction_kind) === 'weight' && (
+                        <span className="ml-1.5 text-[10px] uppercase tracking-wide bg-slate-100 text-slate-500 rounded px-1.5 py-0.5" title="A weight/bushel deduction — valued once from the load reconciliation (the shrink line below), not counted as dollars here">
+                          weight
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-slate-600">
                       {item.description ?? <span className="text-slate-300">—</span>}
                       {item.quantity_basis && <span className="text-xs text-slate-400 ml-1">({item.quantity_basis})</span>}
                     </td>
-                    <td className="px-3 py-2 text-right tabular-nums">${fmt(Number(item.amount))}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{fmtCents(centsPerBu(Number(item.amount), settledBu))}</td>
+                    {coerceDeductionKind(item.deduction_kind) === 'weight' ? (
+                      <>
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-400">{Number(item.amount) > 0 ? `($${fmt(Number(item.amount))})` : '—'}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-300">—</td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="px-3 py-2 text-right tabular-nums">${fmt(Number(item.amount))}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{fmtCents(centsPerBu(Number(item.amount), settledBu))}</td>
+                      </>
+                    )}
                     <td className="px-3 py-2 text-slate-500">{item.rate_note ?? ''}</td>
                     <td className="px-3 py-2 whitespace-nowrap text-right">
                       {canEdit && (

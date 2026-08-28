@@ -34,6 +34,15 @@ describe('toolNamesForRole', () => {
     expect(names).toContain('get_marketing_summary')
   })
 
+  it('viewer keeps the buyer discount tools (the report is viewer-included)', () => {
+    const names = toolNamesForRole('viewer')
+    expect(names).toContain('get_buyer_discount_schedule')
+    expect(names).toContain('get_buyer_discount_history')
+    // Agronomist never sees them (financial surface).
+    expect(toolNamesForRole('agronomist')).not.toContain('get_buyer_discount_schedule')
+    expect(toolNamesForRole('agronomist')).not.toContain('get_buyer_discount_history')
+  })
+
   it('gin: query_data only', () => {
     expect(toolNamesForRole('gin')).toEqual(['query_data'])
   })
@@ -57,5 +66,19 @@ describe('tool registry', () => {
       expect((t.description ?? '').length).toBeGreaterThan(20)
       expect(toolStatusLabel(t.name)).toMatch(/…$/)
     }
+  })
+
+  it('buyer discount tool shapes: schedule takes buyer (+optional readings), history requires crop_year', () => {
+    const sched = ASSISTANT_TOOLS.find((t) => t.name === 'get_buyer_discount_schedule')!
+    expect(sched.input_schema.required).toEqual(['buyer'])
+    const schedProps = sched.input_schema.properties as Record<string, unknown>
+    for (const p of ['buyer', 'crop', 'moisture', 'test_weight', 'price_per_bu']) expect(schedProps).toHaveProperty(p)
+    // The description pins the contract: the RULE ENGINE does the math.
+    expect(sched.description).toMatch(/RULE ENGINE|rule engine/i)
+
+    const hist = ASSISTANT_TOOLS.find((t) => t.name === 'get_buyer_discount_history')!
+    expect(hist.input_schema.required).toEqual(['crop_year'])
+    const histProps = hist.input_schema.properties as Record<string, unknown>
+    for (const p of ['crop_year', 'buyer', 'crop']) expect(histProps).toHaveProperty(p)
   })
 })

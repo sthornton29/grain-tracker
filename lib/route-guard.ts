@@ -31,7 +31,9 @@ const VIEWER_API_PATHS = [
 // viewers don't get them at all. reportGroupsFor() hides them from the
 // sidebar/landing via this same matrix.
 // rent-settlement: landowner finances + tables the viewer RLS blocks outright.
-const VIEWER_BLOCKED_REPORTS = ['/reports/settlement-pdfs', '/reports/crop-budget', '/reports/rent-settlement']
+// dryer-math: an operation calculator (saved dryers, fuel costs) with no
+// entity dimension — same rationale as crop-budget.
+const VIEWER_BLOCKED_REPORTS = ['/reports/settlement-pdfs', '/reports/crop-budget', '/reports/rent-settlement', '/reports/dryer-math']
 
 // Help is NEVER restricted: every role gets the help center, the assistants
 // (support chat AND the Ask Turnrow data assistant — its answers are scoped

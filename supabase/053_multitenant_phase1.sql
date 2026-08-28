@@ -155,7 +155,7 @@ begin
     -- assumptions / marketing
     'crop_assumptions', 'county_yield_assumptions', 'crop_year_sales_status',
     'harvest_price_estimates', -- per-org despite national prices: keyed by per-org crops (see header)
-    'variety_match_dismissals', 'combine_yield_entries', 'external_trucks', 'assistant_usage', 'lease_terms', 'rent_settlements',
+    'variety_match_dismissals', 'combine_yield_entries', 'external_trucks', 'assistant_usage', 'lease_terms', 'rent_settlements', 'org_dryers',
     -- crop insurance
     'crop_insurance_policies', 'crop_insurance_sco', 'crop_insurance_eco',
     'crop_insurance_stax', 'crop_insurance_mco',
