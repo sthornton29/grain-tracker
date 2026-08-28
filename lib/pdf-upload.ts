@@ -34,7 +34,7 @@ export function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement'
+export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement' | 'discount_schedule'
 
 // Full lease-terms extraction for the Rent Settlement report (069). Shapes
 // mirror lib/rent-settlement.ts LeaseTermsShape (snake_case on the wire).
@@ -54,6 +54,17 @@ export type LeaseAgreementExtraction = {
   source: string | null
 }
 
+// A document-level itemized discount line (074). Category is free text on the
+// wire — coerceDiscountCategory (lib/settlement-discounts.ts) pins it to the
+// enum at save time.
+export type SettlementDiscountItemExtraction = {
+  category: string | null
+  description: string | null
+  amount: number | null
+  rate_note: string | null
+  quantity_basis: string | null
+}
+
 export type SettlementExtraction = {
   buyer_name: string | null
   settlement_date: string | null
@@ -64,6 +75,32 @@ export type SettlementExtraction = {
     gross_revenue: number | null
     discounts: number | null
   }>
+  // Absent on pre-074 parses; the review screen treats missing as [].
+  discount_items?: SettlementDiscountItemExtraction[]
+}
+
+// A buyer's posted discount sheet (document_type 'discount_schedule', 074).
+// Rule shapes mirror lib/discount-schedules.ts ScheduleRuleShape (snake_case
+// on the wire; factor/basis coerced at save time).
+export type DiscountScheduleRuleExtraction = {
+  factor: string | null
+  basis: string | null
+  base_value: number | null
+  direction: 'above' | 'below' | null
+  rate_per_unit: number | null
+  tiers: Array<{ from: number | null; to: number | null; rate: number | null }> | null
+  cumulative: boolean | null
+  rejection_at: number | null
+  note: string | null
+}
+
+export type DiscountScheduleExtraction = {
+  buyer_name: string | null
+  crop: string | null
+  effective_date: string | null
+  crop_year: number | null
+  schedule_text: string | null
+  rules: DiscountScheduleRuleExtraction[]
 }
 
 export type TicketExtraction = {
@@ -340,11 +377,12 @@ export async function parseDocument(input: File | ParseImage[], documentType: 'c
 export async function parseDocument(input: File | ParseImage[], documentType: 'gin_receipt'): Promise<GinReceiptExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'cotton_marketing_document', opts?: { category?: CottonMarketingCategory }): Promise<CottonMarketingExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'lease_agreement'): Promise<LeaseAgreementExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'discount_schedule'): Promise<DiscountScheduleExtraction>
 export async function parseDocument(
   input: File | ParseImage[],
   documentType: DocumentType,
   opts?: { category?: CottonMarketingCategory; primaryTarget?: string },
-): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonLoadsExtraction | GinReceiptExtraction | CottonMarketingExtraction | LeaseAgreementExtraction> {
+): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonLoadsExtraction | GinReceiptExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction> {
   // Build the request body. Photos are compressed small enough to inline as
   // base64. A PDF, however, is uploaded to storage first and sent as a URL:
   // Vercel rejects serverless request bodies over 4.5 MB with a 413, well below
@@ -381,7 +419,7 @@ export async function parseDocument(
     if (!body || typeof body !== 'object' || !('data' in body)) {
       throw new Error('Malformed response from server.')
     }
-    return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonMarketingExtraction | LeaseAgreementExtraction
+    return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction
   } finally {
     cleanup?.()
   }

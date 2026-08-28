@@ -17,6 +17,13 @@ import { mergeSettlements } from '@/lib/parse-merge'
 import { imagesToPdf } from '@/lib/image-capture'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
+import {
+  DISCOUNT_CATEGORIES,
+  DISCOUNT_CATEGORY_LABELS,
+  centsPerBu,
+  coerceDiscountCategory,
+  sumCheck,
+} from '@/lib/settlement-discounts'
 import type { Buyer } from '@/lib/types'
 
 type LoadMatch = {
@@ -43,6 +50,18 @@ const emptyRow = (): RowDraft => ({
   discounts: '',
   notes: '',
 })
+
+// One itemized discount line (074) — the statement's own deduction lines,
+// AI-extracted or typed, saved to settlement_discount_items with the lines.
+type DiscountDraft = {
+  category: string
+  description: string
+  amount: string
+  rate_note: string
+  quantity_basis: string
+}
+
+const emptyDiscount = (): DiscountDraft => ({ category: 'other', description: '', amount: '', rate_note: '', quantity_basis: '' })
 
 function num(s: string): number | null {
   if (s == null || s === '') return null
@@ -93,6 +112,7 @@ export default function NewSettlementPage() {
   const [settlementNumber, setSettlementNumber] = useState('')
   const [notes, setNotes] = useState('')
   const [rows, setRows] = useState<RowDraft[]>([])
+  const [discountRows, setDiscountRows] = useState<DiscountDraft[]>([])
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
 
@@ -207,8 +227,18 @@ export default function NewSettlementPage() {
         notes: '',
       }))
       setRows(nextRows)
+      const extractedItems = Array.isArray(data.discount_items) ? data.discount_items : []
+      setDiscountRows(extractedItems.map((di) => ({
+        category: coerceDiscountCategory(di.category),
+        description: di.description ?? '',
+        amount: di.amount != null ? String(di.amount) : '',
+        rate_note: di.rate_note ?? '',
+        quantity_basis: di.quantity_basis ?? '',
+      })))
       setAiBanner(
-        `AI extracted ${nextRows.length} line item${nextRows.length === 1 ? '' : 's'} from settlement PDF. Please review before saving.`,
+        `AI extracted ${nextRows.length} line item${nextRows.length === 1 ? '' : 's'}` +
+        (extractedItems.length > 0 ? ` and ${extractedItems.length} itemized discount${extractedItems.length === 1 ? '' : 's'}` : '') +
+        ' from settlement PDF. Please review before saving.',
       )
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) {
@@ -230,6 +260,7 @@ export default function NewSettlementPage() {
     setAiBanner(null)
     setAiStage(null)
     setRows([])
+    setDiscountRows([])
   }
 
   function updateRow(i: number, patch: Partial<RowDraft>) {
@@ -290,8 +321,23 @@ export default function NewSettlementPage() {
     })
 
     const { error: lErr } = await supabase.from('settlement_lines').insert(lines)
+    if (lErr) { setSaving(false); setErr('Settlement saved but lines failed: ' + lErr.message); return }
+
+    const items = discountRows
+      .filter((d) => d.description.trim() || num(d.amount) != null)
+      .map((d) => ({
+        settlement_id: settlement.id,
+        category: coerceDiscountCategory(d.category),
+        description: d.description.trim() || null,
+        amount: num(d.amount) ?? 0,
+        rate_note: d.rate_note.trim() || null,
+        quantity_basis: d.quantity_basis.trim() || null,
+      }))
+    if (items.length > 0) {
+      const { error: dErr } = await supabase.from('settlement_discount_items').insert(items)
+      if (dErr) { setSaving(false); setErr('Settlement saved but its discount detail failed: ' + dErr.message); return }
+    }
     setSaving(false)
-    if (lErr) { setErr('Settlement saved but lines failed: ' + lErr.message); return }
     router.push(`/settlements/${settlement.id}`)
   }
 
@@ -451,6 +497,106 @@ export default function NewSettlementPage() {
             <div className="lg:sticky lg:top-3 self-start h-[70vh] min-h-[400px]">
               <div className="text-xs text-slate-500 mb-1">Source document — cross-reference while reviewing</div>
               <SourcePreview source={source} className="h-full" title="Settlement" />
+            </div>
+          )}
+        </div>
+
+        {/* Itemized discounts (074): the statement's own deduction lines. The
+            AI fills these from the upload; under-itemized statements and
+            manual entries get rows added here. Saved with the settlement. */}
+        <div className="space-y-2 border-t border-slate-100 pt-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex-1 min-w-0">
+              <h3 className="font-semibold">Itemized discounts</h3>
+              <p className="text-xs text-slate-500">
+                Each deduction on the statement, by type — this powers the ¢/bu breakdown and the Buyer Discount Comparison report.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setDiscountRows((ds) => [...ds, emptyDiscount()])}
+              className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2"
+            >
+              + Add discount line
+            </button>
+          </div>
+
+          {(() => {
+            const lineDiscTotal = rows.reduce((s, r) => s + (num(r.discounts) ?? 0), 0)
+            const check = sumCheck(discountRows.map((d) => ({ category: d.category, amount: num(d.amount) ?? 0 })), lineDiscTotal)
+            return check.mismatch ? (
+              <p className="text-sm rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-amber-900">
+                The itemized lines add to ${fmt(check.itemizedTotal)}, but the line discounts total ${fmt(lineDiscTotal)}.
+                Part of the statement may not be itemized — review before saving.
+              </p>
+            ) : null
+          })()}
+
+          {discountRows.length === 0 ? (
+            <p className="text-sm text-slate-400">
+              None yet — the AI upload fills these in when the statement shows its deductions.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-100 text-slate-700">
+                  <tr>
+                    {['Type', 'Statement wording', '$', '¢/bu', 'Rate', ''].map((h, i) => (
+                      <th key={h || i} className={`px-2 py-2 whitespace-nowrap ${h === '$' || h === '¢/bu' ? 'text-right' : 'text-left'}`}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {discountRows.map((d, i) => {
+                    const cents = centsPerBu(num(d.amount) ?? 0, totals.netBu)
+                    return (
+                      <tr key={i} className="border-t border-slate-100 align-top">
+                        <td className="px-2 py-1">
+                          <select
+                            value={d.category}
+                            onChange={(e) => setDiscountRows((ds) => ds.map((x, j) => (i === j ? { ...x, category: e.target.value } : x)))}
+                            className={inputCls}
+                          >
+                            {DISCOUNT_CATEGORIES.map((c) => <option key={c} value={c}>{DISCOUNT_CATEGORY_LABELS[c]}</option>)}
+                          </select>
+                        </td>
+                        <td className="px-2 py-1" style={{ minWidth: 160 }}>
+                          <input
+                            value={d.description}
+                            onChange={(e) => setDiscountRows((ds) => ds.map((x, j) => (i === j ? { ...x, description: e.target.value } : x)))}
+                            className={inputCls}
+                          />
+                        </td>
+                        <td className="px-2 py-1" style={{ minWidth: 90 }}>
+                          <input
+                            type="number" step="0.01" value={d.amount}
+                            onChange={(e) => setDiscountRows((ds) => ds.map((x, j) => (i === j ? { ...x, amount: e.target.value } : x)))}
+                            className={`${inputCls} text-right`}
+                          />
+                        </td>
+                        <td className="px-2 py-1 text-right font-mono text-slate-500">
+                          {cents != null ? `${cents.toLocaleString(undefined, { maximumFractionDigits: 1 })}¢` : ''}
+                        </td>
+                        <td className="px-2 py-1" style={{ minWidth: 140 }}>
+                          <input
+                            value={d.rate_note}
+                            onChange={(e) => setDiscountRows((ds) => ds.map((x, j) => (i === j ? { ...x, rate_note: e.target.value } : x)))}
+                            placeholder="e.g. 4¢/lb under 54"
+                            className={inputCls}
+                          />
+                        </td>
+                        <td className="px-2 py-1">
+                          <button
+                            type="button"
+                            onClick={() => setDiscountRows((ds) => ds.filter((_, j) => j !== i))}
+                            className="text-red-600 text-sm"
+                          >✕</button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
             </div>
           )}
         </div>

@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
 import { buyersImportConfig } from '@/lib/import-configs'
 import SettingsDocImport from '@/components/settings-doc-import'
+import DiscountScheduleImport from '@/components/discount-schedule-import'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { matchExistingBuyer, BUYER_FINDER_RADII, type BuyerFinderHit } from '@/lib/ai-lookups'
 import type { Buyer, DeliveryLocation } from '@/lib/types'
@@ -223,6 +224,8 @@ export default function BuyersPage() {
       <SettingsDocImport primaryTarget="buyers" title="Upload a Buyer List (AI)" onSaved={refresh} />
 
       <CsvImport config={buyersImportConfig()} onImported={refresh} />
+
+      <DiscountScheduleImport showList />
 
       <form onSubmit={addBuyer} className="bg-white rounded-xl shadow p-4 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
         <input

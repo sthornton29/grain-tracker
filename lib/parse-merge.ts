@@ -16,9 +16,11 @@ import type {
   ContractExtraction,
   CottonLoadsExtraction,
   CropInsuranceExtraction,
+  DiscountScheduleExtraction,
   FsaBaseAcresExtraction,
   GinReceiptExtraction,
   LeaseAgreementExtraction,
+  SettlementDiscountItemExtraction,
   SettlementExtraction,
   TicketsExtraction,
 } from '@/lib/pdf-upload'
@@ -89,6 +91,27 @@ export function mergeTickets(parts: TicketsExtraction[]): TicketsExtraction {
 }
 
 export function mergeSettlements(parts: SettlementExtraction[]): SettlementExtraction {
+  // Discount items: an EXACT category+description+amount repeat across a
+  // chunk boundary is the same printed line seen twice — drop it. Different
+  // amounts under the same category+description are per-chunk PARTIAL sums
+  // (each batch of pages saw its share of, say, the drying charges) — SUM
+  // them into one item, keeping the first non-null rate/basis text.
+  const deduped = mergeList(
+    parts.map((p) => p.discount_items ?? []),
+    (i) => `${norm(i.category)}|${norm(i.description)}|${i.amount ?? ''}`,
+  )
+  const byKey = new Map<string, SettlementDiscountItemExtraction>()
+  for (const i of deduped) {
+    const key = `${norm(i.category)}|${norm(i.description)}`
+    const prev = byKey.get(key)
+    if (!prev) {
+      byKey.set(key, { ...i })
+    } else {
+      prev.amount = (prev.amount ?? 0) + (i.amount ?? 0)
+      prev.rate_note = prev.rate_note ?? i.rate_note
+      prev.quantity_basis = prev.quantity_basis ?? i.quantity_basis
+    }
+  }
   return {
     buyer_name: firstValue(parts, (p) => p.buyer_name),
     settlement_date: firstValue(parts, (p) => p.settlement_date),
@@ -97,6 +120,21 @@ export function mergeSettlements(parts: SettlementExtraction[]): SettlementExtra
       parts.map((p) => p.line_items ?? []),
       (l) => (l.ticket_number ? norm(l.ticket_number) : null),
     ),
+    discount_items: [...byKey.values()],
+  }
+}
+
+export function mergeDiscountSchedules(parts: DiscountScheduleExtraction[]): DiscountScheduleExtraction {
+  // One schedule per document: header scalars from the first chunk that has
+  // them; rules concatenate with one entry per factor (the earliest chunk's
+  // rule for a factor wins — a schedule prices each factor once).
+  return {
+    buyer_name: firstValue(parts, (p) => p.buyer_name),
+    crop: firstValue(parts, (p) => p.crop),
+    effective_date: firstValue(parts, (p) => p.effective_date),
+    crop_year: firstValue(parts, (p) => p.crop_year),
+    schedule_text: firstValue(parts, (p) => p.schedule_text),
+    rules: mergeList(parts.map((p) => p.rules ?? []), (r) => norm(r.factor) || null),
   }
 }
 

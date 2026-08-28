@@ -5,6 +5,9 @@ import { computeBushels } from '@/lib/shrink'
 import { relinkSettlementLines } from '@/lib/settlement-link'
 import SettlementPdfPanel from '@/components/settlement-pdf-panel'
 import LineMatchSelect, { type LoadOption } from './line-match-select'
+import DiscountsBlock from './discounts-block'
+import SettlementHeaderActions from './header-actions'
+import type { SettlementDiscountItem } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
 
@@ -170,6 +173,22 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
 
   const totalNetBu = lines.reduce((s, l) => s + Number(l.net_bushels ?? 0), 0)
   const totalNetRev = lines.reduce((s, l) => s + Number(l.net_revenue ?? 0), 0)
+  const totalGross = lines.reduce((s, l) => s + Number(l.gross_revenue ?? 0), 0)
+  const totalDisc = lines.reduce((s, l) => s + Number(l.discounts ?? 0), 0)
+
+  // The shrink comparison's inputs, over the MATCHED lines only (our dry-bu
+  // figure needs a load): our FSA-standard dry bushels vs their pay bushels,
+  // and their bushel-weighted net price to monetize the gap.
+  const matchedTheirBu = matched.reduce((s, l) => s + Number(l.net_bushels ?? 0), 0)
+  const matchedOurDry = matched.reduce((s, l) => s + dryBu(l.load!), 0)
+  const matchedNetRev = matched.reduce((s, l) => s + Number(l.net_revenue ?? 0), 0)
+  const avgMatchedPrice = matchedTheirBu > 0 ? matchedNetRev / matchedTheirBu : null
+
+  const { data: discountItems } = await supabase
+    .from('settlement_discount_items')
+    .select('*')
+    .eq('settlement_id', params.id)
+    .order('created_at')
 
   return (
     <div className="space-y-4">
@@ -181,17 +200,37 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
             {settlement.notes && <> · {settlement.notes}</>}
           </p>
         </div>
+        <SettlementHeaderActions
+          settlementId={settlement.id}
+          settlementDate={settlement.settlement_date}
+          settlementNumber={settlement.settlement_number}
+          notes={settlement.notes}
+        />
         <Link href="/settlements" className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Back</Link>
       </div>
 
       <SettlementPdfPanel settlementId={settlement.id} currentUrl={settlement.source_pdf_url} />
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         <StatCard label="Lines" value={String(lines.length)} />
         <StatCard label="Matched" value={String(matched.length)} tone="green" />
         <StatCard label="Unmatched" value={String(unmatchedCount)} tone={unmatchedCount > 0 ? 'amber' : 'slate'} />
+        <StatCard label="Gross revenue" value={`$${fmt(totalGross)}`} />
+        <StatCard label="Discounts" value={`$${fmt(totalDisc)}`} tone={totalDisc > 0 ? 'amber' : 'slate'} />
         <StatCard label="Net revenue" value={`$${fmt(totalNetRev)}`} />
       </div>
+
+      <DiscountsBlock
+        settlementId={settlement.id}
+        initialItems={(discountItems as SettlementDiscountItem[]) ?? []}
+        settledBu={totalNetBu}
+        grossRevenue={totalGross}
+        discountTotal={totalDisc}
+        ourDryBu={matched.length > 0 ? matchedOurDry : null}
+        matchedSettledBu={matchedTheirBu}
+        avgPricePerBu={avgMatchedPrice}
+        canEdit
+      />
 
       <Section title="Matched loads" subtitle="Lines tied to a load. Diffs &gt;1% between our dry bu and their net bu are flagged.">
         {matched.length === 0 ? <Empty>None.</Empty> : (

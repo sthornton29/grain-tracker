@@ -38,6 +38,15 @@ Also extract these document-level fields:
 - settlement_date (the date on the settlement, format YYYY-MM-DD)
 - settlement_number (any reference number, check number, or settlement ID — null if not found)
 
+ALSO itemize EVERY discount, deduction, or fee line the statement shows into document-level discount_items — moisture shrink, drying charges, test weight, damage, heat damage, foreign material, dockage, splits, sprout damage, musty/sour, checkoff and other fees. For each distinct discount line:
+- category: exactly one of "moisture_shrink" | "drying" | "test_weight" | "damage" | "heat_damage" | "foreign_material" | "dockage" | "splits" | "sprout" | "musty_sour" | "other" (checkoff and service fees are "other")
+- description: the statement's OWN wording for the line, verbatim (e.g. "DRYING CHG", "TW DISC 53.4#")
+- amount: the total dollars deducted for that line across the whole statement, as a positive number
+- rate_note: the rate exactly as printed, e.g. "4¢/lb under 54" or "$.025 per 1/2% over 15%" — null when no rate is shown
+- quantity_basis: what the rate was applied to when shown, e.g. "1,024.5 bu @ 17.2%" — null otherwise
+
+If the statement itemizes discounts per ticket line, SUM each distinct category+description across the document into ONE discount_items entry (the per-line "discounts" fields above stay per-line totals — discount_items is the document-level breakdown). The discount_items amounts should add up to the total of the per-line discounts; extract the numbers as printed and do not force them to balance. If the statement shows no discount detail at all, discount_items is [].
+
 Respond ONLY in JSON with no other text, no markdown backticks. Use this exact format:
 {
   "buyer_name": "string",
@@ -49,6 +58,57 @@ Respond ONLY in JSON with no other text, no markdown backticks. Use this exact f
       "net_bushels": number,
       "gross_revenue": number,
       "discounts": number
+    }
+  ],
+  "discount_items": [
+    {
+      "category": "string (one of the categories above)",
+      "description": "string",
+      "amount": number,
+      "rate_note": "string or null",
+      "quantity_basis": "string or null"
+    }
+  ]
+}`
+
+const DISCOUNT_SCHEDULE_PROMPT = `This is a grain buyer's posted DISCOUNT SCHEDULE (discount sheet / grade discount schedule) — the rules an elevator applies to moisture, test weight, damage, and other quality factors when settling grain. Extract the schedule's structured rules. Use null for anything the sheet does not state — NEVER guess a number.
+
+Document-level fields:
+- buyer_name (the elevator/buyer whose schedule this is)
+- crop (the commodity the schedule covers, e.g. "Corn", "Soybeans", "Wheat" — null if it doesn't say)
+- effective_date (YYYY-MM-DD — the posted/effective/revised date on the sheet; null when none is shown)
+- crop_year (the crop year if stated, else null)
+- schedule_text (a faithful plain-text transcription of the discount terms as printed — complete but compact; this is preserved with the record)
+
+- rules: one entry per quality factor the schedule prices:
+  - factor: exactly one of "moisture_shrink" | "drying" | "test_weight" | "damage" | "heat_damage" | "foreign_material" | "dockage" | "splits" | "sprout" | "musty_sour" | "other"
+  - basis: "weight_shrink_pct" when the charge deducts a percent of WEIGHT (shrink), "cents_per_bu" when it is a price discount in cents per bushel, "pct_of_price" when it takes a percent off the price
+  - base_value: the threshold where charges begin (15 for "over 15% moisture", 54 for "under 54 lb test weight")
+  - direction: "above" when charges grow as the measurement RISES past base (moisture, damage, FM), "below" when they grow as it FALLS (test weight)
+  - rate_per_unit: for LINEAR rules, the charge per whole unit past base in the basis units — convert half-point rates to per-point (a printed "2.5¢ per 1/2%" is 5) and put the printed wording in note. Null when the rule is tiered.
+  - tiers: for TIERED/bracketed rules, the bracket table in measurement order: [{ "from": number, "to": number, "rate": number }] — "54.0–54.9 = 4¢" becomes { "from": 54.0, "to": 54.9, "rate": 4 }, rate in the basis units. [] for linear rules.
+  - cumulative: true ONLY when the sheet says bracket charges STACK/add as grain passes through successive tiers ("an additional 8¢ per..."); false when a bracket's printed rate is the whole charge (the normal case)
+  - rejection_at: the measurement at/past which the buyer refuses the load ("reject below 49 lb" → 49), null when not stated
+  - note: the schedule's own wording for this factor, verbatim-ish
+
+Respond ONLY in JSON with no other text, no markdown backticks:
+{
+  "buyer_name": "string or null",
+  "crop": "string or null",
+  "effective_date": "YYYY-MM-DD or null",
+  "crop_year": number or null,
+  "schedule_text": "string or null",
+  "rules": [
+    {
+      "factor": "string (one of the factors above)",
+      "basis": "weight_shrink_pct or cents_per_bu or pct_of_price",
+      "base_value": number or null,
+      "direction": "above or below",
+      "rate_per_unit": number or null,
+      "tiers": [ { "from": number, "to": number, "rate": number } ],
+      "cumulative": true or false,
+      "rejection_at": number or null,
+      "note": "string or null"
     }
   ]
 }`
@@ -459,7 +519,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
   ]
 }`
 
-type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement'
+type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement' | 'discount_schedule'
 
 // Full lease-terms extraction for the Rent Settlement report — deeper than
 // the settings-document lease read (which only lifts share % / cash rent
@@ -626,6 +686,7 @@ const PROMPTS: Record<DocumentType, string> = {
   gin_receipt: GIN_RECEIPT_PROMPT,
   cotton_marketing_document: COTTON_MARKETING_PROMPT,
   lease_agreement: LEASE_AGREEMENT_PROMPT,
+  discount_schedule: DISCOUNT_SCHEDULE_PROMPT,
 }
 
 type ParseBody = {

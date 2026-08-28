@@ -328,6 +328,50 @@ export type SettlementLine = {
   notes: string | null
 }
 
+// An itemized discount/deduction line on a settlement (074). Amounts are
+// positive dollars deducted; the settlement_lines.discounts totals stay
+// authoritative (items are the breakdown, sum-checked in the UI).
+export type SettlementDiscountItem = {
+  id: string
+  settlement_id: string
+  category: string
+  description: string | null
+  amount: number
+  rate_note: string | null
+  quantity_basis: string | null
+  created_at: string
+}
+
+// A buyer's posted discount sheet for one crop, from an effective date (074).
+export type BuyerDiscountSchedule = {
+  id: string
+  buyer_id: string
+  crop_id: string
+  effective_date: string
+  schedule_text: string | null
+  source_pdf_url: string | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+// One quality-factor rule of a schedule; tiers is the jsonb bracket table
+// (lib/discount-schedules.ts parses/applies it).
+export type BuyerDiscountScheduleRule = {
+  id: string
+  schedule_id: string
+  factor: string
+  basis: string
+  base_value: number | null
+  direction: 'above' | 'below'
+  rate_per_unit: number | null
+  tiers: unknown
+  cumulative: boolean
+  rejection_at: number | null
+  note: string | null
+  created_at: string
+}
+
 export type LoadAttachment = {
   id: string
   load_id: string

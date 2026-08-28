@@ -52,6 +52,7 @@ begin
     'landowners', 'entity_counties',
     'loads', 'load_splits', 'load_attachments', 'contracts', 'contract_attachments',
     'settlements', 'settlement_lines',
+    'settlement_discount_items', 'buyer_discount_schedules', 'buyer_discount_schedule_rules',
     'futures_positions', 'options_positions',
     'crop_assumptions', 'county_yield_assumptions', 'crop_year_sales_status',
     'harvest_price_estimates', 'variety_match_dismissals', 'combine_yield_entries', 'external_trucks', 'assistant_usage', 'lease_terms', 'rent_settlements',

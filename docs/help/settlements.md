@@ -1,8 +1,8 @@
 ---
 page_route: /settlements
 title: Settlements
-updated: 2026-08-05
-keywords: settlements, settlement statement, buyer, paid, unpaid, reconcile, ticket, PDF, upload, revenue, discounts
+updated: 2026-08-28
+keywords: settlements, settlement statement, buyer, paid, unpaid, reconcile, ticket, PDF, upload, revenue, discounts, itemized, drying, test weight, shrink, price per bushel, edit, delete
 ---
 ## What this page is for
 
@@ -10,15 +10,19 @@ Settlements is where buyer settlement statements live — the paperwork that say
 
 ## How to use it
 
-- The list shows each settlement with its buyer, date, line count, how many lines are still unmatched to loads, net bushels, and net revenue — plus a link to the original document and a Review link.
+- The list shows each settlement with its buyer, date, line count, how many lines are still unmatched to loads, net bushels, and net revenue — plus a link to the original document. Tap any row to open the settlement's own page.
 - To enter one, tap New Settlement. Three ways to get the lines in:
-- **Upload the statement** — a PDF or a photo. Turnrow reads the settlement number, date, buyer, and every line (ticket number, net bushels, gross revenue, discounts) into editable rows for you to review before saving.
+- **Upload the statement** — a PDF or a photo. Turnrow reads the settlement number, date, buyer, and every line (ticket number, net bushels, gross revenue, discounts) into editable rows for you to review before saving. It also itemizes each deduction the statement shows — drying, test weight, dockage, and the rest — into its own discount lines, and warns if the itemized lines don't add up to the statement's discount total.
 - **Upload a spreadsheet** — columns for ticket number, net bushels, gross revenue, and discounts (a template is downloadable).
 - **Type the rows** by hand.
 - As you review, each line shows whether its ticket number matches one of your loads. Save, and the settlement is recorded with its lines tied to loads.
 - Open a settlement anytime to see its reconciliation page.
 
 ## The settlement detail page
+
+Open a settlement and everything about it is on one page: the header (editable with **Edit**; **Delete** removes the settlement and its lines after a confirmation, sending its loads back to Unpaid), the original document, gross/discounts/net totals, and the sections below.
+
+**The Discounts block** shows every deduction as its own line — the type, the statement's own wording, the dollars, and what it works out to in cents per settled bushel — then walks the price: gross $/bu, less discounts ¢/bu, equals net $/bu. It also shows the **weight deduction beyond standard shrink**: the buyer's pay bushels compared against your FSA-standard dry bushels, priced out — a real cost the price discounts never show. Statements entered by hand, or ones the upload couldn't fully itemize, can have discount lines added or corrected right here; these lines feed the Buyer Discount Comparison report.
 
 Three sections do the reconciling:
 

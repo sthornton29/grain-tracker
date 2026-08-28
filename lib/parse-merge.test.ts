@@ -16,6 +16,7 @@ import {
   mergeCottonLoads,
   mergeCottonMarketing,
   mergeCropInsurance,
+  mergeDiscountSchedules,
   mergeFsaBaseAcres,
   mergeGinReceipts,
   mergeList,
@@ -93,6 +94,57 @@ describe('mergeSettlements', () => {
     expect(merged.buyer_name).toBe('ADM')
     expect(merged.settlement_number).toBe('S-9')
     expect(merged.line_items.map((l) => l.ticket_number)).toEqual(['1001', '1002'])
+  })
+
+  it('discount items: exact boundary repeats drop, per-chunk partials sum', () => {
+    const item = (category: string, description: string, amount: number, rate_note: string | null = null) =>
+      ({ category, description, amount, rate_note, quantity_basis: null })
+    const merged = mergeSettlements([
+      {
+        buyer_name: 'ADM', settlement_date: '2026-08-01', settlement_number: 'S-9',
+        line_items: [],
+        discount_items: [item('drying', 'DRYING CHG', 75, '2.5¢/half point'), item('test_weight', 'TW DISC', 40)],
+      },
+      {
+        buyer_name: null, settlement_date: null, settlement_number: null,
+        line_items: [],
+        discount_items: [
+          item('drying', 'DRYING CHG', 75, '2.5¢/half point'), // exact repeat → dropped
+          item('test_weight', 'TW DISC', 12), // different amount → a partial, sums
+        ],
+      },
+    ])
+    const byCat = new Map(merged.discount_items!.map((i) => [i.category, i]))
+    expect(byCat.get('drying')!.amount).toBe(75)
+    expect(byCat.get('drying')!.rate_note).toBe('2.5¢/half point')
+    expect(byCat.get('test_weight')!.amount).toBe(52)
+    expect(merged.discount_items).toHaveLength(2)
+  })
+})
+
+describe('mergeDiscountSchedules', () => {
+  it('header from the first chunk; one rule per factor (earliest wins)', () => {
+    const rule = (factor: string, base: number | null) => ({
+      factor, basis: 'cents_per_bu', base_value: base, direction: 'above' as const,
+      rate_per_unit: 5, tiers: [], cumulative: false, rejection_at: null, note: null,
+    })
+    const merged = mergeDiscountSchedules([
+      {
+        buyer_name: 'Farmers Elevator', crop: 'Corn', effective_date: '2026-09-01',
+        crop_year: 2026, schedule_text: 'p1 text',
+        rules: [rule('drying', 15)],
+      },
+      {
+        buyer_name: null, crop: null, effective_date: null, crop_year: null, schedule_text: null,
+        rules: [rule('drying', 99), rule('test_weight', 54)], // drying repeat dropped
+      },
+    ])
+    expect(merged.buyer_name).toBe('Farmers Elevator')
+    expect(merged.effective_date).toBe('2026-09-01')
+    expect(merged.rules.map((r) => [r.factor, r.base_value])).toEqual([
+      ['drying', 15],
+      ['test_weight', 54],
+    ])
   })
 })
 

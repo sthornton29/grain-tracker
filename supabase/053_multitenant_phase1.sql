@@ -149,6 +149,7 @@ begin
     -- grain flow
     'loads', 'load_splits', 'load_attachments', 'contracts', 'contract_attachments',
     'settlements', 'settlement_lines',
+    'settlement_discount_items', 'buyer_discount_schedules', 'buyer_discount_schedule_rules',
     -- hedging
     'futures_positions', 'options_positions',
     -- assumptions / marketing

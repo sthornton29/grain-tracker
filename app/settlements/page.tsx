@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import ExportBar from '@/components/export-bar'
@@ -52,6 +53,7 @@ const EMPTY_COUNTS: Map<string, number> = new Map()
 
 export default function SettlementsListPage() {
   const supabase = useMemo(() => createClient(), [])
+  const router = useRouter()
   const [rows, setRows] = useState<Row[]>([])
   const [buyerLoads, setBuyerLoads] = useState<BuyerLoad[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
@@ -360,25 +362,33 @@ export default function SettlementsListPage() {
         </select>
       </div>
 
+      <p className="text-xs text-slate-500">
+        Tap a settlement to open it — the reconciliation, itemized discounts, and edit/delete live on its page.
+      </p>
+
       <div className="overflow-x-auto bg-white rounded-xl shadow">
         <table className="min-w-full text-sm">
           <thead className="bg-slate-100 text-slate-700">
             <tr>
-              {['Date', 'Settlement #', 'Buyer', 'Lines', 'Unmatched', 'Net bu', 'Net revenue', 'PDF', '']
+              {['Date', 'Settlement #', 'Buyer', 'Lines', 'Unmatched', 'Net bu', 'Net revenue', 'PDF']
                 .map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
             </tr>
           </thead>
           <tbody>
             {loading && (
-              <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>
+              <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>
             )}
             {!loading && filtered.length === 0 && (
-              <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">No settlements found.</td></tr>
+              <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">No settlements found.</td></tr>
             )}
             {!loading && filtered.map((r) => {
               const { count, unmatched, netBu, netRev } = rowStats(r)
               return (
-                <tr key={r.id} className="border-t border-slate-100">
+                <tr
+                  key={r.id}
+                  onClick={() => router.push(`/settlements/${r.id}`)}
+                  className="border-t border-slate-100 cursor-pointer hover:bg-slate-50"
+                >
                   <td className="px-3 py-2">{r.settlement_date}</td>
                   <td className="px-3 py-2 font-semibold">{r.settlement_number ?? '—'}</td>
                   <td className="px-3 py-2">{r.buyer?.name ?? ''}</td>
@@ -390,7 +400,7 @@ export default function SettlementsListPage() {
                   </td>
                   <td className="px-3 py-2 text-right">{fmt(netBu)}</td>
                   <td className="px-3 py-2 text-right">${fmt(netRev)}</td>
-                  <td className="px-3 py-2">
+                  <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
                     {r.source_pdf_url ? (
                       <a
                         href={r.source_pdf_url}
@@ -404,7 +414,6 @@ export default function SettlementsListPage() {
                       <span className="text-slate-300">—</span>
                     )}
                   </td>
-                  <td className="px-3 py-2"><Link href={`/settlements/${r.id}`} className="text-brand-deep">Review →</Link></td>
                 </tr>
               )
             })}
