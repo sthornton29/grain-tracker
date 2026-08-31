@@ -15,6 +15,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { fieldCropAggregates, practiceOf, combineEntryTotals, combineNegativeNetMessage } from '@/lib/yields'
 import { rememberHarvestEntryPath } from '@/lib/harvest-entry-path'
+import { FieldPicker } from '@/components/field-picker'
 import type { CombineYieldEntry, Crop, Farm, Field, FieldPlanting, LoadSplit } from '@/lib/types'
 
 type LoadRow = {
@@ -97,7 +98,6 @@ export default function CombineYieldPage() {
   }, [supabase])
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
-  const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
 
   const yearOptions = useMemo(() => {
     const s = new Set<number>([currentYear()])
@@ -105,19 +105,14 @@ export default function CombineYieldPage() {
     return [...s].sort((a, b) => b - a)
   }, [plantings])
 
-  // Fields with a planting for the chosen year, grouped by farm for the picker.
+  // Fields with a planting for the chosen year; the shared FieldPicker
+  // handles the farm grouping + search.
   const yearPlantings = useMemo(() => plantings.filter((p) => p.season_year === cropYear), [plantings, cropYear])
   const plantedFieldIds = useMemo(() => new Set(yearPlantings.map((p) => p.field_id)), [yearPlantings])
-  const fieldsByFarm = useMemo(() => {
-    const m = new Map<string, Field[]>()
-    for (const f of fields) {
-      if (!plantedFieldIds.has(f.id)) continue
-      const list = m.get(f.farm_id ?? '') ?? []
-      list.push(f)
-      m.set(f.farm_id ?? '', list)
-    }
-    return m
-  }, [fields, plantedFieldIds])
+  const plantedFields = useMemo(
+    () => fields.filter((f) => plantedFieldIds.has(f.id)),
+    [fields, plantedFieldIds],
+  )
 
   const fieldPlantings = useMemo(
     () => yearPlantings.filter((p) => p.field_id === fieldId),
@@ -294,16 +289,14 @@ export default function CombineYieldPage() {
           </label>
           <label className="block text-sm">
             <span className="font-semibold">Field</span>
-            <select value={fieldId} onChange={(e) => { setFieldId(e.target.value); setPlantingId('') }} className={inputCls}>
-              <option value="">— pick a field —</option>
-              {[...fieldsByFarm.entries()]
-                .sort((a, b) => (farmById.get(a[0])?.name ?? '').localeCompare(farmById.get(b[0])?.name ?? ''))
-                .map(([farmId, fs]) => (
-                  <optgroup key={farmId || 'none'} label={farmById.get(farmId)?.name ?? 'No farm'}>
-                    {fs.map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
-                  </optgroup>
-                ))}
-            </select>
+            <FieldPicker
+              value={fieldId}
+              onChange={(id) => { setFieldId(id); setPlantingId('') }}
+              fields={plantedFields}
+              farms={farms}
+              placeholder="— pick a field —"
+              className={inputCls}
+            />
           </label>
         </div>
         {fieldId && fieldPlantings.length > 1 && (

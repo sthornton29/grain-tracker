@@ -98,6 +98,49 @@ export function applyLastLoadDefaults<F extends DefaultableForm>(
   }
 }
 
+/**
+ * The Save & New reset — the patch applied over the just-saved form to start
+ * the next load. Everything NOT in this patch carries forward untouched:
+ * date, crop, crop year, From/To selections, and contract (the just-saved
+ * load is now the user's latest, so keeping them equals re-running the
+ * defaults seam without a refetch).
+ *
+ * THE TRUCK IS DELIBERATELY CLEARED (truck_id + hauler_truck). During
+ * harvest, consecutive loads rotate between trucks; a silently inherited
+ * truck produces wrong-truck records that are tedious to hunt down later.
+ * The truck's last-used affordances (use-last-tare etc.) still work — they
+ * just wait for a truck to be picked. Note the fresh-visit defaults seam
+ * above never seeds a truck either (LAST_LOAD_DEFAULTS_SELECT has no
+ * truck_id), so the truck ALWAYS starts empty on a new-load form.
+ */
+export function saveAndNewPatch(time: string): {
+  time: string
+  truck_id: ''
+  hauler_truck: ''
+  gross_weight: ''
+  tare_weight: ''
+  net_weight: ''
+  moisture: ''
+  test_weight: ''
+  dry_bushels_override: ''
+  ticket_number: ''
+  practice: ''
+} {
+  return {
+    time,
+    truck_id: '',
+    hauler_truck: '',
+    gross_weight: '',
+    tare_weight: '',
+    net_weight: '',
+    moisture: '',
+    test_weight: '',
+    dry_bushels_override: '',
+    ticket_number: '',
+    practice: '',
+  }
+}
+
 /** "8/14" from "2026-08-14" — no leading zeros, no year (it's this season). */
 function shortDate(iso: string): string {
   const [, m, d] = iso.split('-')

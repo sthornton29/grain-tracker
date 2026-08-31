@@ -17,12 +17,15 @@ import {
   dateDefaultNote,
   pickLastLoadDefaults,
   pickPerUserLastLoadDefaults,
+  saveAndNewPatch,
   type LastLoadDefaultsSource,
 } from '@/lib/load-defaults'
+import { contractDeliveredTotals, contractProgress } from '@/lib/contract-progress'
 import { HaulerTruckField, TruckPicker, findExternalTruck } from '@/components/truck-picker'
+import { FieldPicker } from '@/components/field-picker'
 import { lowTareWarning, truckTareKey, truckTareStats, type TareHistoryLoad } from '@/lib/truck-tare'
 import { fetchTruckTareHistory } from '@/lib/truck-tare-fetch'
-import type { Bin, Buyer, Contract, Crop, ExternalTruck, Field, FieldPlanting, Load, LoadSplit, Truck } from '@/lib/types'
+import type { Bin, Buyer, Contract, Crop, ExternalTruck, Farm, Field, FieldPlanting, Load, LoadSplit, Truck } from '@/lib/types'
 
 type Props = {
   initial?: Partial<Load>
@@ -133,6 +136,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   const [saveHaulerTruck, setSaveHaulerTruck] = useState(false)
   const [crops, setCrops] = useState<Crop[]>([])
   const [fields, setFields] = useState<Field[]>([])
+  const [farms, setFarms] = useState<Farm[]>([])
   const [bins, setBins] = useState<Bin[]>([])
   const [buyers, setBuyers] = useState<Buyer[]>([])
   const [contracts, setContracts] = useState<Contract[]>([])
@@ -159,6 +163,10 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   // progress widget. Excludes the load being edited (added back live below).
   const [contractDelivered, setContractDelivered] = useState<{ dryBu: number; count: number } | null>(null)
   const [contractProgressLoading, setContractProgressLoading] = useState(false)
+  // Bumped after each Save & New so the tracker refetches WITH the load just
+  // saved — without it the delivered total was fetched once per contract
+  // selection and overstated remaining for the rest of the session.
+  const [contractRefresh, setContractRefresh] = useState(0)
   // The selected truck's tare history (lib/truck-tare) — feeds the low-tare
   // warning and the "Use last tare" shortcut. Keyed so a stale fetch for a
   // previously selected truck can't land on the current one.
@@ -197,10 +205,12 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [t, c, f, b, by, ct, pl, xt] = await Promise.all([
+      const [t, c, f, fa, b, by, ct, pl, xt] = await Promise.all([
         supabase.from('trucks').select('*').order('name_or_number'),
         supabase.from('crops').select('*').order('name'),
         supabase.from('fields').select('*').order('name_or_number'),
+        // Farms group the field picker and power its farm-name search.
+        supabase.from('farms').select('*').order('name'),
         supabase.from('bins').select('*').order('name_or_number'),
         supabase.from('buyers').select('*').order('name'),
         supabase.from('contracts').select('*').order('contract_number'),
@@ -213,6 +223,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       setExternalTrucks((xt.data as ExternalTruck[]) || [])
       setCrops((c.data as Crop[]) || [])
       setFields((f.data as Field[]) || [])
+      setFarms((fa.data as Farm[]) || [])
       setBins((b.data as Bin[]) || [])
       setBuyers((by.data as Buyer[]) || [])
       setContracts((ct.data as Contract[]) || [])
@@ -306,7 +317,10 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   // switches to the hauler-truck flow (free text + saved external trucks).
   const isPickup = selectedContract?.delivery_type === 'pickup'
 
-  // Fetch the contract's delivered dry bushels whenever the selection changes.
+  // Fetch the contract's delivered dry bushels whenever the selection changes
+  // — and again after every Save & New (contractRefresh), so loads saved
+  // earlier in THIS session always count. A mid-session contract switch takes
+  // the contract_id branch and fetches that contract's true current total.
   useEffect(() => {
     if (!form.contract_id) { setContractDelivered(null); return }
     let cancelled = false
@@ -319,31 +333,21 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       if (mode === 'edit' && initial?.id) q = q.neq('id', initial.id)
       const { data } = await q
       if (cancelled) return
-      let dryBu = 0
-      let count = 0
-      for (const l of (data ?? []) as Array<{ net_weight: number | null; moisture: number | null; crop_id: string | null; dry_bushels_override: number | null }>) {
-        const crop = l.crop_id ? cropById.get(l.crop_id) : null
-        const { dryBushels } = computeBushels({
-          netWeightLb: l.net_weight, moisturePct: l.moisture,
-          baseMoisturePct: crop?.base_moisture_pct ?? null, baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
-          dryBushelsOverride: l.dry_bushels_override,
-        })
-        if (dryBushels) { dryBu += dryBushels; count++ }
-      }
-      setContractDelivered({ dryBu, count })
+      setContractDelivered(contractDeliveredTotals((data ?? []) as Parameters<typeof contractDeliveredTotals>[0], cropById))
       setContractProgressLoading(false)
     })()
     return () => { cancelled = true }
-  }, [form.contract_id, mode, initial?.id, supabase, cropById])
+  }, [form.contract_id, mode, initial?.id, supabase, cropById, contractRefresh])
 
   // Contract fill progress: delivered + this (unsaved/edited) load vs contracted.
   const contractTotal = selectedContract ? Number(selectedContract.contracted_bushels) : 0
   const deliveredBu = contractDelivered?.dryBu ?? 0
   const thisLoadBu = dryBushels ?? 0
-  const projectedBu = deliveredBu + thisLoadBu
-  const remainingBu = contractTotal - projectedBu
-  const pctDelivered = contractTotal > 0 ? Math.min(100, (deliveredBu / contractTotal) * 100) : 0
-  const pctThisLoad = contractTotal > 0 ? Math.max(0, Math.min(100 - pctDelivered, (thisLoadBu / contractTotal) * 100)) : 0
+  const { projectedBu, remainingBu, pctDelivered, pctThisLoad } = contractProgress({
+    contractedBu: contractTotal,
+    deliveredBu,
+    thisLoadBu,
+  })
 
   // Only hide bins designated to a DIFFERENT crop; undesignated bins always
   // show. Filtering undesignated bins out looked harmless, but it wiped the
@@ -746,22 +750,12 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   // Present a fresh form immediately after "Save & New". The session fields
   // (date/crop/year/from/to/contract — exactly what the defaults seam seeds)
   // stay as they are: the load just saved is now MY latest load, so keeping
-  // them equals re-running the seam without a refetch. Truck stays too (the
-  // same driver usually enters their own truck's loads back to back). The
-  // per-load fields — weights, moisture, test weight, ticket, time — clear.
+  // them equals re-running the seam without a refetch. The per-load fields —
+  // weights, moisture, test weight, ticket, time, AND THE TRUCK — clear
+  // (saveAndNewPatch): consecutive harvest loads rotate between trucks, so an
+  // inherited truck silently writes wrong-truck records.
   function startNextLoad(ticket: string | null) {
-    setForm((f) => ({
-      ...f,
-      time: nowHHMM(),
-      gross_weight: '',
-      tare_weight: '',
-      net_weight: '',
-      moisture: '',
-      test_weight: '',
-      dry_bushels_override: '',
-      ticket_number: '',
-      practice: '',
-    }))
+    setForm((f) => ({ ...f, ...saveAndNewPatch(nowHHMM()) }))
     // Splits describe the load just saved, not the next one.
     setSplitMode(false)
     setSplits([])
@@ -769,6 +763,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     setSaveHaulerTruck(false)
     setJustSaved(ticket ? `Saved — ticket ${ticket}` : 'Load saved')
     setTareRefresh((n) => n + 1) // the saved tare joins the truck's baseline
+    setContractRefresh((n) => n + 1) // the tracker recounts WITH the saved load
     submittingRef.current = false
     setBusy(false)
     setError(null)
@@ -879,14 +874,13 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         </div>
         {form.from_type === 'field' && !splitMode && (
           <>
-            <select
+            <FieldPicker
               value={form.from_field_id}
-              onChange={(e) => setForm((f) => ({ ...f, from_field_id: e.target.value, practice: '' }))}
+              onChange={(id) => setForm((f) => ({ ...f, from_field_id: id, practice: '' }))}
+              fields={filteredFields}
+              farms={farms}
               className={inputCls}
-            >
-              <option value="">— select field —</option>
-              {filteredFields.map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
-            </select>
+            />
             {form.crop_id && filteredFields.length === 0 && (
               <p className="text-xs text-amber-700">
                 No fields have a planting recorded for this crop. Add one under Settings → Field Plantings.
@@ -964,14 +958,15 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                 <div key={i} className="rounded-lg border border-slate-200 p-2 space-y-2 bg-slate-50">
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-slate-500 w-16">Field {i + 1}</span>
-                    <select
-                      value={row.field_id}
-                      onChange={(e) => setSplitField(i, e.target.value)}
-                      className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-base bg-white"
-                    >
-                      <option value="">— select field —</option>
-                      {filteredFields.map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
-                    </select>
+                    <div className="flex-1 min-w-0">
+                      <FieldPicker
+                        value={row.field_id}
+                        onChange={(id) => setSplitField(i, id)}
+                        fields={filteredFields}
+                        farms={farms}
+                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-base bg-white"
+                      />
+                    </div>
                     {splits.length > 2 && (
                       <button
                         type="button"

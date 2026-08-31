@@ -14,11 +14,13 @@
 
 import { describe, expect, it } from 'vitest'
 import {
+  LAST_LOAD_DEFAULTS_SELECT,
   applyLastLoadDefaults,
   dateDefaultNote,
   isTransferShape,
   pickLastLoadDefaults,
   pickPerUserLastLoadDefaults,
+  saveAndNewPatch,
   type DefaultableForm,
   type LastLoadDefaultsSource,
 } from './load-defaults'
@@ -129,6 +131,68 @@ describe('pickPerUserLastLoadDefaults — per-user tiering (073)', () => {
   })
   it('nothing anywhere → null (form keeps its blank defaults)', () => {
     expect(pickPerUserLastLoadDefaults({ mine: [], org: [transfer] })).toBeNull()
+  })
+})
+
+describe('saveAndNewPatch — what Save & New clears vs keeps', () => {
+  // The patch is applied OVER the just-saved form: a key in the patch is
+  // cleared for the next load; a key absent from it carries forward.
+  const patch = saveAndNewPatch('09:41')
+
+  it('clears the truck — both the own-truck id and the hauler free text', () => {
+    expect(patch.truck_id).toBe('')
+    expect(patch.hauler_truck).toBe('')
+  })
+
+  it('clears every per-load field and stamps the new time', () => {
+    expect(patch).toEqual({
+      time: '09:41',
+      truck_id: '',
+      hauler_truck: '',
+      gross_weight: '',
+      tare_weight: '',
+      net_weight: '',
+      moisture: '',
+      test_weight: '',
+      dry_bushels_override: '',
+      ticket_number: '',
+      practice: '',
+    })
+  })
+
+  it('keeps From/To, crop, crop year, date, and contract (absent from the patch)', () => {
+    for (const kept of [
+      'date', 'crop_id', 'crop_year',
+      'from_type', 'from_field_id', 'from_bin_id',
+      'to_type', 'to_bin_id', 'to_buyer_id', 'contract_id',
+    ]) {
+      expect(patch).not.toHaveProperty(kept)
+    }
+  })
+
+  it('applied over a saved form, only the truck + per-load fields reset', () => {
+    const saved = {
+      ...emptyForm({ crop_id: 'corn', crop_year: '2026', from_type: 'field' as const, from_field_id: 'f-1', to_type: 'buyer' as const, to_buyer_id: 'by-1', contract_id: 'c-1' }),
+      time: '08:15', truck_id: 't-42', hauler_truck: '',
+      gross_weight: '81000', tare_weight: '31000', net_weight: '50000',
+      moisture: '15.5', test_weight: '56.1', dry_bushels_override: '',
+      ticket_number: '1234', practice: 'irrigated',
+    }
+    const next = { ...saved, ...saveAndNewPatch('08:19') }
+    expect(next.truck_id).toBe('')
+    expect(next.gross_weight).toBe('')
+    expect(next.ticket_number).toBe('')
+    expect(next).toMatchObject({
+      date: TODAY, crop_id: 'corn', crop_year: '2026',
+      from_type: 'field', from_field_id: 'f-1',
+      to_type: 'buyer', to_buyer_id: 'by-1', contract_id: 'c-1',
+    })
+  })
+
+  it('the fresh-visit defaults seam never seeds a truck either', () => {
+    // Belt and braces: the SELECT feeding applyLastLoadDefaults carries no
+    // truck column, so a truck can't sneak back in through the seam.
+    expect(LAST_LOAD_DEFAULTS_SELECT).not.toContain('truck')
   })
 })
 
