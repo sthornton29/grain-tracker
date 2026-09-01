@@ -1023,6 +1023,14 @@ function CropSection({
                 {row.seed.unpricedBu > 0.5 ? ` · ${bu(row.seed.unpricedBu)} bu at ${price2(row.seed.unpricedNetPerBu)} (seed est.)` : ''}
                 {row.seed.premiumPerBu > 0 ? ` · premiums +${price2(row.seed.premiumPerBu)} assumed` : ''}
               </span>
+              {row.seed.missingPremiums && (
+                <span
+                  className="inline-flex items-center rounded-full bg-amber-100 text-amber-800 font-medium px-2 py-0.5"
+                  title="A seed contract's expected outcome has no premium rows — its value here is base price only. Open the contract to add rows or apply the standard schedule."
+                >
+                  premiums missing — base only
+                </span>
+              )}
             </div>
           )}
         </div>

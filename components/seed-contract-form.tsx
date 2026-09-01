@@ -21,7 +21,10 @@ import type { SeedContractExtraction } from '@/lib/pdf-upload'
 import { findBestMatch } from '@/lib/fuzzy'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { varietyKey } from '@/lib/variety-resolution'
-import { SEED_OUTCOME_LABEL, defaultFinalSettlementDate } from '@/lib/seed-contracts'
+import {
+  SEED_OUTCOME_LABEL, SEED_PREMIUM_TEMPLATE, classifyExtractedPremiums,
+  defaultFinalSettlementDate, validExtractedPremiums,
+} from '@/lib/seed-contracts'
 import type { SeedOutcome } from '@/lib/seed-contracts'
 import type { Buyer, Crop, Entity } from '@/lib/types'
 
@@ -32,13 +35,14 @@ type PremiumRow = {
   applies_to: 'all' | 'irrigated_only'
 }
 
-// Bayer-style starting schedule — every row editable, rows add/remove freely.
-const PREMIUM_TEMPLATE: PremiumRow[] = [
-  { outcome: 'accepted', component: 'Production premium', amount_per_bu: '1.15', applies_to: 'all' },
-  { outcome: 'accepted', component: 'Irrigated premium', amount_per_bu: '0.25', applies_to: 'irrigated_only' },
-  { outcome: 'released_post_harvest', component: 'Release premium', amount_per_bu: '0.40', applies_to: 'all' },
-  { outcome: 'released_pre_harvest', component: 'Release premium', amount_per_bu: '0.20', applies_to: 'all' },
-]
+// The standard Bayer Southern schedule (lib/seed-contracts SEED_PREMIUM_TEMPLATE)
+// as editable string rows — ALL FOUR outcomes with the full component stack.
+const PREMIUM_TEMPLATE: PremiumRow[] = SEED_PREMIUM_TEMPLATE.map((p) => ({
+  outcome: p.outcome,
+  component: p.component,
+  amount_per_bu: p.amount_per_bu.toFixed(2),
+  applies_to: p.applies_to,
+}))
 
 type PlantingOption = {
   id: string
@@ -88,6 +92,10 @@ export default function SeedContractForm({ editContractId }: { editContractId?: 
   const [aiStage, setAiStage] = useState('')
   const [aiSource, setAiSource] = useState<DocumentSource | null>(null)
   const [aiBanner, setAiBanner] = useState('')
+  // Set when the upload's Exhibit C premiums were absent or only partly
+  // readable — the schedule is left EMPTY until the user explicitly picks:
+  // apply the standard template, keep the partial rows, or leave it empty.
+  const [premiumIssue, setPremiumIssue] = useState<null | { kind: 'none' | 'partial'; extracted: PremiumRow[] }>(null)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
 
@@ -241,17 +249,22 @@ export default function SeedContractForm({ editContractId }: { editContractId?: 
       if (x.usage_fee_per_bu != null) setUsageFee(String(x.usage_fee_per_bu))
       if (x.final_settlement_date) setSettlementDate(x.final_settlement_date)
       if (x.notes) setNotes(x.notes)
-      if (x.premiums.length > 0) {
-        setPremiums(
-          x.premiums
-            .filter((p) => p.component != null && p.amount_per_bu != null)
-            .map((p) => ({
-              outcome: (p.outcome ?? 'accepted') as SeedOutcome,
-              component: p.component as string,
-              amount_per_bu: String(p.amount_per_bu),
-              applies_to: p.applies_to === 'irrigated_only' ? 'irrigated_only' : 'all',
-            })),
-        )
+      // Premium schedule: NEVER silently keep a partial extraction. Complete
+      // (all four outcomes, nothing dropped) seeds the rows for review;
+      // anything less clears the schedule and asks the user to choose.
+      const completeness = classifyExtractedPremiums(x.premiums)
+      const extractedRows: PremiumRow[] = validExtractedPremiums(x.premiums).map((p) => ({
+        outcome: p.outcome,
+        component: p.component,
+        amount_per_bu: String(p.amount_per_bu),
+        applies_to: p.applies_to,
+      }))
+      if (completeness === 'complete') {
+        setPremiums(extractedRows)
+        setPremiumIssue(null)
+      } else {
+        setPremiums([])
+        setPremiumIssue({ kind: completeness === 'partial' ? 'partial' : 'none', extracted: extractedRows })
       }
       setAiBanner(
         `The document was read${warning ? ` (${warning})` : ''}. Review and edit everything below, then save — the document attaches automatically.`,
@@ -480,6 +493,53 @@ export default function SeedContractForm({ editContractId }: { editContractId?: 
         <p className="text-sm text-slate-500">
           What the seed company pays on top of the elected price, per outcome. Premiums are assumptions until the crop is accepted.
         </p>
+        {premiumIssue && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 space-y-2">
+            <p>
+              {premiumIssue.kind === 'none'
+                ? 'Exhibit C premium terms weren’t found in the document, so no schedule was filled in.'
+                : `Only part of the premium schedule could be read (${premiumIssue.extracted.length} row${premiumIssue.extracted.length === 1 ? '' : 's'}) — a partial schedule won’t be saved without your say-so.`}
+              {' '}Apply the standard Bayer Southern schedule (shown below for review), or leave it empty for now.
+            </p>
+            <div className="flex gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => { setPremiums(PREMIUM_TEMPLATE); setPremiumIssue(null) }}
+                className="rounded-lg bg-amber-600 hover:bg-amber-700 text-white px-3 py-1.5 text-sm font-semibold"
+              >
+                Apply standard schedule
+              </button>
+              {premiumIssue.kind === 'partial' && (
+                <button
+                  type="button"
+                  onClick={() => { setPremiums(premiumIssue.extracted); setPremiumIssue(null) }}
+                  className="rounded-lg border border-amber-400 px-3 py-1.5 text-sm text-amber-800 hover:bg-amber-100"
+                >
+                  Use the {premiumIssue.extracted.length} row{premiumIssue.extracted.length === 1 ? '' : 's'} that were read (incomplete)
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setPremiumIssue(null)}
+                className="rounded-lg border border-amber-400 px-3 py-1.5 text-sm text-amber-800 hover:bg-amber-100"
+              >
+                Leave empty
+              </button>
+            </div>
+          </div>
+        )}
+        {!premiumIssue && premiums.length === 0 && (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 flex items-center gap-3 flex-wrap">
+            <span>No premium schedule — projections will show the base price only until rows are added.</span>
+            <button
+              type="button"
+              onClick={() => setPremiums(PREMIUM_TEMPLATE)}
+              className="rounded-lg border border-amber-400 px-3 py-1.5 text-sm text-amber-800 hover:bg-amber-100"
+            >
+              Apply standard schedule
+            </button>
+          </div>
+        )}
         <div className="space-y-2">
           {premiums.map((p, i) => (
             <div key={i} className="flex items-end gap-2 flex-wrap">

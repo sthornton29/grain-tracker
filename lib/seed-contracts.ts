@@ -106,6 +106,88 @@ export type SeedContractPayment = {
 }
 
 // ---------------------------------------------------------------------------
+// Standard premium template (Bayer Southern shape) — ALL FOUR outcomes carry
+// the full component stack, so switching the expected outcome never lands on
+// an empty schedule. Accepted at the cap on irrigated bushels:
+// 0.50 + 0.65 + 0.25 = 1.40; dryland 1.15.
+
+export const SEED_PREMIUM_TEMPLATE: ReadonlyArray<Omit<SeedContractPremium, 'id' | 'contract_id'>> = [
+  { outcome: 'accepted', component: 'Production premium', amount_per_bu: 0.5, applies_to: 'all', sort_order: 0 },
+  { outcome: 'accepted', component: 'Usage premium', amount_per_bu: 0.65, applies_to: 'all', sort_order: 1 },
+  { outcome: 'accepted', component: 'Irrigation premium', amount_per_bu: 0.25, applies_to: 'irrigated_only', sort_order: 2 },
+  { outcome: 'released_post_harvest', component: 'Production premium', amount_per_bu: 0.5, applies_to: 'all', sort_order: 3 },
+  { outcome: 'released_post_harvest', component: 'Post-harvest release premium', amount_per_bu: 0.45, applies_to: 'all', sort_order: 4 },
+  { outcome: 'released_post_harvest', component: 'Irrigation premium', amount_per_bu: 0.25, applies_to: 'irrigated_only', sort_order: 5 },
+  { outcome: 'released_pre_harvest', component: 'Production premium', amount_per_bu: 0.5, applies_to: 'all', sort_order: 6 },
+  { outcome: 'released_pre_harvest', component: 'Pre-harvest release premium', amount_per_bu: 0.2, applies_to: 'all', sort_order: 7 },
+  { outcome: 'released_pre_harvest', component: 'Irrigation premium', amount_per_bu: 0.25, applies_to: 'irrigated_only', sort_order: 8 },
+  { outcome: 'rejected', component: 'Production premium', amount_per_bu: 0.5, applies_to: 'all', sort_order: 9 },
+  { outcome: 'rejected', component: 'Irrigation premium', amount_per_bu: 0.25, applies_to: 'irrigated_only', sort_order: 10 },
+]
+
+export const SEED_OUTCOMES: readonly SeedOutcome[] = [
+  'accepted', 'released_post_harvest', 'released_pre_harvest', 'rejected',
+]
+
+/** True when the outcome has NO premium rows at all — the schedule can't say
+ *  what that outcome pays, which is different from a genuine $0 stack. */
+export function missingPremiumRows(
+  premiums: readonly Pick<SeedContractPremium, 'outcome'>[],
+  outcome: SeedOutcome,
+): boolean {
+  return !premiums.some((p) => p.outcome === outcome)
+}
+
+// ---------------------------------------------------------------------------
+// AI-extraction premium classification — the guard against silently writing a
+// partial schedule when Exhibit C pages are missing or unreadable.
+
+export type ExtractedPremiumLike = {
+  outcome: string | null
+  component: string | null
+  amount_per_bu: number | null
+  applies_to: string | null
+}
+
+/** The extraction's valid premium rows (a row needs a named component, a
+ *  numeric $/bu, and a recognizable outcome to mean anything). */
+export function validExtractedPremiums(
+  premiums: readonly ExtractedPremiumLike[],
+): Array<Omit<SeedContractPremium, 'id' | 'contract_id' | 'sort_order'>> {
+  const out: Array<Omit<SeedContractPremium, 'id' | 'contract_id' | 'sort_order'>> = []
+  for (const p of premiums) {
+    if (p.component == null || p.component.trim() === '') continue
+    if (p.amount_per_bu == null || !Number.isFinite(Number(p.amount_per_bu))) continue
+    if (p.outcome == null || !SEED_OUTCOMES.includes(p.outcome as SeedOutcome)) continue
+    out.push({
+      outcome: p.outcome as SeedOutcome,
+      component: p.component.trim(),
+      amount_per_bu: Number(p.amount_per_bu),
+      applies_to: p.applies_to === 'irrigated_only' ? 'irrigated_only' : 'all',
+    })
+  }
+  return out
+}
+
+/**
+ * How complete the extracted schedule is:
+ *   'complete' — valid rows cover ALL FOUR outcomes and nothing was dropped;
+ *   'partial'  — some valid rows, but outcomes are missing or rows had to be
+ *                dropped (unreadable amounts/outcomes) — NEVER auto-applied;
+ *   'none'     — nothing usable (Exhibit C absent or unreadable).
+ */
+export function classifyExtractedPremiums(
+  premiums: readonly ExtractedPremiumLike[],
+): 'complete' | 'partial' | 'none' {
+  const valid = validExtractedPremiums(premiums)
+  if (valid.length === 0) return 'none'
+  const dropped = valid.length < premiums.length
+  const outcomes = new Set(valid.map((p) => p.outcome))
+  const allOutcomes = SEED_OUTCOMES.every((o) => outcomes.has(o))
+  return allOutcomes && !dropped ? 'complete' : 'partial'
+}
+
+// ---------------------------------------------------------------------------
 // Pricing elections
 
 export const SEED_ELECTION_INCREMENTS = [25, 50, 75, 100] as const
@@ -356,6 +438,10 @@ export type SeedMarketingPosition = {
   buyers: string[]
   /** true while any commitment's production is still an estimate. */
   estimated: boolean
+  /** true when any commitment's SELECTED expected outcome has no premium
+   *  rows at all — that contract projects base-only and should be flagged
+   *  (an empty outcome is a data gap, not a genuine $0 stack). */
+  missingPremiums: boolean
 }
 
 /** Sum of the commitments' committed bushels (needed before valuation). */
@@ -384,11 +470,13 @@ export function seedMarketingPosition(
   const proxy = unpricedCashPrice ?? 0
   const buyers: string[] = []
   let estimated = false
+  let missingPremiums = false
   for (const c of commitments) {
     const bu = Number(c.committed.bushels || 0)
     committedBu += bu
     if (c.buyerName && !buyers.includes(c.buyerName)) buyers.push(c.buyerName)
     if (c.committed.fromEstimate || !c.committed.actual) estimated = true
+    if (missingPremiumRows(c.premiums, c.details.expected_outcome)) missingPremiums = true
     const prem = premiumPerBu({
       premiums: c.premiums,
       outcome: c.details.expected_outcome,
@@ -421,6 +509,7 @@ export function seedMarketingPosition(
     revenue,
     buyers,
     estimated,
+    missingPremiums,
   }
 }
 

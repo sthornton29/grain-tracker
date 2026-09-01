@@ -10,7 +10,7 @@ import StaticExportBar from '@/components/static-export-bar'
 import type { ExportPayload } from '@/lib/exports'
 import { CONTRACT_TYPE_LABEL, effectiveContractType, type ContractType, type PricingStatus } from '@/lib/contracts'
 import { parseContractMonth } from '@/lib/hedging'
-import { blendedElectedPrice, cumulativePricedPct, effectivePriceWalk } from '@/lib/seed-contracts'
+import { blendedElectedPrice, cumulativePricedPct, effectivePriceWalk, missingPremiumRows } from '@/lib/seed-contracts'
 import type { SeedContractDetails, SeedContractPayment, SeedContractPremium, SeedPricingElection } from '@/lib/seed-contracts'
 
 export const dynamic = 'force-dynamic'
@@ -392,6 +392,9 @@ export default async function ContractsPage({
     pricedPct: number
     electedPrice: number | null
     expectedRevenue: number | null
+    /** The selected expected outcome has no premium rows: the projection is
+     *  base-only — a data gap the row flags, never a silent $0 premium. */
+    missingPremiums: boolean
   } {
     const details = seedDetailsBy.get(c.id) ?? null
     const elections = seedElectionsBy.get(c.id) ?? []
@@ -404,7 +407,8 @@ export default async function ContractsPage({
       const walk = effectivePriceWalk({ details, premiums, elections, referencePlusBasis: null, irrigatedShare: 0 })
       if (walk.expectedNetPerBu != null) expectedRevenue = walk.expectedNetPerBu * committedBu
     }
-    return { committedBu, pricedPct, electedPrice, expectedRevenue }
+    const missingPremiums = details != null && missingPremiumRows(premiums, details.expected_outcome)
+    return { committedBu, pricedPct, electedPrice, expectedRevenue, missingPremiums }
   }
 
   // Formatted PDF/Excel of the visible contracts (mirrors the table; payload is
@@ -434,7 +438,7 @@ export default async function ContractsPage({
         if (isSeedKind(c)) {
           const seed = seedRowInfo(c)
           return [
-            c.contract_number, c.buyer?.name ?? '', c.crop?.name ?? '', 'Seed', c.crop_year ?? '',
+            c.contract_number, c.buyer?.name ?? '', c.crop?.name ?? '', seed.missingPremiums ? 'Seed (no premiums)' : 'Seed', c.crop_year ?? '',
             c.date_sold ? fmtDate(c.date_sold) : '', location, window,
             seed.committedBu, delivered, Math.max(0, seed.committedBu - delivered),
             seed.pricedPct, seed.electedPrice ?? '', seed.expectedRevenue ?? '', agg?.paidBushels ?? 0, agg?.deliveredUnpaid ?? 0,
@@ -627,7 +631,17 @@ export default async function ContractsPage({
                   <td className="px-3 py-2">{c.crop?.name ?? ''}</td>
                   <td className="px-3 py-2">
                     {seed
-                      ? <span className="text-xs rounded-full bg-emerald-100 text-emerald-800 px-2 py-0.5">Seed</span>
+                      ? (
+                        <span className="whitespace-nowrap">
+                          <span className="text-xs rounded-full bg-emerald-100 text-emerald-800 px-2 py-0.5">Seed</span>
+                          {seed.missingPremiums && (
+                            <span
+                              className="ml-1 text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5"
+                              title="No premium rows for the contract's expected outcome — projections show the base price only. Open the contract to add rows or apply the standard schedule."
+                            >no premiums</span>
+                          )}
+                        </span>
+                      )
                       : <span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{CONTRACT_TYPE_LABEL[effectiveContractType(c)]}</span>}
                   </td>
                   <td className="px-3 py-2">{c.crop_year ?? ''}</td>

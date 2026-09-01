@@ -19,7 +19,8 @@ The important pieces:
 - **Contract acres and forecast yield** — together they set the estimated quantity, but the real committed production comes from the **fields you link** on the form. Until harvest, those fields count at their expected yield; after harvest, at their actual bushels.
 - **Local market for pricing** — the elevator whose posted price your elections use (for example, a river terminal named in the agreement).
 - **Price everything by** — the agreement's deadline (Selection Date). All the bushels need a price by then.
-- **Premium schedule** — what the company pays on top of your elected price, per outcome: the full stack if the seed is *accepted*, usually less if it's *released* back to you, nothing if *rejected*. Some premiums (like an irrigated premium) pay only on irrigated bushels, and the total is capped per bushel. The form starts from a typical schedule — edit every row to match your agreement.
+- **Premium schedule** — what the company pays on top of your elected price, per outcome: one stack if the seed is *accepted*, another if it's *released* back to you, and so on. Some premiums (like an irrigation premium) pay only on irrigated bushels, and the total is capped per bushel. The form starts from the standard schedule (all four outcomes filled in) — edit every row to match your agreement, and you can also add, edit, or remove rows any time on the contract's own page, or tap **Apply standard schedule** to reset it to the standard one.
+- **If the upload can't read the premium pages** — when the agreement's premium terms are missing or only partly readable, Turnrow never quietly saves a partial schedule. It asks: apply the standard schedule (shown for your review), keep just the rows it could read, or leave the schedule empty. An empty or incomplete schedule is always flagged — never a silent zero.
 - **Usage fee** — the per-bushel fee the company nets out of your settlement.
 
 ## Pricing elections
@@ -46,6 +47,7 @@ Seed contracts pay in stages: typically 80% of the base price after delivery and
 - **Why does the contract show "(est.)" bushels?** The linked fields haven't finished harvest, so committed production is still the expected yield. It switches to actual bushels when harvest wraps up.
 - **Can I sell grain off the seed fields to someone else?** No — the agreement commits everything those fields produce, and Turnrow treats it that way: seed-field bushels never count as available for grain contracts.
 - **What if the crop is released back to me?** Set the expected outcome to *Released* so projections use that premium level; the released bushels are yours to market as grain at that point.
+- **Why does the contract say "no premiums"?** The outcome you've set as expected has no premium rows on file, so every projection shows the base price only — that's a gap in the schedule, not a real $0 premium. Open the contract and add the rows, or tap **Apply standard schedule**. The warning shows on the contract page, the contract list, and the Marketing page until the rows exist.
 
 ## If something looks wrong
 

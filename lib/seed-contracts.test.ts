@@ -7,10 +7,11 @@
 
 import { describe, expect, it } from 'vitest'
 import {
-  blendedElectedPrice, buildSeedCommitments, cumulativePricedPct,
-  defaultFinalSettlementDate, effectivePriceWalk, premiumPerBu,
+  SEED_OUTCOMES, SEED_PREMIUM_TEMPLATE, blendedElectedPrice, buildSeedCommitments,
+  classifyExtractedPremiums, cumulativePricedPct,
+  defaultFinalSettlementDate, effectivePriceWalk, missingPremiumRows, premiumPerBu,
   seedCashFlowEvents, seedCommittedProduction, seedMarketingPosition,
-  seedTrackerProgress, validateElectionPct,
+  seedTrackerProgress, validExtractedPremiums, validateElectionPct,
 } from '@/lib/seed-contracts'
 import type {
   SeedContractDetails, SeedContractPayment, SeedContractPremium,
@@ -74,6 +75,121 @@ describe('premium stack (irr/dry weighted, capped)', () => {
     expect(released.weighted).toBeCloseTo(0.4, 10)
     const rejected = premiumPerBu({ premiums: PREMIUMS, outcome: 'rejected', irrigatedShare: IRR_SHARE, capPerBu: 1.4 })
     expect(rejected.weighted).toBe(0)
+  })
+})
+
+describe('standard premium template (Bayer Southern)', () => {
+  it('carries ALL FOUR outcomes with the full component stack', () => {
+    const byOutcome = new Map<string, typeof SEED_PREMIUM_TEMPLATE[number][]>()
+    for (const p of SEED_PREMIUM_TEMPLATE) {
+      const arr = byOutcome.get(p.outcome) ?? []
+      arr.push(p)
+      byOutcome.set(p.outcome, arr)
+    }
+    for (const o of SEED_OUTCOMES) expect(byOutcome.has(o), `missing outcome ${o}`).toBe(true)
+    const stack = (o: string) => (byOutcome.get(o) ?? []).map((p) => `${p.component}|${p.amount_per_bu}|${p.applies_to}`).sort()
+    expect(stack('accepted')).toEqual([
+      'Irrigation premium|0.25|irrigated_only',
+      'Production premium|0.5|all',
+      'Usage premium|0.65|all',
+    ])
+    expect(stack('released_post_harvest')).toEqual([
+      'Irrigation premium|0.25|irrigated_only',
+      'Post-harvest release premium|0.45|all',
+      'Production premium|0.5|all',
+    ])
+    expect(stack('released_pre_harvest')).toEqual([
+      'Irrigation premium|0.25|irrigated_only',
+      'Pre-harvest release premium|0.2|all',
+      'Production premium|0.5|all',
+    ])
+    expect(stack('rejected')).toEqual([
+      'Irrigation premium|0.25|irrigated_only',
+      'Production premium|0.5|all',
+    ])
+  })
+
+  it('accepted at the $1.40 cap: $1.15 dryland / $1.40 irrigated', () => {
+    const p = premiumPerBu({ premiums: [...SEED_PREMIUM_TEMPLATE], outcome: 'accepted', irrigatedShare: 1, capPerBu: 1.4 })
+    expect(p.drylandRate).toBeCloseTo(1.15, 10) // 0.50 + 0.65
+    expect(p.irrigatedRate).toBeCloseTo(1.4, 10) // 0.50 + 0.65 + 0.25, exactly at the cap
+  })
+})
+
+describe('extracted-premium classification (the partial-schedule guard)', () => {
+  const row = (over: Partial<{ outcome: string | null; component: string | null; amount_per_bu: number | null; applies_to: string | null }>) => ({
+    outcome: 'accepted' as string | null, component: 'Production premium' as string | null,
+    amount_per_bu: 0.5 as number | null, applies_to: 'all' as string | null, ...over,
+  })
+
+  it('complete: valid rows cover all four outcomes with nothing dropped', () => {
+    const rows = SEED_OUTCOMES.map((o) => row({ outcome: o }))
+    expect(classifyExtractedPremiums(rows)).toBe('complete')
+  })
+
+  it('partial: outcomes missing, or rows dropped for unreadable amounts — never auto-applied', () => {
+    // Only the accepted rows read → partial.
+    expect(classifyExtractedPremiums([row({}), row({ component: 'Usage premium', amount_per_bu: 0.65 })])).toBe('partial')
+    // All four outcomes present but one row's amount unreadable → partial.
+    const rows = [...SEED_OUTCOMES.map((o) => row({ outcome: o })), row({ component: 'Usage premium', amount_per_bu: null })]
+    expect(classifyExtractedPremiums(rows)).toBe('partial')
+    // The unreadable row is dropped from the usable set, never kept as $0.
+    expect(validExtractedPremiums(rows)).toHaveLength(4)
+  })
+
+  it('none: nothing usable (Exhibit C absent / unreadable)', () => {
+    expect(classifyExtractedPremiums([])).toBe('none')
+    expect(classifyExtractedPremiums([row({ amount_per_bu: null }), row({ component: null })])).toBe('none')
+    expect(classifyExtractedPremiums([row({ outcome: 'something else' })])).toBe('none')
+  })
+})
+
+describe('missing-outcome guard', () => {
+  it('flags an outcome with NO rows (distinct from a genuine $0 stack)', () => {
+    expect(missingPremiumRows(PREMIUMS, 'accepted')).toBe(false)
+    // The fixture has no rejected rows at all → missing, even though the
+    // arithmetic premium would also be $0 for a real all-$0 schedule.
+    expect(missingPremiumRows(PREMIUMS, 'rejected')).toBe(true)
+    expect(missingPremiumRows([...SEED_PREMIUM_TEMPLATE], 'rejected')).toBe(false)
+  })
+
+  it('seedMarketingPosition raises missingPremiums and projects base-only', () => {
+    const committed = { bushels: 15000, actual: false, irrigatedShare: IRR_SHARE, fromEstimate: false }
+    const pos = seedMarketingPosition([{
+      contractId: 'sc1', buyerName: 'Bayer', contractNumber: 'BAY-2026-001',
+      committed,
+      details: { ...DETAILS, expected_outcome: 'rejected' }, // no rejected rows in PREMIUMS
+      premiums: PREMIUMS, elections: [election(100, 10.4)],
+    }], null)
+    expect(pos.missingPremiums).toBe(true)
+    expect(pos.premiumPerBu).toBe(0)
+    // Base-only: 15,000 × (10.40 − 0.50 usage fee).
+    expect(pos.revenue).toBeCloseTo(15000 * (10.4 - 0.5), 6)
+    // A complete schedule never flags.
+    const ok = seedMarketingPosition([{
+      contractId: 'sc1', buyerName: 'Bayer', contractNumber: 'BAY-2026-001',
+      committed, details: DETAILS, premiums: [...SEED_PREMIUM_TEMPLATE], elections: [election(100, 10.4)],
+    }], null)
+    expect(ok.missingPremiums).toBe(false)
+  })
+})
+
+describe('repaired walk (#4600039602 shape): base $13.43 + the accepted stack', () => {
+  it('elect $13.43 on 100%: dryland +$1.15 / irrigated +$1.40, weighted on 108.6 irr of 300 ac', () => {
+    const w = effectivePriceWalk({
+      details: DETAILS, // cap $1.40, usage fee $0.50, expected outcome accepted
+      premiums: [...SEED_PREMIUM_TEMPLATE],
+      elections: [election(100, 13.43)],
+      referencePlusBasis: null,
+      irrigatedShare: IRR_SHARE,
+    })
+    expect(w.blendedBase).toBeCloseTo(13.43, 10)
+    expect(w.premium.drylandRate).toBeCloseTo(1.15, 10)
+    expect(w.premium.irrigatedRate).toBeCloseTo(1.4, 10)
+    // Weighted: 0.362 × 1.40 + 0.638 × 1.15 = 1.2405
+    expect(w.premium.weighted).toBeCloseTo(1.2405, 10)
+    // Net = 13.43 + 1.2405 − 0.50 usage fee = 14.1705
+    expect(w.expectedNetPerBu).toBeCloseTo(14.1705, 10)
   })
 })
 

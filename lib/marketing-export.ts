@@ -105,7 +105,8 @@ export function buildMarketingExport(args: {
       kv('Committed', `${buf(r.seed.committedBu)} bu${r.seed.estimated ? ' (est.)' : ''}`)
       kv('Priced (elected)', `${buf(r.seed.electedBu)} bu${r.seed.electedAvgPrice != null ? ` @ ${price(r.seed.electedAvgPrice)}` : ''}`)
       kv('Unpriced (seed est.)', `${buf(r.seed.unpricedBu)} bu${r.seed.unpricedBu > 0 ? ` @ ${price(r.seed.unpricedNetPerBu)}` : ''}`)
-      kv('Expected premium / bu (assumed)', price(r.seed.premiumPerBu))
+      if (r.seed.missingPremiums) kv('Expected premium / bu', 'MISSING — no rows for the expected outcome (base only)')
+      else kv('Expected premium / bu (assumed)', price(r.seed.premiumPerBu))
       if (r.seed.usageFeePerBu > 0) kv('Usage fee / bu', price(r.seed.usageFeePerBu))
     }
 
