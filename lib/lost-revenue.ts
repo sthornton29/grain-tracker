@@ -1,4 +1,4 @@
-// Lost revenue from discounting — the Buyer Discount Comparison report's
+// Lost revenue from discounting — Ask Turnrow's buyer-discount-history
 // lead measure (pure, unit-tested).
 //
 // Buyers discount inconsistently: some cut the PRICE (drying charges,

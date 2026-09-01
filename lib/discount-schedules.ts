@@ -19,7 +19,7 @@
 //     successive tiers — every bracket passed or entered adds its rate
 //     (52.5 lb under the same sheet → 4 + 8 + 16 = 28¢).
 //
-// Used by the Buyer Discount Comparison report's schedule table and its
+// Used by the Ask Turnrow schedule tools, the dryer comparison, and the
 // expected-vs-actual audit (apply the schedule in force at the settlement
 // date to each settled load's known moisture/TW, compare with what was
 // charged). Everything here is unit-tested with hand-worked numbers.

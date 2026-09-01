@@ -1,4 +1,5 @@
-// Buyer Discount Comparison — the report's math, pure and unit-tested.
+// Buyer discount comparison — pure, unit-tested math kept for Ask Turnrow's
+// buyer-discount tools (the standalone report retired 2026-09-01).
 //
 // Premise: within one crop and crop year the grain is broadly similar, so a
 // SYSTEMATIC difference in what two buyers deduct is the buyer, not the

@@ -1,8 +1,8 @@
 ---
 page_route: /settings/buyers
 title: Buyers & Delivery Locations
-updated: 2026-08-28
-keywords: buyers, delivery locations, elevators, terminals, gins, find buyers, near me, zip code, import, csv, duplicate, discount schedule
+updated: 2026-09-01
+keywords: buyers, delivery locations, elevators, terminals, gins, find buyers, near me, zip code, import, csv, duplicate, discount schedule, ask turnrow, dock, moisture
 ---
 ## What this page is for
 
@@ -13,7 +13,8 @@ Buyers are the businesses you sell and haul to — elevators, river terminals, f
 - Type a name and **Add Buyer** to create one. Expand a buyer to add its delivery locations, each with an optional address.
 - **Find buyers near me** searches the web for elevators, terminals, and other buyers that handle your crops near a zip code you enter, within a radius you pick. Results come back as a checklist — tick the ones you actually sell to, edit a name if it isn't quite right, and add them. Anything you don't tick is discarded, and results already in your list are marked so you don't double up.
 - To bring in a whole list at once, use the spreadsheet import at the top — one row per buyer, locations in one cell separated by semicolons. There's also an **Upload (AI)** card that reads buyer names and delivery locations out of any document, alongside anything else it finds worth filing elsewhere.
-- **Discount schedules live on each buyer.** Expand a buyer and its schedules are right there — crop, effective date, rule count, and a link to the original sheet — with **Upload discount schedule (AI)** on the buyer's own card (photo or PDF; Turnrow reads where drying and test-weight charges start, the rates or bracket scales, rejection points; review and confirm — nothing saves until you do). The Buyer Discount Comparison report, the Grain Dryer Math tool, and the Ask Turnrow assistant all read from this one home. When a buyer posts a new sheet, upload it too — the effective dates keep each one applied to its own period; to replace a bad read, delete it and upload again.
+- **Discount schedules live on each buyer.** Expand a buyer and its schedules are right there — crop, effective date, rule count, and a link to the original sheet — with **Upload discount schedule (AI)** on the buyer's own card (photo or PDF; Turnrow reads where drying and test-weight charges start, the rates or bracket scales, rejection points; review and confirm — nothing saves until you do). When a buyer posts a new sheet, upload it too — the effective dates keep each one applied to its own period; to replace a bad read, delete it and upload again.
+- **Schedules are queryable in plain words.** Once a schedule is on file, **Ask Turnrow** can quote it — try *"What will [buyer] dock me for 17% corn?"* — and can compare what each buyer's discounting actually cost you from your settled statements ("which buyer's discounts cost me the most last year?"). The Grain Dryer Math tool also uses the schedules for its dry-it-or-haul-it-wet comparison.
 
 ## What the controls do
 

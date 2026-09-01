@@ -40,6 +40,8 @@ const STARTERS: Record<AppRole, string[]> = {
     'Which field yielded best?',
     'How many bushels are unsold?',
     'What’s sitting in the bins right now?',
+    'What would my buyers dock me for 17% moisture corn?',
+    'Which buyer’s discounts cost me the most last year?',
   ],
   viewer: [
     'Which field yielded best this year?',

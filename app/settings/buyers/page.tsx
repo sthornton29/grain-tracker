@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
@@ -24,7 +25,7 @@ export default function BuyersPage() {
   const [locs, setLocs] = useState<DeliveryLocation[]>([])
   const [cropList, setCropList] = useState<Array<{ id: string; name: string }>>([])
   // Discount schedules (074) live WITH the buyer — listed and uploaded per
-  // buyer here; the Buyer Discount Comparison report and the Dryer Math tool
+  // buyer here; Ask Turnrow's discount tools and the Dryer Math comparison
   // read from this one home.
   const [schedules, setSchedules] = useState<BuyerDiscountSchedule[]>([])
   const [scheduleRuleCounts, setScheduleRuleCounts] = useState<Map<string, number>>(new Map())
@@ -512,7 +513,7 @@ export default function BuyersPage() {
                   )}
 
                   {/* Discount schedules attached to THIS buyer (074) — the one
-                      home the comparison report and dryer tool read from. */}
+                      home the Ask Turnrow tools and the dryer tool read from. */}
                   <div className="pt-2 space-y-2">
                     <div className="flex items-center gap-2 flex-wrap">
                       <div className="text-sm font-semibold flex-1">Discount schedules</div>
@@ -524,10 +525,16 @@ export default function BuyersPage() {
                         {uploadOpenBuyerId === b.id ? 'Hide upload' : 'Upload discount schedule (AI)'}
                       </button>
                     </div>
+                    {(schedulesByBuyer.get(b.id) ?? []).length > 0 && (
+                      <p className="text-sm text-slate-500">
+                        <Link href="/assistant" className="text-brand-deep hover:underline">Ask Turnrow</Link> can quote
+                        these — try &ldquo;What will {b.name} dock me for 17% corn?&rdquo;
+                      </p>
+                    )}
                     {(schedulesByBuyer.get(b.id) ?? []).length === 0 ? (
                       <p className="text-sm text-slate-400">
-                        None on file — upload the buyer&rsquo;s posted discount sheet and Turnrow reads its rules. The
-                        Buyer Discount Comparison report and the Grain Dryer Math tool use them.
+                        None on file — upload the buyer&rsquo;s posted discount sheet and Turnrow reads its rules.
+                        Ask Turnrow can then quote them, and the Grain Dryer Math tool compares against them.
                       </p>
                     ) : (
                       <ul className="divide-y divide-slate-100 border border-slate-200 rounded-lg">

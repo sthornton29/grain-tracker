@@ -930,7 +930,7 @@ async function getBuyerDiscountSchedule(
   if (!buyer) return { error: `No buyer named "${input.buyer}". Buyers: ${buyers.map((b) => b.name).join(', ') || 'none'}.` }
   const buyerSchedules = schedules.filter((s) => s.buyer_id === buyer.id)
   if (buyerSchedules.length === 0) {
-    return { buyer: buyer.name, schedules: [], note: 'No discount schedules uploaded for this buyer. Upload one on Settings → Buyers or the Buyer Discount Comparison report.' }
+    return { buyer: buyer.name, schedules: [], note: 'No discount schedules uploaded for this buyer. Upload one on Settings → Buyers.' }
   }
   let crop = resolveByName(crops, input.crop)
   if (!crop) {
@@ -1135,7 +1135,7 @@ async function getBuyerDiscountHistory(
   return {
     crop_year: input.crop_year,
     groups: out,
-    note: 'Lost revenue normalizes price discounts AND pay-bushel shrink beyond FSA-standard to dollars — rank 1 = cheapest per contracted bushel (spot-only buyers rank on the settled-bu figure). Same math as the Buyer Discount Comparison report.',
+    note: 'Lost revenue normalizes price discounts AND pay-bushel shrink beyond FSA-standard to dollars — rank 1 = cheapest per contracted bushel (spot-only buyers rank on the settled-bu figure).',
   }
 }
 
@@ -1229,7 +1229,7 @@ export const ASSISTANT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'get_buyer_discount_history',
-    description: 'What each buyer\'s discounting actually COST per bushel for a crop year, from settled statements: lost ¢ per contracted bushel (lead, rank 1 = cheapest), lost ¢ per settled bushel, and the breakdown by category (moisture/drying, test weight, damage, FM/dockage, other, weight deduction beyond FSA-standard shrink). Use it for "who was cheapest on light test weight last year?". Same math as the Buyer Discount Comparison report.',
+    description: 'What each buyer\'s discounting actually COST per bushel for a crop year, from settled statements: lost ¢ per contracted bushel (lead, rank 1 = cheapest), lost ¢ per settled bushel, and the breakdown by category (moisture/drying, test weight, damage, FM/dockage, other, weight deduction beyond FSA-standard shrink). Use it for "who was cheapest on light test weight last year?" or any buyer-vs-buyer discount comparison.',
     input_schema: {
       type: 'object',
       properties: {

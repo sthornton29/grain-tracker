@@ -1,7 +1,7 @@
 ---
 page_route: /settlements
 title: Settlements
-updated: 2026-08-28
+updated: 2026-09-01
 keywords: settlements, settlement statement, buyer, paid, unpaid, reconcile, ticket, PDF, upload, revenue, discounts, itemized, drying, test weight, shrink, price per bushel, edit, delete
 ---
 ## What this page is for
@@ -22,7 +22,7 @@ Settlements is where buyer settlement statements live — the paperwork that say
 
 Open a settlement and everything about it is on one page: the header (editable with **Edit**; **Delete** removes the settlement and its lines after a confirmation, sending its loads back to Unpaid), the original document, gross/discounts/net totals, and the sections below.
 
-**The Discounts block** shows every deduction as its own line — the type, the statement's own wording, the dollars, and what it works out to in cents per settled bushel — then walks the price: gross $/bu, less discounts ¢/bu, equals net $/bu. It also shows the **weight deduction beyond standard shrink**: the buyer's pay bushels compared against your FSA-standard dry bushels, priced out — a real cost the price discounts never show. Statements entered by hand, or ones the upload couldn't fully itemize, can have discount lines added or corrected right here; these lines feed the Buyer Discount Comparison report.
+**The Discounts block** shows every deduction as its own line — the type, the statement's own wording, the dollars, and what it works out to in cents per settled bushel — then walks the price: gross $/bu, less discounts ¢/bu, equals net $/bu. It also shows the **weight deduction beyond standard shrink**: the buyer's pay bushels compared against your FSA-standard dry bushels, priced out — a real cost the price discounts never show. Statements entered by hand, or ones the upload couldn't fully itemize, can have discount lines added or corrected right here; these lines feed Ask Turnrow&rsquo;s buyer-discount comparisons.
 
 Three sections do the reconciling:
 

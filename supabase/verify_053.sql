@@ -24,6 +24,7 @@ insert into _tenant_tables values
   ('crop_assumptions'), ('county_yield_assumptions'), ('crop_year_sales_status'),
   ('harvest_price_estimates'), ('variety_match_dismissals'), ('combine_yield_entries'), ('external_trucks'), ('assistant_usage'), ('lease_terms'), ('rent_settlements'), ('org_dryers'),
   ('seed_contract_details'), ('seed_contract_premiums'), ('seed_pricing_elections'), ('seed_contract_payments'), ('seed_contract_plantings'),
+  ('freight_settings'), ('freight_distances'),
   ('crop_insurance_policies'), ('crop_insurance_sco'), ('crop_insurance_eco'),
   ('crop_insurance_stax'), ('crop_insurance_mco'),
   ('farm_base_acres'), ('arc_plc_elections'), ('arc_plc_payments'),

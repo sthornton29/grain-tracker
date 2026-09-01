@@ -47,7 +47,6 @@ export const REPORT_GROUPS: ReportNavGroup[] = [
       { label: 'Crop Budget Planner', href: '/reports/crop-budget', description: 'Pre-season budgeting, one budget per crop year: per-crop breakout grid (Overall + irrigated/dryland + double-crop rows, acres × yield × price × cost → profit) seeded from your APH, budget-year new-crop futures, and this year\'s costs — with a simple price × yield matrix per crop. A sandbox, isolated from actuals.' },
       { label: 'Cash Flow Forecast', href: '/reports/cash-flow', description: 'Monthly projected revenue from contracts and delivered grain, plus the projected ARC/PLC, crop-insurance, and other USDA safety net.' },
       { label: 'Hedging Summary', href: '/reports/hedging-summary', description: 'All futures positions (open and closed) with realized and unrealized P&L, summarized by crop year. Suitable for a lender or business partner.' },
-      { label: 'Buyer Discount Comparison', href: '/reports/buyer-discounts', description: 'What each buyer really costs per bushel: actual settlement discounts by category, weight taken beyond standard shrink, quality-adjusted ¢-per-point rates, and an audit of charges against each buyer\'s own published discount schedule.' },
     ],
   },
   {
@@ -79,7 +78,8 @@ export const REPORT_GROUPS: ReportNavGroup[] = [
   {
     title: 'Operational Reports',
     reports: [
-      { label: 'Grain Dryer Math', href: '/reports/dryer-math', description: 'What drying really costs per bushel: fuel and shrink by incoming moisture for your dryer, the price of overdrying past base, and dry-it-or-haul-it-wet against a buyer\'s discount schedule.' },
+      { label: 'Grain Dryer Math', href: '/reports/dryer-math', description: 'Crop, fuel, fuel price — and the table answers what drying costs per bushel at every incoming moisture, what overdrying past base gives away, and (optionally) whether drying beats hauling it wet.' },
+      { label: 'Freight Math', href: '/reports/freight-math', description: 'What a haul really costs: fuel, labor, and wear per load and per bushel for any distance — and how much more a delivered contract must pay than a picked-up one to cover the trip.' },
       { label: 'Load Log', href: '/loads', external: true, description: 'The full load log — search, filter, and export. Opens the standalone Loads page.' },
       { label: 'Contract Tracker', href: '/contracts', external: true, description: 'Delivered vs. contracted with pricing and payment status. Opens the standalone Contracts page.' },
       { label: 'Unpaid Loads', href: '/loads/unpaid', external: true, description: 'Buyer-delivered loads with no matching settlement line. Opens the standalone page.' },

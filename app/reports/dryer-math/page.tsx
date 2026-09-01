@@ -2,7 +2,6 @@
 
 import { useCallback, useState } from 'react'
 import DryerMathReport from '@/components/reports/dryer-math-report'
-import DiscountScheduleImport from '@/components/discount-schedule-import'
 import ExportBar from '@/components/export-bar'
 import type { ExportPayload } from '@/lib/exports'
 
@@ -10,7 +9,6 @@ export default function DryerMathPage() {
   const [buildPayload, setBuildPayload] = useState<() => ExportPayload>(
     () => () => ({ title: 'Grain Dryer Math', sections: [{ columns: [], rows: [] }] }),
   )
-  const [schedulesVersion, setSchedulesVersion] = useState(0)
   const handlePayload = useCallback((fn: () => ExportPayload) => {
     setBuildPayload(() => fn)
   }, [])
@@ -21,12 +19,10 @@ export default function DryerMathPage() {
         <ExportBar buildPayload={() => buildPayload()} />
       </div>
       <p className="text-sm text-slate-600 no-print max-w-3xl">
-        What it costs to take a point of moisture out — and what it costs to take out one too many. Pick your dryer,
-        set fuel and grain prices, and read the answer per bushel; attach a buyer&rsquo;s discount schedule to see
-        whether drying beats hauling it wet.
+        Crop, fuel, fuel price — the table answers what a point of moisture costs to take out, and what taking out
+        one too many gives away. Everything else lives behind the ⚙ Assumptions panel.
       </p>
-      <DryerMathReport onPayloadChange={handlePayload} schedulesVersion={schedulesVersion} />
-      <DiscountScheduleImport onChanged={() => setSchedulesVersion((v) => v + 1)} />
+      <DryerMathReport onPayloadChange={handlePayload} />
     </div>
   )
 }

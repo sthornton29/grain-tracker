@@ -516,7 +516,7 @@ export default function NewSettlementPage() {
             <div className="flex-1 min-w-0">
               <h3 className="font-semibold">Itemized discounts</h3>
               <p className="text-xs text-slate-500">
-                Each deduction on the statement, by type — this powers the ¢/bu breakdown and the Buyer Discount Comparison report.
+                Each deduction on the statement, by type — this powers the ¢/bu breakdown and Ask Turnrow&rsquo;s buyer-discount answers.
               </p>
             </div>
             <button

@@ -1,7 +1,7 @@
 'use client'
 
-// "Upload discount schedule (AI)" — shared by the Buyer Discount Comparison
-// report and the Buyers settings page. Reads a buyer's posted discount sheet
+// "Upload discount schedule (AI)" — shared by Settings → Buyers and the
+// Grain Dryer Math page. Reads a buyer's posted discount sheet
 // (document_type 'discount_schedule'), shows the extracted rules for review,
 // and saves ONLY on confirm: one buyer_discount_schedules row (buyer × crop ×
 // effective date, schedule text preserved) plus its rule rows. With
@@ -251,9 +251,9 @@ export default function DiscountScheduleImport({
         <div className="flex-1 min-w-0">
           <div className="font-semibold">Buyer discount schedules</div>
           <div className="text-sm text-slate-500">
-            Upload a buyer&rsquo;s posted discount sheet and Turnrow reads its rules — then the Buyer Discount Comparison
-            report and the Grain Dryer Math tool can use what the sheet says. Schedules live with the buyer
-            (Settings → Buyers).
+            Upload a buyer&rsquo;s posted discount sheet and Turnrow reads its rules — then Ask Turnrow can quote
+            them and the Grain Dryer Math tool can compare against what the sheet says. Schedules live with the
+            buyer (Settings → Buyers).
           </div>
         </div>
         {!showList && (
