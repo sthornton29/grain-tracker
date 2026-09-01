@@ -7,7 +7,7 @@
 > programs. **Not a SaaS product** — single-tenant, used on iPads in trucks by a
 > small team, so the UX favors fast capture and forgiving data entry.
 >
-> _Snapshot date: 2026-09-01. Schema at migration `077`. **Production migration state: 076 applied; `077` (seed production contracts: `contracts.contract_kind` + `seed_contract_details`/`seed_contract_premiums`/`seed_pricing_elections`/`seed_contract_payments`/`seed_contract_plantings`) is PENDING — apply in the Supabase SQL editor BEFORE or with the deploy that ships it (the contracts pages select `contract_kind` explicitly).**_ `supabase/verify_migrations.sql` is the read-only ALL-migrations checklist (one ✓/✗ row per migration 002–076 by its signature artifact, verdict on top — paste into the SQL editor after any apply); `supabase/verify_052/053/054.sql` are read-only deep-dive diagnostics; `docs/BETA_ACCEPTANCE.md` is the pre-invite isolation checklist (now incl. check (f): the assistant is org-blind)._
+> _Snapshot date: 2026-09-01. Schema at migration `077`. **Production migration state: CURRENT at 077 — `077` (seed production contracts: `contracts.contract_kind` + `seed_contract_details`/`seed_contract_premiums`/`seed_pricing_elections`/`seed_contract_payments`/`seed_contract_plantings`) applied by Stuart in the Supabase SQL editor 2026-09-01, alongside the same-day deploy. Nothing pending.**_ `supabase/verify_migrations.sql` is the read-only ALL-migrations checklist (one ✓/✗ row per migration 002–076 by its signature artifact, verdict on top — paste into the SQL editor after any apply); `supabase/verify_052/053/054.sql` are read-only deep-dive diagnostics; `docs/BETA_ACCEPTANCE.md` is the pre-invite isolation checklist (now incl. check (f): the assistant is org-blind)._
 
 ---
 
