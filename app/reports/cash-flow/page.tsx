@@ -9,6 +9,8 @@ import { projectInsuranceIndemnities, actualYieldByCropFromLoads, type LiveHarve
 import { fieldCropAggregates, withLoadBreakouts, type CombineEntryLike } from '@/lib/yields'
 import { cottonCashFlowEvents, type CottonCashEvent } from '@/lib/cotton-sales'
 import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
+import { fetchSeedContracts, type SeedContractData } from '@/lib/seed-contracts-fetch'
+import { buildSeedCommitments, seedCashFlowEvents, type SeedCashFlowEvent } from '@/lib/seed-contracts'
 import { isCottonCrop } from '@/lib/marketing'
 import { resolveProgramYearConfig } from '@/lib/program-config'
 import { buildEntityScope } from '@/lib/entity-scope'
@@ -412,6 +414,9 @@ export default function CashFlowPage() {
   const shareFor = (c: Contract) => attribution.shareForContract(c)
   const visibleContracts = contracts.filter((c) => {
     if (viewerPending) return false
+    // Seed production contracts (077) stage their own labeled events below —
+    // keeping them out of the grain buckets prevents double counting.
+    if ((c.contract_kind ?? 'grain') === 'seed_production') return false
     if (cropYear !== '' && c.crop_year !== cropYear) return false
     if (cropId && c.crop_id !== cropId) return false
     if (buyerId && c.buyer_id !== buyerId) return false
@@ -561,6 +566,68 @@ export default function CashFlowPage() {
     return buckets
   }, [cropYear, cropId, scope, elections, baseAcres, commodities, arcPriceData, arcPayments, scopedPolicies, scos, ecos, harvestEstimates, effAssumptions, plantings, loads, splits, combineEntries, cropById, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments])
 
+  // Seed production contracts (077): the staged-payment events — 80% base at
+  // each election, final 20% + premiums at the estimated settlement, storage
+  // monthly, the usage fee as an outflow — with received ledger rows replacing
+  // their projections. Fetched once per crop year; events derived below.
+  const [seedRaw, setSeedRaw] = useState<SeedContractData | null>(null)
+  useEffect(() => {
+    if (cropYear === '') { setSeedRaw(null); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const seed = await fetchSeedContracts(supabase, cropYear)
+        if (!cancelled) setSeedRaw(seed)
+      } catch { if (!cancelled) setSeedRaw(null) }
+    })()
+    return () => { cancelled = true }
+  }, [cropYear, supabase])
+
+  const seedEvents = useMemo(() => {
+    if (cropYear === '' || viewerPending || !seedRaw || seedRaw.bundles.length === 0) return []
+    // Crop-level harvest flags decide estimate vs actual committed production
+    // (the monthly forecast doesn't need the field-level analysis).
+    const completeIds = new Set<string>()
+    for (const a of effAssumptions) if (a.harvest_complete && a.crop_year === cropYear) completeIds.add(a.crop_id)
+    const aggByKey = fieldCropAggregates(loads, splits, cropById, { cropYear, combineEntries })
+    const commitments = buildSeedCommitments({
+      bundles: seedRaw.bundles,
+      cropYear,
+      plantings,
+      aggByKey,
+      assumptions: effAssumptions,
+      harvestCompleteCropIds: completeIds,
+      buyerNameById: new Map(buyers.map((b) => [b.id, b.name])),
+      shareForContract: (c) => attribution.shareForContract(c),
+    })
+    const out: Array<SeedCashFlowEvent & { cropId: string | null; buyerId: string | null }> = []
+    for (const b of seedRaw.bundles) {
+      const commitment = (b.contract.crop_id ? commitments.get(b.contract.crop_id) ?? [] : [])
+        .find((c) => c.contractId === b.contract.id)
+      if (!commitment || commitment.committed.bushels <= 0) continue
+      const a = effAssumptions.find((x) => x.crop_id === b.contract.crop_id && x.crop_year === cropYear)
+      const ref = a?.assumed_futures != null ? Number(a.assumed_futures) + Number(a.assumed_basis ?? 0) : null
+      for (const e of seedCashFlowEvents({
+        details: b.details, premiums: b.premiums, elections: b.elections, payments: b.payments,
+        committed: commitment.committed, referencePlusBasis: ref, cropYear,
+        contractLabel: `Seed ${b.contract.contract_number}`,
+      })) {
+        out.push({ ...e, cropId: b.contract.crop_id, buyerId: b.contract.buyer_id })
+      }
+    }
+    return out.sort((x, y) => x.month.localeCompare(y.month))
+  }, [cropYear, viewerPending, seedRaw, effAssumptions, loads, splits, cropById, combineEntries, plantings, buyers, attribution])
+
+  const visibleSeedEvents = useMemo(
+    () => seedEvents.filter((e) => (!cropId || e.cropId === cropId) && (!buyerId || e.buyerId === buyerId)),
+    [seedEvents, cropId, buyerId],
+  )
+  const seedMonthly = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const e of visibleSeedEvents) m.set(e.month, (m.get(e.month) ?? 0) + e.amount)
+    return m
+  }, [visibleSeedEvents])
+
   // Cotton events, respecting the crop filter (a non-cotton crop hides them)
   // and bucketed net per month.
   const visibleCottonEvents = useMemo(() => {
@@ -574,17 +641,18 @@ export default function CashFlowPage() {
   }, [visibleCottonEvents])
 
   const monthlyRows = useMemo(() => {
-    const keys = [...new Set([...monthly.keys(), ...safetyNet.keys(), ...cottonMonthly.keys()])].sort()
+    const keys = [...new Set([...monthly.keys(), ...safetyNet.keys(), ...cottonMonthly.keys(), ...seedMonthly.keys()])].sort()
     let running = 0
     return keys.map((k) => {
       const b = monthly.get(k) ?? { received: 0, outstanding: 0, projected: 0 }
       const s = safetyNet.get(k) ?? { arcPlc: 0, insurance: 0, other: 0 }
       const cotton = cottonMonthly.get(k) ?? 0
-      const total = b.received + b.outstanding + b.projected + s.arcPlc + s.insurance + s.other + cotton
+      const seed = seedMonthly.get(k) ?? 0
+      const total = b.received + b.outstanding + b.projected + s.arcPlc + s.insurance + s.other + cotton + seed
       running += total
-      return { key: k, label: monthLabel(k), ...b, ...s, cotton, total, cumulative: running }
+      return { key: k, label: monthLabel(k), ...b, ...s, cotton, seed, total, cumulative: running }
     })
-  }, [monthly, safetyNet, cottonMonthly])
+  }, [monthly, safetyNet, cottonMonthly, seedMonthly])
 
   // Safety-net totals across the visible window, for the summary cards.
   const safetyTotals = useMemo(() => {
@@ -620,6 +688,7 @@ export default function CashFlowPage() {
   ]
 
   const cottonNet = useMemo(() => visibleCottonEvents.reduce((s, e) => s + e.amount, 0), [visibleCottonEvents])
+  const seedNet = useMemo(() => visibleSeedEvents.reduce((s, e) => s + e.amount, 0), [visibleSeedEvents])
 
   const safetyCards: SummaryCardData[] = [
     {
@@ -631,6 +700,9 @@ export default function CashFlowPage() {
     { label: 'Total Safety Net', value: `$${fmt(safetyTotals.total)}`, tone: 'favorable' },
     ...(visibleCottonEvents.length > 0
       ? [{ label: 'Cotton cash (net — loans, sales, LDP, fees)', value: `$${fmt(cottonNet)}`, tone: 'favorable' as const }]
+      : []),
+    ...(visibleSeedEvents.length > 0
+      ? [{ label: 'Seed contracts (net — base, premiums, storage, fees)', value: `$${fmt(seedNet)}`, tone: 'favorable' as const }]
       : []),
   ]
 
@@ -650,10 +722,10 @@ export default function CashFlowPage() {
         { label: 'Received', align: 'right', format: 'usd0' }, { label: 'Outstanding', align: 'right', format: 'usd0' },
         { label: 'Projected', align: 'right', format: 'usd0' }, { label: 'ARC/PLC', align: 'right', format: 'usd0' },
         { label: 'Crop Insurance', align: 'right', format: 'usd0' }, { label: 'Other Govt', align: 'right', format: 'usd0' },
-        { label: 'Cotton (net)', align: 'right', format: 'usd0' },
+        { label: 'Cotton (net)', align: 'right', format: 'usd0' }, { label: 'Seed (net)', align: 'right', format: 'usd0' },
         { label: 'Month total', align: 'right', format: 'usd0' }, { label: 'Cumulative', align: 'right', format: 'usd0' },
       ],
-      rows: monthlyRows.map((r) => [r.label, r.received, r.outstanding, r.projected, r.arcPlc, r.insurance, r.other, r.cotton, r.total, r.cumulative]),
+      rows: monthlyRows.map((r) => [r.label, r.received, r.outstanding, r.projected, r.arcPlc, r.insurance, r.other, r.cotton, r.seed, r.total, r.cumulative]),
     }
 
     const cottonDetail: ExportPayload['sections'][number] | null = visibleCottonEvents.length > 0
@@ -664,6 +736,17 @@ export default function CashFlowPage() {
             { label: 'Amount', align: 'right', format: 'usd0' }, { label: 'Status' },
           ],
           rows: visibleCottonEvents.map((e) => [e.date, e.label, e.amount, e.status]),
+        }
+      : null
+
+    const seedDetail: ExportPayload['sections'][number] | null = visibleSeedEvents.length > 0
+      ? {
+          title: 'Seed Contract Cash Detail',
+          columns: [
+            { label: 'Month' }, { label: 'Item' },
+            { label: 'Amount', align: 'right', format: 'usd0' }, { label: 'Status' },
+          ],
+          rows: visibleSeedEvents.map((e) => [monthLabel(e.month), e.label, e.amount, e.status]),
         }
       : null
 
@@ -704,7 +787,7 @@ export default function CashFlowPage() {
         { label: 'Remaining', value: formatNumber(summary.remaining, 'usd0') },
         { label: 'Total Safety Net', value: formatNumber(safetyTotals.total, 'usd0'), tone: 'favorable' },
       ],
-      sections: cottonDetail ? [monthly, cottonDetail, detail] : [monthly, detail],
+      sections: [monthly, ...(cottonDetail ? [cottonDetail] : []), ...(seedDetail ? [seedDetail] : []), detail],
     }
   }
 
@@ -786,7 +869,7 @@ export default function CashFlowPage() {
                 <table className="min-w-full text-sm border-collapse">
                   <thead className={theadCls}>
                     <tr>
-                      {['Month', 'Received', 'Outstanding', 'Projected', 'ARC/PLC', 'Crop Insurance', 'Other Govt', 'Cotton (net)', 'Month total', 'Cumulative']
+                      {['Month', 'Received', 'Outstanding', 'Projected', 'ARC/PLC', 'Crop Insurance', 'Other Govt', 'Cotton (net)', 'Seed (net)', 'Month total', 'Cumulative']
                         .map((h, i) => <th key={h} className={`${i === 0 ? 'text-left' : 'text-right'} px-3 py-2 whitespace-nowrap font-semibold`}>{h}</th>)}
                     </tr>
                   </thead>
@@ -801,6 +884,7 @@ export default function CashFlowPage() {
                         <td className={`${numCell} text-purple-700`}>${fmt(r.insurance)}</td>
                         <td className={`${numCell} text-teal-700`}>${fmt(r.other)}</td>
                         <td className={`${numCell} ${r.cotton < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{r.cotton !== 0 ? `$${fmt(r.cotton)}` : '—'}</td>
+                        <td className={`${numCell} ${r.seed < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{r.seed !== 0 ? `$${fmt(r.seed)}` : '—'}</td>
                         <td className={numCell}>${fmt(r.total)}</td>
                         <td className={`${numCell} font-semibold`}>${fmt(r.cumulative)}</td>
                       </tr>
@@ -832,6 +916,41 @@ export default function CashFlowPage() {
                     {visibleCottonEvents.map((e, i) => (
                       <tr key={i} className="border-t border-slate-100">
                         <td className={`${textCell} whitespace-nowrap`}>{e.date}</td>
+                        <td className={textCell}>{e.label}</td>
+                        <td className={`${numCell} ${e.amount < 0 ? 'text-red-700' : 'text-green-700'}`}>${fmt(e.amount)}</td>
+                        <td className={textCell}>
+                          <span className={`text-xs rounded-full px-2 py-0.5 ${e.status === 'received' ? 'bg-green-100 text-green-800' : 'bg-sky-100 text-sky-800'}`}>{e.status}</span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {visibleSeedEvents.length > 0 && (
+            <div className="bg-white rounded-xl shadow overflow-hidden">
+              <div className="px-4 py-2 border-b border-slate-100 font-semibold">Seed contract cash detail</div>
+              <p className="px-4 pt-2 text-xs text-slate-500">
+                Labeled seed-contract cash lines: 80% of each priced portion lands in its election month (unpriced
+                bushels assumed priced by the deadline), the final 20% plus premiums at the estimated final settlement,
+                storage pay monthly, and the usage fee as an outflow. Recorded payments replace the projection for
+                their type. These roll into the Seed (net) column above.
+              </p>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead className={theadCls}>
+                    <tr>
+                      {['Month', 'Item', 'Amount', 'Status'].map((h, i) => (
+                        <th key={h} className={`${i === 2 ? 'text-right' : 'text-left'} px-3 py-2 whitespace-nowrap font-semibold`}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {visibleSeedEvents.map((e, i) => (
+                      <tr key={i} className="border-t border-slate-100">
+                        <td className={`${textCell} whitespace-nowrap`}>{monthLabel(e.month)}</td>
                         <td className={textCell}>{e.label}</td>
                         <td className={`${numCell} ${e.amount < 0 ? 'text-red-700' : 'text-green-700'}`}>${fmt(e.amount)}</td>
                         <td className={textCell}>

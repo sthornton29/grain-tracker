@@ -116,13 +116,14 @@ checks(seq, migration, evidence, applied) as (values
   ( 73, '073_load_created_by',                'loads.created_by',                               exists (select 1 from cols where t = 'loads' and c = 'created_by')),
   ( 74, '074_settlement_discounts',           'settlement_discount_items + buyer_discount_schedules(+_rules)', exists (select 1 from tbls where t = 'settlement_discount_items') and exists (select 1 from tbls where t = 'buyer_discount_schedules') and exists (select 1 from tbls where t = 'buyer_discount_schedule_rules')),
   ( 75, '075_discount_deduction_kind',        'settlement_discount_items.deduction_kind',       exists (select 1 from cols where t = 'settlement_discount_items' and c = 'deduction_kind')),
-  ( 76, '076_dryer_math',                     'table dryer_models + table org_dryers',          exists (select 1 from tbls where t = 'dryer_models') and exists (select 1 from tbls where t = 'org_dryers'))
+  ( 76, '076_dryer_math',                     'table dryer_models + table org_dryers',          exists (select 1 from tbls where t = 'dryer_models') and exists (select 1 from tbls where t = 'org_dryers')),
+  ( 77, '077_seed_production_contracts',      'contracts.contract_kind + seed_contract_details(+premiums/elections/payments/plantings)', exists (select 1 from cols where t = 'contracts' and c = 'contract_kind') and exists (select 1 from tbls where t = 'seed_contract_details') and exists (select 1 from tbls where t = 'seed_pricing_elections') and exists (select 1 from tbls where t = 'seed_contract_payments'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 076'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 077'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

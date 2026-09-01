@@ -5,6 +5,9 @@ import { createClient } from '@/lib/supabase/client'
 import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
+import { fetchSeedContracts, type SeedContractData } from '@/lib/seed-contracts-fetch'
+import { buildSeedCommitments } from '@/lib/seed-contracts'
+import type { SeedMarketingPosition } from '@/lib/seed-contracts'
 import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
 import CropYearSalesStatus from '@/components/crop-year-sales-status'
@@ -47,6 +50,8 @@ type PlantingRow = {
   planted_acres: number | null
   irrigated_acres: number | null
   dryland_acres: number | null
+  irrigated_bushels: number | null
+  yield_breakout_entered: boolean | null
   yield_include_override: boolean | null
 }
 
@@ -117,20 +122,24 @@ function scenarioFor(row: MarketingRow, wfFut: number | null, wfBasis: number, a
   // Cotton rows price in ¢/lb over lbs: a price delta × lbs is cents, ÷100 to
   // dollars — and the headline price re-derives in ¢ (×100). Grains are 1:1.
   const toUsd = row.unit === 'lbs' ? 1 / 100 : 1
+  // Unpriced seed-committed bushels ride the reference price too (their proxy
+  // is futures + basis), so the What-If moves them exactly like the engine
+  // would when the assumption is saved. Elected seed bushels stay locked.
+  const seedUnpriced = row.seed?.unpricedBu ?? 0
   let blended: number
   if (advanced) {
     // Futures delta hits the completely-unpriced bushels; the basis delta hits
-    // every assumed-basis bushel (open HTAs + open hedges + unpriced) — exactly
-    // what computeMarketing does when those values are saved. (Cotton has no
-    // basis bushels, so its basis term is always 0.)
+    // every assumed-basis bushel (open HTAs + open hedges + unpriced + unpriced
+    // seed) — exactly what computeMarketing does when those values are saved.
+    // (Cotton has no basis bushels, so its basis term is always 0.)
     const dFut = wfFut - row.unpricedFuturesPrice
     const dBasis = wfBasis - row.assumedBasis
-    blended = round2(row.blendedRevenue + (dFut * row.unpricedBu + dBasis * row.basisAssumedBu) * toUsd)
+    blended = round2(row.blendedRevenue + (dFut * (row.unpricedBu + seedUnpriced) + dBasis * row.basisAssumedBu) * toUsd)
   } else {
     // Simple: a flat cash price replaces (futures + assumed basis) on the unsold
-    // (completely-unpriced) bushels.
+    // (completely-unpriced) bushels — and the unpriced seed share's base price.
     const dCash = wfFut - (row.unpricedFuturesPrice + row.assumedBasis)
-    blended = round2(row.blendedRevenue + dCash * row.unpricedBu * toUsd)
+    blended = round2(row.blendedRevenue + dCash * (row.unpricedBu + seedUnpriced) * toUsd)
   }
   const revenuePerAcre = round2(blended / row.acres)
   const profitPerAcre = row.costPerAcre != null ? round2(blended / row.acres - row.costPerAcre) : null
@@ -166,6 +175,10 @@ export default function MarketingPage() {
   // Physical cotton marketing data (contracts / CCC loans / LDP / fees) — raw
   // inputs + summary; scoped to the entity filter below.
   const [cottonPhysicalRaw, setCottonPhysicalRaw] = useState<CottonPhysicalData | null>(null)
+  // Seed production contracts (077) — bundles + buyer names for the badge;
+  // scoped to the entity filter below via attribution.shareForContract.
+  const [seedRaw, setSeedRaw] = useState<SeedContractData | null>(null)
+  const [buyers, setBuyers] = useState<Array<{ id: string; name: string }>>([])
   // Entity filter (shared scoping — see lib/entity-scope.ts). Operation-wide
   // assumptions flow down unchanged; only acres/production/positions narrow.
   const [entityId, setEntityId] = usePersistentState('marketing:entity', '')
@@ -209,7 +222,7 @@ export default function MarketingPage() {
     setLoading(true)
     const [cr, pl, ct, fp, op, ca, ld, sp, gr, cb, ce] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
-      supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, yield_include_override').eq('season_year', cropYear),
+      supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, irrigated_bushels, yield_breakout_entered, yield_include_override').eq('season_year', cropYear),
       supabase.from('contracts').select('*').eq('crop_year', cropYear),
       supabase.from('futures_positions').select('*').eq('crop_year', cropYear),
       supabase.from('options_positions').select('*').eq('crop_year', cropYear),
@@ -238,6 +251,15 @@ export default function MarketingPage() {
     try {
       setCottonPhysicalRaw(await fetchCottonPhysical(supabase, cropYear))
     } catch { setCottonPhysicalRaw(null) }
+    // Seed production contracts (077) — same tolerance: missing tables → none.
+    try {
+      const [seed, buyersQ] = await Promise.all([
+        fetchSeedContracts(supabase, cropYear, { contracts: (ct.data as Contract[]) ?? [] }),
+        supabase.from('buyers').select('id, name'),
+      ])
+      setSeedRaw(seed)
+      setBuyers((buyersQ.data as Array<{ id: string; name: string }>) ?? [])
+    } catch { setSeedRaw(null) }
     setLoading(false)
   }, [supabase])
 
@@ -361,10 +383,11 @@ export default function MarketingPage() {
   // (field|crop|year) → dry bushels + last load date, splits-aware — narrowed to
   // the entity's fields. Drives both actual production (by crop) and the
   // field-level harvest-completion check.
-  const aggByKey = useMemo(
-    () => (year == null ? new Map() : scope.fieldAgg(fieldCropAggregates(loads, splits, cropById, { cropYear: year, combineEntries }))),
-    [year, loads, splits, combineEntries, cropById, scope],
+  const rawAggByKey = useMemo(
+    () => (year == null ? new Map() : fieldCropAggregates(loads, splits, cropById, { cropYear: year, combineEntries })),
+    [year, loads, splits, combineEntries, cropById],
   )
+  const aggByKey = useMemo(() => scope.fieldAgg(rawAggByKey), [scope, rawAggByKey])
   const production = useMemo(() => {
     const prod = new Map<string, number>()
     for (const [key, agg] of aggByKey) {
@@ -444,9 +467,27 @@ export default function MarketingPage() {
     return m
   }, [cottonPhysicalRaw, attribution, crops])
 
+  // Seed production commitments (077): the linked plantings' production per
+  // seed contract, attributed to the entity filter like every contract.
+  const seedCommitments = useMemo(() => {
+    if (year == null || !seedRaw || seedRaw.bundles.length === 0) return undefined
+    return buildSeedCommitments({
+      bundles: seedRaw.bundles,
+      cropYear: year,
+      plantings,
+      // Unscoped production: attribution.shareForContract is the ONLY scaling
+      // (a scoped agg would double-scale null-entity/agent-held contracts).
+      aggByKey: rawAggByKey,
+      assumptions: effAssumptions,
+      harvestCompleteCropIds: harvestCompleteIds,
+      buyerNameById: new Map(buyers.map((b) => [b.id, b.name])),
+      shareForContract: (c) => attribution.shareForContract(c),
+    })
+  }, [year, seedRaw, plantings, rawAggByKey, effAssumptions, harvestCompleteIds, buyers, attribution])
+
   const rows = useMemo(
-    () => (year == null || viewer.loading || !viewerA.ready ? [] : computeMarketing({ cropYear: year, crops, plantings: scopedPlantings, contracts: scopedContracts, futures: scopedFutures, options: scopedOptions, assumptions: effAssumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures, harvestCompleteCropIds: harvestCompleteIds, cottonProductionByCrop: cottonProd, cottonPhysicalByCrop: cottonPhysical })),
-    [year, viewer.loading, viewerA.ready, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, production, expProdByCrop, currentFutures, harvestCompleteIds, cottonProd, cottonPhysical],
+    () => (year == null || viewer.loading || !viewerA.ready ? [] : computeMarketing({ cropYear: year, crops, plantings: scopedPlantings, contracts: scopedContracts, futures: scopedFutures, options: scopedOptions, assumptions: effAssumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures, harvestCompleteCropIds: harvestCompleteIds, cottonProductionByCrop: cottonProd, cottonPhysicalByCrop: cottonPhysical, seedCommitmentsByCrop: seedCommitments })),
+    [year, viewer.loading, viewerA.ready, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, production, expProdByCrop, currentFutures, harvestCompleteIds, cottonProd, cottonPhysical, seedCommitments],
   )
 
   // Actual average yield (dry bushels from loads ÷ planted acres) per crop, used
@@ -948,12 +989,16 @@ function CropSection({
           </div>
         )}
 
-        {/* Marketing position — full-width bars below the metrics */}
+        {/* Marketing position — full-width bars below the metrics. Seed-
+            committed bushels count as sold/committed with their own segment. */}
         <div className="min-w-0">
           {!advanced ? (
-            <PositionBlock title="Sold" prod={prod} green={row.contractedBu} greenLabel="Sold" grayLabel="Unsold" />
+            row.seed
+              ? <SeedPositionBlock title="Sold / committed" prod={prod} soldBu={row.contractedBu} seed={row.seed} />
+              : <PositionBlock title="Sold" prod={prod} green={row.contractedBu} greenLabel="Sold" grayLabel="Unsold" />
           ) : (
             <div className="space-y-1.5">
+              {row.seed && <SeedPositionBlock title="Sold / committed" prod={prod} soldBu={row.contractedBu} seed={row.seed} />}
               <PositionBlock title="Futures-priced" prod={prod} green={row.futuresPricedBu} greenLabel="Priced" grayLabel="Unpriced"
                 avg={row.avgFutures != null ? `avg ${price2(row.avgFutures)}` : undefined} />
               <button type="button" onClick={onToggleBasis} className="text-xs text-brand-deep font-medium no-print">
@@ -963,6 +1008,21 @@ function CropSection({
                 <PositionBlock title="Basis-priced" prod={prod} green={row.basisLockedBu} greenLabel="Basis set" grayLabel="No basis"
                   avg={`avg ${basis2(row.avgBasis)} (${basisStateLabel(row)})`} />
               )}
+            </div>
+          )}
+          {row.seed && (
+            <div className="flex items-center gap-2 flex-wrap mt-1.5 text-xs text-slate-500">
+              <span className="inline-flex items-center rounded-full bg-emerald-100 text-emerald-800 font-medium px-2 py-0.5">
+                Seed — {row.seed.buyers.length > 0 ? row.seed.buyers.join(', ') : 'seed company'}
+              </span>
+              <span className="tabular-nums">
+                {bu(row.seed.committedBu)} bu committed{row.seed.estimated ? ' (est.)' : ''}
+                {row.seed.electedBu > 0 && row.seed.electedAvgPrice != null
+                  ? ` · ${Math.round((row.seed.electedBu / row.seed.committedBu) * 100)}% priced at avg ${price2(row.seed.electedAvgPrice)}`
+                  : ''}
+                {row.seed.unpricedBu > 0.5 ? ` · ${bu(row.seed.unpricedBu)} bu at ${price2(row.seed.unpricedNetPerBu)} (seed est.)` : ''}
+                {row.seed.premiumPerBu > 0 ? ` · premiums +${price2(row.seed.premiumPerBu)} assumed` : ''}
+              </span>
             </div>
           )}
         </div>
@@ -1573,6 +1633,40 @@ function PositionBlock({ title, prod, green, greenLabel, grayLabel, avg }: {
       ]} />
       <div className="flex justify-between text-[10px] text-slate-400 mt-0.5">
         <span>{greenLabel}</span><span>{grayLabel}</span>
+      </div>
+    </div>
+  )
+}
+
+// Position bar for a crop with a seed production commitment: grain sales
+// (green) + seed-committed bushels (emerald, priced dark / unpriced light) vs
+// the uncommitted rest. All segments share the production denominator.
+function SeedPositionBlock({ title, prod, soldBu, seed }: {
+  title: string
+  prod: number
+  soldBu: number
+  seed: SeedMarketingPosition
+}) {
+  const sold = Math.max(0, Math.min(soldBu, prod))
+  const seedElected = Math.max(0, Math.min(seed.electedBu, prod - sold))
+  const seedUnpriced = Math.max(0, Math.min(seed.unpricedBu, prod - sold - seedElected))
+  const rest = Math.max(0, prod - sold - seedElected - seedUnpriced)
+  const committed = sold + seedElected + seedUnpriced
+  const pct = prod > 0 ? Math.min(100, (committed / prod) * 100) : 0
+  return (
+    <div>
+      <div className="flex items-baseline justify-between mb-1 gap-2">
+        <span className="text-xs text-slate-500">{title}</span>
+        <span className="text-base font-bold tabular-nums">{pct.toFixed(0)}%</span>
+      </div>
+      <StackedBar height="h-6" segments={[
+        { value: sold, className: 'bg-green-600', label: sold > 0 ? bu(sold) : undefined },
+        { value: seedElected, className: 'bg-emerald-500', label: seedElected > 0 ? bu(seedElected) : undefined },
+        { value: seedUnpriced, className: 'bg-emerald-300', label: seedUnpriced > 0 ? bu(seedUnpriced) : undefined },
+        { value: rest, className: 'bg-slate-300', label: rest > 0 ? bu(rest) : undefined },
+      ]} />
+      <div className="flex justify-between text-[10px] text-slate-400 mt-0.5">
+        <span>Sold · Seed priced · Seed unpriced</span><span>Unsold</span>
       </div>
     </div>
   )

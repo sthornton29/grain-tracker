@@ -11,6 +11,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, type Planting } from '@/lib/marketing'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
+import { fetchSeedContracts, type SeedContractData } from '@/lib/seed-contracts-fetch'
+import { buildSeedCommitments } from '@/lib/seed-contracts'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
@@ -275,10 +277,11 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   // (field|crop|year) → dry bushels + last load date, splits-aware — narrowed
   // to the entity's fields. Drives actual production (by crop) and the
   // field-level harvest-completion check.
-  const aggByKey = useMemo(
-    () => scope.fieldAgg(fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear, combineEntries })),
-    [loads, splits, combineEntries, cropById, cropYear, scope],
+  const rawAggByKey = useMemo(
+    () => fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear, combineEntries }),
+    [loads, splits, combineEntries, cropById, cropYear],
   )
+  const aggByKey = useMemo(() => scope.fieldAgg(rawAggByKey), [scope, rawAggByKey])
 
   // Actual production (dry bushels) by crop for the year.
   const productionByCrop = useMemo(() => {
@@ -364,6 +367,41 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     return m
   }, [cottonPhysicalRaw, attribution, crops])
 
+  // Seed production contracts (077) — same input the dashboard passes, so
+  // blended revenue stays structurally identical across the two pages.
+  const [seedRaw, setSeedRaw] = useState<SeedContractData | null>(null)
+  const [buyerNames, setBuyerNames] = useState<Map<string, string>>(new Map())
+  useEffect(() => {
+    if (cropYear === '') { setSeedRaw(null); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const [seed, buyersQ] = await Promise.all([
+          fetchSeedContracts(supabase, cropYear, { contracts }),
+          supabase.from('buyers').select('id, name'),
+        ])
+        if (cancelled) return
+        setSeedRaw(seed)
+        setBuyerNames(new Map((((buyersQ.data ?? []) as Array<{ id: string; name: string }>)).map((b) => [b.id, b.name])))
+      } catch { if (!cancelled) setSeedRaw(null) }
+    })()
+    return () => { cancelled = true }
+  }, [cropYear, supabase, contracts])
+  const seedCommitments = useMemo(() => {
+    if (cropYear === '' || !seedRaw || seedRaw.bundles.length === 0) return undefined
+    return buildSeedCommitments({
+      bundles: seedRaw.bundles,
+      cropYear,
+      plantings,
+      // Unscoped production — attribution.shareForContract is the only scaling.
+      aggByKey: rawAggByKey,
+      assumptions: effAssumptions,
+      harvestCompleteCropIds: harvestCompleteIds,
+      buyerNameById: buyerNames,
+      shareForContract: (c) => attribution.shareForContract(c),
+    })
+  }, [cropYear, seedRaw, plantings, rawAggByKey, effAssumptions, harvestCompleteIds, buyerNames, attribution])
+
   const marketingRows = useMemo(() => {
     if (cropYear === '' || viewer.loading || !viewerA.ready) return []
     return computeMarketing({
@@ -380,8 +418,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       harvestCompleteCropIds: harvestCompleteIds,
       cottonProductionByCrop,
       cottonPhysicalByCrop: cottonPhysical,
+      seedCommitmentsByCrop: seedCommitments,
     })
-  }, [cropYear, viewer.loading, viewerA.ready, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds, cottonProductionByCrop, cottonPhysical])
+  }, [cropYear, viewer.loading, viewerA.ready, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds, cottonProductionByCrop, cottonPhysical, seedCommitments])
 
   // Resolve a harvest price per crop for the MARKET path: final → RMA
   // in-discovery running average → estimate → projected. `source`

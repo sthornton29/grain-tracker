@@ -255,6 +255,10 @@ export type Contract = {
   /** Optional: the date the contract was sold/signed (057) — informational,
    *  distinct from the delivery window and completed_at. */
   date_sold: string | null
+  /** 077: 'grain' (default — forward/HTA/basis) or 'seed_production' (an
+   *  acreage-based seed grower agreement; details in seed_contract_details).
+   *  Optional so code degrades before the migration is applied. */
+  contract_kind?: 'grain' | 'seed_production' | null
   created_at: string
   // Pricing breakdown (forward / HTA / basis). cash_price is the canonical flat
   // price; price_per_bushel is kept in sync for backward compatibility.

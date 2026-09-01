@@ -85,7 +85,9 @@ export default function ContractsSettingsPage() {
     ])
     setBuyers((b.data as Buyer[]) || [])
     setCrops((c.data as Crop[]) || [])
-    setRows((k.data as Contract[]) || [])
+    // Seed production contracts (077) have their own form and detail page —
+    // this page manages the grain book only.
+    setRows(((k.data as Contract[]) || []).filter((r) => (r.contract_kind ?? 'grain') !== 'seed_production'))
     setLocations((l.data as DeliveryLocation[]) || [])
     setEntities((en.data as Entity[]) || [])
     setPlantings((pl.data as FieldPlanting[]) || [])

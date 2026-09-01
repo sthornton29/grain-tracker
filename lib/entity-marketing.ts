@@ -20,6 +20,7 @@ import {
 } from '@/lib/marketing'
 import { buildEntityScope } from '@/lib/entity-scope'
 import { cropsWithCompleteHarvest, type FieldCropAgg } from '@/lib/yields'
+import { buildSeedCommitments, type SeedContractBundle } from '@/lib/seed-contracts'
 import type { CottonPhysicalInputs, CottonPhysicalSummary } from '@/lib/cotton-sales'
 import type { Contract, Crop, CropAssumption, FieldPlanting, FuturesPosition, OptionPosition } from '@/lib/types'
 
@@ -51,6 +52,9 @@ export type EntityMarketingInputs = {
   /** Physical cotton marketing inputs (044); null when none exist. */
   cottonPhysicalInputs: CottonPhysicalInputs | null
   currentFuturesByCrop: ReadonlyMap<string, number>
+  /** Seed production contract bundles (077); absent/empty = no seed book. */
+  seedBundles?: readonly SeedContractBundle[]
+  buyerNameById?: ReadonlyMap<string, string>
 }
 
 const num = (v: unknown) => Number(v) || 0
@@ -104,6 +108,26 @@ export function computeEntityMarketingRows(inputs: EntityMarketingInputs, entity
     if (cottonSummary) cottonPhysicalByCrop.set(c.id, cottonSummary)
   }
 
+  // Seed production commitments (077): the same attribution factor scales the
+  // committed bushels (own-entity contracts whole, agent/null-entity pro rata)
+  // over the UNSCOPED production — mirroring the dashboard's entity filter.
+  const seedCommitmentsByCrop = inputs.seedBundles && inputs.seedBundles.length > 0
+    ? buildSeedCommitments({
+        bundles: [...inputs.seedBundles],
+        cropYear,
+        plantings: inputs.plantings.map((p) => ({
+          id: p.id, crop_id: p.crop_id, season_year: p.season_year, field_id: p.field_id,
+          planted_acres: p.planted_acres, irrigated_acres: p.irrigated_acres, dryland_acres: p.dryland_acres,
+          irrigated_bushels: p.irrigated_bushels, yield_breakout_entered: p.yield_breakout_entered,
+        })),
+        aggByKey: new Map(inputs.aggByKey),
+        assumptions: inputs.assumptions,
+        harvestCompleteCropIds,
+        buyerNameById: new Map(inputs.buyerNameById ?? []),
+        shareForContract: (c) => attribution.shareForContract(c),
+      })
+    : undefined
+
   return computeMarketing({
     cropYear,
     crops: [...crops],
@@ -118,5 +142,6 @@ export function computeEntityMarketingRows(inputs: EntityMarketingInputs, entity
     harvestCompleteCropIds,
     cottonProductionByCrop,
     cottonPhysicalByCrop,
+    seedCommitmentsByCrop,
   })
 }

@@ -10,6 +10,8 @@ import StaticExportBar from '@/components/static-export-bar'
 import type { ExportPayload } from '@/lib/exports'
 import { CONTRACT_TYPE_LABEL, effectiveContractType, type ContractType, type PricingStatus } from '@/lib/contracts'
 import { parseContractMonth } from '@/lib/hedging'
+import { blendedElectedPrice, cumulativePricedPct, effectivePriceWalk } from '@/lib/seed-contracts'
+import type { SeedContractDetails, SeedContractPayment, SeedContractPremium, SeedPricingElection } from '@/lib/seed-contracts'
 
 export const dynamic = 'force-dynamic'
 
@@ -30,6 +32,7 @@ type ContractRow = {
   entity_id: string | null
   contract_month: string | null
   contract_type: ContractType
+  contract_kind: 'grain' | 'seed_production' | null
   pricing_status: PricingStatus
   futures_price: number | null
   basis: number | null
@@ -37,6 +40,10 @@ type ContractRow = {
   buyer: { name: string } | null
   crop: { name: string } | null
   delivery_location: { name: string } | null
+}
+
+function isSeedKind(c: Pick<ContractRow, 'contract_kind'>): boolean {
+  return c.contract_kind === 'seed_production'
 }
 
 type LoadRow = {
@@ -161,7 +168,7 @@ export default async function ContractsPage({
         id, contract_number, contracted_bushels, price_per_bushel, notes,
         crop_year, delivery_type, delivery_start_date, delivery_end_date, date_sold, completed_at,
         buyer_id, crop_id, entity_id,
-        contract_month, contract_type, pricing_status, futures_price, basis, cash_price,
+        contract_month, contract_type, contract_kind, pricing_status, futures_price, basis, cash_price,
         buyer:buyers(name), crop:crops(name), delivery_location:delivery_locations(name)
       `)
       .order('contract_number'),
@@ -204,6 +211,36 @@ export default async function ContractsPage({
 
   const plantingYears = ((plantingsRes.data ?? []) as Array<{ season_year: number | null }>).map((p) => p.season_year)
   const cropYearOptions = cropYearOptionsFromPlantings(plantingYears, cropYear)
+
+  // Seed production contracts (077): pricing elections + staged payments drive
+  // their progress semantics (% priced, complete on the received final
+  // payment) instead of delivered-vs-contracted.
+  const seedIds = allContracts.filter(isSeedKind).map((c) => c.id)
+  const seedDetailsBy = new Map<string, SeedContractDetails>()
+  const seedElectionsBy = new Map<string, SeedPricingElection[]>()
+  const seedPremiumsBy = new Map<string, SeedContractPremium[]>()
+  const seedPaymentsBy = new Map<string, SeedContractPayment[]>()
+  if (seedIds.length > 0) {
+    const [dQ, eQ, prQ, pQ] = await Promise.all([
+      supabase.from('seed_contract_details').select('*').in('contract_id', seedIds),
+      supabase.from('seed_pricing_elections').select('*').in('contract_id', seedIds).order('election_date'),
+      supabase.from('seed_contract_premiums').select('*').in('contract_id', seedIds).order('sort_order'),
+      supabase.from('seed_contract_payments').select('*').in('contract_id', seedIds),
+    ])
+    for (const d of ((dQ.data ?? []) as SeedContractDetails[])) seedDetailsBy.set(d.contract_id, d)
+    for (const e of ((eQ.data ?? []) as SeedPricingElection[])) {
+      const arr = seedElectionsBy.get(e.contract_id) ?? []
+      arr.push(e); seedElectionsBy.set(e.contract_id, arr)
+    }
+    for (const p of ((prQ.data ?? []) as SeedContractPremium[])) {
+      const arr = seedPremiumsBy.get(p.contract_id!) ?? []
+      arr.push(p); seedPremiumsBy.set(p.contract_id!, arr)
+    }
+    for (const p of ((pQ.data ?? []) as SeedContractPayment[])) {
+      const arr = seedPaymentsBy.get(p.contract_id) ?? []
+      arr.push(p); seedPaymentsBy.set(p.contract_id, arr)
+    }
+  }
 
   function loadDryBu(l: LoadRow): number {
     const crop = l.crop_id ? cropById.get(l.crop_id) : null
@@ -263,9 +300,17 @@ export default async function ContractsPage({
   for (const c of allContracts) numberCounts.set(c.contract_number, (numberCounts.get(c.contract_number) ?? 0) + 1)
 
   function flagFor(c: ContractRow): ContractFlag {
+    if (c.completed_at != null) return 'complete'
+    if (isSeedKind(c)) {
+      // A seed contract is done when the final base payment has been received
+      // (delivered bushels don't close it — settlement does).
+      const pays = seedPaymentsBy.get(c.id) ?? []
+      if (pays.some((p) => p.payment_type === 'base_final' && p.status === 'received')) return 'complete'
+      if (isFuture(c.delivery_start_date)) return 'future'
+      return 'open'
+    }
     const agg = aggByContract.get(c.id)
     const delivered = agg?.delivered ?? 0
-    if (c.completed_at != null) return 'complete'
     if (delivered >= Number(c.contracted_bushels) && Number(c.contracted_bushels) > 0) return 'complete'
     if (isFuture(c.delivery_start_date)) return 'future'
     return 'open'
@@ -278,7 +323,7 @@ export default async function ContractsPage({
     // Contracts with no entity_id are excluded under an entity filter so loads
     // delivered against a different entity's contract can't smuggle this one in.
     if (entityId && c.entity_id !== entityId) return false
-    if (typeFilter && effectiveContractType(c) !== typeFilter) return false
+    if (typeFilter && (isSeedKind(c) ? typeFilter !== 'seed' : effectiveContractType(c) !== typeFilter)) return false
     if (pricingFilter && c.pricing_status !== pricingFilter) return false
     const flag = flagFor(c)
     if (hideCompleted && flag === 'complete') return false
@@ -337,6 +382,31 @@ export default async function ContractsPage({
     .filter((x): x is { c: ContractRow; days: number } => x.days != null && x.days <= 30)
     .sort((a, b) => a.days - b.days)
 
+  // Seed-row display facts: committed bushels (contract estimate), % priced
+  // from the elections ledger, the blended elected price, and — when fully
+  // priced — the expected settlement revenue (elected + premiums − usage fee;
+  // premiums valued conservatively without the irrigated share, which needs
+  // the linked plantings the Marketing dashboard has).
+  function seedRowInfo(c: ContractRow): {
+    committedBu: number
+    pricedPct: number
+    electedPrice: number | null
+    expectedRevenue: number | null
+  } {
+    const details = seedDetailsBy.get(c.id) ?? null
+    const elections = seedElectionsBy.get(c.id) ?? []
+    const premiums = seedPremiumsBy.get(c.id) ?? []
+    const committedBu = details != null ? Number(details.estimated_bushels) : Number(c.contracted_bushels)
+    const pricedPct = Math.min(100, cumulativePricedPct(elections))
+    const electedPrice = blendedElectedPrice(elections)
+    let expectedRevenue: number | null = null
+    if (details) {
+      const walk = effectivePriceWalk({ details, premiums, elections, referencePlusBasis: null, irrigatedShare: 0 })
+      if (walk.expectedNetPerBu != null) expectedRevenue = walk.expectedNetPerBu * committedBu
+    }
+    return { committedBu, pricedPct, electedPrice, expectedRevenue }
+  }
+
   // Formatted PDF/Excel of the visible contracts (mirrors the table; payload is
   // plain data handed to the client StaticExportBar).
   const contractsExportPayload: ExportPayload = {
@@ -353,19 +423,28 @@ export default async function ContractsPage({
         { label: 'Contract #' }, { label: 'Buyer' }, { label: 'Crop' }, { label: 'Type' }, { label: 'Year', format: 'text' },
         { label: 'Sold' }, { label: 'Location' }, { label: 'Delivery window' },
         { label: 'Contracted', align: 'right', format: 'bu' }, { label: 'Delivered', align: 'right', format: 'bu' }, { label: 'Remaining', align: 'right', format: 'bu' },
-        { label: '% Delivered', align: 'right', format: 'pct1' }, { label: '$/bu', align: 'right', format: 'price' },
+        { label: 'Progress %', align: 'right', format: 'pct1' }, { label: '$/bu', align: 'right', format: 'price' },
         { label: 'Revenue', align: 'right', format: 'usd0' }, { label: 'Paid bu', align: 'right', format: 'bu' }, { label: 'Unpaid bu', align: 'right', format: 'bu' },
       ],
       rows: visible.map((c) => {
         const agg = aggByContract.get(c.id)
         const delivered = agg?.delivered ?? 0
+        const location = c.delivery_type === 'delivered' ? `Del → ${c.delivery_location?.name ?? '—'}` : 'Pickup'
+        const window = (c.delivery_start_date || c.delivery_end_date) ? `${fmtDate(c.delivery_start_date)} → ${fmtDate(c.delivery_end_date)}` : '—'
+        if (isSeedKind(c)) {
+          const seed = seedRowInfo(c)
+          return [
+            c.contract_number, c.buyer?.name ?? '', c.crop?.name ?? '', 'Seed', c.crop_year ?? '',
+            c.date_sold ? fmtDate(c.date_sold) : '', location, window,
+            seed.committedBu, delivered, Math.max(0, seed.committedBu - delivered),
+            seed.pricedPct, seed.electedPrice ?? '', seed.expectedRevenue ?? '', agg?.paidBushels ?? 0, agg?.deliveredUnpaid ?? 0,
+          ]
+        }
         const contracted = Number(c.contracted_bushels)
         const remaining = Math.max(0, contracted - delivered)
         const pct = contracted > 0 ? Math.min(100, (delivered / contracted) * 100) : 0
         const price = c.price_per_bushel != null ? Number(c.price_per_bushel) : ''
         const revenue = c.price_per_bushel != null ? Number(c.price_per_bushel) * contracted : ''
-        const location = c.delivery_type === 'delivered' ? `Del → ${c.delivery_location?.name ?? '—'}` : 'Pickup'
-        const window = (c.delivery_start_date || c.delivery_end_date) ? `${fmtDate(c.delivery_start_date)} → ${fmtDate(c.delivery_end_date)}` : '—'
         return [
           c.contract_number, c.buyer?.name ?? '', c.crop?.name ?? '', CONTRACT_TYPE_LABEL[effectiveContractType(c)], c.crop_year ?? '',
           c.date_sold ? fmtDate(c.date_sold) : '', location, window, contracted, delivered, remaining, pct, price, revenue, agg?.paidBushels ?? 0, agg?.deliveredUnpaid ?? 0,
@@ -381,12 +460,21 @@ export default async function ContractsPage({
       </Suspense>
       <h1 className="text-2xl font-bold">Contract Tracker</h1>
       <div className="flex items-end gap-3 flex-wrap">
-        <Link
-          href="/settings/contracts"
-          className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold"
-        >
-          New Contract
-        </Link>
+        <details className="relative">
+          <summary className="list-none cursor-pointer rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold select-none">
+            New Contract ▾
+          </summary>
+          <div className="absolute z-10 mt-1 w-52 rounded-lg border border-slate-200 bg-white shadow-lg py-1">
+            <Link href="/settings/contracts" className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+              Grain contract
+              <span className="block text-xs text-slate-400">Forward · HTA · Basis</span>
+            </Link>
+            <Link href="/contracts/seed/new" className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
+              Seed contract
+              <span className="block text-xs text-slate-400">Acreage-based seed production</span>
+            </Link>
+          </div>
+        </details>
         {visible.length > 0 && <StaticExportBar payload={contractsExportPayload} />}
         <form className="flex items-center gap-2 flex-wrap">
           <select name="entity" defaultValue={entityId} className="rounded-lg border border-slate-300 px-3 py-2">
@@ -406,6 +494,7 @@ export default async function ContractsPage({
             <option value="forward">Forward</option>
             <option value="hta">HTA</option>
             <option value="basis">Basis</option>
+            <option value="seed">Seed</option>
           </select>
           <select name="pricing" defaultValue={pricingFilter} className="rounded-lg border border-slate-300 px-3 py-2">
             <option value="">All pricing</option>
@@ -505,10 +594,16 @@ export default async function ContractsPage({
             {visible.map((c) => {
               const agg = aggByContract.get(c.id) ?? { delivered: 0, paidBushels: 0, revenue: 0, deliveredUnpaid: 0, entityIds: new Set<string>(), loadCount: 0 }
               const isDup = (numberCounts.get(c.contract_number) ?? 0) > 1
-              const remaining = Math.max(0, Number(c.contracted_bushels) - agg.delivered)
-              const pct = Number(c.contracted_bushels) > 0 ? Math.min(100, (agg.delivered / Number(c.contracted_bushels)) * 100) : 0
-              const contractPrice = c.price_per_bushel != null ? Number(c.price_per_bushel) : null
-              const contractRevenue = contractPrice != null ? contractPrice * Number(c.contracted_bushels) : null
+              const seed = isSeedKind(c) ? seedRowInfo(c) : null
+              const contractedShown = seed ? seed.committedBu : Number(c.contracted_bushels)
+              const remaining = Math.max(0, contractedShown - agg.delivered)
+              const pct = seed
+                ? seed.pricedPct
+                : Number(c.contracted_bushels) > 0 ? Math.min(100, (agg.delivered / Number(c.contracted_bushels)) * 100) : 0
+              const contractPrice = seed ? seed.electedPrice : (c.price_per_bushel != null ? Number(c.price_per_bushel) : null)
+              const contractRevenue = seed
+                ? seed.expectedRevenue
+                : contractPrice != null ? contractPrice * Number(c.contracted_bushels) : null
 
               const flag = flagFor(c)
               const endIn = daysUntil(c.delivery_end_date)
@@ -531,7 +626,9 @@ export default async function ContractsPage({
                   <td className="px-3 py-2">{c.buyer?.name ?? ''}</td>
                   <td className="px-3 py-2">{c.crop?.name ?? ''}</td>
                   <td className="px-3 py-2">
-                    <span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{CONTRACT_TYPE_LABEL[effectiveContractType(c)]}</span>
+                    {seed
+                      ? <span className="text-xs rounded-full bg-emerald-100 text-emerald-800 px-2 py-0.5">Seed</span>
+                      : <span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{CONTRACT_TYPE_LABEL[effectiveContractType(c)]}</span>}
                   </td>
                   <td className="px-3 py-2">{c.crop_year ?? ''}</td>
                   <td className="px-3 py-2 text-xs whitespace-nowrap">
@@ -547,19 +644,28 @@ export default async function ContractsPage({
                       ? <>{fmtDate(c.delivery_start_date)} → {fmtDate(c.delivery_end_date)}{endWarning ? ` (${endIn}d)` : ''}</>
                       : <span className="text-slate-400">—</span>}
                   </td>
-                  <td className="px-3 py-2 text-right">{fmt(Number(c.contracted_bushels))}</td>
+                  <td className="px-3 py-2 text-right">
+                    {fmt(contractedShown)}
+                    {seed && <span className="ml-1 text-xs text-slate-400">(est.)</span>}
+                  </td>
                   <td className="px-3 py-2 text-right">
                     {fmt(agg.delivered)}
                     <span className="ml-1 text-xs text-slate-400">({agg.loadCount} load{agg.loadCount === 1 ? '' : 's'})</span>
                   </td>
                   <td className="px-3 py-2 w-40">
                     <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
-                      <div className="h-2 bg-green-600" style={{ width: `${pct}%` }} />
+                      <div className={`h-2 ${seed ? 'bg-emerald-500' : 'bg-green-600'}`} style={{ width: `${pct}%` }} />
                     </div>
-                    <div className="text-xs text-slate-500 mt-0.5">{pct.toFixed(1)}% · {fmt(remaining)} bu left</div>
+                    <div className="text-xs text-slate-500 mt-0.5">
+                      {seed ? `${pct.toFixed(0)}% priced` : `${pct.toFixed(1)}% · ${fmt(remaining)} bu left`}
+                    </div>
                   </td>
                   <td className="px-3 py-2 text-right font-mono whitespace-nowrap">
-                    {c.pricing_status === 'fully_priced'
+                    {seed
+                      ? (contractPrice != null
+                          ? <span>${contractPrice.toFixed(2)}{seed.pricedPct < 100 && <span className="ml-1 text-[10px] rounded bg-amber-100 text-amber-800 px-1">{100 - seed.pricedPct}% unpriced</span>}</span>
+                          : <span className="text-[10px] rounded bg-amber-100 text-amber-800 px-1">unpriced</span>)
+                      : c.pricing_status === 'fully_priced'
                       ? (c.cash_price != null ? `$${Number(c.cash_price).toFixed(2)}` : '')
                       : c.pricing_status === 'awaiting_basis'
                       ? <span>F ${Number(c.futures_price ?? 0).toFixed(2)} <span className="text-[10px] rounded bg-amber-100 text-amber-800 px-1">basis?</span></span>

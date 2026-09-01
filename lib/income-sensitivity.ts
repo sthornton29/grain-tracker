@@ -23,6 +23,7 @@
 
 import { computeMarketing, type Planting } from '@/lib/marketing'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
+import type { SeedCropCommitment } from '@/lib/seed-contracts'
 import {
   computePolicy, policyPremium, scoConfigFrom, ecoConfigFrom, staxConfigFrom, mcoConfigFrom,
   centsToInsuranceDollars,
@@ -220,6 +221,11 @@ export type CropScenarioInputs = {
    *  cells with a scenario ¢/lb below the loan floor flatten there, mirroring
    *  how the RP floor flattens the insurance downside. */
   cottonPhysical?: CottonPhysicalSummary | null
+  /** Seed production commitments (077) for this crop. Elected increments stay
+   *  locked at their elected prices; the unpriced committed share re-prices
+   *  with the scenario price (it rides the assumed-futures proxy inside the
+   *  engine); premiums stay constant per the expected-outcome assumption. */
+  seedCommitments?: readonly SeedCropCommitment[] | null
   /** STAX/MCO endorsements (045), keyed to this crop's policies. */
   staxes?: readonly CropInsuranceStax[]
   mcos?: readonly CropInsuranceMco[]
@@ -326,6 +332,9 @@ export function computeScenarioCell(
     actualProductionByCrop: new Map(),
     expectedProductionByCrop: new Map([[inp.crop.id, production]]),
     cottonPhysicalByCrop: inp.cottonPhysical ? new Map([[inp.crop.id, inp.cottonPhysical]]) : undefined,
+    seedCommitmentsByCrop: inp.seedCommitments && inp.seedCommitments.length > 0
+      ? new Map([[inp.crop.id, [...inp.seedCommitments]]])
+      : undefined,
   })[0]
   const cropRevenue = row?.blendedRevenue ?? 0
 

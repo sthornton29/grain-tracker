@@ -5,6 +5,8 @@
 import { cropToHedgeCommodity, CONTRACT_TYPE_LABEL, effectiveContractType } from '@/lib/contracts'
 import { CONTRACT_SIZE_BU, quantityFor } from '@/lib/hedging'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
+import { seedCommittedBushels, seedMarketingPosition } from '@/lib/seed-contracts'
+import type { SeedCropCommitment, SeedMarketingPosition } from '@/lib/seed-contracts'
 import type { Contract, Crop, CropAssumption, FuturesPosition, OptionPosition } from '@/lib/types'
 
 // Crops the dashboard treats as lbs-native cotton (production + CT hedges only;
@@ -36,6 +38,15 @@ export type MarketingRow = {
     unpricedLbs: number // held/unallocated production valued at market/assumed
     hedgedUnsoldLbs: number // open CT shorts covering unpriced lbs
   }
+  // Seed production commitment (077, the cotton-pool pattern adapted for
+  // grain): the linked plantings' bushels are committed to the seed buyer —
+  // counted as sold in the position bar ("Seed — [buyer]"). Elected
+  // increments are locked at their elected price + expected premiums; the
+  // unpriced remainder rides the reference futures + assumed basis (the
+  // local-elevator proxy) + premiums, so it stays scenario-sensitive. The
+  // dollars are already inside blendedRevenue; grain contract buckets above
+  // (contractedBu, unpricedBu, …) exclude seed bushels — no double-counting.
+  seed: SeedMarketingPosition | null
   acres: number
   yield: number | null
   yieldLabel: 'Est.' | 'Actual'
@@ -218,8 +229,12 @@ export function computeMarketing(args: {
   // id — lib/cotton-sales.ts buildCottonPhysicalSummary output. Absent = no
   // physical marketing data (the row behaves as production + hedges only).
   cottonPhysicalByCrop?: Map<string, CottonPhysicalSummary>
+  // Seed production commitments (077) per crop id — lib/seed-contracts.ts
+  // SeedCropCommitment, assembled by the pages (production from the linked
+  // plantings, entity attribution already applied). Absent = no seed book.
+  seedCommitmentsByCrop?: Map<string, SeedCropCommitment[]>
 }): MarketingRow[] {
-  const { cropYear, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop, expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop, cottonPhysicalByCrop } = args
+  const { cropYear, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop, expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop, cottonPhysicalByCrop, seedCommitmentsByCrop } = args
 
   const cropIdsWithPlantings = new Set(
     plantings.filter((p) => p.season_year === cropYear).map((p) => p.crop_id),
@@ -271,10 +286,25 @@ export function computeMarketing(args: {
     }
 
     const assumedBasis = assumption?.assumed_basis != null ? Number(assumption.assumed_basis) : 0
+    const assumedFutures = assumption?.assumed_futures != null ? Number(assumption.assumed_futures) : null
+    const currentFutures = currentFuturesByCrop?.get(crop.id) ?? null
+    // The price for completely-unpriced bushels: the user's assumed futures when
+    // set (a standing What-If assumption), otherwise the auto-fetched harvest-price
+    // estimate (Barchart).
+    const marketFutures = assumedFutures ?? currentFutures
 
-    const cropContracts = contracts.filter((c) => c.crop_id === crop.id && c.crop_year === cropYear)
+    // Seed production contracts (077) are acreage commitments valued through
+    // their own block below — excluded from every grain pricing loop so their
+    // bushels never double-count with the regular contract book. Unpriced seed
+    // bushels are valued at the reference futures + assumed basis (the proxy
+    // for the contract's local-elevator quote) + expected premiums.
+    const cropContracts = contracts.filter(
+      (c) => c.crop_id === crop.id && c.crop_year === cropYear && (c.contract_kind ?? 'grain') !== 'seed_production',
+    )
+    const seedCommitments = seedCommitmentsByCrop?.get(crop.id) ?? []
+    const seedCommittedBu = seedCommittedBushels(seedCommitments)
     const contractedBu = cropContracts.reduce((s, c) => s + Number(c.contracted_bushels ?? 0), 0)
-    const remaining = totalProduction - contractedBu
+    const remaining = totalProduction - contractedBu - seedCommittedBu
 
     // Bushels whose total price is fully locked (no assumption): fully-priced
     // flat-cash contracts + contracts with BOTH futures and basis set. Drives the
@@ -363,16 +393,26 @@ export function computeMarketing(args: {
     const avgFutures = rawAvgFutures != null ? round(rawAvgFutures + hedgeAdjPerBu) : null
 
     // Bushel buckets shared by the basis average and blended revenue: unsold
-    // production, the open hedges covering it, and the completely-unpriced rest.
-    const unsold = Math.max(0, totalProduction - contractedBu)
+    // production (net of the seed-committed bushels — those fields' grain is
+    // spoken for), the open hedges covering it, and the completely-unpriced rest.
+    const unsold = Math.max(0, totalProduction - contractedBu - seedCommittedBu)
     const hedgeCovered = Math.max(0, Math.min(openHedgeBu, unsold))
     const unpricedBu = Math.max(0, unsold - hedgeCovered)
+
+    // Seed commitment valuation: elected increments locked at their elected
+    // price; the unpriced remainder at the crop's unpriced cash proxy (same
+    // fallback cascade as the unpriced bushels below), both plus expected
+    // premiums and minus the usage fee.
+    const seedPos = seedCommitments.length > 0
+      ? seedMarketingPosition(seedCommitments, (marketFutures ?? rawAvgFutures ?? 0) + assumedBasis)
+      : null
 
     // (3) Average basis — bushel-weighted across ALL basis-component bushels:
     //     contracts with locked basis at their weighted average, plus everything
     //     valued at the assumed basis (futures contracts without basis, open
-    //     hedges, unpriced bushels). All locked → 'actual' (= the locked avg);
-    //     none locked → 'assumed' (= the assumed basis); a mix → 'blended'.
+    //     hedges, unpriced bushels, unpriced seed-committed bushels). All locked
+    //     → 'actual' (= the locked avg); none locked → 'assumed' (= the assumed
+    //     basis); a mix → 'blended'.
     //     Flat-cash bushels carry no basis component and stay out of the blend.
     let bBu = 0, bW = 0
     for (const c of cropContracts) if (c.basis != null) { const bu = Number(c.contracted_bushels ?? 0); bBu += bu; bW += Number(c.basis) * bu }
@@ -380,20 +420,13 @@ export function computeMarketing(args: {
     for (const c of cropContracts) if (c.futures_price != null && c.basis == null) htaNoBasisBu += Number(c.contracted_bushels ?? 0)
     const basisLockedBu = bBu
     const basisLockedAvg = bBu > 0 ? round(bW / bBu) : null
-    const basisAssumedBu = round2(htaNoBasisBu + hedgeCovered + unpricedBu)
+    const basisAssumedBu = round2(htaNoBasisBu + hedgeCovered + unpricedBu + (seedPos?.unpricedBu ?? 0))
     const basisState: MarketingRow['basisState'] =
       basisLockedBu > 0 ? (basisAssumedBu > 0 ? 'blended' : 'actual') : 'assumed'
     const avgBasisAssumed = basisLockedBu === 0
     const avgBasis = basisLockedBu > 0
       ? round((bW + assumedBasis * basisAssumedBu) / (basisLockedBu + basisAssumedBu))
       : round(assumedBasis)
-
-    const assumedFutures = assumption?.assumed_futures != null ? Number(assumption.assumed_futures) : null
-    const currentFutures = currentFuturesByCrop?.get(crop.id) ?? null
-    // The price for completely-unpriced bushels: the user's assumed futures when
-    // set (a standing What-If assumption), otherwise the auto-fetched harvest-price
-    // estimate (Barchart).
-    const marketFutures = assumedFutures ?? currentFutures
 
     // (5) Total Average Price = avg_futures_price + avg_basis. Always computes for
     //     a crop with production: cash fallback (flat-cash only), then assumed/market
@@ -413,7 +446,12 @@ export function computeMarketing(args: {
     //     scaling each proportionally when over-sold. A no-op when contracted <=
     //     production (unsold/hedge/unpriced are already clamped to >= 0 above), so
     //     revenue/acre stays = Total Avg Price x yield.
-    const contractFill = contractedBu > totalProduction && contractedBu > 0 ? totalProduction / contractedBu : 1
+    //     Seed-committed bushels are spoken for before grain contracts can fill
+    //     (all production from the linked fields belongs to the seed company),
+    //     so grain contracts cap against what's left. With no seed book this is
+    //     exactly the old totalProduction cap.
+    const grainCapacity = Math.max(0, totalProduction - seedCommittedBu)
+    const contractFill = contractedBu > grainCapacity && contractedBu > 0 ? grainCapacity / contractedBu : 1
     let blendedRevenue = 0
     for (const c of cropContracts) {
       const bu = Number(c.contracted_bushels ?? 0) * contractFill
@@ -432,6 +470,9 @@ export function computeMarketing(args: {
     if (hedgeCovered > 0) blendedRevenue += hedgeCovered * ((openHedgeAvg ?? rawAvgFutures ?? marketFutures ?? 0) + assumedBasis)
     // Completely-unpriced bushels at the assumed/market futures + assumed basis.
     if (unpricedBu > 0) blendedRevenue += unpricedBu * ((marketFutures ?? rawAvgFutures ?? 0) + assumedBasis)
+    // Seed commitment (elected locked + unpriced at the proxy, premiums and
+    // usage fee netted in) — computed once above, added once here.
+    if (seedPos) blendedRevenue += seedPos.revenue
     // FULL PRECISION — never rounded here. The UI rounds at display, and
     // aggregateMarketing() sums these full-precision values so the dashboard and
     // Revenue Projections totals can't drift apart from stage-rounding.
@@ -453,7 +494,7 @@ export function computeMarketing(args: {
     const totalProfit = totalCost != null ? blendedRevenue - totalCost : null
 
     rows.push({
-      cropId: crop.id, cropName: crop.name, unit: 'bu', cottonBales: null, cottonPhysical: null, acres, yield: yieldVal, yieldLabel, totalProduction,
+      cropId: crop.id, cropName: crop.name, unit: 'bu', cottonBales: null, cottonPhysical: null, seed: seedPos, acres, yield: yieldVal, yieldLabel, totalProduction,
       contractedBu, remaining, avgCashPrice, excludedAwaitingBu,
       futuresPricedBu, physicalFuturesBu, physicalFuturesAvg, openHedgeBu, openHedgeAvg,
       rawAvgFutures, hedgeRealizedPnl, hedgeAdjPerBu, avgFutures, avgBasis, avgBasisAssumed, assumedBasis, assumedFutures,
@@ -614,6 +655,7 @@ function computeCottonRow(args: {
 
   return {
     cropId: crop.id, cropName: crop.name, unit: 'lbs',
+    seed: null,
     cottonBales: actual.bales > 0 ? actual.bales : null,
     cottonPhysical: physical
       ? { summary: physical, poolValueDollars, poolEstimated, inLoanValueDollars, inLoanFloored, unpricedLbs: uncoveredLbs, hedgedUnsoldLbs: hedgeCovered }

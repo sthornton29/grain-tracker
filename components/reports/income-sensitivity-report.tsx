@@ -24,6 +24,8 @@ import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, type CombineEntryLike } from '@/lib/yields'
 import { segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop } from '@/lib/marketing'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
+import { fetchSeedContracts, type SeedContractData } from '@/lib/seed-contracts-fetch'
+import { buildSeedCommitments } from '@/lib/seed-contracts'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
@@ -184,6 +186,26 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
         const physical = await fetchCottonPhysical(supabase, cropYear)
         if (!cancelled) setCottonPhysicalRaw(physical)
       } catch { if (!cancelled) setCottonPhysicalRaw(null) }
+    })()
+    return () => { cancelled = true }
+  }, [cropYear, supabase])
+
+  // Seed production contracts (077) — tolerates the tables absent → null.
+  const [seedRaw, setSeedRaw] = useState<SeedContractData | null>(null)
+  const [seedBuyerNames, setSeedBuyerNames] = useState<Map<string, string>>(new Map())
+  useEffect(() => {
+    if (cropYear === '') { setSeedRaw(null); return }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const [seed, buyersQ] = await Promise.all([
+          fetchSeedContracts(supabase, cropYear),
+          supabase.from('buyers').select('id, name'),
+        ])
+        if (cancelled) return
+        setSeedRaw(seed)
+        setSeedBuyerNames(new Map((((buyersQ.data ?? []) as Array<{ id: string; name: string }>)).map((b) => [b.id, b.name])))
+      } catch { if (!cancelled) setSeedRaw(null) }
     })()
     return () => { cancelled = true }
   }, [cropYear, supabase])
@@ -368,10 +390,11 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
 
   // Field-level dry bushels + last load date, splits-aware — narrowed to the
   // entity's fields.
-  const aggByKey = useMemo(
-    () => scope.fieldAgg(fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear, combineEntries })),
-    [loads, splits, combineEntries, cropById, cropYear, scope],
+  const rawAggByKey = useMemo(
+    () => fieldCropAggregates(loads, splits, cropById, { cropYear: cropYear === '' ? null : cropYear, combineEntries }),
+    [loads, splits, combineEntries, cropById, cropYear],
   )
+  const aggByKey = useMemo(() => scope.fieldAgg(rawAggByKey), [scope, rawAggByKey])
   const cropCompleteKeys = useMemo(() => {
     const s = new Set<string>()
     for (const a of effAssumptions) if (a.harvest_complete) s.add(`${a.crop_id}|${a.crop_year}`)
@@ -383,6 +406,26 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
     if (cropYear === '') return { byCrop: new Map<string, HarvestSplit>(), statusByPlanting: new Map<string, 'complete' | 'in_progress' | 'unharvested'>() }
     return splitHarvestByCrop({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions: effAssumptions })
   }, [scopedPlantings, aggByKey, cropYear, cropCompleteKeys])
+
+  // Seed commitments per crop id (077): committed production from the linked
+  // plantings, attributed like every contract; the scenario cell locks the
+  // elected increments and re-prices the unpriced share with the cell price.
+  const seedCommitments = useMemo(() => {
+    if (cropYear === '' || !seedRaw || seedRaw.bundles.length === 0) return null
+    const completeIds = new Set<string>()
+    for (const [cropId, split] of harvestSplit.byCrop) if (split.state === 'complete') completeIds.add(cropId)
+    return buildSeedCommitments({
+      bundles: seedRaw.bundles,
+      cropYear,
+      plantings,
+      // Unscoped production — attribution.shareForContract is the only scaling.
+      aggByKey: rawAggByKey,
+      assumptions: effAssumptions,
+      harvestCompleteCropIds: completeIds,
+      buyerNameById: seedBuyerNames,
+      shareForContract: (c) => attribution.shareForContract(c),
+    })
+  }, [cropYear, seedRaw, plantings, rawAggByKey, effAssumptions, harvestSplit, seedBuyerNames, attribution])
 
   // Expected yield on the REMAINING (not-yet-complete) acres, per crop — the
   // yield-axis center once harvest is underway, from the assumption breakouts.
@@ -482,11 +525,17 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
         // Cotton: sold/pool lbs stay locked; in-loan lbs floor at the banked
         // CCC loan value (cells below the floor flatten there).
         cottonPhysical: isCottonCrop(crop.name) ? cottonPhysicalSummary : null,
+        // Seed commitments (077): elected increments locked, unpriced share
+        // moves with the scenario price, premiums constant per the outcome.
+        seedCommitments: !isCottonCrop(crop.name) ? seedCommitments?.get(cropId) ?? null : null,
       }
 
       const contractedBu = isCottonCrop(crop.name)
         ? (cottonPhysicalSummary?.soldLbs ?? 0)
-        : inputs.contracts.reduce((s, c) => s + Number(c.contracted_bushels ?? 0), 0)
+        : inputs.contracts
+            .filter((c) => (c.contract_kind ?? 'grain') !== 'seed_production')
+            .reduce((s, c) => s + Number(c.contracted_bushels ?? 0), 0)
+          + (seedCommitments?.get(cropId) ?? []).reduce((s, sc) => s + sc.committed.bushels, 0)
       const commodity = cropToHedgeCommodity(crop.name)
       // Bushels for grains, lbs for cotton (quantityFor knows each contract size).
       const openHedgeBu = commodity
@@ -554,7 +603,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       })
     }
     return views.sort((a, b) => a.crop.name.localeCompare(b.crop.name))
-  }, [cropYear, viewer.loading, viewerA.ready, plantedCropIds, cropById, yearPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, scopedPolicies, scos, ecos, staxes, mcos, effCountyAssumptions, priceEstimates, harvestSplit, remainingExpectedYield, liveEstimates, refSymbols, refByCrop, axes, programCfg, includeGov, govPerAcre, cottonPhysicalSummary])
+  }, [cropYear, viewer.loading, viewerA.ready, plantedCropIds, cropById, yearPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, scopedPolicies, scos, ecos, staxes, mcos, effCountyAssumptions, priceEstimates, harvestSplit, remainingExpectedYield, liveEstimates, refSymbols, refByCrop, axes, programCfg, includeGov, govPerAcre, cottonPhysicalSummary, seedCommitments])
 
   function setAxis(cropId: string, patch: Partial<AxisCfg>) {
     const key = `${cropYear}:${cropId}`

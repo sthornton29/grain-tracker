@@ -7,6 +7,8 @@ import { truckDisplay, truckExportLabel } from '@/lib/trucks'
 import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, effectiveContractType, type ContractType, type PricingStatus } from '@/lib/contracts'
 import ContractActions from './contract-actions'
 import ContractAttachments from '@/components/contract-attachments'
+import SeedContractDetail from '@/components/seed-contract-detail'
+import type { SeedContractDetails, SeedContractPayment, SeedContractPremium, SeedPricingElection } from '@/lib/seed-contracts'
 import StaticExportBar from '@/components/static-export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
 
@@ -32,6 +34,7 @@ type ContractDetail = {
   date_sold: string | null
   completed_at: string | null
   created_at: string
+  contract_kind: 'grain' | 'seed_production' | null
   buyer_id: string | null
   crop_id: string | null
   entity_id: string | null
@@ -101,7 +104,7 @@ export default async function ContractDetailPage({ params }: { params: { id: str
     .from('contracts')
     .select(`
       id, contract_number, contracted_bushels, price_per_bushel, notes,
-      crop_year, contract_month, contract_type, pricing_status, futures_price, basis, cash_price, service_fee,
+      crop_year, contract_month, contract_type, contract_kind, pricing_status, futures_price, basis, cash_price, service_fee,
       delivery_type, delivery_start_date, delivery_end_date, date_sold, completed_at, created_at,
       buyer_id, crop_id, entity_id, delivery_location_id,
       buyer:buyers(name),
@@ -183,6 +186,64 @@ export default async function ContractDetailPage({ params }: { params: { id: str
   const autoComplete = Number(contract.contracted_bushels) > 0
     && delivered >= Number(contract.contracted_bushels)
   const isComplete = contract.completed_at != null || autoComplete
+
+  // Seed production contract (077): its own detail page — elections + payments
+  // ledgers, expected-outcome selector, linked fields, effective price walk.
+  if (contract.contract_kind === 'seed_production') {
+    const [detailsQ, premiumsQ, electionsQ, paymentsQ, junctionQ, assumptionQ] = await Promise.all([
+      supabase.from('seed_contract_details').select('*').eq('contract_id', contract.id).maybeSingle(),
+      supabase.from('seed_contract_premiums').select('*').eq('contract_id', contract.id).order('sort_order'),
+      supabase.from('seed_pricing_elections').select('*').eq('contract_id', contract.id).order('election_date'),
+      supabase.from('seed_contract_payments').select('*').eq('contract_id', contract.id).order('payment_date'),
+      supabase.from('seed_contract_plantings').select('planting_id').eq('contract_id', contract.id),
+      contract.crop_id != null && contract.crop_year != null
+        ? supabase.from('crop_assumptions').select('assumed_basis, assumed_futures, expected_yield, expected_yield_irr, expected_yield_dry, harvest_complete').eq('crop_id', contract.crop_id).eq('crop_year', contract.crop_year).maybeSingle()
+        : Promise.resolve({ data: null }),
+    ])
+    const plantingIds = ((junctionQ.data ?? []) as Array<{ planting_id: string }>).map((j) => j.planting_id)
+    let linkedPlantings: Array<{
+      id: string; planted_acres: number; irrigated_acres: number; dryland_acres: number
+      field: { name_or_number: string; farm: { name: string } | null } | null
+    }> = []
+    if (plantingIds.length > 0) {
+      const { data } = await supabase
+        .from('field_plantings')
+        .select('id, planted_acres, irrigated_acres, dryland_acres, field:fields(name_or_number, farm:farms(name))')
+        .in('id', plantingIds)
+      linkedPlantings = (data ?? []) as unknown as typeof linkedPlantings
+    }
+    const a = (assumptionQ.data ?? null) as { assumed_basis: number | null; assumed_futures: number | null } | null
+    return (
+      <SeedContractDetail
+        contract={{
+          id: contract.id,
+          contract_number: contract.contract_number,
+          buyerName: contract.buyer?.name ?? null,
+          cropName: contract.crop?.name ?? null,
+          entityName: contract.entity?.name ?? null,
+          crop_year: contract.crop_year,
+          completed_at: contract.completed_at,
+          notes: contract.notes,
+        }}
+        details={(detailsQ.data ?? null) as SeedContractDetails | null}
+        premiums={((premiumsQ.data ?? []) as SeedContractPremium[])}
+        elections={((electionsQ.data ?? []) as SeedPricingElection[])}
+        payments={((paymentsQ.data ?? []) as SeedContractPayment[])}
+        linkedPlantings={linkedPlantings.map((p) => ({
+          id: p.id,
+          fieldName: p.field?.name_or_number ?? '—',
+          farmName: p.field?.farm?.name ?? null,
+          plantedAcres: Number(p.planted_acres ?? 0),
+          irrigatedAcres: Number(p.irrigated_acres ?? 0),
+        }))}
+        referencePlusBasis={
+          a?.assumed_futures != null ? Number(a.assumed_futures) + Number(a.assumed_basis ?? 0) : null
+        }
+        deliveredBu={delivered}
+        loadCount={loads.length}
+      />
+    )
+  }
 
   const detailRows: Array<[string, React.ReactNode]> = [
     ['Buyer', contract.buyer?.name ?? '—'],

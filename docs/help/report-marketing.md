@@ -1,7 +1,7 @@
 ---
 page_route: /reports/marketing
 title: Marketing Dashboard
-updated: 2026-08-24
+updated: 2026-09-01
 keywords: marketing, contracts, futures, basis, cash price, unpriced bushels, assumptions, what-if, profit, breakeven, harvest complete, still harvesting, count anyway, cotton, reference contract, contract month, expired, front month
 ---
 ## What this page is for
@@ -28,6 +28,8 @@ Production is your assumed acres × yield until you mark harvest complete; after
 An amber **includes assumptions** marker appears whenever any production is not fully priced; its tooltip breaks down how many bushels ride on assumed futures or basis. Profit is this blended revenue minus your cost per acre, and it matches Revenue Projections to the cent. Breakeven price is cost divided by yield; breakeven yield is cost divided by average price.
 
 Cotton sections work in pounds and cents per pound, with a position bar covering sold, pool, in-loan, hedged, and unpriced lint.
+
+A crop with a **seed production contract** shows a "Seed — [company]" tag and its own segments in the position bar: the linked seed fields' bushels count as committed, elected portions hold their elected price plus the expected premiums, and the unpriced share is valued at the reference price (marked "seed est."). Premiums stay assumptions until the seed company accepts the crop — the contract's expected-outcome setting drives them.
 
 ## Common questions
 

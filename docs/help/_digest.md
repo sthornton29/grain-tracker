@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-08-31 · version 0.1.0 · build d741fc7. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-09-01 · version 0.1.0 · build 7e82de6. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -128,6 +128,8 @@ The contract tracker shows every grain contract with how much you've delivered a
 - **Basis** — the basis is locked, the futures price is still open. Your price moves with the futures market until you set it.
 
 When you later set the open leg — an HTA gets its basis, or a basis contract gets its futures — the contract shows as Forward, because at that point both legs are locked and it prices like one. The pricing status (fully priced, awaiting basis, awaiting futures) is shown and filterable on the list.
+
+- **Seed** — a seed production agreement (growing seed beans for a seed company). These commit acres instead of bushels and have their own entry form, detail page, and progress: the bar shows the share of the bushels you've priced, not deliveries, and the contract completes when the final payment arrives. See the **Seed production contracts** help topic for the full story.
 
 ## What the controls do
 
@@ -621,6 +623,8 @@ The **Total Safety Net** adds program and insurance money with realistic timing.
 
 When cotton is in the year, a **Cotton (net)** column and a cotton cash detail table appear: CCC loan money when bales enter loan, redemption payoffs and equity sale proceeds when loans resolve, pool payments on their dates plus each pool's estimated remaining value, priced contract proceeds spread across their delivery windows, on-call contracts valued at basis plus the current futures quote, LDP on its date, and fees as outflows.
 
+When a **seed production contract** is in the year, a **Seed (net)** column and its own detail table appear: 80% of each priced portion in its election month (unpriced bushels assumed priced by the agreement's deadline), the final 20% plus premiums at the estimated final settlement, storage pay monthly, and the usage fee as an outflow. Payments you record on the contract replace the projection for their type.
+
 ## Common questions
 
 - **Why is a month's projected revenue lower than I expected?** The contract's value is spread across every remaining month of its delivery window — one month carries only its share.
@@ -846,6 +850,7 @@ Pick a crop year and scroll to a crop. The row and column closest to today's fut
 ## How the numbers work
 
 - **Contracted bushels stay locked.** Cash contracts keep their cash price, HTA and basis contracts their locked legs, open hedges their trade price, realized gains counted once. The scenario price applies only to unpriced bushels, plus your assumed basis. If scenario production falls below contracted bushels, revenue is capped at production.
+- **Seed contracts** follow the same rule: elected portions stay locked at their elected price, the unpriced committed share moves with the scenario price, and premiums hold at the contract's expected-outcome assumption.
 - **Harvested bushels are facts.** The yield axis applies only to unharvested acres. Mid-harvest, the header shows what is already in the bin; a fully harvested crop collapses to a single actual-yield column, leaving only price risk.
 - **Insurance re-runs in every cell.** Each RP, RP-HPE, and YP policy — with SCO and ECO, per irrigated/dryland practice — recomputes with the scenario price as the harvest price, shown net of premium. Once the RMA final harvest price is on file, it is used instead in every cell.
 - **County yield modes.** County-based coverage (SCO, ECO, STAX, ARP, AYP, MCO) needs a county yield, estimated from your "my yield vs county" differential. **County independent** (the default) holds the county constant while your farm yield moves — a local loss the county may not share, exposing the gap where county products might not pay when you have a loss. **County moves with me** models a widespread loss: the county falls with your yield, keeping your usual relationship to it, so area coverage triggers alongside your own policies. Once the RMA final county yield is published, both modes pin to it.
@@ -926,6 +931,8 @@ Production is your assumed acres × yield until you mark harvest complete; after
 An amber **includes assumptions** marker appears whenever any production is not fully priced; its tooltip breaks down how many bushels ride on assumed futures or basis. Profit is this blended revenue minus your cost per acre, and it matches Revenue Projections to the cent. Breakeven price is cost divided by yield; breakeven yield is cost divided by average price.
 
 Cotton sections work in pounds and cents per pound, with a position bar covering sold, pool, in-loan, hedged, and unpriced lint.
+
+A crop with a **seed production contract** shows a "Seed — [company]" tag and its own segments in the position bar: the linked seed fields' bushels count as committed, elected portions hold their elected price plus the expected premiums, and the unpriced share is valued at the reference price (marked "seed est."). Premiums stay assumptions until the seed company accepts the crop — the contract's expected-outcome setting drives them.
 
 ## Common questions
 
@@ -1243,6 +1250,57 @@ For tickets you already have in a spreadsheet, use Loads → Import instead. Dow
 - A row won't turn Ready: look for amber cells — usually a missing from/to pick or a net weight of zero — and make sure a crop year is selected at the top.
 - Numbers look transposed or wrong: trust the source preview, not the extraction; correct the cell by hand.
 - Uploads failing repeatedly on clear documents: contact support.
+
+# Seed production contracts  (page: /contracts/seed)
+
+## What a seed contract is
+
+A seed production agreement is different from selling grain. You commit **acres** — named fields growing the seed company's variety — not a bushel count. Whatever those fields produce belongs to the seed company. In return you get to price the bushels on your own timing against a named local elevator's posted price, and a premium rides on top of that price once the company accepts the crop as seed.
+
+Turnrow tracks all of it: the agreement's terms, your pricing elections, the staged payments, and how it all rolls into the marketing and cash-flow reports.
+
+## Entering one
+
+On the Contracts page, **New Contract → Seed contract** opens the dedicated form. Type the terms in, or upload the signed agreement (PDF or photos) — Turnrow reads the signature page and the premium/payment terms and fills the form in for your review. Nothing saves until you confirm.
+
+The important pieces:
+
+- **Contract acres and forecast yield** — together they set the estimated quantity, but the real committed production comes from the **fields you link** on the form. Until harvest, those fields count at their expected yield; after harvest, at their actual bushels.
+- **Local market for pricing** — the elevator whose posted price your elections use (for example, a river terminal named in the agreement).
+- **Price everything by** — the agreement's deadline (Selection Date). All the bushels need a price by then.
+- **Premium schedule** — what the company pays on top of your elected price, per outcome: the full stack if the seed is *accepted*, usually less if it's *released* back to you, nothing if *rejected*. Some premiums (like an irrigated premium) pay only on irrigated bushels, and the total is capped per bushel. The form starts from a typical schedule — edit every row to match your agreement.
+- **Usage fee** — the per-bushel fee the company nets out of your settlement.
+
+## Pricing elections
+
+You price the crop in 25% pieces (25 / 50 / 75 / 100), each at the local market's price that day or a target order that filled. Record each one on the contract's page — "Price 25% at $10.42 — elected 11/3" — and the page keeps the running total priced. Turnrow won't let elections go past 100%.
+
+## Why premiums are an assumption until acceptance
+
+The premium stack only pays in full if the company accepts the crop as seed — and that decision comes after harvest. Until then, every projection in Turnrow values the premiums at the **expected outcome** you've set on the contract (it starts at *Accepted*). If you want to plan conservatively, change the expected outcome and every report follows. When the company settles, record the real payments and the projections step aside.
+
+## Payments
+
+Seed contracts pay in stages: typically 80% of the base price after delivery and pricing, the final 20% plus premiums at final settlement (often the following spring), storage pay monthly if you hold the crop, and the usage fee netted out. Record each payment on the contract's page as it arrives. The **Cash Flow report** projects the stages until the real payments replace them, and the contract shows **complete** once the final base payment is received.
+
+## Where it shows up in reports
+
+- **Marketing** — the linked fields' bushels count as committed to the seed company, with their own segment in the position bar and a "Seed — [company]" tag. Elected bushels hold their elected price plus expected premiums; unpriced bushels move with the market (marked "seed est.").
+- **Income Sensitivity** — elected portions stay locked; unpriced seed bushels move with the scenario price. Premiums stay at the expected-outcome assumption.
+- **Cash Flow** — the staged payments appear as labeled seed lines with their own column.
+- **Revenue Projections** — the seed dollars are inside crop sales revenue, so everything still adds up.
+
+## Common questions
+
+- **Why does the contract show "(est.)" bushels?** The linked fields haven't finished harvest, so committed production is still the expected yield. It switches to actual bushels when harvest wraps up.
+- **Can I sell grain off the seed fields to someone else?** No — the agreement commits everything those fields produce, and Turnrow treats it that way: seed-field bushels never count as available for grain contracts.
+- **What if the crop is released back to me?** Set the expected outcome to *Released* so projections use that premium level; the released bushels are yours to market as grain at that point.
+
+## If something looks wrong
+
+- The committed bushels look off: check which fields are linked on the contract (Edit) and the crop's expected yield under the Marketing page's assumptions.
+- Premiums look too high or low: open the contract and check the premium schedule rows, the irrigated acres on the linked fields, and the premium cap.
+- Anything else: contact support.
 
 # Buyers & Delivery Locations  (page: /settings/buyers)
 

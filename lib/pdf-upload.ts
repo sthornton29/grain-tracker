@@ -34,7 +34,39 @@ export function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement' | 'discount_schedule'
+export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement' | 'discount_schedule' | 'seed_contract'
+
+// Seed grower agreement extraction (077): the signature page (brand, contract
+// #, acres, bu/ac, estimated quantity, elevator, grower entity) AND the
+// Exhibit C terms (premium components/amounts/cap, pricing methods and
+// windows, payment dates, storage terms).
+export type SeedContractExtraction = {
+  contract_number: string | null
+  seed_company: string | null
+  grower_name: string | null
+  crop: string | null
+  crop_year: number | null
+  brand: string | null
+  variety: string | null
+  production_site: string | null
+  contract_acres: number | null
+  forecast_bu_per_acre: number | null
+  estimated_bushels: number | null
+  local_market_elevator: string | null
+  pricing_deadline: string | null
+  premium_cap_per_bu: number | null
+  storage_pay_per_bu_month: number | null
+  storage_pay_start_date: string | null
+  usage_fee_per_bu: number | null
+  final_settlement_date: string | null
+  premiums: Array<{
+    outcome: 'accepted' | 'released_post_harvest' | 'released_pre_harvest' | 'rejected' | null
+    component: string | null
+    amount_per_bu: number | null
+    applies_to: 'all' | 'irrigated_only' | null
+  }>
+  notes: string | null
+}
 
 // Full lease-terms extraction for the Rent Settlement report (069). Shapes
 // mirror lib/rent-settlement.ts LeaseTermsShape (snake_case on the wire).
@@ -381,11 +413,12 @@ export async function parseDocument(input: File | ParseImage[], documentType: 'g
 export async function parseDocument(input: File | ParseImage[], documentType: 'cotton_marketing_document', opts?: { category?: CottonMarketingCategory }): Promise<CottonMarketingExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'lease_agreement'): Promise<LeaseAgreementExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'discount_schedule'): Promise<DiscountScheduleExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'seed_contract'): Promise<SeedContractExtraction>
 export async function parseDocument(
   input: File | ParseImage[],
   documentType: DocumentType,
   opts?: { category?: CottonMarketingCategory; primaryTarget?: string },
-): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonLoadsExtraction | GinReceiptExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction> {
+): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonLoadsExtraction | GinReceiptExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction | SeedContractExtraction> {
   // Build the request body. Photos are compressed small enough to inline as
   // base64. A PDF, however, is uploaded to storage first and sent as a URL:
   // Vercel rejects serverless request bodies over 4.5 MB with a 413, well below
@@ -422,7 +455,7 @@ export async function parseDocument(
     if (!body || typeof body !== 'object' || !('data' in body)) {
       throw new Error('Malformed response from server.')
     }
-    return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction
+    return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction | SeedContractExtraction
   } finally {
     cleanup?.()
   }

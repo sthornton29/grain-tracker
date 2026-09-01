@@ -20,6 +20,7 @@ import type {
   FsaBaseAcresExtraction,
   GinReceiptExtraction,
   LeaseAgreementExtraction,
+  SeedContractExtraction,
   SettlementDiscountItemExtraction,
   SettlementExtraction,
   TicketsExtraction,
@@ -141,6 +142,23 @@ export function mergeDiscountSchedules(parts: DiscountScheduleExtraction[]): Dis
 export function mergeContracts(parts: ContractExtraction[]): ContractExtraction {
   // One contract per document — later pages only fill fields page 1 lacked.
   return mergeScalars(parts)
+}
+
+export function mergeSeedContracts(parts: SeedContractExtraction[]): SeedContractExtraction {
+  // One agreement per document: scalars from the first chunk that read them
+  // (signature page first), premium rows collected across the terms pages and
+  // deduped on outcome + component.
+  const norm = (s: string | null | undefined) => (s ?? '').trim().toLowerCase()
+  return {
+    ...mergeScalars(parts.map(({ premiums: _premiums, ...rest }) => rest)),
+    premiums: mergeList(
+      parts.map((p) => p.premiums ?? []),
+      (r) => {
+        const key = `${norm(r.outcome)}|${norm(r.component)}`
+        return key === '|' ? null : key
+      },
+    ),
+  } as SeedContractExtraction
 }
 
 export function mergeBrokerage(parts: BrokerageStatementExtraction[]): BrokerageStatementExtraction {

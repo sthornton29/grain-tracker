@@ -341,6 +341,56 @@ Respond ONLY in JSON with no other text and no markdown backticks:
   "notes": "string or null"
 }`
 
+const SEED_CONTRACT_PROMPT = `This is a seed production (seed grower) agreement between a farmer and a seed company (e.g. a Bayer/Asgrow soybean seed grower agreement with its Exhibit C terms). The grower commits ACRES to grow seed; pricing, premiums, and payments follow the agreement's own schedule. Extract both the signature-page facts AND the exhibit/terms pages. For any field you cannot determine, use null — do not guess.
+
+Extract these fields:
+- contract_number (the agreement/contract number)
+- seed_company (the seed company / buyer, e.g. "Bayer")
+- grower_name (the grower entity as signed, if stated)
+- crop (the commodity, e.g. "Soybeans")
+- crop_year (the production year as a 4-digit number)
+- brand (the seed brand, e.g. "Asgrow") and variety (the product, e.g. "AG55XF5")
+- production_site (the receiving/production facility with its town, e.g. "Hurt Seed Company, Halls TN")
+- contract_acres (the committed acres, as a number)
+- forecast_bu_per_acre (the forecast/estimated yield per acre used in the agreement)
+- estimated_bushels (the agreement's estimated quantity; if not printed, acres × forecast)
+- local_market_elevator (the named local market/elevator whose posted price drives grower pricing, e.g. "Bunge Decatur AL")
+- pricing_deadline (the default Selection Date — the date by which all bushels must be priced, YYYY-MM-DD)
+- premium_cap_per_bu (the maximum total premium per bushel, in DOLLARS, if the terms cap it)
+- storage_pay_per_bu_month (storage payment per bushel per month, in DOLLARS) and storage_pay_start_date (when storage pay begins, YYYY-MM-DD)
+- usage_fee_per_bu (any per-bushel usage/technology fee the company deducts, in DOLLARS, as a POSITIVE number)
+- final_settlement_date (when the final payment + premiums are due, YYYY-MM-DD, if stated)
+- premiums: EVERY premium component in the terms, one row each:
+  - outcome: which acceptance outcome it pays under — "accepted" (seed accepted), "released_post_harvest" (released after harvest), "released_pre_harvest" (released before harvest), "rejected"
+  - component (the premium's own name as printed, e.g. "Production premium", "Irrigated premium")
+  - amount_per_bu (DOLLARS per bushel)
+  - applies_to: "irrigated_only" when the component pays only on irrigated production, else "all"
+- notes (other notable terms worth recording — payment split like 80%/20%, delivery obligations; keep brief)
+
+Respond ONLY in JSON with no other text and no markdown backticks:
+{
+  "contract_number": "string or null",
+  "seed_company": "string or null",
+  "grower_name": "string or null",
+  "crop": "string or null",
+  "crop_year": number or null,
+  "brand": "string or null",
+  "variety": "string or null",
+  "production_site": "string or null",
+  "contract_acres": number or null,
+  "forecast_bu_per_acre": number or null,
+  "estimated_bushels": number or null,
+  "local_market_elevator": "string or null",
+  "pricing_deadline": "YYYY-MM-DD or null",
+  "premium_cap_per_bu": number or null,
+  "storage_pay_per_bu_month": number or null,
+  "storage_pay_start_date": "YYYY-MM-DD or null",
+  "usage_fee_per_bu": number or null,
+  "final_settlement_date": "YYYY-MM-DD or null",
+  "premiums": [{ "outcome": "accepted or released_post_harvest or released_pre_harvest or rejected or null", "component": "string or null", "amount_per_bu": number or null, "applies_to": "all or irrigated_only or null" }],
+  "notes": "string or null"
+}`
+
 // The unified settings extraction (replaces the per-page fields/plantings
 // prompts): ONE call classifies the document and extracts EVERY
 // settings-relevant thing in it, whatever page the upload started from. The
@@ -521,7 +571,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
   ]
 }`
 
-type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement' | 'discount_schedule'
+type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement' | 'discount_schedule' | 'seed_contract'
 
 // Full lease-terms extraction for the Rent Settlement report — deeper than
 // the settings-document lease read (which only lifts share % / cash rent
@@ -689,6 +739,7 @@ const PROMPTS: Record<DocumentType, string> = {
   cotton_marketing_document: COTTON_MARKETING_PROMPT,
   lease_agreement: LEASE_AGREEMENT_PROMPT,
   discount_schedule: DISCOUNT_SCHEDULE_PROMPT,
+  seed_contract: SEED_CONTRACT_PROMPT,
 }
 
 type ParseBody = {

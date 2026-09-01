@@ -1,7 +1,7 @@
 ---
 page_route: /reports/cash-flow
 title: Cash Flow Forecast
-updated: 2026-08-05
+updated: 2026-09-01
 keywords: cash flow, monthly, received, outstanding, projected, delivery window, safety net, ARC, PLC, insurance, cotton, contracts
 ---
 ## What this page is for
@@ -29,6 +29,8 @@ The three revenue columns split every contracted dollar by how certain it is:
 The **Total Safety Net** adds program and insurance money with realistic timing. ARC/PLC for a program year is paid in October of the following year — so when you filter to a crop year, the ARC/PLC shown is the prior program year's payment arriving that October, and the card names the program year. Crop insurance is the projected indemnity, using the same per-practice yields and the current futures-based harvest price estimate as the Claims Monitor, so the two reports agree. Other USDA payments count in the month and year received.
 
 When cotton is in the year, a **Cotton (net)** column and a cotton cash detail table appear: CCC loan money when bales enter loan, redemption payoffs and equity sale proceeds when loans resolve, pool payments on their dates plus each pool's estimated remaining value, priced contract proceeds spread across their delivery windows, on-call contracts valued at basis plus the current futures quote, LDP on its date, and fees as outflows.
+
+When a **seed production contract** is in the year, a **Seed (net)** column and its own detail table appear: 80% of each priced portion in its election month (unpriced bushels assumed priced by the agreement's deadline), the final 20% plus premiums at the estimated final settlement, storage pay monthly, and the usage fee as an outflow. Payments you record on the contract replace the projection for their type.
 
 ## Common questions
 

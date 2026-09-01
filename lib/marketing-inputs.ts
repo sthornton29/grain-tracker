@@ -34,6 +34,8 @@ import {
 } from '@/lib/reference-contract'
 import { normalizeBarchartPrice } from '@/lib/hedging'
 import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
+import { fetchSeedContracts } from '@/lib/seed-contracts-fetch'
+import { buildSeedCommitments, type SeedContractBundle, type SeedCropCommitment } from '@/lib/seed-contracts'
 import type { CottonPhysicalInputs } from '@/lib/cotton-sales'
 import type { EntityMarketingInputs } from '@/lib/entity-marketing'
 import { fetchAll } from '@/lib/partner-api-server'
@@ -383,6 +385,29 @@ export async function loadMarketingInputs(
   const plantedCropIds = new Set(plantings.map((p) => p.crop_id))
   const currentFuturesByCrop = await resolveCurrentFutures(supabase, crops, plantedCropIds, assumptions, cropYear)
 
+  // Seed production contracts (077) — whole-operation commitments; missing
+  // tables degrade to none, like the cotton fetch above.
+  let seedBundles: SeedContractBundle[] = []
+  let buyerNameById = new Map<string, string>()
+  let seedCommitmentsByCrop: Map<string, SeedCropCommitment[]> | undefined
+  try {
+    const seed = await fetchSeedContracts(supabase, cropYear, { orgId: org, contracts })
+    if (seed.bundles.length > 0) {
+      seedBundles = seed.bundles
+      const buyersQ = await supabase.from('buyers').select('id, name').eq('org_id', org)
+      buyerNameById = new Map((((buyersQ.data ?? []) as Array<{ id: string; name: string }>)).map((b) => [b.id, b.name]))
+      seedCommitmentsByCrop = buildSeedCommitments({
+        bundles: seedBundles,
+        cropYear,
+        plantings,
+        aggByKey: production.aggByKey,
+        assumptions,
+        harvestCompleteCropIds: production.harvestCompleteCropIds,
+        buyerNameById,
+      })
+    }
+  } catch { /* 077 not applied yet — no seed book */ }
+
   const rows = computeMarketing({
     cropYear,
     crops,
@@ -397,6 +422,7 @@ export async function loadMarketingInputs(
     harvestCompleteCropIds: production.harvestCompleteCropIds,
     cottonProductionByCrop: production.cottonProductionByCrop,
     cottonPhysicalByCrop,
+    seedCommitmentsByCrop,
   })
   return {
     production,
@@ -418,6 +444,8 @@ export async function loadMarketingInputs(
       cottonBales: production.cottonBales,
       cottonPhysicalInputs,
       currentFuturesByCrop,
+      seedBundles,
+      buyerNameById,
     },
   }
 }

@@ -52,6 +52,8 @@ import { applyCombineRemainders, applyTransfers, cellFor, cellTotal, type OnHand
 import { truckExportLabel } from '@/lib/trucks'
 import { validateAssistantSql } from '@/lib/assistant-sql'
 import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
+import { fetchSeedContracts } from '@/lib/seed-contracts-fetch'
+import { buildSeedCommitments, type SeedCropCommitment } from '@/lib/seed-contracts'
 import {
   factorMeasurement,
   isRejected,
@@ -215,6 +217,26 @@ async function loadMarketingBundle(
     if (summary) for (const c of crops) if (isCottonCrop(c.name)) cottonPhysical.set(c.id, summary)
   } catch { cottonPhysical = new Map() }
 
+  // Seed production contracts (077) — tolerates the tables absent → none.
+  let seedCommitmentsByCrop: Map<string, SeedCropCommitment[]> | undefined
+  try {
+    const seed = await fetchSeedContracts(supabase, cropYear, { contracts })
+    if (seed.bundles.length > 0) {
+      const buyersQ = await supabase.from('buyers').select('id, name')
+      seedCommitmentsByCrop = buildSeedCommitments({
+        bundles: seed.bundles,
+        cropYear,
+        plantings,
+        // Unscoped production — attribution.shareForContract is the only scaling.
+        aggByKey: fieldCropAggregates(loads, splits, cropById, { cropYear, combineEntries }),
+        assumptions,
+        harvestCompleteCropIds: harvestCompleteIds,
+        buyerNameById: new Map((((buyersQ.data ?? []) as Array<{ id: string; name: string }>)).map((b) => [b.id, b.name])),
+        shareForContract: (c) => attribution.shareForContract(c),
+      })
+    }
+  } catch { /* 077 not applied yet */ }
+
   const scopedContracts = attribution.contracts(contracts)
   const rows = computeMarketing({
     cropYear,
@@ -231,6 +253,7 @@ async function loadMarketingBundle(
     harvestCompleteCropIds: harvestCompleteIds,
     cottonProductionByCrop: cottonProd,
     cottonPhysicalByCrop: cottonPhysical,
+    seedCommitmentsByCrop,
   })
   return { rows, totals: aggregateMarketing(rows), scope, scopedContracts, crops, entityNote: note }
 }
@@ -253,6 +276,23 @@ function compactMarketingRow(r: MarketingRow) {
     cost_per_acre_usd: r.costPerAcre != null ? r2(r.costPerAcre) : null,
     profit_per_acre_usd: r.profitPerAcre != null ? r2(r.profitPerAcre) : null,
     total_profit_usd: r.totalProfit != null ? r0(r.totalProfit) : null,
+    // Seed production commitment (077): acreage-committed bushels to a seed
+    // company — elected increments locked, the rest valued at reference +
+    // premiums ("seed est."); premiums are assumptions until acceptance.
+    ...(r.seed
+      ? {
+          seed_commitment: {
+            buyers: r.seed.buyers,
+            committed_bu: r0(r.seed.committedBu),
+            elected_bu: r0(r.seed.electedBu),
+            elected_avg_price: r.seed.electedAvgPrice != null ? r2(r.seed.electedAvgPrice) : null,
+            unpriced_bu: r0(r.seed.unpricedBu),
+            expected_premium_per_bu: r2(r.seed.premiumPerBu),
+            usage_fee_per_bu: r2(r.seed.usageFeePerBu),
+            production_basis: r.seed.estimated ? 'estimated' : 'actual',
+          },
+        }
+      : {}),
   }
 }
 

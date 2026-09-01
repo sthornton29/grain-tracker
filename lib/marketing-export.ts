@@ -80,7 +80,8 @@ export function buildMarketingExport(args: {
     }
 
     const adv = cropMeta.get(r.cropId) ?? false
-    const cropContracts = contracts.filter((c) => c.crop_id === r.cropId)
+    // Seed production contracts get their own block below, never the grain type lines.
+    const cropContracts = contracts.filter((c) => c.crop_id === r.cropId && (c.contract_kind ?? 'grain') !== 'seed_production')
     const byType = new Map<string, number>()
     for (const c of cropContracts) {
       const t = CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']
@@ -99,6 +100,14 @@ export function buildMarketingExport(args: {
     kv('Contracted', `${buf(r.contractedBu)} bu`)
     kv('Remaining', `${buf(r.remaining)} bu`)
     for (const [t, b] of byType) kv(t, `${buf(b)} bu`)
+    if (r.seed) {
+      sub(`Seed production${r.seed.buyers.length > 0 ? ` — ${r.seed.buyers.join(', ')}` : ''}`)
+      kv('Committed', `${buf(r.seed.committedBu)} bu${r.seed.estimated ? ' (est.)' : ''}`)
+      kv('Priced (elected)', `${buf(r.seed.electedBu)} bu${r.seed.electedAvgPrice != null ? ` @ ${price(r.seed.electedAvgPrice)}` : ''}`)
+      kv('Unpriced (seed est.)', `${buf(r.seed.unpricedBu)} bu${r.seed.unpricedBu > 0 ? ` @ ${price(r.seed.unpricedNetPerBu)}` : ''}`)
+      kv('Expected premium / bu (assumed)', price(r.seed.premiumPerBu))
+      if (r.seed.usageFeePerBu > 0) kv('Usage fee / bu', price(r.seed.usageFeePerBu))
+    }
 
     if (adv) {
       // Block 1 — Average Futures Price Buildup (line-item ledger).

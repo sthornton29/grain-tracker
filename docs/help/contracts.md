@@ -1,8 +1,8 @@
 ---
 page_route: /contracts
 title: Contracts
-updated: 2026-08-06
-keywords: contracts, forward, cash, HTA, basis, futures, pricing, delivered, contracted, first notice day, delivery window, attachments, entity
+updated: 2026-09-01
+keywords: contracts, forward, cash, HTA, basis, futures, pricing, delivered, contracted, first notice day, delivery window, attachments, entity, seed, seed contract, seed production
 ---
 ## What this page is for
 
@@ -22,6 +22,8 @@ The contract tracker shows every grain contract with how much you've delivered a
 - **Basis** — the basis is locked, the futures price is still open. Your price moves with the futures market until you set it.
 
 When you later set the open leg — an HTA gets its basis, or a basis contract gets its futures — the contract shows as Forward, because at that point both legs are locked and it prices like one. The pricing status (fully priced, awaiting basis, awaiting futures) is shown and filterable on the list.
+
+- **Seed** — a seed production agreement (growing seed beans for a seed company). These commit acres instead of bushels and have their own entry form, detail page, and progress: the bar shows the share of the bushels you've priced, not deliveries, and the contract completes when the final payment arrives. See the **Seed production contracts** help topic for the full story.
 
 ## What the controls do
 
