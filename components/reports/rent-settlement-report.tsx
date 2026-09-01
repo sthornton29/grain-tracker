@@ -124,8 +124,8 @@ export default function RentSettlementReport() {
       fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels').order('id').range(f, t)),
       supabase.from('combine_yield_entries').select('*'),
       fetchAllRows((f, t) => supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue').order('id').range(f, t)),
-      supabase.from('lease_terms').select('*').order('created_at', { ascending: false }),
-      supabase.from('rent_settlements').select('*').order('generated_at', { ascending: false }),
+      fetchAllRows((f, t) => supabase.from('lease_terms').select('*').order('created_at', { ascending: false }).order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('rent_settlements').select('*').order('generated_at', { ascending: false }).order('id').range(f, t)),
     ])
     setLandowners((lo.data as Landowner[]) || [])
     setFarms((fa.data as Farm[]) || [])

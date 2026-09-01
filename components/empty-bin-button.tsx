@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
 
 type Props = { binId: string; binName: string }
@@ -45,16 +46,20 @@ export default function EmptyBinButton({ binId, binName }: Props) {
     try {
       const today = todayISO()
       const [loadsRes, cropsRes, adjRes] = await Promise.all([
-        supabase
+        fetchAllRows((f, t) => supabase
           .from('loads')
           .select('net_weight, moisture, crop_id, dry_bushels_override, from_type, from_bin_id, to_type, to_bin_id')
-          .or(`from_bin_id.eq.${binId},to_bin_id.eq.${binId}`),
+          .or(`from_bin_id.eq.${binId},to_bin_id.eq.${binId}`)
+          .order('id')
+          .range(f, t)),
         supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel'),
-        supabase
+        fetchAllRows((f, t) => supabase
           .from('bin_inventory_adjustments')
           .select('crop_id, adjustment_type, bushels, as_of_date')
           .eq('bin_id', binId)
-          .lte('as_of_date', today),
+          .lte('as_of_date', today)
+          .order('id')
+          .range(f, t)),
       ])
       const loads = (loadsRes.data ?? []) as LoadRow[]
       const crops = (cropsRes.data ?? []) as CropRow[]

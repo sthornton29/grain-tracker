@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { allocateSplits, validateSplitDrafts, type SplitDraft } from '@/lib/load-splits'
@@ -213,8 +214,8 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         supabase.from('farms').select('*').order('name'),
         supabase.from('bins').select('*').order('name_or_number'),
         supabase.from('buyers').select('*').order('name'),
-        supabase.from('contracts').select('*').order('contract_number'),
-        supabase.from('field_plantings').select('*'),
+        fetchAllRows((f, t) => supabase.from('contracts').select('*').order('contract_number').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
         // Saved hauler trucks for pickup contracts. Tolerates a missing table
         // (067 not applied yet) — the picker just offers free text.
         supabase.from('external_trucks').select('*').order('name'),

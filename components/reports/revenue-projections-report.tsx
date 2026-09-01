@@ -121,7 +121,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
         supabase.from('options_positions').select('*'),
         supabase.from('crop_assumptions').select('*'),
         fetchAllRows((f, t) => supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override').order('id').range(f, t)),
-        supabase.from('crop_insurance_policies').select('*'),
+        fetchAllRows((f, t) => supabase.from('crop_insurance_policies').select('*').order('id').range(f, t)),
         supabase.from('crop_insurance_sco').select('*'),
         supabase.from('crop_insurance_eco').select('*'),
         supabase.from('harvest_price_estimates').select('*').order('price_date', { ascending: false }),
@@ -138,7 +138,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
         supabase.from('farms').select('id, entity_id'),
         supabase.from('fields').select('id, farm_id'),
         // May not exist yet (migration 062): an error leaves data null → [].
-        supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
+        fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date').order('id').range(f, t)),
       ])
       setEntities((en.data as Entity[]) || [])
       setFarms((fa.data as Array<{ id: string; entity_id: string | null }>) || [])

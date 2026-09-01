@@ -198,52 +198,47 @@ export default function CashFlowPage() {
 
   useEffect(() => {
     ;(async () => {
-      // Paginate loads to defeat the project-level db-max-rows cap; one
+      // Paginate loads (lib/fetch-all-rows — cap-agnostic termination); one
       // missed load means a contract's delivered total quietly stays at zero.
       async function fetchAllLoads(): Promise<LoadRow[]> {
-        const PAGE = 1000
-        const out: LoadRow[] = []
-        for (let from = 0; ; from += PAGE) {
-          const { data, error } = await supabase
+        const { data, error } = await fetchAllRows<LoadRow>((f, t) =>
+          supabase
             .from('loads')
             .select('id, date, contract_id, ticket_number, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, practice')
             .order('id', { ascending: true })
-            .range(from, from + PAGE - 1)
-          if (error) throw error
-          const batch = (data ?? []) as LoadRow[]
-          out.push(...batch)
-          if (batch.length < PAGE) break
-        }
-        return out
+            .range(f, t),
+        )
+        if (error) throw new Error(error.message)
+        return data
       }
       const [ct, ld, sp, ln, st, cr, by, en, fa, fi, pl] = await Promise.all([
         supabase.from('contracts').select('*'),
         fetchAllLoads(),
         fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels, practice').order('id').range(f, t)),
         fetchAllRows((f, t) => supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue, settlement_id').order('id').range(f, t)),
-        supabase.from('settlements').select('id, settlement_date'),
+        fetchAllRows((f, t) => supabase.from('settlements').select('id, settlement_date').order('id').range(f, t)),
         supabase.from('crops').select('*'),
         supabase.from('buyers').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('id, entity_id'),
         supabase.from('fields').select('id, farm_id'),
-        supabase.from('field_plantings').select('*'),
+        fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
       ])
       const [ca, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp, ce] = await Promise.all([
         supabase.from('crop_assumptions').select('*'),
-        supabase.from('crop_insurance_policies').select('*'),
+        fetchAllRows((f, t) => supabase.from('crop_insurance_policies').select('*').order('id').range(f, t)),
         supabase.from('crop_insurance_sco').select('*'),
         supabase.from('crop_insurance_eco').select('*'),
-        supabase.from('harvest_price_estimates').select('*').order('price_date', { ascending: false }),
+        fetchAllRows((f, t) => supabase.from('harvest_price_estimates').select('*').order('price_date', { ascending: false }).order('id').range(f, t)),
         supabase.from('program_year_config').select('*'),
         supabase.from('covered_commodities').select('*'),
         supabase.from('farm_base_acres').select('*'),
         supabase.from('arc_plc_elections').select('*'),
         supabase.from('arc_plc_price_data').select('*'),
-        supabase.from('arc_plc_payments').select('*'),
-        supabase.from('other_government_payments').select('*'),
+        fetchAllRows((f, t) => supabase.from('arc_plc_payments').select('*').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('other_government_payments').select('*').order('id').range(f, t)),
         // May not exist yet (migration 062): an error leaves data null → [].
-        supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
+        fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date').order('id').range(f, t)),
       ])
       setContracts((ct.data as Contract[]) || [])
       setLoads(ld)

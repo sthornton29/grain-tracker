@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 
 type StatusRow = { crop_id: string; physical_sales_complete: boolean }
 
@@ -26,10 +27,12 @@ export default function CropYearSalesStatus({ year: yearProp }: { year?: number 
 
   useEffect(() => {
     ;(async () => {
-      const { data } = await supabase
+      const { data } = await fetchAllRows((f, t) => supabase
         .from('field_plantings')
         .select('season_year')
         .order('season_year', { ascending: false })
+        .order('id')
+        .range(f, t))
       const distinct = [...new Set(((data ?? []) as Array<{ season_year: number }>).map((r) => r.season_year))]
       if (distinct.length > 0) {
         setYears(distinct)
@@ -44,7 +47,7 @@ export default function CropYearSalesStatus({ year: yearProp }: { year?: number 
       setLoading(true)
       setErr(null)
       const [plantingsRes, statusRes] = await Promise.all([
-        supabase.from('field_plantings').select('crop_id, crops(id, name)').eq('season_year', year),
+        fetchAllRows((f, t) => supabase.from('field_plantings').select('crop_id, crops(id, name)').eq('season_year', year).order('id').range(f, t)),
         supabase
           .from('crop_year_sales_status')
           .select('crop_id, physical_sales_complete')

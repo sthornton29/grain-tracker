@@ -9,6 +9,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
 import { PdfTooLargeError, type RawSettingsExtraction } from '@/lib/pdf-upload'
@@ -56,7 +57,7 @@ export default function SettingsDocImport({
         supabase.from('landowners').select('id, name, phone, email, address'),
         supabase.from('farms').select('*'),
         supabase.from('fields').select('id, farm_id, name_or_number, total_acres, irrigated_acres, county_id'),
-        supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres'),
+        fetchAllRows((f, t) => supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres').order('id').range(f, t)),
         supabase.from('buyers').select('id, name'),
         supabase.from('delivery_locations').select('id, buyer_id, name'),
         supabase.from('bin_sites').select('id, name'),
@@ -64,7 +65,7 @@ export default function SettingsDocImport({
         supabase.from('gins').select('id, name'),
         supabase.from('trucks').select('id, name_or_number'),
         supabase.from('crops').select('id, name'),
-        supabase.from('field_planting_varieties').select('variety'),
+        fetchAllRows((f, t) => supabase.from('field_planting_varieties').select('variety').order('id').range(f, t)),
         supabase.from('variety_match_dismissals').select('key_a, key_b'),
       ])
       const counties = await fetchAllCounties(supabase)

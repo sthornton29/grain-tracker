@@ -75,14 +75,16 @@ export default function SettlementsListPage() {
 
   async function refresh() {
     setLoading(true)
-    let sq = supabase
-      .from('settlements')
-      .select('id, settlement_date, settlement_number, notes, source_pdf_url, buyer_id, buyer:buyers(name), settlement_lines(net_bushels, net_revenue, load_id, ticket_number)')
-      .order('settlement_date', { ascending: false })
-    if (from) sq = sq.gte('settlement_date', from)
-    if (to) sq = sq.lte('settlement_date', to)
     const [settRes, entitiesRes, farmsRes, fieldsRes, buyersRes, plantingsRes, contractsRes, splitsRes, buyerLoadsRes] = await Promise.all([
-      sq,
+      fetchAllRows((f, t) => {
+        let sq = supabase
+          .from('settlements')
+          .select('id, settlement_date, settlement_number, notes, source_pdf_url, buyer_id, buyer:buyers(name), settlement_lines(net_bushels, net_revenue, load_id, ticket_number)')
+          .order('settlement_date', { ascending: false })
+        if (from) sq = sq.gte('settlement_date', from)
+        if (to) sq = sq.lte('settlement_date', to)
+        return sq.order('id').range(f, t)
+      }),
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('*'),
       supabase.from('fields').select('*'),

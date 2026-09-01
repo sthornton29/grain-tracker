@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import EntityFilter from '@/components/entity-filter'
@@ -49,11 +50,11 @@ export default function CropInsuranceSettingsPage() {
       supabase.from('crops').select('*').order('name'),
       supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('entities').select('*').order('name'),
-      supabase.from('field_plantings').select('*'),
-      supabase.from('crop_insurance_policies').select('*').order('crop_year', { ascending: false }),
+      fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('crop_insurance_policies').select('*').order('crop_year', { ascending: false }).order('id').range(f, t)),
       supabase.from('crop_insurance_sco').select('*'),
       supabase.from('crop_insurance_eco').select('*'),
-      supabase.from('harvest_price_estimates').select('*'),
+      fetchAllRows((f, t) => supabase.from('harvest_price_estimates').select('*').order('id').range(f, t)),
       supabase.from('program_year_config').select('*').order('crop_year', { ascending: false }),
       // 045 tables — tolerate the migration not being applied yet.
       supabase.from('crop_insurance_stax').select('*'),

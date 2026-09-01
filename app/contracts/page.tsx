@@ -108,24 +108,18 @@ function daysUntilFirstNotice(contractMonth: string | null): number | null {
   return Math.ceil((fnd.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
 }
 
-// Page-scoped paginated fetch of every load with a contract_id. We can't trust
-// .limit() to override the Supabase project-level db-max-rows cap, so we
-// .range() through the table until a short page comes back.
+// Paginated fetch of every load (lib/fetch-all-rows — cap-agnostic
+// termination, so a lowered db-max-rows can never silently truncate it).
 async function fetchAllContractLoads(supabase: SupabaseClient): Promise<LoadRow[]> {
-  const PAGE = 1000
-  const out: LoadRow[] = []
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabase
+  const { data, error } = await fetchAllRows<LoadRow>((f, t) =>
+    supabase
       .from('loads')
       .select('id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override, from_type, from_field_id')
       .order('id', { ascending: true })
-      .range(from, from + PAGE - 1)
-    if (error) throw error
-    const batch = (data ?? []) as LoadRow[]
-    out.push(...batch)
-    if (batch.length < PAGE) break
-  }
-  return out
+      .range(f, t),
+  )
+  if (error) throw new Error(error.message)
+  return data
 }
 
 function isFuture(start: string | null): boolean {
@@ -163,7 +157,7 @@ export default async function ContractsPage({
   const anyFilters = Boolean(entityId || cropFilter || typeFilter || pricingFilter || cropYear != null || hideCompleted || hideFuture)
 
   const [contractsRes, loads, cropsRes, fieldsRes, farmsRes, entitiesRes, linesRes, plantingsRes] = await Promise.all([
-    supabase
+    fetchAllRows((f, t) => supabase
       .from('contracts')
       .select(`
         id, contract_number, contracted_bushels, price_per_bushel, notes,
@@ -172,14 +166,16 @@ export default async function ContractsPage({
         contract_month, contract_type, contract_kind, pricing_status, futures_price, basis, cash_price,
         buyer:buyers(name), crop:crops(name), delivery_location:delivery_locations(name)
       `)
-      .order('contract_number'),
+      .order('contract_number')
+      .order('id')
+      .range(f, t)),
     fetchAllContractLoads(supabase),
     supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').order('name'),
     supabase.from('fields').select('id, farm_id'),
     supabase.from('farms').select('id, entity_id'),
     supabase.from('entities').select('id, name').order('name'),
     fetchAllRows((f, t) => supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue').order('id').range(f, t)),
-    supabase.from('field_plantings').select('season_year'),
+    fetchAllRows((f, t) => supabase.from('field_plantings').select('season_year').order('id').range(f, t)),
   ])
 
   const allContracts = (contractsRes.data as unknown as ContractRow[]) ?? []

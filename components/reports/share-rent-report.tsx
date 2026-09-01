@@ -95,7 +95,7 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
         fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
         supabase.from('landowners').select('*').order('name'),
         // May not exist yet (migration 062): an error leaves data null → [].
-        supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
+        fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date').order('id').range(f, t)),
       ])
       setCrops((cr.data as Crop[]) || [])
       setEntities((en.data as Entity[]) || [])

@@ -33,6 +33,7 @@ import {
   referenceMonthOptions,
 } from '@/lib/reference-contract'
 import { normalizeBarchartPrice } from '@/lib/hedging'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
 import { fetchSeedContracts } from '@/lib/seed-contracts-fetch'
 import { buildSeedCommitments, type SeedContractBundle, type SeedCropCommitment } from '@/lib/seed-contracts'
@@ -153,12 +154,15 @@ export async function loadProductionInputs(
   ])
   // Combine entries (062) — a missing table degrades to none, like /production.
   let combineEntries: CombineRow[] = []
-  const combineResult = await supabase
-    .from('combine_yield_entries')
-    .select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date')
-    .eq('org_id', org)
-    .eq('crop_year', cropYear)
-  if (!combineResult.error) combineEntries = (combineResult.data ?? []) as CombineRow[]
+  const combineResult = await fetchAllRows<CombineRow>((f, t) =>
+    supabase
+      .from('combine_yield_entries')
+      .select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date')
+      .eq('org_id', org)
+      .eq('crop_year', cropYear)
+      .order('id')
+      .range(f, t))
+  if (!combineResult.error) combineEntries = combineResult.data
 
   const cropById = new Map(crops.map((c) => [c.id, c]))
   const doubleCropIds = buildDoubleCropSet(plantings, cropById)

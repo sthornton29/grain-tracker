@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 
 const norm = (s: string | null | undefined) => (s ?? '').trim().toLowerCase()
 
@@ -76,11 +77,18 @@ export async function relinkSettlementLines(
   const unlinked = (lines ?? []).filter((l) => !l.load_id && norm(l.ticket_number))
   if (unlinked.length === 0) return 0
 
-  const { data: buyerLoads } = await supabase
-    .from('loads')
-    .select('id, ticket_number')
-    .eq('to_type', 'buyer')
-    .eq('to_buyer_id', buyerId)
+  // Paginated (lib/fetch-all-rows): a buyer's loads exceed the ~1,000-row
+  // request cap over the years, and a truncated read here would silently
+  // leave settlement lines unlinked.
+  const { data: buyerLoads } = await fetchAllRows<{ id: string; ticket_number: string | null }>((f, t) =>
+    supabase
+      .from('loads')
+      .select('id, ticket_number')
+      .eq('to_type', 'buyer')
+      .eq('to_buyer_id', buyerId)
+      .order('id')
+      .range(f, t),
+  )
 
   // ticket → list of load ids that carry it.
   const byTicket = new Map<string, string[]>()

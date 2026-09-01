@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import CsvImport from '@/components/csv-import'
 import SettingsDocImport from '@/components/settings-doc-import'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
@@ -386,8 +387,8 @@ export default function PlantingsPage() {
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('crops').select('*').order('name'),
-      supabase.from('field_plantings').select('*').order('season_year', { ascending: false }),
-      supabase.from('field_planting_varieties').select('*').order('variety'),
+      fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('season_year', { ascending: false }).order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('field_planting_varieties').select('*').order('variety').order('id').range(f, t)),
       // "Keep both" decisions — tolerate a missing table (043 not applied yet).
       supabase.from('variety_match_dismissals').select('*'),
     ])

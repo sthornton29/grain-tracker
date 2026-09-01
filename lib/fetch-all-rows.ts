@@ -6,10 +6,21 @@
 // unpaginated loads/splits/settlement-lines consumer degraded the same way.
 //
 // EVERY query that reads a whole growing table (loads, load_splits,
-// settlement_lines, …) must page through it with `.range()` — and the query
-// passed here MUST carry a stable `.order()` (usually `.order('id')`, or as
-// the final tiebreak after a display order): without one, page boundaries
-// can shift between requests and rows get skipped or doubled.
+// settlement_lines, plantings, positions, the cotton per-bale tables, …)
+// must page through it with `.range()` — enforced by the CI gate in
+// lib/growing-table-reads.test.ts — and the query passed here MUST carry a
+// stable `.order()` (usually `.order('id')`, or as the final tiebreak after
+// a display order): without one, page boundaries can shift between requests
+// and rows get skipped or doubled.
+//
+// TERMINATION IS CAP-AGNOSTIC: the loop never assumes the server's cap
+// equals `pageSize`. A short page only proves the table is exhausted once
+// the server has demonstrated it can return a full page; before that (small
+// table, or a server cap LOWER than pageSize — e.g. someone tightening
+// db-max-rows) the loop probes on from the next offset and stops only on an
+// empty page. A lowered server cap therefore slows the read; it can never
+// silently truncate it. Requests always resume at `out.length`, so the loop
+// adapts to whatever batch size the server actually serves.
 //
 // The result is shaped like a Supabase response ({ data, error }) so call
 // sites inside a Promise.all destructure exactly as before.
@@ -28,12 +39,19 @@ export async function fetchAllRows<T>(
   pageSize = SUPABASE_PAGE_SIZE,
 ): Promise<{ data: T[]; error: PageError }> {
   const out: T[] = []
-  for (let from = 0; ; from += pageSize) {
+  let sawFullPage = false
+  for (;;) {
+    const from = out.length
     const { data, error } = await build(from, from + pageSize - 1)
     if (error) return { data: out, error }
     const batch = ((data as unknown) as T[]) ?? []
     out.push(...batch)
-    if (batch.length < pageSize) break
+    if (batch.length === 0) break
+    if (batch.length >= pageSize) { sawFullPage = true; continue }
+    // Short page: the genuine end only if the server has proven it can fill
+    // a page — otherwise its cap may simply be lower than pageSize, so keep
+    // probing until an empty page confirms exhaustion.
+    if (sawFullPage) break
   }
   return { data: out, error: null }
 }

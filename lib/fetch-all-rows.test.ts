@@ -1,22 +1,27 @@
-// The pagination guard: full pages keep fetching, a short page stops, errors
-// surface, and the boundaries are exactly the inclusive .range() bounds.
+// The pagination guard: cap-agnostic termination (a short page ends the read
+// only after the server has proven it can fill a page; otherwise probe on to
+// an empty page), errors surface, and requests resume at the received count.
 
 import { describe, expect, it } from 'vitest'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 
-function fakeTable(rowCount: number, pageSize: number) {
+/** A fake table that serves at most `serverCap` rows per request, regardless
+ *  of how many the range asks for — exactly PostgREST's db-max-rows. */
+function fakeTable(rowCount: number, opts: { pageSize: number; serverCap?: number }) {
   const rows = Array.from({ length: rowCount }, (_, i) => ({ id: i }))
   const calls: Array<[number, number]> = []
+  const cap = opts.serverCap ?? opts.pageSize
   const build = (from: number, to: number) => {
     calls.push([from, to])
-    return Promise.resolve({ data: rows.slice(from, to + 1), error: null })
+    const want = Math.min(to - from + 1, cap)
+    return Promise.resolve({ data: rows.slice(from, from + want), error: null })
   }
-  return { build, calls, run: () => fetchAllRows<{ id: number }>(build, pageSize) }
+  return { calls, run: () => fetchAllRows<{ id: number }>(build, opts.pageSize) }
 }
 
 describe('fetchAllRows', () => {
   it('pages through a table larger than one request (the 1,000-row cap bug)', async () => {
-    const t = fakeTable(2500, 1000)
+    const t = fakeTable(2500, { pageSize: 1000 })
     const { data, error } = await t.run()
     expect(error).toBeNull()
     expect(data).toHaveLength(2500)
@@ -24,19 +29,38 @@ describe('fetchAllRows', () => {
     expect(data[0].id).toBe(0)
     expect(data[2499].id).toBe(2499)
     expect(new Set(data.map((r) => r.id)).size).toBe(2500)
-    // Inclusive range bounds; the short last page stops the loop.
+    // Two full pages prove the server fills pages; the short third ends it.
     expect(t.calls).toEqual([[0, 999], [1000, 1999], [2000, 2999]])
   })
 
-  it('a table that ends exactly on a page boundary makes one extra empty request and stops', async () => {
-    const t = fakeTable(2000, 1000)
+  it('NEVER trusts pageSize as the server cap: a lower db-max-rows still reads everything', async () => {
+    // Server silently serves at most 500/request while we ask for 1,000 —
+    // the exact config change that would have resurrected the harvest bug.
+    const t = fakeTable(2500, { pageSize: 1000, serverCap: 500 })
+    const { data, error } = await t.run()
+    expect(error).toBeNull()
+    expect(data).toHaveLength(2500)
+    expect(new Set(data.map((r) => r.id)).size).toBe(2500)
+    // Requests resume at the received count and only an empty page ends it.
+    expect(t.calls).toEqual([[0, 999], [500, 1499], [1000, 1999], [1500, 2499], [2000, 2999], [2500, 3499]])
+  })
+
+  it('a table smaller than one page confirms the end with one empty probe', async () => {
+    const t = fakeTable(800, { pageSize: 1000 })
+    const { data } = await t.run()
+    expect(data).toHaveLength(800)
+    expect(t.calls).toEqual([[0, 999], [800, 1799]])
+  })
+
+  it('a table ending exactly on a page boundary stops after one empty page', async () => {
+    const t = fakeTable(2000, { pageSize: 1000 })
     const { data } = await t.run()
     expect(data).toHaveLength(2000)
-    expect(t.calls).toHaveLength(3) // 1000 + 1000 + 0
+    expect(t.calls).toEqual([[0, 999], [1000, 1999], [2000, 2999]])
   })
 
   it('an empty table returns no rows after one request', async () => {
-    const t = fakeTable(0, 1000)
+    const t = fakeTable(0, { pageSize: 1000 })
     const { data, error } = await t.run()
     expect(data).toEqual([])
     expect(error).toBeNull()

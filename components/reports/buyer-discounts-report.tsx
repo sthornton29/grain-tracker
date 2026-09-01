@@ -154,7 +154,7 @@ export default function BuyerDiscountsReport({
         supabase.from('farms').select('*'),
         supabase.from('fields').select('*'),
         fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
-        supabase.from('contracts').select('id, entity_id, contract_number, contracted_bushels'),
+        fetchAllRows((f, t) => supabase.from('contracts').select('id, entity_id, contract_number, contracted_bushels').order('id').range(f, t)),
         supabase.from('buyer_discount_schedules').select('*'),
         supabase.from('buyer_discount_schedule_rules').select('*'),
       ])

@@ -104,18 +104,21 @@ export default async function InventoryPage({
     fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels').order('id').range(f, t)),
     // Combine yield entries (062) — tolerate the table not existing yet
     // (migration pending): error → no entries, the page still renders.
-    supabase.from('combine_yield_entries')
-      .select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
+    fetchAllRows((f, t) => supabase.from('combine_yield_entries')
+      .select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date')
+      .order('id').range(f, t)),
     supabase.from('entities').select('id, name').order('name'),
-    supabase.from('bin_inventory_adjustments')
+    fetchAllRows((f, t) => supabase.from('bin_inventory_adjustments')
       .select('id, bin_id, crop_id, adjustment_type, bushels, moisture, as_of_date, notes, created_at')
       .lte('as_of_date', today)
-      .order('as_of_date', { ascending: true }),
-    supabase.from('bin_transfers')
+      .order('as_of_date', { ascending: true })
+      .order('id').range(f, t)),
+    fetchAllRows((f, t) => supabase.from('bin_transfers')
       .select('id, from_bin_id, to_bin_id, crop_id, bushels, transfer_date, method, throughput_bu_per_hr, hours_run, notes, created_at')
       .lte('transfer_date', today)
       .order('transfer_date', { ascending: false })
-      .order('created_at', { ascending: false }),
+      .order('created_at', { ascending: false })
+      .order('id').range(f, t)),
   ])
 
   const allBins = (binsRes.data ?? []) as BinRow[]

@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import { BuyerPicker } from '@/components/buyer-location-pickers'
 import EntitySelect from '@/components/entity-select'
@@ -106,8 +107,8 @@ export default function SeedContractForm({ editContractId }: { editContractId?: 
         supabase.from('buyers').select('id, name').order('name'),
         supabase.from('crops').select('*').order('name'),
         supabase.from('entities').select('id, name, entity_role').order('name'),
-        supabase.from('field_plantings').select('season_year'),
-        supabase.from('contracts').select('id, contract_number').eq('contract_kind', 'seed_production'),
+        fetchAllRows((f, t) => supabase.from('field_plantings').select('season_year').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('contracts').select('id, contract_number').eq('contract_kind', 'seed_production').order('id').range(f, t)),
       ])
       if (!alive) return
       setBuyers((b.data ?? []) as Buyer[])
@@ -175,15 +176,19 @@ export default function SeedContractForm({ editContractId }: { editContractId?: 
     let alive = true
     void (async () => {
       const [pQ, vQ] = await Promise.all([
-        supabase
+        fetchAllRows((f, t) => supabase
           .from('field_plantings')
           .select('id, crop_id, season_year, planted_acres, irrigated_acres, field:fields(name_or_number, farm:farms(name))')
           .eq('crop_id', cropId)
-          .eq('season_year', cropYear),
-        supabase
+          .eq('season_year', cropYear)
+          .order('id')
+          .range(f, t)),
+        fetchAllRows((f, t) => supabase
           .from('field_planting_varieties')
           .select('variety, planting:field_plantings!inner(crop_id)')
-          .eq('planting.crop_id', cropId),
+          .eq('planting.crop_id', cropId)
+          .order('id')
+          .range(f, t)),
       ])
       if (!alive) return
       type Raw = { id: string; crop_id: string; season_year: number; planted_acres: number; irrigated_acres: number; field: { name_or_number: string; farm: { name: string } | null } | null }

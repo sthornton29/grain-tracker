@@ -144,14 +144,14 @@ export default function YieldsPage() {
       fetchAllRows((f, t) => supabase.from('loads').select('id, date, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, truck_label, hauler_truck, ticket_number, practice').order('id').range(f, t)),
       supabase.from('counties').select('*').order('state_code').order('name'),
       fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
-      supabase.from('field_planting_varieties').select('*').order('variety'),
+      fetchAllRows((f, t) => supabase.from('field_planting_varieties').select('*').order('variety').order('id').range(f, t)),
       supabase.from('crop_assumptions').select('*'),
       supabase.from('trucks').select('id, name_or_number').order('name_or_number'),
       supabase.from('bins').select('id, name_or_number').order('name_or_number'),
       supabase.from('buyers').select('id, name').order('name'),
       // Combine yield entries (062) — tolerate the table not existing yet
       // (migration pending): error → no entries, the page still works.
-      supabase.from('combine_yield_entries').select('*'),
+      fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('*').order('id').range(f, t)),
     ])
     setEntities((en.data as Entity[]) || [])
     setFarms((fa.data as Farm[]) || [])

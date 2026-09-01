@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
 import { truckDisplay, truckExportLabel } from '@/lib/trucks'
 import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, effectiveContractType, type ContractType, type PricingStatus } from '@/lib/contracts'
@@ -131,10 +132,12 @@ export default async function ContractDetailPage({ params }: { params: { id: str
       const escaped = ticketNumbers.map((t) => `"${t.replace(/"/g, '\\"')}"`).join(',')
       filters.push(`ticket_number.in.(${escaped})`)
     }
-    const { data, error } = await supabase
+    const { data, error } = await fetchAllRows((f, t) => supabase
       .from('settlement_lines')
       .select('load_id, ticket_number, net_bushels, net_revenue')
       .or(filters.join(','))
+      .order('id')
+      .range(f, t))
     if (error) throw error
     lines = (data ?? []) as SettlementLineRow[]
   }

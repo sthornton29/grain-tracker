@@ -201,9 +201,9 @@ export default function MarketingPage() {
   useEffect(() => {
     ;(async () => {
       const [pl, ct, fp, en, fa, fi] = await Promise.all([
-        supabase.from('field_plantings').select('season_year'),
-        supabase.from('contracts').select('crop_year'),
-        supabase.from('futures_positions').select('crop_year'),
+        fetchAllRows((f, t) => supabase.from('field_plantings').select('season_year').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('contracts').select('crop_year').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('futures_positions').select('crop_year').order('id').range(f, t)),
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('id, entity_id'),
         supabase.from('fields').select('id, farm_id, name_or_number'),
@@ -223,7 +223,7 @@ export default function MarketingPage() {
     setLoading(true)
     const [cr, pl, ct, fp, op, ca, ld, sp, gr, cb, ce] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
-      supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, irrigated_bushels, yield_breakout_entered, yield_include_override').eq('season_year', cropYear),
+      fetchAllRows((f, t) => supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, irrigated_bushels, yield_breakout_entered, yield_include_override').eq('season_year', cropYear).order('id').range(f, t)),
       supabase.from('contracts').select('*').eq('crop_year', cropYear),
       supabase.from('futures_positions').select('*').eq('crop_year', cropYear),
       supabase.from('options_positions').select('*').eq('crop_year', cropYear),
@@ -233,7 +233,7 @@ export default function MarketingPage() {
       supabase.from('gin_receipts').select('id, crop_year, bales_count, total_bale_weight, entity_id, farm_id, field_id').eq('crop_year', cropYear),
       fetchAllRows((f, t) => supabase.from('cotton_bales').select('gin_receipt_id, net_weight_lbs').eq('crop_year', cropYear).order('id').range(f, t)),
       // May not exist yet (migration 062): an error leaves data null → [].
-      supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date').eq('crop_year', cropYear),
+      fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date').eq('crop_year', cropYear).order('id').range(f, t)),
     ])
     setCrops((cr.data as Crop[]) ?? [])
     setPlantings((pl.data as PlantingRow[]) ?? [])

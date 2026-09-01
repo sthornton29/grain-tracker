@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import {
   buildVarietyMergePlan,
   dismissalKey,
@@ -57,8 +58,8 @@ export default function VarietiesPage() {
   async function refresh() {
     const [cr, pl, vv, dm] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
-      supabase.from('field_plantings').select('id, crop_id, season_year'),
-      supabase.from('field_planting_varieties').select('*'),
+      fetchAllRows((f, t) => supabase.from('field_plantings').select('id, crop_id, season_year').order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('field_planting_varieties').select('*').order('id').range(f, t)),
       supabase.from('variety_match_dismissals').select('*'),
     ])
     const firstErr = cr.error ?? pl.error ?? vv.error

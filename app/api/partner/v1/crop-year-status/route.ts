@@ -111,12 +111,19 @@ export async function GET(req: NextRequest) {
     // Combine entries (062) net against weighed loads. A missing table (062
     // not applied yet) degrades to none — same pattern as sales status below.
     let combineEntries: CombineEntryRow[] = []
-    const combineResult = await supabase
-      .from('combine_yield_entries')
-      .select('field_id, crop_id, crop_year, adjusted_total_bushels, updated_at')
-      .eq('org_id', org)
-      .eq('crop_year', year)
-    if (!combineResult.error) combineEntries = (combineResult.data ?? []) as CombineEntryRow[]
+    try {
+      combineEntries = await fetchAll<CombineEntryRow>((f, t) =>
+        supabase
+          .from('combine_yield_entries')
+          .select('field_id, crop_id, crop_year, adjusted_total_bushels, updated_at')
+          .eq('org_id', org)
+          .eq('crop_year', year)
+          .order('id')
+          .range(f, t),
+      )
+    } catch {
+      // Missing table (062 not applied yet) degrades to none.
+    }
 
     // The manual flag lives in crop_year_sales_status (migration 050). A
     // missing table gets an actionable message instead of a bare 42P01.

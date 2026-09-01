@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
 import { relinkSettlementLines } from '@/lib/settlement-link'
 import SettlementPdfPanel from '@/components/settlement-pdf-panel'
@@ -114,7 +115,7 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
     if (t) settledTicketKeys.add(t)
   }
 
-  const { data: buyerLoads } = await supabase
+  const { data: buyerLoads } = await fetchAllRows((f, t) => supabase
     .from('loads')
     .select(`
       id, date, ticket_number, net_weight, moisture, dry_bushels_override, contract_id, to_buyer_id,
@@ -123,6 +124,8 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
     `)
     .eq('to_buyer_id', settlement.buyer_id)
     .eq('to_type', 'buyer')
+    .order('id')
+    .range(f, t))
   const allBuyerLoads = (buyerLoads as unknown as LoadShape[]) ?? []
 
   // After the relink above, a line's load_id is persisted for every unambiguous

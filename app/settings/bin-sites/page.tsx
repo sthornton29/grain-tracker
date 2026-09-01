@@ -82,7 +82,7 @@ export default function BinSitesPage() {
       supabase.from('entity_counties').select('*'),
       supabase.from('crops').select('*').order('name'),
       fetchAllRows((f, t) => supabase.from('loads').select('net_weight, moisture, crop_id, dry_bushels_override, from_type, from_bin_id, to_type, to_bin_id').order('id').range(f, t)),
-      supabase.from('bin_inventory_adjustments').select('*').lte('as_of_date', today),
+      fetchAllRows((f, t) => supabase.from('bin_inventory_adjustments').select('*').lte('as_of_date', today).order('id').range(f, t)),
     ])
     setSites((si.data as BinSite[]) || [])
     setBins((bi.data as Bin[]) || [])

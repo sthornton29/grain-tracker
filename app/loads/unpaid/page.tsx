@@ -44,7 +44,7 @@ export default async function UnpaidLoadsPage({
       .order('id')
       .range(f, t)),
     fetchAllRows((f, t) => supabase.from('settlement_lines').select('ticket_number, load_id').order('id').range(f, t)),
-    supabase.from('field_plantings').select('season_year'),
+    fetchAllRows((f, t) => supabase.from('field_plantings').select('season_year').order('id').range(f, t)),
   ])
 
   const loads = (loadsRes.data as unknown as Row[]) ?? []

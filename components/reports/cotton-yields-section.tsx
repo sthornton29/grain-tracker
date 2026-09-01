@@ -41,7 +41,7 @@ export default function CottonYieldsSection({ year, entityId = '' }: { year: num
         fetchAllRows((f, t) => supabase.from('gin_receipt_loads').select('cotton_load_id').order('id').range(f, t)),
         supabase.from('farms').select('*'),
         supabase.from('fields').select('*'),
-        supabase.from('field_plantings').select('*'),
+        fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
         supabase.from('crops').select('*'),
       ])
       setLoads((l.data as CottonLoad[]) || [])

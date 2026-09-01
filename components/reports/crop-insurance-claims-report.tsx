@@ -145,7 +145,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         supabase.from('county_yield_assumptions').select('*'),
         fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels, practice').order('id').range(f, t)),
         // May not exist yet (migration 062): an error leaves data null → [].
-        supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
+        fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date').order('id').range(f, t)),
       ])
       setCrops((cr.data as Crop[]) || [])
       setCounties((co.data as County[]) || [])
@@ -289,8 +289,8 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         return m
       })
       // Pick up the rows the route just mirrored.
-      const { data: est } = await supabase
-        .from('harvest_price_estimates').select('*').order('price_date', { ascending: false })
+      const { data: est } = await fetchAllRows((f, t) => supabase
+        .from('harvest_price_estimates').select('*').order('price_date', { ascending: false }).order('id').range(f, t))
       if (est) setPriceEstimates(est as HarvestPriceEstimate[])
     } catch {
       /* RMA unreachable — the tiering falls back to the estimate; prior chips stay */

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import {
   COMMODITIES,
   type Commodity,
@@ -52,10 +53,10 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
   useEffect(() => {
     ;(async () => {
       const [pos, ent, mp, opt] = await Promise.all([
-        supabase.from('futures_positions').select('*').order('trade_date', { ascending: false }),
+        fetchAllRows((f, t) => supabase.from('futures_positions').select('*').order('trade_date', { ascending: false }).order('id').range(f, t)),
         supabase.from('entities').select('*').order('name'),
         supabase.from('market_prices').select('contract_symbol, price, price_date').order('price_date', { ascending: false }),
-        supabase.from('options_positions').select('*').order('trade_date', { ascending: false }),
+        fetchAllRows((f, t) => supabase.from('options_positions').select('*').order('trade_date', { ascending: false }).order('id').range(f, t)),
       ])
       setPositions((pos.data as FuturesPosition[]) ?? [])
       setOptions((opt.data as OptionPosition[]) ?? [])
@@ -85,7 +86,7 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
     let cancelled = false
     ;(async () => {
       const [pl, cr, fa, fi] = await Promise.all([
-        supabase.from('field_plantings').select('field_id, crop_id, season_year, planted_acres'),
+        fetchAllRows((f, t) => supabase.from('field_plantings').select('field_id, crop_id, season_year, planted_acres').order('id').range(f, t)),
         supabase.from('crops').select('*'),
         supabase.from('farms').select('id, entity_id'),
         supabase.from('fields').select('id, farm_id'),

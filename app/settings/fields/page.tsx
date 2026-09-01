@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import CsvImport from '@/components/csv-import'
 import { fieldsImportConfig } from '@/lib/import-configs'
 import SettingsDocImport from '@/components/settings-doc-import'
@@ -66,7 +67,7 @@ export default function FieldsPage() {
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('crops').select('*').order('name'),
-      supabase.from('field_plantings').select('*').order('season_year', { ascending: false }),
+      fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('season_year', { ascending: false }).order('id').range(f, t)),
       supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('entity_counties').select('*'),
     ])

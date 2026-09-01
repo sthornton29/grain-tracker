@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
@@ -87,13 +88,13 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
         supabase.from('farms').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('crops').select('*').order('name'),
-        supabase.from('field_plantings').select('*'),
+        fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
         supabase.from('covered_commodities').select('*').order('name'),
         supabase.from('farm_base_acres').select('*'),
         supabase.from('arc_plc_elections').select('*'),
         supabase.from('arc_plc_price_data').select('*'),
-        supabase.from('arc_plc_payments').select('*'),
-        supabase.from('other_government_payments').select('*'),
+        fetchAllRows((f, t) => supabase.from('arc_plc_payments').select('*').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('other_government_payments').select('*').order('id').range(f, t)),
         supabase.from('program_year_config').select('*'),
         fetchAllCounties(supabase),
         supabase.from('arc_benchmark_data').select('*'),

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import {
   ContractFields,
@@ -41,7 +42,7 @@ export default function EditContractPage() {
         supabase.from('crops').select('*').order('name'),
         supabase.from('delivery_locations').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
-        supabase.from('field_plantings').select('season_year'),
+        fetchAllRows((f, t) => supabase.from('field_plantings').select('season_year').order('id').range(f, t)),
       ])
       if (cancelled) return
       if (c.error || !c.data) { setErr(c.error?.message ?? 'Contract not found'); return }

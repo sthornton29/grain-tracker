@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import CsvImport from '@/components/csv-import'
 import { contractsImportConfig } from '@/lib/import-configs'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
@@ -78,10 +79,10 @@ export default function ContractsSettingsPage() {
     const [b, c, k, l, en, pl] = await Promise.all([
       supabase.from('buyers').select('*').order('name'),
       supabase.from('crops').select('*').order('name'),
-      supabase.from('contracts').select('*').order('contract_number'),
+      fetchAllRows((f, t) => supabase.from('contracts').select('*').order('contract_number').order('id').range(f, t)),
       supabase.from('delivery_locations').select('*').order('name'),
       supabase.from('entities').select('*').order('name'),
-      supabase.from('field_plantings').select('season_year'),
+      fetchAllRows((f, t) => supabase.from('field_plantings').select('season_year').order('id').range(f, t)),
     ])
     setBuyers((b.data as Buyer[]) || [])
     setCrops((c.data as Crop[]) || [])

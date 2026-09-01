@@ -212,18 +212,26 @@ export function serviceClientMissingResponse(): NextResponse {
 
 // Pages through a query 1,000 rows at a time. Callers build the query inside
 // the factory (a PostgREST builder is single-use) and MUST include a stable
-// .order(...) for deterministic paging.
+// .order(...) for deterministic paging. Termination is CAP-AGNOSTIC (the
+// lib/fetch-all-rows rule): a short page proves exhaustion only once the
+// server has filled a page; before that the loop probes on from the received
+// count, so a db-max-rows below 1,000 slows the read but can never silently
+// truncate it.
 export async function fetchAll<T>(
   page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
 ): Promise<T[]> {
   const size = 1000
   const out: T[] = []
-  for (let from = 0; ; from += size) {
+  let sawFullPage = false
+  for (;;) {
+    const from = out.length
     const { data, error } = await page(from, from + size - 1)
     if (error) throw new Error(error.message)
     const rows = data ?? []
     out.push(...rows)
-    if (rows.length < size) break
+    if (rows.length === 0) break
+    if (rows.length >= size) { sawFullPage = true; continue }
+    if (sawFullPage) break
   }
   return out
 }

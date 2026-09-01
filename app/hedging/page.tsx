@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import PositionForm from '@/components/hedging/position-form'
 import ClosePositionDialog from '@/components/hedging/close-position-dialog'
 import OptionForm from '@/components/hedging/option-form'
@@ -127,9 +128,9 @@ export default function HedgingPage() {
 
   const loadAll = useCallback(async () => {
     const [pos, ent, opt] = await Promise.all([
-      supabase.from('futures_positions').select('*').order('trade_date', { ascending: false }),
+      fetchAllRows((f, t) => supabase.from('futures_positions').select('*').order('trade_date', { ascending: false }).order('id').range(f, t)),
       supabase.from('entities').select('*').order('name'),
-      supabase.from('options_positions').select('*').order('trade_date', { ascending: false }),
+      fetchAllRows((f, t) => supabase.from('options_positions').select('*').order('trade_date', { ascending: false }).order('id').range(f, t)),
     ])
     const list = (pos.data as FuturesPosition[]) ?? []
     const optList = (opt.data as OptionPosition[]) ?? []

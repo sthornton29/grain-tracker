@@ -33,6 +33,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { formatCottonPrice, parseCottonPriceInput, fmtPrice } from '@/lib/hedging'
 import {
@@ -219,9 +220,9 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
       supabase.from('budget_scenarios').select('*').order('created_at'),
       supabase.from('budget_lines').select('*').order('sort_order'),
       supabase.from('crops').select('*').order('name'),
-      supabase.from('crop_insurance_policies').select('*'),
+      fetchAllRows((f, t) => supabase.from('crop_insurance_policies').select('*').order('id').range(f, t)),
       supabase.from('crop_assumptions').select('*'),
-      supabase.from('field_plantings').select('*'),
+      fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
       supabase.from('fields').select('total_acres'),
     ])
     if (sc.error?.message.includes('does not exist') || sc.error?.code === '42P01') {

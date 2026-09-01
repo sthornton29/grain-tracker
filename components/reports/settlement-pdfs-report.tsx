@@ -15,6 +15,7 @@
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import ExportBar from '@/components/export-bar'
 import type { ExportPayload } from '@/lib/exports'
@@ -79,8 +80,8 @@ export default function SettlementPdfsReport() {
     ;(async () => {
       const [cr, pl, st] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
-        supabase.from('field_plantings').select('season_year'),
-        supabase
+        fetchAllRows((f, t) => supabase.from('field_plantings').select('season_year').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase
           .from('settlements')
           .select(`
             id, settlement_date, settlement_number, source_pdf_url,
@@ -89,7 +90,9 @@ export default function SettlementPdfsReport() {
               load:loads(crop_id, crop_year)
             )
           `)
-          .order('settlement_date', { ascending: false }),
+          .order('settlement_date', { ascending: false })
+          .order('id')
+          .range(f, t)),
       ])
       setCrops((cr.data as Crop[]) || [])
       setPlantings(((pl.data as Pick<FieldPlanting, 'season_year'>[]) || []) as FieldPlanting[])

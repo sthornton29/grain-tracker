@@ -14,6 +14,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { fetchAllCounties } from '@/lib/counties'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
@@ -70,12 +71,12 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
       supabase.from('farms').select('*').order('name'),
       supabase.from('entities').select('*').order('name'),
       fetchAllCounties(supabase),
-      supabase.from('field_plantings').select('*'),
+      fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
       supabase.from('covered_commodities').select('*').order('name'),
       supabase.from('farm_base_acres').select('*'),
       supabase.from('arc_plc_elections').select('*'),
       supabase.from('arc_plc_price_data').select('*'),
-      supabase.from('arc_plc_payments').select('*'),
+      fetchAllRows((f, t) => supabase.from('arc_plc_payments').select('*').order('id').range(f, t)),
       supabase.from('arc_benchmark_data').select('*'),
       supabase.from('mya_monthly_prices').select('*'),
       supabase.from('program_year_config').select('*'),

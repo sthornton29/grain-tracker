@@ -34,7 +34,7 @@ export default function CottonBalesPage() {
     const [b, g, r, f, fl] = await Promise.all([
       fetchAllRows((f, t) => supabase.from('cotton_bales').select('*').order('pbi_number').order('id').range(f, t)),
       fetchAllRows((f, t) => supabase.from('cotton_bale_grades').select('*').order('id').range(f, t)),
-      supabase.from('gin_receipts').select('*'),
+      fetchAllRows((f, t) => supabase.from('gin_receipts').select('*').order('id').range(f, t)),
       supabase.from('farms').select('*'),
       supabase.from('fields').select('*'),
     ])
