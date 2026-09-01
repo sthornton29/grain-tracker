@@ -13,9 +13,10 @@ import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import ExportBar from '@/components/export-bar'
 import {
-  YieldRowDetail, useCottonDetailData, buildDetailForPlantings, cottonDetailsByYear,
-  grainDetailExportSection, cottonDetailExportSection,
+  YieldRowDetail, VarietyRowDetail, useCottonDetailData, buildDetailForPlantings, cottonDetailsByYear,
+  grainDetailExportSection, cottonDetailExportSection, varietyDetailExportSections,
 } from '@/components/yields-detail'
+import { attributeVarietyBushels, type VarietyPlantingPart } from '@/lib/variety-yields'
 import type { ExportColumn, ExportPayload, ExportSection } from '@/lib/exports'
 import type { CombineYieldEntry, Crop, CropAssumption, Entity, Farm, Field, FieldPlanting, FieldPlantingVariety, County, LoadSplit } from '@/lib/types'
 
@@ -209,6 +210,15 @@ export default function YieldsPage() {
     binNameById: new Map(bins.map((b) => [b.id, b.name_or_number])),
     buyerNameById: new Map(buyers.map((b) => [b.id, b.name])),
   }), [fields, trucks, bins, buyers])
+  // Field → farm name, for the variety drill-down's per-field breakdown.
+  const farmNameByField = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const f of fields) {
+      const farm = f.farm_id ? farmById.get(f.farm_id) : null
+      if (farm) m.set(f.id, farm.name)
+    }
+    return m
+  }, [fields, farmById])
 
   const varietiesByPlanting = useMemo(() => {
     const m = new Map<string, FieldPlantingVariety[]>()
@@ -672,47 +682,40 @@ export default function YieldsPage() {
     acres: number
     dryBu: number
     plantings: number
+    /** The per-planting attributions behind the numbers — the drill-down
+     *  renders exactly these, so it provably sums to the row. */
+    parts: VarietyPlantingPart[]
+    /** Any part estimated by acre share (unallocated multi-variety planting). */
+    anyAcreShare: boolean
   }
 
-  // Variety aggregation:
-  //   - 0 varieties on a planting: excluded (no way to attribute the bushels)
-  //   - 1 variety: all of the planting's dry bushels go to that variety; acres
-  //     come from the variety row (falling back to planted_acres when the user
-  //     left variety acres at 0)
-  //   - 2+ varieties: ignored unless the user has manually allocated bushels
-  //     to every variety row on that planting
+  // Variety aggregation — every planting routes through THE attribution seam
+  // (lib/variety-yields attributeVarietyBushels):
+  //   - 0 varieties: excluded (no way to attribute the bushels)
+  //   - 1 variety ('whole'): all of the planting's dry bushels
+  //   - 2+ with a full manual allocation ('allocated'): the user's bushels
+  //   - 2+ unallocated ('acre_share'): estimated by acre share — badged as an
+  //     estimate until allocated; with no variety acres recorded, excluded.
   const varietyAgg = useMemo<VarietyAgg[]>(() => {
     const m = new Map<string, VarietyAgg>()
-    const bump = (key: string, init: VarietyAgg) => {
-      const existing = m.get(key)
-      if (existing) {
-        existing.acres += init.acres
-        existing.dryBu += init.dryBu
-        existing.plantings += 1
-      } else {
-        m.set(key, init)
-      }
-    }
     for (const p of includedPlantings) {
       const vs = varietiesByPlanting.get(p.id) ?? []
-      if (vs.length === 0) continue
       const dryBu = dryBuFor(p.field_id, p.crop_id, p.season_year)
       const cropName = cropById.get(p.crop_id)?.name ?? '—'
-      const planted = Number(p.planted_acres) || 0
-      if (vs.length === 1) {
-        const v = vs[0]
-        const acres = Number(v.acres) > 0 ? Number(v.acres) : planted
-        bump(`${cropName}|${v.variety}|${p.season_year}`, {
-          cropName, variety: v.variety, seasonYear: p.season_year, acres, dryBu, plantings: 1,
-        })
-      } else {
-        const allAllocated = vs.every((v) => v.bushels != null)
-        if (!allAllocated) continue
-        for (const v of vs) {
-          const bu = Number(v.bushels) || 0
-          const acres = Number(v.acres) || 0
-          bump(`${cropName}|${v.variety}|${p.season_year}`, {
-            cropName, variety: v.variety, seasonYear: p.season_year, acres, dryBu: bu, plantings: 1,
+      for (const part of attributeVarietyBushels({ planting: p, varieties: vs, dryBu })) {
+        const key = `${cropName}|${part.variety}|${part.seasonYear}`
+        const existing = m.get(key)
+        if (existing) {
+          existing.acres += part.varietyAcres
+          existing.dryBu += part.dryBu
+          existing.plantings += 1
+          existing.parts.push(part)
+          existing.anyAcreShare = existing.anyAcreShare || part.basis === 'acre_share'
+        } else {
+          m.set(key, {
+            cropName, variety: part.variety, seasonYear: part.seasonYear,
+            acres: part.varietyAcres, dryBu: part.dryBu, plantings: 1,
+            parts: [part], anyAcreShare: part.basis === 'acre_share',
           })
         }
       }
@@ -725,6 +728,8 @@ export default function YieldsPage() {
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [includedPlantings, varietiesByPlanting, aggByKey, cropById])
+
+  const varietyRowKey = (r: VarietyAgg) => `${r.cropName}|${r.variety}|${r.seasonYear}`
 
   // Multi-variety plantings in the current filter — but only once their field's
   // harvest is COMPLETE. A still-harvesting field has no final bushels to
@@ -869,6 +874,7 @@ export default function YieldsPage() {
       { label: 'Acres', align: 'right', format: 'acres' },
       { label: 'Yield (bu/ac)', align: 'right', format: 'yield' },
       { label: 'Dry bu', align: 'right', format: 'bu' },
+      { label: 'Note' },
     ]
     const rows = varietyAgg.map((r) => {
       const yld = r.acres > 0 ? r.dryBu / r.acres : null
@@ -880,9 +886,31 @@ export default function YieldsPage() {
         r.acres,
         yld ?? '',
         r.dryBu,
+        r.anyAcreShare ? 'incl. acre-share est.' : '',
       ]
     })
-    return { title: 'Yields by Variety', filters: fieldFiltersLabel(), sections: [{ columns, rows }] }
+    const sections: ExportSection[] = [{ columns, rows }]
+    // An open drill-down exports its variety detail sheets (per-field
+    // attribution + the constituent loads) through the shared layer.
+    if (openDetail?.view === 'variety') {
+      const r = varietyAgg.find((x) => varietyRowKey(x) === openDetail.key)
+      if (r) {
+        const title = `Variety Detail — ${r.variety} · ${r.cropName} · ${r.seasonYear}`
+        if (isCottonCrop(r.cropName)) {
+          if (cottonDetail.data) {
+            const refs = r.parts.map((p) => ({ field_id: p.fieldId, crop_id: p.cropId, season_year: p.seasonYear, planted_acres: p.varietyAcres }))
+            const details = cottonDetailsByYear(refs, cottonDetail.data)
+            sections.push(cottonDetailExportSection({ title, details, showYear: details.length > 1 }))
+          }
+        } else {
+          sections.push(...varietyDetailExportSections({
+            title, parts: r.parts, loads, splits, cropById,
+            lookups: detailLookups, farmNameByField, combineEntries,
+          }))
+        }
+      }
+    }
+    return { title: 'Yields by Variety', filters: fieldFiltersLabel(), sections }
   }
 
   function openBreakout(p: FieldPlanting) {
@@ -1074,8 +1102,8 @@ export default function YieldsPage() {
   // Entity: chevron + Crop/Acres/Dry bu/Yield = 5 (+Year), plus 4 in breakdown.
   const entityColCount = 5 + (showEntityYear ? 1 : 0) + (entityShowBreakdown ? 4 : 0)
   const multiVarColCount = 6 + (showMultiVarYear ? 1 : 0)
-  // Variety rollup: Crop/Variety/Plantings/Acres/Dry bu/Yield = 6 (+Year).
-  const varietyColCount = 6 + (showVarietyYear ? 1 : 0)
+  // Variety rollup: expander + Crop/Variety/Plantings/Acres/Yield/Dry bu = 7 (+Year).
+  const varietyColCount = 7 + (showVarietyYear ? 1 : 0)
 
   return (
     <div className="space-y-4">
@@ -1121,7 +1149,7 @@ export default function YieldsPage() {
               ? 'Plantings rolled up to farm × crop × season. Dry bushels divided by planted acres.'
               : view === 'entity'
                 ? 'Plantings rolled up to entity × crop × season, across every farm that belongs to the entity. Dry bushels divided by planted acres.'
-                : 'Bushels rolled up by crop × variety × season. Single-variety plantings are attributed automatically; multi-variety plantings only count once you allocate bushels to each variety.'}
+                : 'Bushels rolled up by crop × variety × season. Single-variety plantings are attributed automatically; a multi-variety planting uses your per-variety bushel allocation, or an acre-share estimate (badged "acre-share est.") until you allocate. Tap a row for its fields and loads.'}
         </p>
       )}
 
@@ -1341,6 +1369,7 @@ export default function YieldsPage() {
             <table className="min-w-full text-sm">
               <thead className="bg-slate-100 text-slate-700">
                 <tr>
+                  <th className="w-6 px-2 py-2"></th>
                   <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
                   <th className="text-left px-3 py-2 whitespace-nowrap">Variety</th>
                   {showVarietyYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
@@ -1357,18 +1386,51 @@ export default function YieldsPage() {
                     No varieties recorded for these filters. Add varieties on the Plantings page, or allocate bushels on any multi-variety plantings above.
                   </td></tr>
                 )}
-                {varietyAgg.map((r, i) => {
+                {varietyAgg.map((r) => {
                   const yld = r.acres > 0 ? r.dryBu / r.acres : null
+                  const rowKey = varietyRowKey(r)
+                  const detailOpen = openDetail?.view === 'variety' && openDetail.key === rowKey
                   return (
-                    <tr key={i} className="border-t border-slate-100">
-                      <td className="px-3 py-2">{r.cropName}</td>
-                      <td className="px-3 py-2 font-semibold">{r.variety}</td>
-                      {showVarietyYear && <td className="px-3 py-2">{r.seasonYear}</td>}
-                      <td className="px-3 py-2 text-right">{r.plantings}</td>
-                      <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
-                      <td className="px-3 py-2 text-right font-semibold">{yld != null ? yld.toFixed(1) : '—'}</td>
-                      <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
-                    </tr>
+                    <Fragment key={rowKey}>
+                      <tr
+                        className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+                        onClick={(e) => { if (rowClickIsOnControl(e)) return; toggleDetail('variety', rowKey, r.cropName) }}
+                      >
+                        <td className="px-2 py-2 text-slate-400">{detailOpen ? '▾' : '▸'}</td>
+                        <td className="px-3 py-2">{r.cropName}</td>
+                        <td className="px-3 py-2 font-semibold">{r.variety}</td>
+                        {showVarietyYear && <td className="px-3 py-2">{r.seasonYear}</td>}
+                        <td className="px-3 py-2 text-right">{r.plantings}</td>
+                        <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
+                        <td className="px-3 py-2 text-right font-semibold">{yld != null ? yld.toFixed(1) : '—'}</td>
+                        <td className="px-3 py-2 text-right">
+                          {fmtNum(r.dryBu)}
+                          {r.anyAcreShare && (
+                            <span
+                              className="ml-1.5 text-xs rounded px-1.5 py-0.5 bg-amber-100 text-amber-800 whitespace-nowrap"
+                              title="Includes bushels estimated by each variety's share of the acres on a multi-variety field — allocate bushels on the planting to replace the estimate"
+                            >acre-share est.</span>
+                          )}
+                        </td>
+                      </tr>
+                      {detailOpen && (
+                        <tr className="bg-slate-50">
+                          <td colSpan={varietyColCount} className="px-3 py-3">
+                            <VarietyRowDetail
+                              parts={r.parts}
+                              loads={loads}
+                              splits={splits}
+                              cropById={cropById}
+                              lookups={detailLookups}
+                              farmNameByField={farmNameByField}
+                              allowLoadLinks={allowLoadLinks}
+                              combineEntries={combineEntries}
+                              cotton={isCottonCrop(r.cropName) ? cottonDetail : null}
+                            />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   )
                 })}
               </tbody>

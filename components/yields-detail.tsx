@@ -21,6 +21,10 @@ import {
   type CombineDetailRow,
 } from '@/lib/yield-detail'
 import { combineNegativeNetMessage, type CombineEntryLike } from '@/lib/yields'
+import {
+  summarizeVarietyDetail, varietyShareOfField, VARIETY_BASIS_LABEL,
+  type VarietyFieldDetailInput, type VarietyPlantingPart,
+} from '@/lib/variety-yields'
 import { formatCottonPrice } from '@/lib/hedging'
 import type { ExportSection } from '@/lib/exports'
 import type { createClient } from '@/lib/supabase/client'
@@ -678,6 +682,267 @@ export function YieldRowDetail({
       )}
     </div>
   )
+}
+
+// ---------------------------------------------------------------------------
+// Variety drill-down — the hierarchy is variety → fields → loads. Each field
+// row shows the acres of THIS variety on that field and the bushels the
+// attribution seam (lib/variety-yields) assigned it, badged with the basis
+// on multi-variety fields ("allocated" / "acre-share est."); the numbers come
+// from the SAME parts the variety row summed, so the detail provably foots.
+// ---------------------------------------------------------------------------
+
+function basisBadge(basis: VarietyPlantingPart['basis']): ReactNode {
+  const label = VARIETY_BASIS_LABEL[basis]
+  if (!label) return null
+  const cls = basis === 'acre_share' ? 'bg-amber-100 text-amber-800' : 'bg-sky-100 text-sky-800'
+  return <span className={`ml-1.5 text-xs rounded px-1.5 py-0.5 whitespace-nowrap ${cls}`}>{label}</span>
+}
+
+type VarietyFieldRow = {
+  part: VarietyPlantingPart
+  fieldName: string
+  farmName: string | null
+  detail: ReturnType<typeof buildDetailForPlantings>
+}
+
+function buildVarietyFieldRows(args: {
+  parts: readonly VarietyPlantingPart[]
+  loads: readonly DetailLoadLike[]
+  splits: readonly DetailSplitLike[]
+  cropById: Map<string, DetailCropLike>
+  combineEntries?: readonly CombineEntryLike[] | null
+  lookups: DetailLookups
+  farmNameByField?: Map<string, string>
+}): VarietyFieldRow[] {
+  return args.parts
+    .map((part) => ({
+      part,
+      fieldName: args.lookups.fieldNameById.get(part.fieldId) ?? '—',
+      farmName: args.farmNameByField?.get(part.fieldId) ?? null,
+      detail: buildDetailForPlantings({
+        plantings: [{ field_id: part.fieldId, crop_id: part.cropId, season_year: part.seasonYear, planted_acres: part.varietyAcres }],
+        loads: args.loads,
+        splits: args.splits,
+        cropById: args.cropById,
+        combineEntries: args.combineEntries,
+      }),
+    }))
+    .sort((a, b) => {
+      if (a.part.seasonYear !== b.part.seasonYear) return b.part.seasonYear - a.part.seasonYear
+      return a.fieldName.localeCompare(b.fieldName)
+    })
+}
+
+function VarietySummaryStrip({ s }: { s: ReturnType<typeof summarizeVarietyDetail> }) {
+  const window =
+    s.firstLoadDate && s.lastLoadDate
+      ? s.firstLoadDate === s.lastLoadDate
+        ? fmtDate(s.firstLoadDate)
+        : `${fmtDate(s.firstLoadDate)} — ${fmtDate(s.lastLoadDate)}`
+      : null
+  const parts: string[] = []
+  if (s.toBinsPct != null && s.toBinsPct > 0) parts.push(`${Math.round(s.toBinsPct)}% to bins`)
+  if (s.toBuyersPct != null && s.toBuyersPct > 0) parts.push(`${Math.round(s.toBuyersPct)}% sold`)
+  return (
+    <div className="flex flex-wrap gap-2">
+      <Stat label="Acres" value={fmtNum(s.varietyAcres, 1)} />
+      <Stat label="Loads" value={String(s.loadCount)} />
+      <Stat label="Dry bu" value={fmtNum(s.dryBu)} />
+      <Stat label="Yield (bu/ac)" value={s.yieldPerAcre != null ? s.yieldPerAcre.toFixed(1) : '—'} />
+      <Stat label="Moisture (wtd)" value={s.weightedMoisture != null ? `${s.weightedMoisture.toFixed(1)}%` : '—'} />
+      {s.weightedTestWeight != null && <Stat label="Test wt (wtd)" value={s.weightedTestWeight.toFixed(1)} />}
+      {window && <Stat label="Harvest window" value={window} />}
+      {parts.length > 0 && <Stat label="Where it went" value={parts.join(' · ')} />}
+    </div>
+  )
+}
+
+export function VarietyRowDetail({
+  parts,
+  loads,
+  splits,
+  cropById,
+  lookups,
+  farmNameByField,
+  allowLoadLinks,
+  cotton,
+  combineEntries,
+}: {
+  /** The row's per-planting attributions — the SAME parts its numbers summed. */
+  parts: readonly VarietyPlantingPart[]
+  loads: readonly DetailLoadLike[]
+  splits: readonly DetailSplitLike[]
+  cropById: Map<string, DetailCropLike>
+  lookups: DetailLookups
+  farmNameByField?: Map<string, string>
+  allowLoadLinks: boolean
+  /** Pass the shared cotton state when this variety's crop is cotton. */
+  cotton?: CottonDetailState | null
+  combineEntries?: readonly CombineEntryLike[] | null
+}) {
+  const rows = useMemo(
+    () => buildVarietyFieldRows({ parts, loads, splits, cropById, combineEntries, lookups, farmNameByField }),
+    [parts, loads, splits, cropById, combineEntries, lookups, farmNameByField],
+  )
+  const summary = useMemo(
+    () =>
+      summarizeVarietyDetail(
+        rows.map((r): VarietyFieldDetailInput => ({ part: r.part, fieldSummary: r.detail.summary, loads: r.detail.loads })),
+      ),
+    [rows],
+  )
+  const [openField, setOpenField] = useState<string | null>(null)
+  const showYear = new Set(rows.map((r) => r.part.seasonYear)).size > 1
+  const showFarm = rows.some((r) => r.farmName != null)
+  const colCount = 7 + (showYear ? 1 : 0) + (showFarm ? 1 : 0)
+
+  if (cotton) {
+    // Cotton varieties speak in gin receipts / bales / lbs — the same cotton
+    // path the other tabs' drill-downs use, scoped to this variety's fields.
+    const refs: DetailPlantingRef[] = parts.map((p) => ({
+      field_id: p.fieldId, crop_id: p.cropId, season_year: p.seasonYear, planted_acres: p.varietyAcres,
+    }))
+    return (
+      <div className="space-y-2 text-left">
+        <CottonDetail plantings={refs} cotton={cotton} lookups={lookups} perFieldBreakdown />
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2 text-left">
+      <VarietySummaryStrip s={summary} />
+      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+        <table className="min-w-full text-sm">
+          <thead className="bg-slate-50 text-slate-700">
+            <tr>
+              <th className="w-6 px-2 py-2"></th>
+              <th className="text-left px-3 py-2 whitespace-nowrap">Field</th>
+              {showFarm && <th className="text-left px-3 py-2 whitespace-nowrap">Farm</th>}
+              {showYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
+              <th className="text-right px-3 py-2 whitespace-nowrap">Variety acres</th>
+              <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
+              <th className="text-right px-3 py-2 whitespace-nowrap">Yield (bu/ac)</th>
+              <th className="text-right px-3 py-2 whitespace-nowrap">Moisture (wtd)</th>
+              <th className="text-right px-3 py-2 whitespace-nowrap">Loads</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const key = r.part.plantingId
+              const isOpen = openField === key
+              const share = varietyShareOfField(r.part, r.detail.summary)
+              const yld = r.part.varietyAcres > 0 ? r.part.dryBu / r.part.varietyAcres : null
+              return (
+                <Fragment key={key}>
+                  <tr
+                    className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+                    onClick={(e) => {
+                      if ((e.target as HTMLElement).closest('button, a')) return
+                      setOpenField(isOpen ? null : key)
+                    }}
+                  >
+                    <td className="px-2 py-2 text-slate-400">{isOpen ? '▾' : '▸'}</td>
+                    <td className="px-3 py-2 font-medium">{r.fieldName}</td>
+                    {showFarm && <td className="px-3 py-2">{r.farmName ?? '—'}</td>}
+                    {showYear && <td className="px-3 py-2">{r.part.seasonYear}</td>}
+                    <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.part.varietyAcres, 1)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {fmtNum(r.part.dryBu)}
+                      {basisBadge(r.part.basis)}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums font-semibold">{yld != null ? yld.toFixed(1) : '—'}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {r.detail.summary.weightedMoisture != null ? `${r.detail.summary.weightedMoisture.toFixed(1)}%` : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">{r.detail.summary.loadCount}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr className="bg-slate-50">
+                      <td colSpan={colCount} className="px-3 py-3 space-y-2">
+                        {r.part.basis !== 'whole' && share < 1 && (
+                          <p className="text-xs text-slate-500">
+                            Showing every load off this field — {fmtNum(r.part.dryBu)} of{' '}
+                            {fmtNum(r.detail.summary.fieldProductionDryBu)} bu are attributed to this variety
+                            ({VARIETY_BASIS_LABEL[r.part.basis]}).
+                          </p>
+                        )}
+                        <CombineEntryBanner rows={r.detail.combineRows} lookups={lookups} />
+                        {r.detail.loads.length === 0 ? (
+                          r.detail.combineRows.length === 0 && (
+                            <p className="text-sm text-slate-500">No loads recorded yet for this field.</p>
+                          )
+                        ) : (
+                          <LoadTable rows={r.detail.loads} lookups={lookups} allowLoadLinks={allowLoadLinks} />
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+/** Export sections for an open variety drill-down: the per-field attribution
+ *  sheet, then the constituent fields' load detail (shared layer). */
+export function varietyDetailExportSections(args: {
+  title: string
+  parts: readonly VarietyPlantingPart[]
+  loads: readonly DetailLoadLike[]
+  splits: readonly DetailSplitLike[]
+  cropById: Map<string, DetailCropLike>
+  lookups: DetailLookups
+  farmNameByField?: Map<string, string>
+  combineEntries?: readonly CombineEntryLike[] | null
+}): ExportSection[] {
+  const rows = buildVarietyFieldRows(args)
+  const fieldSection: ExportSection = {
+    title: args.title,
+    columns: [
+      { label: 'Field' },
+      { label: 'Farm' },
+      { label: 'Year', format: 'text' },
+      { label: 'Variety acres', align: 'right', format: 'acres' },
+      { label: 'Dry bu', align: 'right', format: 'bu' },
+      { label: 'Yield (bu/ac)', align: 'right', format: 'yield' },
+      { label: 'Moisture (wtd)', align: 'right', format: 'dec1' },
+      { label: 'Loads', align: 'right', format: 'int' },
+      { label: 'Attribution' },
+    ],
+    rows: rows.map((r) => [
+      r.fieldName,
+      r.farmName ?? '',
+      r.part.seasonYear,
+      r.part.varietyAcres,
+      r.part.dryBu,
+      r.part.varietyAcres > 0 ? r.part.dryBu / r.part.varietyAcres : '',
+      r.detail.summary.weightedMoisture,
+      r.detail.summary.loadCount,
+      VARIETY_BASIS_LABEL[r.part.basis] ?? '',
+    ]),
+  }
+  const detail = buildDetailForPlantings({
+    plantings: args.parts.map((p) => ({ field_id: p.fieldId, crop_id: p.cropId, season_year: p.seasonYear, planted_acres: p.varietyAcres })),
+    loads: args.loads,
+    splits: args.splits,
+    cropById: args.cropById,
+    combineEntries: args.combineEntries,
+  })
+  return [
+    fieldSection,
+    grainDetailExportSection({
+      title: `${args.title} — loads`,
+      detailLoads: detail.loads,
+      lookups: args.lookups,
+      combineRows: detail.combineRows,
+    }),
+  ]
 }
 
 // ---------------------------------------------------------------------------
