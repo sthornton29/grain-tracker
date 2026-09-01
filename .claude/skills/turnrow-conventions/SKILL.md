@@ -81,6 +81,15 @@ Canonical metric → format (the consistency contract in `lib/exports.ts`
 
 ## Shared seams — never fork these
 
+- **Row-cap-proof reads**: NEVER bare-`select()` a growing table (loads,
+  splits, settlement lines, plantings, contracts, positions, per-bale cotton
+  tables…) — the project silently caps requests at ~1,000 rows. Page every
+  whole-table read through `lib/fetch-all-rows.ts` `fetchAllRows` with a
+  stable `.order()` (usually `.order('id')` as the final tiebreak).
+  `lib/growing-table-reads.test.ts` is the CI gate: it scans the source and
+  fails on unpaginated reads of any `GROWING_TABLES` entry. A new table that
+  grows per event or per year must be added to that list.
+
 - **Exports**: every report export goes through `lib/exports.ts`. Build an
   `ExportPayload` and hand `buildPayload` to `components/export-bar.tsx`
   `<ExportBar/>` (Excel / PDF / Print). Excel cells stay REAL numbers with a
