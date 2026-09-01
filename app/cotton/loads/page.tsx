@@ -9,6 +9,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { findBestMatch } from '@/lib/fuzzy'
 import { PdfTooLargeError, type CottonLoadsExtraction, type CottonLoadExtraction } from '@/lib/pdf-upload'
@@ -58,12 +59,12 @@ export default function CottonLoadsPage() {
 
   async function refresh() {
     const [l, g, f, fl, en, jr] = await Promise.all([
-      supabase.from('cotton_loads').select('*').order('delivered_date', { ascending: false }).order('created_at', { ascending: false }),
+      fetchAllRows((f, t) => supabase.from('cotton_loads').select('*').order('delivered_date', { ascending: false }).order('created_at', { ascending: false }).order('id').range(f, t)),
       supabase.from('gins').select('*').order('name'),
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('entities').select('*').order('name'),
-      supabase.from('gin_receipt_loads').select('cotton_load_id'),
+      fetchAllRows((f, t) => supabase.from('gin_receipt_loads').select('cotton_load_id').order('id').range(f, t)),
     ])
     setLoads((l.data as CottonLoad[]) || [])
     setGins((g.data as Gin[]) || [])

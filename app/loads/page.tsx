@@ -9,6 +9,7 @@ import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { HARVEST_ENTRY_PATH_KEY, type HarvestEntryPath } from '@/lib/harvest-entry-path'
 import { splitFieldLabel } from '@/lib/load-splits'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { truckDisplay, truckExportLabel } from '@/lib/trucks'
 import { buildTareStatsIndex, lowTareWarning, truckTareKey } from '@/lib/truck-tare'
 import ExportBar from '@/components/export-bar'
@@ -138,21 +139,27 @@ export default function LoadsPage() {
 
   async function refresh() {
     setLoading(true)
-    let query = supabase.from('loads').select(SELECT).order('date', { ascending: false }).order('time', { ascending: false })
-    if (from) query = query.gte('date', from)
-    if (to) query = query.lte('date', to)
+    // Paginated (lib/fetch-all-rows): a bare select caps at ~1,000 rows, which
+    // silently truncated the log's OLDEST loads once the operation crossed it.
+    // The id tiebreak keeps the date/time order stable across pages.
+    const loadsQ = fetchAllRows((f, t) => {
+      let query = supabase.from('loads').select(SELECT).order('date', { ascending: false }).order('time', { ascending: false }).order('id')
+      if (from) query = query.gte('date', from)
+      if (to) query = query.lte('date', to)
+      return query.range(f, t)
+    })
     const [loadsRes, entitiesRes, farmsRes, fieldsRes, countiesRes, settlementLinesRes, plantingsRes, contractsRes, splitsRes] = await Promise.all([
-      query,
+      loadsQ,
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('*'),
       supabase.from('fields').select('*'),
       supabase.from('counties').select('*').order('state_code').order('name'),
-      supabase.from('settlement_lines').select('ticket_number, load_id'),
+      fetchAllRows((f, t) => supabase.from('settlement_lines').select('ticket_number, load_id').order('id').range(f, t)),
       supabase.from('field_plantings').select('season_year'),
       supabase.from('contracts')
         .select('id, contract_number, buyer_id, crop_id, entity_id, crop_year, buyer:buyers(name), crop:crops(name)')
         .order('contract_number'),
-      supabase.from('load_splits').select('*'),
+      fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
     ])
     setRows((loadsRes.data as unknown as Row[]) || [])
     const splitMap = new Map<string, LoadSplit[]>()

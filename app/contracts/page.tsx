@@ -3,6 +3,7 @@ import { Suspense } from 'react'
 import ContractFilterPersistence from '@/components/contract-filter-persistence'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import ContractFlagIcon, { type ContractFlag } from '@/components/contract-flag'
@@ -177,7 +178,7 @@ export default async function ContractsPage({
     supabase.from('fields').select('id, farm_id'),
     supabase.from('farms').select('id, entity_id'),
     supabase.from('entities').select('id, name').order('name'),
-    supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue'),
+    fetchAllRows((f, t) => supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue').order('id').range(f, t)),
     supabase.from('field_plantings').select('season_year'),
   ])
 

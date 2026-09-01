@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import StaticExportBar from '@/components/static-export-bar'
@@ -30,7 +31,7 @@ export default async function UnpaidLoadsPage({
   const cropYear = searchParams.crop_year ? Number(searchParams.crop_year) : null
 
   const [loadsRes, linesRes, plantingsRes] = await Promise.all([
-    supabase
+    fetchAllRows((f, t) => supabase
       .from('loads')
       .select(`
         id, date, ticket_number, crop_year, net_weight, moisture, dry_bushels_override, to_type,
@@ -39,8 +40,10 @@ export default async function UnpaidLoadsPage({
         contract:contracts(contract_number)
       `)
       .eq('to_type', 'buyer')
-      .order('date', { ascending: false }),
-    supabase.from('settlement_lines').select('ticket_number, load_id'),
+      .order('date', { ascending: false })
+      .order('id')
+      .range(f, t)),
+    fetchAllRows((f, t) => supabase.from('settlement_lines').select('ticket_number, load_id').order('id').range(f, t)),
     supabase.from('field_plantings').select('season_year'),
   ])
 

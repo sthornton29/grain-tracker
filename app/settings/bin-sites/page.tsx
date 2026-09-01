@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import CsvImport from '@/components/csv-import'
 import { binsImportConfig } from '@/lib/import-configs'
 import SettingsDocImport from '@/components/settings-doc-import'
@@ -80,7 +81,7 @@ export default function BinSitesPage() {
       supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('entity_counties').select('*'),
       supabase.from('crops').select('*').order('name'),
-      supabase.from('loads').select('net_weight, moisture, crop_id, dry_bushels_override, from_type, from_bin_id, to_type, to_bin_id'),
+      fetchAllRows((f, t) => supabase.from('loads').select('net_weight, moisture, crop_id, dry_bushels_override, from_type, from_bin_id, to_type, to_bin_id').order('id').range(f, t)),
       supabase.from('bin_inventory_adjustments').select('*').lte('as_of_date', today),
     ])
     setSites((si.data as BinSite[]) || [])

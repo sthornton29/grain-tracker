@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import LandownerPicker from '@/components/landowner-picker'
 import { parseDocumentChunked } from '@/lib/parse-chunked'
@@ -119,10 +120,10 @@ export default function RentSettlementReport() {
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
-      supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, ticket_number'),
-      supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels'),
+      fetchAllRows((f, t) => supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, ticket_number').order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels').order('id').range(f, t)),
       supabase.from('combine_yield_entries').select('*'),
-      supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue'),
+      fetchAllRows((f, t) => supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue').order('id').range(f, t)),
       supabase.from('lease_terms').select('*').order('created_at', { ascending: false }),
       supabase.from('rent_settlements').select('*').order('generated_at', { ascending: false }),
     ])

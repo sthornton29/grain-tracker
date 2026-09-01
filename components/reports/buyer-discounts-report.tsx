@@ -22,6 +22,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
 import { formatNumber, type ExportPayload, type ExportSection } from '@/lib/exports'
 import {
@@ -146,13 +147,13 @@ export default function BuyerDiscountsReport({
       const [sRes, iRes, lRes, bRes, cRes, eRes, fRes, fdRes, spRes, coRes, schRes, ruleRes] = await Promise.all([
         supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_number, settlement_lines(id, load_id, ticket_number, net_bushels, gross_revenue, discounts, net_revenue, price_per_bushel)'),
         supabase.from('settlement_discount_items').select('*'),
-        supabase.from('loads').select('id, to_buyer_id, ticket_number, crop_id, crop_year, contract_id, moisture, test_weight, net_weight, dry_bushels_override, from_type, from_field_id').eq('to_type', 'buyer'),
+        fetchAllRows((f, t) => supabase.from('loads').select('id, to_buyer_id, ticket_number, crop_id, crop_year, contract_id, moisture, test_weight, net_weight, dry_bushels_override, from_type, from_field_id').eq('to_type', 'buyer').order('id').range(f, t)),
         supabase.from('buyers').select('*').order('name'),
         supabase.from('crops').select('*').order('name'),
         supabase.from('entities').select('*'),
         supabase.from('farms').select('*'),
         supabase.from('fields').select('*'),
-        supabase.from('load_splits').select('*'),
+        fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
         supabase.from('contracts').select('id, entity_id, contract_number, contracted_bushels'),
         supabase.from('buyer_discount_schedules').select('*'),
         supabase.from('buyer_discount_schedule_rules').select('*'),

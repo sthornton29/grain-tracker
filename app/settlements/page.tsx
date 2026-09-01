@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import ExportBar from '@/components/export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
@@ -90,10 +91,11 @@ export default function SettlementsListPage() {
       supabase.from('contracts')
         .select('id, contract_number, buyer_id, crop_id, entity_id, crop_year, buyer:buyers(name), crop:crops(name)')
         .order('contract_number'),
-      supabase.from('load_splits').select('*'),
-      supabase.from('loads')
+      fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('loads')
         .select('id, to_buyer_id, ticket_number, crop_year, contract_id, from_type, from_field_id')
-        .eq('to_type', 'buyer'),
+        .eq('to_type', 'buyer')
+        .order('id').range(f, t)),
     ])
     setRows((settRes.data as unknown as Row[]) || [])
     setBuyerLoads((buyerLoadsRes.data as unknown as BuyerLoad[]) || [])

@@ -9,6 +9,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { parseGradeCsv, type ParsedGradeRow } from '@/lib/cotton-grades'
 import { matchGradesToBales } from '@/lib/cotton'
@@ -31,8 +32,8 @@ export default function CottonBalesPage() {
 
   async function refresh() {
     const [b, g, r, f, fl] = await Promise.all([
-      supabase.from('cotton_bales').select('*').order('pbi_number'),
-      supabase.from('cotton_bale_grades').select('*'),
+      fetchAllRows((f, t) => supabase.from('cotton_bales').select('*').order('pbi_number').order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('cotton_bale_grades').select('*').order('id').range(f, t)),
       supabase.from('gin_receipts').select('*'),
       supabase.from('farms').select('*'),
       supabase.from('fields').select('*'),

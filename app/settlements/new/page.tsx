@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { parseCsv } from '@/lib/csv'
 import { findBestMatch } from '@/lib/fuzzy'
 import {
@@ -129,7 +130,7 @@ export default function NewSettlementPage() {
     ;(async () => {
       const [b, l] = await Promise.all([
         supabase.from('buyers').select('*').order('name'),
-        supabase.from('loads').select('id, date, ticket_number, crop_id, crop:crops(name), contract_id'),
+        fetchAllRows((f, t) => supabase.from('loads').select('id, date, ticket_number, crop_id, crop:crops(name), contract_id').order('id').range(f, t)),
       ])
       setBuyers((b.data as Buyer[]) || [])
       const map = new Map<string, LoadMatch>()

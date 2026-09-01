@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import CottonYieldsSection from '@/components/reports/cotton-yields-section'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, analyzeYields, expectedYieldForPlanting, type CombineEntryLike, type ExpectedYieldAssumption } from '@/lib/yields'
@@ -59,8 +60,8 @@ export default function SeasonSummaryPage() {
     const [cr, pl, lo, sp, en, fa, fi, ce, ca] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
-      supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id'),
-      supabase.from('load_splits').select('*'),
+      fetchAllRows((f, t) => supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id').order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('id, entity_id'),
       supabase.from('fields').select('id, farm_id'),

@@ -51,6 +51,7 @@ import { unrealizedPnl, optionUnrealizedPnl, quantityFor, pnlSizeFor, contractUn
 import { applyCombineRemainders, applyTransfers, cellFor, cellTotal, type OnHandBag } from '@/lib/bin-inventory'
 import { truckExportLabel } from '@/lib/trucks'
 import { validateAssistantSql } from '@/lib/assistant-sql'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
 import { fetchSeedContracts } from '@/lib/seed-contracts-fetch'
 import { buildSeedCommitments, type SeedCropCommitment } from '@/lib/seed-contracts'
@@ -94,11 +95,12 @@ async function all<T>(q: PromiseLike<{ data: unknown; error: { message: string }
   return ((data as unknown) as T[]) ?? []
 }
 
-/** Paginated full-table read (the project caps rows per request). */
+/** Paginated full-table read (the project caps rows per request). Ordered by
+ *  id so page boundaries are stable — unordered ranges can skip/double rows. */
 async function allPaged<T>(supabase: SupabaseClient, table: string, select: string, page = 1000): Promise<T[]> {
   const out: T[] = []
   for (let fromIdx = 0; ; fromIdx += page) {
-    const { data, error } = await supabase.from(table).select(select).range(fromIdx, fromIdx + page - 1)
+    const { data, error } = await supabase.from(table).select(select).order('id').range(fromIdx, fromIdx + page - 1)
     if (error) throw new Error(error.message)
     const rows = ((data as unknown) as T[]) ?? []
     out.push(...rows)
@@ -172,10 +174,12 @@ async function loadMarketingBundle(
     all<CropAssumption>(supabase.from('crop_assumptions').select('*')),
     allPaged<{ id: string; date: string; crop_id: string | null; crop_year: number | null; from_type: string | null; from_field_id: string | null; net_weight: number | null; moisture: number | null; dry_bushels_override: number | null }>(
       supabase, 'loads', 'id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
-    all<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels')),
+    allPaged<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase, 'load_splits', 'load_id, field_id, crop_id, dry_bushels'),
     all<{ id: string; crop_year: number; bales_count: number | null; total_bale_weight: number | null; entity_id: string | null; farm_id: string | null; field_id: string | null }>(
       supabase.from('gin_receipts').select('id, crop_year, bales_count, total_bale_weight, entity_id, farm_id, field_id').eq('crop_year', cropYear)),
-    all<{ gin_receipt_id: string; net_weight_lbs: number | null }>(supabase.from('cotton_bales').select('gin_receipt_id, net_weight_lbs').eq('crop_year', cropYear)),
+    fetchAllRows<{ gin_receipt_id: string; net_weight_lbs: number | null }>((f, t) =>
+      supabase.from('cotton_bales').select('gin_receipt_id, net_weight_lbs').eq('crop_year', cropYear).order('id').range(f, t),
+    ).then((r) => { if (r.error) throw new Error(r.error.message); return r.data }),
     all<CombineRow>(
       supabase.from('combine_yield_entries').select(COMBINE_SELECT).eq('crop_year', cropYear)),
   ])
@@ -324,7 +328,7 @@ async function getYields(supabase: SupabaseClient, ctx: AssistantContext, input:
     all<FieldPlanting>(supabase.from('field_plantings').select('*')),
     allPaged<{ id: string; date: string; crop_id: string | null; crop_year: number | null; from_type: string | null; from_field_id: string | null; net_weight: number | null; moisture: number | null; dry_bushels_override: number | null }>(
       supabase, 'loads', 'id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
-    all<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels')),
+    allPaged<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase, 'load_splits', 'load_id, field_id, crop_id, dry_bushels'),
     all<CombineRow>(
       supabase.from('combine_yield_entries').select(COMBINE_SELECT)),
     all<{ id: string; name: string }>(supabase.from('landowners').select('id, name')),
@@ -385,7 +389,7 @@ async function getRevenueProjection(supabase: SupabaseClient, ctx: AssistantCont
     all<FieldPlanting>(supabase.from('field_plantings').select('*')),
     allPaged<{ id: string; date: string; crop_id: string | null; crop_year: number | null; from_type: string | null; from_field_id: string | null; net_weight: number | null; moisture: number | null; dry_bushels_override: number | null }>(
       supabase, 'loads', 'id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
-    all<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels')),
+    allPaged<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase, 'load_splits', 'load_id, field_id, crop_id, dry_bushels'),
     all<CombineRow>(
       supabase.from('combine_yield_entries').select(COMBINE_SELECT)),
     all<import('@/lib/types').HarvestPriceEstimate>(supabase.from('harvest_price_estimates').select('*').order('price_date', { ascending: false })),
@@ -477,8 +481,8 @@ async function getContracts(supabase: SupabaseClient, _ctx: AssistantContext, in
   const contracts = await all<ContractRow>(q)
   const loads = await allPaged<{ id: string; contract_id: string | null; ticket_number: string | null; net_weight: number | null; moisture: number | null; crop_id: string | null; dry_bushels_override: number | null }>(
     supabase, 'loads', 'id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override')
-  const lines = await all<{ load_id: string | null; ticket_number: string | null; net_bushels: number | null; net_revenue: number | null }>(
-    supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue'))
+  const lines = await allPaged<{ load_id: string | null; ticket_number: string | null; net_bushels: number | null; net_revenue: number | null }>(
+    supabase, 'settlement_lines', 'load_id, ticket_number, net_bushels, net_revenue')
   const linesByLoad = new Map(lines.filter((l) => l.load_id).map((l) => [l.load_id as string, l]))
   const linesByTicket = new Map(lines.filter((l) => l.ticket_number).map((l) => [String(l.ticket_number).trim().toLowerCase(), l]))
   const today = new Date().toISOString().slice(0, 10)
@@ -584,7 +588,7 @@ async function getInsuranceEstimates(supabase: SupabaseClient, ctx: AssistantCon
     all<FieldPlanting>(supabase.from('field_plantings').select('*')),
     allPaged<{ id: string; date: string; crop_id: string | null; crop_year: number | null; from_type: string | null; from_field_id: string | null; net_weight: number | null; moisture: number | null; dry_bushels_override: number | null }>(
       supabase, 'loads', 'id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
-    all<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels')),
+    allPaged<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase, 'load_splits', 'load_id, field_id, crop_id, dry_bushels'),
     all<CombineRow>(
       supabase.from('combine_yield_entries').select(COMBINE_SELECT)),
     all<import('@/lib/types').HarvestPriceEstimate>(supabase.from('harvest_price_estimates').select('*').order('price_date', { ascending: false })),
@@ -675,8 +679,8 @@ async function getCashFlow(supabase: SupabaseClient, ctx: AssistantContext, inpu
     all<Contract>(supabase.from('contracts').select('*')),
     allPaged<{ id: string; contract_id: string | null; ticket_number: string | null; net_weight: number | null; moisture: number | null; crop_id: string | null; dry_bushels_override: number | null }>(
       supabase, 'loads', 'id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override'),
-    all<{ load_id: string | null; ticket_number: string | null; net_bushels: number | null; net_revenue: number | null; settlement_id: string }>(
-      supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue, settlement_id')),
+    allPaged<{ load_id: string | null; ticket_number: string | null; net_bushels: number | null; net_revenue: number | null; settlement_id: string }>(
+      supabase, 'settlement_lines', 'load_id, ticket_number, net_bushels, net_revenue, settlement_id'),
     all<{ id: string; settlement_date: string | null }>(supabase.from('settlements').select('id, settlement_date')),
     all<Crop>(supabase.from('crops').select('*')),
     all<import('@/lib/types').OtherGovernmentPayment>(supabase.from('other_government_payments').select('*')),
@@ -805,7 +809,7 @@ async function getBinInventory(supabase: SupabaseClient, _ctx: AssistantContext)
     all<Crop>(supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel')),
     allPaged<{ id: string; date: string; net_weight: number | null; moisture: number | null; crop_id: string | null; crop_year: number | null; dry_bushels_override: number | null; from_type: string | null; from_field_id: string | null; from_bin_id: string | null; to_type: string | null; to_bin_id: string | null }>(
       supabase, 'loads', 'id, date, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, from_bin_id, to_type, to_bin_id'),
-    all<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels')),
+    allPaged<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase, 'load_splits', 'load_id, field_id, crop_id, dry_bushels'),
     all<CombineRow>(
       supabase.from('combine_yield_entries').select(COMBINE_SELECT)),
     all<{ bin_id: string; crop_id: string; adjustment_type: string; bushels: number }>(
@@ -1007,7 +1011,7 @@ async function getBuyerDiscountHistory(
     all<{ id: string; contract_number: string; contracted_bushels: number | string | null; entity_id: string | null }>(
       supabase.from('contracts').select('id, contract_number, contracted_bushels, entity_id')),
     fetchScopeBits(supabase),
-    all<{ load_id: string; field_id: string }>(supabase.from('load_splits').select('load_id, field_id')),
+    allPaged<{ load_id: string; field_id: string }>(supabase, 'load_splits', 'load_id, field_id'),
   ])
   const wantBuyer = resolveByName(buyers, input.buyer)
   if (input.buyer && !wantBuyer) return { error: `No buyer named "${input.buyer}". Buyers: ${buyers.map((b) => b.name).join(', ') || 'none'}.` }

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { projectPayments, expectedArcPlcDate, programYearFor, paymentAttributionYear } from '@/lib/government-payments'
@@ -218,8 +219,8 @@ export default function CashFlowPage() {
       const [ct, ld, sp, ln, st, cr, by, en, fa, fi, pl] = await Promise.all([
         supabase.from('contracts').select('*'),
         fetchAllLoads(),
-        supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels, practice'),
-        supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue, settlement_id'),
+        fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels, practice').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue, settlement_id').order('id').range(f, t)),
         supabase.from('settlements').select('id, settlement_date'),
         supabase.from('crops').select('*'),
         supabase.from('buyers').select('*').order('name'),

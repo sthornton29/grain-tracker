@@ -13,6 +13,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fmtPrice } from '@/lib/hedging'
@@ -133,7 +134,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         supabase.from('entities').select('*').order('name'),
         supabase.from('crop_assumptions').select('*'),
         supabase.from('field_plantings').select('*'),
-        supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override, practice'),
+        fetchAllRows((f, t) => supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override, practice').order('id').range(f, t)),
         supabase.from('crop_insurance_policies').select('*'),
         supabase.from('crop_insurance_sco').select('*'),
         supabase.from('crop_insurance_eco').select('*'),
@@ -142,7 +143,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         supabase.from('crop_insurance_stax').select('*'),
         supabase.from('crop_insurance_mco').select('*'),
         supabase.from('county_yield_assumptions').select('*'),
-        supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels, practice'),
+        fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels, practice').order('id').range(f, t)),
         // May not exist yet (migration 062): an error leaves data null → [].
         supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'),
       ])

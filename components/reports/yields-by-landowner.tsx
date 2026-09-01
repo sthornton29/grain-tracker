@@ -2,6 +2,7 @@
 
 import { Fragment, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
@@ -104,8 +105,8 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
         supabase.from('farms').select('*'),
         supabase.from('fields').select('*'),
         supabase.from('field_plantings').select('*'),
-        supabase.from('loads').select('id, date, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, truck_label, hauler_truck, ticket_number'),
-        supabase.from('load_splits').select('*'),
+        fetchAllRows((f, t) => supabase.from('loads').select('id, date, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, truck_label, hauler_truck, ticket_number').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
         supabase.from('landowners').select('*').order('name'),
         supabase.from('trucks').select('id, name_or_number').order('name_or_number'),
         supabase.from('bins').select('id, name_or_number').order('name_or_number'),

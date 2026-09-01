@@ -5,6 +5,7 @@
 // consumer then behaves exactly as before the feature).
 
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { buildCottonPhysicalSummary, type CottonPhysicalInputs, type CottonPhysicalSummary } from '@/lib/cotton-sales'
 import type {
   CccLoan, CottonBale, CottonBaleDisposition, CottonBaleGrade, CottonFee,
@@ -29,23 +30,28 @@ export async function fetchCottonPhysical(
   const orgId = opts?.orgId
   // The dynamic select string defeats supabase's literal-type parsing, so the
   // builder is typed loosely here; every result is cast at its use site, as
-  // this module always has.
+  // this module always has. Per-bale tables grow past the project's ~1,000-
+  // row-per-request cap in one season, so every read pages via fetchAllRows
+  // (id-ordered for stable page boundaries).
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const from = (table: string, select: string): any => {
-    const q = supabase.from(table).select(select)
-    return orgId ? q.eq('org_id', orgId) : q
-  }
+  const from = (table: string, select: string, filter?: (q: any) => any): Promise<{ data: any; error: { message: string } | null }> =>
+    fetchAllRows((f, t) => {
+      let q = supabase.from(table).select(select)
+      if (orgId) q = q.eq('org_id', orgId)
+      if (filter) q = filter(q)
+      return q.order('id').range(f, t)
+    })
   const [balesQ, gradesQ, dispQ, contractsQ, poolQ, loansQ, loanBalesQ, ldpsQ, ldpBalesQ, feesQ] = await Promise.all([
-    from('cotton_bales', 'id, gin_receipt_id, crop_year, pbi_number, net_weight_lbs, created_at').eq('crop_year', cropYear),
+    from('cotton_bales', 'id, gin_receipt_id, crop_year, pbi_number, net_weight_lbs, created_at', (q) => q.eq('crop_year', cropYear)),
     from('cotton_bale_grades', 'bale_id, loan_value_cents_per_lb, loan_value_total, class_date'),
     from('cotton_bale_dispositions', '*'),
-    from('cotton_sales_contracts', '*').eq('crop_year', cropYear),
+    from('cotton_sales_contracts', '*', (q) => q.eq('crop_year', cropYear)),
     from('cotton_pool_payments', '*'),
-    from('ccc_loans', '*').eq('crop_year', cropYear),
+    from('ccc_loans', '*', (q) => q.eq('crop_year', cropYear)),
     from('ccc_loan_bales', 'loan_id, bale_id'),
-    from('cotton_ldp_records', '*').eq('crop_year', cropYear),
+    from('cotton_ldp_records', '*', (q) => q.eq('crop_year', cropYear)),
     from('cotton_ldp_bales', 'ldp_id, bale_id'),
-    from('cotton_fees', '*').eq('crop_year', cropYear),
+    from('cotton_fees', '*', (q) => q.eq('crop_year', cropYear)),
   ])
 
   const bales = ((balesQ.data as CottonBale[]) || [])

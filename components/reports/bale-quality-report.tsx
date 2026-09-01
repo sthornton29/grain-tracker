@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { theadCls, grandTotalRowCls } from '@/components/reports/report-kit'
 import type { ExportPayload, ExportCell } from '@/lib/exports'
@@ -44,8 +45,8 @@ export default function BaleQualityReport({ onPayloadChange }: Props) {
   useEffect(() => {
     ;(async () => {
       const [b, g, r, f, fl, en] = await Promise.all([
-        supabase.from('cotton_bales').select('*'),
-        supabase.from('cotton_bale_grades').select('*'),
+        fetchAllRows((f, t) => supabase.from('cotton_bales').select('*').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('cotton_bale_grades').select('*').order('id').range(f, t)),
         supabase.from('gin_receipts').select('*'),
         supabase.from('farms').select('*'),
         supabase.from('fields').select('*'),

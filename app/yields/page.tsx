@@ -17,6 +17,7 @@ import {
   grainDetailExportSection, cottonDetailExportSection, varietyDetailExportSections,
 } from '@/components/yields-detail'
 import { attributeVarietyBushels, type VarietyPlantingPart } from '@/lib/variety-yields'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import type { ExportColumn, ExportPayload, ExportSection } from '@/lib/exports'
 import type { CombineYieldEntry, Crop, CropAssumption, Entity, Farm, Field, FieldPlanting, FieldPlantingVariety, County, LoadSplit } from '@/lib/types'
 
@@ -138,9 +139,11 @@ export default function YieldsPage() {
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
-      supabase.from('loads').select('id, date, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, truck_label, hauler_truck, ticket_number, practice'),
+      // Paginated: a bare select caps at ~1,000 rows and silently drops loads
+      // once harvest crosses it (the Blythe Big South bug) — see lib/fetch-all-rows.
+      fetchAllRows((f, t) => supabase.from('loads').select('id, date, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, truck_label, hauler_truck, ticket_number, practice').order('id').range(f, t)),
       supabase.from('counties').select('*').order('state_code').order('name'),
-      supabase.from('load_splits').select('*'),
+      fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
       supabase.from('field_planting_varieties').select('*').order('variety'),
       supabase.from('crop_assumptions').select('*'),
       supabase.from('trucks').select('id, name_or_number').order('name_or_number'),

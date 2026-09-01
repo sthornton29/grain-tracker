@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cottonFieldYields, type CottonFieldYield } from '@/lib/cotton'
 import { theadCls, grandTotalRowCls } from '@/components/reports/report-kit'
 import type { CottonLoad, GinReceipt, CottonBale, Farm, Field, FieldPlanting, Crop } from '@/lib/types'
@@ -34,10 +35,10 @@ export default function CottonYieldsSection({ year, entityId = '' }: { year: num
       if (!(data as { cotton_module_enabled?: boolean } | null)?.cotton_module_enabled) return
       setEnabled(true)
       const [l, r, b, jr, f, fl, pl, cr] = await Promise.all([
-        supabase.from('cotton_loads').select('*'),
+        fetchAllRows((f, t) => supabase.from('cotton_loads').select('*').order('id').range(f, t)),
         supabase.from('gin_receipts').select('*'),
-        supabase.from('cotton_bales').select('*'),
-        supabase.from('gin_receipt_loads').select('cotton_load_id'),
+        fetchAllRows((f, t) => supabase.from('cotton_bales').select('*').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('gin_receipt_loads').select('cotton_load_id').order('id').range(f, t)),
         supabase.from('farms').select('*'),
         supabase.from('fields').select('*'),
         supabase.from('field_plantings').select('*'),

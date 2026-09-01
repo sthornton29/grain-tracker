@@ -9,6 +9,7 @@
 
 import { Fragment, useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import {
   buildLoadDetail,
   summarizeDetail,
@@ -164,12 +165,14 @@ export function useCottonDetailData(supabase: ReturnType<typeof createClient>): 
     setLoading(true)
     setError(null)
     ;(async () => {
+      // Per-bale/per-load tables cross the ~1,000-row cap in one season —
+      // paginated reads (lib/fetch-all-rows) so the detail never drops rows.
       const [gr, cb, bg, cl, grl] = await Promise.all([
         supabase.from('gin_receipts').select('id, field_id, crop_year, bales_count, total_bale_weight, total_seed_cotton_weight'),
-        supabase.from('cotton_bales').select('id, gin_receipt_id, net_weight_lbs, crop_year'),
-        supabase.from('cotton_bale_grades').select('bale_id, loan_value_cents_per_lb'),
-        supabase.from('cotton_loads').select('id, field_id, crop_year, net_weight'),
-        supabase.from('gin_receipt_loads').select('cotton_load_id'),
+        fetchAllRows((f, t) => supabase.from('cotton_bales').select('id, gin_receipt_id, net_weight_lbs, crop_year').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('cotton_bale_grades').select('bale_id, loan_value_cents_per_lb').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('cotton_loads').select('id, field_id, crop_year, net_weight').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('gin_receipt_loads').select('cotton_load_id').order('id').range(f, t)),
       ])
       setLoading(false)
       const err = gr.error ?? cb.error ?? bg.error ?? cl.error ?? grl.error

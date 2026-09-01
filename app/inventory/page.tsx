@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
 import {
   type OnHandBag, type BinInventoryCell,
@@ -99,8 +100,8 @@ export default async function InventoryPage({
     supabase.from('bins').select('id, name_or_number, crop_id, bin_site_id, capacity_bushels').order('name_or_number'),
     supabase.from('bin_sites').select('id, name, entity_id').order('name'),
     supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').order('name'),
-    supabase.from('loads').select('id, date, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, from_bin_id, to_type, to_bin_id'),
-    supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels'),
+    fetchAllRows((f, t) => supabase.from('loads').select('id, date, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, from_bin_id, to_type, to_bin_id').order('id').range(f, t)),
+    fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels').order('id').range(f, t)),
     // Combine yield entries (062) — tolerate the table not existing yet
     // (migration pending): error → no entries, the page still renders.
     supabase.from('combine_yield_entries')

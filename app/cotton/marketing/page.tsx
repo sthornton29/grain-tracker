@@ -9,6 +9,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { BuyerPicker } from '@/components/buyer-location-pickers'
 import { formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
@@ -83,15 +84,15 @@ export default function CottonMarketingPage() {
       supabase.from('farms').select('*'),
       supabase.from('fields').select('*'),
       supabase.from('gin_receipts').select('*').eq('crop_year', cropYear),
-      supabase.from('cotton_bales').select('*').eq('crop_year', cropYear),
-      supabase.from('cotton_bale_grades').select('*'),
-      supabase.from('cotton_bale_dispositions').select('*'),
+      fetchAllRows((f, t) => supabase.from('cotton_bales').select('*').eq('crop_year', cropYear).order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('cotton_bale_grades').select('*').order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('cotton_bale_dispositions').select('*').order('id').range(f, t)),
       supabase.from('cotton_sales_contracts').select('*').eq('crop_year', cropYear).order('created_at'),
       supabase.from('cotton_pool_payments').select('*').order('payment_date'),
       supabase.from('ccc_loans').select('*').eq('crop_year', cropYear).order('entry_date'),
-      supabase.from('ccc_loan_bales').select('loan_id, bale_id'),
+      fetchAllRows((f, t) => supabase.from('ccc_loan_bales').select('loan_id, bale_id').order('id').range(f, t)),
       supabase.from('cotton_ldp_records').select('*').eq('crop_year', cropYear).order('ldp_date'),
-      supabase.from('cotton_ldp_bales').select('ldp_id, bale_id'),
+      fetchAllRows((f, t) => supabase.from('cotton_ldp_bales').select('ldp_id, bale_id').order('id').range(f, t)),
       supabase.from('cotton_fees').select('*').eq('crop_year', cropYear).order('fee_date'),
       supabase.from('cotton_fee_schedule').select('*').eq('crop_year', cropYear).maybeSingle(),
       supabase.from('awp_weekly').select('*').order('week_effective', { ascending: false }).limit(30),

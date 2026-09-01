@@ -9,6 +9,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, type Planting } from '@/lib/marketing'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
 import { fetchSeedContracts, type SeedContractData } from '@/lib/seed-contracts-fetch'
@@ -119,7 +120,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
         supabase.from('futures_positions').select('*'),
         supabase.from('options_positions').select('*'),
         supabase.from('crop_assumptions').select('*'),
-        supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
+        fetchAllRows((f, t) => supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override').order('id').range(f, t)),
         supabase.from('crop_insurance_policies').select('*'),
         supabase.from('crop_insurance_sco').select('*'),
         supabase.from('crop_insurance_eco').select('*'),
@@ -130,9 +131,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
         supabase.from('arc_plc_price_data').select('*'),
         supabase.from('arc_plc_payments').select('*'),
         supabase.from('other_government_payments').select('*'),
-        supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels'),
+        fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels').order('id').range(f, t)),
         supabase.from('gin_receipts').select('id, crop_year, bales_count, total_bale_weight, entity_id, farm_id, field_id'),
-        supabase.from('cotton_bales').select('gin_receipt_id, crop_year, net_weight_lbs'),
+        fetchAllRows((f, t) => supabase.from('cotton_bales').select('gin_receipt_id, crop_year, net_weight_lbs').order('id').range(f, t)),
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('id, entity_id'),
         supabase.from('fields').select('id, farm_id'),

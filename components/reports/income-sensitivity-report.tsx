@@ -19,6 +19,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, type CombineEntryLike } from '@/lib/yields'
@@ -228,8 +229,8 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
         supabase.from('futures_positions').select('*'),
         supabase.from('options_positions').select('*'),
         supabase.from('crop_assumptions').select('*'),
-        supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
-        supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels'),
+        fetchAllRows((f, t) => supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels').order('id').range(f, t)),
         supabase.from('crop_insurance_policies').select('*'),
         supabase.from('crop_insurance_sco').select('*'),
         supabase.from('crop_insurance_eco').select('*'),

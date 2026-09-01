@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { parseCsv } from '@/lib/csv'
 import type { Bin, Buyer, Contract, Crop, Field, Truck } from '@/lib/types'
 
@@ -112,7 +113,7 @@ export default function LoadsImportPage() {
         supabase.from('bins').select('*'),
         supabase.from('buyers').select('*'),
         supabase.from('contracts').select('*'),
-        supabase.from('loads').select('ticket_number'),
+        fetchAllRows((f, t) => supabase.from('loads').select('ticket_number').order('id').range(f, t)),
       ])
       setTrucks((t.data as Truck[]) || [])
       setCrops((c.data as Crop[]) || [])

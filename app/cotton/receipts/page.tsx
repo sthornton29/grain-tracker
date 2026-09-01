@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { findBestMatch } from '@/lib/fuzzy'
 import { PdfTooLargeError, type GinReceiptExtraction } from '@/lib/pdf-upload'
@@ -46,12 +47,12 @@ export default function GinReceiptsPage() {
   async function refresh() {
     const [r, b, g, f, fl, en, l] = await Promise.all([
       supabase.from('gin_receipts').select('*').order('receipt_date', { ascending: false }),
-      supabase.from('cotton_bales').select('gin_receipt_id'),
+      fetchAllRows((f, t) => supabase.from('cotton_bales').select('gin_receipt_id').order('id').range(f, t)),
       supabase.from('gins').select('*').order('name'),
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('entities').select('*').order('name'),
-      supabase.from('cotton_loads').select('*'),
+      fetchAllRows((f, t) => supabase.from('cotton_loads').select('*').order('id').range(f, t)),
     ])
     setReceipts((r.data as GinReceipt[]) || [])
     const counts = new Map<string, number>()
