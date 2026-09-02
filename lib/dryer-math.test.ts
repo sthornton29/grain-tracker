@@ -17,27 +17,37 @@ import type { ScheduleRuleShape } from '@/lib/discount-schedules'
 
 // Hand-verified dryer economics. The spec's worked example: 25% corn dried
 // to 15% (10 points) on a mixed-flow at 0.018 gal LP per bu-pt and $1.60 LP
-// → 10 × 0.018 × 1.60 = $0.288 = 28.8¢ fuel per bushel.
+// → 10 × 0.018 × 1.60 = $0.288 = 28.8¢ fuel per bushel — and that IS the
+// total cost of drying: the water above base is unsellable whether you dry
+// it or the buyer's shrink table takes it, so shrink is not a drying cost.
 
 const mixedFlowLp: DryerSpec = { fuel: 'lp', fuelPerBuPt: 0.018, fanKwhPerBuPt: null }
 
-describe('fuel cost', () => {
-  it('25% → 15% corn at $1.60 LP and 0.018 gal/bu-pt = 28.8¢/bu', () => {
+describe('fuel cost — the whole cost of drying to base', () => {
+  it('25% → 15% corn at $1.60 LP and 0.018 gal/bu-pt = 28.8¢/bu, total = fuel (shrink excluded)', () => {
     const c = dryingCost(25, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2)
     expect(c.points).toBe(10)
     expect(c.fuelPerBu).toBeCloseTo(0.288, 10)
     expect(c.energyPerBuPt).toBeCloseTo(0.0288, 10) // 2.88¢ per point
+    expect(c.totalPerBu).toBeCloseTo(0.288, 10)     // 28.8¢ — NOT 28.8 + 49.7
   })
-  it('fan electricity adds at the electric rate (default $0.12/kWh)', () => {
+  it('fan electricity adds at the electric rate (default $0.12/kWh) and IS in the total', () => {
     const withFan: DryerSpec = { ...mixedFlowLp, fanKwhPerBuPt: 0.01 }
     const c = dryingCost(25, 15, withFan, { fuelPrice: 1.6 }, 4.2)
     expect(c.fanPerBu).toBeCloseTo(10 * 0.01 * DEFAULT_ELECTRIC_RATE, 10) // $0.012
     expect(c.energyPerBu).toBeCloseTo(0.288 + 0.012, 10)
+    expect(c.totalPerBu).toBeCloseTo(0.288 + 0.012, 10)
   })
   it('at/below base = zero points, zero cost', () => {
     const c = dryingCost(15, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2)
     expect(c.points).toBe(0)
     expect(c.totalPerBu).toBe(0)
+  })
+  it('the grain price is optional above base — the cost does not need it', () => {
+    const c = dryingCost(25, 15, mixedFlowLp, { fuelPrice: 1.6 })
+    expect(c.totalPerBu).toBeCloseTo(0.288, 10)
+    expect(c.shrinkPct).toBeCloseTo(11.83, 10)
+    expect(c.shrinkValuePerBu).toBeNull()
   })
 })
 
@@ -63,23 +73,26 @@ describe('LP ↔ NG equivalence (BTU parity: 91,500 BTU/gal ÷ 1,020 BTU/cf)', (
   })
 })
 
-describe('shrink — the physical weight loss, valued at the grain price', () => {
-  it('1.183%/pt × $4.20 corn = 4.9686¢ per point; 10 points = 49.686¢/bu', () => {
+describe('shrink to base — reported, never a cost', () => {
+  it('1.183%/pt: 10 points = 11.83% of the wet weight, valued at $4.20 = 49.686¢ — informational only', () => {
     expect(SHRINK_PCT_PER_POINT).toBe(1.183)
     const c = dryingCost(25, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2)
     expect(c.shrinkPct).toBeCloseTo(11.83, 10)
-    expect(c.shrinkValuePerBu).toBeCloseTo(0.1183 * 4.2, 10) // $0.49686
-    // Total cost of drying = fuel + shrink.
-    expect(c.totalPerBu).toBeCloseTo(0.288 + 0.49686, 10)
+    expect(c.shrinkValuePerBu).toBeCloseTo(0.1183 * 4.2, 10) // $0.49686 — what the buyer's table would take
+    // The counterfactual is identical (haul wet → the buyer shrinks it; dry
+    // it → it evaporates), so the total stays fuel-only.
+    expect(c.totalPerBu).toBeCloseTo(0.288, 10)
+    expect(c.totalPerBu).toBeLessThan(c.fuelPerBu + c.shrinkValuePerBu!)
   })
 })
 
-describe('overdrying — stopping below base', () => {
+describe('overdrying — stopping below base IS a cost (unchanged)', () => {
   it('drying corn to 13.5% against a 15.0% base combines lost volume + extra fuel', () => {
     // 1.5 points over: volume 1.5 × 1.183% × $4.20 = $0.074529;
     // fuel 1.5 × 0.018 × $1.60 = $0.0432 → total $0.117729 = 11.77¢/bu.
     const o = overdryingCost(13.5, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2)
     expect(o.pointsOver).toBeCloseTo(1.5, 10)
+    expect(o.lostVolumePct).toBeCloseTo(1.7745, 10)
     expect(o.lostVolumePerBu).toBeCloseTo(0.074529, 6)
     expect(o.extraEnergyPerBu).toBeCloseTo(0.0432, 10)
     expect(o.totalPerBu).toBeCloseTo(0.117729, 6)
@@ -89,24 +102,31 @@ describe('overdrying — stopping below base', () => {
   })
 })
 
-describe('wetVsDry — dry it or haul it wet', () => {
+describe('wetVsDry — dry it or haul it wet (your side = fuel only)', () => {
   // A buyer sheet: 5¢/bu per point over 15% (tiered walk exercised in the
   // discount-schedules tests; here a linear rule keeps the arithmetic bare).
   const dryingRule: ScheduleRuleShape = {
     factor: 'drying', basis: 'cents_per_bu', base_value: 15, direction: 'above',
     rate_per_unit: 5, tiers: [], cumulative: false, rejection_at: null,
   }
-  it('18% corn: buyer docks 15¢, own drying costs 23.5¢ → hauling wet is cheaper', () => {
+  it('18% corn: buyer docks 15¢, own drying costs 8.64¢ fuel → drying is cheaper', () => {
     const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [dryingRule])
     expect(v.buyerCents).toBeCloseTo(15, 10)
-    // 3 pts: fuel 3×0.018×1.60 = 8.64¢ + shrink 3×4.9686¢ = 14.9058¢ → 23.5458¢.
-    expect(v.dryCents).toBeCloseTo(23.5458, 3)
+    // 3 pts × 0.018 × $1.60 = 8.64¢. No shrink on our side: the buyer's
+    // shrink comes off the ticket whether we dry or haul wet.
+    expect(v.dryCents).toBeCloseTo(8.64, 10)
+    expect(v.cheaper).toBe('dry')
+  })
+  it('a cheap sheet flips the verdict — 2¢/point docks 6¢, under the 8.64¢ of fuel', () => {
+    const cheap = { ...dryingRule, rate_per_unit: 2 }
+    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [cheap])
+    expect(v.buyerCents).toBeCloseTo(6, 10)
     expect(v.cheaper).toBe('haul_wet')
   })
-  it('a punitive sheet flips the verdict', () => {
-    const punitive = { ...dryingRule, rate_per_unit: 12 } // 12¢/point
-    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [punitive])
-    expect(v.buyerCents).toBeCloseTo(36, 10)
+  it('the comparison never needs a grain price on our side', () => {
+    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, null, [dryingRule])
+    expect(v.dryCents).toBeCloseTo(8.64, 10)
+    expect(v.buyerCents).toBeCloseTo(15, 10)
     expect(v.cheaper).toBe('dry')
   })
   it('tier-walk schedules run through the same rule engine', () => {
@@ -118,9 +138,7 @@ describe('wetVsDry — dry it or haul it wet', () => {
         { from: 17.0, to: 19.0, rate: 10 },
       ],
     }
-    // 18%: past the 6¢ tier... 18 is inside the second bracket AND inside
-    // neither/past the first? 18 > 17.0 → past bracket 1 (6¢) + in bracket 2
-    // (10¢) = 16¢ walked.
+    // 18% is past bracket 1 (6¢) and inside bracket 2 (10¢) = 16¢ walked.
     const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [walk])
     expect(v.buyerCents).toBeCloseTo(16, 10)
   })

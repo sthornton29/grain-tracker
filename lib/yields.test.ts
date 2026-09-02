@@ -248,8 +248,9 @@ describe('analyzeYields — exported constants', () => {
 
 describe('analyzeYields — unharvested', () => {
   it('excludes a row with 0 dry bushels as unharvested', () => {
+    // a's last load is two weeks old (crop quiet → a is not the active field).
     const rows = [
-      row({ id: 'a', acres: 100, dryBu: 18000, lastLoadDate: '2025-09-10' }),
+      row({ id: 'a', acres: 100, dryBu: 18000, lastLoadDate: '2025-09-05' }),
       row({ id: 'b', acres: 50, dryBu: 0, lastLoadDate: null }), // unharvested
     ]
     const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
@@ -307,14 +308,21 @@ describe('analyzeYields — in-progress detection', () => {
     expect(p.pctComplete).toBeCloseTo((200 / 300) * 100, 6)
   })
 
-  it('does NOT flag the latest field when its yield is within the threshold band', () => {
-    // c at 170 bu/ac (17000/100). baseline 190, cutoff 161.5. 170 >= 161.5 → counts.
-    const rows = [...base, row({ id: 'c', acres: 100, dryBu: 17000, lastLoadDate: '2025-09-18' })]
+  it('does NOT flag a field within the threshold band once the combine has moved on', () => {
+    // c at 170 bu/ac (17000/100). baseline 190, cutoff 161.5. 170 >= 161.5 → counts
+    // — as soon as a later-dated load lands on d (the field now being cut,
+    // which is held as the active field).
+    const rows = [
+      ...base,
+      row({ id: 'c', acres: 100, dryBu: 17000, lastLoadDate: '2025-09-17' }),
+      row({ id: 'd', acres: 100, dryBu: 18500, lastLoadDate: '2025-09-19' }),
+    ]
     const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
 
     expect(res.autoExcluded.has('c')).toBe(false)
     expect(res.excluded.has('c')).toBe(false)
-    // Average over all three = (20000+18000+17000)/300 = 55000/300 = 183.333...
+    expect(res.excluded.get('d')).toBe('in_progress') // the active field
+    // Average over a+b+c = (20000+18000+17000)/300 = 55000/300 = 183.333...
     expect(res.averages.get('corn')?.yield).toBeCloseTo(55000 / 300, 6)
   })
 
@@ -325,7 +333,8 @@ describe('analyzeYields — in-progress detection', () => {
     // silence alone.
     //   low:  50 bu/ac, dated 2025-09-05 (own loads 15 days quiet)
     //   a:   200 bu/ac, dated 2025-09-10
-    //   b:   180 bu/ac, dated 2025-09-19 (crop still active)
+    //   b:   180 bu/ac, dated 2025-09-19 (crop still active — b is the
+    //        field being cut, so it is held too)
     const rows = [
       row({ id: 'low', acres: 100, dryBu: 5000, lastLoadDate: '2025-09-05' }),
       row({ id: 'a', acres: 100, dryBu: 20000, lastLoadDate: '2025-09-10' }),
@@ -334,9 +343,9 @@ describe('analyzeYields — in-progress detection', () => {
     const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
     expect(res.excluded.get('low')).toBe('in_progress')
     expect(res.excluded.has('a')).toBe(false)
-    expect(res.excluded.has('b')).toBe(false)
-    // Average over a+b = 38000/200 = 190.
-    expect(res.averages.get('corn')?.yield).toBeCloseTo(190, 6)
+    expect(res.excluded.get('b')).toBe('in_progress')
+    // Average over a alone = 200.
+    expect(res.averages.get('corn')?.yield).toBeCloseTo(200, 6)
   })
 
   it('a low field STAYS in-progress even when another field has a later-dated load (the Parker case)', () => {
@@ -347,7 +356,8 @@ describe('analyzeYields — in-progress detection', () => {
     //   a:      200 bu/ac, 2025-09-08 (settled)
     //   b:      180 bu/ac, 2025-09-09 (settled)        → baseline 190, cutoff 161.5
     //   parker:  50 bu/ac, 2025-09-17 (active, low)    → in_progress
-    //   other:  185 bu/ac, 2025-09-19 (active, newest) → fine, counts
+    //   other:  185 bu/ac, 2025-09-19 (newest — the field the combine is in)
+    //                                                  → in_progress (active-field hold)
     const rows = [
       row({ id: 'a', acres: 100, dryBu: 20000, lastLoadDate: '2025-09-08' }),
       row({ id: 'b', acres: 100, dryBu: 18000, lastLoadDate: '2025-09-09' }),
@@ -356,10 +366,10 @@ describe('analyzeYields — in-progress detection', () => {
     ]
     const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
     expect(res.excluded.get('parker')).toBe('in_progress')
-    expect(res.excluded.has('other')).toBe(false)
-    // Average over a+b+other = (20000+18000+18500)/300 = 188.333…
-    expect(res.averages.get('corn')?.yield).toBeCloseTo(56500 / 300, 6)
-    expect(res.progress.get('corn')?.inProgressAcres).toBe(100)
+    expect(res.excluded.get('other')).toBe('in_progress')
+    // Average over the settled a+b = 190.
+    expect(res.averages.get('corn')?.yield).toBeCloseTo(190, 6)
+    expect(res.progress.get('corn')?.inProgressAcres).toBe(200)
   })
 
   it('two simultaneously-harvested low fields are BOTH flagged vs the settled baseline', () => {
@@ -379,11 +389,13 @@ describe('analyzeYields — in-progress detection', () => {
   })
 
   it('when NOTHING has settled yet, the baseline falls back to the other fields', () => {
-    // Harvest just started: both fields are active, nothing is settled.
-    // b is judged against a (baseline 200, cutoff 170 → 50 flagged); a is
+    // Harvest just started: both fields are recent, nothing is settled. The
+    // combine finished a and is now in b (b's load is later-dated, so a is
+    // no longer the active field). b is judged against a (baseline 200,
+    // cutoff 170 → 50 flagged — and it is the active field besides); a is
     // judged against b (baseline 50, cutoff 42.5 → 200 fine).
     const rows = [
-      row({ id: 'a', acres: 100, dryBu: 20000, lastLoadDate: '2025-09-19' }),
+      row({ id: 'a', acres: 100, dryBu: 20000, lastLoadDate: '2025-09-18' }),
       row({ id: 'b', acres: 100, dryBu: 5000, lastLoadDate: '2025-09-19' }),
     ]
     const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
@@ -416,6 +428,7 @@ describe('analyzeYields — the low-yield signal PERSISTS (date ordering is not 
     // d was loaded after c's last load. Moving to another field is not proof
     // c finished (start a field → move off → return is routine), so c's low
     // partial number stays out of the averages until real completion evidence.
+    // d itself is the field being cut now → held as the active field.
     const rows = [
       ...week,
       row({ id: 'c', acres: 100, dryBu: 5000, lastLoadDate: '2025-09-18' }),
@@ -423,24 +436,25 @@ describe('analyzeYields — the low-yield signal PERSISTS (date ordering is not 
     ]
     const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
     expect(res.excluded.get('c')).toBe('in_progress')
-    expect(res.excluded.has('d')).toBe(false)
-    // Average over a+b+d = (20000+18000+19000)/300 = 190.
+    expect(res.excluded.get('d')).toBe('in_progress')
+    // Average over a+b = (20000+18000)/200 = 190.
     expect(res.averages.get('corn')?.yield).toBeCloseTo(190, 6)
-    expect(res.progress.get('corn')?.inProgressAcres).toBe(100)
+    expect(res.progress.get('corn')?.inProgressAcres).toBe(200)
   })
 
-  it('a normal-yield field is complete regardless of other-field load timing', () => {
-    // d yields in line with the crop: it counts whether its last load is
-    // before, same-day, or after anyone else's — the low-yield gate is the
-    // only thing that holds a field in progress.
+  it('a normal-yield field is complete once the combine has moved on, whatever the low field does', () => {
+    // d yields in line with the crop and e (later-dated) shows the combine
+    // has moved past it: d counts, c (low) stays held, e is the active field.
     const rows = [
       ...week,
       row({ id: 'c', acres: 100, dryBu: 5000, lastLoadDate: '2025-09-18' }),  // 50 bu/ac — low
       row({ id: 'd', acres: 100, dryBu: 19000, lastLoadDate: '2025-09-18' }), // 190 bu/ac — fine
+      row({ id: 'e', acres: 100, dryBu: 9000, lastLoadDate: '2025-09-19' }),  // the field being cut now
     ]
     const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
     expect(res.excluded.get('c')).toBe('in_progress')
     expect(res.excluded.has('d')).toBe(false)
+    expect(res.excluded.get('e')).toBe('in_progress')
     expect(res.excluded.has('a')).toBe(false)
     expect(res.excluded.has('b')).toBe(false)
   })
@@ -512,11 +526,20 @@ describe('analyzeYields — thin peers: the expected-yield bar (crop_assumptions
     expect(res.progress.get('corn')?.inProgressAcres).toBe(100)
   })
 
-  it('a first field tracking its expected yield is complete as usual', () => {
-    const rows = [row({ id: 'first', acres: 100, dryBu: 17500, lastLoadDate: '2025-09-18', expectedYield: 180 })]
-    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
-    expect(res.excluded.size).toBe(0)
-    expect(res.averages.get('corn')?.yield).toBeCloseTo(175, 6)
+  it('a first field tracking its expected yield is still the field being cut — complete once the combine moves on', () => {
+    const first = row({ id: 'first', acres: 100, dryBu: 17500, lastLoadDate: '2025-09-18', expectedYield: 180 })
+    // Alone and recent: it's the active field, whatever its yield.
+    const alone = analyzeYields([first], IN_PROGRESS_THRESHOLD, NOW)
+    expect(alone.excluded.get('first')).toBe('in_progress')
+    // A later-dated load on the next field → the yield rule decides: 175 vs
+    // the 180 expected is fine → complete.
+    const movedOn = analyzeYields(
+      [first, row({ id: 'second', acres: 100, dryBu: 4000, lastLoadDate: '2025-09-19', expectedYield: 180 })],
+      IN_PROGRESS_THRESHOLD, NOW,
+    )
+    expect(movedOn.excluded.has('first')).toBe(false)
+    expect(movedOn.excluded.get('second')).toBe('in_progress')
+    expect(movedOn.averages.get('corn')?.yield).toBeCloseTo(175, 6)
   })
 
   it('with ONE partial peer, the expected yield still sets the bar (a low peer cannot shelter)', () => {
@@ -531,12 +554,25 @@ describe('analyzeYields — thin peers: the expected-yield bar (crop_assumptions
     expect(res.excluded.get('b')).toBe('in_progress')
   })
 
-  it('no peers and no expected yield → complete, reported in noBaseline so the UI can say why', () => {
+  it('no peers and no expected yield → still the active field while recent (never defaulted complete)', () => {
     const rows = [row({ id: 'only', acres: 100, dryBu: 3000, lastLoadDate: '2025-09-18' })]
     const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
-    expect(res.excluded.size).toBe(0)
+    expect(res.excluded.get('only')).toBe('in_progress')
+    expect(res.noBaseline.has('only')).toBe(false)
+    expect(res.progress.get('corn')?.inProgressAcres).toBe(100)
+  })
+
+  it('a field that cannot be judged after the combine moved on is reported in noBaseline so the UI can say why', () => {
+    // The only peer carries bushels but no acres (nothing to weight a
+    // baseline by) and there is no expected yield → complete, noted.
+    const rows = [
+      row({ id: 'only', acres: 100, dryBu: 3000, lastLoadDate: '2025-09-17' }),
+      row({ id: 'odd', acres: 0, dryBu: 500, lastLoadDate: '2025-09-19' }),
+    ]
+    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
+    expect(res.excluded.has('only')).toBe(false)
     expect(res.noBaseline.has('only')).toBe(true)
-    expect(res.progress.get('corn')?.completedAcres).toBe(100)
+    expect(res.excluded.get('odd')).toBe('in_progress') // the active field
   })
 
   it('the expected-yield bar clears on crop-wide quiet like any other (10+ days → complete)', () => {
@@ -616,14 +652,16 @@ describe('analyzeYields — override', () => {
     const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
     expect(res.autoExcluded.get('parker')).toBe('in_progress') // still flagged by the rule…
     expect(res.excluded.has('parker')).toBe(false)             // …but counted by the override
-    expect(res.averages.get('corn')?.yield).toBeCloseTo(61500 / 400, 6)
-    expect(res.progress.get('corn')?.completedAcres).toBe(400)
+    expect(res.excluded.get('other')).toBe('in_progress')      // the field being cut now
+    expect(res.averages.get('corn')?.yield).toBeCloseTo(43000 / 300, 6)
+    expect(res.progress.get('corn')?.completedAcres).toBe(300)
   })
 
   it('override does NOT un-exclude an unharvested (0-bu) field', () => {
     // override only applies to in_progress; an unharvested field has no bushels.
+    // (a's load is two weeks old — the crop is quiet, so a counts as usual.)
     const rows = [
-      row({ id: 'a', acres: 100, dryBu: 18000, lastLoadDate: '2025-09-10' }),
+      row({ id: 'a', acres: 100, dryBu: 18000, lastLoadDate: '2025-09-05' }),
       row({ id: 'b', acres: 50, dryBu: 0, lastLoadDate: null, override: true }),
     ]
     const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
@@ -634,33 +672,149 @@ describe('analyzeYields — override', () => {
   })
 })
 
-describe('analyzeYields — no peers AND no expected yield → default complete (noted)', () => {
-  it('a single harvested field with no expected yield is never flagged (nothing to judge against)', () => {
-    const rows = [
-      row({ id: 'a', acres: 100, dryBu: 100, lastLoadDate: '2025-09-19' }), // tiny yield, but alone
+describe('analyzeYields — a lone harvested field with no expected yield', () => {
+  it('is the field being cut while recent (in progress), and counts once the crop goes quiet', () => {
+    const recent = [
+      row({ id: 'a', acres: 100, dryBu: 100, lastLoadDate: '2025-09-19' }), // tiny yield, alone, yesterday
     ]
-    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
-    expect(res.autoExcluded.size).toBe(0)
-    expect(res.excluded.size).toBe(0)
-    expect(res.noBaseline.has('a')).toBe(true)
+    const held = analyzeYields(recent, IN_PROGRESS_THRESHOLD, NOW)
+    expect(held.excluded.get('a')).toBe('in_progress')
+    expect(held.noBaseline.has('a')).toBe(false)
+    expect(held.averages.has('corn')).toBe(false)
+
+    // Eleven days of silence → harvest wrapped; it counts (nothing to judge
+    // it against, and the quiet clock is the completion evidence).
+    const quiet = analyzeYields(
+      [row({ id: 'a', acres: 100, dryBu: 100, lastLoadDate: '2025-09-09' })],
+      IN_PROGRESS_THRESHOLD, NOW,
+    )
+    expect(quiet.autoExcluded.size).toBe(0)
+    expect(quiet.excluded.size).toBe(0)
     // Average = 100/100 = 1.
-    expect(res.averages.get('corn')?.yield).toBeCloseTo(1, 6)
-    const p = res.progress.get('corn')!
+    expect(quiet.averages.get('corn')?.yield).toBeCloseTo(1, 6)
+    const p = quiet.progress.get('corn')!
     expect(p.completedAcres).toBe(100)
     expect(p.totalAcres).toBe(100)
     expect(p.pctComplete).toBeCloseTo(100, 6)
   })
 
-  it('a single harvested field with an unharvested sibling still has no baseline', () => {
-    // Only one field has bushels → harvested.length === 1 → no in-progress check.
+  it('an unharvested sibling changes nothing — the harvested one is still the active field', () => {
     const rows = [
       row({ id: 'a', acres: 100, dryBu: 100, lastLoadDate: '2025-09-19' }),
       row({ id: 'b', acres: 100, dryBu: 0, lastLoadDate: null }),
     ]
     const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
-    expect(res.autoExcluded.get('a')).toBeUndefined()
+    expect(res.autoExcluded.get('a')).toBe('in_progress')
     expect(res.autoExcluded.get('b')).toBe('unharvested')
-    expect(res.excluded.get('a')).toBeUndefined()
+    expect(res.excluded.get('a')).toBe('in_progress')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The active field is never complete: the field with loads and no later-dated
+// load on any other field of the crop is the one the combine is in.
+// ---------------------------------------------------------------------------
+describe('analyzeYields — the active field is never complete', () => {
+  // Two settled fields set a 190 baseline; `cur` yields a normal 185.
+  const settled = [
+    row({ id: 'a', acres: 100, dryBu: 20000, lastLoadDate: '2025-09-05' }),
+    row({ id: 'b', acres: 100, dryBu: 18000, lastLoadDate: '2025-09-06' }),
+  ]
+
+  it('one field loading, normal yield, no other-field loads, day 3 → in progress', () => {
+    // cur's last load was 2025-09-17 (3 days before NOW) and nothing later
+    // has landed anywhere — the combine is still in it.
+    const rows = [...settled, row({ id: 'cur', acres: 100, dryBu: 18500, lastLoadDate: '2025-09-17' })]
+    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
+    expect(res.autoExcluded.get('cur')).toBe('in_progress')
+    expect(res.excluded.get('cur')).toBe('in_progress')
+    expect(res.excluded.has('a')).toBe(false)
+    expect(res.excluded.has('b')).toBe(false)
+    // The averages hold at the settled 190 — a perfectly normal partial
+    // number is still partial.
+    expect(res.averages.get('corn')?.yield).toBeCloseTo(190, 6)
+    expect(res.progress.get('corn')?.inProgressAcres).toBe(100)
+  })
+
+  it('the same field after a later-dated load on another field → complete under the yield rules', () => {
+    const rows = [
+      ...settled,
+      row({ id: 'cur', acres: 100, dryBu: 18500, lastLoadDate: '2025-09-17' }),
+      row({ id: 'next', acres: 100, dryBu: 6000, lastLoadDate: '2025-09-19' }), // moved on
+    ]
+    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
+    expect(res.excluded.has('cur')).toBe(false)            // normal yield → complete
+    expect(res.excluded.get('next')).toBe('in_progress')   // the new active field (and low)
+    // Average over a+b+cur = (20000+18000+18500)/300 = 188.333…
+    expect(res.averages.get('corn')?.yield).toBeCloseTo(56500 / 300, 6)
+  })
+
+  it('the same field with a low yield stays in progress after the move — the standing low-yield rule', () => {
+    const rows = [
+      ...settled,
+      row({ id: 'cur', acres: 100, dryBu: 5000, lastLoadDate: '2025-09-17' }), // 50 bu/ac
+      row({ id: 'next', acres: 100, dryBu: 18000, lastLoadDate: '2025-09-19' }),
+    ]
+    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
+    expect(res.excluded.get('cur')).toBe('in_progress')
+    expect(res.excluded.get('next')).toBe('in_progress')
+    expect(res.averages.get('corn')?.yield).toBeCloseTo(190, 6)
+  })
+
+  it('the same field with crop-wide 10-day silence → complete', () => {
+    // cur's 2025-09-09 load is the crop's newest — 11 days ago. Harvest has
+    // wrapped or paused, so the hold clears and it counts.
+    const rows = [...settled, row({ id: 'cur', acres: 100, dryBu: 18500, lastLoadDate: '2025-09-09' })]
+    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
+    expect(res.autoExcluded.has('cur')).toBe(false)
+    expect(res.excluded.has('cur')).toBe(false)
+    expect(res.averages.get('corn')?.yield).toBeCloseTo(56500 / 300, 6)
+    expect(res.progress.get('corn')?.pctComplete).toBeCloseTo(100, 6)
+  })
+
+  it('the last field of the season never gets an other-field load — it completes only via the quiet clock or count anyway', () => {
+    const last = row({ id: 'last', acres: 100, dryBu: 18500, lastLoadDate: '2025-09-15' })
+    const others = [
+      row({ id: 'a', acres: 100, dryBu: 20000, lastLoadDate: '2025-09-05' }),
+      row({ id: 'b', acres: 100, dryBu: 18000, lastLoadDate: '2025-09-12' }),
+    ]
+    // Day 5 after its last load: still held, even though every other field
+    // has finished and its yield is normal.
+    const day5 = analyzeYields([...others, last], IN_PROGRESS_THRESHOLD, NOW)
+    expect(day5.excluded.get('last')).toBe('in_progress')
+    expect(day5.excluded.has('b')).toBe(false)
+    // Its own last load IS the crop's last load: the crop-wide quiet clock
+    // and "no later load anywhere" are the same test for it. At day 11 the
+    // crop is quiet → complete.
+    const day11 = analyzeYields([...others, last], IN_PROGRESS_THRESHOLD, new Date('2025-09-26T12:00:00Z'))
+    expect(day11.excluded.has('last')).toBe(false)
+    expect(day11.progress.get('corn')?.pctComplete).toBeCloseTo(100, 6)
+    // Or "count anyway" completes it right now.
+    const counted = analyzeYields([...others, { ...last, override: true }], IN_PROGRESS_THRESHOLD, NOW)
+    expect(counted.autoExcluded.get('last')).toBe('in_progress')
+    expect(counted.excluded.has('last')).toBe(false)
+    expect(counted.progress.get('corn')?.pctComplete).toBeCloseTo(100, 6)
+  })
+
+  it('two fields loaded the same day are both held — dates alone cannot say which one the combine left', () => {
+    const rows = [
+      ...settled,
+      row({ id: 'x', acres: 100, dryBu: 18500, lastLoadDate: '2025-09-19' }),
+      row({ id: 'y', acres: 100, dryBu: 19000, lastLoadDate: '2025-09-19' }),
+    ]
+    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
+    expect(res.excluded.get('x')).toBe('in_progress')
+    expect(res.excluded.get('y')).toBe('in_progress')
+  })
+
+  it('the explicit markers still complete the active field: combine harvest_complete and the crop-level flag', () => {
+    const rows = [...settled, row({ id: 'cur', acres: 100, dryBu: 18500, lastLoadDate: '2025-09-17', combineComplete: true })]
+    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
+    expect(res.excluded.has('cur')).toBe(false)
+    // And the crop-level harvest-complete key overrides at the status seam.
+    const held = analyzeYields([...settled, row({ id: 'cur', acres: 100, dryBu: 18500, lastLoadDate: '2025-09-17' })], IN_PROGRESS_THRESHOLD, NOW)
+    expect(harvestStatusOf({ id: 'cur', crop_id: 'corn', season_year: 2025 }, held.excluded, new Set(['corn|2025']))).toBe('complete')
+    expect(harvestStatusOf({ id: 'cur', crop_id: 'corn', season_year: 2025 }, held.excluded, new Set())).toBe('in_progress')
   })
 })
 
@@ -687,12 +841,14 @@ describe('analyzeYields — weighted average over survivors', () => {
 
 describe('analyzeYields — multiple crops handled independently', () => {
   it('classifies and averages each crop separately', () => {
+    // Both crops are quiet (loads 2+ weeks old) so no field is the active
+    // one — isolating the per-crop bookkeeping.
     const rows = [
       // corn: two normal fields, weighted avg (20000+18000)/200 = 190.
-      row({ id: 'c1', cropId: 'corn', acres: 100, dryBu: 20000, lastLoadDate: '2025-09-10' }),
-      row({ id: 'c2', cropId: 'corn', acres: 100, dryBu: 18000, lastLoadDate: '2025-09-12' }),
+      row({ id: 'c1', cropId: 'corn', acres: 100, dryBu: 20000, lastLoadDate: '2025-09-01' }),
+      row({ id: 'c2', cropId: 'corn', acres: 100, dryBu: 18000, lastLoadDate: '2025-09-03' }),
       // beans: one harvested (60 bu/ac), one unharvested.
-      row({ id: 'b1', cropId: 'beans', acres: 100, dryBu: 6000, lastLoadDate: '2025-09-11' }),
+      row({ id: 'b1', cropId: 'beans', acres: 100, dryBu: 6000, lastLoadDate: '2025-09-02' }),
       row({ id: 'b2', cropId: 'beans', acres: 100, dryBu: 0, lastLoadDate: null }),
     ]
     const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
@@ -752,12 +908,13 @@ describe('cropsWithCompleteHarvest', () => {
   it('a crop is complete only when EVERY field is harvested', () => {
     const plantings = [pl('a', 'f1', 'corn', 100), pl('b', 'f2', 'corn', 100)]
     const agg = new Map<string, FieldCropAgg>([
-      ['f1|corn|2026', { dryBu: 18000, lastLoadDate: '2025-09-10' }],
+      ['f1|corn|2026', { dryBu: 18000, lastLoadDate: '2025-09-05' }],
       ['f2|corn|2026', { dryBu: 0, lastLoadDate: null }], // unharvested
     ])
     expect(cropsWithCompleteHarvest({ plantings, aggByKey: agg, cropYear: 2026, cropCompleteKeys: new Set(), now: NOW }).has('corn')).toBe(false)
-    // Both fields now harvested at similar yields (last loads stale → not in-progress).
-    agg.set('f2|corn|2026', { dryBu: 17000, lastLoadDate: '2025-09-12' })
+    // Both fields now harvested at similar yields, and the crop has been
+    // quiet 12 days (last loads stale → nothing is the active field).
+    agg.set('f2|corn|2026', { dryBu: 17000, lastLoadDate: '2025-09-08' })
     expect(cropsWithCompleteHarvest({ plantings, aggByKey: agg, cropYear: 2026, cropCompleteKeys: new Set(), now: NOW }).has('corn')).toBe(true)
   })
 

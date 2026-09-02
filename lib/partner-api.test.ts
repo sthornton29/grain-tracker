@@ -292,7 +292,10 @@ describe('buildProductionRecords', () => {
   const args = { plantings, loads, splits, ginReceipts, fields, farms, entities, crops }
 
   it('computes grain dry bushels per field and cotton lint lbs, year-scoped', () => {
-    const out = buildProductionRecords({ ...args, year: 2026 })
+    // Viewed weeks after the last load: the crop is quiet, so the lone corn
+    // field is no longer "the field being cut" and reads complete.
+    const settled = new Date('2026-10-20T12:00:00Z')
+    const out = buildProductionRecords({ ...args, year: 2026, now: settled })
     expect(out).toHaveLength(2)
     const corn = out.find((r) => r.crop === 'Corn')!
     expect(corn).toMatchObject({
@@ -313,7 +316,7 @@ describe('buildProductionRecords', () => {
     })
     // The crop-level flag completes it, exactly like the Yields page.
     const done = buildProductionRecords({
-      ...args, year: 2026,
+      ...args, year: 2026, now: settled,
       cropAssumptions: [{ crop_id: 'c-cotton', crop_year: 2026, harvest_complete: true }],
     }).find((r) => r.crop === 'Cotton')!
     expect(done.harvest_status).toBe('complete')
@@ -390,7 +393,9 @@ describe('buildProductionRecords — harvest_status', () => {
     // fx settled at 200 bu/ac (load 15 days before NOW); fy low at 50 bu/ac
     // with a recent load; fz loaded AFTER fy (the Parker case). fy stays in
     // progress — harvested_acres 0, but production_units still flow so the
-    // partner can show progress.
+    // partner can show progress. fz, with the crop's newest load, is the
+    // field the combine is in now — held in progress too (the active-field
+    // rule), exactly as the Yields page shows it.
     const out = buildProductionRecords({
       ...base,
       plantings: [pl('pA', 'fx'), pl('pB', 'fy'), pl('pC', 'fz')],
@@ -400,7 +405,19 @@ describe('buildProductionRecords — harvest_status', () => {
       harvest_status: 'in_progress', harvested_acres: 0, production_units: 5000, planted_acres: 100,
     })
     expect(rowOf(out, 'fx')).toMatchObject({ harvest_status: 'complete', harvested_acres: 100 })
-    expect(rowOf(out, 'fz')).toMatchObject({ harvest_status: 'complete', harvested_acres: 100 })
+    expect(rowOf(out, 'fz')).toMatchObject({ harvest_status: 'in_progress', harvested_acres: 0, production_units: 18000 })
+    // Once a later load lands on yet another field, fz counts (normal yield).
+    const movedOn = buildProductionRecords({
+      ...base,
+      fields: [...base.fields, pf('fw')],
+      plantings: [pl('pA', 'fx'), pl('pB', 'fy'), pl('pC', 'fz'), pl('pD', 'fw')],
+      loads: [
+        ld('l1', 'fx', '2026-09-05', 20000), ld('l2', 'fy', '2026-09-17', 5000),
+        ld('l3', 'fz', '2026-09-19', 18000), ld('l4', 'fw', '2026-09-20', 6000),
+      ],
+    })
+    expect(rowOf(movedOn, 'fz')).toMatchObject({ harvest_status: 'complete', harvested_acres: 100 })
+    expect(rowOf(movedOn, 'fw')).toMatchObject({ harvest_status: 'in_progress' })
   })
 
   it('the "count anyway" override completes the field (yield_include_override)', () => {

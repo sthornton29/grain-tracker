@@ -8,22 +8,29 @@
 // (payloads, mpg, speed, hours, wear, ownership toggle, the distances
 // table + AI estimates) live in the ⚙ slide-over, persisted per org
 // (freight_settings/freight_distances, 078). Math in lib/freight-math.ts.
+//
+// Distances are organized BY BUYER (buyer heading → its delivery
+// locations, the Settings → Buyers hierarchy) with one directly-editable
+// miles cell per bin site: type a number and it saves at once as 'manual'
+// — no address, no estimate needed. "Estimate missing distances (AI)" is an
+// optional bulk fill for the blanks only (planDistanceSaves).
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import {
-  FREIGHT_DEFAULTS, distanceFor, freightCost, payloadForCrop,
-  planDistanceSaves, roadMilesEstimate,
+  FREIGHT_DEFAULTS, applyManualDistance, distanceFor, freightCost, groupDistancesByBuyer,
+  manualDistanceRow, payloadForCrop, planDistanceSaves, roadMilesEstimate,
   type DistanceEstimate, type FreightDistanceRow, type FreightSettings,
 } from '@/lib/freight-math'
 import ExportBar from '@/components/export-bar'
-import { EmptyState, fmtNum, numCell, textCell, theadCls } from '@/components/reports/report-kit'
+import { EmptyState, fmtNum, numCell, theadCls } from '@/components/reports/report-kit'
 import type { ExportPayload } from '@/lib/exports'
 import type { Crop } from '@/lib/types'
 
 type BinSiteRow = { id: string; name: string; address: string | null; latitude: number | string | null; longitude: number | string | null }
-type LocationRow = { id: string; name: string; address: string | null; latitude: number | string | null; longitude: number | string | null; buyer: { name: string } | null }
+type LocationRow = { id: string; buyer_id: string | null; name: string; address: string | null; latitude: number | string | null; longitude: number | string | null }
+type BuyerRow = { id: string; name: string }
 type SettingsRow = {
   id: string
   truck_mpg: number | string
@@ -54,6 +61,7 @@ export default function FreightMathPage() {
   const [crops, setCrops] = useState<Crop[]>([])
   const [binSites, setBinSites] = useState<BinSiteRow[]>([])
   const [locations, setLocations] = useState<LocationRow[]>([])
+  const [buyers, setBuyers] = useState<BuyerRow[]>([])
   const [distances, setDistances] = useState<DistRow[]>([])
   const [settingsRow, setSettingsRow] = useState<SettingsRow | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -80,7 +88,9 @@ export default function FreightMathPage() {
   const [estimating, setEstimating] = useState(false)
   const [estimateReview, setEstimateReview] = useState<Array<DistanceEstimate & { label: string }> | null>(null)
   const [estimateNote, setEstimateNote] = useState<string | null>(null)
+  // In-flight typed miles, keyed `${bin_site_id}|${delivery_location_id}`.
   const [editMiles, setEditMiles] = useState<Record<string, string>>({})
+  const [justSaved, setJustSaved] = useState<string | null>(null)
 
   const refetchDistances = useCallback(async () => {
     const { data } = await supabase.from('freight_distances').select('*')
@@ -90,10 +100,11 @@ export default function FreightMathPage() {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const [c, bs, dl, fd, fs] = await Promise.all([
+      const [c, bs, dl, by, fd, fs] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('bin_sites').select('id, name, address, latitude, longitude').order('name'),
-        supabase.from('delivery_locations').select('id, name, address, latitude, longitude, buyer:buyers(name)').order('name'),
+        supabase.from('delivery_locations').select('id, buyer_id, name, address, latitude, longitude').order('name'),
+        supabase.from('buyers').select('id, name').order('name'),
         supabase.from('freight_distances').select('*'),
         supabase.from('freight_settings').select('*').maybeSingle(),
       ])
@@ -101,6 +112,7 @@ export default function FreightMathPage() {
       setCrops((c.data as Crop[]) || [])
       setBinSites(((bs.data ?? []) as unknown as BinSiteRow[]))
       setLocations(((dl.data ?? []) as unknown as LocationRow[]))
+      setBuyers(((by.data ?? []) as BuyerRow[]))
       // 078 not applied yet → the calculator still works with defaults.
       if (fd.error || fs.error) setTablesMissing(true)
       setDistances(((fd.data ?? []) as DistRow[]))
@@ -182,6 +194,14 @@ export default function FreightMathPage() {
     }
   }, [tablesMissing, mpgStr, speedStr, hoursStr, wearStr, includeOwnership, ownershipStr, diesel, labor, payloadOverrides, settingsRow, supabase])
 
+  // The by-buyer distance model: buyer → locations → a miles cell per bin
+  // site. Drives both the destination picker and the assumptions table.
+  const groups = useMemo(
+    () => groupDistancesByBuyer({ buyers, locations, binSites, distances }),
+    [buyers, locations, binSites, distances],
+  )
+  const buyerNameOf = (buyerId: string | null) => buyers.find((b) => b.id === buyerId)?.name ?? null
+
   // Destination pick fills the miles from the distance table.
   const destDistance = destinationId && binSiteId ? distanceFor(distances, binSiteId, destinationId) : null
   useEffect(() => {
@@ -234,19 +254,21 @@ export default function FreightMathPage() {
         for (const d of dests) {
           const b = coords.get(`loc:${d.id}`)
           if (!b) continue
+          const buyerName = buyerNameOf(d.buyer_id)
           estimates.push({
             bin_site_id: s.id,
             delivery_location_id: d.id,
             miles: Math.round(roadMilesEstimate(a.lat, a.lon, b.lat, b.lon) * 10) / 10,
-            label: `${s.name} → ${d.name}${d.buyer?.name ? ` (${d.buyer.name})` : ''}`,
+            label: `${s.name} → ${d.name}${buyerName ? ` (${buyerName})` : ''}`,
           })
         }
       }
+      // Blanks only: anything already on file — typed or estimated — is kept.
       const savable = planDistanceSaves(distances, estimates)
       const savableKeys = new Set(savable.map((e) => `${e.bin_site_id}|${e.delivery_location_id}`))
       const review = estimates.filter((e) => savableKeys.has(`${e.bin_site_id}|${e.delivery_location_id}`))
       if (review.length === 0) {
-        setEstimateNote('Nothing to estimate — every pair either has a manual distance (kept) or an endpoint that couldn’t be located.')
+        setEstimateNote('Nothing to estimate — every pair already has miles on file (yours are never touched), or an endpoint has no address to locate. Type miles for those below.')
       } else {
         setEstimateReview(review)
       }
@@ -271,16 +293,35 @@ export default function FreightMathPage() {
     )
     if (error) { setErr(error.message); return }
     setEstimateReview(null)
-    setEstimateNote('Estimates saved — labeled as estimates; correct any of them below and your number sticks.')
+    setEstimateNote('Estimates saved and labeled as estimates. Type over any of them below and your number sticks.')
     refetchDistances()
   }
 
-  async function saveManualMiles(row: DistRow) {
-    const v = N(editMiles[row.id])
-    if (v == null || v <= 0) return
-    const { error } = await supabase.from('freight_distances').update({ miles: v, source: 'manual' }).eq('id', row.id)
+  // A typed mileage saves at once as the user's own number — for any
+  // location, address or not, whatever was there before. A blank or zero
+  // entry just reverts the cell to what's on file.
+  async function saveManualMiles(binSiteId: string, locationId: string, value: string) {
+    const key = `${binSiteId}|${locationId}`
+    const clearEdit = () => setEditMiles((m) => { const next = { ...m }; delete next[key]; return next })
+    const manual = manualDistanceRow(binSiteId, locationId, value)
+    if (!manual) { clearEdit(); return }
+    const current = distanceFor(distances, binSiteId, locationId)
+    if (current && current.source === 'manual' && current.miles === manual.miles) { clearEdit(); return }
+    setErr(null)
+    const { error } = await supabase
+      .from('freight_distances')
+      .upsert(manual, { onConflict: 'org_id,bin_site_id,delivery_location_id' })
     if (error) { setErr(error.message); return }
-    setEditMiles((m) => { const next = { ...m }; delete next[row.id]; return next })
+    // Optimistic: the cell reads back as "yours" immediately; the refetch
+    // brings the real row id.
+    setDistances((rows) =>
+      applyManualDistance(rows, binSiteId, locationId, manual.miles).map((r) =>
+        'id' in r ? (r as DistRow) : { ...r, id: `pending:${key}` },
+      ),
+    )
+    clearEdit()
+    setJustSaved(key)
+    setTimeout(() => setJustSaved((k) => (k === key ? null : k)), 2000)
     refetchDistances()
   }
 
@@ -370,12 +411,23 @@ export default function FreightMathPage() {
         </label>
         <label className="text-sm text-slate-700">
           Destination (fills miles)
-          <select value={destinationId} onChange={(e) => setDestinationId(e.target.value)} className={`block mt-0.5 max-w-56 ${inputCls}`}>
+          <select value={destinationId} onChange={(e) => setDestinationId(e.target.value)} className={`block mt-0.5 max-w-64 ${inputCls}`}>
             <option value="">— type miles —</option>
-            {locations.map((l) => <option key={l.id} value={l.id}>{l.name}{l.buyer?.name ? ` (${l.buyer.name})` : ''}</option>)}
+            {groups.filter((g) => g.locations.length > 0).map((g) => (
+              <optgroup key={g.buyerId ?? 'other'} label={g.buyerName}>
+                {g.locations.map((l) => {
+                  const d = binSiteId ? l.milesBySite.get(binSiteId) ?? null : null
+                  return (
+                    <option key={l.id} value={l.id}>
+                      {l.name}{d ? ` — ${fmtNum(d.miles, 1)} mi` : ' — no miles yet'}
+                    </option>
+                  )
+                })}
+              </optgroup>
+            ))}
           </select>
           {destinationId && binSites.length > 1 && (
-            <select value={binSiteId} onChange={(e) => setBinSiteId(e.target.value)} className={`block mt-1 max-w-56 ${inputCls}`}>
+            <select value={binSiteId} onChange={(e) => setBinSiteId(e.target.value)} className={`block mt-1 max-w-64 ${inputCls}`}>
               {binSites.map((b) => <option key={b.id} value={b.id}>from {b.name}</option>)}
             </select>
           )}
@@ -383,7 +435,7 @@ export default function FreightMathPage() {
             <span className="block text-xs text-slate-500 mt-0.5">
               {destDistance
                 ? `${fmtNum(destDistance.miles, 1)} mi (${destDistance.source === 'manual' ? 'your number' : 'estimate'})`
-                : 'No distance on file — estimate them under ⚙ Assumptions.'}
+                : 'No miles on file yet — type them under ⚙ Assumptions.'}
             </span>
           )}
         </label>
@@ -561,8 +613,10 @@ export default function FreightMathPage() {
                 </button>
               </div>
               <p className="text-xs text-slate-500">
-                Road-distance <em>estimates</em> between your bin sites and each delivery location (straight-line × 1.25).
-                Correct any of them and your number sticks — a re-estimate never overwrites it.
+                One-way miles from each bin site to each delivery location, by buyer. Type the miles you know — each
+                number saves as soon as you leave the box and is marked <em>yours</em>. No address needed. The estimate
+                is optional: it fills only the blanks (straight-line × 1.25 between addresses) and never changes a
+                number that&rsquo;s already here.
               </p>
               {estimateNote && <p className="text-xs rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-slate-600">{estimateNote}</p>}
               {estimateReview && (
@@ -581,46 +635,84 @@ export default function FreightMathPage() {
                   </div>
                 </div>
               )}
-              {distances.length > 0 && (
-                <table className="min-w-full text-sm">
-                  <thead className="bg-slate-50 text-slate-700">
-                    <tr>
-                      <th className="text-left px-2 py-1.5">From</th>
-                      <th className="text-left px-2 py-1.5">To</th>
-                      <th className="text-right px-2 py-1.5">Miles</th>
-                      <th className="px-2 py-1.5"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {distances.map((d) => {
-                      const site = binSites.find((b) => b.id === d.bin_site_id)
-                      const loc = locations.find((l) => l.id === d.delivery_location_id)
-                      return (
-                        <tr key={d.id} className="border-t border-slate-100">
-                          <td className={textCell}>{site?.name ?? '—'}</td>
-                          <td className={textCell}>{loc?.name ?? '—'}{loc?.buyer?.name ? ` (${loc.buyer.name})` : ''}</td>
-                          <td className={`${numCell} tabular-nums`}>
-                            <input
-                              type="number" step="0.1"
-                              value={editMiles[d.id] ?? String(N(d.miles) ?? '')}
-                              onChange={(e) => setEditMiles((m) => ({ ...m, [d.id]: e.target.value }))}
-                              className={`${inputCls} w-20 text-right`}
-                            />
-                          </td>
-                          <td className="px-2 py-1.5 whitespace-nowrap">
-                            {editMiles[d.id] != null && editMiles[d.id] !== String(N(d.miles) ?? '') ? (
-                              <button type="button" onClick={() => saveManualMiles(d)} className="text-xs font-semibold text-brand-deep hover:underline">Save</button>
-                            ) : (
-                              <span className={`text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 ${d.source === 'manual' ? 'bg-sky-100 text-sky-800' : 'bg-amber-100 text-amber-800'}`}>
-                                {d.source === 'manual' ? 'yours' : 'estimate'}
-                              </span>
-                            )}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
+              {binSites.length === 0 ? (
+                <p className="text-xs text-slate-500">
+                  Add a bin site under <a href="/settings/bin-sites" className="text-brand-deep underline">Settings → Bin Sites</a> to enter distances from it.
+                </p>
+              ) : groups.length === 0 ? (
+                <p className="text-xs text-slate-500">
+                  No buyers yet — add buyers and their delivery locations under <a href="/settings/buyers" className="text-brand-deep underline">Settings → Buyers</a>.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-slate-50 text-slate-700">
+                      <tr>
+                        <th className="text-left px-2 py-1.5">Delivery location</th>
+                        {binSites.map((b) => (
+                          <th key={b.id} className="text-right px-2 py-1.5 whitespace-nowrap">
+                            {binSites.length > 1 ? `Miles from ${b.name}` : 'Miles (one-way)'}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {groups.map((g) => (
+                        <Fragment key={g.buyerId ?? 'other'}>
+                          <tr className="bg-slate-100/70">
+                            <td colSpan={1 + binSites.length} className="px-2 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-600">
+                              {g.buyerName}
+                            </td>
+                          </tr>
+                          {g.locations.length === 0 && (
+                            <tr>
+                              <td colSpan={1 + binSites.length} className="px-4 py-1.5 text-xs text-slate-400">No delivery locations.</td>
+                            </tr>
+                          )}
+                          {g.locations.map((loc) => (
+                            <tr key={loc.id} className="border-t border-slate-100">
+                              <td className="px-2 py-1.5 pl-5 align-top">
+                                <div>{loc.name}</div>
+                                {!loc.hasAddress && (
+                                  <div className="text-[11px] text-slate-400">No address on file — type the miles you know.</div>
+                                )}
+                              </td>
+                              {binSites.map((b) => {
+                                const key = `${b.id}|${loc.id}`
+                                const saved = loc.milesBySite.get(b.id) ?? null
+                                const shown = editMiles[key] ?? (saved ? String(saved.miles) : '')
+                                return (
+                                  <td key={b.id} className="px-2 py-1.5 text-right whitespace-nowrap align-top">
+                                    <input
+                                      type="number" step="0.1" min="0" inputMode="decimal"
+                                      value={shown}
+                                      placeholder="—"
+                                      disabled={tablesMissing}
+                                      aria-label={`Miles from ${b.name} to ${loc.name}`}
+                                      onChange={(e) => setEditMiles((m) => ({ ...m, [key]: e.target.value }))}
+                                      onBlur={() => { if (editMiles[key] != null) saveManualMiles(b.id, loc.id, editMiles[key]) }}
+                                      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                                      className={`${inputCls} w-24 text-right tabular-nums disabled:bg-slate-100`}
+                                    />
+                                    <span className="block text-[10px] uppercase tracking-wide mt-0.5 h-3">
+                                      {justSaved === key ? (
+                                        <span className="text-green-700">saved</span>
+                                      ) : saved ? (
+                                        <span className={saved.source === 'manual' ? 'text-sky-800' : 'text-amber-800'}>
+                                          {saved.source === 'manual' ? 'yours' : 'estimate'}
+                                        </span>
+                                      ) : null}
+                                    </span>
+                                  </td>
+                                )
+                              })}
+                            </tr>
+                          ))}
+                        </Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
           </div>

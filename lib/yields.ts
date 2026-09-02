@@ -454,6 +454,18 @@ export const IN_PROGRESS_MIN_PEERS = 2
 
 // Per crop:
 //   * a row with no bushels is "unharvested" → excluded.
+//   * THE ACTIVE FIELD IS NEVER COMPLETE. While the crop is active (loads
+//     within the window), a field with loads but NO later-dated load from
+//     any other field of the crop is the one the combine is sitting in —
+//     "in_progress" regardless of yield, even a perfectly normal one. The
+//     hold clears when EITHER a later-dated load lands on another field
+//     (moved on — the yield rules below then decide: normal → complete, low
+//     → stays in progress) OR the crop goes quiet past the window (harvest
+//     wrapped or paused; for the trailing field of the season its own last
+//     load IS the crop's last load, so both formulations coincide). Two
+//     fields loaded the same day are both held — dates alone can't say
+//     which one the combine left. "Count anyway" and the explicit
+//     harvest-complete markers still complete a field from any state.
 //   * LOW YIELD is the primary in-progress signal, and it PERSISTS. A field
 //     whose yield is more than `threshold` below the crop's baseline is
 //     "in_progress" → excluded (its partial bushels would understate the true
@@ -466,9 +478,12 @@ export const IN_PROGRESS_MIN_PEERS = 2
 //         harvest-complete flag (applied by harvestStatusOf's callers), OR
 //       - more than IN_PROGRESS_STALE_DAYS (10) of silence since the field's
 //         last load — a long, conservative "clearly not coming back" fallback.
-//     A field at/above the baseline (within `threshold`) is complete as usual —
-//     the low-yield gate is what separates "partially harvested" from "done",
-//     and a normal-yielding field is never held in-progress by this logic.
+//     A field at/above the baseline (within `threshold`) is complete as usual
+//     once the combine has moved on — the low-yield gate is what separates
+//     "partially harvested" from "done" for a field that is no longer the
+//     active one; a normal-yielding field is never held by the LOW-YIELD
+//     logic (only by the active-field hold above, until the next field's
+//     later-dated load arrives).
 //     NOTE: a field that genuinely finished at a terrible number (a real crop
 //     failure) is indistinguishable from one abandoned mid-harvest — "count
 //     anyway" is the intended path to include it before the quiet window runs.
@@ -540,7 +555,23 @@ export function analyzeYields(
         // though while the crop is active they remain candidates themselves.
         const isResting = (r: YieldInput) =>
           r.lastLoadDate == null || daysSince(r.lastLoadDate) > IN_PROGRESS_STALE_DAYS
+        // The field the combine is in right now: loads, and no OTHER field
+        // of the crop has a later-dated load. Held in progress whatever its
+        // yield — you can't be done with a field you're still cutting. (A
+        // field with bushels but no load date can't be placed in time and
+        // is not held.)
+        const isActiveField = (cand: YieldInput) => {
+          const own = cand.lastLoadDate ? cand.lastLoadDate.slice(0, 10) : null
+          if (own == null) return false
+          return !harvested.some(
+            (r) => r.id !== cand.id && r.lastLoadDate != null && r.lastLoadDate.slice(0, 10) > own,
+          )
+        }
         for (const cand of harvested) {
+          if (isActiveField(cand)) {
+            autoExcluded.set(cand.id, 'in_progress')
+            continue
+          }
           const others = harvested.filter((r) => r.id !== cand.id)
           let bu = 0
           let ac = 0

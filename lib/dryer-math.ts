@@ -6,15 +6,20 @@
 //     stored in the fuel's OWN unit — gal for LP, ccf (100 cf) for NG —
 //     converted between fuels by BTU parity: propane 91,500 BTU/gal, natural
 //     gas 1,020 BTU/cf (1 gal LP ≈ 89.7 cf ≈ 0.897 ccf);
-//   * shrink is the PHYSICAL weight loss of removing water, at the standard
-//     1.183%/point handling-free shrink factor, valued at the grain price —
-//     shown separately so total cost of drying = fuel (+ fan) + shrink;
-//   * overdrying (below the crop's base moisture) costs lost sellable volume
-//     (the same 1.183%/pt × price) PLUS the fuel spent removing points
-//     nobody pays for;
-//   * the underdrying comparison prices "haul it wet" from the buyer's
-//     discount schedule (lib/discount-schedules.ts does the tier walk) next
-//     to "dry it yourself."
+//   * THE COST OF DRYING TO BASE IS FUEL (+ FAN ELECTRICITY) ONLY. The water
+//     above base moisture is unsellable either way: deliver wet and the
+//     buyer's shrink table takes it off the ticket; dry it and it goes up the
+//     stack. The counterfactual is identical, so the weight lost reaching
+//     base is NOT a cost of drying — it is reported (shrinkPct) as the
+//     physical reality, never summed into totalPerBu;
+//   * overdrying (below the crop's base moisture) IS a cost: every point past
+//     base gives away sellable weight (1.183%/pt × the grain price) AND burns
+//     fuel removing points nobody pays for — so the grain price is only
+//     needed for the below-base rows;
+//   * the dry-it-or-haul-it-wet comparison prices "haul it wet" from the
+//     buyer's discount schedule (lib/discount-schedules.ts does the tier
+//     walk) next to "dry it yourself" = fuel (+ fan) — apples to apples,
+//     because the buyer's shrink applies in both worlds.
 
 import {
   factorMeasurement,
@@ -78,29 +83,34 @@ export type DryingCost = {
   energyPerBu: number
   /** Energy $/bu-pt (fuel + fan). */
   energyPerBuPt: number
-  /** Physical shrink: weight lost drying to base, % of the wet weight. */
+  /** INFORMATIONAL: weight lost reaching base, % of the wet weight. Happens
+   *  whether you dry it or the buyer's shrink table takes it — not a cost of
+   *  drying, and never part of totalPerBu. */
   shrinkPct: number
-  /** That shrink valued at the grain price, $/bu. */
-  shrinkValuePerBu: number
-  /** energy + shrink — the whole cost of taking the water out, $/bu. */
+  /** INFORMATIONAL: that weight valued at the grain price, $/bu — what the
+   *  buyer's shrink table would take off the ticket. Null without a price. */
+  shrinkValuePerBu: number | null
+  /** THE cost of drying to base = fuel + fan, $/bu. Shrink is excluded on
+   *  purpose (see the header note). */
   totalPerBu: number
 }
 
 /** Cost of drying from `moisture` down to `baseMoisture` (0 points when
- *  already at/below base). */
+ *  already at/below base). The grain price is optional — it only values the
+ *  informational shrink figure, never the cost. */
 export function dryingCost(
   moisture: number,
   baseMoisture: number,
   dryer: DryerSpec,
   prices: FuelPrices,
-  grainPrice: number,
+  grainPrice?: number | null,
 ): DryingCost {
   const points = Math.max(0, moisture - baseMoisture)
   const fuelPerBu = points * dryer.fuelPerBuPt * prices.fuelPrice
   const fanPerBu = points * (dryer.fanKwhPerBuPt ?? 0) * (prices.electricRate ?? DEFAULT_ELECTRIC_RATE)
   const energyPerBu = fuelPerBu + fanPerBu
   const shrinkPct = points * SHRINK_PCT_PER_POINT
-  const shrinkValuePerBu = (shrinkPct / 100) * grainPrice
+  const shrinkValuePerBu = grainPrice != null && grainPrice > 0 ? (shrinkPct / 100) * grainPrice : null
   return {
     points,
     fuelPerBu,
@@ -109,13 +119,15 @@ export function dryingCost(
     energyPerBuPt: energyCostPerBuPt(dryer, prices),
     shrinkPct,
     shrinkValuePerBu,
-    totalPerBu: energyPerBu + shrinkValuePerBu,
+    totalPerBu: energyPerBu,
   }
 }
 
 export type OverdryingCost = {
   /** Points dried BELOW base. */
   pointsOver: number
+  /** Sellable weight given away, % (pointsOver × 1.183%). */
+  lostVolumePct: number
   /** Sellable volume given away: pointsOver × 1.183% × price, $/bu. */
   lostVolumePerBu: number
   /** The fuel + fan spent removing those unpaid points, $/bu. */
@@ -125,7 +137,8 @@ export type OverdryingCost = {
 }
 
 /** What stopping BELOW base costs: drying to `finalMoisture` < base gives
- *  away weight nobody pays for AND burns fuel doing it. */
+ *  away weight nobody pays for AND burns fuel doing it. This is the one
+ *  place the grain price is a genuine input. */
 export function overdryingCost(
   finalMoisture: number,
   baseMoisture: number,
@@ -134,9 +147,10 @@ export function overdryingCost(
   grainPrice: number,
 ): OverdryingCost {
   const pointsOver = Math.max(0, baseMoisture - finalMoisture)
-  const lostVolumePerBu = pointsOver * (SHRINK_PCT_PER_POINT / 100) * grainPrice
+  const lostVolumePct = pointsOver * SHRINK_PCT_PER_POINT
+  const lostVolumePerBu = (lostVolumePct / 100) * grainPrice
   const extraEnergyPerBu = pointsOver * energyCostPerBuPt(dryer, prices)
-  return { pointsOver, lostVolumePerBu, extraEnergyPerBu, totalPerBu: lostVolumePerBu + extraEnergyPerBu }
+  return { pointsOver, lostVolumePct, lostVolumePerBu, extraEnergyPerBu, totalPerBu: lostVolumePerBu + extraEnergyPerBu }
 }
 
 // ---------- the "dry it or haul it wet" comparison ----------
@@ -145,17 +159,20 @@ export type WetVsDryVerdict = {
   /** The buyer's schedule discount at this moisture, ¢/bu (moisture-measured
    *  factors only — the tier walk runs in code). Null = no applicable rule. */
   buyerCents: number | null
-  /** Your own total cost of drying those points, ¢/bu (energy + shrink). */
+  /** Your own cost of drying those points, ¢/bu — fuel + fan only. The
+   *  buyer's shrink applies whether you dry or haul wet, so it cancels. */
   dryCents: number
   cheaper: 'dry' | 'haul_wet' | 'even' | null
 }
 
+/** `grainPrice` is only used to price a schedule rule written as a percent
+ *  of price — never to add shrink to your side. */
 export function wetVsDry(
   moisture: number,
   baseMoisture: number,
   dryer: DryerSpec,
   prices: FuelPrices,
-  grainPrice: number,
+  grainPrice: number | null,
   scheduleRules: ReadonlyArray<ScheduleRuleShape>,
 ): WetVsDryVerdict {
   const own = dryingCost(moisture, baseMoisture, dryer, prices, grainPrice)
@@ -163,7 +180,7 @@ export function wetVsDry(
   let buyerCents: number | null = null
   for (const rule of scheduleRules) {
     if (factorMeasurement(rule.factor) !== 'moisture') continue
-    const cents = ruleCentsPerBu(rule, moisture, grainPrice)
+    const cents = ruleCentsPerBu(rule, moisture, grainPrice ?? 0)
     if (cents == null) continue
     buyerCents = (buyerCents ?? 0) + cents
   }

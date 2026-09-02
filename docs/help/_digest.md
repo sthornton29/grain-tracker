@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-09-01 · version 0.1.0 · build e0da4f3. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-09-02 · version 0.1.0 · build 24ac465. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -673,23 +673,28 @@ This report lays out your production the way your crop insurance agent needs it:
 
 ## What this page is for
 
-What it costs to take a point of moisture out — and what it costs to take out one too many. Three inputs and the table answers: **Crop · Fuel · Fuel price**. For every incoming moisture from bone-dry to 28% you get the fuel to dry it to base, the weight that drying shrinks away, and the total drying cost per bushel. Rows below base show the price of overdrying in red. It's a calculator, not a record book: nothing here tracks loads.
+What it costs to take a point of moisture out — and what it costs to take out one too many. Three inputs and the table answers: **Crop · Fuel · Fuel price**. For every incoming moisture from bone-dry to 28% you get the fuel (and fan power) to dry it to base — that is the drying cost — plus, for information, the weight that comes off reaching base. Rows below base show the price of overdrying in red. It's a calculator, not a record book: nothing here tracks loads.
 
 ## Setting it up
 
 - **Crop** — sets the base moisture from the crop's own standard (the same base the rest of Turnrow shrinks to).
 - **Fuel** — propane or natural gas, with its price. If a saved dryer is selected, its fuel applies automatically.
-- Everything else lives under **⚙ Assumptions**: your dryer (a saved one, a catalog model, or a standard 0.018 gal-LP-equivalent per bushel-point), the grain price (defaults to today's futures quote for the crop's reference contract — type over it any time), the electric rate, and the calibrate-from-records tool. The line under the inputs always says which dryer and grain price are in play.
+- Everything else lives under **⚙ Assumptions**: your dryer (a saved one, a catalog model, or a standard 0.018 gal-LP-equivalent per bushel-point), the electric rate, the calibrate-from-records tool, and the grain price. The grain price only matters for the rows *below* base (overdrying) — it defaults to today's futures quote for the crop's reference contract, and you can type over it any time. The line under the inputs always says which dryer and grain price are in play.
 
 ## Reading the table
 
-- **Rows above base** are incoming wet grain dried to base: fuel $/bu, the cost per point, the **shrink** (the physical water weight, valued at the grain price — a real cost whether or not you think of it that way), and the total.
+- **Rows above base** are incoming wet grain dried to base: the fuel in cents per bushel, the cost per point, and the **total drying cost** (fuel plus fan electricity). That total is the whole cost of drying.
+- **Weight lost to base** is the grayed-out column beside it: how much of the wet weight is water that comes off reaching base. It is shown so you can see how many bushels leave the truck — it is *not* added into the cost, and hovering it tells you what the buyer's table would take for the same water.
 - **The base row** is the stop line.
-- **Rows below base** are the price of **overdrying**: every half-point past base gives away sellable weight *and* burns fuel removing water nobody pays for.
+- **Rows below base** are the price of **overdrying**: every half-point past base gives away sellable grain *and* burns fuel removing water nobody pays for. These are the only rows that need a grain price.
+
+## Why shrink isn't a drying cost
+
+The water above base moisture is unsellable either way. Haul it to town wet and the buyer's shrink table takes it off the ticket. Dry it yourself and it goes up the stack. You end up with the same dry bushels in both cases, so drying didn't cost you that weight — it was never yours to sell. What drying *does* cost you is the fuel. Below base it's a different story: that weight is real grain you could have sold, which is why the overdrying rows count it.
 
 ## Dry it or haul it wet
 
-An optional comparison at the bottom (collapsed until you open it): pick a buyer whose discount schedule is on file and every wet row shows their dock beside your drying cost, with the call — *Dry it* or *Haul it wet* — and the savings. Schedules live with the buyer under Settings → Buyers; you can also upload one right there in the section. Ask Turnrow can quote the same schedules in plain words.
+An optional comparison at the bottom (collapsed until you open it): pick a buyer whose discount schedule is on file and every wet row shows their moisture dock or drying charge beside your fuel cost, with the call — *Dry it* or *Haul it wet* — and the savings. It's apples to apples: their shrink comes off whether you dry or haul, so it cancels out and only their charge and your fuel remain. Schedules live with the buyer under Settings → Buyers; you can also upload one right there in the section. Ask Turnrow can quote the same schedules in plain words.
 
 ## Calibrating from your records
 
@@ -698,12 +703,13 @@ The honest consumption number is yours, not a brochure's: in ⚙ Assumptions, en
 ## Common questions
 
 - **Where do the catalog numbers come from?** Typical figures by dryer type (cross-flow, mixed-flow, tower, heat recovery). They're starting points, labeled as such — calibrate with your records.
-- **Why does hauling wet sometimes win?** A buyer's drying charge can be less than your fuel plus shrink, especially for a point or two. The comparison uses their posted sheet.
+- **Why does hauling wet sometimes win?** A buyer's drying charge can be less than your fuel, especially on a cheap sheet or for a point or two. The comparison uses their posted sheet.
+- **The old version added shrink into the total — why the change?** Because the shrink happens whether you dry or the buyer does, so it can't be a cost of choosing to dry. Fuel is. The weight is still shown so nothing is hidden.
 - **Does this change any of my data?** No. Only saved dryers (and a calibration you choose to save) persist — the rest is session inputs.
 
 ## If something looks wrong
 
-- No grain price showing: there may be no live quote — enter one under ⚙ Assumptions.
+- The rows below base say to enter a grain price: there's no live quote — enter one under ⚙ Assumptions. The rows above base don't need it.
 - No buyers in the compare list: no discount schedule on file for this crop yet — upload one in the comparison section or on Settings → Buyers.
 - Numbers that don't square with your fuel bills: calibrate from records; the presets are estimates. Still off after that: contact support.
 
@@ -717,8 +723,8 @@ What a haul really costs — and the number that settles picked-up vs delivered 
 
 - **Diesel $/gal · Labor $/hr · Miles (one-way)** — the three inputs. That's the whole main screen.
 - **Crop** — sets the payload per load from the crop's test weight (corn about 950 bushels, soybeans and wheat about 880). Override it under ⚙ Assumptions if your trucks run different.
-- **Destination** — optional: pick a delivery location and the miles fill in from your saved distances (choose which bin site when you have several). No distances yet? Estimate them under ⚙ Assumptions.
-- **⚙ Assumptions** — truck mpg (6.0 loaded/empty average), average speed (45 mph), load/unload and wait time (0.75 hr), wear and repairs ($0.20/mi), and the payload override. All editable, saved for your operation.
+- **Destination** — optional: the picker lists your delivery locations grouped by buyer, each showing the saved miles from your bin site (choose which bin site when you have several). Pick one and the miles fill in. A location with no miles yet says so — type them under ⚙ Assumptions.
+- **⚙ Assumptions** — truck mpg (6.0 loaded/empty average), average speed (45 mph), load/unload and wait time (0.75 hr), wear and repairs ($0.20/mi), the payload override, and the distances table. All editable, saved for your operation.
 
 ## What the breakeven means
 
@@ -728,20 +734,22 @@ The **custom-rate equivalent** ($ per loaded mile) is a sanity check: if a hired
 
 ## Destination distances
 
-- **Estimate missing distances (AI)** looks up the coordinates of your bin sites and delivery locations from their addresses, then estimates road miles (straight-line distance plus a quarter for real roads). You review every number before anything is saved, and they're always labeled *estimate*.
-- **Correct any estimate** in the distances table — type the real miles and save. Your number is marked *yours* and a re-estimate will never overwrite it.
-- Distances need addresses: add them under Settings → Bin Sites and Settings → Buyers (delivery locations).
+- The table under ⚙ Assumptions is organized the way Settings → Buyers is: each **buyer** is a heading, its **delivery locations** sit beneath it, and every location has a miles box for each of your bin sites.
+- **Type the miles you know.** Each number saves as soon as you leave the box and is marked *yours*. No address is needed — a location without an address still gets its row, with a note that typing is the way to fill it. Your number is never changed by anything else on the page.
+- **Estimate missing distances (AI)** is optional. It looks up the coordinates of bin sites and delivery locations that have addresses, estimates road miles (straight-line distance plus a quarter for real roads), and shows them for review before anything is saved. It fills **only the blanks** — it never touches a number that's already there, yours or an earlier estimate. Estimates are always labeled *estimate*; type over one and it becomes yours.
 
 ## Common questions
 
 - **Why doesn't the per-bushel number show for cotton?** Cotton hauls in pounds on module trucks, not a bushel payload — the per-load cost still works.
 - **Should I include ownership costs?** For where-to-haul decisions, no — they don't change with the trip. For setting a full custom rate to charge someone else, yes.
-- **The estimated miles look off.** They're straight-line × 1.25 — river crossings and detours can beat the factor. Type the real miles; your correction sticks.
+- **The estimated miles look off.** They're straight-line × 1.25 — river crossings and detours can beat the factor. Type the real miles over it; your number sticks.
+- **A location isn't in the estimate.** It has no address on file. Type its miles directly — that's all it needs.
 
 ## If something looks wrong
 
-- No destinations in the picker: add delivery locations with addresses under Settings → Buyers.
-- Estimates won't run: bin sites and delivery locations both need addresses on file.
+- No destinations in the picker: add buyers and their delivery locations under Settings → Buyers.
+- No miles boxes in the table: add a bin site under Settings → Bin Sites — distances are measured from there.
+- The estimate finds nothing to do: every pair already has miles, or the locations have no addresses. Type the ones you need.
 - Anything else: contact support.
 
 # Government Payment Tracker  (page: /reports/government-payments)
@@ -1562,7 +1570,7 @@ Yields turns your load log into bushels per acre. The same production can be vie
 
 ## What the controls do
 
-- **Harvest status.** A field that hasn't been harvested, or is only partway through, is left out of the yield math — a half-harvested field would drag every average down. In-progress fields are labeled so you can see they're pending. If a field really is done but Turnrow can't tell (say the last loads went straight to town under a different crop year), tap **Count anyway** on that field. Turnrow asks you to confirm, then treats the field as finished — it looks like every other completed field and its bushels go into the averages. Open the field's detail and tap **Undo** to put it back to automatic. A field whose yield runs well below what's normal for the crop is what earns an in-progress label. "Normal" is the crop's other harvested fields — and early in harvest, when there's little or nothing to compare against yet, it's the yield estimate you entered in the Marketing assumptions, so even the first field cut reads in progress until it's genuinely done. The label is deliberately sticky: cutting a few loads, moving to another field for a while, and coming back later is normal, so loads landing on other fields never mark this one finished — and as long as loads for the crop are still coming in anywhere on the operation, a low field stays in progress no matter how long since its own last load. A low field only counts once you tap **Count anyway** or mark the crop's harvest complete — or after about ten days pass with nothing more hauled from that crop at all, which means harvest is genuinely paused or over. A field yielding in line with the rest is never held back, and a field with nothing to compare against (no harvested neighbors and no yield estimate) counts as finished, with a note in its detail saying so. If a field truly finished with a poor yield — a real crop failure — Turnrow can't tell that apart from a field you'll come back to, so use **Count anyway** to put its number in the averages.
+- **Harvest status.** A field that hasn't been harvested, or is only partway through, is left out of the yield math — a half-harvested field would drag every average down. In-progress fields are labeled so you can see they're pending. If a field really is done but Turnrow can't tell (say the last loads went straight to town under a different crop year), tap **Count anyway** on that field. Turnrow asks you to confirm, then treats the field as finished — it looks like every other completed field and its bushels go into the averages. Open the field's detail and tap **Undo** to put it back to automatic. Two things earn an in-progress label. First, **your current field counts as still going until you move to the next one or harvest goes quiet**: the field with loads and no later load on any other field of that crop is the one the combine is sitting in, so it reads in progress whatever its yield — even a perfectly normal one — until a later-dated load lands on another field, or about ten days pass with nothing hauled from that crop anywhere. (If two fields got loads the same day, both are treated as current until the next day's loads settle it.) Second, once you've moved on, a field whose yield runs well below what's normal for the crop keeps its in-progress label. "Normal" is the crop's other harvested fields — and early in harvest, when there's little or nothing to compare against yet, it's the yield estimate you entered in the Marketing assumptions. That low-yield label is deliberately sticky: cutting a few loads, moving to another field for a while, and coming back later is normal, so loads landing on other fields never mark a low field finished — and as long as loads for the crop are still coming in anywhere on the operation, a low field stays in progress no matter how long since its own last load. A low field only counts once you tap **Count anyway** or mark the crop's harvest complete — or after about ten days pass with nothing more hauled from that crop at all, which means harvest is genuinely paused or over. A field yielding in line with the rest counts as soon as you've moved to the next one. The last field of the season never gets a "next one," so it counts when harvest goes quiet — or right away with **Count anyway**. If a field truly finished with a poor yield — a real crop failure — Turnrow can't tell that apart from a field you'll come back to, so use **Count anyway** to put its number in the averages.
 - **Allocate irr/dry.** A field with both irrigated and dryland acres has one pile of bushels but two practices. There are two ways to split it. The easy way: tag each load Irrigated or Dryland as you enter it — when every load on the field carries a tag, the split comes straight from the loads (the row shows **From load tags ✓**) and you're never asked to allocate. Otherwise, once the field's harvest is complete, an **Allocate irr/dry** button lets you split the field's dry bushels between the two — type one side and the other side fills in so the split always totals the field's bushels. If some loads are tagged, the allocation opens pre-filled from those tags so you only complete the remainder. A manual allocation, once saved, stays in charge even if load tags change later — clear it to go back to using the tags. Until the field is split one way or the other, it counts in the overall total but sits out of the irrigated and dryland columns.
 - **Allocate bushels (varieties).** A planting with a single variety credits all its bushels to that variety automatically. A planting with two or more varieties uses your per-variety bushel allocation when you've entered one; until then, its bushels are **estimated by each variety's share of the acres** and badged **"acre-share est."** wherever they appear — the page still lists the plantings that need allocation once their harvest is complete, and allocating replaces the estimate with your real split.
 - **Variety detail.** Tap a variety row for its summary (acres of that variety, loads, dry bushels, yield, weighted moisture and test weight, harvest window, where the grain went) and a field-by-field table — each field showing the acres of *this* variety on it and the bushels attributed to it. On a field growing several varieties, the bushels carry a badge saying how they were attributed: **allocated** (your per-variety split) or **acre-share est.** (estimated until you allocate). Open a field there and you'll see every load off that field, with a note of how much of it belongs to this variety. Cotton varieties show gin receipts, bales, and pounds instead of grain loads. The moisture and test-weight averages weight each field's loads by the variety's share of that field, so a variety on a shared field only counts its portion.

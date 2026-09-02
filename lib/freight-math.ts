@@ -123,7 +123,8 @@ export function roadMilesEstimate(lat1: number, lon1: number, lat2: number, lon2
 }
 
 // ---------------------------------------------------------------------------
-// Distance table rules: manual corrections stick.
+// Distance table rules: typed miles are the primary path; the AI estimate
+// only fills blanks and never touches what's on file.
 // ---------------------------------------------------------------------------
 
 export type FreightDistanceRow = {
@@ -139,19 +140,106 @@ export type DistanceEstimate = {
   miles: number
 }
 
+const pairKey = (r: { bin_site_id: string; delivery_location_id: string }) => `${r.bin_site_id}|${r.delivery_location_id}`
+
 /**
- * Which freshly-computed estimates may be saved: a pair whose existing row is
- * 'manual' is NEVER overwritten by a re-estimate (the user's correction
- * sticks); 'estimate' rows refresh, missing pairs insert.
+ * Which freshly-computed estimates may be saved: ONLY pairs with nothing on
+ * file. A 'manual' row is the user's own number and is never overwritten; an
+ * existing 'estimate' is left alone too — the action is "estimate MISSING
+ * distances", a bulk fill for the blanks, not a refresh.
  */
 export function planDistanceSaves(
   existing: readonly FreightDistanceRow[],
   estimates: readonly DistanceEstimate[],
 ): DistanceEstimate[] {
-  const manualPairs = new Set(
-    existing.filter((r) => r.source === 'manual').map((r) => `${r.bin_site_id}|${r.delivery_location_id}`),
-  )
-  return estimates.filter((e) => !manualPairs.has(`${e.bin_site_id}|${e.delivery_location_id}`))
+  const onFile = new Set(existing.map(pairKey))
+  return estimates.filter((e) => !onFile.has(pairKey(e)))
+}
+
+/**
+ * The row a typed mileage saves: source 'manual', whether or not the location
+ * has an address (no address is needed to type a distance you know) and
+ * whatever was there before. Null for a blank/zero/invalid entry — nothing to
+ * save.
+ */
+export function manualDistanceRow(
+  binSiteId: string,
+  deliveryLocationId: string,
+  miles: number | string | null | undefined,
+): FreightDistanceRow | null {
+  if (miles == null || miles === '') return null
+  const n = Number(miles)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return { bin_site_id: binSiteId, delivery_location_id: deliveryLocationId, miles: Math.round(n * 10) / 10, source: 'manual' }
+}
+
+/** Pure state update: the pair's row becomes the manual one (replacing an
+ *  estimate or an earlier manual number); an invalid entry changes nothing. */
+export function applyManualDistance<T extends FreightDistanceRow>(
+  rows: readonly T[],
+  binSiteId: string,
+  deliveryLocationId: string,
+  miles: number | string | null | undefined,
+): Array<T | FreightDistanceRow> {
+  const manual = manualDistanceRow(binSiteId, deliveryLocationId, miles)
+  if (!manual) return [...rows]
+  const key = pairKey(manual)
+  let replaced = false
+  const out: Array<T | FreightDistanceRow> = rows.map((r) => {
+    if (pairKey(r) !== key) return r
+    replaced = true
+    return { ...r, miles: manual.miles, source: 'manual' as const }
+  })
+  if (!replaced) out.push(manual)
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// The by-buyer distance model: buyer heading → its delivery locations →
+// one miles cell per bin site. Mirrors the Settings → Buyers hierarchy.
+// ---------------------------------------------------------------------------
+
+export type DistanceLocationRow = {
+  id: string
+  name: string
+  address: string | null
+  /** False = no address on file. The AI estimate can't reach it — typing
+   *  the miles you know is the only path, and it is always open. */
+  hasAddress: boolean
+  /** bin_site_id → what's on file for that pair (null = blank). */
+  milesBySite: Map<string, { miles: number; source: 'estimate' | 'manual' } | null>
+}
+
+export type DistanceBuyerGroup = {
+  /** Null for locations whose buyer isn't in the list (shouldn't happen —
+   *  kept so nothing silently disappears). */
+  buyerId: string | null
+  buyerName: string
+  locations: DistanceLocationRow[]
+}
+
+export function groupDistancesByBuyer(args: {
+  buyers: ReadonlyArray<{ id: string; name: string }>
+  locations: ReadonlyArray<{ id: string; buyer_id: string | null; name: string; address: string | null }>
+  binSites: ReadonlyArray<{ id: string }>
+  distances: readonly FreightDistanceRow[]
+}): DistanceBuyerGroup[] {
+  const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name)
+  const toRow = (l: { id: string; name: string; address: string | null }): DistanceLocationRow => {
+    const milesBySite = new Map<string, { miles: number; source: 'estimate' | 'manual' } | null>()
+    for (const s of args.binSites) milesBySite.set(s.id, distanceFor(args.distances, s.id, l.id))
+    return { id: l.id, name: l.name, address: l.address, hasAddress: (l.address ?? '').trim() !== '', milesBySite }
+  }
+  const groups: DistanceBuyerGroup[] = []
+  const placed = new Set<string>()
+  for (const b of [...args.buyers].sort(byName)) {
+    const locs = args.locations.filter((l) => l.buyer_id === b.id).sort(byName)
+    for (const l of locs) placed.add(l.id)
+    groups.push({ buyerId: b.id, buyerName: b.name, locations: locs.map(toRow) })
+  }
+  const orphans = args.locations.filter((l) => !placed.has(l.id)).sort(byName)
+  if (orphans.length > 0) groups.push({ buyerId: null, buyerName: 'Other locations', locations: orphans.map(toRow) })
+  return groups
 }
 
 /** The miles for a pair, if on file. */
