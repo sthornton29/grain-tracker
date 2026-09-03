@@ -28,7 +28,7 @@ GRAIN FLOW
 - load_splits(id, load_id, field_id, crop_id, net_weight, dry_bushels, percentage, practice)
 - trucks(id, name_or_number) ; external_trucks(id, name, buyer_id)  -- hauler trucks from pickup loads
 - contracts(id, contract_number, buyer_id, crop_id, entity_id, crop_year, contracted_bushels, price_per_bushel, cash_price, futures_price, basis, contract_type 'forward'|'hta'|'basis', contract_month, pricing_status, delivery_type 'pickup'|'delivered', delivery_location_id, delivery_start_date, delivery_end_date, date_sold, completed_at, notes)
-- buyers(id, name) ; delivery_locations(id, buyer_id, name, address)
+- buyers(id, name) ; delivery_locations(id, buyer_id, name, address, wait_hours)
 - settlements(id, buyer_id, settlement_date, settlement_number)  -- crop year comes through the lines' loads
 - settlement_lines(id, settlement_id, load_id, ticket_number, net_bushels, gross_revenue, discounts, net_revenue GENERATED, price_per_bushel GENERATED)
 

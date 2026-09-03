@@ -49,8 +49,30 @@ export function payloadForCrop(
   return Math.round(TRUCK_PAYLOAD_LBS / lb / 10) * 10
 }
 
+/**
+ * The hours a trip sits loading, unloading, and waiting: the location's own
+ * figure (delivery_locations.wait_hours, 079) when one is set, else the
+ * global assumption. Elevator lines vary wildly and everyone knows which
+ * houses make you sit — this is where that knowledge lands.
+ */
+export function effectiveWaitHours(
+  override: number | string | null | undefined,
+  settings: FreightSettings = FREIGHT_DEFAULTS,
+): { hours: number; isOverride: boolean } {
+  if (override != null && override !== '') {
+    const n = Number(override)
+    if (Number.isFinite(n) && n >= 0) return { hours: n, isOverride: true }
+  }
+  return { hours: settings.loadUnloadHours, isOverride: false }
+}
+
 export type FreightCost = {
   roundTripMiles: number
+  /** The load/unload + wait hours this trip was costed at (the location's
+   *  override when one applied, else the global assumption). */
+  loadUnloadHours: number
+  /** True when a per-location wait time replaced the global assumption. */
+  waitIsOverride: boolean
   /** Round-trip miles ÷ mpg × diesel $/gal. */
   fuel: number
   /** (Round-trip ÷ avg speed + load/unload hours) × labor $/hr. */
@@ -76,17 +98,22 @@ export function freightCost(args: {
   laborRate: number
   payloadBu: number | null
   settings?: FreightSettings
+  /** Per-location load/unload + wait hours; null/blank = the global figure. */
+  waitHours?: number | string | null
 }): FreightCost {
   const s = args.settings ?? FREIGHT_DEFAULTS
+  const wait = effectiveWaitHours(args.waitHours, s)
   const roundTrip = args.oneWayMiles * 2
   const fuel = (roundTrip / s.truckMpg) * args.dieselPrice
-  const labor = (roundTrip / s.avgSpeedMph + s.loadUnloadHours) * args.laborRate
+  const labor = (roundTrip / s.avgSpeedMph + wait.hours) * args.laborRate
   const wear = roundTrip * s.wearPerMile
   const ownership = s.includeOwnership && s.ownershipPerMile != null ? roundTrip * s.ownershipPerMile : 0
   const totalPerLoad = fuel + labor + wear + ownership
   const perBu = args.payloadBu != null && args.payloadBu > 0 ? totalPerLoad / args.payloadBu : null
   return {
     roundTripMiles: roundTrip,
+    loadUnloadHours: wait.hours,
+    waitIsOverride: wait.isOverride,
     fuel,
     labor,
     wear,
@@ -206,6 +233,9 @@ export type DistanceLocationRow = {
   /** False = no address on file. The AI estimate can't reach it — typing
    *  the miles you know is the only path, and it is always open. */
   hasAddress: boolean
+  /** The location's own load/unload + wait hours (079); null = the global
+   *  assumption applies. */
+  waitHours: number | null
   /** bin_site_id → what's on file for that pair (null = blank). */
   milesBySite: Map<string, { miles: number; source: 'estimate' | 'manual' } | null>
 }
@@ -220,15 +250,20 @@ export type DistanceBuyerGroup = {
 
 export function groupDistancesByBuyer(args: {
   buyers: ReadonlyArray<{ id: string; name: string }>
-  locations: ReadonlyArray<{ id: string; buyer_id: string | null; name: string; address: string | null }>
+  locations: ReadonlyArray<{ id: string; buyer_id: string | null; name: string; address: string | null; wait_hours?: number | string | null }>
   binSites: ReadonlyArray<{ id: string }>
   distances: readonly FreightDistanceRow[]
 }): DistanceBuyerGroup[] {
   const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name)
-  const toRow = (l: { id: string; name: string; address: string | null }): DistanceLocationRow => {
+  const toRow = (l: { id: string; name: string; address: string | null; wait_hours?: number | string | null }): DistanceLocationRow => {
     const milesBySite = new Map<string, { miles: number; source: 'estimate' | 'manual' } | null>()
     for (const s of args.binSites) milesBySite.set(s.id, distanceFor(args.distances, s.id, l.id))
-    return { id: l.id, name: l.name, address: l.address, hasAddress: (l.address ?? '').trim() !== '', milesBySite }
+    return {
+      id: l.id, name: l.name, address: l.address,
+      hasAddress: (l.address ?? '').trim() !== '',
+      waitHours: waitHoursValue(l.wait_hours),
+      milesBySite,
+    }
   }
   const groups: DistanceBuyerGroup[] = []
   const placed = new Set<string>()
@@ -252,4 +287,80 @@ export function distanceFor(
   if (!row) return null
   const miles = Number(row.miles)
   return Number.isFinite(miles) && miles > 0 ? { miles, source: row.source } : null
+}
+
+// ---------------------------------------------------------------------------
+// The cost-by-destination table: every saved destination costed with the
+// current diesel/labor inputs, its OWN miles (from the chosen bin site) and
+// its OWN wait time, and the selected crop's payload — grouped by buyer, the
+// picked destination highlighted, locations without miles on file kept
+// (greyed, "set distance") so nothing silently disappears.
+// ---------------------------------------------------------------------------
+
+export type DestinationCostRow = {
+  locationId: string
+  locationName: string
+  /** One-way miles on file from the chosen bin site; null = not set yet. */
+  miles: number | null
+  milesSource: 'estimate' | 'manual' | null
+  /** The effective load/unload + wait hours (override or global). */
+  waitHours: number
+  waitIsOverride: boolean
+  /** Null without miles. */
+  cost: FreightCost | null
+  isSelected: boolean
+}
+
+export type DestinationCostGroup = {
+  buyerId: string | null
+  buyerName: string
+  rows: DestinationCostRow[]
+}
+
+/** A typed wait time as hours ≥ 0 (two decimals), or null for a blank or
+ *  invalid entry — blank means "back to the global default". */
+export function waitHoursValue(value: number | string | null | undefined): number | null {
+  if (value == null || value === '') return null
+  const n = Number(value)
+  if (!Number.isFinite(n) || n < 0) return null
+  return Math.round(n * 100) / 100
+}
+
+export function destinationCostTable(args: {
+  groups: readonly DistanceBuyerGroup[]
+  binSiteId: string
+  selectedLocationId: string | null
+  dieselPrice: number
+  laborRate: number
+  payloadBu: number | null
+  settings: FreightSettings
+}): DestinationCostGroup[] {
+  const out: DestinationCostGroup[] = []
+  for (const g of args.groups) {
+    // A buyer with no delivery locations has nothing to cost — skipped here
+    // (the assumptions table still shows its heading).
+    if (g.locations.length === 0) continue
+    const rows: DestinationCostRow[] = g.locations.map((l) => {
+      const d = l.milesBySite.get(args.binSiteId) ?? null
+      const wait = effectiveWaitHours(l.waitHours, args.settings)
+      const cost = d
+        ? freightCost({
+            oneWayMiles: d.miles, dieselPrice: args.dieselPrice, laborRate: args.laborRate,
+            payloadBu: args.payloadBu, settings: args.settings, waitHours: l.waitHours,
+          })
+        : null
+      return {
+        locationId: l.id,
+        locationName: l.name,
+        miles: d?.miles ?? null,
+        milesSource: d?.source ?? null,
+        waitHours: wait.hours,
+        waitIsOverride: wait.isOverride,
+        cost,
+        isSelected: args.selectedLocationId != null && args.selectedLocationId === l.id,
+      }
+    })
+    out.push({ buyerId: g.buyerId, buyerName: g.buyerName, rows })
+  }
+  return out
 }

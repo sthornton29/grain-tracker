@@ -2,26 +2,35 @@
 
 // Grain Dryer Math — a calculator, not a ledger. THREE inputs on the main
 // screen (crop · fuel type · fuel price) and the table renders immediately;
-// everything else (dryer/consumption, grain price, electric rate, calibrate-
-// from-records) lives in the ⚙ Assumptions slide-over. The dry-it-or-haul-it
-// buyer comparison is a collapsed optional section at the bottom. Math in
-// lib/dryer-math.ts (unit-tested); session inputs + saved dryers only.
+// everything else (dryer/consumption, grain price, electric rate, dryer
+// depreciation, calibrate-from-records) lives in the ⚙ Assumptions
+// slide-over. The dry-it-or-haul-it buyer comparison is a collapsed optional
+// section at the bottom. Math in lib/dryer-math.ts (unit-tested); session
+// inputs + saved dryers + the org's dryer_settings row (079).
 //
-// Economics: the cost of drying to base is fuel (+ fan electricity) ONLY.
-// The water above base is unsellable whether you dry it or the buyer's
-// shrink table takes it, so the weight lost reaching base is shown as
-// information — never summed into the cost. Below base (overdrying) the
-// lost weight IS sellable grain given away, so those rows price it at the
-// grain price — the only rows that need one.
+// The table is TWO columns — Moisture | Total drying cost/bu — instantly
+// readable. Above base the total is fuel + fan electricity + depreciation
+// (flat per bushel dried, the extension convention); the breakdown lives in
+// the note under the table and in the assumptions panel. Below base the
+// single column carries the red cost of overdrying (sellable volume given
+// away + the fuel spent removing points nobody pays for).
+//
+// Economics: the water above base is unsellable whether you dry it or the
+// buyer's shrink table takes it, so the weight lost reaching base is never a
+// cost of drying. Depreciation IS a real cost of running your dryer — but
+// sunk if the dryer is owned regardless, so the buyer comparison has a
+// toggle (default on) for the marginal dry-vs-haul call.
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { marketingReferenceContract } from '@/lib/reference-contract'
 import {
+  DEFAULT_DEPRECIATION_CENTS_PER_BU,
   DEFAULT_ELECTRIC_RATE,
   SHRINK_PCT_PER_POINT,
   calibrateFromRecords,
+  depreciationCentsPerBu,
   dryingCost,
   energyCostPerBuPt,
   moistureRows,
@@ -30,6 +39,7 @@ import {
   wetVsDry,
   type DryerFuel,
   type DryerSpec,
+  type DryingRates,
 } from '@/lib/dryer-math'
 import {
   parseTiers,
@@ -60,6 +70,16 @@ type OrgDryer = {
   fuel: DryerFuel
   fuel_per_bu_pt: number | string
   fan_kwh_per_bu_pt: number | string | null
+}
+
+/** One row per org (079): the depreciation assumption + comparison toggle. */
+type DryerSettingsRow = {
+  id: string
+  depreciation_cents_per_bu: number | string
+  include_depreciation_in_comparison: boolean
+  dryer_investment: number | string | null
+  useful_life_years: number | string | null
+  bushels_dried_per_year: number | string | null
 }
 
 const DRYER_TYPE_LABELS: Record<string, string> = {
@@ -113,6 +133,16 @@ export default function DryerMathReport({
   const [grainPriceStr, setGrainPriceStr] = useState('')
   const [quote, setQuote] = useState<{ symbol: string; price: number } | null>(null)
 
+  // ---- dryer ownership (079 dryer_settings, one row per org) ----
+  const [settingsRow, setSettingsRow] = useState<DryerSettingsRow | null>(null)
+  const [settingsMissing, setSettingsMissing] = useState(false)
+  const [deprStr, setDeprStr] = useState(String(DEFAULT_DEPRECIATION_CENTS_PER_BU))
+  const [includeDeprInCompare, setIncludeDeprInCompare] = useState(true)
+  // The mini-calculator's three inputs (investment ÷ life ÷ bushels/yr).
+  const [invStr, setInvStr] = useState('')
+  const [lifeStr, setLifeStr] = useState('')
+  const [buYrStr, setBuYrStr] = useState('')
+
   // ---- buyer comparison (collapsed, off by default) ----
   const [compareOpen, setCompareOpen] = useState(false)
   const [buyerId, setBuyerId] = usePersistentState('dryer:buyerId', '')
@@ -132,17 +162,29 @@ export default function DryerMathReport({
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      const [m, d, c, b] = await Promise.all([
+      const [m, d, c, b, ds] = await Promise.all([
         supabase.from('dryer_models').select('*').order('manufacturer').order('model'),
         supabase.from('org_dryers').select('*').order('name'),
         supabase.from('crops').select('*').order('name'),
         supabase.from('buyers').select('*').order('name'),
+        supabase.from('dryer_settings').select('*').maybeSingle(),
       ])
       if (cancelled) return
       setModels((m.data as unknown as DryerModel[]) || [])
       setOrgDryers((d.data as unknown as OrgDryer[]) || [])
       setCrops((c.data as Crop[]) || [])
       setBuyers((b.data as Buyer[]) || [])
+      // 079 not applied yet → the calculator still works with the default.
+      if (ds.error) setSettingsMissing(true)
+      const s = (ds.data ?? null) as DryerSettingsRow | null
+      setSettingsRow(s)
+      if (s) {
+        setDeprStr(String(N(s.depreciation_cents_per_bu) ?? DEFAULT_DEPRECIATION_CENTS_PER_BU))
+        setIncludeDeprInCompare(s.include_depreciation_in_comparison !== false)
+        setInvStr(s.dryer_investment != null ? String(s.dryer_investment) : '')
+        setLifeStr(s.useful_life_years != null ? String(s.useful_life_years) : '')
+        setBuYrStr(s.bushels_dried_per_year != null ? String(s.bushels_dried_per_year) : '')
+      }
       setLoading(false)
     })()
     return () => { cancelled = true }
@@ -223,10 +265,42 @@ export default function DryerMathReport({
   // A saved dryer's own fuel wins; the main selector then displays it fixed.
   const activeFuel: DryerFuel = spec?.fuel ?? mainFuel
   const fuelPrice = activeFuel === 'ng' ? N(ngPrice) : N(lpPrice)
-  const prices = useMemo(
-    () => (fuelPrice != null && spec ? { fuelPrice, electricRate: N(electricRate) ?? DEFAULT_ELECTRIC_RATE } : null),
-    [fuelPrice, spec, electricRate],
+  const deprCents = N(deprStr) ?? DEFAULT_DEPRECIATION_CENTS_PER_BU
+  const rates: DryingRates | null = useMemo(
+    () => (fuelPrice != null && spec
+      ? { fuelPrice, electricRate: N(electricRate) ?? DEFAULT_ELECTRIC_RATE, depreciationCentsPerBu: Math.max(0, deprCents) }
+      : null),
+    [fuelPrice, spec, electricRate, deprCents],
   )
+
+  // The mini-calculator's answer (null until all three inputs are in).
+  const calcDepr = depreciationCentsPerBu({ investment: invStr, usefulLifeYears: lifeStr, bushelsDriedPerYear: buYrStr })
+
+  // Persist the ownership assumptions per org (079). Best-effort.
+  const persistSettings = useCallback(async () => {
+    if (settingsMissing) return
+    const payload = {
+      depreciation_cents_per_bu: Math.max(0, N(deprStr) ?? DEFAULT_DEPRECIATION_CENTS_PER_BU),
+      include_depreciation_in_comparison: includeDeprInCompare,
+      dryer_investment: N(invStr),
+      useful_life_years: N(lifeStr),
+      bushels_dried_per_year: N(buYrStr),
+    }
+    if (settingsRow) {
+      await supabase.from('dryer_settings').update(payload).eq('id', settingsRow.id)
+    } else {
+      const { data } = await supabase.from('dryer_settings').insert(payload).select('*').maybeSingle()
+      if (data) setSettingsRow(data as DryerSettingsRow)
+    }
+  }, [settingsMissing, deprStr, includeDeprInCompare, invStr, lifeStr, buYrStr, settingsRow, supabase])
+
+  // The comparison toggle saves at once (it's a one-click setting).
+  useEffect(() => {
+    if (loading || !settingsRow) return
+    if (settingsRow.include_depreciation_in_comparison === includeDeprInCompare) return
+    persistSettings()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [includeDeprInCompare])
 
   // Buyer schedule for the wet-vs-dry comparison — only when the section is open.
   const buyerRules: ScheduleRuleShape[] = useMemo(() => {
@@ -256,21 +330,24 @@ export default function DryerMathReport({
   }, [buyers, schedules, cropId])
 
   // ---- the table ----
-  // Above-base rows never need the grain price (cost = fuel + fan); the
-  // overdrying rows do (lost sellable weight), so they wait for one.
+  // Above-base rows never need the grain price (cost = fuel + fan +
+  // depreciation); the overdrying rows do (lost sellable weight), so they
+  // wait for one.
   const rows = useMemo(() => {
-    if (!spec || !prices) return []
+    if (!spec || !rates) return []
     return moistureRows(baseMoisture).map((m) => {
       if (m > baseMoisture) {
-        const cost = dryingCost(m, baseMoisture, spec, prices, grainPrice)
-        const verdict = buyerRules.length > 0 ? wetVsDry(m, baseMoisture, spec, prices, grainPrice, buyerRules) : null
+        const cost = dryingCost(m, baseMoisture, spec, rates, grainPrice)
+        const verdict = buyerRules.length > 0
+          ? wetVsDry(m, baseMoisture, spec, rates, grainPrice, buyerRules, { includeDepreciation: includeDeprInCompare })
+          : null
         return { m, kind: 'wet' as const, cost, verdict }
       }
       if (m === baseMoisture) return { m, kind: 'base' as const }
-      const over = grainPrice != null ? overdryingCost(m, baseMoisture, spec, prices, grainPrice) : null
+      const over = grainPrice != null ? overdryingCost(m, baseMoisture, spec, rates, grainPrice) : null
       return { m, kind: 'over' as const, over }
     })
-  }, [spec, prices, grainPrice, baseMoisture, buyerRules])
+  }, [spec, rates, grainPrice, baseMoisture, buyerRules, includeDeprInCompare])
 
   // ---- calibration ----
   const calibration = calibrateFromRecords({
@@ -318,53 +395,53 @@ export default function DryerMathReport({
   useEffect(() => {
     onPayloadChange(() => buildPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, crop?.name, spec, fuelPrice, grainPrice, buyerId, compareOpen])
+  }, [rows, crop?.name, spec, fuelPrice, grainPrice, buyerId, compareOpen, deprCents, includeDeprInCompare])
 
   function buildPayload(): ExportPayload {
     const dryerLabel = pickedOrgDryer?.name
       ?? (pickedModel ? `${pickedModel.manufacturer} ${pickedModel.model}` : 'Standard consumption')
+    const comparing = buyerRules.length > 0
     const filters = [
       crop?.name ?? 'No crop',
       `base ${fmtNum(baseMoisture, 1)}%`,
       dryerLabel,
       spec ? `${spec.fuelPerBuPt.toFixed(4)} ${spec.fuel === 'lp' ? 'gal' : 'ccf'}/bu-pt` : '',
       fuelPrice != null ? `${activeFuel === 'lp' ? 'LP $' + fmtNum(fuelPrice) + '/gal' : 'NG $' + fmtNum(fuelPrice) + '/ccf'}` : '',
+      `depreciation ${fmtNum(Math.max(0, deprCents), 1)}¢/bu dried`,
       grainPrice != null ? `grain $${fmtNum(grainPrice)}/bu` : '',
-      buyerRules.length > 0 ? `vs ${buyers.find((b) => b.id === buyerId)?.name ?? 'buyer'}` : '',
+      comparing ? `vs ${buyers.find((b) => b.id === buyerId)?.name ?? 'buyer'}${includeDeprInCompare ? '' : ' (depreciation excluded from the comparison)'}` : '',
     ].filter(Boolean).join(' · ')
     return {
       title: 'Grain Dryer Math',
       filters,
-      summary: spec && prices ? [
-        { label: 'Drying cost per point (fuel + fan)', value: formatNumber(energyCostPerBuPt(spec, prices) * 100, 'dec1') + '¢/bu' },
+      summary: spec && rates ? [
+        { label: 'Energy per point (fuel + fan)', value: formatNumber(energyCostPerBuPt(spec, rates) * 100, 'dec1') + '¢/bu' },
+        { label: 'Depreciation per bushel dried', value: formatNumber(Math.max(0, deprCents), 'dec1') + '¢/bu' },
         { label: 'Weight lost per point (not a cost)', value: SHRINK_PCT_PER_POINT.toFixed(3) + '%' },
       ] : undefined,
       sections: [{
-        title: 'Cost by incoming moisture — drying to base costs fuel only; the weight lost reaching base comes off whether you or the buyer dries it',
+        title: 'Total drying cost by incoming moisture — fuel + fan electricity + depreciation; rows below base are the cost of overdrying',
         columns: [
           { label: 'Moisture %', align: 'right', format: 'dec1' },
-          { label: 'Points', align: 'right', format: 'dec1' },
-          { label: 'Fuel ¢/bu', align: 'right', format: 'dec1' },
-          { label: '¢/point', align: 'right', format: 'dec1' },
-          { label: 'Total drying ¢/bu', align: 'right', format: 'dec1' },
-          { label: 'Weight lost %', align: 'right', format: 'dec1' },
-          { label: 'Sellable grain given away ¢/bu', align: 'right', format: 'dec1' },
-          { label: 'Buyer dock ¢/bu', align: 'right', format: 'dec1' },
-          { label: 'Cheaper', align: 'left' },
+          { label: 'Total drying cost ¢/bu', align: 'right', format: 'dec1' },
+          ...(comparing ? [
+            { label: 'Buyer dock ¢/bu', align: 'right' as const, format: 'dec1' as const },
+            { label: 'Cheaper', align: 'left' as const },
+          ] : []),
         ],
         rows: rows.map((r) => {
-          if (r.kind === 'base') return [r.m, 0, null, null, null, null, null, null, 'Base — stop here']
-          if (r.kind === 'over') return r.over ? [
-            r.m, -r.over.pointsOver, r.over.extraEnergyPerBu * 100, null,
-            { v: r.over.totalPerBu * 100, tone: 'unfavorable' as const },
-            r.over.lostVolumePct, r.over.lostVolumePerBu * 100, null, 'Overdried — cost of going past base',
-          ] : [r.m, null, null, null, null, null, null, null, 'Overdried — enter a grain price']
+          if (r.kind === 'base') return [r.m, null, ...(comparing ? [null, 'Base — stop here'] : [])]
+          if (r.kind === 'over') {
+            return r.over
+              ? [r.m, { v: r.over.totalPerBu * 100, tone: 'unfavorable' as const }, ...(comparing ? [null, 'Overdried — cost of going past base'] : [])]
+              : [r.m, null, ...(comparing ? [null, 'Overdried — enter a grain price'] : [])]
+          }
           return [
-            r.m, r.cost.points, r.cost.fuelPerBu * 100, r.cost.energyPerBuPt * 100,
-            r.cost.totalPerBu * 100,
-            r.cost.shrinkPct, null,
-            r.verdict?.buyerCents ?? null,
-            r.verdict?.cheaper === 'dry' ? 'Dry it' : r.verdict?.cheaper === 'haul_wet' ? 'Haul it wet' : r.verdict?.cheaper === 'even' ? 'Even' : '',
+            r.m, r.cost.totalPerBu * 100,
+            ...(comparing ? [
+              r.verdict?.buyerCents ?? null,
+              r.verdict?.cheaper === 'dry' ? 'Dry it' : r.verdict?.cheaper === 'haul_wet' ? 'Haul it wet' : r.verdict?.cheaper === 'even' ? 'Even' : '',
+            ] : []),
           ]
         }),
       }],
@@ -379,10 +456,17 @@ export default function DryerMathReport({
   const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm'
   const fuelUnit = activeFuel === 'ng' ? 'ccf' : 'gal'
   const dryerLabel = pickedOrgDryer?.name ?? (pickedModel ? `${pickedModel.manufacturer} ${pickedModel.model}` : `${quickPerBuPt || '0.018'} gal-LP-eq/bu-pt`)
+  const comparing = buyerRules.length > 0
+  const colCount = comparing ? 4 : 2
 
   return (
     <div className="space-y-4">
       {err && <p className="text-sm text-red-600">{err}</p>}
+      {settingsMissing && (
+        <p className="text-sm rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-amber-800">
+          The calculator works, but saving the depreciation assumption needs a database update — contact support.
+        </p>
+      )}
 
       {/* ---- THE THREE INPUTS ---- */}
       <div className="bg-white rounded-xl shadow p-4 no-print flex flex-wrap items-end gap-4">
@@ -424,18 +508,18 @@ export default function DryerMathReport({
           type="button"
           onClick={() => setPanelOpen(true)}
           className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
-          title="Dryer & consumption, grain price, electric rate, calibration"
+          title="Dryer & consumption, grain price, electric rate, depreciation, calibration"
         >
           ⚙ Assumptions
         </button>
       </div>
       <p className="text-xs text-slate-500 no-print -mt-2">
-        Using {dryerLabel} · grain {grainPrice != null ? `$${fmtNum(grainPrice)}/bu` : '(no price — only the overdrying rows need one)'}
+        Using {dryerLabel} · depreciation {fmtNum(Math.max(0, deprCents), 1)}¢/bu dried · grain {grainPrice != null ? `$${fmtNum(grainPrice)}/bu` : '(no price — only the overdrying rows need one)'}
         {quote && grainPriceStr === '' ? ` (${quote.symbol} today)` : ''} — adjust under ⚙ Assumptions.
       </p>
 
-      {/* ---- the table ---- */}
-      {spec == null || prices == null ? (
+      {/* ---- the table: Moisture | Total drying cost/bu ---- */}
+      {spec == null || rates == null ? (
         <p className="text-sm text-slate-400 bg-white rounded-xl shadow px-4 py-3">Set a fuel price (and consumption under ⚙ Assumptions).</p>
       ) : (
         <div className="overflow-x-auto bg-white rounded-xl shadow">
@@ -443,13 +527,9 @@ export default function DryerMathReport({
             <thead className={theadCls}>
               <tr>
                 <th className={`${numCell} font-semibold`}>Moisture</th>
-                <th className={`${numCell} font-semibold`}>Points</th>
-                <th className={`${numCell} font-semibold`}>Fuel ¢/bu</th>
-                <th className={`${numCell} font-semibold`}>¢/point</th>
-                <th className={`${numCell} font-semibold`} title="Fuel plus fan electricity. Shrink is not included — see the note under the table.">Total drying ¢/bu</th>
-                <th className={`${numCell} font-normal text-slate-400`} title="Weight lost reaching base — happens whether you or the buyer dries. Not a cost of drying, not in the total.">Weight lost to base</th>
-                {buyerRules.length > 0 && <th className={`${numCell} font-semibold`}>Buyer dock ¢/bu</th>}
-                {buyerRules.length > 0 && <th className={`${textCell} text-left font-semibold`}>Cheaper</th>}
+                <th className={`${numCell} font-semibold`} title="Fuel + fan electricity + dryer depreciation (flat per bushel dried). Shrink is not included — see the note under the table.">Total drying cost/bu</th>
+                {comparing && <th className={`${numCell} font-semibold`}>Buyer dock ¢/bu</th>}
+                {comparing && <th className={`${textCell} text-left font-semibold`}>Cheaper</th>}
               </tr>
             </thead>
             <tbody>
@@ -458,8 +538,7 @@ export default function DryerMathReport({
                   return (
                     <tr key={r.m} className="border-t-2 border-brand/40 bg-green-50/50 font-medium">
                       <td className={numCell}>{fmtNum(r.m, 1)}%</td>
-                      <td className={numCell}>—</td>
-                      <td colSpan={buyerRules.length > 0 ? 6 : 4} className={`${textCell} text-green-800`}>
+                      <td colSpan={colCount - 1} className={`${textCell} text-green-800`}>
                         Base moisture — stop here. Every half-point below this line costs you twice: sellable weight given away and wasted fuel.
                       </td>
                     </tr>
@@ -470,50 +549,41 @@ export default function DryerMathReport({
                   return (
                     <tr key={r.m} className="border-t border-slate-100 bg-red-50/40">
                       <td className={`${numCell} text-red-700`}>{fmtNum(r.m, 1)}%</td>
-                      <td className={`${numCell} text-red-700`}>−{fmtNum(baseMoisture - r.m, 1)}</td>
                       {o ? (
-                        <>
-                          <td className={numCell} title="Fuel burned removing points nobody pays for">{fmtCents(o.extraEnergyPerBu * 100)}</td>
-                          <td className={`${numCell} text-slate-300`}>—</td>
-                          <td className={`${numCell} font-semibold text-red-700`} title="Sellable grain given away + the fuel burned removing points nobody pays for">
-                            {fmtCents(o.totalPerBu * 100)} overdried
-                          </td>
-                          <td className={`${numCell} text-red-700`} title={`${fmtNum(o.lostVolumePct, 2)}% of sellable weight given away at $${fmtNum(grainPrice ?? 0)}/bu`}>
-                            {fmtNum(o.lostVolumePct, 1)}% given away ({fmtCents(o.lostVolumePerBu * 100)})
-                          </td>
-                        </>
+                        <td
+                          className={`${numCell} font-semibold text-red-700`}
+                          title={`Overdried by ${fmtNum(baseMoisture - r.m, 1)} pt: ${fmtNum(o.lostVolumePct, 2)}% of sellable weight given away (${fmtCents(o.lostVolumePerBu * 100)} at $${fmtNum(grainPrice ?? 0)}/bu) + ${fmtCents(o.extraEnergyPerBu * 100)} of fuel removing points nobody pays for`}
+                        >
+                          {fmtCents(o.totalPerBu * 100)} overdried
+                        </td>
                       ) : (
-                        <td colSpan={4} className={`${textCell} text-red-700/80`}>
-                          Overdried — enter a grain price under ⚙ Assumptions to value the sellable weight given away.
+                        <td className={`${textCell} text-red-700/80 text-right`}>
+                          Overdried — enter a grain price under ⚙ Assumptions
                         </td>
                       )}
-                      {buyerRules.length > 0 && <td className={`${numCell} text-slate-300`}>—</td>}
-                      {buyerRules.length > 0 && <td className={textCell} />}
+                      {comparing && <td className={`${numCell} text-slate-300`}>—</td>}
+                      {comparing && <td className={textCell} />}
                     </tr>
                   )
                 }
                 const v = r.verdict
+                const breakdown = [
+                  `fuel ${fmtCents(r.cost.fuelPerBu * 100)}`,
+                  r.cost.fanPerBu > 0 ? `fan ${fmtCents(r.cost.fanPerBu * 100)}` : null,
+                  `depreciation ${fmtCents(r.cost.depreciationPerBu * 100)}`,
+                ].filter(Boolean).join(' + ')
                 return (
                   <tr key={r.m} className="border-t border-slate-100">
                     <td className={numCell}>{fmtNum(r.m, 1)}%</td>
-                    <td className={numCell}>{fmtNum(r.cost.points, 1)}</td>
-                    <td className={numCell}>{fmtCents(r.cost.fuelPerBu * 100)}</td>
-                    <td className={numCell}>{fmtCents(r.cost.energyPerBuPt * 100)}</td>
-                    <td className={`${numCell} font-semibold`} title={r.cost.fanPerBu > 0 ? `fuel ${fmtCents(r.cost.fuelPerBu * 100)} + fan ${fmtCents(r.cost.fanPerBu * 100)}` : 'fuel only (no fan electricity entered)'}>
+                    <td className={`${numCell} font-semibold`} title={`${fmtNum(r.cost.points, 1)} pt to base: ${breakdown}`}>
                       {fmtCents(r.cost.totalPerBu * 100)}
                     </td>
-                    <td
-                      className={`${numCell} text-slate-400`}
-                      title={`${fmtNum(r.cost.shrinkPct, 2)}% of the wet weight is water above base${r.cost.shrinkValuePerBu != null ? ` (about ${fmtCents(r.cost.shrinkValuePerBu * 100)} at $${fmtNum(grainPrice ?? 0)}/bu)` : ''} — it comes off whether you dry it or the buyer shrinks it. Not a drying cost.`}
-                    >
-                      {fmtNum(r.cost.shrinkPct, 1)}%
-                    </td>
-                    {buyerRules.length > 0 && (
+                    {comparing && (
                       <td className={`${numCell} ${v?.cheaper === 'haul_wet' ? 'text-green-700 font-semibold' : ''}`}>
                         {v?.buyerCents != null ? fmtCents(v.buyerCents) : '—'}
                       </td>
                     )}
-                    {buyerRules.length > 0 && (
+                    {comparing && (
                       <td className={textCell}>
                         {v?.cheaper === 'dry' && <span className="text-green-700 font-medium">Dry it (save {fmtCents((v.buyerCents ?? 0) - v.dryCents)})</span>}
                         {v?.cheaper === 'haul_wet' && <span className="text-sky-700 font-medium">Haul it wet (save {fmtCents(v.dryCents - (v.buyerCents ?? 0))})</span>}
@@ -530,21 +600,25 @@ export default function DryerMathReport({
 
       <div className="text-xs text-slate-500 max-w-3xl space-y-1">
         <p>
-          <span className="font-semibold text-slate-600">How the cost is figured.</span> Drying to base costs fuel (plus fan
-          electricity) — that is the whole cost. The water above base is unsellable either way: haul it wet and the
-          buyer&rsquo;s shrink table takes it off the ticket; dry it and it goes up the stack. Same result both ways, so
-          the weight lost reaching base ({fmtNum(SHRINK_PCT_PER_POINT, 3)}%/point) is shown so you can see how many
-          bushels leave the truck — it is never added into the drying cost.
+          <span className="font-semibold text-slate-600">How the cost is figured.</span> Above base, the total is three
+          things: <strong>fuel</strong>{spec && rates ? ` (${fmtCents(spec.fuelPerBuPt * rates.fuelPrice * 100, 2)} per point)` : ''},{' '}
+          <strong>fan electricity</strong>{spec?.fanKwhPerBuPt ? ` (${fmtCents((spec.fanKwhPerBuPt ?? 0) * (rates?.electricRate ?? DEFAULT_ELECTRIC_RATE) * 100, 2)} per point)` : ' (none entered)'}, and{' '}
+          <strong>dryer depreciation</strong> — {fmtNum(Math.max(0, deprCents), 1)}¢ on every bushel that goes through the dryer,
+          flat, not per point. Hover any total for its breakdown. Repairs and interest aren&rsquo;t in there: raise the
+          depreciation figure under ⚙ Assumptions if you want full ownership costing.
         </p>
         <p>
-          Rows below base are different: every half-point past base gives away sellable grain (that same
-          {' '}{fmtNum(SHRINK_PCT_PER_POINT, 3)}%/point, valued at the grain price) <em>and</em> burns fuel removing water
-          nobody pays for. Those rows are the only ones that need a grain price.
+          The water above base is never a cost of drying: haul it wet and the buyer&rsquo;s shrink table takes it off the
+          ticket; dry it and it goes up the stack — same dry bushels either way ({fmtNum(SHRINK_PCT_PER_POINT, 3)}%
+          of the wet weight per point). Rows below base are different: every half-point past base gives away sellable
+          grain (valued at the grain price) <em>and</em> burns fuel removing water nobody pays for. Those rows are the
+          only ones that need a grain price.
         </p>
-        {buyerRules.length > 0 && (
+        {comparing && (
           <p>
-            The buyer comparison is apples to apples: your side is fuel; their side is their moisture dock or drying
-            charge. Their shrink comes off in both worlds, so it cancels out.
+            The buyer comparison is apples to apples: your side is fuel and fan
+            {includeDeprInCompare ? ' plus depreciation' : ' (depreciation left out — the marginal view)'}; their side is
+            their moisture dock or drying charge. Their shrink comes off in both worlds, so it cancels out.
           </p>
         )}
       </div>
@@ -570,9 +644,20 @@ export default function DryerMathReport({
               <span className="block text-xs text-slate-500 mt-0.5">
                 {buyersWithSchedules.length === 0
                   ? `No ${crop?.name ?? ''} discount schedules on file — upload one below or on Settings → Buyers.`
-                  : 'Their sheet prices "haul it wet" beside your fuel cost in the table above — their shrink applies either way, so it cancels.'}
+                  : 'Their sheet prices "haul it wet" beside your drying cost in the table above — their shrink applies either way, so it cancels.'}
               </span>
             </label>
+            <div className="space-y-1">
+              <label className="text-sm text-slate-700 flex items-center gap-2">
+                <input type="checkbox" checked={includeDeprInCompare} onChange={(e) => setIncludeDeprInCompare(e.target.checked)} />
+                Include depreciation in the comparison ({fmtNum(Math.max(0, deprCents), 1)}¢/bu)
+              </label>
+              <p className="text-xs text-slate-500">
+                If you own the dryer, its depreciation is spent whether or not this load runs through it — so for the
+                marginal dry-or-haul call on one load you may prefer to leave it out. Left in, the comparison prices
+                your full cost of drying.
+              </p>
+            </div>
             <DiscountScheduleImport onChanged={() => setSchedulesVersion((v) => v + 1)} />
           </div>
         )}
@@ -581,11 +666,11 @@ export default function DryerMathReport({
       {/* ---- assumptions slide-over ---- */}
       {panelOpen && (
         <div className="fixed inset-0 z-40 no-print" role="dialog" aria-modal="true">
-          <div className="absolute inset-0 bg-slate-900/30" onClick={() => setPanelOpen(false)} />
+          <div className="absolute inset-0 bg-slate-900/30" onClick={() => { setPanelOpen(false); persistSettings() }} />
           <div className="absolute inset-y-0 right-0 w-full max-w-md bg-white shadow-2xl overflow-y-auto p-5 space-y-5">
             <div className="flex items-center gap-2">
               <h2 className="font-semibold text-lg flex-1">Assumptions</h2>
-              <button type="button" onClick={() => setPanelOpen(false)} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50">Done</button>
+              <button type="button" onClick={() => { setPanelOpen(false); persistSettings() }} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50">Done</button>
             </div>
 
             <div className="space-y-2">
@@ -660,6 +745,57 @@ export default function DryerMathReport({
                 <input type="number" step="0.01" value={electricRate} onChange={(e) => setElectricRate(e.target.value)} className={`block mt-0.5 w-24 ${inputCls} text-right`} />
               </label>
               <p className="text-xs text-slate-500">Base moisture comes from the crop&rsquo;s standard ({crop?.name ?? '—'}: {fmtNum(baseMoisture, 1)}%) — change it under Settings → Crops.</p>
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-sm font-semibold">Dryer depreciation</div>
+              <label className="text-sm text-slate-700 block">
+                ¢ per bushel dried
+                <input
+                  type="number" step="0.1" min="0" value={deprStr}
+                  onChange={(e) => setDeprStr(e.target.value)}
+                  onBlur={persistSettings}
+                  disabled={settingsMissing}
+                  className={`block mt-0.5 w-24 ${inputCls} text-right disabled:bg-slate-100`}
+                />
+                <span className="block text-xs text-slate-500 mt-0.5">
+                  ≈ dryer investment ÷ useful life ÷ bushels dried per year (e.g. $300,000 ÷ 15 yr ÷ 500,000 bu ≈ 4¢).
+                  Applied flat to every bushel that goes through the dryer, not per point. Raise it to fold in repairs
+                  and interest for full ownership costing.
+                </span>
+              </label>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
+                <div className="text-xs font-semibold text-slate-600">Work it out</div>
+                <div className="flex flex-wrap items-end gap-2">
+                  <label className="text-sm text-slate-700">
+                    Dryer investment $
+                    <input type="number" step="1000" min="0" value={invStr} onChange={(e) => setInvStr(e.target.value)} placeholder="300,000" className={`block mt-0.5 w-28 ${inputCls} text-right`} />
+                  </label>
+                  <label className="text-sm text-slate-700">
+                    Useful life (yr)
+                    <input type="number" step="1" min="1" value={lifeStr} onChange={(e) => setLifeStr(e.target.value)} placeholder="15" className={`block mt-0.5 w-20 ${inputCls} text-right`} />
+                  </label>
+                  <label className="text-sm text-slate-700">
+                    Bushels dried / yr
+                    <input type="number" step="10000" min="1" value={buYrStr} onChange={(e) => setBuYrStr(e.target.value)} placeholder="500,000" className={`block mt-0.5 w-28 ${inputCls} text-right`} />
+                  </label>
+                </div>
+                {calcDepr != null ? (
+                  <div className="text-sm">
+                    → <span className="font-semibold tabular-nums">{fmtNum(calcDepr, 2)}¢/bu</span>
+                    <button
+                      type="button"
+                      onClick={() => setDeprStr(String(Math.round(calcDepr * 10) / 10))}
+                      disabled={settingsMissing}
+                      className="ml-2 rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1 text-sm font-semibold disabled:opacity-50"
+                    >
+                      Use {fmtNum(calcDepr, 1)}¢
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-400">Fill all three and the ¢/bu figure appears here.</p>
+                )}
+              </div>
             </div>
 
             <div className="space-y-2">

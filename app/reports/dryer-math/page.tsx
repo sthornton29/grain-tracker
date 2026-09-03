@@ -19,8 +19,9 @@ export default function DryerMathPage() {
         <ExportBar buildPayload={() => buildPayload()} />
       </div>
       <p className="text-sm text-slate-600 no-print max-w-3xl">
-        Crop, fuel, fuel price — the table answers what a point of moisture costs to take out, and what taking out
-        one too many gives away. Everything else lives behind the ⚙ Assumptions panel.
+        Crop, fuel, fuel price — two columns answer what drying to base costs per bushel at every incoming moisture
+        (fuel, fan, and dryer depreciation) and what taking out one point too many gives away. Everything else lives
+        behind the ⚙ Assumptions panel.
       </p>
       <DryerMathReport onPayloadChange={handlePayload} />
     </div>

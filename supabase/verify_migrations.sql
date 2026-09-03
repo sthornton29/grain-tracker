@@ -118,13 +118,14 @@ checks(seq, migration, evidence, applied) as (values
   ( 75, '075_discount_deduction_kind',        'settlement_discount_items.deduction_kind',       exists (select 1 from cols where t = 'settlement_discount_items' and c = 'deduction_kind')),
   ( 76, '076_dryer_math',                     'table dryer_models + table org_dryers',          exists (select 1 from tbls where t = 'dryer_models') and exists (select 1 from tbls where t = 'org_dryers')),
   ( 77, '077_seed_production_contracts',      'contracts.contract_kind + seed_contract_details(+premiums/elections/payments/plantings)', exists (select 1 from cols where t = 'contracts' and c = 'contract_kind') and exists (select 1 from tbls where t = 'seed_contract_details') and exists (select 1 from tbls where t = 'seed_pricing_elections') and exists (select 1 from tbls where t = 'seed_contract_payments')),
-  ( 78, '078_freight_math',                   'freight_settings + freight_distances + bin_sites.latitude', exists (select 1 from tbls where t = 'freight_settings') and exists (select 1 from tbls where t = 'freight_distances') and exists (select 1 from cols where t = 'bin_sites' and c = 'latitude'))
+  ( 78, '078_freight_math',                   'freight_settings + freight_distances + bin_sites.latitude', exists (select 1 from tbls where t = 'freight_settings') and exists (select 1 from tbls where t = 'freight_distances') and exists (select 1 from cols where t = 'bin_sites' and c = 'latitude')),
+  ( 79, '079_wait_hours_dryer_settings',      'delivery_locations.wait_hours + table dryer_settings', exists (select 1 from cols where t = 'delivery_locations' and c = 'wait_hours') and exists (select 1 from tbls where t = 'dryer_settings'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 078'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 079'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

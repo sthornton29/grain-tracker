@@ -121,6 +121,9 @@ export type DeliveryLocation = {
   buyer_id: string
   name: string
   address: string | null
+  /** Freight Math: this location's own load/unload + wait hours (079);
+   *  null = the global assumption. */
+  wait_hours?: number | string | null
 }
 export type Crop = {
   id: string

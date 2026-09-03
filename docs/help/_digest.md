@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-09-03 · version 0.1.0 · build a78af84. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-09-03 · version 0.1.0 · build ae1ebe2. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -673,28 +673,33 @@ This report lays out your production the way your crop insurance agent needs it:
 
 ## What this page is for
 
-What it costs to take a point of moisture out — and what it costs to take out one too many. Three inputs and the table answers: **Crop · Fuel · Fuel price**. For every incoming moisture from bone-dry to 28% you get the fuel (and fan power) to dry it to base — that is the drying cost — plus, for information, the weight that comes off reaching base. Rows below base show the price of overdrying in red. It's a calculator, not a record book: nothing here tracks loads.
+What it costs to take a point of moisture out — and what it costs to take out one too many. Three inputs and the table answers: **Crop · Fuel · Fuel price**. The table is two columns — **Moisture** and **Total drying cost per bushel** — for every incoming moisture from bone-dry to 28%. Above base, the total is fuel, fan power, and dryer depreciation. Rows below base show the price of overdrying in red. It's a calculator, not a record book: nothing here tracks loads.
 
 ## Setting it up
 
 - **Crop** — sets the base moisture from the crop's own standard (the same base the rest of Turnrow shrinks to).
 - **Fuel** — propane or natural gas, with its price. If a saved dryer is selected, its fuel applies automatically.
-- Everything else lives under **⚙ Assumptions**: your dryer (a saved one, a catalog model, or a standard 0.018 gal-LP-equivalent per bushel-point), the electric rate, the calibrate-from-records tool, and the grain price. The grain price only matters for the rows *below* base (overdrying) — it defaults to today's futures quote for the crop's reference contract, and you can type over it any time. The line under the inputs always says which dryer and grain price are in play.
+- Everything else lives under **⚙ Assumptions**: your dryer (a saved one, a catalog model, or a standard 0.018 gal-LP-equivalent per bushel-point), the electric rate, the **depreciation** figure, the calibrate-from-records tool, and the grain price. The grain price only matters for the rows *below* base (overdrying) — it defaults to today's futures quote for the crop's reference contract, and you can type over it any time. The line under the inputs always says which dryer, depreciation figure, and grain price are in play.
 
 ## Reading the table
 
-- **Rows above base** are incoming wet grain dried to base: the fuel in cents per bushel, the cost per point, and the **total drying cost** (fuel plus fan electricity). That total is the whole cost of drying.
-- **Weight lost to base** is the grayed-out column beside it: how much of the wet weight is water that comes off reaching base. It is shown so you can see how many bushels leave the truck — it is *not* added into the cost, and hovering it tells you what the buyer's table would take for the same water.
+- **Rows above base** are incoming wet grain dried to base. The single figure is the **total drying cost** per bushel: fuel + fan electricity + depreciation. Hover a figure and it shows the breakdown.
 - **The base row** is the stop line.
-- **Rows below base** are the price of **overdrying**: every half-point past base gives away sellable grain *and* burns fuel removing water nobody pays for. These are the only rows that need a grain price.
+- **Rows below base** are the price of **overdrying**: every half-point past base gives away sellable grain *and* burns fuel removing water nobody pays for. These are the only rows that need a grain price. Hover the red figure for the split.
+
+## Dryer depreciation
+
+A dryer costs money to own, and that cost belongs in the price of drying: **≈ dryer investment ÷ useful life ÷ bushels dried per year** — for example $300,000 ÷ 15 years ÷ 500,000 bushels ≈ 4¢ a bushel, which is the starting figure. It's applied **flat to every bushel that goes through the dryer**, not per point: a bushel that lost two points and one that lost ten carry the same 4¢. Under ⚙ Assumptions you can type your own figure or fill in the three numbers and let the page work it out. Want full ownership costing? Raise the figure to fold in repairs and interest. The figure saves for your operation.
 
 ## Why shrink isn't a drying cost
 
-The water above base moisture is unsellable either way. Haul it to town wet and the buyer's shrink table takes it off the ticket. Dry it yourself and it goes up the stack. You end up with the same dry bushels in both cases, so drying didn't cost you that weight — it was never yours to sell. What drying *does* cost you is the fuel. Below base it's a different story: that weight is real grain you could have sold, which is why the overdrying rows count it.
+The water above base moisture is unsellable either way. Haul it to town wet and the buyer's shrink table takes it off the ticket. Dry it yourself and it goes up the stack. You end up with the same dry bushels in both cases, so drying didn't cost you that weight — it was never yours to sell. What drying *does* cost you is the fuel, the fan, and the dryer. Below base it's a different story: that weight is real grain you could have sold, which is why the overdrying rows count it.
 
 ## Dry it or haul it wet
 
-An optional comparison at the bottom (collapsed until you open it): pick a buyer whose discount schedule is on file and every wet row shows their moisture dock or drying charge beside your fuel cost, with the call — *Dry it* or *Haul it wet* — and the savings. It's apples to apples: their shrink comes off whether you dry or haul, so it cancels out and only their charge and your fuel remain. Schedules live with the buyer under Settings → Buyers; you can also upload one right there in the section. Ask Turnrow can quote the same schedules in plain words.
+An optional comparison at the bottom (collapsed until you open it): pick a buyer whose discount schedule is on file and every wet row shows their moisture dock or drying charge beside your drying cost, with the call — *Dry it* or *Haul it wet* — and the savings. It's apples to apples: their shrink comes off whether you dry or haul, so it cancels out and only their charge and your cost remain.
+
+**Depreciation in the comparison** is a checkbox there, on by default. If you own the dryer, its depreciation is spent whether or not this particular load runs through it — so for the marginal call on one load you may prefer to untick it and compare fuel and fan alone. Left on, the comparison prices your full cost of drying. Schedules live with the buyer under Settings → Buyers; you can also upload one right there in the section. Ask Turnrow can quote the same schedules in plain words.
 
 ## Calibrating from your records
 
@@ -702,29 +707,31 @@ The honest consumption number is yours, not a brochure's: in ⚙ Assumptions, en
 
 ## Common questions
 
+- **Where did the fuel and per-point columns go?** Into the hover on each total and the note under the table. The table itself is two columns so it reads at a glance.
 - **Where do the catalog numbers come from?** Typical figures by dryer type (cross-flow, mixed-flow, tower, heat recovery). They're starting points, labeled as such — calibrate with your records.
-- **Why does hauling wet sometimes win?** A buyer's drying charge can be less than your fuel, especially on a cheap sheet or for a point or two. The comparison uses their posted sheet.
-- **The old version added shrink into the total — why the change?** Because the shrink happens whether you dry or the buyer does, so it can't be a cost of choosing to dry. Fuel is. The weight is still shown so nothing is hidden.
-- **Does this change any of my data?** No. Only saved dryers (and a calibration you choose to save) persist — the rest is session inputs.
+- **Why does hauling wet sometimes win?** A buyer's drying charge can be less than your cost, especially on a cheap sheet or for a point or two. The comparison uses their posted sheet — and whether depreciation is in your side is your choice.
+- **Is depreciation charged on the overdrying rows too?** No. Those rows are the extra cost of going past base — lost grain and wasted fuel. The bushel already carried its depreciation reaching base.
+- **Does this change any of my data?** No. Only saved dryers, a calibration you choose to save, and the depreciation setting persist — the rest is session inputs.
 
 ## If something looks wrong
 
 - The rows below base say to enter a grain price: there's no live quote — enter one under ⚙ Assumptions. The rows above base don't need it.
 - No buyers in the compare list: no discount schedule on file for this crop yet — upload one in the comparison section or on Settings → Buyers.
+- The depreciation box is greyed out and won't save: a database update is needed — contact support. The table still uses the 4¢ default.
 - Numbers that don't square with your fuel bills: calibrate from records; the presets are estimates. Still off after that: contact support.
 
 # Freight Math  (page: /reports/freight-math)
 
 ## What this page is for
 
-What a haul really costs — and the number that settles picked-up vs delivered decisions. Put in diesel, labor, and miles, and the page answers instantly: the cost of the trip itemized (fuel, labor, wear) and totaled per load, the cost per bushel, and the decision line — **how much more a delivered contract must pay than a picked-up one to cover the haul**. A small table shows the same at 10/25/50/75/100 miles for quick scanning.
+What a haul really costs — and the number that settles picked-up vs delivered decisions. Put in diesel, labor, and miles, and the page answers instantly: the cost of the trip itemized (fuel, labor, wear) and totaled per load, the cost per bushel, and the decision line — **how much more a delivered contract must pay than a picked-up one to cover the haul**. Below the answer, two tables: **every saved destination costed with its own miles and wait time**, and the same math at 10/25/50/75/100 miles for quick scanning.
 
 ## Setting it up
 
 - **Diesel $/gal · Labor $/hr · Miles (one-way)** — the three inputs. That's the whole main screen.
 - **Crop** — sets the payload per load from the crop's test weight (corn about 950 bushels, soybeans and wheat about 880). Override it under ⚙ Assumptions if your trucks run different.
-- **Destination** — optional: the picker lists your delivery locations grouped by buyer, each showing the saved miles from your bin site (choose which bin site when you have several). Pick one and the miles fill in. A location with no miles yet says so — type them under ⚙ Assumptions.
-- **⚙ Assumptions** — truck mpg (6.0 loaded/empty average), average speed (45 mph), load/unload and wait time (0.75 hr), wear and repairs ($0.20/mi), the payload override, and the distances table. All editable, saved for your operation.
+- **Destination** — optional: the picker lists your delivery locations grouped by buyer, each showing the saved miles from your bin site (choose which bin site when you have several). Pick one and the miles fill in — and if that location has its own wait time, the cost uses it. A location with no miles yet says so — type them under ⚙ Assumptions.
+- **⚙ Assumptions** — truck mpg (6.0 loaded/empty average), average speed (45 mph), the default load/unload and wait time (0.75 hr), wear and repairs ($0.20/mi), the payload override, and the distances table with a wait time per location. All editable, saved for your operation.
 
 ## What the breakeven means
 
@@ -732,9 +739,17 @@ If hauling to town costs 9¢ a bushel, a delivered bid has to beat the picked-up
 
 The **custom-rate equivalent** ($ per loaded mile) is a sanity check: if a hired hauler quotes less than your own number, let them haul it.
 
+## Cost by destination
+
+The first table under the answer lists your saved destinations, grouped by buyer, each costed at today's diesel and labor with **its own miles** (from the bin site you picked) and **its own wait time**: Miles · Wait · Cost/load · ¢/bu. The destination you picked is highlighted. A location with no miles on file shows greyed with a *set distance* link to the assumptions panel. Sitting an extra hour at a slow house at $25/hr labor is about 2¢ a bushel on a corn load — this table is where that shows up side by side.
+
+## Wait times per location
+
+Elevator lines vary wildly, and everyone knows which houses make you sit. The default load/unload + wait time (0.75 hr per trip) covers a normal stop; in the distances table under ⚙ Assumptions, the **Wait** column beside each location's miles lets you set that house's own hours. Leave it blank and the default applies (shown greyed in the box). Type 1.5 for the one that always backs up and every figure for that destination — the main screen when it's picked, its row in the cost-by-destination table — uses 1.5. Each entry saves as soon as you leave the box.
+
 ## Destination distances
 
-- The table under ⚙ Assumptions is organized the way Settings → Buyers is: each **buyer** is a heading, its **delivery locations** sit beneath it, and every location has a miles box for each of your bin sites.
+- The table under ⚙ Assumptions is organized the way Settings → Buyers is: each **buyer** is a heading, its **delivery locations** sit beneath it, and every location has a miles box for each of your bin sites plus its wait box.
 - **Type the miles you know.** Each number saves as soon as you leave the box and is marked *yours*. No address is needed — a location without an address still gets its row, with a note that typing is the way to fill it. Your number is never changed by anything else on the page.
 - **Estimate missing distances (AI)** is optional. It looks up the coordinates of bin sites and delivery locations that have addresses, estimates road miles (straight-line distance plus a quarter for real roads), and shows them for review before anything is saved. It fills **only the blanks** — it never touches a number that's already there, yours or an earlier estimate. Estimates are always labeled *estimate*; type over one and it becomes yours.
 
@@ -744,12 +759,15 @@ The **custom-rate equivalent** ($ per loaded mile) is a sanity check: if a hired
 - **Should I include ownership costs?** For where-to-haul decisions, no — they don't change with the trip. For setting a full custom rate to charge someone else, yes.
 - **The estimated miles look off.** They're straight-line × 1.25 — river crossings and detours can beat the factor. Type the real miles over it; your number sticks.
 - **A location isn't in the estimate.** It has no address on file. Type its miles directly — that's all it needs.
+- **I typed miles by hand — which wait time applies?** The default. A location's own wait time only applies when that destination is picked; typing miles clears the pick.
+- **Does the export include the destination table?** Yes — both tables, with the wait hours each row was costed at.
 
 ## If something looks wrong
 
-- No destinations in the picker: add buyers and their delivery locations under Settings → Buyers.
+- No destinations in the picker or the destination table: add buyers and their delivery locations under Settings → Buyers.
 - No miles boxes in the table: add a bin site under Settings → Bin Sites — distances are measured from there.
 - The estimate finds nothing to do: every pair already has miles, or the locations have no addresses. Type the ones you need.
+- The Wait boxes are greyed out and won't take a number: a database update is needed — contact support.
 - Anything else: contact support.
 
 # Government Payment Tracker  (page: /reports/government-payments)

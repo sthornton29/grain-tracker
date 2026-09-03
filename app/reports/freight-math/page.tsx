@@ -13,23 +13,34 @@
 // locations, the Settings → Buyers hierarchy) with one directly-editable
 // miles cell per bin site: type a number and it saves at once as 'manual'
 // — no address, no estimate needed. "Estimate missing distances (AI)" is an
-// optional bulk fill for the blanks only (planDistanceSaves).
+// optional bulk fill for the blanks only (planDistanceSaves). Beside the
+// miles, a Wait column (delivery_locations.wait_hours, 079) overrides the
+// global load/unload + wait hours per location — blank = the default.
+//
+// Above the by-mile quick table, a cost-by-destination table
+// (destinationCostTable) prices every saved destination with its own miles
+// and wait; the picked destination highlights.
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import {
-  FREIGHT_DEFAULTS, applyManualDistance, distanceFor, freightCost, groupDistancesByBuyer,
-  manualDistanceRow, payloadForCrop, planDistanceSaves, roadMilesEstimate,
-  type DistanceEstimate, type FreightDistanceRow, type FreightSettings,
+  FREIGHT_DEFAULTS, applyManualDistance, destinationCostTable, distanceFor, freightCost,
+  groupDistancesByBuyer, manualDistanceRow, payloadForCrop, planDistanceSaves, roadMilesEstimate,
+  waitHoursValue, type DistanceEstimate, type FreightDistanceRow, type FreightSettings,
 } from '@/lib/freight-math'
 import ExportBar from '@/components/export-bar'
-import { EmptyState, fmtNum, numCell, theadCls } from '@/components/reports/report-kit'
+import { EmptyState, fmtNum, numCell, textCell, theadCls } from '@/components/reports/report-kit'
 import type { ExportPayload } from '@/lib/exports'
 import type { Crop } from '@/lib/types'
 
 type BinSiteRow = { id: string; name: string; address: string | null; latitude: number | string | null; longitude: number | string | null }
-type LocationRow = { id: string; buyer_id: string | null; name: string; address: string | null; latitude: number | string | null; longitude: number | string | null }
+type LocationRow = {
+  id: string; buyer_id: string | null; name: string; address: string | null
+  latitude: number | string | null; longitude: number | string | null
+  /** Per-location load/unload + wait hours (079); absent before the migration. */
+  wait_hours?: number | string | null
+}
 type BuyerRow = { id: string; name: string }
 type SettingsRow = {
   id: string
@@ -90,7 +101,11 @@ export default function FreightMathPage() {
   const [estimateNote, setEstimateNote] = useState<string | null>(null)
   // In-flight typed miles, keyed `${bin_site_id}|${delivery_location_id}`.
   const [editMiles, setEditMiles] = useState<Record<string, string>>({})
+  // In-flight typed wait hours, keyed by delivery_location_id.
+  const [editWait, setEditWait] = useState<Record<string, string>>({})
   const [justSaved, setJustSaved] = useState<string | null>(null)
+  // 079 not applied yet → the Wait column is read-only with the update note.
+  const [waitColumnMissing, setWaitColumnMissing] = useState(false)
 
   const refetchDistances = useCallback(async () => {
     const { data } = await supabase.from('freight_distances').select('*')
@@ -103,7 +118,9 @@ export default function FreightMathPage() {
       const [c, bs, dl, by, fd, fs] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('bin_sites').select('id, name, address, latitude, longitude').order('name'),
-        supabase.from('delivery_locations').select('id, buyer_id, name, address, latitude, longitude').order('name'),
+        // '*' rather than a column list: wait_hours (079) may not exist yet
+        // and the calculator must keep working before the migration lands.
+        supabase.from('delivery_locations').select('*').order('name'),
         supabase.from('buyers').select('id, name').order('name'),
         supabase.from('freight_distances').select('*'),
         supabase.from('freight_settings').select('*').maybeSingle(),
@@ -111,7 +128,9 @@ export default function FreightMathPage() {
       if (cancelled) return
       setCrops((c.data as Crop[]) || [])
       setBinSites(((bs.data ?? []) as unknown as BinSiteRow[]))
-      setLocations(((dl.data ?? []) as unknown as LocationRow[]))
+      const locs = ((dl.data ?? []) as unknown as LocationRow[])
+      setLocations(locs)
+      if (locs.length > 0 && !('wait_hours' in locs[0])) setWaitColumnMissing(true)
       setBuyers(((by.data ?? []) as BuyerRow[]))
       // 078 not applied yet → the calculator still works with defaults.
       if (fd.error || fs.error) setTablesMissing(true)
@@ -164,12 +183,16 @@ export default function FreightMathPage() {
   const diesel = N(dieselStr)
   const labor = N(laborStr)
   const miles = N(milesStr)
+  // The picked destination's own wait time (null = the global assumption);
+  // typing miles by hand clears the destination and with it the override.
+  const destination = destinationId ? locations.find((l) => l.id === destinationId) ?? null : null
+  const destWaitHours = destination ? waitHoursValue(destination.wait_hours) : null
 
   const cost = useMemo(
     () => (diesel != null && labor != null && miles != null && miles > 0
-      ? freightCost({ oneWayMiles: miles, dieselPrice: diesel, laborRate: labor, payloadBu, settings })
+      ? freightCost({ oneWayMiles: miles, dieselPrice: diesel, laborRate: labor, payloadBu, settings, waitHours: destWaitHours })
       : null),
-    [diesel, labor, miles, payloadBu, settings],
+    [diesel, labor, miles, payloadBu, settings, destWaitHours],
   )
 
   // Persist assumptions + last-used inputs per org (078). Best-effort.
@@ -201,6 +224,16 @@ export default function FreightMathPage() {
     [buyers, locations, binSites, distances],
   )
   const buyerNameOf = (buyerId: string | null) => buyers.find((b) => b.id === buyerId)?.name ?? null
+
+  // Cost by destination: every saved destination with its own miles (from
+  // the chosen bin site) and its own wait, at the current inputs.
+  const destinationTable = useMemo(
+    () => (diesel != null && labor != null && binSiteId
+      ? destinationCostTable({ groups, binSiteId, selectedLocationId: destinationId || null, dieselPrice: diesel, laborRate: labor, payloadBu, settings })
+      : []),
+    [groups, binSiteId, destinationId, diesel, labor, payloadBu, settings],
+  )
+  const anyDestinationRows = destinationTable.some((g) => g.rows.length > 0)
 
   // Destination pick fills the miles from the distance table.
   const destDistance = destinationId && binSiteId ? distanceFor(distances, binSiteId, destinationId) : null
@@ -325,6 +358,23 @@ export default function FreightMathPage() {
     refetchDistances()
   }
 
+  // A typed wait time saves at once on the location (079); blank clears it
+  // back to the global default. Optimistic, like the miles cells.
+  async function saveWaitHours(locationId: string, value: string) {
+    const clearEdit = () => setEditWait((m) => { const next = { ...m }; delete next[locationId]; return next })
+    const hours = waitHoursValue(value)
+    const current = waitHoursValue(locations.find((l) => l.id === locationId)?.wait_hours)
+    if (hours === current) { clearEdit(); return }
+    setErr(null)
+    const { error } = await supabase.from('delivery_locations').update({ wait_hours: hours }).eq('id', locationId)
+    if (error) { setErr(error.message); return }
+    setLocations((rows) => rows.map((l) => (l.id === locationId ? { ...l, wait_hours: hours } : l)))
+    clearEdit()
+    const key = `wait|${locationId}`
+    setJustSaved(key)
+    setTimeout(() => setJustSaved((k) => (k === key ? null : k)), 2000)
+  }
+
   // ---- export ----
   const buildPayload = useCallback((): ExportPayload => {
     const rows = QUICK_MILES.map((mi) => {
@@ -333,6 +383,15 @@ export default function FreightMathPage() {
         : null
       return [mi, c?.fuel ?? null, c?.labor ?? null, c?.wear ?? null, c?.totalPerLoad ?? null, c?.centsPerBu ?? null]
     })
+    // Cost by destination — the saved ones (a location without miles has
+    // nothing to print). Wait shows the hours each row was costed at.
+    const destRows = destinationTable.flatMap((g) =>
+      g.rows.filter((r) => r.cost != null).map((r) => [
+        g.buyerName, r.locationName, r.miles, r.waitHours,
+        r.cost!.fuel, r.cost!.labor, r.cost!.wear, r.cost!.totalPerLoad, r.cost!.centsPerBu,
+      ]),
+    )
+    const binSiteName = binSites.find((b) => b.id === binSiteId)?.name
     return {
       title: 'Freight Math',
       filters: [
@@ -340,27 +399,45 @@ export default function FreightMathPage() {
         payloadBu != null ? `${fmtNum(payloadBu, 0)} bu/load` : 'no payload',
         diesel != null ? `diesel $${fmtNum(diesel)}/gal` : '',
         labor != null ? `labor $${fmtNum(labor)}/hr` : '',
-        `${fmtNum(settings.truckMpg, 1)} mpg · ${fmtNum(settings.avgSpeedMph, 0)} mph · ${fmtNum(settings.loadUnloadHours, 2)} hr load/unload · wear $${fmtNum(settings.wearPerMile)}/mi`,
+        `${fmtNum(settings.truckMpg, 1)} mpg · ${fmtNum(settings.avgSpeedMph, 0)} mph · ${fmtNum(settings.loadUnloadHours, 2)} hr load/unload + wait (default) · wear $${fmtNum(settings.wearPerMile)}/mi`,
+        cost?.waitIsOverride ? `${fmtNum(cost.loadUnloadHours, 2)} hr at ${destination?.name ?? 'this destination'}` : '',
       ].filter(Boolean).join(' · '),
       summary: cost ? [
         { label: 'Cost per load', value: usd2(cost.totalPerLoad) },
         { label: 'Cost per bushel', value: cost.centsPerBu != null ? `${fmtNum(cost.centsPerBu, 1)}¢` : '—' },
         { label: 'Delivered must pay at least', value: cost.breakevenCentsPerBu != null ? `+${fmtNum(cost.breakevenCentsPerBu, 1)}¢/bu` : '—' },
       ] : undefined,
-      sections: [{
-        title: 'Cost by one-way miles',
-        columns: [
-          { label: 'One-way miles', align: 'right', format: 'int' },
-          { label: 'Fuel', align: 'right', format: 'usd2' },
-          { label: 'Labor', align: 'right', format: 'usd2' },
-          { label: 'Wear', align: 'right', format: 'usd2' },
-          { label: 'Per load', align: 'right', format: 'usd2' },
-          { label: '¢/bu', align: 'right', format: 'dec1' },
-        ],
-        rows,
-      }],
+      sections: [
+        ...(destRows.length > 0 ? [{
+          title: `Cost by destination${binSiteName ? ` — from ${binSiteName}` : ''}`,
+          columns: [
+            { label: 'Buyer', align: 'left' as const },
+            { label: 'Destination', align: 'left' as const },
+            { label: 'One-way miles', align: 'right' as const, format: 'dec1' as const },
+            { label: 'Wait (hr)', align: 'right' as const, format: 'dec2' as const },
+            { label: 'Fuel', align: 'right' as const, format: 'usd2' as const },
+            { label: 'Labor', align: 'right' as const, format: 'usd2' as const },
+            { label: 'Wear', align: 'right' as const, format: 'usd2' as const },
+            { label: 'Per load', align: 'right' as const, format: 'usd2' as const },
+            { label: '¢/bu', align: 'right' as const, format: 'dec1' as const },
+          ],
+          rows: destRows,
+        }] : []),
+        {
+          title: 'Cost by one-way miles',
+          columns: [
+            { label: 'One-way miles', align: 'right', format: 'int' },
+            { label: 'Fuel', align: 'right', format: 'usd2' },
+            { label: 'Labor', align: 'right', format: 'usd2' },
+            { label: 'Wear', align: 'right', format: 'usd2' },
+            { label: 'Per load', align: 'right', format: 'usd2' },
+            { label: '¢/bu', align: 'right', format: 'dec1' },
+          ],
+          rows,
+        },
+      ],
     }
-  }, [cost, crop?.name, payloadBu, diesel, labor, settings])
+  }, [cost, crop?.name, payloadBu, diesel, labor, settings, destinationTable, binSites, binSiteId, destination?.name])
 
   if (loading) return <p className="text-sm text-slate-400">Loading…</p>
   if (crops.length === 0) {
@@ -380,9 +457,9 @@ export default function FreightMathPage() {
         Operating costs only (fuel, labor, wear): the right basis for deciding <em>where</em> to haul.
       </p>
       {err && <p className="text-sm text-red-600">{err}</p>}
-      {tablesMissing && (
+      {(tablesMissing || waitColumnMissing) && (
         <p className="text-sm rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-amber-800">
-          The calculator works, but saved assumptions and destination distances need a database update — contact support.
+          The calculator works, but saved assumptions, destination distances, and per-location wait times need a database update — contact support.
         </p>
       )}
 
@@ -434,7 +511,7 @@ export default function FreightMathPage() {
           {destinationId && (
             <span className="block text-xs text-slate-500 mt-0.5">
               {destDistance
-                ? `${fmtNum(destDistance.miles, 1)} mi (${destDistance.source === 'manual' ? 'your number' : 'estimate'})`
+                ? `${fmtNum(destDistance.miles, 1)} mi (${destDistance.source === 'manual' ? 'your number' : 'estimate'})${destWaitHours != null ? ` · ${fmtNum(destWaitHours, 2)} hr wait here` : ''}`
                 : 'No miles on file yet — type them under ⚙ Assumptions.'}
             </span>
           )}
@@ -463,6 +540,10 @@ export default function FreightMathPage() {
                 fuel {usd2(cost.fuel)} · labor {usd2(cost.labor)} · wear {usd2(cost.wear)}
                 {cost.ownership > 0 ? ` · ownership ${usd2(cost.ownership)}` : ''}
               </div>
+              <div className="text-xs text-slate-500 tabular-nums">
+                {fmtNum(cost.loadUnloadHours, 2)} hr load/unload + wait
+                {cost.waitIsOverride ? ` (${destination?.name ?? 'this destination'}'s own time)` : ' (default)'}
+              </div>
             </div>
             <div>
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">Cost per bushel{crop ? ` (${fmtNum(payloadBu ?? 0, 0)} bu ${crop.name})` : ''}</div>
@@ -483,6 +564,53 @@ export default function FreightMathPage() {
               A <strong>delivered</strong> contract must pay at least{' '}
               <strong className="tabular-nums">{fmtNum(cost.breakevenCentsPerBu, 1)}¢/bu</strong> more than a{' '}
               <strong>picked-up</strong> contract to cover hauling {fmtNum(miles ?? 0, 0)} miles.
+            </div>
+          )}
+
+          {anyDestinationRows && (
+            <div className="overflow-x-auto bg-white rounded-xl shadow">
+              <table className="min-w-full text-sm border-collapse">
+                <thead className={theadCls}>
+                  <tr>
+                    <th className={`${textCell} text-left font-semibold`}>
+                      Destination{binSites.length > 1 ? ` — from ${binSites.find((b) => b.id === binSiteId)?.name ?? ''}` : ''}
+                    </th>
+                    <th className={`${numCell} font-semibold`}>Miles</th>
+                    <th className={`${numCell} font-semibold`} title="Load/unload + wait hours this destination is costed at — its own time when set, else the default">Wait (hr)</th>
+                    <th className={`${numCell} font-semibold`}>Cost/load</th>
+                    <th className={`${numCell} font-semibold`}>¢/bu</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {destinationTable.map((g) => (
+                    <Fragment key={g.buyerId ?? 'other'}>
+                      <tr className="bg-slate-100/70">
+                        <td colSpan={5} className="px-2 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-600">{g.buyerName}</td>
+                      </tr>
+                      {g.rows.map((r) => (
+                        <tr
+                          key={r.locationId}
+                          className={`border-t border-slate-100 ${r.isSelected ? 'bg-green-50/50 font-medium' : ''} ${r.cost == null ? 'text-slate-400' : ''}`}
+                        >
+                          <td className={`${textCell} pl-5`}>{r.locationName}</td>
+                          {r.cost == null ? (
+                            <td className={`${numCell} font-normal`}>
+                              <button type="button" onClick={() => setPanelOpen(true)} className="text-brand-deep underline text-xs no-print">set distance</button>
+                            </td>
+                          ) : (
+                            <td className={numCell} title={r.milesSource === 'manual' ? 'your number' : 'estimate'}>{fmtNum(r.miles ?? 0, 1)}</td>
+                          )}
+                          <td className={`${numCell} ${r.waitIsOverride ? '' : 'text-slate-400 font-normal'}`} title={r.waitIsOverride ? "This location's own load/unload + wait time" : 'The default load/unload + wait time'}>
+                            {fmtNum(r.waitHours, 2)}
+                          </td>
+                          <td className={`${numCell} ${r.cost ? 'font-semibold' : ''}`}>{r.cost ? usd2(r.cost.totalPerLoad) : '—'}</td>
+                          <td className={`${numCell} ${r.cost ? 'font-semibold' : ''}`}>{r.cost?.centsPerBu != null ? `${fmtNum(r.cost.centsPerBu, 1)}¢` : '—'}</td>
+                        </tr>
+                      ))}
+                    </Fragment>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
 
@@ -539,8 +667,9 @@ export default function FreightMathPage() {
                 <input type="number" step="1" value={speedStr} onChange={(e) => setSpeedStr(e.target.value)} className={`block mt-0.5 w-24 ${inputCls} text-right`} />
               </label>
               <label className="text-sm text-slate-700">
-                Load/unload + wait (hr per trip)
+                Load/unload + wait (hr per trip, default)
                 <input type="number" step="0.05" value={hoursStr} onChange={(e) => setHoursStr(e.target.value)} className={`block mt-0.5 w-24 ${inputCls} text-right`} />
+                <span className="block text-xs text-slate-500 mt-0.5">A location&rsquo;s own wait time (below) overrides this.</span>
               </label>
               <label className="text-sm text-slate-700">
                 Wear &amp; repairs ($/mi)
@@ -616,7 +745,8 @@ export default function FreightMathPage() {
                 One-way miles from each bin site to each delivery location, by buyer. Type the miles you know — each
                 number saves as soon as you leave the box and is marked <em>yours</em>. No address needed. The estimate
                 is optional: it fills only the blanks (straight-line × 1.25 between addresses) and never changes a
-                number that&rsquo;s already here.
+                number that&rsquo;s already here. <strong>Wait</strong> is that location&rsquo;s own load/unload + wait
+                hours — everyone knows which houses make you sit. Leave it blank to use the default.
               </p>
               {estimateNote && <p className="text-xs rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-slate-600">{estimateNote}</p>}
               {estimateReview && (
@@ -654,19 +784,20 @@ export default function FreightMathPage() {
                             {binSites.length > 1 ? `Miles from ${b.name}` : 'Miles (one-way)'}
                           </th>
                         ))}
+                        <th className="text-right px-2 py-1.5 whitespace-nowrap" title="This location's load/unload + wait hours; blank = the default above">Wait (hr)</th>
                       </tr>
                     </thead>
                     <tbody>
                       {groups.map((g) => (
                         <Fragment key={g.buyerId ?? 'other'}>
                           <tr className="bg-slate-100/70">
-                            <td colSpan={1 + binSites.length} className="px-2 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-600">
+                            <td colSpan={2 + binSites.length} className="px-2 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-600">
                               {g.buyerName}
                             </td>
                           </tr>
                           {g.locations.length === 0 && (
                             <tr>
-                              <td colSpan={1 + binSites.length} className="px-4 py-1.5 text-xs text-slate-400">No delivery locations.</td>
+                              <td colSpan={2 + binSites.length} className="px-4 py-1.5 text-xs text-slate-400">No delivery locations.</td>
                             </tr>
                           )}
                           {g.locations.map((loc) => (
@@ -706,6 +837,28 @@ export default function FreightMathPage() {
                                   </td>
                                 )
                               })}
+                              <td className="px-2 py-1.5 text-right whitespace-nowrap align-top">
+                                <input
+                                  type="number" step="0.25" min="0" inputMode="decimal"
+                                  value={editWait[loc.id] ?? (loc.waitHours != null ? String(loc.waitHours) : '')}
+                                  placeholder={fmtNum(settings.loadUnloadHours, 2)}
+                                  disabled={waitColumnMissing}
+                                  aria-label={`Wait hours at ${loc.name}`}
+                                  onChange={(e) => setEditWait((m) => ({ ...m, [loc.id]: e.target.value }))}
+                                  onBlur={() => { if (editWait[loc.id] != null) saveWaitHours(loc.id, editWait[loc.id]) }}
+                                  onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                                  className={`${inputCls} w-20 text-right tabular-nums placeholder:text-slate-300 disabled:bg-slate-100`}
+                                />
+                                <span className="block text-[10px] uppercase tracking-wide mt-0.5 h-3">
+                                  {justSaved === `wait|${loc.id}` ? (
+                                    <span className="text-green-700">saved</span>
+                                  ) : loc.waitHours != null ? (
+                                    <span className="text-sky-800">yours</span>
+                                  ) : (
+                                    <span className="text-slate-300">default</span>
+                                  )}
+                                </span>
+                              </td>
                             </tr>
                           ))}
                         </Fragment>

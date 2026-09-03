@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
+  DEFAULT_DEPRECIATION_CENTS_PER_BU,
   DEFAULT_ELECTRIC_RATE,
   SHRINK_PCT_PER_POINT,
   calibrateFromRecords,
+  depreciationCentsPerBu,
   dryingCost,
   energyCostPerBuPt,
   lpGalToNgCcf,
@@ -17,15 +19,18 @@ import type { ScheduleRuleShape } from '@/lib/discount-schedules'
 
 // Hand-verified dryer economics. The spec's worked example: 25% corn dried
 // to 15% (10 points) on a mixed-flow at 0.018 gal LP per bu-pt and $1.60 LP
-// → 10 × 0.018 × 1.60 = $0.288 = 28.8¢ fuel per bushel — and that IS the
-// total cost of drying: the water above base is unsellable whether you dry
-// it or the buyer's shrink table takes it, so shrink is not a drying cost.
+// → 10 × 0.018 × 1.60 = $0.288 = 28.8¢ fuel per bushel, plus the flat
+// depreciation per bushel dried (4.0¢ default) — and that IS the total cost
+// of drying: the water above base is unsellable whether you dry it or the
+// buyer's shrink table takes it, so shrink is not a drying cost.
 
 const mixedFlowLp: DryerSpec = { fuel: 'lp', fuelPerBuPt: 0.018, fanKwhPerBuPt: null }
+/** Fuel-only rates: depreciation excluded so the energy arithmetic reads bare. */
+const noDepr = { depreciationCentsPerBu: 0 }
 
-describe('fuel cost — the whole cost of drying to base', () => {
-  it('25% → 15% corn at $1.60 LP and 0.018 gal/bu-pt = 28.8¢/bu, total = fuel (shrink excluded)', () => {
-    const c = dryingCost(25, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2)
+describe('fuel cost — the energy side of drying to base', () => {
+  it('25% → 15% corn at $1.60 LP and 0.018 gal/bu-pt = 28.8¢/bu fuel (shrink excluded)', () => {
+    const c = dryingCost(25, 15, mixedFlowLp, { fuelPrice: 1.6, ...noDepr }, 4.2)
     expect(c.points).toBe(10)
     expect(c.fuelPerBu).toBeCloseTo(0.288, 10)
     expect(c.energyPerBuPt).toBeCloseTo(0.0288, 10) // 2.88¢ per point
@@ -33,21 +38,82 @@ describe('fuel cost — the whole cost of drying to base', () => {
   })
   it('fan electricity adds at the electric rate (default $0.12/kWh) and IS in the total', () => {
     const withFan: DryerSpec = { ...mixedFlowLp, fanKwhPerBuPt: 0.01 }
-    const c = dryingCost(25, 15, withFan, { fuelPrice: 1.6 }, 4.2)
+    const c = dryingCost(25, 15, withFan, { fuelPrice: 1.6, ...noDepr }, 4.2)
     expect(c.fanPerBu).toBeCloseTo(10 * 0.01 * DEFAULT_ELECTRIC_RATE, 10) // $0.012
     expect(c.energyPerBu).toBeCloseTo(0.288 + 0.012, 10)
     expect(c.totalPerBu).toBeCloseTo(0.288 + 0.012, 10)
   })
-  it('at/below base = zero points, zero cost', () => {
+  it('at/below base = zero points, zero cost — and no depreciation either (the bushel never ran)', () => {
     const c = dryingCost(15, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2)
     expect(c.points).toBe(0)
+    expect(c.depreciationPerBu).toBe(0)
     expect(c.totalPerBu).toBe(0)
   })
   it('the grain price is optional above base — the cost does not need it', () => {
-    const c = dryingCost(25, 15, mixedFlowLp, { fuelPrice: 1.6 })
+    const c = dryingCost(25, 15, mixedFlowLp, { fuelPrice: 1.6, ...noDepr })
     expect(c.totalPerBu).toBeCloseTo(0.288, 10)
     expect(c.shrinkPct).toBeCloseTo(11.83, 10)
     expect(c.shrinkValuePerBu).toBeNull()
+  })
+})
+
+describe('the two-column row model — total = fuel + fan electricity + depreciation', () => {
+  // 20% → 15% corn (5 points), 0.018 gal/pt, $1.60 LP:
+  //   fuel     5 × 0.018 × 1.60         = $0.144  = 14.4¢
+  //   electric 5 × 0.01 kWh × $0.10/kWh = $0.005  =  0.5¢
+  //   depreciation (flat per bu dried)  = $0.040  =  4.0¢
+  //   total                                        = 18.9¢/bu
+  const withFan: DryerSpec = { ...mixedFlowLp, fanKwhPerBuPt: 0.01 }
+  const rates = { fuelPrice: 1.6, electricRate: 0.1, depreciationCentsPerBu: 4.0 }
+
+  it('20% → 15%: 14.4¢ fuel + 0.5¢ electric + 4.0¢ depreciation = 18.9¢/bu', () => {
+    const c = dryingCost(20, 15, withFan, rates)
+    expect(c.fuelPerBu).toBeCloseTo(0.144, 10)
+    expect(c.fanPerBu).toBeCloseTo(0.005, 10)
+    expect(c.depreciationPerBu).toBeCloseTo(0.04, 10)
+    expect(c.totalPerBu).toBeCloseTo(0.189, 10)
+    expect(c.totalPerBu * 100).toBeCloseTo(18.9, 10)
+  })
+  it('depreciation is flat per bushel dried, not per point: 25% → 15% still carries 4.0¢', () => {
+    const ten = dryingCost(25, 15, withFan, rates)
+    const five = dryingCost(20, 15, withFan, rates)
+    expect(ten.depreciationPerBu).toBeCloseTo(0.04, 10)
+    expect(ten.depreciationPerBu).toBeCloseTo(five.depreciationPerBu, 10)
+    // Energy scales with points; depreciation does not.
+    expect(ten.energyPerBu).toBeCloseTo(2 * five.energyPerBu, 10)
+    expect(ten.totalPerBu).toBeCloseTo(0.288 + 0.01 + 0.04, 10)
+  })
+  it('omitting the figure uses the 4.0¢ default; 0 excludes it; a negative is ignored', () => {
+    expect(DEFAULT_DEPRECIATION_CENTS_PER_BU).toBe(4.0)
+    expect(dryingCost(20, 15, withFan, { fuelPrice: 1.6, electricRate: 0.1 }).totalPerBu).toBeCloseTo(0.189, 10)
+    expect(dryingCost(20, 15, withFan, { fuelPrice: 1.6, electricRate: 0.1, depreciationCentsPerBu: 0 }).totalPerBu).toBeCloseTo(0.149, 10)
+    expect(dryingCost(20, 15, withFan, { fuelPrice: 1.6, electricRate: 0.1, depreciationCentsPerBu: -3 }).depreciationPerBu).toBeCloseTo(0.04, 10)
+  })
+  it('the overdrying row is unchanged: lost sellable volume + extra fuel, no depreciation', () => {
+    // 13.5% against a 15.0% base: 1.5 × 1.183% × $4.20 = $0.074529 volume
+    // + 1.5 × 0.018 × $1.60 = $0.0432 fuel → 11.77¢/bu, with or without a
+    // depreciation figure in the rates.
+    const o = overdryingCost(13.5, 15, mixedFlowLp, rates, 4.2)
+    expect(o.lostVolumePerBu).toBeCloseTo(0.074529, 6)
+    expect(o.extraEnergyPerBu).toBeCloseTo(0.0432, 10)
+    expect(o.totalPerBu).toBeCloseTo(0.117729, 6)
+    expect(overdryingCost(13.5, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2).totalPerBu).toBeCloseTo(o.totalPerBu, 10)
+  })
+})
+
+describe('depreciation mini-calculator — investment ÷ useful life ÷ bushels dried per year', () => {
+  it('$300,000 ÷ 15 yr ÷ 500,000 bu ≈ 4.0¢/bu', () => {
+    expect(depreciationCentsPerBu({ investment: 300000, usefulLifeYears: 15, bushelsDriedPerYear: 500000 })).toBeCloseTo(4.0, 10)
+  })
+  it('accepts typed strings; blanks, zero life/bushels, and junk give null (never Infinity)', () => {
+    expect(depreciationCentsPerBu({ investment: '300000', usefulLifeYears: '15', bushelsDriedPerYear: '500000' })).toBeCloseTo(4.0, 10)
+    expect(depreciationCentsPerBu({ investment: '', usefulLifeYears: 15, bushelsDriedPerYear: 500000 })).toBeNull()
+    expect(depreciationCentsPerBu({ investment: 300000, usefulLifeYears: 0, bushelsDriedPerYear: 500000 })).toBeNull()
+    expect(depreciationCentsPerBu({ investment: 300000, usefulLifeYears: 15, bushelsDriedPerYear: null })).toBeNull()
+    expect(depreciationCentsPerBu({ investment: 'abc', usefulLifeYears: 15, bushelsDriedPerYear: 500000 })).toBeNull()
+  })
+  it('a smaller dryer over more bushels: $120,000 ÷ 20 yr ÷ 300,000 bu = 2.0¢', () => {
+    expect(depreciationCentsPerBu({ investment: 120000, usefulLifeYears: 20, bushelsDriedPerYear: 300000 })).toBeCloseTo(2.0, 10)
   })
 })
 
@@ -70,13 +136,14 @@ describe('LP ↔ NG equivalence (BTU parity: 91,500 BTU/gal ÷ 1,020 BTU/cf)', (
     const lpCost = dryingCost(25, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2)
     const ngCost = dryingCost(25, 15, ngDryer, { fuelPrice: parityNgPrice }, 4.2)
     expect(ngCost.fuelPerBu).toBeCloseTo(lpCost.fuelPerBu, 10)
+    expect(ngCost.totalPerBu).toBeCloseTo(lpCost.totalPerBu, 10)
   })
 })
 
 describe('shrink to base — reported, never a cost', () => {
   it('1.183%/pt: 10 points = 11.83% of the wet weight, valued at $4.20 = 49.686¢ — informational only', () => {
     expect(SHRINK_PCT_PER_POINT).toBe(1.183)
-    const c = dryingCost(25, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2)
+    const c = dryingCost(25, 15, mixedFlowLp, { fuelPrice: 1.6, ...noDepr }, 4.2)
     expect(c.shrinkPct).toBeCloseTo(11.83, 10)
     expect(c.shrinkValuePerBu).toBeCloseTo(0.1183 * 4.2, 10) // $0.49686 — what the buyer's table would take
     // The counterfactual is identical (haul wet → the buyer shrinks it; dry
@@ -102,7 +169,7 @@ describe('overdrying — stopping below base IS a cost (unchanged)', () => {
   })
 })
 
-describe('wetVsDry — dry it or haul it wet (your side = fuel only)', () => {
+describe('wetVsDry — dry it or haul it wet (your side = fuel + fan, depreciation by the toggle)', () => {
   // A buyer sheet: 5¢/bu per point over 15% (tiered walk exercised in the
   // discount-schedules tests; here a linear rule keeps the arithmetic bare).
   const dryingRule: ScheduleRuleShape = {
@@ -110,21 +177,35 @@ describe('wetVsDry — dry it or haul it wet (your side = fuel only)', () => {
     rate_per_unit: 5, tiers: [], cumulative: false, rejection_at: null,
   }
   it('18% corn: buyer docks 15¢, own drying costs 8.64¢ fuel → drying is cheaper', () => {
-    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [dryingRule])
+    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6, ...noDepr }, 4.2, [dryingRule])
     expect(v.buyerCents).toBeCloseTo(15, 10)
     // 3 pts × 0.018 × $1.60 = 8.64¢. No shrink on our side: the buyer's
     // shrink comes off the ticket whether we dry or haul wet.
     expect(v.dryCents).toBeCloseTo(8.64, 10)
     expect(v.cheaper).toBe('dry')
   })
+  it('depreciation rides on your side by default (8.64 + 4.0 = 12.64¢) and the toggle drops it', () => {
+    const on = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [dryingRule])
+    expect(on.depreciationIncluded).toBe(true)
+    expect(on.dryCents).toBeCloseTo(12.64, 10)
+    expect(on.cheaper).toBe('dry') // still under the 15¢ dock
+    const off = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [dryingRule], { includeDepreciation: false })
+    expect(off.depreciationIncluded).toBe(false)
+    expect(off.dryCents).toBeCloseTo(8.64, 10)
+    // A 10¢ sheet: including the sunk depreciation says haul it; the marginal
+    // view (toggle off) says dry it — exactly the call the note explains.
+    const tenCent = { ...dryingRule, rate_per_unit: 10 / 3 }
+    expect(wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [tenCent]).cheaper).toBe('haul_wet')
+    expect(wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [tenCent], { includeDepreciation: false }).cheaper).toBe('dry')
+  })
   it('a cheap sheet flips the verdict — 2¢/point docks 6¢, under the 8.64¢ of fuel', () => {
     const cheap = { ...dryingRule, rate_per_unit: 2 }
-    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [cheap])
+    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6, ...noDepr }, 4.2, [cheap])
     expect(v.buyerCents).toBeCloseTo(6, 10)
     expect(v.cheaper).toBe('haul_wet')
   })
   it('the comparison never needs a grain price on our side', () => {
-    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, null, [dryingRule])
+    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6, ...noDepr }, null, [dryingRule])
     expect(v.dryCents).toBeCloseTo(8.64, 10)
     expect(v.buyerCents).toBeCloseTo(15, 10)
     expect(v.cheaper).toBe('dry')

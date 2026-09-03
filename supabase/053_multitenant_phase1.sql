@@ -157,7 +157,7 @@ begin
     'harvest_price_estimates', -- per-org despite national prices: keyed by per-org crops (see header)
     'variety_match_dismissals', 'combine_yield_entries', 'external_trucks', 'assistant_usage', 'lease_terms', 'rent_settlements', 'org_dryers',
     'seed_contract_details', 'seed_contract_premiums', 'seed_pricing_elections', 'seed_contract_payments', 'seed_contract_plantings',
-    'freight_settings', 'freight_distances',
+    'freight_settings', 'freight_distances', 'dryer_settings',
     -- crop insurance
     'crop_insurance_policies', 'crop_insurance_sco', 'crop_insurance_eco',
     'crop_insurance_stax', 'crop_insurance_mco',
