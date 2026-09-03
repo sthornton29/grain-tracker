@@ -457,7 +457,6 @@ export default function DryerMathReport({
   const fuelUnit = activeFuel === 'ng' ? 'ccf' : 'gal'
   const dryerLabel = pickedOrgDryer?.name ?? (pickedModel ? `${pickedModel.manufacturer} ${pickedModel.model}` : `${quickPerBuPt || '0.018'} gal-LP-eq/bu-pt`)
   const comparing = buyerRules.length > 0
-  const colCount = comparing ? 4 : 2
 
   return (
     <div className="space-y-4">
@@ -522,8 +521,8 @@ export default function DryerMathReport({
       {spec == null || rates == null ? (
         <p className="text-sm text-slate-400 bg-white rounded-xl shadow px-4 py-3">Set a fuel price (and consumption under ⚙ Assumptions).</p>
       ) : (
-        <div className="overflow-x-auto bg-white rounded-xl shadow">
-          <table className="min-w-full text-sm border-collapse">
+        <div className="overflow-x-auto bg-white rounded-xl shadow inline-block max-w-full align-top">
+          <table className="w-auto text-sm border-collapse">
             <thead className={theadCls}>
               <tr>
                 <th className={`${numCell} font-semibold`}>Moisture</th>
@@ -536,11 +535,11 @@ export default function DryerMathReport({
               {rows.map((r) => {
                 if (r.kind === 'base') {
                   return (
-                    <tr key={r.m} className="border-t-2 border-brand/40 bg-green-50/50 font-medium">
-                      <td className={numCell}>{fmtNum(r.m, 1)}%</td>
-                      <td colSpan={colCount - 1} className={`${textCell} text-green-800`}>
-                        Base moisture — stop here. Every half-point below this line costs you twice: sellable weight given away and wasted fuel.
-                      </td>
+                    <tr key={r.m} className="border-t-2 border-brand/40 bg-green-50/50 font-medium" title="Base moisture — the stop line">
+                      <td className={`${numCell} text-green-800`}>{fmtNum(r.m, 1)}%</td>
+                      <td className={`${numCell} text-green-800 text-xs uppercase tracking-wide`}>base</td>
+                      {comparing && <td className={`${numCell} text-slate-300`}>—</td>}
+                      {comparing && <td className={textCell} />}
                     </tr>
                   )
                 }
@@ -557,8 +556,8 @@ export default function DryerMathReport({
                           {fmtCents(o.totalPerBu * 100)} overdried
                         </td>
                       ) : (
-                        <td className={`${textCell} text-red-700/80 text-right`}>
-                          Overdried — enter a grain price under ⚙ Assumptions
+                        <td className={`${numCell} text-red-700/80 text-xs font-normal`} title="Overdried — enter a grain price under ⚙ Assumptions to value the sellable weight given away">
+                          needs grain price
                         </td>
                       )}
                       {comparing && <td className={`${numCell} text-slate-300`}>—</td>}
