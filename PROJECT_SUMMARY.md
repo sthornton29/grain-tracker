@@ -7,7 +7,7 @@
 > programs. **Not a SaaS product** — single-tenant, used on iPads in trucks by a
 > small team, so the UX favors fast capture and forgiving data entry.
 >
-> _Snapshot date: 2026-09-02. Schema at migration `078`. **Production migration state: 077 applied; `078` (Freight Math: `freight_settings` + `freight_distances` + lat/lon caches on `bin_sites`/`delivery_locations`) is still PENDING after the 2026-09-02 deploy — apply `supabase/078_freight_math.sql` in the Supabase SQL editor, then re-run `verify_migrations.sql` (expect "schema is at 078"); the calculator degrades gracefully pre-apply: math works, saved assumptions/distances show a contact-support note.**_ `supabase/verify_migrations.sql` is the read-only ALL-migrations checklist (one ✓/✗ row per migration 002–076 by its signature artifact, verdict on top — paste into the SQL editor after any apply); `supabase/verify_052/053/054.sql` are read-only deep-dive diagnostics; `docs/BETA_ACCEPTANCE.md` is the pre-invite isolation checklist (now incl. check (f): the assistant is org-blind)._
+> _Snapshot date: 2026-09-02. Schema at migration `078`. **Production migration state: 002–078 ALL applied** — `078` (Freight Math: `freight_settings` + `freight_distances` + lat/lon caches on `bin_sites`/`delivery_locations`) applied by Stuart and confirmed 2026-09-02 (its four artifacts answer on the public API); nothing pending._ `supabase/verify_migrations.sql` is the read-only ALL-migrations checklist (one ✓/✗ row per migration 002–076 by its signature artifact, verdict on top — paste into the SQL editor after any apply); `supabase/verify_052/053/054.sql` are read-only deep-dive diagnostics; `docs/BETA_ACCEPTANCE.md` is the pre-invite isolation checklist (now incl. check (f): the assistant is org-blind)._
 
 ---
 
