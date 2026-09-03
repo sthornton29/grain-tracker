@@ -136,10 +136,15 @@ export function splitHarvestByCrop(args: {
     const cur = aggByFieldCrop.get(ck)
     if (cur) {
       cur.dryBu += v.dryBu
-      if (v.lastLoadDate != null && (cur.lastLoadDate == null || v.lastLoadDate > cur.lastLoadDate)) cur.lastLoadDate = v.lastLoadDate
+      if (v.lastLoadDate != null && (cur.lastLoadDate == null || v.lastLoadDate > cur.lastLoadDate)) {
+        cur.lastLoadDate = v.lastLoadDate
+        cur.lastLoadTime = v.lastLoadTime ?? null
+      } else if (v.lastLoadDate != null && v.lastLoadDate === cur.lastLoadDate && v.lastLoadTime != null && (cur.lastLoadTime == null || v.lastLoadTime > cur.lastLoadTime)) {
+        cur.lastLoadTime = v.lastLoadTime
+      }
       if (v.combine) cur.combine = v.combine
     } else {
-      aggByFieldCrop.set(ck, { dryBu: v.dryBu, lastLoadDate: v.lastLoadDate, combine: v.combine })
+      aggByFieldCrop.set(ck, { dryBu: v.dryBu, lastLoadDate: v.lastLoadDate, lastLoadTime: v.lastLoadTime ?? null, combine: v.combine })
     }
   }
   const yearPlantings = args.plantings.filter((p) => p.season_year === args.cropYear)
@@ -153,6 +158,7 @@ export function splitHarvestByCrop(args: {
       return {
         id: p.id, cropId: p.crop_id, acres: Number(p.planted_acres ?? 0),
         dryBu: agg?.dryBu ?? 0, lastLoadDate: agg?.lastLoadDate ?? null,
+        lastLoadTime: agg?.lastLoadTime ?? null,
         override: p.yield_include_override ?? null,
         combineComplete: agg?.combine?.harvestComplete,
         expectedYield: expectedYieldForPlanting(assumptionByCrop.get(p.crop_id), {

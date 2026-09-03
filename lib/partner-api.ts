@@ -117,6 +117,9 @@ export type LoadRow = {
   from_type: string | null
   from_field_id: string | null
   updated_at?: string | null
+  /** Time of day (HH:MM:SS) — orders same-day loads across fields for the
+   *  active-field harvest hold, exactly as the Yields page does. */
+  time?: string | null
 }
 export type SplitRow = {
   load_id: string
@@ -396,22 +399,28 @@ export function buildProductionRecords(args: {
 
   // field|crop → { units, updated_at, last contributing load date }. The date
   // feeds the same in-progress classification the Yields page runs.
-  const agg = new Map<string, { units: number; updatedAt: string | null; lastDate: string | null }>()
+  const agg = new Map<string, { units: number; updatedAt: string | null; lastDate: string | null; lastTime: string | null }>()
   const bump = (
     fieldId: string,
     cropId: string,
     units: number,
     updatedAt: string | null | undefined,
     date: string | null | undefined,
+    time: string | null | undefined = null,
   ) => {
     const key = `${fieldId}|${cropId}`
     const cur = agg.get(key)
     if (cur) {
       cur.units += units
       cur.updatedAt = maxIso(cur.updatedAt, updatedAt)
-      if (date != null && (cur.lastDate == null || date > cur.lastDate)) cur.lastDate = date
+      if (date != null && (cur.lastDate == null || date > cur.lastDate)) {
+        cur.lastDate = date
+        cur.lastTime = time ?? null
+      } else if (date != null && date === cur.lastDate && time != null && (cur.lastTime == null || time > cur.lastTime)) {
+        cur.lastTime = time
+      }
     } else {
-      agg.set(key, { units, updatedAt: updatedAt ?? null, lastDate: date ?? null })
+      agg.set(key, { units, updatedAt: updatedAt ?? null, lastDate: date ?? null, lastTime: time ?? null })
     }
   }
 
@@ -432,13 +441,13 @@ export function buildProductionRecords(args: {
       dryBushelsOverride: l.dry_bushels_override,
     })
     if (!dryBushels) continue
-    bump(l.from_field_id, l.crop_id, dryBushels, l.updated_at, l.date)
+    bump(l.from_field_id, l.crop_id, dryBushels, l.updated_at, l.date, l.time)
   }
   for (const s of args.splits) {
     const parent = loadById.get(s.load_id)
     if (!parent || parent.crop_year !== args.year || s.dry_bushels == null) continue
     if (combineFields.has(`${s.field_id}|${s.crop_id}`)) continue
-    bump(s.field_id, s.crop_id, num(s.dry_bushels), parent.updated_at, parent.date)
+    bump(s.field_id, s.crop_id, num(s.dry_bushels), parent.updated_at, parent.date, parent.time)
   }
   for (const e of yearEntries) {
     const bu = num(e.adjusted_total_bushels)
@@ -489,6 +498,7 @@ export function buildProductionRecords(args: {
         acres: num(p.planted_acres),
         dryBu: a?.units ?? 0,
         lastLoadDate: a?.lastDate ?? null,
+        lastLoadTime: a?.lastTime ?? null,
         override: p.yield_include_override ?? null,
         combineComplete: combineCompleteByKey.get(`${p.field_id}|${p.crop_id}`),
         expectedYield: assumption

@@ -29,6 +29,9 @@ type LoadLike = {
   from_field_id: string | null
   /** Optional load-level irrigated/dryland designation (migration 060). */
   practice?: 'irrigated' | 'dryland' | null
+  /** Time of day (HH:MM:SS) when known — orders same-day loads across fields
+   *  so the active-field hold can tell which field the combine moved to. */
+  time?: string | null
 }
 
 type SplitLike = {
@@ -108,6 +111,10 @@ export type FieldCropAgg = {
   /** Most recent contributing load date (YYYY-MM-DD), or null. Used to spot the
    *  field currently being harvested. */
   lastLoadDate: string | null
+  /** Time of day of the newest load ON lastLoadDate (the latest known time
+   *  among that day's loads), or null when none of them carries a time.
+   *  Breaks same-day ties between fields for the active-field hold. */
+  lastLoadTime?: string | null
   /** Dry bushels from loads/split-portions designated irrigated / dryland.
    *  A load with practice null contributes to dryBu only. Optional so callers
    *  that hand-build aggregates (income-sensitivity, tests) stay valid;
@@ -159,14 +166,19 @@ export function fieldCropAggregates(
     return entryByKey.has(`${fieldId}|${cropId}|${effYear}`) ? effYear : dateYr
   }
 
-  const bump = (key: string, bu: number, date: string, practice: 'irrigated' | 'dryland' | null) => {
+  const bump = (key: string, bu: number, date: string, practice: 'irrigated' | 'dryland' | null, time: string | null) => {
     let cur = map.get(key)
     if (!cur) {
-      cur = { dryBu: 0, lastLoadDate: null, irrBu: 0, dryLandBu: 0, designatedLoads: 0, totalLoads: 0 }
+      cur = { dryBu: 0, lastLoadDate: null, lastLoadTime: null, irrBu: 0, dryLandBu: 0, designatedLoads: 0, totalLoads: 0 }
       map.set(key, cur)
     }
     cur.dryBu += bu
-    if (cur.lastLoadDate == null || date > cur.lastLoadDate) cur.lastLoadDate = date
+    if (cur.lastLoadDate == null || date > cur.lastLoadDate) {
+      cur.lastLoadDate = date
+      cur.lastLoadTime = time
+    } else if (date === cur.lastLoadDate && time != null && (cur.lastLoadTime == null || time > cur.lastLoadTime)) {
+      cur.lastLoadTime = time
+    }
     cur.totalLoads = (cur.totalLoads ?? 0) + 1
     if (practice === 'irrigated') { cur.irrBu = (cur.irrBu ?? 0) + bu; cur.designatedLoads = (cur.designatedLoads ?? 0) + 1 }
     else if (practice === 'dryland') { cur.dryLandBu = (cur.dryLandBu ?? 0) + bu; cur.designatedLoads = (cur.designatedLoads ?? 0) + 1 }
@@ -187,7 +199,7 @@ export function fieldCropAggregates(
       dryBushelsOverride: l.dry_bushels_override,
     })
     if (!dryBushels) continue
-    bump(`${l.from_field_id}|${l.crop_id}|${keyYr}`, dryBushels, l.date, l.practice ?? null)
+    bump(`${l.from_field_id}|${l.crop_id}|${keyYr}`, dryBushels, l.date, l.practice ?? null, l.time ?? null)
   }
 
   const loadById = new Map(loads.map((l) => [l.id, l]))
@@ -199,7 +211,7 @@ export function fieldCropAggregates(
     const yr = Number(parent.date.slice(0, 4))
     const keyYr = keyYearFor(s.field_id, s.crop_id, yr, parent.crop_year)
     if (loadYear != null && keyYr !== loadYear) continue
-    bump(`${s.field_id}|${s.crop_id}|${keyYr}`, s.dry_bushels, parent.date, s.practice ?? null)
+    bump(`${s.field_id}|${s.crop_id}|${keyYr}`, s.dry_bushels, parent.date, s.practice ?? null, parent.time ?? null)
   }
 
   // Combine pass: the entry is authoritative for the field's production. The
@@ -209,7 +221,7 @@ export function fieldCropAggregates(
   for (const [key, e] of entryByKey) {
     let cur = map.get(key)
     if (!cur) {
-      cur = { dryBu: 0, lastLoadDate: null, irrBu: 0, dryLandBu: 0, designatedLoads: 0, totalLoads: 0 }
+      cur = { dryBu: 0, lastLoadDate: null, lastLoadTime: null, irrBu: 0, dryLandBu: 0, designatedLoads: 0, totalLoads: 0 }
       map.set(key, cur)
     }
     const adjustedBu = Number(e.adjusted_total_bushels) || 0
@@ -226,7 +238,10 @@ export function fieldCropAggregates(
       entryDate: e.entry_date,
     }
     cur.dryBu = adjustedBu
-    if (cur.lastLoadDate == null || e.entry_date > cur.lastLoadDate) cur.lastLoadDate = e.entry_date
+    if (cur.lastLoadDate == null || e.entry_date > cur.lastLoadDate) {
+      cur.lastLoadDate = e.entry_date
+      cur.lastLoadTime = null // an entry has no time of day
+    }
   }
 
   return map
@@ -379,6 +394,10 @@ export type YieldInput = {
   acres: number
   dryBu: number
   lastLoadDate: string | null
+  /** Time of day of the newest load on lastLoadDate, when known. Lets the
+   *  active-field hold order same-day loads across fields; without it a
+   *  same-day switch is a tie and both fields stay held. */
+  lastLoadTime?: string | null
   /** Manual override: true forces the field to be counted despite an auto flag;
    *  null/undefined leaves the automatic classification in effect. */
   override?: boolean | null
@@ -463,9 +482,11 @@ export const IN_PROGRESS_MIN_PEERS = 2
 //     → stays in progress) OR the crop goes quiet past the window (harvest
 //     wrapped or paused; for the trailing field of the season its own last
 //     load IS the crop's last load, so both formulations coincide). Two
-//     fields loaded the same day are both held — dates alone can't say
-//     which one the combine left. "Count anyway" and the explicit
-//     harvest-complete markers still complete a field from any state.
+//     fields loaded the same day are ordered by their loads' TIME of day
+//     (loads.time) when both are known — the field with the later load is
+//     the one the combine moved to; with a time missing the day is a tie
+//     and both are held. "Count anyway" and the explicit harvest-complete
+//     markers still complete a field from any state.
 //   * LOW YIELD is the primary in-progress signal, and it PERSISTS. A field
 //     whose yield is more than `threshold` below the crop's baseline is
 //     "in_progress" → excluded (its partial bushels would understate the true
@@ -556,16 +577,22 @@ export function analyzeYields(
         const isResting = (r: YieldInput) =>
           r.lastLoadDate == null || daysSince(r.lastLoadDate) > IN_PROGRESS_STALE_DAYS
         // The field the combine is in right now: loads, and no OTHER field
-        // of the crop has a later-dated load. Held in progress whatever its
-        // yield — you can't be done with a field you're still cutting. (A
-        // field with bushels but no load date can't be placed in time and
-        // is not held.)
+        // of the crop has a later load. Held in progress whatever its yield
+        // — you can't be done with a field you're still cutting. (A field
+        // with bushels but no load date can't be placed in time and is not
+        // held.) "Later" is by calendar date first; on the same day the
+        // loads' times decide when BOTH are known (the operation switched
+        // fields mid-day — the field hauled later is the current one);
+        // with a time missing the day is a tie and both fields stay held.
+        const loadedAfter = (other: YieldInput, own: YieldInput) => {
+          const a = other.lastLoadDate!.slice(0, 10)
+          const b = own.lastLoadDate!.slice(0, 10)
+          if (a !== b) return a > b
+          return other.lastLoadTime != null && own.lastLoadTime != null && other.lastLoadTime > own.lastLoadTime
+        }
         const isActiveField = (cand: YieldInput) => {
-          const own = cand.lastLoadDate ? cand.lastLoadDate.slice(0, 10) : null
-          if (own == null) return false
-          return !harvested.some(
-            (r) => r.id !== cand.id && r.lastLoadDate != null && r.lastLoadDate.slice(0, 10) > own,
-          )
+          if (cand.lastLoadDate == null) return false
+          return !harvested.some((r) => r.id !== cand.id && r.lastLoadDate != null && loadedAfter(r, cand))
         }
         for (const cand of harvested) {
           if (isActiveField(cand)) {
@@ -729,6 +756,7 @@ function analyzeSeason<T extends SeasonPlanting>(args: {
       return {
         id: p.id, cropId: p.crop_id, acres: Number(p.planted_acres ?? 0),
         dryBu: agg?.dryBu ?? 0, lastLoadDate: agg?.lastLoadDate ?? null,
+        lastLoadTime: agg?.lastLoadTime ?? null,
         override: p.yield_include_override ?? null,
         combineComplete: agg?.combine?.harvestComplete,
         expectedYield: expectedYieldForPlanting(assumptionByCrop.get(p.crop_id), {

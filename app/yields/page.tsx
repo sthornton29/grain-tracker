@@ -141,7 +141,7 @@ export default function YieldsPage() {
       supabase.from('field_plantings').select('*'),
       // Paginated: a bare select caps at ~1,000 rows and silently drops loads
       // once harvest crosses it (the Blythe Big South bug) — see lib/fetch-all-rows.
-      fetchAllRows((f, t) => supabase.from('loads').select('id, date, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, truck_label, hauler_truck, ticket_number, practice').order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, truck_label, hauler_truck, ticket_number, practice').order('id').range(f, t)),
       supabase.from('counties').select('*').order('state_code').order('name'),
       fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
       fetchAllRows((f, t) => supabase.from('field_planting_varieties').select('*').order('variety').order('id').range(f, t)),
@@ -310,6 +310,7 @@ export default function YieldsPage() {
           acres: Number(p.planted_acres),
           dryBu: agg?.dryBu ?? 0,
           lastLoadDate: agg?.lastLoadDate ?? null,
+          lastLoadTime: agg?.lastLoadTime ?? null,
           override: p.yield_include_override,
           combineComplete: agg?.combine?.harvestComplete,
           expectedYield: expectedYieldForPlanting(assumptionByKey.get(`${p.crop_id}|${p.season_year}`), p),

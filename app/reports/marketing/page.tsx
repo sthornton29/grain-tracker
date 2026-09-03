@@ -228,7 +228,7 @@ export default function MarketingPage() {
       supabase.from('futures_positions').select('*').eq('crop_year', cropYear),
       supabase.from('options_positions').select('*').eq('crop_year', cropYear),
       supabase.from('crop_assumptions').select('*').eq('crop_year', cropYear),
-      fetchAllRows((f, t) => supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override').eq('crop_year', cropYear).order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override').eq('crop_year', cropYear).order('id').range(f, t)),
       fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels').order('id').range(f, t)),
       supabase.from('gin_receipts').select('id, crop_year, bales_count, total_bale_weight, entity_id, farm_id, field_id').eq('crop_year', cropYear),
       fetchAllRows((f, t) => supabase.from('cotton_bales').select('gin_receipt_id, net_weight_lbs').eq('crop_year', cropYear).order('id').range(f, t)),

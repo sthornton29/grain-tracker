@@ -60,7 +60,7 @@ export default function SeasonSummaryPage() {
     const [cr, pl, lo, sp, en, fa, fi, ce, ca] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
-      fetchAllRows((f, t) => supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id').order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id').order('id').range(f, t)),
       fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('id, entity_id'),
@@ -129,6 +129,7 @@ export default function SeasonSummaryPage() {
           acres: Number(p.planted_acres),
           dryBu: agg?.dryBu ?? 0,
           lastLoadDate: agg?.lastLoadDate ?? null,
+          lastLoadTime: agg?.lastLoadTime ?? null,
           override: p.yield_include_override,
           combineComplete: agg?.combine?.harvestComplete,
           expectedYield: expectedYieldForPlanting(assumptionByCrop.get(p.crop_id), p),

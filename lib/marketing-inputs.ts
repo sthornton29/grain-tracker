@@ -134,7 +134,7 @@ export async function loadProductionInputs(
     fetchAll<LoadRow>((f, t) =>
       supabase
         .from('loads')
-        .select('id, date, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, practice')
+        .select('id, date, time, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, practice')
         .eq('org_id', org)
         .eq('crop_year', cropYear)
         .order('id')
@@ -187,6 +187,7 @@ export async function loadProductionInputs(
         acres: Number(p.planted_acres ?? 0),
         dryBu: agg?.dryBu ?? 0,
         lastLoadDate: agg?.lastLoadDate ?? null,
+        lastLoadTime: agg?.lastLoadTime ?? null,
         override: p.yield_include_override ?? null,
         combineComplete: agg?.combine?.harvestComplete,
         expectedYield: expectedYieldForPlanting(assumptionByCrop.get(p.crop_id), p),

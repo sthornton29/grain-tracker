@@ -53,7 +53,7 @@ export async function GET(req: NextRequest) {
       fetchAll<LoadRow>((f, t) =>
         supabase
           .from('loads')
-          .select('id, date, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, updated_at')
+          .select('id, date, time, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, updated_at')
           .eq('org_id', org)
           .eq('crop_year', year)
           .order('id')

@@ -81,7 +81,7 @@ export default function CombineYieldPage() {
         supabase.from('crops').select('*').order('name'),
         supabase.from('field_plantings').select('*'),
         supabase.from('bins').select('id, name_or_number').order('name_or_number'),
-        fetchAllRows((f, t) => supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, practice').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, practice').order('id').range(f, t)),
         fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
         // Tolerate the table not existing yet (062 pending) — no entries.
         fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('*').order('id').range(f, t)),

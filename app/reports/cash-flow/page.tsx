@@ -204,7 +204,7 @@ export default function CashFlowPage() {
         const { data, error } = await fetchAllRows<LoadRow>((f, t) =>
           supabase
             .from('loads')
-            .select('id, date, contract_id, ticket_number, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, practice')
+            .select('id, date, time, contract_id, ticket_number, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, practice')
             .order('id', { ascending: true })
             .range(f, t),
         )

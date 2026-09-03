@@ -135,7 +135,7 @@ export default function CropInsuranceReport() {
         supabase.from('fields').select('*'),
         supabase.from('counties').select('*').order('state_code').order('name'),
         supabase.from('field_plantings').select('*'),
-        fetchAllRows((f, t) => supabase.from('loads').select('id, date, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id').order('id').range(f, t)),
         fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
         supabase.from('crop_assumptions').select('*'),
         // May not exist yet (migration 062): an error leaves data null → [].
@@ -275,6 +275,7 @@ export default function CropInsuranceReport() {
           acres: Number(p.planted_acres),
           dryBu: agg?.dryBu ?? 0,
           lastLoadDate: agg?.lastLoadDate ?? null,
+          lastLoadTime: agg?.lastLoadTime ?? null,
           override: p.yield_include_override,
           combineComplete: agg?.combine?.harvestComplete,
           expectedYield: expectedYieldForPlanting(assumptionByKey.get(`${p.crop_id}|${p.season_year}`), p),

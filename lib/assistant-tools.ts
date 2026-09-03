@@ -174,7 +174,7 @@ async function loadMarketingBundle(
     allRows<OptionPosition>((f, t) => supabase.from('options_positions').select('*').eq('crop_year', cropYear).order('id').range(f, t)),
     all<CropAssumption>(supabase.from('crop_assumptions').select('*')),
     allPaged<{ id: string; date: string; crop_id: string | null; crop_year: number | null; from_type: string | null; from_field_id: string | null; net_weight: number | null; moisture: number | null; dry_bushels_override: number | null }>(
-      supabase, 'loads', 'id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
+      supabase, 'loads', 'id, date, time, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
     allPaged<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase, 'load_splits', 'load_id, field_id, crop_id, dry_bushels'),
     all<{ id: string; crop_year: number; bales_count: number | null; total_bale_weight: number | null; entity_id: string | null; farm_id: string | null; field_id: string | null }>(
       supabase.from('gin_receipts').select('id, crop_year, bales_count, total_bale_weight, entity_id, farm_id, field_id').eq('crop_year', cropYear)),
@@ -328,7 +328,7 @@ async function getYields(supabase: SupabaseClient, ctx: AssistantContext, input:
     all<Crop>(supabase.from('crops').select('*')),
     allRows<FieldPlanting>((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
     allPaged<{ id: string; date: string; crop_id: string | null; crop_year: number | null; from_type: string | null; from_field_id: string | null; net_weight: number | null; moisture: number | null; dry_bushels_override: number | null }>(
-      supabase, 'loads', 'id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
+      supabase, 'loads', 'id, date, time, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
     allPaged<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase, 'load_splits', 'load_id, field_id, crop_id, dry_bushels'),
     allRows<CombineRow>((f, t) =>
       supabase.from('combine_yield_entries').select(COMBINE_SELECT).order('id').range(f, t)),
@@ -389,7 +389,7 @@ async function getRevenueProjection(supabase: SupabaseClient, ctx: AssistantCont
     all<CropAssumption>(supabase.from('crop_assumptions').select('*')),
     allRows<FieldPlanting>((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
     allPaged<{ id: string; date: string; crop_id: string | null; crop_year: number | null; from_type: string | null; from_field_id: string | null; net_weight: number | null; moisture: number | null; dry_bushels_override: number | null }>(
-      supabase, 'loads', 'id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
+      supabase, 'loads', 'id, date, time, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
     allPaged<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase, 'load_splits', 'load_id, field_id, crop_id, dry_bushels'),
     allRows<CombineRow>((f, t) =>
       supabase.from('combine_yield_entries').select(COMBINE_SELECT).order('id').range(f, t)),
@@ -592,7 +592,7 @@ async function getInsuranceEstimates(supabase: SupabaseClient, ctx: AssistantCon
     all<CropAssumption>(supabase.from('crop_assumptions').select('*')),
     allRows<FieldPlanting>((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
     allPaged<{ id: string; date: string; crop_id: string | null; crop_year: number | null; from_type: string | null; from_field_id: string | null; net_weight: number | null; moisture: number | null; dry_bushels_override: number | null }>(
-      supabase, 'loads', 'id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
+      supabase, 'loads', 'id, date, time, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override'),
     allPaged<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase, 'load_splits', 'load_id, field_id, crop_id, dry_bushels'),
     allRows<CombineRow>((f, t) =>
       supabase.from('combine_yield_entries').select(COMBINE_SELECT).order('id').range(f, t)),
@@ -813,7 +813,7 @@ async function getBinInventory(supabase: SupabaseClient, _ctx: AssistantContext)
     all<{ id: string; name: string }>(supabase.from('bin_sites').select('id, name').order('name')),
     all<Crop>(supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel')),
     allPaged<{ id: string; date: string; net_weight: number | null; moisture: number | null; crop_id: string | null; crop_year: number | null; dry_bushels_override: number | null; from_type: string | null; from_field_id: string | null; from_bin_id: string | null; to_type: string | null; to_bin_id: string | null }>(
-      supabase, 'loads', 'id, date, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, from_bin_id, to_type, to_bin_id'),
+      supabase, 'loads', 'id, date, time, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, from_bin_id, to_type, to_bin_id'),
     allPaged<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number }>(supabase, 'load_splits', 'load_id, field_id, crop_id, dry_bushels'),
     allRows<CombineRow>((f, t) =>
       supabase.from('combine_yield_entries').select(COMBINE_SELECT).order('id').range(f, t)),

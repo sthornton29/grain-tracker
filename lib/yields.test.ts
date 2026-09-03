@@ -34,6 +34,7 @@ type LoadLike = {
   from_type: string | null
   from_field_id: string | null
   practice?: 'irrigated' | 'dryland' | null
+  time?: string | null
 }
 
 type SplitLike = {
@@ -216,6 +217,38 @@ describe('fieldCropAggregates', () => {
     expect(fieldCropAggregates(loads, splits, cropById, { loadYear: 2026 }).get('fA|corn|2026'))
       .toMatchObject({ dryBu: 500, lastLoadDate: '2026-01-03' })
     expect(fieldCropAggregates(loads, splits, cropById, { loadYear: 2025 }).size).toBe(0)
+  })
+})
+
+describe('fieldCropAggregates — lastLoadTime (same-day ordering for the active-field hold)', () => {
+  it('tracks the latest known time among the newest day’s loads, and resets when a later day arrives', () => {
+    const loads = [
+      load({ id: 'l1', date: '2025-09-18', time: '16:00:00', dry_bushels_override: 1000 }),
+      load({ id: 'l2', date: '2025-09-19', time: '09:10:00', dry_bushels_override: 1000 }),
+      load({ id: 'l3', date: '2025-09-19', time: '15:40:00', dry_bushels_override: 1000 }),
+      load({ id: 'l4', date: '2025-09-19', time: '11:00:00', dry_bushels_override: 1000 }),
+    ]
+    const agg = fieldCropAggregates(loads, [], cropById).get('fA|corn|2025')!
+    expect(agg.lastLoadDate).toBe('2025-09-19')
+    expect(agg.lastLoadTime).toBe('15:40:00')
+  })
+
+  it('a newest-day load without a time leaves the known time in place; a day with no times reads null', () => {
+    const mixed = [
+      load({ id: 'l1', date: '2025-09-19', time: '15:40:00', dry_bushels_override: 1000 }),
+      load({ id: 'l2', date: '2025-09-19', time: null, dry_bushels_override: 1000 }),
+    ]
+    expect(fieldCropAggregates(mixed, [], cropById).get('fA|corn|2025')!.lastLoadTime).toBe('15:40:00')
+    const untimed = [load({ id: 'l1', date: '2025-09-19', dry_bushels_override: 1000 })]
+    expect(fieldCropAggregates(untimed, [], cropById).get('fA|corn|2025')!.lastLoadTime).toBeNull()
+  })
+
+  it('a split portion carries its parent load’s time', () => {
+    const loads = [load({ id: 'p', date: '2025-09-19', time: '17:05:00', from_field_id: 'fA', dry_bushels_override: 1000 })]
+    const splits: SplitLike[] = [{ load_id: 'p', field_id: 'fB', crop_id: 'corn', dry_bushels: 400 }]
+    const agg = fieldCropAggregates(loads, splits, cropById).get('fB|corn|2025')!
+    expect(agg.lastLoadDate).toBe('2025-09-19')
+    expect(agg.lastLoadTime).toBe('17:05:00')
   })
 })
 
@@ -796,7 +829,7 @@ describe('analyzeYields — the active field is never complete', () => {
     expect(counted.progress.get('corn')?.pctComplete).toBeCloseTo(100, 6)
   })
 
-  it('two fields loaded the same day are both held — dates alone cannot say which one the combine left', () => {
+  it('two fields loaded the same day WITHOUT times are both held — dates alone cannot say which one the combine left', () => {
     const rows = [
       ...settled,
       row({ id: 'x', acres: 100, dryBu: 18500, lastLoadDate: '2025-09-19' }),
@@ -804,6 +837,46 @@ describe('analyzeYields — the active field is never complete', () => {
     ]
     const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
     expect(res.excluded.get('x')).toBe('in_progress')
+    expect(res.excluded.get('y')).toBe('in_progress')
+  })
+
+  it('a same-day switch is settled by the loads’ times: the field hauled later is the current one (the Moore / Wheeler Grove case)', () => {
+    // 2025-09-19: Wheeler Grove's last load at 15:40, Moore's at 17:05, Blue
+    // Pond's at 18:17 — the crew moved Wheeler Grove → Moore → Blue Pond in
+    // one afternoon. Only Blue Pond is the field being cut; the other two are
+    // normal-yield and complete.
+    const rows = [
+      ...settled,
+      row({ id: 'wheeler', acres: 100, dryBu: 21600, lastLoadDate: '2025-09-19', lastLoadTime: '15:40:00' }),
+      row({ id: 'moore', acres: 100, dryBu: 19200, lastLoadDate: '2025-09-19', lastLoadTime: '17:05:00' }),
+      row({ id: 'bluepond', acres: 100, dryBu: 20000, lastLoadDate: '2025-09-19', lastLoadTime: '18:17:00' }),
+    ]
+    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
+    expect(res.excluded.has('wheeler')).toBe(false)
+    expect(res.excluded.has('moore')).toBe(false)
+    expect(res.excluded.get('bluepond')).toBe('in_progress')
+    expect(res.progress.get('corn')?.inProgressAcres).toBe(100)
+  })
+
+  it('a same-day switch with a time missing on either side stays a tie (both held)', () => {
+    const rows = [
+      ...settled,
+      row({ id: 'x', acres: 100, dryBu: 18500, lastLoadDate: '2025-09-19', lastLoadTime: null }),
+      row({ id: 'y', acres: 100, dryBu: 19000, lastLoadDate: '2025-09-19', lastLoadTime: '18:17:00' }),
+    ]
+    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
+    expect(res.excluded.get('x')).toBe('in_progress')
+    expect(res.excluded.get('y')).toBe('in_progress')
+  })
+
+  it('a later DATE beats any time: yesterday 23:00 is before today 06:00', () => {
+    const rows = [
+      ...settled,
+      row({ id: 'x', acres: 100, dryBu: 18500, lastLoadDate: '2025-09-18', lastLoadTime: '23:00:00' }),
+      row({ id: 'y', acres: 100, dryBu: 19000, lastLoadDate: '2025-09-19', lastLoadTime: '06:00:00' }),
+    ]
+    const res = analyzeYields(rows, IN_PROGRESS_THRESHOLD, NOW)
+    expect(res.excluded.has('x')).toBe(false)
     expect(res.excluded.get('y')).toBe('in_progress')
   })
 

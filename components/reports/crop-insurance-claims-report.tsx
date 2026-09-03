@@ -134,7 +134,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         supabase.from('entities').select('*').order('name'),
         supabase.from('crop_assumptions').select('*'),
         supabase.from('field_plantings').select('*'),
-        fetchAllRows((f, t) => supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override, practice').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override, practice').order('id').range(f, t)),
         supabase.from('crop_insurance_policies').select('*'),
         supabase.from('crop_insurance_sco').select('*'),
         supabase.from('crop_insurance_eco').select('*'),

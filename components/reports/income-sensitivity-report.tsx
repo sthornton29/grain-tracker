@@ -229,7 +229,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
         supabase.from('futures_positions').select('*'),
         supabase.from('options_positions').select('*'),
         supabase.from('crop_assumptions').select('*'),
-        fetchAllRows((f, t) => supabase.from('loads').select('id, date, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override').order('id').range(f, t)),
         fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels').order('id').range(f, t)),
         fetchAllRows((f, t) => supabase.from('crop_insurance_policies').select('*').order('id').range(f, t)),
         supabase.from('crop_insurance_sco').select('*'),
