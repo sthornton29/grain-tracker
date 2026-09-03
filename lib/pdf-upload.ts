@@ -127,6 +127,9 @@ export type DiscountScheduleRuleExtraction = {
   cumulative: boolean | null
   rejection_at: number | null
   note: string | null
+  /** Moisture rules: the % of weight shrunk per point over base when the
+   *  sheet states one (080); null when not printed. */
+  shrink_factor_pct_per_point?: number | null
 }
 
 export type DiscountScheduleExtraction = {

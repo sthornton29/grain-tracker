@@ -1,11 +1,16 @@
 import { describe, it, expect } from 'vitest'
 import {
+  ASSUMED_SHRINK_FACTOR_PCT_PER_POINT,
   expectedDiscountDollars,
   isRejected,
+  moistureTerms,
   parseTiers,
   ruleCentsPerBu,
   ruleRawCharge,
   scheduleInForce,
+  scheduleShrinkPctAt,
+  shapeStoredRule,
+  summarizeMoistureTerms,
   summarizeRule,
   unitsPastBase,
   varianceVerdict,
@@ -168,5 +173,111 @@ describe('parseTiers + summarizeRule', () => {
   it('summarizes tiered and linear rules in plain language', () => {
     expect(summarizeRule(twTiered)).toBe('4¢/8¢/16¢ per bracket, under 55 lb · reject at 50 lb')
     expect(summarizeRule(dryingLinear)).toBe('5¢/bu per point over 16.5%')
+  })
+})
+
+describe('moistureTerms — a schedule\'s two-step moisture treatment (080)', () => {
+  const drying: ScheduleRuleShape = {
+    factor: 'drying', basis: 'cents_per_bu', base_value: 15, direction: 'above',
+    rate_per_unit: 3.5, tiers: [], cumulative: false, rejection_at: null,
+  }
+  const shrinkLine: ScheduleRuleShape = {
+    factor: 'moisture_shrink', basis: 'weight_shrink_pct', base_value: 15, direction: 'above',
+    rate_per_unit: 1.4, tiers: [], cumulative: false, rejection_at: null,
+  }
+  const tw: ScheduleRuleShape = {
+    factor: 'test_weight', basis: 'cents_per_bu', base_value: 54, direction: 'below',
+    rate_per_unit: 4, tiers: [], cumulative: false, rejection_at: null,
+  }
+
+  it('an explicit factor on the moisture rule is used as printed — not assumed', () => {
+    const t = moistureTerms([{ ...drying, shrink_factor_pct_per_point: 1.4 }, tw])
+    expect(t.hasMoistureRules).toBe(true)
+    expect(t.baseMoisture).toBe(15)
+    expect(t.shrinkFactorPctPerPoint).toBe(1.4)
+    expect(t.shrinkFactorAssumed).toBe(false)
+    expect(t.bundled).toBe(false)
+    expect(t.chargeBasis).toBe('cents_per_bu_per_point')
+    expect(t.chargeRules).toHaveLength(1)
+    expect(t.shrinkRules).toHaveLength(0)
+    expect(scheduleShrinkPctAt(t, 20, null)).toBeCloseTo(7.0, 10)
+  })
+
+  it('a separate shrink line supplies the factor when the rule carries none', () => {
+    const t = moistureTerms([shrinkLine, drying])
+    expect(t.shrinkFactorPctPerPoint).toBe(1.4)
+    expect(t.shrinkFactorAssumed).toBe(false)
+    expect(t.shrinkRules).toHaveLength(1)
+    expect(t.chargeRules).toHaveLength(1)
+    expect(summarizeMoistureTerms(t)).toBe('base 15% · 1.4% shrink/pt · 3.5¢/pt drying')
+  })
+
+  it('nothing on file → 1.4% assumed and flagged "assumed — verify against the schedule"', () => {
+    const t = moistureTerms([drying])
+    expect(ASSUMED_SHRINK_FACTOR_PCT_PER_POINT).toBe(1.4)
+    expect(t.shrinkFactorPctPerPoint).toBe(1.4)
+    expect(t.shrinkFactorAssumed).toBe(true)
+    expect(summarizeMoistureTerms(t)).toBe('base 15% · 1.4% shrink/pt (assumed — verify against the schedule) · 3.5¢/pt drying')
+    expect(scheduleShrinkPctAt(t, 18, null)).toBeCloseTo(4.2, 10)
+  })
+
+  it('a lone %-of-price charge is the bundled discount: no factor, nothing assumed', () => {
+    const bundled: ScheduleRuleShape = { ...drying, basis: 'pct_of_price', rate_per_unit: 2 }
+    const t = moistureTerms([bundled])
+    expect(t.bundled).toBe(true)
+    expect(t.chargeBasis).toBe('pct_of_price_per_point')
+    expect(t.shrinkFactorPctPerPoint).toBeNull()
+    expect(t.shrinkFactorAssumed).toBe(false)
+    expect(scheduleShrinkPctAt(t, 20, null)).toBeNull()
+    expect(summarizeMoistureTerms(t)).toBe('base 15% · 2% of price/pt (bundled — shrink included)')
+    // With a shrink line beside it, it is NOT bundled.
+    expect(moistureTerms([bundled, shrinkLine]).bundled).toBe(false)
+    expect(moistureTerms([{ ...bundled, shrink_factor_pct_per_point: 1.3 }]).bundled).toBe(false)
+  })
+
+  it('a tiered shrink line is walked by the rule engine at the moisture', () => {
+    const tieredShrink: ScheduleRuleShape = {
+      ...shrinkLine, rate_per_unit: null,
+      tiers: [{ from: 15.1, to: 17.0, rate: 2.5 }, { from: 17.1, to: 19.0, rate: 5.5 }],
+    }
+    const t = moistureTerms([tieredShrink, drying])
+    expect(t.shrinkFactorPctPerPoint).toBeNull()
+    expect(t.shrinkFactorAssumed).toBe(false)
+    expect(scheduleShrinkPctAt(t, 18, null)).toBe(5.5)
+  })
+
+  it('no moisture rule at all', () => {
+    const t = moistureTerms([tw])
+    expect(t.hasMoistureRules).toBe(false)
+    expect(t.baseMoisture).toBeNull()
+    expect(t.shrinkFactorAssumed).toBe(false)
+    expect(scheduleShrinkPctAt(t, 20, 15)).toBeNull()
+    expect(summarizeMoistureTerms(t)).toBe('no moisture rule')
+  })
+
+  it('the sheet\'s own base wins; the fallback base only fills a missing one', () => {
+    const t = moistureTerms([{ ...drying, base_value: 15.5, shrink_factor_pct_per_point: 1.4 }])
+    expect(scheduleShrinkPctAt(t, 20, 15)).toBeCloseTo(1.4 * 4.5, 10)
+    const noBase = moistureTerms([{ ...drying, base_value: null, shrink_factor_pct_per_point: 1.4 }])
+    expect(noBase.baseMoisture).toBeNull()
+    expect(scheduleShrinkPctAt(noBase, 20, 15)).toBeCloseTo(7.0, 10)
+    expect(scheduleShrinkPctAt(noBase, 20, null)).toBeNull()
+  })
+
+  it('shapeStoredRule reads a stored row (numeric strings, the 080 column present or absent)', () => {
+    const withFactor = shapeStoredRule({
+      factor: 'drying', basis: 'cents_per_bu', base_value: '15.000', direction: 'above',
+      rate_per_unit: '3.5000', tiers: [], cumulative: false, rejection_at: null, note: null,
+      shrink_factor_pct_per_point: '1.400',
+    })
+    expect(withFactor.base_value).toBe(15)
+    expect(withFactor.rate_per_unit).toBe(3.5)
+    expect(withFactor.shrink_factor_pct_per_point).toBe(1.4)
+    const pre080 = shapeStoredRule({
+      factor: 'drying', basis: 'cents_per_bu', base_value: 15, direction: 'above',
+      rate_per_unit: 3.5, tiers: null, cumulative: null, rejection_at: null,
+    })
+    expect(pre080.shrink_factor_pct_per_point).toBeNull()
+    expect(moistureTerms([pre080]).shrinkFactorAssumed).toBe(true)
   })
 })

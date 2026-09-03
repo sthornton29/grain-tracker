@@ -20,6 +20,14 @@
 // cost of drying. Depreciation IS a real cost of running your dryer — but
 // sunk if the dryer is owned regardless, so the buyer comparison has a
 // toggle (default on) for the marginal dry-vs-haul call.
+//
+// The dry-vs-haul comparison (080) models the elevator's real two-step
+// treatment: they SHRINK the bushels to base at THEIR factor (1.4%/pt
+// typical — everything beyond the 1.183%/pt of physical water is sellable
+// grain they keep, valued at the grain price), then CHARGE drying on what
+// is left. Both cost you; the buyer side is itemized so the user sees why.
+// The schedule's factor lives on its moisture rule (assumed 1.4% and flagged
+// when the sheet is silent — editable on Settings → Buyers).
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
@@ -40,14 +48,16 @@ import {
   type DryerFuel,
   type DryerSpec,
   type DryingRates,
+  type WetVsDryVerdict,
 } from '@/lib/dryer-math'
 import {
-  parseTiers,
+  ASSUMED_SHRINK_FACTOR_PCT_PER_POINT,
+  moistureTerms,
   scheduleInForce,
-  type RuleBasis,
+  shapeStoredRule,
+  summarizeMoistureTerms,
   type ScheduleRuleShape,
 } from '@/lib/discount-schedules'
-import { coerceDiscountCategory } from '@/lib/settlement-discounts'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import DiscountScheduleImport from '@/components/discount-schedule-import'
@@ -95,6 +105,8 @@ const N = (v: number | string | null | undefined): number | null => {
   const n = typeof v === 'number' ? v : Number(v)
   return Number.isFinite(n) ? n : null
 }
+
+const DEFAULT_ASSUMED = ASSUMED_SHRINK_FACTOR_PCT_PER_POINT
 
 const fmtCents = (n: number | null | undefined, d = 1) =>
   n == null || !Number.isFinite(Number(n)) ? '—' : `${Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}¢`
@@ -311,18 +323,12 @@ export default function DryerMathReport({
         .sort((a, b) => b.effective_date.localeCompare(a.effective_date))[0]
       ?? null
     if (!sched) return []
-    return scheduleRules.filter((r) => r.schedule_id === sched.id).map((r) => ({
-      factor: coerceDiscountCategory(r.factor),
-      basis: (r.basis === 'weight_shrink_pct' || r.basis === 'pct_of_price' ? r.basis : 'cents_per_bu') as RuleBasis,
-      base_value: N(r.base_value),
-      direction: r.direction === 'below' ? 'below' : 'above',
-      rate_per_unit: N(r.rate_per_unit),
-      tiers: parseTiers(r.tiers),
-      cumulative: r.cumulative === true,
-      rejection_at: N(r.rejection_at),
-      note: r.note,
-    }))
+    return scheduleRules.filter((r) => r.schedule_id === sched.id).map(shapeStoredRule)
   }, [compareOpen, buyerId, cropId, schedules, scheduleRules])
+
+  // The sheet's moisture treatment (base · shrink factor · charge) — shown
+  // beside the comparison so the user sees what they're being compared to.
+  const buyerTerms = useMemo(() => moistureTerms(buyerRules), [buyerRules])
 
   const buyersWithSchedules = useMemo(() => {
     const ids = new Set(schedules.filter((s) => s.crop_id === cropId).map((s) => s.buyer_id))
@@ -409,7 +415,7 @@ export default function DryerMathReport({
       fuelPrice != null ? `${activeFuel === 'lp' ? 'LP $' + fmtNum(fuelPrice) + '/gal' : 'NG $' + fmtNum(fuelPrice) + '/ccf'}` : '',
       `depreciation ${fmtNum(Math.max(0, deprCents), 1)}¢/bu dried`,
       grainPrice != null ? `grain $${fmtNum(grainPrice)}/bu` : '',
-      comparing ? `vs ${buyers.find((b) => b.id === buyerId)?.name ?? 'buyer'}${includeDeprInCompare ? '' : ' (depreciation excluded from the comparison)'}` : '',
+      comparing ? `vs ${buyers.find((b) => b.id === buyerId)?.name ?? 'buyer'} — ${summarizeMoistureTerms(buyerTerms)}${includeDeprInCompare ? '' : ' (depreciation excluded from the comparison)'}` : '',
     ].filter(Boolean).join(' · ')
     return {
       title: 'Grain Dryer Math',
@@ -425,27 +431,39 @@ export default function DryerMathReport({
           { label: 'Moisture %', align: 'right', format: 'dec1' },
           { label: 'Total drying cost ¢/bu', align: 'right', format: 'dec1' },
           ...(comparing ? [
-            { label: 'Buyer dock ¢/bu', align: 'right' as const, format: 'dec1' as const },
+            { label: 'Haul it wet ¢/bu', align: 'right' as const, format: 'dec1' as const },
+            { label: 'Their sheet', align: 'left' as const },
             { label: 'Cheaper', align: 'left' as const },
           ] : []),
         ],
         rows: rows.map((r) => {
-          if (r.kind === 'base') return [r.m, null, ...(comparing ? [null, 'Base — stop here'] : [])]
+          if (r.kind === 'base') return [r.m, null, ...(comparing ? [null, '', 'Base — stop here'] : [])]
           if (r.kind === 'over') {
             return r.over
-              ? [r.m, { v: r.over.totalPerBu * 100, tone: 'unfavorable' as const }, ...(comparing ? [null, 'Overdried — cost of going past base'] : [])]
-              : [r.m, null, ...(comparing ? [null, 'Overdried — enter a grain price'] : [])]
+              ? [r.m, { v: r.over.totalPerBu * 100, tone: 'unfavorable' as const }, ...(comparing ? [null, '', 'Overdried — cost of going past base'] : [])]
+              : [r.m, null, ...(comparing ? [null, '', 'Overdried — enter a grain price'] : [])]
           }
           return [
             r.m, r.cost.totalPerBu * 100,
             ...(comparing ? [
               r.verdict?.buyerCents ?? null,
-              r.verdict?.cheaper === 'dry' ? 'Dry it' : r.verdict?.cheaper === 'haul_wet' ? 'Haul it wet' : r.verdict?.cheaper === 'even' ? 'Even' : '',
+              r.verdict ? buyerSideText(r.verdict) : '',
+              r.verdict?.cheaper === 'dry' ? 'Dry it' : r.verdict?.cheaper === 'haul_wet' ? 'Haul it wet' : r.verdict?.cheaper === 'even' ? 'Even' : r.verdict?.reason === 'needs_price' ? 'Needs a grain price' : '',
             ] : []),
           ]
         }),
       }],
     }
+  }
+
+  // "17.5¢ charge + 4.6¢ excess shrink" — the buyer side, itemized.
+  function buyerSideText(v: WetVsDryVerdict): string {
+    const b = v.buyer
+    if (!b) return ''
+    if (b.bundled) return `${fmtCents(b.chargeCents)} bundled moisture discount`
+    const charge = b.chargeCents != null ? `${fmtCents(b.chargeCents)} charge` : 'charge needs a price'
+    const shrink = b.excessShrinkCents != null ? `${fmtCents(b.excessShrinkCents)} excess shrink` : 'excess shrink needs a price'
+    return `${charge} + ${shrink}`
   }
 
   if (loading) return <p className="text-sm text-slate-400">Loading…</p>
@@ -513,7 +531,7 @@ export default function DryerMathReport({
         </button>
       </div>
       <p className="text-xs text-slate-500 no-print -mt-2">
-        Using {dryerLabel} · depreciation {fmtNum(Math.max(0, deprCents), 1)}¢/bu dried · grain {grainPrice != null ? `$${fmtNum(grainPrice)}/bu` : '(no price — only the overdrying rows need one)'}
+        Using {dryerLabel} · depreciation {fmtNum(Math.max(0, deprCents), 1)}¢/bu dried · grain {grainPrice != null ? `$${fmtNum(grainPrice)}/bu` : '(no price — the overdrying rows and the buyer comparison need one)'}
         {quote && grainPriceStr === '' ? ` (${quote.symbol} today)` : ''} — adjust under ⚙ Assumptions.
       </p>
 
@@ -527,7 +545,7 @@ export default function DryerMathReport({
               <tr>
                 <th className={`${numCell} font-semibold`}>Moisture</th>
                 <th className={`${numCell} font-semibold`} title="Fuel + fan electricity + dryer depreciation (flat per bushel dried). Shrink is not included — see the note under the table.">Total drying cost/bu</th>
-                {comparing && <th className={`${numCell} font-semibold`}>Buyer dock ¢/bu</th>}
+                {comparing && <th className={`${numCell} font-semibold`} title="Their two steps: shrink to base at their factor (the part beyond physical water is grain they keep), then the drying charge on what's left">Haul it wet</th>}
                 {comparing && <th className={`${textCell} text-left font-semibold`}>Cheaper</th>}
               </tr>
             </thead>
@@ -578,12 +596,19 @@ export default function DryerMathReport({
                       {fmtCents(r.cost.totalPerBu * 100)}
                     </td>
                     {comparing && (
-                      <td className={`${numCell} ${v?.cheaper === 'haul_wet' ? 'text-green-700 font-semibold' : ''}`}>
-                        {v?.buyerCents != null ? fmtCents(v.buyerCents) : '—'}
+                      <td className={`${numCell} align-top ${v?.cheaper === 'haul_wet' ? 'text-green-700' : ''}`} title={v ? buyerSideText(v) : ''}>
+                        {v?.buyerCents != null ? (
+                          <>
+                            <span className="font-semibold">{fmtCents(v.buyerCents)}</span>
+                            <span className="block text-[11px] font-normal text-slate-500 whitespace-nowrap">{buyerSideText(v)}</span>
+                          </>
+                        ) : v?.reason === 'needs_price' ? (
+                          <span className="text-xs text-amber-700 font-normal">needs grain price</span>
+                        ) : '—'}
                       </td>
                     )}
                     {comparing && (
-                      <td className={textCell}>
+                      <td className={`${textCell} align-top`}>
                         {v?.cheaper === 'dry' && <span className="text-green-700 font-medium">Dry it (save {fmtCents((v.buyerCents ?? 0) - v.dryCents)})</span>}
                         {v?.cheaper === 'haul_wet' && <span className="text-sky-700 font-medium">Haul it wet (save {fmtCents(v.dryCents - (v.buyerCents ?? 0))})</span>}
                         {v?.cheaper === 'even' && <span className="text-slate-500">About even</span>}
@@ -615,9 +640,13 @@ export default function DryerMathReport({
         </p>
         {comparing && (
           <p>
-            The buyer comparison is apples to apples: your side is fuel and fan
-            {includeDeprInCompare ? ' plus depreciation' : ' (depreciation left out — the marginal view)'}; their side is
-            their moisture dock or drying charge. Their shrink comes off in both worlds, so it cancels out.
+            <span className="font-semibold text-slate-600">Haul it wet.</span> The elevator shrinks your bushels to base
+            first, then charges to dry what&rsquo;s left — both cost you. Their shrink factor
+            ({buyerTerms.bundled ? 'built into their bundled discount' : `${fmtNum(buyerTerms.shrinkFactorPctPerPoint ?? DEFAULT_ASSUMED, 2)}%/pt${buyerTerms.shrinkFactorAssumed ? ', assumed — verify against the schedule' : ''}`})
+            takes {fmtNum(SHRINK_PCT_PER_POINT, 3)}%/pt of water that&rsquo;s gone whether you or they dry it, and
+            everything above that is sellable grain they keep, valued at the grain price. Add their drying charge on
+            what&rsquo;s left and that&rsquo;s the &ldquo;haul it wet&rdquo; figure. Your side is fuel and fan
+            {includeDeprInCompare ? ' plus depreciation' : ' (depreciation left out — the marginal view)'}.
           </p>
         )}
       </div>
@@ -643,9 +672,24 @@ export default function DryerMathReport({
               <span className="block text-xs text-slate-500 mt-0.5">
                 {buyersWithSchedules.length === 0
                   ? `No ${crop?.name ?? ''} discount schedules on file — upload one below or on Settings → Buyers.`
-                  : 'Their sheet prices "haul it wet" beside your drying cost in the table above — their shrink applies either way, so it cancels.'}
+                  : 'Their sheet prices "haul it wet" beside your drying cost in the table above: they shrink your bushels to base at their factor, then charge drying on what is left.'}
               </span>
             </label>
+            {comparing && (
+              <p className={`text-xs rounded-lg px-3 py-2 border ${buyerTerms.shrinkFactorAssumed ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                <span className="font-semibold">Their sheet:</span> {summarizeMoistureTerms(buyerTerms)}.{' '}
+                {buyerTerms.shrinkFactorAssumed && 'The sheet on file states no shrink factor, so 1.4% stands in — '}
+                <a href="/settings/buyers" className="text-brand-deep underline">
+                  {buyerTerms.shrinkFactorAssumed ? 'set the printed factor on Settings → Buyers' : 'edit on Settings → Buyers'}
+                </a>.
+              </p>
+            )}
+            {comparing && grainPrice == null && (
+              <p className="text-xs rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-amber-900">
+                Enter a grain price under ⚙ Assumptions — the comparison needs it to value the grain the elevator keeps
+                beyond the water.
+              </p>
+            )}
             <div className="space-y-1">
               <label className="text-sm text-slate-700 flex items-center gap-2">
                 <input type="checkbox" checked={includeDeprInCompare} onChange={(e) => setIncludeDeprInCompare(e.target.checked)} />
@@ -736,7 +780,7 @@ export default function DryerMathReport({
                 />
                 <span className="block text-xs text-slate-500 mt-0.5">
                   {quote ? `Default: ${quote.symbol} today $${fmtNum(quote.price)}. ` : 'No live quote. '}
-                  Only the overdrying rows (below base) use it — drying to base costs fuel, not grain.
+                  The overdrying rows (below base) and the buyer comparison use it — drying to base costs fuel, not grain.
                 </span>
               </label>
               <label className="text-sm text-slate-700 block">

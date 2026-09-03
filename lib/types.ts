@@ -379,6 +379,9 @@ export type BuyerDiscountScheduleRule = {
   cumulative: boolean
   rejection_at: number | null
   note: string | null
+  /** Moisture rules (080): % of weight shrunk per point over base; null =
+   *  not stated (the comparison assumes 1.4% and flags it). Absent pre-080. */
+  shrink_factor_pct_per_point?: number | string | null
   created_at: string
 }
 

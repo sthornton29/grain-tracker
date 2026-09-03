@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-09-03 · version 0.1.0 · build ae1ebe2. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-09-03 · version 0.1.0 · build d04a671. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -679,7 +679,7 @@ What it costs to take a point of moisture out — and what it costs to take out 
 
 - **Crop** — sets the base moisture from the crop's own standard (the same base the rest of Turnrow shrinks to).
 - **Fuel** — propane or natural gas, with its price. If a saved dryer is selected, its fuel applies automatically.
-- Everything else lives under **⚙ Assumptions**: your dryer (a saved one, a catalog model, or a standard 0.018 gal-LP-equivalent per bushel-point), the electric rate, the **depreciation** figure, the calibrate-from-records tool, and the grain price. The grain price only matters for the rows *below* base (overdrying) — it defaults to today's futures quote for the crop's reference contract, and you can type over it any time. The line under the inputs always says which dryer, depreciation figure, and grain price are in play.
+- Everything else lives under **⚙ Assumptions**: your dryer (a saved one, a catalog model, or a standard 0.018 gal-LP-equivalent per bushel-point), the electric rate, the **depreciation** figure, the calibrate-from-records tool, and the grain price. The grain price matters for the rows *below* base (overdrying) and for the buyer comparison — it defaults to today's futures quote for the crop's reference contract, and you can type over it any time. The line under the inputs always says which dryer, depreciation figure, and grain price are in play.
 
 ## Reading the table
 
@@ -697,7 +697,11 @@ The water above base moisture is unsellable either way. Haul it to town wet and 
 
 ## Dry it or haul it wet
 
-An optional comparison at the bottom (collapsed until you open it): pick a buyer whose discount schedule is on file and every wet row shows their moisture dock or drying charge beside your drying cost, with the call — *Dry it* or *Haul it wet* — and the savings. It's apples to apples: their shrink comes off whether you dry or haul, so it cancels out and only their charge and your cost remain.
+An optional comparison at the bottom (collapsed until you open it): pick a buyer whose discount schedule is on file and every wet row shows what hauling it wet costs by their sheet beside your drying cost, with the call — *Dry it* or *Haul it wet* — and the savings.
+
+**How the elevator treats wet grain.** It's two steps, and both cost you. First the elevator **shrinks your bushels** to base at *its* shrink factor — 1.4% per point is typical. Part of that is water that's gone whether you or they dry it (about 1.183% per point), so that part is on nobody's side of the comparison. Everything above it is sellable grain they keep, and it's valued at the grain price. Then they **charge to dry what's left** — so many cents per point, or a percent of the price per point. The "haul it wet" figure is those two added together, and each row shows the split: *17.5¢ charge + 4.6¢ excess shrink*. Some sheets print one bundled percent-of-price discount per point with no shrink line; that discount already includes the shrink, so it's applied alone and labeled *bundled*.
+
+The comparison needs a **grain price** (it values the grain the elevator keeps) — the one under ⚙ Assumptions, defaulted from the live quote. A line under the buyer picker shows the sheet's terms: base, shrink factor, and charge. If the sheet on file doesn't state a shrink factor, 1.4% stands in and the line says *assumed — verify against the schedule*; type the printed factor on the schedule row under Settings → Buyers and the comparison uses it.
 
 **Depreciation in the comparison** is a checkbox there, on by default. If you own the dryer, its depreciation is spent whether or not this particular load runs through it — so for the marginal call on one load you may prefer to untick it and compare fuel and fan alone. Left on, the comparison prices your full cost of drying. Schedules live with the buyer under Settings → Buyers; you can also upload one right there in the section. Ask Turnrow can quote the same schedules in plain words.
 
@@ -709,7 +713,8 @@ The honest consumption number is yours, not a brochure's: in ⚙ Assumptions, en
 
 - **Where did the fuel and per-point columns go?** Into the hover on each total and the note under the table. The table itself is two columns so it reads at a glance.
 - **Where do the catalog numbers come from?** Typical figures by dryer type (cross-flow, mixed-flow, tower, heat recovery). They're starting points, labeled as such — calibrate with your records.
-- **Why does hauling wet sometimes win?** A buyer's drying charge can be less than your cost, especially on a cheap sheet or for a point or two. The comparison uses their posted sheet — and whether depreciation is in your side is your choice.
+- **Why does hauling wet sometimes win?** A buyer's charge plus the grain they keep can still come in under your cost — a cheap sheet with a lean shrink factor, or a point or two of moisture. The comparison uses their posted sheet — and whether depreciation is in your side is your choice.
+- **The comparison used to favor hauling wet a lot more. What changed?** It counted only the buyer's drying charge and ignored the bushels their shrink factor takes beyond the water. Now it counts both, the way the elevator does.
 - **Is depreciation charged on the overdrying rows too?** No. Those rows are the extra cost of going past base — lost grain and wasted fuel. The bushel already carried its depreciation reaching base.
 - **Does this change any of my data?** No. Only saved dryers, a calibration you choose to save, and the depreciation setting persist — the rest is session inputs.
 
@@ -717,6 +722,8 @@ The honest consumption number is yours, not a brochure's: in ⚙ Assumptions, en
 
 - The rows below base say to enter a grain price: there's no live quote — enter one under ⚙ Assumptions. The rows above base don't need it.
 - No buyers in the compare list: no discount schedule on file for this crop yet — upload one in the comparison section or on Settings → Buyers.
+- The buyer column says *needs grain price*: enter one under ⚙ Assumptions — the comparison can't value the shrink without it.
+- The sheet line is amber, *assumed — verify against the schedule*: the schedule on file has no shrink factor. Check the printed sheet and type the factor on the schedule row under Settings → Buyers.
 - The depreciation box is greyed out and won't save: a database update is needed — contact support. The table still uses the 4¢ default.
 - Numbers that don't square with your fuel bills: calibrate from records; the presets are estimates. Still off after that: contact support.
 
@@ -1338,6 +1345,7 @@ Buyers are the businesses you sell and haul to — elevators, river terminals, f
 - **Find buyers near me** searches the web for elevators, terminals, and other buyers that handle your crops near a zip code you enter, within a radius you pick. Results come back as a checklist — tick the ones you actually sell to, edit a name if it isn't quite right, and add them. Anything you don't tick is discarded, and results already in your list are marked so you don't double up.
 - To bring in a whole list at once, use the spreadsheet import at the top — one row per buyer, locations in one cell separated by semicolons. There's also an **Upload (AI)** card that reads buyer names and delivery locations out of any document, alongside anything else it finds worth filing elsewhere.
 - **Discount schedules live on each buyer.** Expand a buyer and its schedules are right there — crop, effective date, rule count, and a link to the original sheet — with **Upload discount schedule (AI)** on the buyer's own card (photo or PDF; Turnrow reads where drying and test-weight charges start, the rates or bracket scales, rejection points; review and confirm — nothing saves until you do). When a buyer posts a new sheet, upload it too — the effective dates keep each one applied to its own period; to replace a bad read, delete it and upload again.
+- **The shrink factor sits on the schedule row.** Elevators shrink wet bushels to base at their own factor (1.4% per point is typical) before charging drying, and the Grain Dryer Math comparison needs that number. Turnrow reads it from the sheet when it's printed; when it isn't, the row shows the moisture terms in amber with *assumed — verify against the schedule* and a **Shrink %/pt** box — type the printed factor and it saves as you leave the box. Blank means the 1.4% assumption.
 - **Schedules are queryable in plain words.** Once a schedule is on file, **Ask Turnrow** can quote it — try *"What will [buyer] dock me for 17% corn?"* — and can compare what each buyer's discounting actually cost you from your settled statements ("which buyer's discounts cost me the most last year?"). The Grain Dryer Math tool also uses the schedules for its dry-it-or-haul-it-wet comparison.
 
 ## What the controls do

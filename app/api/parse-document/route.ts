@@ -85,12 +85,13 @@ Document-level fields:
 - rules: one entry per quality factor the schedule prices:
   - factor: exactly one of "moisture_shrink" | "drying" | "test_weight" | "damage" | "heat_damage" | "foreign_material" | "dockage" | "splits" | "sprout" | "musty_sour" | "other"
   - basis: "weight_shrink_pct" when the charge deducts a percent of WEIGHT (shrink), "cents_per_bu" when it is a price discount in cents per bushel, "pct_of_price" when it takes a percent off the price
-  - base_value: the threshold where charges begin (15 for "over 15% moisture", 54 for "under 54 lb test weight")
+  - base_value: the threshold where charges begin (15 for "over 15% moisture", 54 for "under 54 lb test weight"). For moisture rules this is the schedule's OWN base moisture — read it exactly as printed (15.0 vs 15.5 matters).
   - direction: "above" when charges grow as the measurement RISES past base (moisture, damage, FM), "below" when they grow as it FALLS (test weight)
   - rate_per_unit: for LINEAR rules, the charge per whole unit past base in the basis units — convert half-point rates to per-point (a printed "2.5¢ per 1/2%" is 5) and put the printed wording in note. Null when the rule is tiered.
   - tiers: for TIERED/bracketed rules, the bracket table in measurement order: [{ "from": number, "to": number, "rate": number }] — "54.0–54.9 = 4¢" becomes { "from": 54.0, "to": 54.9, "rate": 4 }, rate in the basis units. [] for linear rules.
   - cumulative: true ONLY when the sheet says bracket charges STACK/add as grain passes through successive tiers ("an additional 8¢ per..."); false when a bracket's printed rate is the whole charge (the normal case)
   - rejection_at: the measurement at/past which the buyer refuses the load ("reject below 49 lb" → 49), null when not stated
+  - shrink_factor_pct_per_point: MOISTURE rules only ("moisture_shrink" / "drying"): the percent of WEIGHT the buyer shrinks per point of moisture over base when the sheet states one — "1.4% shrink per point" → 1.4, "shrink 1.5% per 1%" → 1.5, "0.7% per half point" → 1.4. Elevators treat moisture in TWO steps — shrink the bushels to base at this factor, then charge drying on what is left — and most sheets print both ("1.4% shrink per point + 4¢/pt drying"): record the factor here on the drying rule AND emit the shrink as its own "moisture_shrink" rule with basis "weight_shrink_pct" and rate_per_unit the same percent. Null when the sheet prints ONE bundled percent-of-price (or ¢/bu) moisture discount with no shrink stated, and null for every non-moisture factor. NEVER invent a factor.
   - note: the schedule's own wording for this factor, verbatim-ish
 
 Respond ONLY in JSON with no other text, no markdown backticks:
@@ -110,6 +111,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
       "tiers": [ { "from": number, "to": number, "rate": number } ],
       "cumulative": true or false,
       "rejection_at": number or null,
+      "shrink_factor_pct_per_point": number or null,
       "note": "string or null"
     }
   ]

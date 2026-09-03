@@ -169,69 +169,167 @@ describe('overdrying — stopping below base IS a cost (unchanged)', () => {
   })
 })
 
-describe('wetVsDry — dry it or haul it wet (your side = fuel + fan, depreciation by the toggle)', () => {
-  // A buyer sheet: 5¢/bu per point over 15% (tiered walk exercised in the
-  // discount-schedules tests; here a linear rule keeps the arithmetic bare).
-  const dryingRule: ScheduleRuleShape = {
+describe('wetVsDry — the elevator shrinks first, then charges to dry what is left', () => {
+  // The extension example: 20% corn on a 15.0 base, $4.20 corn, a sheet
+  // printing "1.4% shrink per point + 3.5¢/pt drying".
+  //   charge        3.5¢ × 5 pt                          = 17.5¢
+  //   excess shrink (1.4 − 1.183)% × 5 pt × $4.20         =  4.557¢  (≈ 4.6¢)
+  //   haul it wet                                          = 22.057¢ (≈ 22.1¢)
+  //   dry it        14.4¢ fuel + 0.5¢ fan (+ 4.0¢ depr)    = 14.9¢ / 18.9¢
+  // → drying wins with depreciation off AND on. The physical 1.183%/pt is
+  // on neither side: that water is gone whether you or they dry it.
+  const withFan: DryerSpec = { ...mixedFlowLp, fanKwhPerBuPt: 0.01 }
+  const rates = { fuelPrice: 1.6, electricRate: 0.1, depreciationCentsPerBu: 4.0 }
+  const dryingCharge: ScheduleRuleShape = {
     factor: 'drying', basis: 'cents_per_bu', base_value: 15, direction: 'above',
-    rate_per_unit: 5, tiers: [], cumulative: false, rejection_at: null,
+    rate_per_unit: 3.5, tiers: [], cumulative: false, rejection_at: null,
   }
-  it('18% corn: buyer docks 15¢, own drying costs 8.64¢ fuel → drying is cheaper', () => {
-    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6, ...noDepr }, 4.2, [dryingRule])
-    expect(v.buyerCents).toBeCloseTo(15, 10)
-    // 3 pts × 0.018 × $1.60 = 8.64¢. No shrink on our side: the buyer's
-    // shrink comes off the ticket whether we dry or haul wet.
-    expect(v.dryCents).toBeCloseTo(8.64, 10)
-    expect(v.cheaper).toBe('dry')
+  const sheet14: ScheduleRuleShape[] = [{ ...dryingCharge, shrink_factor_pct_per_point: 1.4 }]
+
+  it('20% corn: 17.5¢ charge + 4.6¢ excess shrink = 22.1¢ to haul wet, itemized', () => {
+    const v = wetVsDry(20, 15, withFan, rates, 4.2, sheet14)
+    expect(v.reason).toBeNull()
+    expect(v.buyer!.pointsPastBase).toBe(5)
+    expect(v.buyer!.chargeCents).toBeCloseTo(17.5, 10)
+    expect(v.buyer!.chargeBasis).toBe('cents_per_bu_per_point')
+    expect(v.buyer!.shrinkPct).toBeCloseTo(7.0, 10)                      // 1.4 × 5
+    expect(v.buyer!.excessShrinkPct).toBeCloseTo((1.4 - 1.183) * 5, 10)  // 1.085%
+    expect(v.buyer!.excessShrinkCents).toBeCloseTo(4.557, 3)
+    expect(v.buyer!.shrinkFactorPctPerPoint).toBe(1.4)
+    expect(v.buyer!.shrinkFactorAssumed).toBe(false)
+    expect(v.buyer!.bundled).toBe(false)
+    expect(v.buyerCents).toBeCloseTo(22.057, 3)
+    expect(v.buyerCents!).toBeCloseTo(22.1, 1)
   })
-  it('depreciation rides on your side by default (8.64 + 4.0 = 12.64¢) and the toggle drops it', () => {
-    const on = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [dryingRule])
+
+  it('dry-yourself wins with depreciation ON (18.9¢) and OFF (14.9¢) — the previously inverted verdict', () => {
+    const on = wetVsDry(20, 15, withFan, rates, 4.2, sheet14)
+    expect(on.dryCents).toBeCloseTo(18.9, 10)
     expect(on.depreciationIncluded).toBe(true)
-    expect(on.dryCents).toBeCloseTo(12.64, 10)
-    expect(on.cheaper).toBe('dry') // still under the 15¢ dock
-    const off = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [dryingRule], { includeDepreciation: false })
-    expect(off.depreciationIncluded).toBe(false)
-    expect(off.dryCents).toBeCloseTo(8.64, 10)
-    // A 10¢ sheet: including the sunk depreciation says haul it; the marginal
-    // view (toggle off) says dry it — exactly the call the note explains.
-    const tenCent = { ...dryingRule, rate_per_unit: 10 / 3 }
-    expect(wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [tenCent]).cheaper).toBe('haul_wet')
-    expect(wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [tenCent], { includeDepreciation: false }).cheaper).toBe('dry')
+    expect(on.cheaper).toBe('dry')
+    const off = wetVsDry(20, 15, withFan, rates, 4.2, sheet14, { includeDepreciation: false })
+    expect(off.dryCents).toBeCloseTo(14.9, 10)
+    expect(off.cheaper).toBe('dry')
+    // The old model (charge only, 17.5¢ vs 18.9¢) called this "haul it wet".
+    expect(on.buyerCents!).toBeGreaterThan(on.dryCents)
   })
-  it('a cheap sheet flips the verdict — 2¢/point docks 6¢, under the 8.64¢ of fuel', () => {
-    const cheap = { ...dryingRule, rate_per_unit: 2 }
-    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6, ...noDepr }, 4.2, [cheap])
-    expect(v.buyerCents).toBeCloseTo(6, 10)
-    expect(v.cheaper).toBe('haul_wet')
-  })
-  it('the comparison never needs a grain price on our side', () => {
-    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6, ...noDepr }, null, [dryingRule])
-    expect(v.dryCents).toBeCloseTo(8.64, 10)
-    expect(v.buyerCents).toBeCloseTo(15, 10)
+
+  it('the same sheet read as two lines (a 1.4% shrink rule + the drying rule) gives the same answer, not assumed', () => {
+    const shrinkLine: ScheduleRuleShape = {
+      factor: 'moisture_shrink', basis: 'weight_shrink_pct', base_value: 15, direction: 'above',
+      rate_per_unit: 1.4, tiers: [], cumulative: false, rejection_at: null,
+    }
+    const v = wetVsDry(20, 15, withFan, rates, 4.2, [shrinkLine, dryingCharge])
+    expect(v.buyer!.shrinkFactorPctPerPoint).toBe(1.4)
+    expect(v.buyer!.shrinkFactorAssumed).toBe(false)
+    expect(v.buyerCents).toBeCloseTo(22.057, 3)
     expect(v.cheaper).toBe('dry')
   })
-  it('tier-walk schedules run through the same rule engine', () => {
+
+  it('bundled %-of-price sheet: 2%/pt × 5 pt × $4.20 = 42¢, applied alone — no excess-shrink add-on', () => {
+    const bundled: ScheduleRuleShape = {
+      factor: 'drying', basis: 'pct_of_price', base_value: 15, direction: 'above',
+      rate_per_unit: 2, tiers: [], cumulative: false, rejection_at: null,
+    }
+    const v = wetVsDry(20, 15, withFan, rates, 4.2, [bundled])
+    expect(v.buyer!.bundled).toBe(true)
+    expect(v.buyer!.chargeBasis).toBe('pct_of_price_per_point')
+    expect(v.buyer!.chargeCents).toBeCloseTo(42, 10)
+    expect(v.buyer!.shrinkPct).toBeNull()
+    expect(v.buyer!.excessShrinkPct).toBe(0)
+    expect(v.buyer!.excessShrinkCents).toBe(0)
+    expect(v.buyer!.shrinkFactorPctPerPoint).toBeNull()
+    expect(v.buyer!.shrinkFactorAssumed).toBe(false)
+    expect(v.buyerCents).toBeCloseTo(42, 10)
+    expect(v.cheaper).toBe('dry')
+    // A %-of-price charge WITH a stated factor is not bundled: charge + excess.
+    const explicit = wetVsDry(20, 15, withFan, rates, 4.2, [{ ...bundled, shrink_factor_pct_per_point: 1.4 }])
+    expect(explicit.buyer!.bundled).toBe(false)
+    expect(explicit.buyerCents).toBeCloseTo(42 + 4.557, 3)
+  })
+
+  it('a factor of exactly 1.183 is pure physical water — zero excess shrink, the charge alone', () => {
+    const v = wetVsDry(20, 15, withFan, rates, 4.2, [{ ...dryingCharge, shrink_factor_pct_per_point: 1.183 }])
+    expect(v.buyer!.excessShrinkPct).toBeCloseTo(0, 10)
+    expect(v.buyer!.excessShrinkCents).toBe(0)
+    expect(v.buyerCents).toBeCloseTo(17.5, 10)
+    // And a factor UNDER physical never goes negative.
+    const lenient = wetVsDry(20, 15, withFan, rates, 4.2, [{ ...dryingCharge, shrink_factor_pct_per_point: 1.0 }])
+    expect(lenient.buyer!.excessShrinkPct).toBe(0)
+    expect(lenient.buyerCents).toBeCloseTo(17.5, 10)
+  })
+
+  it('a sheet with no shrink factor on file assumes 1.4% and flags it', () => {
+    const v = wetVsDry(20, 15, withFan, rates, 4.2, [dryingCharge])
+    expect(v.buyer!.shrinkFactorPctPerPoint).toBe(1.4)
+    expect(v.buyer!.shrinkFactorAssumed).toBe(true)
+    expect(v.buyerCents).toBeCloseTo(22.057, 3)
+    expect(v.cheaper).toBe('dry')
+  })
+
+  it('the schedule base wins over the crop base for the buyer side; the crop base still drives your side', () => {
+    // Their sheet starts at 15.5; our crop base is 15.0. At 20%: they shrink
+    // and charge 4.5 points; we dry 5.
+    const v = wetVsDry(20, 15, withFan, rates, 4.2, [{ ...dryingCharge, base_value: 15.5, shrink_factor_pct_per_point: 1.4 }])
+    expect(v.buyer!.pointsPastBase).toBeCloseTo(4.5, 10)
+    expect(v.buyer!.chargeCents).toBeCloseTo(3.5 * 4.5, 10)
+    expect(v.buyer!.excessShrinkPct).toBeCloseTo((1.4 - 1.183) * 4.5, 10)
+    expect(v.dryCents).toBeCloseTo(18.9, 10)
+    // No base on the sheet at all → the crop base stands in.
+    const noBase = wetVsDry(20, 15, withFan, rates, 4.2, [{ ...dryingCharge, base_value: null, shrink_factor_pct_per_point: 1.4 }])
+    expect(noBase.buyer!.pointsPastBase).toBe(5)
+  })
+
+  it('the grain price is required: it prices the excess shrink (and any %-of-price rule)', () => {
+    const v = wetVsDry(20, 15, withFan, rates, null, sheet14)
+    expect(v.buyerCents).toBeNull()
+    expect(v.reason).toBe('needs_price')
+    expect(v.cheaper).toBeNull()
+    expect(v.dryCents).toBeCloseTo(18.9, 10)       // your side never needs it
+    expect(v.buyer!.chargeCents).toBeCloseTo(17.5, 10) // the ¢/pt part still shows
+    expect(v.buyer!.excessShrinkCents).toBeNull()
+    // Only a ¢/bu charge with a factor at/under physical water can do without one.
+    const noExcess = wetVsDry(20, 15, withFan, rates, null, [{ ...dryingCharge, shrink_factor_pct_per_point: 1.183 }])
+    expect(noExcess.buyerCents).toBeCloseTo(17.5, 10)
+  })
+
+  it('a tier-walk drying charge runs through the same rule engine, plus the excess shrink', () => {
     const walk: ScheduleRuleShape = {
       factor: 'drying', basis: 'cents_per_bu', base_value: 15.5, direction: 'above',
-      rate_per_unit: null, cumulative: true, rejection_at: null,
+      rate_per_unit: null, cumulative: true, rejection_at: null, shrink_factor_pct_per_point: 1.4,
       tiers: [
         { from: 15.5, to: 17.0, rate: 6 },
         { from: 17.0, to: 19.0, rate: 10 },
       ],
     }
-    // 18% is past bracket 1 (6¢) and inside bracket 2 (10¢) = 16¢ walked.
-    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [walk])
-    expect(v.buyerCents).toBeCloseTo(16, 10)
+    // 18% is past bracket 1 (6¢) and inside bracket 2 (10¢) = 16¢ walked;
+    // excess shrink on 2.5 points over 15.5 = 0.217 × 2.5 × $4.20 = 2.28¢.
+    const v = wetVsDry(18, 15, withFan, rates, 4.2, [walk])
+    expect(v.buyer!.chargeCents).toBeCloseTo(16, 10)
+    expect(v.buyer!.excessShrinkCents).toBeCloseTo(0.217 * 2.5 * 4.2, 6)
+    expect(v.buyerCents).toBeCloseTo(16 + 2.27850, 4)
   })
-  it('no applicable moisture rule → null verdict, own cost still shown', () => {
+
+  it('no moisture rule on the sheet → no buyer side, own cost still shown', () => {
     const twOnly: ScheduleRuleShape = {
       factor: 'test_weight', basis: 'cents_per_bu', base_value: 54, direction: 'below',
       rate_per_unit: 4, tiers: [], cumulative: false, rejection_at: null,
     }
-    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [twOnly])
+    const v = wetVsDry(18, 15, withFan, rates, 4.2, [twOnly])
     expect(v.buyerCents).toBeNull()
+    expect(v.buyer).toBeNull()
+    expect(v.reason).toBe('no_moisture_rule')
     expect(v.cheaper).toBeNull()
     expect(v.dryCents).toBeGreaterThan(0)
+  })
+
+  it('a cheap sheet can still win: 1¢/pt with a 1.2% factor at 18% → 3¢ + 0.2¢ vs 8.64¢ fuel (depr off)', () => {
+    const cheap: ScheduleRuleShape = { ...dryingCharge, rate_per_unit: 1, shrink_factor_pct_per_point: 1.2 }
+    const v = wetVsDry(18, 15, mixedFlowLp, { fuelPrice: 1.6 }, 4.2, [cheap], { includeDepreciation: false })
+    expect(v.buyer!.chargeCents).toBeCloseTo(3, 10)
+    expect(v.buyer!.excessShrinkCents).toBeCloseTo((1.2 - 1.183) * 3 * 4.2, 6) // 0.214¢
+    expect(v.dryCents).toBeCloseTo(8.64, 10)
+    expect(v.cheaper).toBe('haul_wet')
   })
 })
 

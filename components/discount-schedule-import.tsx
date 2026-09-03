@@ -21,7 +21,10 @@ import {
   type DiscountScheduleRuleExtraction,
 } from '@/lib/pdf-upload'
 import {
+  ASSUMED_SHRINK_FACTOR_PCT_PER_POINT,
+  moistureTerms,
   parseTiers,
+  summarizeMoistureTerms,
   summarizeRule,
   type RuleBasis,
   type ScheduleRuleShape,
@@ -57,8 +60,11 @@ function toDraft(r: DiscountScheduleRuleExtraction): RuleDraft {
     cumulative: r.cumulative === true,
     rejection_at: r.rejection_at,
     note: r.note ?? null,
+    shrink_factor_pct_per_point: r.shrink_factor_pct_per_point ?? null,
   }
 }
+
+const isMoistureFactor = (f: string) => f === 'drying' || f === 'moisture_shrink'
 
 export default function DiscountScheduleImport({
   showList = false,
@@ -202,6 +208,9 @@ export default function DiscountScheduleImport({
       setErr(sErr?.message ?? 'Could not save the schedule.')
       return
     }
+    // The 080 column is sent only when a rule carries a factor, so a save
+    // still works before the migration lands (nothing to store then anyway).
+    const anyFactor = rules.some((r) => r.shrink_factor_pct_per_point != null)
     const { error: rErr } = await supabase.from('buyer_discount_schedule_rules').insert(
       rules.map((r) => ({
         schedule_id: schedule.id,
@@ -214,6 +223,7 @@ export default function DiscountScheduleImport({
         cumulative: r.cumulative,
         rejection_at: r.rejection_at,
         note: r.note,
+        ...(anyFactor ? { shrink_factor_pct_per_point: isMoistureFactor(r.factor) ? r.shrink_factor_pct_per_point ?? null : null } : {}),
       })),
     )
     setSaving(false)
@@ -314,7 +324,7 @@ export default function DiscountScheduleImport({
                 <table className="min-w-full text-sm">
                   <thead className="bg-slate-100 text-slate-700">
                     <tr>
-                      {['Factor', 'How it charges', 'Starts at', 'Rate', 'Reject at', ''].map((h, i) => (
+                      {['Factor', 'How it charges', 'Starts at', 'Rate', 'Shrink %/pt', 'Reject at', ''].map((h, i) => (
                         <th key={h || i} className="text-left px-2 py-2 whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
@@ -361,6 +371,19 @@ export default function DiscountScheduleImport({
                           {r.note && <div className="text-xs text-slate-400 mt-0.5">{r.note}</div>}
                         </td>
                         <td className="px-2 py-1">
+                          {isMoistureFactor(r.factor) ? (
+                            <input
+                              type="number" step="0.1" min="0" value={r.shrink_factor_pct_per_point ?? ''}
+                              placeholder={String(ASSUMED_SHRINK_FACTOR_PCT_PER_POINT)}
+                              onChange={(e) => updateRule(i, { shrink_factor_pct_per_point: e.target.value === '' ? null : Number(e.target.value) })}
+                              className={`${inputCls} w-20 text-right placeholder:text-slate-300`}
+                              title="The % of weight the buyer shrinks per point of moisture over base. Blank = not on the sheet (1.4% is assumed and flagged)."
+                            />
+                          ) : (
+                            <span className="text-slate-300">—</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1">
                           <input
                             type="number" step="0.1" value={r.rejection_at ?? ''}
                             onChange={(e) => updateRule(i, { rejection_at: e.target.value === '' ? null : Number(e.target.value) })}
@@ -375,6 +398,17 @@ export default function DiscountScheduleImport({
                   </tbody>
                 </table>
               </div>
+
+              {(() => {
+                const terms = moistureTerms(rules)
+                if (!terms.hasMoistureRules) return null
+                return (
+                  <p className={`text-xs rounded-lg px-3 py-2 border ${terms.shrinkFactorAssumed ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                    <span className="font-semibold">Moisture, as the elevator applies it:</span> {summarizeMoistureTerms(terms)}.
+                    {terms.shrinkFactorAssumed && ' The sheet states no shrink factor — type it in the Shrink %/pt box if it is printed anywhere.'}
+                  </p>
+                )
+              })()}
 
               <label className="block text-sm text-slate-700">
                 Schedule text (kept with the record)

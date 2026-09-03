@@ -9,7 +9,14 @@ import SettingsDocImport from '@/components/settings-doc-import'
 import DiscountScheduleImport from '@/components/discount-schedule-import'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { matchExistingBuyer, BUYER_FINDER_RADII, type BuyerFinderHit } from '@/lib/ai-lookups'
-import type { Buyer, BuyerDiscountSchedule, DeliveryLocation } from '@/lib/types'
+import {
+  ASSUMED_SHRINK_FACTOR_PCT_PER_POINT,
+  moistureTerms,
+  shapeStoredRule,
+  summarizeMoistureTerms,
+  type ScheduleRuleShape,
+} from '@/lib/discount-schedules'
+import type { Buyer, BuyerDiscountSchedule, BuyerDiscountScheduleRule, DeliveryLocation } from '@/lib/types'
 
 type LocForm = { name: string; address: string }
 const emptyLoc: LocForm = { name: '', address: '' }
@@ -28,7 +35,11 @@ export default function BuyersPage() {
   // buyer here; Ask Turnrow's discount tools and the Dryer Math comparison
   // read from this one home.
   const [schedules, setSchedules] = useState<BuyerDiscountSchedule[]>([])
-  const [scheduleRuleCounts, setScheduleRuleCounts] = useState<Map<string, number>>(new Map())
+  // Each schedule's rules (shaped) — the count, and the moisture terms whose
+  // shrink factor is editable right on the row (080).
+  const [rulesBySchedule, setRulesBySchedule] = useState<Map<string, ScheduleRuleShape[]>>(new Map())
+  const [editShrink, setEditShrink] = useState<Record<string, string>>({})
+  const [shrinkSaved, setShrinkSaved] = useState<string | null>(null)
   const [uploadOpenBuyerId, setUploadOpenBuyerId] = useState<string | null>(null)
   // AI buyer finder state. Zip + radius persist so the next search starts
   // where the last one left off.
@@ -56,17 +67,50 @@ export default function BuyersPage() {
       supabase.from('delivery_locations').select('*').order('name'),
       supabase.from('crops').select('id, name').order('name'),
       supabase.from('buyer_discount_schedules').select('*').order('effective_date', { ascending: false }),
-      supabase.from('buyer_discount_schedule_rules').select('id, schedule_id'),
+      // '*' so the page works before 080 adds shrink_factor_pct_per_point.
+      supabase.from('buyer_discount_schedule_rules').select('*').order('id'),
     ])
     setBuyers((b.data as Buyer[]) || [])
     setLocs((l.data as DeliveryLocation[]) || [])
     setCropList((c.data as Array<{ id: string; name: string }>) || [])
     setSchedules((s.data as BuyerDiscountSchedule[]) || [])
-    const counts = new Map<string, number>()
-    for (const row of ((r.data as Array<{ schedule_id: string }>) || [])) {
-      counts.set(row.schedule_id, (counts.get(row.schedule_id) ?? 0) + 1)
+    const bySchedule = new Map<string, ScheduleRuleShape[]>()
+    for (const row of ((r.data as BuyerDiscountScheduleRule[]) || [])) {
+      const arr = bySchedule.get(row.schedule_id) ?? []
+      arr.push(shapeStoredRule(row))
+      bySchedule.set(row.schedule_id, arr)
     }
-    setScheduleRuleCounts(counts)
+    setRulesBySchedule(bySchedule)
+  }
+
+  // The shrink factor typed on a schedule row lands on its moisture rules
+  // (and on a printed shrink line's rate, so the two never disagree). Blank
+  // clears it — back to "assumed 1.4%".
+  async function saveShrinkFactor(s: BuyerDiscountSchedule, value: string) {
+    const clear = () => setEditShrink((m) => { const next = { ...m }; delete next[s.id]; return next })
+    const n = value === '' ? null : Number(value)
+    if (n != null && (!Number.isFinite(n) || n < 0)) { clear(); return }
+    const current = moistureTerms(rulesBySchedule.get(s.id) ?? [])
+    if ((current.shrinkFactorAssumed ? null : current.shrinkFactorPctPerPoint) === n) { clear(); return }
+    setErr(null)
+    const { error } = await supabase
+      .from('buyer_discount_schedule_rules')
+      .update({ shrink_factor_pct_per_point: n })
+      .eq('schedule_id', s.id)
+      .in('factor', ['drying', 'moisture_shrink'])
+    if (error) { setErr(error.message); clear(); return }
+    if (n != null) {
+      await supabase
+        .from('buyer_discount_schedule_rules')
+        .update({ rate_per_unit: n })
+        .eq('schedule_id', s.id)
+        .eq('basis', 'weight_shrink_pct')
+        .in('factor', ['drying', 'moisture_shrink'])
+    }
+    clear()
+    setShrinkSaved(s.id)
+    setTimeout(() => setShrinkSaved((k) => (k === s.id ? null : k)), 2000)
+    refresh()
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
@@ -546,11 +590,40 @@ export default function BuyersPage() {
                                 <span className="text-slate-500 font-normal"> · effective {s.effective_date}</span>
                               </div>
                               <div className="text-xs text-slate-500">
-                                {scheduleRuleCounts.get(s.id) ?? 0} rule{(scheduleRuleCounts.get(s.id) ?? 0) === 1 ? '' : 's'}
+                                {(rulesBySchedule.get(s.id)?.length ?? 0)} rule{(rulesBySchedule.get(s.id)?.length ?? 0) === 1 ? '' : 's'}
                                 {s.source_pdf_url && (
                                   <> · <a href={s.source_pdf_url} target="_blank" rel="noreferrer" className="text-brand-deep">original ↗</a></>
                                 )}
                               </div>
+                              {(() => {
+                                const terms = moistureTerms(rulesBySchedule.get(s.id) ?? [])
+                                if (!terms.hasMoistureRules) return null
+                                const shown = editShrink[s.id] ?? (terms.bundled ? '' : terms.shrinkFactorAssumed ? '' : String(terms.shrinkFactorPctPerPoint ?? ''))
+                                return (
+                                  <div className="text-xs mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                                    <span className={terms.shrinkFactorAssumed ? 'text-amber-800' : 'text-slate-600'}>
+                                      Moisture: {summarizeMoistureTerms(terms)}
+                                    </span>
+                                    {!terms.bundled && (
+                                      <label className="inline-flex items-center gap-1 text-slate-600">
+                                        Shrink
+                                        <input
+                                          type="number" step="0.1" min="0" inputMode="decimal"
+                                          value={shown}
+                                          placeholder={String(ASSUMED_SHRINK_FACTOR_PCT_PER_POINT)}
+                                          aria-label={`Shrink factor per point for the ${cropNameById.get(s.crop_id) ?? ''} schedule effective ${s.effective_date}`}
+                                          onChange={(e) => setEditShrink((m) => ({ ...m, [s.id]: e.target.value }))}
+                                          onBlur={() => { if (editShrink[s.id] != null) saveShrinkFactor(s, editShrink[s.id]) }}
+                                          onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                                          className="w-16 rounded-lg border border-slate-300 px-1.5 py-0.5 text-xs text-right tabular-nums placeholder:text-slate-300"
+                                        />
+                                        %/pt
+                                        {shrinkSaved === s.id && <span className="text-green-700 uppercase tracking-wide text-[10px]">saved</span>}
+                                      </label>
+                                    )}
+                                  </div>
+                                )
+                              })()}
                               {s.schedule_text && (
                                 <details className="text-xs text-slate-500 mt-1">
                                   <summary className="cursor-pointer">Schedule text</summary>

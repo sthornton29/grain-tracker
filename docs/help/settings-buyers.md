@@ -1,7 +1,7 @@
 ---
 page_route: /settings/buyers
 title: Buyers & Delivery Locations
-updated: 2026-09-01
+updated: 2026-09-02
 keywords: buyers, delivery locations, elevators, terminals, gins, find buyers, near me, zip code, import, csv, duplicate, discount schedule, ask turnrow, dock, moisture
 ---
 ## What this page is for
@@ -14,6 +14,7 @@ Buyers are the businesses you sell and haul to — elevators, river terminals, f
 - **Find buyers near me** searches the web for elevators, terminals, and other buyers that handle your crops near a zip code you enter, within a radius you pick. Results come back as a checklist — tick the ones you actually sell to, edit a name if it isn't quite right, and add them. Anything you don't tick is discarded, and results already in your list are marked so you don't double up.
 - To bring in a whole list at once, use the spreadsheet import at the top — one row per buyer, locations in one cell separated by semicolons. There's also an **Upload (AI)** card that reads buyer names and delivery locations out of any document, alongside anything else it finds worth filing elsewhere.
 - **Discount schedules live on each buyer.** Expand a buyer and its schedules are right there — crop, effective date, rule count, and a link to the original sheet — with **Upload discount schedule (AI)** on the buyer's own card (photo or PDF; Turnrow reads where drying and test-weight charges start, the rates or bracket scales, rejection points; review and confirm — nothing saves until you do). When a buyer posts a new sheet, upload it too — the effective dates keep each one applied to its own period; to replace a bad read, delete it and upload again.
+- **The shrink factor sits on the schedule row.** Elevators shrink wet bushels to base at their own factor (1.4% per point is typical) before charging drying, and the Grain Dryer Math comparison needs that number. Turnrow reads it from the sheet when it's printed; when it isn't, the row shows the moisture terms in amber with *assumed — verify against the schedule* and a **Shrink %/pt** box — type the printed factor and it saves as you leave the box. Blank means the 1.4% assumption.
 - **Schedules are queryable in plain words.** Once a schedule is on file, **Ask Turnrow** can quote it — try *"What will [buyer] dock me for 17% corn?"* — and can compare what each buyer's discounting actually cost you from your settled statements ("which buyer's discounts cost me the most last year?"). The Grain Dryer Math tool also uses the schedules for its dry-it-or-haul-it-wet comparison.
 
 ## What the controls do

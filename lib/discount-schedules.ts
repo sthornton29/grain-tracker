@@ -19,12 +19,21 @@
 //     successive tiers — every bracket passed or entered adds its rate
 //     (52.5 lb under the same sheet → 4 + 8 + 16 = 28¢).
 //
+// MOISTURE is two-step at a real elevator (080): the buyer SHRINKS the
+// bushels to its base at ITS factor (shrink_factor_pct_per_point — 1.4% is
+// the industry default when the sheet is silent) and then CHARGES drying on
+// what is left (a ¢/bu-per-point or %-of-price-per-point rule). moistureTerms
+// reads a schedule's moisture rules into that model for the Dryer Math
+// dry-vs-haul comparison; a %-of-price charge standing alone (no shrink
+// line, no factor) is the ISU-style BUNDLED discount that already embodies
+// the shrink.
+//
 // Used by the Ask Turnrow schedule tools, the dryer comparison, and the
 // expected-vs-actual audit (apply the schedule in force at the settlement
 // date to each settled load's known moisture/TW, compare with what was
 // charged). Everything here is unit-tested with hand-worked numbers.
 
-import type { DiscountCategory } from '@/lib/settlement-discounts'
+import { coerceDiscountCategory, type DiscountCategory } from '@/lib/settlement-discounts'
 
 export type RuleBasis = 'weight_shrink_pct' | 'cents_per_bu' | 'pct_of_price'
 
@@ -47,6 +56,42 @@ export type ScheduleRuleShape = {
   /** Measurement at/past which the buyer rejects. */
   rejection_at: number | null
   note?: string | null
+  /** Moisture rules only (080): the % of weight the buyer shrinks per point
+   *  over base_value. Null = not stated on the sheet (the comparison assumes
+   *  ASSUMED_SHRINK_FACTOR_PCT_PER_POINT and says so). */
+  shrink_factor_pct_per_point?: number | null
+}
+
+/** The industry-standard shrink factor a schedule is assumed to use when it
+ *  doesn't state one, % of weight per point of moisture. */
+export const ASSUMED_SHRINK_FACTOR_PCT_PER_POINT = 1.4
+
+/** A stored rule row (buyer_discount_schedule_rules, any select) → the
+ *  engine's shape. Tolerates numeric strings and the 080 column being absent. */
+export function shapeStoredRule(r: {
+  factor: string
+  basis: string
+  base_value: number | string | null
+  direction: string
+  rate_per_unit: number | string | null
+  tiers: unknown
+  cumulative: boolean | null
+  rejection_at: number | string | null
+  note?: string | null
+  shrink_factor_pct_per_point?: number | string | null
+}): ScheduleRuleShape {
+  return {
+    factor: coerceDiscountCategory(r.factor),
+    basis: (r.basis === 'weight_shrink_pct' || r.basis === 'pct_of_price' ? r.basis : 'cents_per_bu') as RuleBasis,
+    base_value: toNum(r.base_value),
+    direction: r.direction === 'below' ? 'below' : 'above',
+    rate_per_unit: toNum(r.rate_per_unit),
+    tiers: parseTiers(r.tiers),
+    cumulative: r.cumulative === true,
+    rejection_at: toNum(r.rejection_at),
+    note: r.note ?? null,
+    shrink_factor_pct_per_point: toNum(r.shrink_factor_pct_per_point),
+  }
 }
 
 const toNum = (v: unknown): number | null => {
@@ -241,4 +286,96 @@ export function summarizeRule(rule: ScheduleRuleShape): string {
       : `${rate}% of price`
   const per = rule.factor === 'test_weight' ? 'lb' : 'point'
   return `${rateTxt} per ${per} ${unit} ${baseTxt}${suffix}${rej}`
+}
+
+// ---------- the schedule's moisture terms (080) ----------
+
+export type MoistureTerms = {
+  /** True when the schedule prices moisture at all. */
+  hasMoistureRules: boolean
+  /** The schedule's OWN base moisture (its moisture rules' base_value);
+   *  null when no rule states one. */
+  baseMoisture: number | null
+  /** The price/drying charge rules — ¢/bu or %-of-price basis. */
+  chargeRules: ScheduleRuleShape[]
+  chargeBasis: 'cents_per_bu_per_point' | 'pct_of_price_per_point' | 'mixed' | null
+  /** The separate shrink line(s) — weight_shrink_pct basis — when printed. */
+  shrinkRules: ScheduleRuleShape[]
+  /** The shrink factor the comparison uses, % per point: an explicit
+   *  shrink_factor_pct_per_point, else a linear shrink line's rate, else the
+   *  1.4% assumption. Null when the discount is bundled. */
+  shrinkFactorPctPerPoint: number | null
+  /** True when nothing on file states the factor and 1.4% stands in —
+   *  "assumed — verify against the schedule". */
+  shrinkFactorAssumed: boolean
+  /** True when a %-of-price charge stands alone (no shrink line, no explicit
+   *  factor): the bundled moisture discount already embodies the shrink, so
+   *  it applies by itself. */
+  bundled: boolean
+}
+
+export function moistureTerms(rules: ReadonlyArray<ScheduleRuleShape>): MoistureTerms {
+  const moisture = rules.filter((r) => factorMeasurement(r.factor) === 'moisture')
+  const shrinkRules = moisture.filter((r) => r.basis === 'weight_shrink_pct')
+  const chargeRules = moisture.filter((r) => r.basis !== 'weight_shrink_pct')
+  const explicit = moisture.map((r) => r.shrink_factor_pct_per_point).find((v) => v != null && Number.isFinite(v) && v >= 0) ?? null
+  const linearShrink = shrinkRules.find((r) => r.tiers.length === 0 && r.rate_per_unit != null)?.rate_per_unit ?? null
+  const chargeBasis = chargeRules.length === 0
+    ? null
+    : chargeRules.every((r) => r.basis === 'cents_per_bu')
+      ? 'cents_per_bu_per_point'
+      : chargeRules.every((r) => r.basis === 'pct_of_price')
+        ? 'pct_of_price_per_point'
+        : 'mixed'
+  const bundled = chargeBasis === 'pct_of_price_per_point' && shrinkRules.length === 0 && explicit == null
+  const shrinkFactorPctPerPoint = bundled ? null : explicit ?? linearShrink ?? (shrinkRules.length > 0 ? null : ASSUMED_SHRINK_FACTOR_PCT_PER_POINT)
+  return {
+    hasMoistureRules: moisture.length > 0,
+    baseMoisture: chargeRules[0]?.base_value ?? shrinkRules[0]?.base_value ?? null,
+    chargeRules,
+    chargeBasis,
+    shrinkRules,
+    shrinkFactorPctPerPoint,
+    shrinkFactorAssumed: !bundled && explicit == null && linearShrink == null && shrinkRules.length === 0 && moisture.length > 0,
+    bundled,
+  }
+}
+
+/** The TOTAL weight shrink the schedule takes at `moisture`, % of the wet
+ *  weight: the factor × points over the schedule's base, or a printed
+ *  (possibly tiered) shrink line walked by the rule engine. Null when the
+ *  discount is bundled (no separable shrink) or nothing prices moisture. */
+export function scheduleShrinkPctAt(terms: MoistureTerms, moisture: number, fallbackBase: number | null): number | null {
+  if (!terms.hasMoistureRules || terms.bundled) return null
+  const base = terms.baseMoisture ?? fallbackBase
+  if (base == null) return null
+  const points = Math.max(0, moisture - base)
+  if (terms.shrinkFactorPctPerPoint != null) return terms.shrinkFactorPctPerPoint * points
+  // A tiered shrink line: the engine walks it.
+  const tiered = terms.shrinkRules.find((r) => r.tiers.length > 0)
+  if (tiered) return ruleRawCharge(tiered, moisture) ?? 0
+  return ASSUMED_SHRINK_FACTOR_PCT_PER_POINT * points
+}
+
+/** Plain-language line for a schedule's moisture terms ("base 15% · 1.4%
+ *  shrink/pt (assumed) · 3.5¢/pt drying"). */
+export function summarizeMoistureTerms(terms: MoistureTerms): string {
+  if (!terms.hasMoistureRules) return 'no moisture rule'
+  const parts: string[] = []
+  if (terms.baseMoisture != null) parts.push(`base ${terms.baseMoisture}%`)
+  if (terms.bundled) {
+    parts.push(`${terms.chargeRules.map((r) => r.tiers.length > 0 ? summarizeRule(r) : `${r.rate_per_unit ?? 0}% of price/pt`).join(' + ')} (bundled — shrink included)`)
+    return parts.join(' · ')
+  }
+  if (terms.shrinkFactorPctPerPoint != null) {
+    parts.push(`${terms.shrinkFactorPctPerPoint}% shrink/pt${terms.shrinkFactorAssumed ? ' (assumed — verify against the schedule)' : ''}`)
+  } else if (terms.shrinkRules.length > 0) {
+    parts.push(summarizeRule(terms.shrinkRules[0]))
+  }
+  for (const r of terms.chargeRules) {
+    parts.push(r.tiers.length > 0
+      ? summarizeRule(r)
+      : r.basis === 'cents_per_bu' ? `${r.rate_per_unit ?? 0}¢/pt drying` : `${r.rate_per_unit ?? 0}% of price/pt drying`)
+  }
+  return parts.join(' · ')
 }

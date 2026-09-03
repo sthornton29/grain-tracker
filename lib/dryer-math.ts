@@ -23,16 +23,27 @@
 //     base gives away sellable weight (1.183%/pt × the grain price) AND burns
 //     fuel removing points nobody pays for — so the grain price is only
 //     needed for the below-base rows;
-//   * the dry-it-or-haul-it-wet comparison prices "haul it wet" from the
-//     buyer's discount schedule (lib/discount-schedules.ts does the tier
-//     walk) next to "dry it yourself" = fuel + fan (+ depreciation by default;
-//     an owned dryer's depreciation is sunk whether or not this load runs
-//     through it, so the marginal decision may prefer it OFF — the toggle) —
-//     apples to apples, because the buyer's shrink applies in both worlds.
+//   * the dry-it-or-haul-it-wet comparison (080) models the elevator's REAL
+//     two-step treatment: it SHRINKS the bushels to its base at ITS factor
+//     (1.4%/pt typical, vs the 1.183%/pt of physical water) and then CHARGES
+//     drying on what is left. The physical water cancels both sides (it is
+//     gone whether you or they dry it), so per wet bushel at moisture M:
+//       haul it wet = schedule charge (¢/pt × points, or %-of-price × points
+//                     × price) + EXCESS shrink = max(0, factor − 1.183) ×
+//                     points × grain price
+//       dry it      = fuel + fan (+ depreciation by the toggle — an owned
+//                     dryer's depreciation is sunk whether or not this load
+//                     runs through it, so the marginal call may prefer OFF).
+//     A %-of-price charge standing alone (no shrink line, no factor) is the
+//     ISU-style BUNDLED discount that already embodies the shrink — applied
+//     alone. The grain price prices the excess shrink, so the comparison
+//     needs one.
 
 import {
-  factorMeasurement,
+  moistureTerms,
   ruleCentsPerBu,
+  scheduleShrinkPctAt,
+  type MoistureTerms,
   type ScheduleRuleShape,
 } from '@/lib/discount-schedules'
 
@@ -204,24 +215,59 @@ export function overdryingCost(
 
 // ---------- the "dry it or haul it wet" comparison ----------
 
+/** The "haul it wet" side, itemized — what the elevator's two-step treatment
+ *  costs per wet bushel at this moisture. */
+export type BuyerSide = {
+  /** Points over the SCHEDULE's base (its own base_value; the crop base when
+   *  the sheet states none). */
+  pointsPastBase: number
+  /** The schedule's price/drying charge, ¢/bu (¢/pt × points, %-of-price ×
+   *  points × price, or a tier walk). Null when a %-of-price rule has no
+   *  price to work with. */
+  chargeCents: number | null
+  chargeBasis: MoistureTerms['chargeBasis']
+  /** The buyer's TOTAL shrink at this moisture, % of the wet weight (their
+   *  factor × points); null when bundled. */
+  shrinkPct: number | null
+  /** The part of that shrink beyond the physical water (1.183%/pt) —
+   *  sellable grain the buyer keeps, % of the wet weight. 0 when bundled. */
+  excessShrinkPct: number
+  /** That excess valued at the grain price, ¢/bu; null without a price. */
+  excessShrinkCents: number | null
+  shrinkFactorPctPerPoint: number | null
+  /** 1.4% stood in — the sheet doesn't state a factor. */
+  shrinkFactorAssumed: boolean
+  /** The %-of-price discount that already embodies the shrink — applied
+   *  alone, no excess-shrink add-on. */
+  bundled: boolean
+  /** charge + excess shrink (or the bundled discount alone), ¢/bu. */
+  totalCents: number | null
+}
+
 export type WetVsDryVerdict = {
-  /** The buyer's schedule discount at this moisture, ¢/bu (moisture-measured
-   *  factors only — the tier walk runs in code). Null = no applicable rule. */
+  /** The cost of hauling it wet per the buyer's sheet, ¢/bu — the charge
+   *  plus the excess shrink (or the bundled discount). Null when the
+   *  schedule prices no moisture or the grain price is missing. */
   buyerCents: number | null
+  buyer: BuyerSide | null
+  /** Why buyerCents is null. */
+  reason: 'no_moisture_rule' | 'needs_price' | null
   /** Your own cost of drying those points, ¢/bu — fuel + fan, plus
-   *  depreciation unless the toggle excludes it. The buyer's shrink applies
-   *  whether you dry or haul wet, so it cancels. */
+   *  depreciation unless the toggle excludes it. The physical water is gone
+   *  either way, so it is on neither side. */
   dryCents: number
   /** Whether depreciation is inside dryCents (the toggle; default on). */
   depreciationIncluded: boolean
   cheaper: 'dry' | 'haul_wet' | 'even' | null
 }
 
-/** `grainPrice` is only used to price a schedule rule written as a percent
- *  of price — never to add shrink to your side. `includeDepreciation`
- *  (default true) keeps the dryer's depreciation on your side; an owned
- *  dryer's depreciation is sunk whether or not this load runs through it,
- *  so for the marginal decision a user may prefer it off. */
+/** The elevator's two-step treatment vs your dryer. `grainPrice` prices the
+ *  buyer's excess shrink (and any %-of-price rule) — the comparison needs
+ *  one unless the sheet's factor is exactly the physical 1.183 and its
+ *  charge is in ¢/bu. `includeDepreciation` (default true) keeps the dryer's
+ *  depreciation on your side; an owned dryer's depreciation is sunk whether
+ *  or not this load runs through it, so for the marginal decision a user
+ *  may prefer it off. */
 export function wetVsDry(
   moisture: number,
   baseMoisture: number,
@@ -234,17 +280,49 @@ export function wetVsDry(
   const includeDepreciation = opts?.includeDepreciation !== false
   const own = dryingCost(moisture, baseMoisture, dryer, prices, grainPrice)
   const dryCents = (includeDepreciation ? own.totalPerBu : own.energyPerBu) * 100
-  let buyerCents: number | null = null
-  for (const rule of scheduleRules) {
-    if (factorMeasurement(rule.factor) !== 'moisture') continue
-    const cents = ruleCentsPerBu(rule, moisture, grainPrice ?? 0)
-    if (cents == null) continue
-    buyerCents = (buyerCents ?? 0) + cents
+  const terms = moistureTerms(scheduleRules)
+  if (!terms.hasMoistureRules) {
+    return { buyerCents: null, buyer: null, reason: 'no_moisture_rule', dryCents, depreciationIncluded: includeDepreciation, cheaper: null }
   }
-  if (buyerCents == null) return { buyerCents, dryCents, depreciationIncluded: includeDepreciation, cheaper: null }
-  const diff = dryCents - buyerCents
+  const price = grainPrice != null && grainPrice > 0 ? grainPrice : null
+  const schedBase = terms.baseMoisture ?? baseMoisture
+  const pointsPastBase = Math.max(0, moisture - schedBase)
+
+  // Step 2 — the charge on what is left, walked by the rule engine.
+  const needsPriceForCharge = terms.chargeRules.some((r) => r.basis !== 'cents_per_bu')
+  let chargeCents: number | null = needsPriceForCharge && price == null ? null : 0
+  if (chargeCents != null) {
+    for (const rule of terms.chargeRules) chargeCents += ruleCentsPerBu(rule, moisture, price ?? 0) ?? 0
+  }
+
+  // Step 1 — the shrink beyond physical water: sellable grain they keep.
+  const shrinkPct = scheduleShrinkPctAt(terms, moisture, baseMoisture)
+  const excessShrinkPct = terms.bundled || shrinkPct == null
+    ? 0
+    : Math.max(0, shrinkPct - SHRINK_PCT_PER_POINT * pointsPastBase)
+  const excessShrinkCents = excessShrinkPct === 0 ? 0 : price != null ? (excessShrinkPct / 100) * price * 100 : null
+
+  const totalCents = chargeCents != null && excessShrinkCents != null ? chargeCents + excessShrinkCents : null
+  const buyer: BuyerSide = {
+    pointsPastBase,
+    chargeCents,
+    chargeBasis: terms.chargeBasis,
+    shrinkPct,
+    excessShrinkPct,
+    excessShrinkCents,
+    shrinkFactorPctPerPoint: terms.shrinkFactorPctPerPoint,
+    shrinkFactorAssumed: terms.shrinkFactorAssumed,
+    bundled: terms.bundled,
+    totalCents,
+  }
+  if (totalCents == null) {
+    return { buyerCents: null, buyer, reason: 'needs_price', dryCents, depreciationIncluded: includeDepreciation, cheaper: null }
+  }
+  const diff = dryCents - totalCents
   return {
-    buyerCents,
+    buyerCents: totalCents,
+    buyer,
+    reason: null,
     dryCents,
     depreciationIncluded: includeDepreciation,
     cheaper: Math.abs(diff) < 0.05 ? 'even' : diff < 0 ? 'dry' : 'haul_wet',
