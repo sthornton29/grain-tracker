@@ -3,6 +3,7 @@ import {
   parseRmaRevenuePrices, pickPrimaryRow, rmaCommodityCode, stateFips,
   windowState, rmaSourceLabel, resolveTieredPrice, rmaCacheIsStale, rmaServiceUrl,
   offerIdentityLabel, rmaPreferredType,
+  offerTypeNames, rmaTypeChoice, rmaTypeChoicePrompt,
 } from '@/lib/rma-price-discovery'
 import { resolveHarvestPriceByCrop, resolveProjectedPrice, rmaToAppInsurancePrice } from '@/lib/crop-insurance'
 import type { CropInsurancePolicy, HarvestPriceEstimate } from '@/lib/types'
@@ -363,5 +364,50 @@ describe('harvest manual override tiering', () => {
       estimates: [discoveryRow], now,
     }).get('corn')!
     expect(r).toMatchObject({ price: 4.42, source: 'rma_discovery' })
+  })
+})
+
+// The winter/spring chooser: Auto (rmaPreferredType) is the universal default
+// and is never shown. The Price Discovery row asks ONLY when the state's
+// offer list carries more than one distinguishable type (Idaho wheat: Winter
+// + Spring) and the crop has no answer on file yet; the answer persists to
+// crops.rma_type_override and the question never returns. Single-type states
+// (Alabama corn: one "All …" type) never see it.
+describe('the insurance-type chooser — asked only when the state lists more than one type', () => {
+  it('offerTypeNames: distinct Conventional types, sorted', () => {
+    const rows = parseRmaRevenuePrices(feed(
+      entry({ code: '0011', name: 'Wheat', type: 'Spring', projected: '6.1000' }),
+      entry({ code: '0011', name: 'Wheat', type: 'Winter', projected: '5.6300' }),
+      entry({ code: '0011', name: 'Wheat', type: 'Winter', projected: '5.6300' }),
+    ))
+    expect(offerTypeNames(rows)).toEqual(['Spring', 'Winter'])
+  })
+  it('a multi-type state with no answer on file → prompt with the types on offer', () => {
+    const choice = rmaTypeChoice({ offerTypes: ['Spring', 'Winter'], rmaTypeOverride: null })
+    expect(choice).toEqual({ options: [{ value: 'winter', label: 'Winter' }, { value: 'spring', label: 'Spring' }] })
+    expect(rmaTypeChoicePrompt({ stateName: 'Idaho', cropName: 'Wheat', options: choice!.options }))
+      .toBe('Idaho lists both Winter and Spring wheat insurance. Which do you grow?')
+  })
+  it('once answered (persisted to the crop) the prompt never returns', () => {
+    expect(rmaTypeChoice({ offerTypes: ['Spring', 'Winter'], rmaTypeOverride: 'winter' })).toBeNull()
+    expect(rmaTypeChoice({ offerTypes: ['Spring', 'Winter'], rmaTypeOverride: 'spring' })).toBeNull()
+  })
+  it('a single-type state never sees it (Alabama corn, Alabama wheat)', () => {
+    expect(rmaTypeChoice({ offerTypes: ['All (Non-High Amylose)'], rmaTypeOverride: null })).toBeNull()
+    expect(rmaTypeChoice({ offerTypes: ['Winter'], rmaTypeOverride: null })).toBeNull()
+    expect(rmaTypeChoice({ offerTypes: [], rmaTypeOverride: null })).toBeNull()
+    expect(rmaTypeChoice({ offerTypes: undefined, rmaTypeOverride: null })).toBeNull()
+  })
+  it('types we cannot tell apart do not count as a choice; durum joins when listed', () => {
+    // Two catch-all variants are not a winter/spring question.
+    expect(rmaTypeChoice({ offerTypes: ['All (Non-High Amylose)', 'All (High Amylose)'], rmaTypeOverride: null })).toBeNull()
+    const three = rmaTypeChoice({ offerTypes: ['Durum', 'Spring', 'Winter'], rmaTypeOverride: null })
+    expect(three?.options.map((o) => o.value)).toEqual(['winter', 'spring', 'durum'])
+    expect(rmaTypeChoicePrompt({ stateName: 'Montana', cropName: 'Wheat', options: three!.options }))
+      .toBe('Montana lists both Winter, Spring, and Durum wheat insurance. Which do you grow?')
+  })
+  it('Auto derivation is untouched underneath: the route still picks by harvest category when no answer exists', () => {
+    expect(rmaPreferredType({ harvest_category: 'spring' })).toBe('winter')
+    expect(rmaPreferredType({ harvest_category: 'fall' })).toBeNull()
   })
 })

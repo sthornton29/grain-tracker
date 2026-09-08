@@ -13,7 +13,7 @@
 // seed-demoted). Resolution is untouched — this file is presentation math.
 
 import {
-  harvestPhase, type HarvestPhase, type RmaLookupResult,
+  harvestPhase, rmaTypeChoice, STATE_NAMES, type HarvestPhase, type RmaLookupResult,
 } from '@/lib/rma-price-discovery'
 import {
   resolveProjectedPrice, centsToInsuranceDollars, type ProjectedResolution,
@@ -35,6 +35,9 @@ export type PriceDiscoveryRow = {
    *  estimate tier with a failure note (distinct from a genuine no-offer). */
   fetchFailed: boolean
   offerIdentity: string | null
+  /** Set when the state lists more than one distinguishable type for the
+   *  commodity and the crop has no override yet — the row asks which. */
+  typeChoice: { stateName: string; options: Array<{ value: 'winter' | 'spring' | 'durum'; label: string }> } | null
   baseContract: string | null
   exchange: string | null
   volatility: number | null
@@ -73,8 +76,13 @@ export function harvestTierLabel(info: {
   return { text: info.contractLabel ? `est. — ${info.contractLabel} today` : 'est.', cls: 'bg-slate-200 text-slate-600' }
 }
 
+/** "Alabama" for 'AL' (falls back to the code itself). */
+function stateDisplayName(code: string): string {
+  return STATE_NAMES[code.toUpperCase()] ?? code.toUpperCase()
+}
+
 export function buildPriceDiscoveryRows(args: {
-  crops: ReadonlyArray<{ id: string; name: string }>
+  crops: ReadonlyArray<{ id: string; name: string; rma_type_override?: 'winter' | 'spring' | 'durum' | null }>
   plantings: ReadonlyArray<{ crop_id: string; season_year: number }>
   policies: ReadonlyArray<{ crop_id: string; crop_year: number }>
   cropYear: number
@@ -125,6 +133,12 @@ export function buildPriceDiscoveryRows(args: {
         noOffer: r?.no_offer === true,
         fetchFailed: r?.fetch_failed === true,
         offerIdentity: r?.offer_identity ?? null,
+        typeChoice: (() => {
+          const choice = r && !r.no_offer && !r.fetch_failed
+            ? rmaTypeChoice({ offerTypes: r.offer_types, rmaTypeOverride: crop.rma_type_override ?? null })
+            : null
+          return choice ? { stateName: stateDisplayName(r!.state_code), options: choice.options } : null
+        })(),
         baseContract: r?.harvest_market_symbol ?? null,
         exchange: r?.harvest_exchange_code ?? null,
         volatility: r?.volatility ?? null,

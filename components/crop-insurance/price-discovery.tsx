@@ -16,7 +16,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fmtPrice } from '@/lib/hedging'
 import { usePersistentState } from '@/lib/use-persistent-state'
-import { mergeRmaResults, type RmaLookupResult } from '@/lib/rma-price-discovery'
+import { mergeRmaResults, rmaTypeChoicePrompt, type RmaLookupResult, type RmaTypeChoice } from '@/lib/rma-price-discovery'
 import { resolveHarvestPriceByCrop, type LiveHarvest } from '@/lib/crop-insurance'
 import { harvestTierLabel } from '@/lib/insurance-price-rows'
 import { buildPriceDiscoveryRows, type PriceDiscoveryRow } from '@/lib/insurance-price-rows'
@@ -60,6 +60,10 @@ export default function PriceDiscovery({
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState<string | null>(null)
+  // Insurance-type answers given on this screen (crops.rma_type_override),
+  // applied locally at once so the prompt closes and the refetch uses them —
+  // the parent's crops list catches up on its next read.
+  const [typeAnswers, setTypeAnswers] = useState<Record<string, RmaTypeChoice>>({})
 
   const countyById = useMemo(() => new Map(counties.map((c) => [c.id, c])), [counties])
   const grownCrops = useMemo(() => {
@@ -67,8 +71,27 @@ export default function PriceDiscovery({
       ...plantings.filter((p) => p.season_year === cropYear).map((p) => p.crop_id),
       ...policies.filter((p) => p.crop_year === cropYear).map((p) => p.crop_id),
     ])
-    return crops.filter((c) => ids.has(c.id))
-  }, [crops, plantings, policies, cropYear])
+    return crops
+      .filter((c) => ids.has(c.id))
+      .map((c) => (typeAnswers[c.id] ? { ...c, rma_type_override: typeAnswers[c.id] } : c))
+  }, [crops, plantings, policies, cropYear, typeAnswers])
+
+  // The one-time answer to "which type do you grow?" — persisted to the crop
+  // (the same override the crop Edit dialog exposes), then that row refetches
+  // so the offer, base contract, and prices follow the answer.
+  async function answerType(cropId: string, value: RmaTypeChoice) {
+    setMsg(null)
+    const { error: e } = await supabase.from('crops').update({ rma_type_override: value }).eq('id', cropId)
+    if (e) { setMsg(`Could not save that choice: ${e.message}`); return }
+    setTypeAnswers((prev) => ({ ...prev, [cropId]: value }))
+  }
+  // Refetch the answered crop once its override is in the payload.
+  const answeredKey = Object.keys(typeAnswers).sort().join('|')
+  useEffect(() => {
+    const last = Object.keys(typeAnswers).pop()
+    if (last) void fetchRma(true, last)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [answeredKey])
   const states = useMemo(
     () => [...new Set(policies
       .filter((p) => p.crop_year === cropYear && p.county_id)
@@ -316,6 +339,25 @@ export default function PriceDiscovery({
                       : row.fetchFailed
                         ? 'RMA unreachable — retry with ↻; estimates apply meanwhile.'
                         : row.offerIdentity ?? (row.stateCode ?? '—')}
+                    {row.typeChoice && (
+                      // Asked only when the state lists more than one type for
+                      // this crop, and only until answered (saved to the crop).
+                      <span className="mt-1 block rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-amber-900">
+                        {rmaTypeChoicePrompt({ stateName: row.typeChoice.stateName, cropName: row.cropName, options: row.typeChoice.options })}{' '}
+                        <span className="inline-flex gap-1 ml-1">
+                          {row.typeChoice.options.map((o) => (
+                            <button
+                              key={o.value}
+                              type="button"
+                              onClick={() => void answerType(row.cropId, o.value)}
+                              className="rounded-md bg-white border border-amber-300 px-2 py-0.5 font-semibold text-amber-900 hover:bg-amber-100"
+                            >
+                              {o.label}
+                            </button>
+                          ))}
+                        </span>
+                      </span>
+                    )}
                   </td>
                   <td className="px-2 py-2 whitespace-nowrap font-mono text-xs">
                     {row.baseContract ?? '—'}

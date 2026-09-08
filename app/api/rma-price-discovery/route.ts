@@ -23,7 +23,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import {
   parseRmaRevenuePrices, pickPrimaryRow, rmaCommodityCode, stateFips,
-  rmaServiceUrl, rmaCacheIsStale, rmaCacheMissingContracts, windowState, rmaSourceLabel, offerIdentityLabel, rmaPreferredType,
+  rmaServiceUrl, rmaCacheIsStale, rmaCacheMissingContracts, windowState, rmaSourceLabel, offerIdentityLabel, offerTypeNames, rmaPreferredType,
   type RmaPriceRow, type RmaWindowStatus, type RmaLookupResult,
 } from '@/lib/rma-price-discovery'
 
@@ -238,6 +238,7 @@ export async function POST(req: NextRequest) {
         harvest_market_symbol: primary.harvestMarketSymbol,
         harvest_exchange_code: primary.harvestExchangeCode,
         offer_identity: offerIdentityLabel({ ...primary, stateAbbr: st.toUpperCase() }),
+        offer_types: offerTypeNames(rows),
       })
 
       // 3. Mirror into the org's estimate rows so the resolvers (and the

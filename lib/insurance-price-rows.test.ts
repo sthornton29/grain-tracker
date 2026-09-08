@@ -297,3 +297,29 @@ describe('winter-crop typing and prior-year windows', () => {
     expect(rows[0].baseContract).toBe('ZWN26')
   })
 })
+
+describe('the type chooser on the Price Discovery row', () => {
+  it('a multi-type state (Idaho wheat) with no override → the row asks, naming the state', () => {
+    const rows = buildPriceDiscoveryRows({
+      ...BASE,
+      crops: [{ id: 'wheat', name: 'Wheat', rma_type_override: null }],
+      plantings: [{ crop_id: 'wheat', season_year: 2026 }],
+      rmaResults: [rma({ crop_id: 'wheat', state_code: 'ID', commodity_code: '0011', offer_types: ['Spring', 'Winter'] })],
+    })
+    expect(rows[0].typeChoice).toEqual({ stateName: 'Idaho', options: [{ value: 'winter', label: 'Winter' }, { value: 'spring', label: 'Spring' }] })
+  })
+  it('answered (override on the crop) → no prompt; single-type Alabama corn → no prompt', () => {
+    const answered = buildPriceDiscoveryRows({
+      ...BASE,
+      crops: [{ id: 'wheat', name: 'Wheat', rma_type_override: 'winter' }],
+      plantings: [{ crop_id: 'wheat', season_year: 2026 }],
+      rmaResults: [rma({ crop_id: 'wheat', state_code: 'ID', commodity_code: '0011', offer_types: ['Spring', 'Winter'] })],
+    })
+    expect(answered[0].typeChoice).toBeNull()
+    const corn = buildPriceDiscoveryRows({ ...BASE, rmaResults: [rma({ offer_types: ['All (Non-High Amylose)'] })] })
+    expect(corn.find((r) => r.cropId === 'corn')!.typeChoice).toBeNull()
+    // Older cached results without offer_types, no-offer and failed rows: never a prompt.
+    expect(buildPriceDiscoveryRows({ ...BASE, rmaResults: [rma({})] })[0].typeChoice).toBeNull()
+    expect(buildPriceDiscoveryRows({ ...BASE, rmaResults: [rma({ no_offer: true, offer_types: ['Spring', 'Winter'] })] })[0].typeChoice).toBeNull()
+  })
+})

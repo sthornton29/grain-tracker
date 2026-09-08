@@ -64,6 +64,17 @@ export const STATE_FIPS: Readonly<Record<string, string>> = {
   NJ: '34', NV: '32', ME: '23', MA: '25', NH: '33', VT: '50', CT: '09', RI: '44',
 }
 
+/** 2-letter state → display name, for plain-language prompts ("Alabama lists
+ *  both Winter and Spring wheat insurance"). Same coverage as STATE_FIPS. */
+export const STATE_NAMES: Readonly<Record<string, string>> = {
+  AL: 'Alabama', AZ: 'Arizona', AR: 'Arkansas', CA: 'California', CO: 'Colorado', DE: 'Delaware', FL: 'Florida', GA: 'Georgia',
+  ID: 'Idaho', IL: 'Illinois', IN: 'Indiana', IA: 'Iowa', KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana', MD: 'Maryland',
+  MI: 'Michigan', MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri', MT: 'Montana', NE: 'Nebraska', NM: 'New Mexico', NY: 'New York',
+  NC: 'North Carolina', ND: 'North Dakota', OH: 'Ohio', OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania', SC: 'South Carolina', SD: 'South Dakota',
+  TN: 'Tennessee', TX: 'Texas', UT: 'Utah', VA: 'Virginia', WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming',
+  NJ: 'New Jersey', NV: 'Nevada', ME: 'Maine', MA: 'Massachusetts', NH: 'New Hampshire', VT: 'Vermont', CT: 'Connecticut', RI: 'Rhode Island',
+}
+
 export function stateFips(stateCode: string | null | undefined): string | null {
   if (!stateCode) return null
   return STATE_FIPS[stateCode.trim().toUpperCase()] ?? null
@@ -203,6 +214,46 @@ const typeMatches = (typeName: string, pref: RmaTypePreference): boolean => {
   if (pref === 'winter') return /winter|^fall\b/i.test(typeName)
   if (pref === 'spring') return /spring/i.test(typeName)
   return /durum/i.test(typeName)
+}
+
+/** The distinct RMA type names a state lists for a commodity (Conventional
+ *  practice, the pool pickPrimaryRow chooses from) — what the offer
+ *  enumeration actually found, e.g. ['Winter', 'Spring'] for Idaho wheat or
+ *  ['All (Non-High Amylose)'] for corn anywhere. */
+export function offerTypeNames(rows: readonly Pick<RmaPriceRow, 'typeName' | 'practiceName'>[]): string[] {
+  const conventional = rows.filter((r) => /conventional/i.test(r.practiceName))
+  const pool = conventional.length > 0 ? conventional : rows
+  return [...new Set(pool.map((r) => r.typeName.trim()).filter(Boolean))].sort()
+}
+
+export type RmaTypeChoice = 'winter' | 'spring' | 'durum'
+const CHOICE_LABEL: Record<RmaTypeChoice, string> = { winter: 'Winter', spring: 'Spring', durum: 'Durum' }
+
+/**
+ * Whether the org has to be ASKED which insurance type it grows — and only
+ * then. Auto derivation (rmaPreferredType) is the universal default and is
+ * never shown; the question appears solely when the state's offer list for
+ * the commodity carries MORE THAN ONE of the types we can tell apart
+ * (Winter / Spring / Durum — the Idaho winter+spring wheat case), so the
+ * auto pick is a guess. Once the crop carries an override the answer is on
+ * file and the prompt never returns. Single-type states never see it.
+ */
+export function rmaTypeChoice(args: {
+  offerTypes: readonly string[] | null | undefined
+  rmaTypeOverride: RmaTypeChoice | null | undefined
+}): { options: Array<{ value: RmaTypeChoice; label: string }> } | null {
+  if (args.rmaTypeOverride) return null
+  const types = args.offerTypes ?? []
+  const present = (['winter', 'spring', 'durum'] as const).filter((c) => types.some((t) => typeMatches(t, c)))
+  if (present.length < 2) return null
+  return { options: present.map((value) => ({ value, label: CHOICE_LABEL[value] })) }
+}
+
+/** The one-line question for the Price Discovery row. */
+export function rmaTypeChoicePrompt(args: { stateName: string; cropName: string; options: ReadonlyArray<{ label: string }> }): string {
+  const labels = args.options.map((o) => o.label)
+  const list = labels.length === 2 ? `${labels[0]} and ${labels[1]}` : `${labels.slice(0, -1).join(', ')}, and ${labels[labels.length - 1]}`
+  return `${args.stateName} lists both ${list} ${args.cropName.toLowerCase()} insurance. Which do you grow?`
 }
 
 /** Pick the row that stands for "the" price of a crop × state × year: the
@@ -393,6 +444,10 @@ export type RmaLookupResult = {
   harvest_market_symbol: string | null
   harvest_exchange_code: string | null
   offer_identity: string | null
+  /** The distinct type names the state lists for the commodity (offerTypeNames)
+   *  — more than one distinguishable type means the auto pick is a guess and
+   *  the Price Discovery row asks which the org grows (rmaTypeChoice). */
+  offer_types?: string[]
   /** RMA genuinely lists no offer for this crop × state (a SUCCESSFUL query
    *  with zero rows) — calm, labeled; the estimate/manual tiers still apply. */
   no_offer?: boolean

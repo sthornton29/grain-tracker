@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, assumedAcresTotal, assumedSegmentAcres, resolveAcresByCrop, segmentTotalAcres, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
 import { marketingCropYearOptions } from '@/lib/crop-years'
+import { breakoutRowKeys, breakoutRowLabel, breakoutShowsSeason, hiddenDoubleCropAcres, hiddenDoubleCropNotice, type BreakoutRowKey } from '@/lib/breakout-grid'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { fetchSeedContracts, type SeedContractData } from '@/lib/seed-contracts-fetch'
@@ -1883,19 +1884,22 @@ function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSa
   const storedAssumedAcres = a ? assumedAcresTotal(a) : 0
   const s: SegmentAcres = assumedMode ? assumedSeg : (seg ?? { fullIrr: 0, fullDry: 0, dcIrr: 0, dcDry: 0 })
   const totalAcres = segmentTotalAcres(s)
-  // Only distinguish full-season vs double-crop when the crop actually has both
-  // (always, while the split is being assumed — every cell is on offer).
-  const showType = assumedMode || (s.fullIrr + s.fullDry > 0 && s.dcIrr + s.dcDry > 0)
 
-  const segDefs = [
-    { key: 'irr', acres: s.fullIrr, label: showType ? 'Full-season · Irrigated' : 'Irrigated', y: yIrr, setY: setYIrr, c: cIrr, setC: setCIrr, a: aIrr, setA: setAIrr },
-    { key: 'dry', acres: s.fullDry, label: showType ? 'Full-season · Dryland' : 'Dryland', y: yDry, setY: setYDry, c: cDry, setC: setCDry, a: aDry, setA: setADry },
-    { key: 'dcIrr', acres: s.dcIrr, label: showType ? 'Double-crop · Irrigated' : 'Irrigated', y: yDcIrr, setY: setYDcIrr, c: cDcIrr, setC: setCDcIrr, a: aDcIrr, setA: setADcIrr },
-    { key: 'dcDry', acres: s.dcDry, label: showType ? 'Double-crop · Dryland' : 'Dryland', y: yDcDry, setY: setYDcDry, c: cDcDry, setC: setCDcDry, a: aDcDry, setA: setADcDry },
-  ]
-  // Planted: only the segments that have acres. Assumed: every cell, so the
-  // split can be typed in.
-  const segs = assumedMode ? segDefs : segDefs.filter((row) => row.acres > 0)
+  // Which rows the grid shows follows the crop's designation (lib/breakout-grid):
+  // planted → the segments with acres; assumed → Irrigated + Dryland, plus the
+  // Double-crop rows only for a crop designated Double-crop in Settings → Crops.
+  const rowKeys = breakoutRowKeys({ mode: assumedMode ? 'assumed' : 'planted', doubleCrop: !!crop.double_crop, seg: s })
+  const showType = breakoutShowsSeason(rowKeys)
+  const segDefs: Record<BreakoutRowKey, { acres: number; y: string; setY: (v: string) => void; c: string; setC: (v: string) => void; a: string; setA: (v: string) => void }> = {
+    irr: { acres: s.fullIrr, y: yIrr, setY: setYIrr, c: cIrr, setC: setCIrr, a: aIrr, setA: setAIrr },
+    dry: { acres: s.fullDry, y: yDry, setY: setYDry, c: cDry, setC: setCDry, a: aDry, setA: setADry },
+    dcIrr: { acres: s.dcIrr, y: yDcIrr, setY: setYDcIrr, c: cDcIrr, setC: setCDcIrr, a: aDcIrr, setA: setADcIrr },
+    dcDry: { acres: s.dcDry, y: yDcDry, setY: setYDcDry, c: cDcDry, setC: setCDcDry, a: aDcDry, setA: setADcDry },
+  }
+  const segs = rowKeys.map((key) => ({ key, label: breakoutRowLabel(key, showType), ...segDefs[key] }))
+  // Assumed acres left in double-crop cells the grid no longer shows (the crop
+  // was re-designated): never dropped silently — say so, offer to clear.
+  const hiddenDcAcres = assumedMode ? hiddenDoubleCropAcres({ doubleCrop: !!crop.double_crop, stored: { dcIrr: a?.assumed_acres_dc_irr, dcDry: a?.assumed_acres_dc_dry } }) : null
 
   // Acre-weighted average over the segments that have a value entered.
   const weighted = (get: (r: (typeof segs)[number]) => string): number | null => {
@@ -1905,6 +1909,15 @@ function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSa
   }
   const round1 = (n: number) => Math.round(n * 10) / 10
   const round2 = (n: number) => Math.round(n * 100) / 100
+  function clearHiddenDcAcres() {
+    setADcIrr(''); setADcDry('')
+    const remaining = (toNum(aIrr) ?? 0) + (toNum(aDry) ?? 0)
+    const anyRemainingCell = [aIrr, aDry].some((v) => v.trim() !== '')
+    onSave(crop.id, {
+      assumed_acres_dc_irr: null, assumed_acres_dc_dry: null,
+      assumed_acres: anyRemainingCell ? round1(remaining) : toNum(aAll),
+    })
+  }
   const wYield = weighted((r) => r.y)
   const wCost = weighted((r) => r.c)
   // The overall value used (and saved): the weighted average once any segment is
@@ -1991,6 +2004,14 @@ function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSa
           before planting are ignored now that fields are planted.
         </p>
       ) : null}
+      {hiddenDcAcres != null && (
+        <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5 flex items-center gap-2 flex-wrap">
+          <span>{hiddenDoubleCropNotice({ cropYear: year, cropName: crop.name, hiddenAcres: hiddenDcAcres })}</span>
+          {!viewerMode && (
+            <button type="button" onClick={clearHiddenDcAcres} className="underline font-semibold">Clear them</button>
+          )}
+        </p>
+      )}
       <table className="w-full text-sm">
         <thead>
           <tr className="text-xs text-slate-500">

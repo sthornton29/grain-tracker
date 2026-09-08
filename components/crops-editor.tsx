@@ -6,8 +6,11 @@
 // is a double-crop. Replaces the generic name-only SimpleCrud for crops.
 
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { createClient } from '@/lib/supabase/client'
 import type { Crop } from '@/lib/types'
+
+type RmaType = 'winter' | 'spring' | 'durum'
 
 type HarvestCategory = 'fall' | 'spring'
 const CATEGORIES: Array<{ value: HarvestCategory; label: string }> = [
@@ -21,8 +24,10 @@ export default function CropsEditor() {
   const [name, setName] = useState('')
   const [category, setCategory] = useState<HarvestCategory>('fall')
   const [dc, setDc] = useState(false)
-  const [editingId, setEditingId] = useState<string | null>(null)
+  // The Edit dialog: name + the crop insurance type (normally automatic).
+  const [editing, setEditing] = useState<Crop | null>(null)
   const [editingName, setEditingName] = useState('')
+  const [editingType, setEditingType] = useState<RmaType | ''>('')
   const [err, setErr] = useState<string | null>(null)
 
   async function refresh() {
@@ -41,12 +46,23 @@ export default function CropsEditor() {
     setName(''); setCategory('fall'); setDc(false); setErr(null); refresh()
   }
 
-  async function saveName(id: string) {
+  function openEdit(c: Crop) {
+    setEditing(c)
+    setEditingName(c.name)
+    setEditingType(c.rma_type_override ?? '')
+  }
+
+  async function saveEdit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!editing) return
     const n = editingName.trim()
     if (!n) return
-    const { error } = await supabase.from('crops').update({ name: n }).eq('id', id)
+    const { error } = await supabase
+      .from('crops')
+      .update({ name: n, rma_type_override: editingType === '' ? null : editingType })
+      .eq('id', editing.id)
     if (error) { setErr(error.message); return }
-    setEditingId(null); setErr(null); refresh()
+    setEditing(null); setErr(null); refresh()
   }
 
   async function setHarvestCategory(id: string, harvest_category: HarvestCategory) {
@@ -59,15 +75,6 @@ export default function CropsEditor() {
   async function setDoubleCrop(id: string, double_crop: boolean) {
     setRows((rs) => rs.map((r) => (r.id === id ? { ...r, double_crop } : r)))
     const { error } = await supabase.from('crops').update({ double_crop }).eq('id', id)
-    if (error) { setErr(error.message); refresh() }
-  }
-
-  // RMA insurance type (066) — only matters where a state carries BOTH
-  // Winter and Spring offers of a commodity; Auto follows harvest category.
-  async function setRmaType(id: string, raw: string) {
-    const rma_type_override = raw === '' ? null : (raw as 'winter' | 'spring' | 'durum')
-    setRows((rs) => rs.map((r) => (r.id === id ? { ...r, rma_type_override } : r)))
-    const { error } = await supabase.from('crops').update({ rma_type_override }).eq('id', id)
     if (error) { setErr(error.message); refresh() }
   }
 
@@ -112,18 +119,7 @@ export default function CropsEditor() {
         {rows.length === 0 && <li className="px-4 py-6 text-center text-slate-400">None yet.</li>}
         {rows.map((r) => (
           <li key={r.id} className="px-4 py-2 flex items-center gap-2 flex-wrap">
-            {editingId === r.id ? (
-              <>
-                <input
-                  autoFocus
-                  value={editingName}
-                  onChange={(e) => setEditingName(e.target.value)}
-                  className="flex-1 min-w-[8rem] rounded-lg border border-slate-300 px-3 py-2"
-                />
-                <button onClick={() => saveName(r.id)} className="text-green-700 font-semibold">Save</button>
-                <button onClick={() => setEditingId(null)} className="text-slate-500">Cancel</button>
-              </>
-            ) : (
+            {(
               <>
                 <span className="flex-1 min-w-[8rem] font-medium">{r.name}</span>
                 <select
@@ -143,28 +139,83 @@ export default function CropsEditor() {
                   />
                   Double-crop
                 </label>
-                <select
-                  value={r.rma_type_override ?? ''}
-                  onChange={(e) => setRmaType(r.id, e.target.value)}
-                  className={`text-sm ${selectCls}`}
-                  aria-label={`${r.name} RMA insurance type`}
-                  title="RMA insurance type for price discovery — Auto follows the harvest category (spring-harvested crops use the Winter/fall offer)"
-                >
-                  <option value="">RMA type: Auto{r.harvest_category === 'spring' ? ' (Winter)' : ''}</option>
-                  <option value="winter">Winter</option>
-                  <option value="spring">Spring</option>
-                  <option value="durum">Durum</option>
-                </select>
-                <button
-                  onClick={() => { setEditingId(r.id); setEditingName(r.name) }}
-                  className="text-brand-deep"
-                >Edit</button>
+                <button onClick={() => openEdit(r)} className="text-brand-deep">Edit</button>
                 <button onClick={() => remove(r.id)} className="text-red-600">Delete</button>
               </>
             )}
           </li>
         ))}
       </ul>
+
+      {editing && (
+        <EditCropModal
+          crop={editing}
+          name={editingName}
+          onName={setEditingName}
+          insuranceType={editingType}
+          onInsuranceType={setEditingType}
+          onSave={saveEdit}
+          onClose={() => setEditing(null)}
+        />
+      )}
     </div>
+  )
+}
+
+// Portaled to document.body (the inline-modal rule): a fixed overlay inside a
+// list row would inherit the row's layout and any ancestor label/form
+// activation. Holds the rename and the one insurance setting that is NOT on
+// the list — the winter/spring type — because it only matters in a state
+// that offers both and is otherwise set automatically from the harvest
+// category (the Price Discovery window asks on its own when it matters).
+function EditCropModal({ crop, name, onName, insuranceType, onInsuranceType, onSave, onClose }: {
+  crop: Crop
+  name: string
+  onName: (v: string) => void
+  insuranceType: RmaType | ''
+  onInsuranceType: (v: RmaType | '') => void
+  onSave: (e: React.FormEvent) => void
+  onClose: () => void
+}) {
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
+  if (!mounted) return null
+  const auto = crop.harvest_category === 'spring' ? 'Winter' : 'Spring'
+  return createPortal(
+    <div className="fixed inset-0 z-30 bg-black/40 flex items-center justify-center p-4 no-print" onClick={onClose}>
+      <form onSubmit={onSave} className="bg-white rounded-xl shadow-xl p-4 w-full max-w-md space-y-3" onClick={(e) => e.stopPropagation()}>
+        <h3 className="font-semibold text-lg">Edit {crop.name}</h3>
+        <label className="block text-sm text-slate-700">
+          Name
+          <input
+            autoFocus
+            value={name}
+            onChange={(e) => onName(e.target.value)}
+            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2"
+          />
+        </label>
+        <label className="block text-sm text-slate-700">
+          Crop insurance type (winter/spring)
+          <select
+            value={insuranceType}
+            onChange={(e) => onInsuranceType(e.target.value === '' ? '' : (e.target.value as RmaType))}
+            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 bg-white"
+          >
+            <option value="">Automatic ({auto})</option>
+            <option value="winter">Winter</option>
+            <option value="spring">Spring</option>
+            <option value="durum">Durum</option>
+          </select>
+          <span className="block text-xs text-slate-500 mt-1">
+            Only matters if your state offers both; normally set automatically.
+          </span>
+        </label>
+        <div className="flex gap-2 justify-end pt-1">
+          <button type="button" onClick={onClose} className="rounded-lg border border-slate-300 px-3 py-2 text-sm">Cancel</button>
+          <button type="submit" className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 text-sm font-semibold">Save</button>
+        </div>
+      </form>
+    </div>,
+    document.body,
   )
 }
