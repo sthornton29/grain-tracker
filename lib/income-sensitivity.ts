@@ -319,6 +319,7 @@ export function computeScenarioCell(
     expected_yield: null, expected_yield_irr: null, expected_yield_dry: null,
     expected_yield_dc_irr: null, expected_yield_dc_dry: null,
     harvest_complete: false, assumed_basis: 0, assumed_futures: null, reference_contract_month: null,
+    assumed_acres: null, assumed_acres_irr: null, assumed_acres_dry: null, assumed_acres_dc_irr: null, assumed_acres_dc_dry: null,
     cost_per_acre: null, cost_per_acre_irr: null, cost_per_acre_dry: null,
     cost_per_acre_dc_irr: null, cost_per_acre_dc_dry: null,
     notes: null, created_at: '', updated_at: '',

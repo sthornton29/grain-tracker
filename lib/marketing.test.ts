@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest'
-import { computeMarketing, breakevenAvgPrice, type Planting } from '@/lib/marketing'
+import {
+  computeMarketing, breakevenAvgPrice, aggregateMarketing,
+  assumedSegmentAcres, assumedAcresTotal, resolveAcresByCrop, segmentAcresByCrop, expectedProductionFromBreakout,
+  type Planting, type SegmentAcres,
+} from '@/lib/marketing'
 import type { Crop, Contract, CropAssumption, FuturesPosition, OptionPosition } from '@/lib/types'
 
 // Worked examples for the standard marketing methodology. Every expected number
@@ -25,7 +29,7 @@ function assumption(over: Partial<CropAssumption> & Pick<CropAssumption, 'crop_i
     id: `a-${over.crop_id}`, crop_year: 2026,
     expected_yield: null, expected_yield_irr: null, expected_yield_dry: null,
     expected_yield_dc_irr: null, expected_yield_dc_dry: null, harvest_complete: false,
-    assumed_basis: 0, assumed_futures: null, reference_contract_month: null, cost_per_acre: null, cost_per_acre_irr: null, cost_per_acre_dry: null,
+    assumed_basis: 0, assumed_futures: null, reference_contract_month: null, assumed_acres: null, assumed_acres_irr: null, assumed_acres_dry: null, assumed_acres_dc_irr: null, assumed_acres_dc_dry: null, cost_per_acre: null, cost_per_acre_irr: null, cost_per_acre_dry: null,
     cost_per_acre_dc_irr: null, cost_per_acre_dc_dry: null, notes: null,
     created_at: '', updated_at: '', ...over,
   }
@@ -498,5 +502,139 @@ describe('computeMarketing — over-contracting cannot inflate revenue', () => {
     expect(r.totalAvgPrice).toBeCloseTo(11.5, 6)
     expect(r.blendedRevenue).toBeCloseTo(57500, 2)  // 5,000 × 11.50, not 6,000 × 11.50 = 69,000
     expect(r.revenuePerAcre).toBeCloseTo(575, 2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Assumed acres (081) — a crop year with no plantings yet. Worked example:
+// 2027 wheat, 3,000 assumed acres × 60 bu/ac expected = 180,000 bu expected
+// production; 50,000 bu already sold ahead on a flat-cash forward at $6.20;
+// the other 130,000 bu unpriced at the reference futures $5.80 + assumed
+// basis −0.30 = $5.50. Blended revenue = 310,000 + 715,000 = 1,025,000; cost
+// $350/ac × 3,000 = 1,050,000 → total profit −25,000.
+// ---------------------------------------------------------------------------
+describe('assumed acres — marketing before planting (081)', () => {
+  const wheat = crop('wheat', 'Wheat')
+  const soldAhead = contract({ crop_id: 'wheat', crop_year: 2027, contract_type: 'forward', contracted_bushels: 50000, cash_price: 6.2 })
+  const base = { expected_yield: 60, assumed_basis: -0.3, cost_per_acre: 350 }
+  const y27 = (over: Partial<CropAssumption>) => ({ ...assumption({ crop_id: 'wheat', ...over }), crop_year: 2027 })
+
+  it('assumedSegmentAcres: breakout cells define the split; no cells → the overall stands as unsplit', () => {
+    expect(assumedSegmentAcres(y27({ assumed_acres: 3000 }))).toEqual({ fullIrr: 0, fullDry: 0, dcIrr: 0, dcDry: 0, unsplit: 3000 })
+    expect(assumedSegmentAcres(y27({ assumed_acres: 3000, assumed_acres_irr: 1000, assumed_acres_dry: 2000 })))
+      .toEqual({ fullIrr: 1000, fullDry: 2000, dcIrr: 0, dcDry: 0 })
+    expect(assumedSegmentAcres(y27({}))).toBeNull()
+    expect(assumedSegmentAcres(y27({ assumed_acres: 0 }))).toBeNull()
+    expect(assumedAcresTotal(y27({ assumed_acres_dc_dry: 450 }))).toBe(450)
+  })
+
+  it('a year with no plantings computes the whole engine on assumed acres × expected yield', () => {
+    const rows = computeMarketing({
+      cropYear: 2027, crops: [wheat], plantings: [], contracts: [soldAhead], futures: [], options: [],
+      assumptions: [y27({ ...base, assumed_acres: 3000 })],
+      actualProductionByCrop: new Map(), currentFuturesByCrop: new Map([['wheat', 5.8]]),
+    })
+    expect(rows).toHaveLength(1)
+    const r = rows[0]
+    expect(r.acresSource).toBe('assumed')
+    expect(r.acres).toBe(3000)
+    expect(r.yield).toBe(60)
+    expect(r.totalProduction).toBe(180000)
+    expect(r.contractedBu).toBe(50000)
+    expect(r.remaining).toBe(130000)
+    expect(r.blendedRevenue).toBeCloseTo(50000 * 6.2 + 130000 * (5.8 - 0.3), 2) // 1,025,000
+    expect(r.costPerAcre).toBe(350)
+    expect(r.totalProfit).toBeCloseTo(1025000 - 1050000, 2) // −25,000
+    // The shared rollup sees the assumed acres like any other.
+    const agg = aggregateMarketing(rows)
+    expect(agg.acres).toBe(3000)
+    expect(agg.totalCost).toBe(1050000)
+  })
+
+  it('the breakout flows through expectedProductionFromBreakout: 1,000 irr @ 75 + 2,000 dry @ 52.5 = 180,000', () => {
+    const a = y27({ ...base, assumed_acres: 3000, assumed_acres_irr: 1000, assumed_acres_dry: 2000, expected_yield_irr: 75, expected_yield_dry: 52.5 })
+    const segFromPlantings = segmentAcresByCrop([], 2027, new Set()) // no plantings at all
+    const prod = expectedProductionFromBreakout(segFromPlantings, [a], 2027)
+    expect(prod.get('wheat')).toBe(1000 * 75 + 2000 * 52.5)
+    const rows = computeMarketing({
+      cropYear: 2027, crops: [wheat], plantings: [], contracts: [], futures: [], options: [],
+      assumptions: [a], actualProductionByCrop: new Map(), expectedProductionByCrop: prod, currentFuturesByCrop: new Map([['wheat', 5.8]]),
+    })
+    expect(rows[0].acres).toBe(3000)
+    expect(rows[0].totalProduction).toBe(180000)
+    expect(rows[0].yield).toBe(60) // 180,000 ÷ 3,000
+  })
+
+  it('unsplit assumed acres ride the OVERALL yield even when only breakout yields are set alongside', () => {
+    // Overall 60 with an irrigated-only yield of 75: no practice split on the
+    // acres, so the 3,000 unsplit acres price at the overall 60.
+    const a = y27({ ...base, assumed_acres: 3000, expected_yield_irr: 75 })
+    const prod = expectedProductionFromBreakout(new Map(), [a], 2027)
+    expect(prod.get('wheat')).toBe(180000)
+  })
+
+  it('plantings beat assumed: once a planting row exists the assumed acres are ignored', () => {
+    const a = y27({ ...base, assumed_acres: 3000 })
+    const planted: Planting[] = [planting('wheat', 3310, 2027)]
+    const rows = computeMarketing({
+      cropYear: 2027, crops: [wheat], plantings: planted, contracts: [soldAhead], futures: [], options: [],
+      assumptions: [a], actualProductionByCrop: new Map(), currentFuturesByCrop: new Map([['wheat', 5.8]]),
+    })
+    expect(rows[0].acresSource).toBe('planted')
+    expect(rows[0].acres).toBe(3310)
+    expect(rows[0].totalProduction).toBe(3310 * 60)
+    // ...and the resolution helper says the same thing the engine did.
+    const seg = segmentAcresByCrop([{ id: 'p1', crop_id: 'wheat', season_year: 2027, irrigated_acres: 0, dryland_acres: 3310 }], 2027, new Set())
+    const resolved = resolveAcresByCrop(seg, [a], 2027)
+    expect(resolved.get('wheat')?.source).toBe('planted')
+    expect(resolved.get('wheat')?.seg).toEqual({ fullIrr: 0, fullDry: 3310, dcIrr: 0, dcDry: 0 })
+  })
+
+  it('the flip mid-year: assumed → planted the moment the first planting is added, no assumption edit needed', () => {
+    const a = y27({ ...base, assumed_acres: 3000 })
+    const run = (plantings: Planting[]) => computeMarketing({
+      cropYear: 2027, crops: [wheat], plantings, contracts: [soldAhead], futures: [], options: [],
+      assumptions: [a], actualProductionByCrop: new Map(), currentFuturesByCrop: new Map([['wheat', 5.8]]),
+    })[0]
+    const before = run([])
+    expect(before.acresSource).toBe('assumed')
+    expect(before.acres).toBe(3000)
+    // The first field goes in — 480 acres. The dashboard now shows THOSE acres
+    // (and only those), not 3,000 and not 3,480: real plantings win outright.
+    const after = run([planting('wheat', 480, 2027)])
+    expect(after.acresSource).toBe('planted')
+    expect(after.acres).toBe(480)
+    expect(after.totalProduction).toBe(480 * 60)
+    // Sold-ahead bushels are unchanged; the position simply reads against the
+    // planted production now.
+    expect(after.contractedBu).toBe(50000)
+    expect(after.remaining).toBe(480 * 60 - 50000)
+  })
+
+  it('a crop with neither plantings nor assumed acres stays off the dashboard', () => {
+    const rows = computeMarketing({
+      cropYear: 2027, crops: [wheat, crop('corn', 'Corn')], plantings: [], contracts: [], futures: [], options: [],
+      assumptions: [y27({ ...base, assumed_acres: 3000 }), { ...assumption({ crop_id: 'corn', expected_yield: 180 }), crop_year: 2027 }],
+      actualProductionByCrop: new Map(),
+    })
+    expect(rows.map((r) => r.cropId)).toEqual(['wheat'])
+  })
+
+  it('assumed acres are operation-level: assumedAcres:false (an entity view) ignores them', () => {
+    const rows = computeMarketing({
+      cropYear: 2027, crops: [wheat], plantings: [], contracts: [soldAhead], futures: [], options: [],
+      assumptions: [y27({ ...base, assumed_acres: 3000 })], actualProductionByCrop: new Map(), assumedAcres: false,
+    })
+    expect(rows).toHaveLength(0)
+    const resolved = resolveAcresByCrop(new Map<string, SegmentAcres>(), [y27({ assumed_acres: 3000 })], 2027, { assumedAcres: false })
+    expect(resolved.size).toBe(0)
+  })
+
+  it('assumed acres for a DIFFERENT year never leak into this one', () => {
+    const rows = computeMarketing({
+      cropYear: 2026, crops: [wheat], plantings: [], contracts: [], futures: [], options: [],
+      assumptions: [y27({ ...base, assumed_acres: 3000 })], actualProductionByCrop: new Map(),
+    })
+    expect(rows).toHaveLength(0)
   })
 })

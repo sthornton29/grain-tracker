@@ -3,6 +3,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { compressImage, ImageDecodeError, type CapturedImage } from '@/lib/image-capture'
 import { excelToPdf, isExcelFile } from '@/lib/excel-to-pdf'
+import Dropzone, { rejectMessage } from '@/components/dropzone'
+
+const FILE_ACCEPT = 'application/pdf,image/*,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel'
+const ACCEPTS_LINE = 'Accepts PDF, photos, or Excel (.xlsx/.xls) — spreadsheets are converted automatically.'
 
 // The input source a parsing screen receives once the user has a document ready:
 // either a single PDF (the original upload path) or one or more compressed photos.
@@ -69,6 +73,21 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
     const file = e.target.files?.[0]
     e.target.value = '' // reset so re-picking the same file fires onChange again
     if (!file) return
+    handleFile(file)
+  }
+
+  // A drop lands on the very same path as the picker: one PDF/Excel hands off,
+  // one image joins the tray, several images all join the tray.
+  function onDropFiles(files: File[]) {
+    if (files.length === 1) { handleFile(files[0]); return }
+    const images = files.filter((f) => f.type.startsWith('image/'))
+    if (images.length !== files.length) {
+      setErr('Drop one PDF or spreadsheet at a time, or several photos together.')
+    }
+    void compressAndAdd(images)
+  }
+
+  function handleFile(file: File) {
     if (isExcelFile(file)) {
       // Convert the spreadsheet to a PDF so it rides the same pipeline as PDFs.
       setImages([])
@@ -111,7 +130,15 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
   const secondary = `${btnBase} bg-white border border-slate-300 text-slate-700`
 
   return (
-    <div className={`flex flex-col gap-2 ${className ?? ''}`}>
+    <Dropzone
+      onFiles={onDropFiles}
+      onReject={(rejected) => setErr(rejectMessage(ACCEPTS_LINE, rejected))}
+      accept={FILE_ACCEPT}
+      multiple
+      disabled={disabled}
+      hint="Drop the document here"
+      className={`flex flex-col gap-2 ${className ?? ''}`}
+    >
       <div className="flex flex-wrap items-center gap-2">
         {isCoarse ? (
           <>
@@ -134,7 +161,7 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
       </div>
 
       {images.length === 0 && (
-        <p className="text-[11px] text-slate-400">Accepts PDF, photos, or Excel (.xlsx/.xls) — spreadsheets are converted automatically.</p>
+        <p className="text-[11px] text-slate-400">{ACCEPTS_LINE} Or drag a file onto this button.</p>
       )}
 
       {isCoarse && images.length === 0 && (
@@ -192,13 +219,7 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
           is ignored on desktop. The library/file pickers omit it. */}
       <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={onPhotoPick} className="hidden" />
       <input ref={libraryRef} type="file" accept="image/*" multiple onChange={onPhotoPick} className="hidden" />
-      <input
-        ref={fileRef}
-        type="file"
-        accept="application/pdf,image/*,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-        onChange={onFilePick}
-        className="hidden"
-      />
-    </div>
+      <input ref={fileRef} type="file" accept={FILE_ACCEPT} onChange={onFilePick} className="hidden" />
+    </Dropzone>
   )
 }

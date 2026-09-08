@@ -1,8 +1,8 @@
 ---
 page_route: /settings/uploads
 title: Uploading Documents
-updated: 2026-08-14
-keywords: upload, AI, documents, lease, FSA, 156EZ, plat map, acreage report, field list, photo, scan, import, cross-fill, review, confirm, large document, many pages, timeout, progress
+updated: 2026-09-08
+keywords: upload, AI, documents, lease, FSA, 156EZ, plat map, acreage report, field list, photo, scan, import, cross-fill, review, confirm, large document, many pages, timeout, progress, drag and drop, drop a file, drag a file
 ---
 ## What this is for
 
@@ -12,6 +12,7 @@ Most of what Turnrow needs to know about your operation is already written down 
 
 - Every setup page (Entities, Landowners, Farms, Fields, Plantings, Buyers, Bin Sites, Trucks) has an **Upload (AI)** card — use the one closest to what you're holding, or the **Upload any document (AI)** card at the top of Settings when you're not sure where something belongs.
 - Upload a PDF, a spreadsheet, or photos (snap multiple pages from your phone). Then review what was found.
+- **Drag and drop works everywhere a file can be uploaded.** On a computer, drag the file from your desktop or a folder onto the upload button or card — it highlights while the file is over it — and it uploads exactly as if you had picked it with the button. This applies to every upload in Turnrow: the AI document uploads here and on their own pages (policies, FSA records, brokerage statements, settlements, gin receipts, weight tickets, classing files, cotton marketing documents, seed contracts, discount schedules, leases), the spreadsheet importers, attachments on loads and contracts, your logo, and the screenshot on the support form. Several photos can be dropped together where several are accepted; a file of the wrong kind is refused with the same message the button would give. On an iPad or phone, keep using the buttons — dragging needs a mouse or trackpad.
 
 ## What the AI looks for
 

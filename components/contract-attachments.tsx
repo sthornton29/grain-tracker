@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { MAX_PDF_BYTES, uploadFileToStorage, deleteStorageObject } from '@/lib/pdf-upload'
 import type { ContractAttachment } from '@/lib/types'
+import Dropzone, { rejectMessage } from '@/components/dropzone'
 
 function isImage(mime: string | null | undefined) {
   return !!mime && mime.startsWith('image/')
@@ -40,6 +41,10 @@ export default function ContractAttachments({ contractId }: { contractId: string
   async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? [])
     e.target.value = ''
+    await addFiles(files)
+  }
+
+  async function addFiles(files: File[]) {
     if (files.length === 0) return
     setErr(null)
     const tooBig = files.find((f) => f.size > MAX_PDF_BYTES)
@@ -86,7 +91,15 @@ export default function ContractAttachments({ contractId }: { contractId: string
   }
 
   return (
-    <div className="bg-white rounded-xl shadow p-4 space-y-3 print:hidden">
+    <Dropzone
+      onFiles={(files) => void addFiles(files)}
+      onReject={(rejected) => setErr(rejectMessage('Use a PDF or an image (JPEG, PNG, HEIC).', rejected))}
+      accept="application/pdf,image/*"
+      multiple
+      disabled={busy}
+      hint="Drop to attach"
+      className="bg-white rounded-xl shadow p-4 space-y-3 print:hidden"
+    >
       <div className="flex items-center gap-2 flex-wrap">
         <h2 className="font-semibold flex-1">Attachments</h2>
         <button
@@ -99,7 +112,7 @@ export default function ContractAttachments({ contractId }: { contractId: string
         </button>
         <input ref={inputRef} type="file" accept="application/pdf,image/*" multiple onChange={onPick} className="hidden" />
       </div>
-      <p className="text-xs text-slate-500">Attach the signed contract PDF or related paperwork. PDFs and images up to 20 MB.</p>
+      <p className="text-xs text-slate-500">Attach the signed contract PDF or related paperwork. PDFs and images up to 20 MB — or drag them onto this card.</p>
 
       {err && <p className="text-sm text-red-600">{err}</p>}
 
@@ -128,6 +141,6 @@ export default function ContractAttachments({ contractId }: { contractId: string
           ))}
         </ul>
       )}
-    </div>
+    </Dropzone>
   )
 }

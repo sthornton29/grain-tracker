@@ -27,6 +27,7 @@ import {
   sumCheck,
 } from '@/lib/settlement-discounts'
 import type { Buyer } from '@/lib/types'
+import Dropzone, { rejectMessage } from '@/components/dropzone'
 
 type LoadMatch = {
   id: string
@@ -157,6 +158,11 @@ export default function NewSettlementPage() {
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
+    await readCsv(file)
+    e.target.value = ''
+  }
+
+  async function readCsv(file: File) {
     setErr(null)
     try {
       const text = await file.text()
@@ -179,7 +185,6 @@ export default function NewSettlementPage() {
         notes: '',
       }))
       setRows((prev) => [...prev, ...next])
-      e.target.value = ''
     } catch (e: any) {
       setErr(e?.message ?? 'Failed to read file')
     }
@@ -415,10 +420,18 @@ export default function NewSettlementPage() {
             stageLabel={aiStage}
             pdfLabel="Settlement PDF or Photo (AI)"
           />
-          <label className="text-sm rounded-lg bg-slate-700 text-white px-3 py-2 cursor-pointer">
-            Upload CSV
-            <input type="file" accept=".csv,text/csv,text/plain" onChange={onFile} className="hidden" />
-          </label>
+          <Dropzone
+            onFiles={(files) => void readCsv(files[0])}
+            onReject={(rejected) => setErr(rejectMessage('Use a CSV file, or the PDF/photo button for the settlement itself.', rejected))}
+            accept=".csv,text/csv,text/plain"
+            hint="Drop the CSV here"
+            className="inline-block"
+          >
+            <label className="text-sm rounded-lg bg-slate-700 text-white px-3 py-2 cursor-pointer inline-block">
+              Upload CSV
+              <input type="file" accept=".csv,text/csv,text/plain" onChange={onFile} className="hidden" />
+            </label>
+          </Dropzone>
           <button
             type="button"
             onClick={() => setRows((rs) => [...rs, emptyRow()])}

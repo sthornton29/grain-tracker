@@ -1,7 +1,7 @@
 ---
 page_route: /contracts
 title: Contracts
-updated: 2026-09-01
+updated: 2026-09-08
 keywords: contracts, forward, cash, HTA, basis, futures, pricing, delivered, contracted, first notice day, delivery window, attachments, entity, seed, seed contract, seed production
 ---
 ## What this page is for
@@ -12,7 +12,7 @@ The contract tracker shows every grain contract with how much you've delivered a
 
 - Each row shows the buyer, type, crop year, delivery location and window, contracted versus delivered bushels, percent delivered, price, revenue, and paid versus unpaid bushels.
 - Tap a contract to open its printable detail page: the full terms, every load delivered against it (your dry bushels beside the buyer's settled net bushels), attachments, and actions to mark it complete or delete it.
-- Create contracts under Settings → Contracts — typed in, from a spreadsheet, or by uploading the contract document for Turnrow to read and pre-fill.
+- Press **New Contract** to add a grain contract — typed in, from a spreadsheet, or by uploading the contract document for Turnrow to read and pre-fill (the same screen lives under Settings → Contracts). The small caret beside the button holds **Seed contract** for acreage-based seed production agreements.
 - Attach the signed paper contract on the detail page so it's always at hand.
 
 ## Contract types in plain words

@@ -461,21 +461,31 @@ export default async function ContractsPage({
       </Suspense>
       <h1 className="text-2xl font-bold">Contract Tracker</h1>
       <div className="flex items-end gap-3 flex-wrap">
-        <details className="relative">
-          <summary className="list-none cursor-pointer rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold select-none">
-            New Contract ▾
-          </summary>
-          <div className="absolute z-10 mt-1 w-52 rounded-lg border border-slate-200 bg-white shadow-lg py-1">
-            <Link href="/settings/contracts" className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
-              Grain contract
-              <span className="block text-xs text-slate-400">Forward · HTA · Basis</span>
-            </Link>
-            <Link href="/contracts/seed/new" className="block px-3 py-2 text-sm text-slate-700 hover:bg-slate-50">
-              Seed contract
-              <span className="block text-xs text-slate-400">Acreage-based seed production</span>
-            </Link>
-          </div>
-        </details>
+        {/* Grain contracts are 95%+ of volume: the primary button goes straight
+            to the grain form. Seed contracts live behind the caret. */}
+        <div className="inline-flex items-stretch rounded-lg bg-brand text-white text-sm font-semibold shadow-sm">
+          <Link
+            href="/settings/contracts"
+            className="rounded-l-lg px-3 py-2 hover:bg-brand-deep"
+          >
+            New Contract
+          </Link>
+          <details className="relative">
+            <summary
+              aria-label="More contract types"
+              title="More contract types"
+              className="list-none cursor-pointer select-none h-full flex items-center rounded-r-lg border-l border-white/30 px-2 hover:bg-brand-deep"
+            >
+              ▾
+            </summary>
+            <div className="absolute right-0 z-10 mt-1 w-56 rounded-lg border border-slate-200 bg-white shadow-lg py-1 font-normal text-slate-700">
+              <Link href="/contracts/seed/new" className="block px-3 py-2 text-sm hover:bg-slate-50">
+                Seed contract
+                <span className="block text-xs text-slate-400">Acreage-based seed production</span>
+              </Link>
+            </div>
+          </details>
+        </div>
         {visible.length > 0 && <StaticExportBar payload={contractsExportPayload} />}
         <form className="flex items-center gap-2 flex-wrap">
           <select name="entity" defaultValue={entityId} className="rounded-lg border border-slate-300 px-3 py-2">

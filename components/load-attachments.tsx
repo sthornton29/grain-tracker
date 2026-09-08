@@ -8,6 +8,7 @@ import {
   deleteStorageObject,
 } from '@/lib/pdf-upload'
 import type { LoadAttachment } from '@/lib/types'
+import Dropzone, { rejectMessage } from '@/components/dropzone'
 
 type Props = {
   loadId: string
@@ -55,6 +56,10 @@ export default function LoadAttachments({ loadId }: Props) {
   async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? [])
     e.target.value = ''
+    await addFiles(files)
+  }
+
+  async function addFiles(files: File[]) {
     if (files.length === 0) return
     setErr(null)
 
@@ -114,7 +119,15 @@ export default function LoadAttachments({ loadId }: Props) {
   }
 
   return (
-    <div className="bg-white rounded-xl shadow p-4 space-y-3">
+    <Dropzone
+      onFiles={(files) => void addFiles(files)}
+      onReject={(rejected) => setErr(rejectMessage('Use a PDF or an image (JPEG, PNG, HEIC).', rejected))}
+      accept="application/pdf,image/*"
+      multiple
+      disabled={busy}
+      hint="Drop to attach"
+      className="bg-white rounded-xl shadow p-4 space-y-3"
+    >
       <div className="flex items-center gap-2 flex-wrap">
         <h2 className="font-semibold flex-1">Attachments</h2>
         <button
@@ -135,7 +148,7 @@ export default function LoadAttachments({ loadId }: Props) {
         />
       </div>
       <p className="text-xs text-slate-500">
-        Attach scanned tickets, photos of the scale ticket, or any related paperwork. PDFs and images up to 20 MB.
+        Attach scanned tickets, photos of the scale ticket, or any related paperwork. PDFs and images up to 20 MB — or drag them onto this card.
       </p>
 
       {err && <p className="text-sm text-red-600">{err}</p>}
@@ -196,6 +209,6 @@ export default function LoadAttachments({ loadId }: Props) {
           ))}
         </ul>
       )}
-    </div>
+    </Dropzone>
   )
 }

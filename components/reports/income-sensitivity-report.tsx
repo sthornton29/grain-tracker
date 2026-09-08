@@ -20,10 +20,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
-import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
+import { buildDoubleCropSet } from '@/lib/plantings'
+import { marketingCropYearOptions } from '@/lib/crop-years'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, type CombineEntryLike } from '@/lib/yields'
-import { segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop } from '@/lib/marketing'
+import { segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, resolveAcresByCrop, segmentTotalAcres } from '@/lib/marketing'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
 import { fetchSeedContracts, type SeedContractData } from '@/lib/seed-contracts-fetch'
 import { buildSeedCommitments } from '@/lib/seed-contracts'
@@ -279,9 +280,17 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   }, [supabase])
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
+  // Future years are on offer too (this year + two), and any year with
+  // contracts, hedges, or assumptions — marketing runs ahead of planting.
   const cropYearOptions = useMemo(
-    () => cropYearOptionsFromPlantings(plantings.map((p) => p.season_year), cropYear === '' ? null : cropYear),
-    [plantings, cropYear],
+    () => marketingCropYearOptions({
+      plantingYears: plantings.map((p) => p.season_year),
+      contractYears: contracts.map((c) => c.crop_year),
+      hedgeYears: [...futures.map((f) => f.crop_year), ...options.map((o) => o.crop_year)],
+      assumptionYears: assumptions.map((a) => a.crop_year),
+      extraYears: [cropYear === '' ? null : cropYear],
+    }),
+    [plantings, contracts, futures, options, assumptions, cropYear],
   )
 
   // The viewer's effective assumptions: shared rows + their private overrides
@@ -325,7 +334,14 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
     () => scopedPlantings.filter((p) => p.season_year === cropYear),
     [scopedPlantings, cropYear],
   )
-  const plantedCropIds = useMemo(() => Array.from(new Set(yearPlantings.map((p) => p.crop_id))), [yearPlantings])
+  // Acres per crop as the Marketing dashboard resolves them: plantings win; a
+  // crop with none rides its assumed acres (081) — whole-operation view only.
+  const doubleCropIds = useMemo(() => buildDoubleCropSet(plantings, cropById), [plantings, cropById])
+  const acresByCrop = useMemo(
+    () => (cropYear === '' ? new Map<string, never>() : resolveAcresByCrop(segmentAcresByCrop(yearPlantings, cropYear, doubleCropIds), effAssumptions, cropYear, { assumedAcres: !scope.active })),
+    [cropYear, yearPlantings, doubleCropIds, effAssumptions, scope.active],
+  )
+  const plantedCropIds = useMemo(() => Array.from(acresByCrop.keys()), [acresByCrop])
 
   // Live reference-contract quotes for every planted crop — the SAME expiry-
   // aware resolver (+ any pinned month) the Marketing dashboard uses, so the
@@ -430,20 +446,28 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
 
   // Expected yield on the REMAINING (not-yet-complete) acres, per crop — the
   // yield-axis center once harvest is underway, from the assumption breakouts.
-  const doubleCropIds = useMemo(() => buildDoubleCropSet(plantings, cropById), [plantings, cropById])
+  // A crop on assumed acres has nothing harvested: its whole acreage remains.
   const remainingExpectedYield = useMemo(() => {
     const m = new Map<string, number>()
     if (cropYear === '') return m
     const remaining = yearPlantings.filter((p) => harvestSplit.statusByPlanting.get(p.id) !== 'complete')
-    const prod = expectedProductionFromBreakout(segmentAcresByCrop(remaining, cropYear, doubleCropIds), effAssumptions, cropYear)
+    // assumedAcres:false — a fully-harvested crop's stale assumed acres must
+    // never resurface here; assumed crops are added below on their own acres.
+    const prod = expectedProductionFromBreakout(segmentAcresByCrop(remaining, cropYear, doubleCropIds), effAssumptions, cropYear, { assumedAcres: false })
     const acres = new Map<string, number>()
     for (const p of remaining) acres.set(p.crop_id, (acres.get(p.crop_id) ?? 0) + Number(p.planted_acres ?? 0))
+    for (const [cropId, r] of acresByCrop) {
+      if (r.source !== 'assumed') continue
+      acres.set(cropId, segmentTotalAcres(r.seg))
+      const p = expectedProductionFromBreakout(new Map([[cropId, r.seg]]), effAssumptions, cropYear, { assumedAcres: false }).get(cropId)
+      if (p != null) prod.set(cropId, p)
+    }
     for (const [cropId, production] of prod) {
       const ac = acres.get(cropId) ?? 0
       if (ac > 0) m.set(cropId, production / ac)
     }
     return m
-  }, [yearPlantings, harvestSplit, cropYear, doubleCropIds, effAssumptions])
+  }, [yearPlantings, harvestSplit, cropYear, doubleCropIds, effAssumptions, acresByCrop])
 
   // Per-year program parameters (SCO trigger, sequestration).
   const programCfg = useMemo(
@@ -484,10 +508,13 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       const crop = cropById.get(cropId)
       if (!crop) continue
       const cps = yearPlantings.filter((p) => p.crop_id === cropId)
-      const plantedAcres = cps.reduce((s, p) => s + Number(p.planted_acres ?? 0), 0)
+      const resolved = acresByCrop.get(cropId)
+      // Assumed acres (081) stand in when the crop has no plantings this year.
+      const assumed = resolved?.source === 'assumed' ? resolved.seg : null
+      const plantedAcres = assumed ? segmentTotalAcres(assumed) : cps.reduce((s, p) => s + Number(p.planted_acres ?? 0), 0)
       if (plantedAcres <= 0) continue
-      const irrigatedAcres = cps.reduce((s, p) => s + (Number(p.irrigated_acres) || 0), 0)
-      const drylandAcres = cps.reduce((s, p) => s + (Number(p.dryland_acres) || 0), 0)
+      const irrigatedAcres = assumed ? assumed.fullIrr + assumed.dcIrr : cps.reduce((s, p) => s + (Number(p.irrigated_acres) || 0), 0)
+      const drylandAcres = assumed ? assumed.fullDry + assumed.dcDry : cps.reduce((s, p) => s + (Number(p.dryland_acres) || 0), 0)
       const split = harvestSplit.byCrop.get(cropId) ?? { fixedBu: 0, completedAcres: 0, remainingAcres: plantedAcres, state: 'pre' as const }
       const assumption = effAssumptions.find((a) => a.crop_id === cropId && a.crop_year === cropYear)
       const cropPolicies = scopedPolicies.filter((p) => p.crop_id === cropId && p.crop_year === cropYear)
@@ -604,7 +631,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       })
     }
     return views.sort((a, b) => a.crop.name.localeCompare(b.crop.name))
-  }, [cropYear, viewer.loading, viewerA.ready, plantedCropIds, cropById, yearPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, scopedPolicies, scos, ecos, staxes, mcos, effCountyAssumptions, priceEstimates, harvestSplit, remainingExpectedYield, liveEstimates, refSymbols, refByCrop, axes, programCfg, includeGov, govPerAcre, cottonPhysicalSummary, seedCommitments])
+  }, [cropYear, viewer.loading, viewerA.ready, plantedCropIds, acresByCrop, cropById, yearPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, scopedPolicies, scos, ecos, staxes, mcos, effCountyAssumptions, priceEstimates, harvestSplit, remainingExpectedYield, liveEstimates, refSymbols, refByCrop, axes, programCfg, includeGov, govPerAcre, cottonPhysicalSummary, seedCommitments])
 
   function setAxis(cropId: string, patch: Partial<AxisCfg>) {
     const key = `${cropYear}:${cropId}`

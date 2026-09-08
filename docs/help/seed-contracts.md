@@ -1,7 +1,7 @@
 ---
 page_route: /contracts/seed
 title: Seed production contracts
-updated: 2026-09-01
+updated: 2026-09-08
 keywords: seed, seed contract, seed production, seed beans, grower agreement, elections, pricing election, premium, premium cap, irrigated premium, usage fee, storage pay, selection date, acceptance, released, rejected, Bayer
 ---
 ## What a seed contract is
@@ -12,7 +12,7 @@ Turnrow tracks all of it: the agreement's terms, your pricing elections, the sta
 
 ## Entering one
 
-On the Contracts page, **New Contract → Seed contract** opens the dedicated form. Type the terms in, or upload the signed agreement (PDF or photos) — Turnrow reads the signature page and the premium/payment terms and fills the form in for your review. Nothing saves until you confirm.
+On the Contracts page, the **New Contract** button opens the grain contract form directly; the small **▾** caret beside it holds **Seed contract**, which opens the dedicated form. Type the terms in, or upload the signed agreement (PDF or photos) — Turnrow reads the signature page and the premium/payment terms and fills the form in for your review. Nothing saves until you confirm.
 
 The important pieces:
 

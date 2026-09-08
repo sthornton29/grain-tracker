@@ -19,6 +19,7 @@ import {
   type CottonMarketingExtraction,
 } from '@/lib/cotton-doc-import'
 import type { CottonDisposition } from '@/lib/types'
+import Dropzone, { rejectMessage } from '@/components/dropzone'
 
 const btnGray = 'rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-sm disabled:opacity-50'
 const btnCls = 'rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50'
@@ -94,13 +95,22 @@ export default function BaleFileAssign({ target, bales, dispositionByBale, loane
         <button type="button" className={btnGray} onClick={() => { setOpen(false); setPartition(null); setErr(null) }}>Close</button>
       </div>
       <div className="flex items-start gap-3 flex-wrap">
-        <label className={`${btnGray} cursor-pointer`}>
-          {busy ? 'Reading…' : 'Upload CSV / text file'}
-          <input
-            type="file" accept=".csv,.txt,text/csv,text/plain" className="hidden" disabled={busy}
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) void onCsvFile(f); e.target.value = '' }}
-          />
-        </label>
+        <Dropzone
+          onFiles={(files) => void onCsvFile(files[0])}
+          onReject={(rejected) => setErr(rejectMessage('Use a CSV or text file of bale numbers, or the PDF/photo button.', rejected))}
+          accept=".csv,.txt,text/csv,text/plain"
+          disabled={busy}
+          hint="Drop the bale list here"
+          className="inline-block"
+        >
+          <label className={`${btnGray} cursor-pointer`}>
+            {busy ? 'Reading…' : 'Upload CSV / text file'}
+            <input
+              type="file" accept=".csv,.txt,text/csv,text/plain" className="hidden" disabled={busy}
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) void onCsvFile(f); e.target.value = '' }}
+            />
+          </label>
+        </Dropzone>
         <DocumentCapture onSource={(src) => void onDocSource(src)} busy={busy} stageLabel={busy ? 'Extracting…' : null} pdfLabel="Upload PDF / photo (AI)" />
       </div>
       {err && <p className="text-sm text-red-600">{err}</p>}

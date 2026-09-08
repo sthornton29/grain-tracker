@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
-import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { marketingCropYearOptions } from '@/lib/crop-years'
 import { projectPayments, expectedArcPlcDate, programYearFor, paymentAttributionYear } from '@/lib/government-payments'
 import { projectInsuranceIndemnities, actualYieldByCropFromLoads, type LiveHarvest } from '@/lib/crop-insurance'
 import { fieldCropAggregates, withLoadBreakouts, type CombineEntryLike } from '@/lib/yields'
@@ -359,12 +359,16 @@ export default function CashFlowPage() {
     return dryBushels ?? 0
   }
 
+  // Future years are on offer too (this year + two), and any year with
+  // contracts or assumptions — marketing and cash planning run ahead of planting.
   const cropYearOptions = useMemo(
-    () => cropYearOptionsFromPlantings(
-      plantings.map((p) => p.season_year),
-      cropYear === '' ? null : cropYear,
-    ),
-    [plantings, cropYear],
+    () => marketingCropYearOptions({
+      plantingYears: plantings.map((p) => p.season_year),
+      contractYears: contracts.map((c) => c.crop_year),
+      assumptionYears: assumptions.map((a) => a.crop_year),
+      extraYears: [cropYear === '' ? null : cropYear],
+    }),
+    [plantings, contracts, assumptions, cropYear],
   )
 
   type Agg = {

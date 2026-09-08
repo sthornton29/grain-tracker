@@ -20,6 +20,9 @@ import {
   type VarietyPlan,
 } from '@/lib/variety-resolution'
 import { downloadExcelTemplate } from '@/lib/import-template'
+import Dropzone, { rejectMessage } from '@/components/dropzone'
+
+const CSV_ACCEPT = '.csv,text/csv,text/plain,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel'
 
 // One scope's (e.g. one crop's) resolution plan over the file's child values.
 type ScopePlan = { scope: string; plan: VarietyPlan }
@@ -157,6 +160,10 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
+    await readFile(file)
+  }
+
+  async function readFile(file: File) {
     setResult(null); setErr(null); setShowAllFailures(false)
     setFileName(file.name)
     try {
@@ -312,14 +319,22 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
         <div className="px-4 pb-4 space-y-4 border-t border-slate-100">
           <div className="pt-3">
             <label className="text-sm font-semibold text-slate-700 block mb-1">CSV or Excel file</label>
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".csv,text/csv,text/plain,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-              onChange={onFile}
-              className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-slate-700 file:text-white file:px-4 file:py-2"
-            />
-            <p className="text-xs text-slate-500 mt-1">For Excel, fill in the Data tab; the first row is the header.</p>
+            <Dropzone
+              onFiles={(files) => void readFile(files[0])}
+              onReject={(rejected) => setErr(rejectMessage('Use a CSV or Excel (.xlsx/.xls) file.', rejected))}
+              accept={CSV_ACCEPT}
+              hint="Drop the spreadsheet here"
+              className="rounded-lg border border-dashed border-slate-300 p-2"
+            >
+              <input
+                ref={fileRef}
+                type="file"
+                accept={CSV_ACCEPT}
+                onChange={onFile}
+                className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-slate-700 file:text-white file:px-4 file:py-2"
+              />
+            </Dropzone>
+            <p className="text-xs text-slate-500 mt-1">For Excel, fill in the Data tab; the first row is the header. You can also drag the file onto the box above.</p>
             {fileName && (
               <p className="text-xs text-slate-500 mt-1">
                 {fileName} · {rows.length} data row{rows.length === 1 ? '' : 's'}

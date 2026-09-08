@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-09-03 · version 0.1.0 · build d04a671. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-09-08 · version 0.1.0 · build 0e0d3cd. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -118,7 +118,7 @@ The contract tracker shows every grain contract with how much you've delivered a
 
 - Each row shows the buyer, type, crop year, delivery location and window, contracted versus delivered bushels, percent delivered, price, revenue, and paid versus unpaid bushels.
 - Tap a contract to open its printable detail page: the full terms, every load delivered against it (your dry bushels beside the buyer's settled net bushels), attachments, and actions to mark it complete or delete it.
-- Create contracts under Settings → Contracts — typed in, from a spreadsheet, or by uploading the contract document for Turnrow to read and pre-fill.
+- Press **New Contract** to add a grain contract — typed in, from a spreadsheet, or by uploading the contract document for Turnrow to read and pre-fill (the same screen lives under Settings → Contracts). The small caret beside the button holds **Seed contract** for acreage-based seed production agreements.
 - Attach the signed paper contract on the detail page so it's always at hand.
 
 ## Contract types in plain words
@@ -679,6 +679,7 @@ What it costs to take a point of moisture out — and what it costs to take out 
 
 - **Crop** — sets the base moisture from the crop's own standard (the same base the rest of Turnrow shrinks to).
 - **Fuel** — propane or natural gas, with its price. If a saved dryer is selected, its fuel applies automatically.
+- **Fuel price and its unit** — type the price and pick the unit beside it: **$/gal** for propane, **$/ccf** for natural gas, or **$/MMBtu** (per million BTU — how many suppliers and utilities quote). A price entered per MMBtu is converted once, using the standard heat contents (91,500 BTU per gallon of propane, 1,020 BTU per cubic foot of natural gas — so 1 MMBtu is 10.93 gallons of propane or 9.80 ccf of gas), and a line under the input shows the equivalent per-gallon or per-ccf figure. The table, the dry-it-or-haul-it comparison, and the calibration all price the same whichever unit you typed. Your choice of unit and the prices you enter are remembered on this device.
 - Everything else lives under **⚙ Assumptions**: your dryer (a saved one, a catalog model, or a standard 0.018 gal-LP-equivalent per bushel-point), the electric rate, the **depreciation** figure, the calibrate-from-records tool, and the grain price. The grain price matters for the rows *below* base (overdrying) and for the buyer comparison — it defaults to today's futures quote for the crop's reference contract, and you can type over it any time. The line under the inputs always says which dryer, depreciation figure, and grain price are in play.
 
 ## Reading the table
@@ -716,7 +717,8 @@ The honest consumption number is yours, not a brochure's: in ⚙ Assumptions, en
 - **Why does hauling wet sometimes win?** A buyer's charge plus the grain they keep can still come in under your cost — a cheap sheet with a lean shrink factor, or a point or two of moisture. The comparison uses their posted sheet — and whether depreciation is in your side is your choice.
 - **The comparison used to favor hauling wet a lot more. What changed?** It counted only the buyer's drying charge and ignored the bushels their shrink factor takes beyond the water. Now it counts both, the way the elevator does.
 - **Is depreciation charged on the overdrying rows too?** No. Those rows are the extra cost of going past base — lost grain and wasted fuel. The bushel already carried its depreciation reaching base.
-- **Does this change any of my data?** No. Only saved dryers, a calibration you choose to save, and the depreciation setting persist — the rest is session inputs.
+- **My gas bill is in therms or dekatherms.** A therm is 100,000 BTU, so $/MMBtu = $/therm × 10; a dekatherm is one MMBtu, so enter that price as-is under $/MMBtu.
+- **Does this change any of my data?** No. Only saved dryers, a calibration you choose to save, and the depreciation setting persist — the rest is session inputs kept on this device.
 
 ## If something looks wrong
 
@@ -946,8 +948,9 @@ Pick a crop year, then scroll through the crop sections. The chevron on each sec
 
 ## What the controls do
 
-- **Crop year and entity filter** — the entity filter narrows acres and production to that entity. Contracts and hedges held by your marketing agent — or entered with no entity — are marketing for the whole operation, so they count toward each entity in proportion to its share of that crop's planted acres. A contract in an entity's own name counts wholly toward it.
+- **Crop year and entity filter** — the crop year list always includes this year and the next two, plus any year you already have plantings, contracts, hedges, or assumptions for — so next year's marketing has a place to live before anything is planted. The entity filter narrows acres and production to that entity. Contracts and hedges held by your marketing agent — or entered with no entity — are marketing for the whole operation, so they count toward each entity in proportion to its share of that crop's planted acres. A contract in an entity's own name counts wholly toward it.
 - **Edit Assumptions** — a panel with one section per crop: enter an overall yield and cost per acre, or break them out by irrigated/dryland and full-season/double-crop. A blank breakout cell falls back to the overall figure. The **Harvest complete** checkbox tells Turnrow the crop is finished; checking it snaps the yield to the actual average from your loads.
+- **Assumed acres (planning a year before planting)** — for a crop year with no plantings yet, each crop's section in the panel takes **assumed acres** instead: an overall figure, or split by irrigated/dryland and full-season/double-crop like the yield. Enter the acres and the expected yield and the dashboard values the year's contracts and hedges against that expected production — 2027 wheat you've already sold ahead, 2028 corn you've hedged. Crops with no acres assumed stay off the dashboard. The moment the first field is planted to a crop for that year, the **planted acres take over automatically** and the assumed figure is ignored (the panel then reads "using planted acres"). Assumed acres are for the whole operation, so they show under **All entities**; an entity filter still goes by the fields actually planted.
 - **What-If on Unpriced Bushels** — type an assumed futures price (or use the **use today's price** button, which fills in the current quote for the reference contract shown) and an assumed basis. These are standing assumptions: they save automatically, stay until you change them, and flow into every headline number here and on Revenue Projections. **Clear assumptions** wipes both.
 - **The reference contract** — shown next to the futures input as the board month and its live quote (for example "ZWU26 · $5.72"). This is the futures contract your unpriced bushels are valued against. The default is the crop year's new-crop month — December corn and cotton, November soybeans, July wheat — and once that contract stops trading (around the middle of its delivery month), Turnrow automatically moves to the next traded month and shows a small note like "Jul 26 expired → Sep 26". You can also pick a different month from the dropdown — any traded month from this crop year through the next — and your choice sticks for that crop and year until you press **Reset to default**. The Income Sensitivity price axis and Revenue Projections follow the same contract, so every page prices unpriced bushels off one answer.
 - **Physical Sales Complete for the Year?** — checkboxes at the bottom, one per crop. Because shrink and small leftovers keep the math from ever landing on exactly zero, this is how you tell Turnrow a year's selling is truly finished.
@@ -957,7 +960,7 @@ Pick a crop year, then scroll through the crop sections. The chevron on each sec
 
 Production is your assumed acres × yield until you mark harvest complete; after that it is the actual bushels from your loads (pounds of lint from gin receipts for cotton). Turnrow also switches to actuals on its own once every field of a crop is harvested. If a crop hasn't switched because a field still shows as being harvested, an amber note at the top names the field — tap **Count anyway** there if it's actually done, and its bushels count as final everywhere. Every bushel is valued at its own price: cash sales at their cash price, HTA and basis contracts at their locked legs, hedged bushels at their trade price with realized futures and options gains counted once, and unpriced bushels at your assumed futures plus assumed basis (or, with no assumption entered, the reference contract's current quote). Basis totals show their state — actual where locked, assumed where not, and a blend when it is some of each.
 
-An amber **includes assumptions** marker appears whenever any production is not fully priced; its tooltip breaks down how many bushels ride on assumed futures or basis. Profit is this blended revenue minus your cost per acre, and it matches Revenue Projections to the cent. Breakeven price is cost divided by yield; breakeven yield is cost divided by average price.
+An amber **includes assumptions** marker appears whenever any production is not fully priced; its tooltip breaks down how many bushels ride on assumed futures or basis. A crop running on assumed acres carries an **acres assumed — no plantings yet** badge and an "assumed" chip on its acres, and the export labels the line "Assumed acres (no plantings yet)". Revenue Projections, Income Sensitivity, and Cash Flow use the same acres, so the whole set of reports works for a future year. Profit is this blended revenue minus your cost per acre, and it matches Revenue Projections to the cent. Breakeven price is cost divided by yield; breakeven yield is cost divided by average price.
 
 Cotton sections work in pounds and cents per pound, with a position bar covering sold, pool, in-loan, hedged, and unpriced lint.
 
@@ -966,7 +969,9 @@ A crop with a **seed production contract** shows a "Seed — [company]" tag and 
 ## Common questions
 
 - **Why did my average price move when I typed a What-If number?** The headline reflects your standing assumptions on unpriced bushels — that is the point. Clear them to see locked pricing only.
-- **I'm a read-only user — can I try my own numbers?** Yes. Your edits are private "your scenario" values only you see, marked with a chip. If an administrator later changes the official assumption, your scenario value is replaced and a notice tells you.
+- **I'm a read-only user — can I try my own numbers?** Yes. Your edits are private "your scenario" values only you see, marked with a chip (assumed acres included). If an administrator later changes the official assumption, your scenario value is replaced and a notice tells you.
+- **I picked next year and the page says there are no plantings yet.** That's expected before planting — open **Edit Assumptions**, give each crop you plan to grow its assumed acres and expected yield, and the dashboard fills in with the contracts and hedges already on file for that year.
+- **I entered assumed acres but the dashboard shows a different number.** Fields have been planted to that crop for the year, and planted acres always win. Check Settings → Plantings; the assumptions panel names the planted total it is using.
 
 ## If something looks wrong
 
@@ -1290,7 +1295,7 @@ Turnrow tracks all of it: the agreement's terms, your pricing elections, the sta
 
 ## Entering one
 
-On the Contracts page, **New Contract → Seed contract** opens the dedicated form. Type the terms in, or upload the signed agreement (PDF or photos) — Turnrow reads the signature page and the premium/payment terms and fills the form in for your review. Nothing saves until you confirm.
+On the Contracts page, the **New Contract** button opens the grain contract form directly; the small **▾** caret beside it holds **Seed contract**, which opens the dedicated form. Type the terms in, or upload the signed agreement (PDF or photos) — Turnrow reads the signature page and the premium/payment terms and fills the form in for your review. Nothing saves until you confirm.
 
 The important pieces:
 
@@ -1509,6 +1514,7 @@ Most of what Turnrow needs to know about your operation is already written down 
 
 - Every setup page (Entities, Landowners, Farms, Fields, Plantings, Buyers, Bin Sites, Trucks) has an **Upload (AI)** card — use the one closest to what you're holding, or the **Upload any document (AI)** card at the top of Settings when you're not sure where something belongs.
 - Upload a PDF, a spreadsheet, or photos (snap multiple pages from your phone). Then review what was found.
+- **Drag and drop works everywhere a file can be uploaded.** On a computer, drag the file from your desktop or a folder onto the upload button or card — it highlights while the file is over it — and it uploads exactly as if you had picked it with the button. This applies to every upload in Turnrow: the AI document uploads here and on their own pages (policies, FSA records, brokerage statements, settlements, gin receipts, weight tickets, classing files, cotton marketing documents, seed contracts, discount schedules, leases), the spreadsheet importers, attachments on loads and contracts, your logo, and the screenshot on the support form. Several photos can be dropped together where several are accepted; a file of the wrong kind is refused with the same message the button would give. On an iPad or phone, keep using the buttons — dragging needs a mouse or trackpad.
 
 ## What the AI looks for
 

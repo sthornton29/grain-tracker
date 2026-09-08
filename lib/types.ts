@@ -300,6 +300,15 @@ export type CropAssumption = {
   // for this crop × year. null = automatic (the new-crop benchmark, rolled
   // forward past expiry — lib/reference-contract.ts). 059.
   reference_contract_month: string | null
+  // Assumed acres (081) for a crop year with NO plantings yet — the marketing
+  // dashboards' acreage until the first planting is entered, when the real
+  // plantings take over and these are ignored. Same optional breakout as the
+  // yield/cost assumptions; a blank breakout leaves the overall standing alone.
+  assumed_acres: number | null
+  assumed_acres_irr: number | null
+  assumed_acres_dry: number | null
+  assumed_acres_dc_irr: number | null
+  assumed_acres_dc_dry: number | null
   // Overall cost/acre (acre-weighted average when the breakout below is used).
   cost_per_acre: number | null
   // Optional cost/acre breakout, mirroring the yield breakout.

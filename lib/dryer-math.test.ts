@@ -7,7 +7,13 @@ import {
   depreciationCentsPerBu,
   dryingCost,
   energyCostPerBuPt,
+  fuelPriceForEngine,
+  fuelPriceUnitLabel,
+  fuelUnitPriceToMmbtu,
+  LP_GAL_PER_MMBTU,
   lpGalToNgCcf,
+  mmbtuPriceToFuelUnit,
+  NG_CCF_PER_MMBTU,
   moistureRows,
   ngCcfToLpGal,
   overdryingCost,
@@ -137,6 +143,63 @@ describe('LP ↔ NG equivalence (BTU parity: 91,500 BTU/gal ÷ 1,020 BTU/cf)', (
     const ngCost = dryingCost(25, 15, ngDryer, { fuelPrice: parityNgPrice }, 4.2)
     expect(ngCost.fuelPerBu).toBeCloseTo(lpCost.fuelPerBu, 10)
     expect(ngCost.totalPerBu).toBeCloseTo(lpCost.totalPerBu, 10)
+  })
+})
+
+// $/MMBtu is a third way to ENTER the price; it converts at one boundary
+// (fuelPriceForEngine) using the same heat contents the parity above uses:
+//   1 MMBtu = 1,000,000 ÷ 91,500 = 10.929 gal LP = 1,000,000 ÷ 102,000 = 9.804 ccf NG.
+// Worked: $3.50/MMBtu natural gas = 3.50 ÷ 9.804 = $0.357/ccf. On 0.018 gal-LP-
+// equivalent per bu-pt (= 0.016147 ccf) that is 0.016147 × 0.357 = $0.005765
+// = 0.5765¢ per bushel-point — and the same 0.5765¢ if the SAME $3.50/MMBtu is
+// burned as propane (3.50 ÷ 10.929 = $0.3203/gal × 0.018 gal).
+describe('$/MMBtu fuel pricing (1 MMBtu = 10.93 gal LP = 9.80 ccf NG)', () => {
+  it('carries the established heat contents', () => {
+    expect(LP_GAL_PER_MMBTU).toBeCloseTo(10.929, 3)
+    expect(NG_CCF_PER_MMBTU).toBeCloseTo(9.804, 3)
+  })
+  it('$3.50/MMBtu NG ≡ $0.357/ccf', () => {
+    expect(mmbtuPriceToFuelUnit(3.5, 'ng')).toBeCloseTo(0.357, 3)
+    expect(mmbtuPriceToFuelUnit(3.5, 'ng')).toBeCloseTo(3.5 / (1_000_000 / 102_000), 12)
+  })
+  it('$3.50/MMBtu LP ≡ $0.320/gal', () => {
+    expect(mmbtuPriceToFuelUnit(3.5, 'lp')).toBeCloseTo(0.3203, 4)
+  })
+  it('round-trips both fuels', () => {
+    expect(fuelUnitPriceToMmbtu(mmbtuPriceToFuelUnit(3.5, 'ng'), 'ng')).toBeCloseTo(3.5, 12)
+    expect(fuelUnitPriceToMmbtu(mmbtuPriceToFuelUnit(3.5, 'lp'), 'lp')).toBeCloseTo(3.5, 12)
+    // $1.60/gal LP is $17.49/MMBtu; $1.20/ccf NG is $11.76/MMBtu.
+    expect(fuelUnitPriceToMmbtu(1.6, 'lp')).toBeCloseTo(17.49, 2)
+    expect(fuelUnitPriceToMmbtu(1.2, 'ng')).toBeCloseTo(11.76, 2)
+  })
+  it('the boundary passes native prices through untouched and converts MMBtu', () => {
+    expect(fuelPriceForEngine(1.6, 'native', 'lp')).toBe(1.6)
+    expect(fuelPriceForEngine(1.2, 'native', 'ng')).toBe(1.2)
+    expect(fuelPriceForEngine(3.5, 'mmbtu', 'ng')).toBeCloseTo(0.357, 3)
+  })
+  it('$3.50/MMBtu prices the same ¢/bu-pt whether entered per MMBtu, per ccf, or burned as LP', () => {
+    const ngDryer: DryerSpec = { fuel: 'ng', fuelPerBuPt: lpGalToNgCcf(0.018) }
+    const viaMmbtu = energyCostPerBuPt(ngDryer, { fuelPrice: fuelPriceForEngine(3.5, 'mmbtu', 'ng') })
+    const viaCcf = energyCostPerBuPt(ngDryer, { fuelPrice: fuelPriceForEngine(0.357, 'native', 'ng') })
+    const viaLp = energyCostPerBuPt(mixedFlowLp, { fuelPrice: fuelPriceForEngine(3.5, 'mmbtu', 'lp') })
+    expect(viaMmbtu * 100).toBeCloseTo(0.5765, 3) // ¢ per bushel-point
+    expect(viaCcf * 100).toBeCloseTo(viaMmbtu * 100, 3) // $0.357/ccf is the rounded quote
+    expect(viaLp).toBeCloseTo(viaMmbtu, 12) // same BTUs, same money, either fuel
+  })
+  it('the whole table row prices identically from either unit', () => {
+    const ngDryer: DryerSpec = { fuel: 'ng', fuelPerBuPt: lpGalToNgCcf(0.018) }
+    const perCcf = mmbtuPriceToFuelUnit(3.5, 'ng')
+    const a = dryingCost(25, 15, ngDryer, { fuelPrice: fuelPriceForEngine(3.5, 'mmbtu', 'ng') }, 4.2)
+    const b = dryingCost(25, 15, ngDryer, { fuelPrice: fuelPriceForEngine(perCcf, 'native', 'ng') }, 4.2)
+    expect(a.fuelPerBu).toBeCloseTo(b.fuelPerBu, 12)
+    expect(a.totalPerBu).toBeCloseTo(b.totalPerBu, 12)
+    // 10 points × 0.5765¢ = 5.77¢ fuel per bushel.
+    expect(a.fuelPerBu * 100).toBeCloseTo(5.765, 2)
+  })
+  it('labels the entered unit', () => {
+    expect(fuelPriceUnitLabel('native', 'lp')).toBe('$/gal')
+    expect(fuelPriceUnitLabel('native', 'ng')).toBe('$/ccf')
+    expect(fuelPriceUnitLabel('mmbtu', 'lp')).toBe('$/MMBtu')
   })
 })
 

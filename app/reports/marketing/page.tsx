@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
-import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
+import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, assumedAcresTotal, assumedSegmentAcres, resolveAcresByCrop, segmentTotalAcres, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
+import { marketingCropYearOptions } from '@/lib/crop-years'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { fetchSeedContracts, type SeedContractData } from '@/lib/seed-contracts-fetch'
@@ -196,14 +197,18 @@ export default function MarketingPage() {
   const [assumptionsOpen, setAssumptionsOpen] = useState(false)
   const [banner, setBanner] = useState<string | null>(null)
 
-  // Crop years that have any plantings, contracts, or futures positions — plus
-  // the entity/farm/field lookups behind the entity filter (year-independent).
+  // Crop years on offer: anything with plantings, contracts, hedges, or
+  // assumptions (incl. assumed acres, 081) PLUS this year and the next two —
+  // marketing runs ahead of planting (lib/crop-years.ts). Plus the
+  // entity/farm/field lookups behind the entity filter (year-independent).
   useEffect(() => {
     ;(async () => {
-      const [pl, ct, fp, en, fa, fi] = await Promise.all([
+      const [pl, ct, fp, op, ca, en, fa, fi] = await Promise.all([
         fetchAllRows((f, t) => supabase.from('field_plantings').select('season_year').order('id').range(f, t)),
         fetchAllRows((f, t) => supabase.from('contracts').select('crop_year').order('id').range(f, t)),
         fetchAllRows((f, t) => supabase.from('futures_positions').select('crop_year').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('options_positions').select('crop_year').order('id').range(f, t)),
+        supabase.from('crop_assumptions').select('crop_year'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('id, entity_id'),
         supabase.from('fields').select('id, farm_id, name_or_number'),
@@ -211,11 +216,13 @@ export default function MarketingPage() {
       setEntities((en.data as Entity[]) || [])
       setFarms((fa.data as Array<{ id: string; entity_id: string | null }>) || [])
       setFields((fi.data as Array<{ id: string; farm_id: string | null; name_or_number: string | null }>) || [])
-      const set = new Set<number>()
-      for (const r of (pl.data as Array<{ season_year: number | null }>) ?? []) if (r.season_year != null) set.add(r.season_year)
-      for (const r of (ct.data as Array<{ crop_year: number | null }>) ?? []) if (r.crop_year != null) set.add(r.crop_year)
-      for (const r of (fp.data as Array<{ crop_year: number | null }>) ?? []) if (r.crop_year != null) set.add(r.crop_year)
-      setYearOptions(Array.from(set).sort((a, b) => b - a))
+      const yrs = (rows: unknown, key: string) => ((rows as Array<Record<string, number | null>> | null) ?? []).map((r) => r[key])
+      setYearOptions(marketingCropYearOptions({
+        plantingYears: yrs(pl.data, 'season_year'),
+        contractYears: yrs(ct.data, 'crop_year'),
+        hedgeYears: [...yrs(fp.data, 'crop_year'), ...yrs(op.data, 'crop_year')],
+        assumptionYears: yrs(ca.data, 'crop_year'),
+      }))
     })()
   }, [supabase])
 
@@ -277,6 +284,11 @@ export default function MarketingPage() {
   const effAssumptions = assumptionRes.rows
   useEffect(() => { if (assumptionRes.staleIds.length > 0) viewerA.cleanupStale(assumptionRes.staleIds) }, [assumptionRes, viewerA])
 
+  // Assumed acres (081) stand in for a crop with no plantings this year — but
+  // only for the whole operation: there is no field to attribute them to, so
+  // an entity filter (or a viewer's grant scope) keeps the planted-acre rule.
+  const assumedAcresOn = entityId === '' && viewer.grantedIds == null
+
   // --- Reference contracts (expiry-aware, override-aware) ------------------
   // One resolver decides the futures contract unpriced bushels are valued
   // against (lib/reference-contract.ts); the What-If dropdown offers the
@@ -284,8 +296,12 @@ export default function MarketingPage() {
   const asOf = useMemo(() => new Date(), [])
   const plantedCropList = useMemo(() => {
     const ids = new Set(plantings.map((p) => p.crop_id))
+    // Crops on assumed acres need their reference contract quoted too.
+    if (assumedAcresOn && year != null) {
+      for (const a of effAssumptions) if (a.crop_year === year && !ids.has(a.crop_id) && assumedAcresTotal(a) > 0) ids.add(a.crop_id)
+    }
     return crops.filter((c) => ids.has(c.id))
-  }, [crops, plantings])
+  }, [crops, plantings, effAssumptions, assumedAcresOn, year])
   const monthOptsByCrop = useMemo(() => {
     const m = new Map<string, ReferenceMonthOption[]>()
     if (year == null) return m
@@ -377,9 +393,15 @@ export default function MarketingPage() {
     [scopedPlantings, year, doubleCropIds],
   )
   const expProdByCrop = useMemo(
-    () => (year == null ? new Map<string, number>() : expectedProductionFromBreakout(segByCrop, effAssumptions, year)),
-    [segByCrop, effAssumptions, year],
+    () => (year == null ? new Map<string, number>() : expectedProductionFromBreakout(segByCrop, effAssumptions, year, { assumedAcres: assumedAcresOn })),
+    [segByCrop, effAssumptions, year, assumedAcresOn],
   )
+  // Acres per crop as the dashboard resolves them (plantings win; assumed
+  // acres for the rest) — the export's irrigated/dryland split reads this.
+  const resolvedSegByCrop = useMemo<Map<string, SegmentAcres>>(() => {
+    if (year == null) return new Map()
+    return new Map([...resolveAcresByCrop(segByCrop, effAssumptions, year, { assumedAcres: assumedAcresOn })].map(([k, v]) => [k, v.seg]))
+  }, [segByCrop, effAssumptions, year, assumedAcresOn])
 
   // (field|crop|year) → dry bushels + last load date, splits-aware — narrowed to
   // the entity's fields. Drives both actual production (by crop) and the
@@ -487,8 +509,8 @@ export default function MarketingPage() {
   }, [year, seedRaw, plantings, rawAggByKey, effAssumptions, harvestCompleteIds, buyers, attribution])
 
   const rows = useMemo(
-    () => (year == null || viewer.loading || !viewerA.ready ? [] : computeMarketing({ cropYear: year, crops, plantings: scopedPlantings, contracts: scopedContracts, futures: scopedFutures, options: scopedOptions, assumptions: effAssumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures, harvestCompleteCropIds: harvestCompleteIds, cottonProductionByCrop: cottonProd, cottonPhysicalByCrop: cottonPhysical, seedCommitmentsByCrop: seedCommitments })),
-    [year, viewer.loading, viewerA.ready, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, production, expProdByCrop, currentFutures, harvestCompleteIds, cottonProd, cottonPhysical, seedCommitments],
+    () => (year == null || viewer.loading || !viewerA.ready ? [] : computeMarketing({ cropYear: year, crops, plantings: scopedPlantings, contracts: scopedContracts, futures: scopedFutures, options: scopedOptions, assumptions: effAssumptions, actualProductionByCrop: production, expectedProductionByCrop: expProdByCrop, currentFuturesByCrop: currentFutures, harvestCompleteCropIds: harvestCompleteIds, cottonProductionByCrop: cottonProd, cottonPhysicalByCrop: cottonPhysical, seedCommitmentsByCrop: seedCommitments, assumedAcres: assumedAcresOn })),
+    [year, viewer.loading, viewerA.ready, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, production, expProdByCrop, currentFutures, harvestCompleteIds, cottonProd, cottonPhysical, seedCommitments, assumedAcresOn],
   )
 
   // Actual average yield (dry bushels from loads ÷ planted acres) per crop, used
@@ -507,11 +529,19 @@ export default function MarketingPage() {
     return m
   }, [scopedPlantings, crops, production, cottonProd])
 
-  // Crops shown in the assumptions editor: those with plantings this year.
+  // Crops shown in the assumptions editor: those with plantings this year
+  // first, then every other crop — a crop with no plantings yet gets its
+  // acreage ASSUMED there (081), which is how a future year gets a dashboard.
   // Cotton is included — its expected_yield is lbs of lint/acre and cost/acre
   // works the same; the row labels adapt (see AssumptionRow).
   const plantedCropIds = useMemo(() => new Set(scopedPlantings.map((p) => p.crop_id)), [scopedPlantings])
-  const plantedCrops = crops.filter((c) => plantedCropIds.has(c.id))
+  // Planted ANYWHERE in the operation (unscoped): the "plantings exist" test
+  // that retires a crop's assumed acres.
+  const plantedCropIdsAll = useMemo(() => new Set(plantings.map((p) => p.crop_id)), [plantings])
+  const panelCrops = useMemo(
+    () => [...crops.filter((c) => plantedCropIds.has(c.id)), ...crops.filter((c) => !plantedCropIds.has(c.id))],
+    [crops, plantedCropIds],
+  )
 
   // The only meaningful combined metrics across mixed crops: total acres and
   // total projected profit (mixing corn/soy/wheat production or price is not).
@@ -558,7 +588,7 @@ export default function MarketingPage() {
       })
       .filter(Boolean)
       .join(' · ')
-    return buildMarketingExport({ year, rows, contracts: scopedContracts, cropMeta, segByCrop, combined, entityName, referenceNote: referenceNote || null })
+    return buildMarketingExport({ year, rows, contracts: scopedContracts, cropMeta, segByCrop: resolvedSegByCrop, combined, entityName, referenceNote: referenceNote || null })
   }
 
   async function saveAssumption(cropId: string, patch: Partial<CropAssumption>) {
@@ -609,6 +639,12 @@ export default function MarketingPage() {
       cost_per_acre_dry: pick('cost_per_acre_dry'),
       cost_per_acre_dc_irr: pick('cost_per_acre_dc_irr'),
       cost_per_acre_dc_dry: pick('cost_per_acre_dc_dry'),
+      // Assumed acres (081) — a future year's acreage until plantings exist.
+      assumed_acres: pick('assumed_acres'),
+      assumed_acres_irr: pick('assumed_acres_irr'),
+      assumed_acres_dry: pick('assumed_acres_dry'),
+      assumed_acres_dc_irr: pick('assumed_acres_dc_irr'),
+      assumed_acres_dc_dry: pick('assumed_acres_dc_dry'),
       notes: pick('notes'),
       updated_at: new Date().toISOString(),
     }
@@ -721,7 +757,17 @@ export default function MarketingPage() {
       ) : loading || viewer.loading || !viewerA.ready ? (
         <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">Loading…</div>
       ) : rows.length === 0 ? (
-        <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">No planted crops for {year}.</div>
+        <div className="bg-white rounded-xl shadow p-6 text-center text-slate-500 space-y-1">
+          <p>No plantings for {year} yet.</p>
+          {assumedAcresOn ? (
+            <p className="text-sm text-slate-400">
+              Planning ahead? Open <button type="button" onClick={() => setAssumptionsOpen(true)} className="text-brand-deep underline">Edit Assumptions</button> and
+              enter assumed acres for each crop — contracts and hedges already written for {year} will show against them until the fields are planted.
+            </p>
+          ) : (
+            <p className="text-sm text-slate-400">Assumed acres for a year with no plantings show under All entities only.</p>
+          )}
+        </div>
       ) : (
         /* Full-width crop sections, stacked — the user scrolls down through
            crops. Each section is the complete view for its crop: an at-a-glance
@@ -789,8 +835,8 @@ export default function MarketingPage() {
       {/* Assumptions slide-over */}
       {assumptionsOpen && year != null && (
         <AssumptionsPanel
-          crops={plantedCrops} year={year} assumptions={effAssumptions}
-          segByCrop={segByCrop} actualByCrop={actualByCrop}
+          crops={panelCrops} year={year} assumptions={effAssumptions}
+          segByCrop={segByCrop} plantedCropIds={plantedCropIdsAll} actualByCrop={actualByCrop}
           onSave={saveAssumption} onClose={() => setAssumptionsOpen(false)}
           viewerMode={viewer.isViewer}
           scenarioCrops={new Set(
@@ -948,7 +994,7 @@ function CropSection({
             <div className="text-sm text-slate-500 tabular-nums mt-0.5">{bu(prod)} bu production</div>
           </div>
           <div>
-            <div className="text-[11px] text-slate-500 uppercase tracking-wide">Acres</div>
+            <div className="text-[11px] text-slate-500 uppercase tracking-wide">Acres{row.acresSource === 'assumed' && <AssumedChip />}</div>
             <div className="text-2xl font-bold tabular-nums leading-tight">{bu(row.acres)}</div>
           </div>
           <div>
@@ -983,10 +1029,12 @@ function CropSection({
         </div>
 
         {/* Assumption legend — unmistakable that the headline leans on assumed
-            pricing for the unpriced bushels. Hidden entirely when fully priced. */}
-        {includesAssumptions && (
-          <div className="flex justify-end -mt-1">
-            <AssumptionBadge title={markerTitle} />
+            pricing for the unpriced bushels (hidden when fully priced) and/or on
+            assumed acres (no plantings yet, 081). */}
+        {(includesAssumptions || row.acresSource === 'assumed') && (
+          <div className="flex justify-end gap-2 flex-wrap -mt-1">
+            {row.acresSource === 'assumed' && <AcresAssumedBadge />}
+            {includesAssumptions && <AssumptionBadge title={markerTitle} />}
           </div>
         )}
 
@@ -1312,7 +1360,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
             </div>
           </div>
           <div>
-            <div className="text-[11px] text-slate-500 uppercase tracking-wide">Acres</div>
+            <div className="text-[11px] text-slate-500 uppercase tracking-wide">Acres{row.acresSource === 'assumed' && <AssumedChip />}</div>
             <div className="text-2xl font-bold tabular-nums leading-tight">{bu(row.acres)}</div>
           </div>
           <div>
@@ -1345,9 +1393,10 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
           </div>
         </div>
 
-        {includesAssumptions && (
-          <div className="flex justify-end -mt-1">
-            <AssumptionBadge title={markerTitle} />
+        {(includesAssumptions || row.acresSource === 'assumed') && (
+          <div className="flex justify-end gap-2 flex-wrap -mt-1">
+            {row.acresSource === 'assumed' && <AcresAssumedBadge />}
+            {includesAssumptions && <AssumptionBadge title={markerTitle} />}
           </div>
         )}
 
@@ -1595,6 +1644,24 @@ function BasisTag({ row }: { row: MarketingRow }) {
 // Headline assumption marker (amber). Flags that the numbers lean on assumed
 // pricing — the assumed futures and/or assumed basis on the unpriced bushels.
 // The full "X unpriced (Y futures, Z basis)" explanation lives in the tooltip.
+const ACRES_ASSUMED_TITLE = 'No fields are planted to this crop for the year yet, so its acres come from the assumed acres you entered under Edit Assumptions. The moment a planting is entered for it, the planted acres take over and the assumed figure is ignored.'
+
+/** Section badge for a crop shown on assumed acres (081). */
+function AcresAssumedBadge() {
+  return (
+    <span title={ACRES_ASSUMED_TITLE} className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-800 text-[11px] font-medium px-2 py-0.5 cursor-help">
+      <span aria-hidden>▲</span>&nbsp;acres assumed — no plantings yet
+    </span>
+  )
+}
+
+/** The small chip on the Acres stat itself. */
+function AssumedChip() {
+  return (
+    <span title={ACRES_ASSUMED_TITLE} className="ml-1 normal-case tracking-normal rounded-full bg-amber-100 text-amber-800 px-1.5 py-0.5 font-medium cursor-help">assumed</span>
+  )
+}
+
 function AssumptionBadge({ title }: { title: string }) {
   return (
     <span title={title} className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-800 text-[11px] font-medium px-2 py-0.5 cursor-help">
@@ -1693,9 +1760,12 @@ function Row({ label, value, tone }: { label: string; value: string; tone?: stri
 // ---------------------------------------------------------------------------
 // Assumptions slide-over panel — collapsible per crop, live recalc, stays open
 // ---------------------------------------------------------------------------
-function AssumptionsPanel({ crops, year, assumptions, segByCrop, actualByCrop, onSave, onClose, viewerMode, scenarioCrops, onResetScenario }: {
+function AssumptionsPanel({ crops, year, assumptions, segByCrop, plantedCropIds, actualByCrop, onSave, onClose, viewerMode, scenarioCrops, onResetScenario }: {
   crops: Crop[]; year: number; assumptions: CropAssumption[]
   segByCrop: Map<string, SegmentAcres>
+  /** Crops with a planting row this year anywhere in the operation — their
+   *  acres are planted; the rest are entered as assumed acres (081). */
+  plantedCropIds: Set<string>
   actualByCrop: Map<string, { production: number; yield: number | null }>
   onSave: (cropId: string, patch: Partial<CropAssumption>) => void
   onClose: () => void
@@ -1721,14 +1791,18 @@ function AssumptionsPanel({ crops, year, assumptions, segByCrop, actualByCrop, o
           <p className="text-xs text-slate-500">
             Enter an overall yield and cost/acre, or break them out by irrigated/dryland (and full-season/double-crop) —
             a blank breakout cell falls back to the overall. On harvest complete, the actual average yield from loads
-            replaces the estimate.
+            replaces the estimate. A crop with no plantings yet takes <b>assumed acres</b> here, so next year&rsquo;s
+            marketing has a dashboard before planting; the planted acres take over the moment fields are entered.
           </p>
           {crops.map((c) => {
             const a = assumptions.find((x) => x.crop_id === c.id && x.crop_year === year)
             const isOpen = openCrop === c.id
             const actual = actualByCrop.get(c.id)
+            const planted = plantedCropIds.has(c.id)
+            const assumedAc = a ? assumedAcresTotal(a) : 0
             const effYield = (a?.harvest_complete && actual?.yield != null) ? actual.yield : a?.expected_yield ?? null
-            const missing = effYield == null
+            // A crop with neither plantings nor assumed acres is dormant this year — no "needs yield" nag.
+            const missing = effYield == null && (planted || assumedAc > 0)
             return (
               <div key={c.id} className="bg-white rounded-lg border border-slate-200 overflow-hidden">
                 <button
@@ -1741,15 +1815,20 @@ function AssumptionsPanel({ crops, year, assumptions, segByCrop, actualByCrop, o
                   {scenarioCrops?.has(c.id) && onResetScenario && (
                     <ScenarioChip onReset={() => onResetScenario(c.id)} />
                   )}
+                  {!planted && (
+                    assumedAc > 0
+                      ? <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 tabular-nums">{bu(assumedAc)} ac assumed</span>
+                      : <span className="text-xs rounded-full bg-slate-100 text-slate-500 px-2 py-0.5">no plantings yet</span>
+                  )}
                   {missing
                     ? <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">needs yield</span>
-                    : <span className="text-xs text-slate-500 tabular-nums">{effYield?.toFixed(1)} {isCottonCrop(c.name) ? 'lbs lint/ac' : 'bu/ac'}{a?.cost_per_acre != null ? ` · ${usd0(a.cost_per_acre)}/ac` : ''}{a?.harvest_complete ? ' · harvested' : ''}</span>}
+                    : effYield != null && <span className="text-xs text-slate-500 tabular-nums">{effYield.toFixed(1)} {isCottonCrop(c.name) ? 'lbs lint/ac' : 'bu/ac'}{a?.cost_per_acre != null ? ` · ${usd0(a.cost_per_acre)}/ac` : ''}{a?.harvest_complete ? ' · harvested' : ''}</span>}
                 </button>
                 {isOpen && (
                   <div className="px-3 pb-3 border-t border-slate-100">
                     <AssumptionRow
                       key={`${c.id}:${a?.updated_at ?? 'new'}`}
-                      crop={c} assumption={a} seg={segByCrop.get(c.id)} actual={actual} onSave={onSave}
+                      crop={c} year={year} assumption={a} seg={segByCrop.get(c.id)} hasPlantings={planted} actual={actual} onSave={onSave}
                       viewerMode={viewerMode}
                     />
                   </div>
@@ -1763,8 +1842,11 @@ function AssumptionsPanel({ crops, year, assumptions, segByCrop, actualByCrop, o
   )
 }
 
-function AssumptionRow({ crop, assumption, seg, actual, onSave, viewerMode }: {
-  crop: Crop; assumption?: CropAssumption; seg?: SegmentAcres
+function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSave, viewerMode }: {
+  crop: Crop; year: number; assumption?: CropAssumption; seg?: SegmentAcres
+  /** Plantings exist for this crop × year (anywhere in the operation): the
+   *  planted acres count and the assumed acres are ignored (081). */
+  hasPlantings: boolean
   actual?: { production: number; yield: number | null }
   onSave: (cropId: string, patch: Partial<CropAssumption>) => void
   /** Viewer role: harvest-complete is an operational fact — read-only. */
@@ -1782,19 +1864,38 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave, viewerMode }: {
   const [cDry, setCDry] = useState(s0(a?.cost_per_acre_dry))
   const [cDcIrr, setCDcIrr] = useState(s0(a?.cost_per_acre_dc_irr))
   const [cDcDry, setCDcDry] = useState(s0(a?.cost_per_acre_dc_dry))
+  // Assumed acres (081) — the crop's acreage while it has no plantings.
+  const [aAll, setAAll] = useState(s0(a?.assumed_acres))
+  const [aIrr, setAIrr] = useState(s0(a?.assumed_acres_irr))
+  const [aDry, setADry] = useState(s0(a?.assumed_acres_dry))
+  const [aDcIrr, setADcIrr] = useState(s0(a?.assumed_acres_dc_irr))
+  const [aDcDry, setADcDry] = useState(s0(a?.assumed_acres_dc_dry))
 
   const toNum = (str: string) => (str.trim() === '' ? null : Number(str))
-  const s = seg ?? { fullIrr: 0, fullDry: 0, dcIrr: 0, dcDry: 0 }
-  const totalAcres = s.fullIrr + s.fullDry + s.dcIrr + s.dcDry
-  // Only distinguish full-season vs double-crop when the crop actually has both.
-  const showType = s.fullIrr + s.fullDry > 0 && s.dcIrr + s.dcDry > 0
+  const assumedMode = !hasPlantings
+  const anyAssumedCell = [aIrr, aDry, aDcIrr, aDcDry].some((v) => v.trim() !== '')
+  // The assumed segments as typed (a blank cell is 0; no cells → the overall
+  // stands alone as unsplit acres priced at the overall yield/cost).
+  const assumedSeg = assumedSegmentAcres({
+    assumed_acres: toNum(aAll), assumed_acres_irr: toNum(aIrr), assumed_acres_dry: toNum(aDry),
+    assumed_acres_dc_irr: toNum(aDcIrr), assumed_acres_dc_dry: toNum(aDcDry),
+  }) ?? { fullIrr: 0, fullDry: 0, dcIrr: 0, dcDry: 0 }
+  const storedAssumedAcres = a ? assumedAcresTotal(a) : 0
+  const s: SegmentAcres = assumedMode ? assumedSeg : (seg ?? { fullIrr: 0, fullDry: 0, dcIrr: 0, dcDry: 0 })
+  const totalAcres = segmentTotalAcres(s)
+  // Only distinguish full-season vs double-crop when the crop actually has both
+  // (always, while the split is being assumed — every cell is on offer).
+  const showType = assumedMode || (s.fullIrr + s.fullDry > 0 && s.dcIrr + s.dcDry > 0)
 
-  const segs = [
-    { key: 'irr', acres: s.fullIrr, label: showType ? 'Full-season · Irrigated' : 'Irrigated', y: yIrr, setY: setYIrr, c: cIrr, setC: setCIrr },
-    { key: 'dry', acres: s.fullDry, label: showType ? 'Full-season · Dryland' : 'Dryland', y: yDry, setY: setYDry, c: cDry, setC: setCDry },
-    { key: 'dcIrr', acres: s.dcIrr, label: showType ? 'Double-crop · Irrigated' : 'Irrigated', y: yDcIrr, setY: setYDcIrr, c: cDcIrr, setC: setCDcIrr },
-    { key: 'dcDry', acres: s.dcDry, label: showType ? 'Double-crop · Dryland' : 'Dryland', y: yDcDry, setY: setYDcDry, c: cDcDry, setC: setCDcDry },
-  ].filter((row) => row.acres > 0)
+  const segDefs = [
+    { key: 'irr', acres: s.fullIrr, label: showType ? 'Full-season · Irrigated' : 'Irrigated', y: yIrr, setY: setYIrr, c: cIrr, setC: setCIrr, a: aIrr, setA: setAIrr },
+    { key: 'dry', acres: s.fullDry, label: showType ? 'Full-season · Dryland' : 'Dryland', y: yDry, setY: setYDry, c: cDry, setC: setCDry, a: aDry, setA: setADry },
+    { key: 'dcIrr', acres: s.dcIrr, label: showType ? 'Double-crop · Irrigated' : 'Irrigated', y: yDcIrr, setY: setYDcIrr, c: cDcIrr, setC: setCDcIrr, a: aDcIrr, setA: setADcIrr },
+    { key: 'dcDry', acres: s.dcDry, label: showType ? 'Double-crop · Dryland' : 'Dryland', y: yDcDry, setY: setYDcDry, c: cDcDry, setC: setCDcDry, a: aDcDry, setA: setADcDry },
+  ]
+  // Planted: only the segments that have acres. Assumed: every cell, so the
+  // split can be typed in.
+  const segs = assumedMode ? segDefs : segDefs.filter((row) => row.acres > 0)
 
   // Acre-weighted average over the segments that have a value entered.
   const weighted = (get: (r: (typeof segs)[number]) => string): number | null => {
@@ -1811,10 +1912,10 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave, viewerMode }: {
   const effYield = wYield != null ? round1(wYield) : toNum(oYield)
   const effCost = wCost != null ? round2(wCost) : toNum(oCost)
 
-  // Expected production: each segment uses its own yield, else the overall.
-  const prod = segs.length > 0
-    ? segs.reduce((sum, r) => sum + (toNum(r.y) ?? effYield ?? 0) * r.acres, 0)
-    : (effYield ?? 0) * totalAcres
+  // Expected production: each segment uses its own yield, else the overall;
+  // unsplit assumed acres ride the overall.
+  const prod = segs.reduce((sum, r) => sum + (toNum(r.y) ?? effYield ?? 0) * r.acres, 0)
+    + (effYield ?? 0) * (s.unsplit ?? 0)
 
   const harvestDone = !!(a?.harvest_complete && actual && actual.production > 0)
   // What the overall yield field shows: actual avg after harvest, the weighted
@@ -1824,7 +1925,7 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave, viewerMode }: {
     : wYield != null ? round1(wYield).toFixed(1) : null
 
   function save() {
-    onSave(crop.id, {
+    const patch: Partial<CropAssumption> = {
       expected_yield: effYield,
       expected_yield_irr: toNum(yIrr),
       expected_yield_dry: toNum(yDry),
@@ -1837,7 +1938,17 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave, viewerMode }: {
       cost_per_acre_dc_dry: toNum(cDcDry),
       // assumed_basis is deliberately untouched here — it's edited on the crop
       // section's What-If block, not in this panel (saveAssumption preserves it).
-    })
+    }
+    // Assumed acres are only edited while the crop has no plantings; once it
+    // does they are ignored and left as stored.
+    if (assumedMode) {
+      patch.assumed_acres = anyAssumedCell ? round1(totalAcres) : toNum(aAll)
+      patch.assumed_acres_irr = toNum(aIrr)
+      patch.assumed_acres_dry = toNum(aDry)
+      patch.assumed_acres_dc_irr = toNum(aDcIrr)
+      patch.assumed_acres_dc_dry = toNum(aDcDry)
+    }
+    onSave(crop.id, patch)
   }
 
   const ic = 'rounded border border-slate-300 px-2 py-1 w-20 text-right'
@@ -1868,11 +1979,25 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave, viewerMode }: {
         Harvest complete
       </label>
       )}
+      {assumedMode ? (
+        <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+          No fields are planted to {crop.name} for {year} yet — enter <b>assumed acres</b> (overall, or split by practice) and
+          the dashboard values this year&rsquo;s contracts and hedges against them. Planted acres take over automatically once
+          fields are entered.
+        </p>
+      ) : storedAssumedAcres > 0 ? (
+        <p className="text-xs text-slate-500">
+          Using planted acres: <span className="font-mono">{bu(totalAcres)}</span>. The {bu(storedAssumedAcres)} acres assumed
+          before planting are ignored now that fields are planted.
+        </p>
+      ) : null}
       <table className="w-full text-sm">
         <thead>
           <tr className="text-xs text-slate-500">
             <th className={`${cell} text-left font-normal`}></th>
-            <th className={`${cell} text-right font-normal`}>Acres</th>
+            <th className={`${cell} text-right font-normal`}>
+              Acres{assumedMode && <span className="ml-1 rounded-full bg-amber-100 text-amber-800 px-1.5 py-0.5 font-medium">assumed</span>}
+            </th>
             <th className={`${cell} text-right font-normal`}>Yield {yieldUnit}</th>
             <th className={`${cell} text-right font-normal`}>Cost/ac</th>
           </tr>
@@ -1880,7 +2005,11 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave, viewerMode }: {
         <tbody>
           <tr>
             <td className={`${cell} text-slate-600 font-medium`}>Overall</td>
-            <td className={`${cell} text-right font-mono text-slate-500`}>{bu(totalAcres)}</td>
+            <td className={`${cell} text-right font-mono text-slate-500`}>
+              {assumedMode && !anyAssumedCell
+                ? <input type="number" step="0.1" min="0" value={aAll} onChange={(e) => setAAll(e.target.value)} placeholder="acres" className={ic} aria-label="Assumed acres" />
+                : bu(totalAcres)}
+            </td>
             <td className={`${cell} text-right`}>
               {overallYieldText != null
                 ? <span className="font-mono">{overallYieldText}</span>
@@ -1895,7 +2024,11 @@ function AssumptionRow({ crop, assumption, seg, actual, onSave, viewerMode }: {
           {segs.map((r) => (
             <tr key={r.key}>
               <td className={`${cell} text-slate-600`}>{r.label}</td>
-              <td className={`${cell} text-right font-mono text-slate-500`}>{bu(r.acres)}</td>
+              <td className={`${cell} text-right font-mono text-slate-500`}>
+                {assumedMode
+                  ? <input type="number" step="0.1" min="0" value={r.a} onChange={(e) => r.setA(e.target.value)} placeholder="—" className={ic} aria-label={`Assumed acres, ${r.label}`} />
+                  : bu(r.acres)}
+              </td>
               <td className={`${cell} text-right`}>
                 <input type="number" step="0.1" value={r.y} placeholder={oYield || ''} onChange={(e) => r.setY(e.target.value)} className={ic} />
               </td>

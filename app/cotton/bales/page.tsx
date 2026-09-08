@@ -14,6 +14,7 @@ import { usePersistentState } from '@/lib/use-persistent-state'
 import { parseGradeCsv, type ParsedGradeRow } from '@/lib/cotton-grades'
 import { matchGradesToBales } from '@/lib/cotton'
 import type { CottonBale, CottonBaleGrade, GinReceipt, Farm, Field } from '@/lib/types'
+import Dropzone, { rejectMessage } from '@/components/dropzone'
 
 const fmt = (n: number | null | undefined, d = 1) => (n == null ? '—' : Number(n).toFixed(d))
 
@@ -105,11 +106,19 @@ export default function CottonBalesPage() {
           The classing office&apos;s CSV parses directly (no AI): the preamble is skipped and columns map by header
           name. Rows match bales by <b>Bale # (PBI)</b>; Farm/Field columns are corroboration only.
         </p>
-        <input
-          type="file" accept=".csv,text/csv"
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) onCsv(f); e.target.value = '' }}
-          className="text-sm"
-        />
+        <Dropzone
+          onFiles={(files) => void onCsv(files[0])}
+          onReject={(rejected) => setErr(rejectMessage("Use the classing office's CSV file.", rejected))}
+          accept=".csv,text/csv"
+          hint="Drop the classing CSV here"
+          className="inline-block rounded-lg border border-dashed border-slate-300 p-2"
+        >
+          <input
+            type="file" accept=".csv,text/csv"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) onCsv(f); e.target.value = '' }}
+            className="text-sm"
+          />
+        </Dropzone>
         {preview && (
           <div className="space-y-2 text-sm">
             <div className="flex flex-wrap gap-2 text-xs">

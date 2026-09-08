@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { computeMarketing, aggregateMarketing, type Planting } from '@/lib/marketing'
+import { computeMarketing, aggregateMarketing, segmentAcresByCrop, expectedProductionFromBreakout, type Planting } from '@/lib/marketing'
 import { computeRevenueProjections, type InsuranceProceeds, type GovtProceeds } from '@/lib/revenue-projections'
 import { buildEntityScope } from '@/lib/entity-scope'
 import type { Crop, Contract, CropAssumption } from '@/lib/types'
@@ -37,7 +37,7 @@ function assumption(over: Partial<CropAssumption> & Pick<CropAssumption, 'crop_i
     id: `a-${over.crop_id}`, crop_year: 2026,
     expected_yield: null, expected_yield_irr: null, expected_yield_dry: null,
     expected_yield_dc_irr: null, expected_yield_dc_dry: null, harvest_complete: false,
-    assumed_basis: 0, assumed_futures: null, reference_contract_month: null, cost_per_acre: null, cost_per_acre_irr: null, cost_per_acre_dry: null,
+    assumed_basis: 0, assumed_futures: null, reference_contract_month: null, assumed_acres: null, assumed_acres_irr: null, assumed_acres_dry: null, assumed_acres_dc_irr: null, assumed_acres_dc_dry: null, cost_per_acre: null, cost_per_acre_irr: null, cost_per_acre_dry: null,
     cost_per_acre_dc_irr: null, cost_per_acre_dc_dry: null, notes: null,
     created_at: '', updated_at: '', ...over,
   }
@@ -340,5 +340,96 @@ describe('reconciliation under an entity filter (shared attribution)', () => {
     expect(rCorn.cropSalesRevenue).toBeCloseTo(corn.blendedRevenue, 6)
     expect(rCorn.profit! - corn.totalProfit!).toBeCloseTo(12000 + 10000, 6)
     expect(totals.profit - aggregateMarketing(tsfRows).totalProfit!).toBeCloseTo(22000, 6)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Assumed acres (081): a crop year with NO plantings — next year's wheat sold
+// ahead and the year-after's corn hedged — must reconcile exactly like a
+// planted year. Worked: 2027 wheat 3,000 assumed ac × 60 = 180,000 bu, 50,000
+// sold flat at 6.20, 130,000 unpriced at 5.80 − 0.30 = 5.50 → blended
+// 1,025,000; cost 350 × 3,000 = 1,050,000 → profit −25,000. 2027 corn 1,200
+// assumed ac (800 irr @ 200 + 400 dry @ 140 = 216,000 bu), all unpriced at
+// 4.60 + 0 → 993,600; cost 650 × 1,200 = 780,000 → profit 213,600.
+// ---------------------------------------------------------------------------
+describe('reconciliation on an assumed-acres year (no plantings yet)', () => {
+  const Y = 2027
+  const crops = [crop('wheat', 'Wheat'), crop('corn', 'Corn')]
+  const assumptions: CropAssumption[] = [
+    { ...assumption({ crop_id: 'wheat', expected_yield: 60, assumed_basis: -0.3, cost_per_acre: 350, assumed_acres: 3000 }), crop_year: Y },
+    { ...assumption({ crop_id: 'corn', expected_yield: 180, cost_per_acre: 650, assumed_acres: 1200, assumed_acres_irr: 800, assumed_acres_dry: 400, expected_yield_irr: 200, expected_yield_dry: 140 }), crop_year: Y },
+  ]
+  const contracts: Contract[] = [
+    { ...contract({ crop_id: 'wheat', contract_type: 'forward', contracted_bushels: 50000, cash_price: 6.2 }), crop_year: Y },
+  ]
+  const currentFuturesByCrop = new Map([['wheat', 5.8], ['corn', 4.6]])
+
+  it('RevProj profit − Marketing profit === insurance + govt, per crop and in total, with zero plantings', () => {
+    // Exactly what the pages do: segment (no plantings → empty), break out
+    // production (assumed acres resolve inside), then the engine.
+    const expectedProductionByCrop = expectedProductionFromBreakout(segmentAcresByCrop([], Y, new Set()), assumptions, Y)
+    expect(expectedProductionByCrop.get('wheat')).toBe(180000)
+    expect(expectedProductionByCrop.get('corn')).toBe(216000)
+
+    const marketingRows = computeMarketing({
+      cropYear: Y, crops, plantings: [], contracts, futures: [], options: [],
+      assumptions, actualProductionByCrop: new Map(), expectedProductionByCrop, currentFuturesByCrop,
+    })
+    expect(marketingRows.map((r) => r.acresSource)).toEqual(['assumed', 'assumed'])
+    const wheat = marketingRows.find((r) => r.cropId === 'wheat')!
+    const corn = marketingRows.find((r) => r.cropId === 'corn')!
+    expect(wheat.blendedRevenue).toBeCloseTo(1025000, 2)
+    expect(wheat.totalProfit).toBeCloseTo(-25000, 2)
+    expect(corn.acres).toBe(1200)
+    expect(corn.blendedRevenue).toBeCloseTo(993600, 2)
+    expect(corn.totalProfit).toBeCloseTo(213600, 2)
+
+    // Next year's revenue policy is not written yet: insurance 0 for both;
+    // an ARC/PLC estimate is attributed to the corn.
+    const insuranceByCrop = new Map<string, InsuranceProceeds>([['wheat', ins(0)], ['corn', ins(0)]])
+    const govtByCrop = new Map<string, GovtProceeds>([['wheat', govt(0)], ['corn', govt(18000)]])
+    const { rows, totals } = computeRevenueProjections({
+      marketingRows, contracts, cropYear: Y, marketPriceByCrop: new Map(), insuranceByCrop, govtByCrop,
+    })
+    for (const r of rows) {
+      const mr = marketingRows.find((m) => m.cropId === r.cropId)!
+      const g = govtByCrop.get(r.cropId)!
+      expect(r.cropSalesRevenue).toBeCloseTo(mr.blendedRevenue, 6)
+      expect(r.profit! - mr.totalProfit!).toBeCloseTo(insuranceByCrop.get(r.cropId)!.netPnl + g.arcPlc + g.cropSpecificOther + g.allocatedOther, 6)
+    }
+    // Wheat carries nothing on top, so it must match bit-for-bit.
+    const rWheat = rows.find((r) => r.cropId === 'wheat')!
+    expect(rWheat.profit).toBe(wheat.totalProfit)
+    // Aggregate identity through the SHARED rollup.
+    const agg = aggregateMarketing(marketingRows)
+    expect(agg.acres).toBe(4200)
+    expect(totals.acres).toBe(4200)
+    expect(totals.profit - agg.totalProfit!).toBeCloseTo(18000, 6)
+  })
+
+  it('the identity survives the flip when the first planting lands mid-year', () => {
+    // 480 wheat acres go in: wheat is now planted (480 ac × 60 = 28,800 bu),
+    // corn is still assumed. Both pages run the same inputs, so the identity
+    // holds with a mixed planted/assumed year.
+    const plantings = [{ id: 'p1', field_id: 'A', crop_id: 'wheat', season_year: Y, irrigated_acres: 0, dryland_acres: 480, planted_acres: 480 }]
+    const seg = segmentAcresByCrop(plantings, Y, new Set())
+    const expectedProductionByCrop = expectedProductionFromBreakout(seg, assumptions, Y)
+    expect(expectedProductionByCrop.get('wheat')).toBe(28800)
+    expect(expectedProductionByCrop.get('corn')).toBe(216000)
+    const marketingRows = computeMarketing({
+      cropYear: Y, crops, plantings: plantings.map((p): Planting => ({ crop_id: p.crop_id, season_year: p.season_year, planted_acres: p.planted_acres })),
+      contracts, futures: [], options: [], assumptions, actualProductionByCrop: new Map(), expectedProductionByCrop, currentFuturesByCrop,
+    })
+    const wheat = marketingRows.find((r) => r.cropId === 'wheat')!
+    const corn = marketingRows.find((r) => r.cropId === 'corn')!
+    expect(wheat.acresSource).toBe('planted')
+    expect(wheat.acres).toBe(480)
+    expect(corn.acresSource).toBe('assumed')
+    const insuranceByCrop = new Map<string, InsuranceProceeds>([['wheat', ins(2500, 4000, 1500)], ['corn', ins(0)]])
+    const govtByCrop = new Map<string, GovtProceeds>([['wheat', govt(0)], ['corn', govt(18000)]])
+    const { totals } = computeRevenueProjections({
+      marketingRows, contracts, cropYear: Y, marketPriceByCrop: new Map(), insuranceByCrop, govtByCrop,
+    })
+    expect(totals.profit - aggregateMarketing(marketingRows).totalProfit!).toBeCloseTo(2500 + 18000, 6)
   })
 })

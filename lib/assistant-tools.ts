@@ -244,6 +244,8 @@ async function loadMarketingBundle(
 
   const scopedContracts = attribution.contracts(contracts)
   const rows = computeMarketing({
+    // Assumed acres (081): whole-operation view only.
+    assumedAcres: !scope.active,
     cropYear,
     crops,
     plantings: scopedPlantings

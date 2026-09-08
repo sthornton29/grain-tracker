@@ -29,6 +29,7 @@ export const NO_BASE_SENTINEL = '1970-01-01T00:00:00+00:00'
 export const OVERRIDABLE_CROP_FIELDS = [
   'expected_yield', 'expected_yield_irr', 'expected_yield_dry', 'expected_yield_dc_irr', 'expected_yield_dc_dry',
   'cost_per_acre', 'cost_per_acre_irr', 'cost_per_acre_dry', 'cost_per_acre_dc_irr', 'cost_per_acre_dc_dry',
+  'assumed_acres', 'assumed_acres_irr', 'assumed_acres_dry', 'assumed_acres_dc_irr', 'assumed_acres_dc_dry',
   'assumed_basis', 'assumed_futures', 'reference_contract_month',
 ] as const
 export type OverridableCropField = (typeof OVERRIDABLE_CROP_FIELDS)[number]
@@ -74,6 +75,8 @@ function emptyCropAssumption(cropId: string, cropYear: number): CropAssumption {
     expected_yield_irr: null, expected_yield_dry: null, expected_yield_dc_irr: null, expected_yield_dc_dry: null,
     harvest_complete: false,
     assumed_basis: 0, assumed_futures: null, reference_contract_month: null,
+    assumed_acres: null,
+    assumed_acres_irr: null, assumed_acres_dry: null, assumed_acres_dc_irr: null, assumed_acres_dc_dry: null,
     cost_per_acre: null,
     cost_per_acre_irr: null, cost_per_acre_dry: null, cost_per_acre_dc_irr: null, cost_per_acre_dc_dry: null,
     notes: null, created_at: NO_BASE_SENTINEL, updated_at: NO_BASE_SENTINEL,

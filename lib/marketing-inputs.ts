@@ -12,6 +12,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import {
+  assumedAcresTotal,
   computeMarketing,
   expectedProductionFromBreakout,
   isCottonCrop,
@@ -388,6 +389,8 @@ export async function loadMarketingInputs(
   const segByCrop = segmentAcresByCrop(plantings, cropYear, production.doubleCropIds)
   const expectedProductionByCrop = expectedProductionFromBreakout(segByCrop, assumptions, cropYear)
   const plantedCropIds = new Set(plantings.map((p) => p.crop_id))
+  // Crops on assumed acres (081 — no plantings yet) need their quote as well.
+  for (const a of assumptions) if (!plantedCropIds.has(a.crop_id) && assumedAcresTotal(a) > 0) plantedCropIds.add(a.crop_id)
   const currentFuturesByCrop = await resolveCurrentFutures(supabase, crops, plantedCropIds, assumptions, cropYear)
 
   // Seed production contracts (077) — whole-operation commitments; missing

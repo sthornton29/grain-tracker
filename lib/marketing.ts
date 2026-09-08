@@ -48,6 +48,9 @@ export type MarketingRow = {
   // (contractedBu, unpricedBu, …) exclude seed bushels — no double-counting.
   seed: SeedMarketingPosition | null
   acres: number
+  // Where the acres came from: this year's plantings, or — with none entered
+  // yet — the crop's assumed acres (081). The dashboard badges assumed rows.
+  acresSource: AcresSource
   yield: number | null
   yieldLabel: 'Est.' | 'Actual'
   totalProduction: number
@@ -148,7 +151,14 @@ function round(n: number, d = 6): number {
 }
 
 // Acres per crop split into full-season vs double-crop and irrigated vs dryland.
-export type SegmentAcres = { fullIrr: number; fullDry: number; dcIrr: number; dcDry: number }
+// `unsplit` (assumed acres only, 081): acres whose practice was not broken out —
+// priced at the crop's overall yield/cost. Planted segments never carry it.
+export type SegmentAcres = { fullIrr: number; fullDry: number; dcIrr: number; dcDry: number; unsplit?: number }
+
+export function segmentTotalAcres(seg: SegmentAcres | null | undefined): number {
+  if (!seg) return 0
+  return seg.fullIrr + seg.fullDry + seg.dcIrr + seg.dcDry + (seg.unsplit ?? 0)
+}
 
 // Aggregate planting acres into the four breakout segments per crop. `doubleCropIds`
 // marks which plantings are double-crop (see buildDoubleCropSet).
@@ -181,10 +191,14 @@ export function expectedProductionFromBreakout(
   segByCrop: Map<string, SegmentAcres>,
   assumptions: CropAssumption[],
   cropYear: number,
+  opts?: { assumedAcres?: boolean },
 ): Map<string, number> {
   const out = new Map<string, number>()
   const num = (v: number | null | undefined) => (v != null ? Number(v) : null)
-  for (const [cropId, seg] of segByCrop) {
+  // Plantings win; a crop with none is priced on its assumed acres (081). An
+  // entity-scoped caller can pass assumedAcres:false, but an extra entry here
+  // is harmless either way — computeMarketing only reads the crops it shows.
+  for (const [cropId, { seg }] of resolveAcresByCrop(segByCrop, assumptions, cropYear, opts)) {
     const a = assumptions.find((x) => x.crop_id === cropId && x.crop_year === cropYear)
     const blended = num(a?.expected_yield)
     const yIrr = num(a?.expected_yield_irr) ?? blended
@@ -193,7 +207,72 @@ export function expectedProductionFromBreakout(
     const yDcDry = num(a?.expected_yield_dc_dry) ?? blended
     if (blended == null && yIrr == null && yDry == null && yDcIrr == null && yDcDry == null) continue
     const prod = (yIrr ?? 0) * seg.fullIrr + (yDry ?? 0) * seg.fullDry + (yDcIrr ?? 0) * seg.dcIrr + (yDcDry ?? 0) * seg.dcDry
+      + (blended ?? 0) * (seg.unsplit ?? 0)
     out.set(cropId, round(prod, 2))
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// Assumed acres (081) — the acreage of a crop year with no plantings yet.
+// ---------------------------------------------------------------------------
+
+export type AcresSource = 'planted' | 'assumed'
+
+const numOrNull = (v: number | string | null | undefined): number | null => {
+  if (v == null || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+/** One assumption row's assumed acres as SegmentAcres. Breakout cells define
+ *  the split (a blank cell is 0 acres); with no breakout the overall total
+ *  stands alone as `unsplit`. Null when the row assumes no acres. */
+export function assumedSegmentAcres(
+  a: Pick<CropAssumption, 'assumed_acres' | 'assumed_acres_irr' | 'assumed_acres_dry' | 'assumed_acres_dc_irr' | 'assumed_acres_dc_dry'> | null | undefined,
+): SegmentAcres | null {
+  if (!a) return null
+  const irr = numOrNull(a.assumed_acres_irr), dry = numOrNull(a.assumed_acres_dry)
+  const dcIrr = numOrNull(a.assumed_acres_dc_irr), dcDry = numOrNull(a.assumed_acres_dc_dry)
+  if (irr != null || dry != null || dcIrr != null || dcDry != null) {
+    const seg = { fullIrr: irr ?? 0, fullDry: dry ?? 0, dcIrr: dcIrr ?? 0, dcDry: dcDry ?? 0 }
+    return segmentTotalAcres(seg) > 0 ? seg : null
+  }
+  const overall = numOrNull(a.assumed_acres)
+  return overall != null && overall > 0 ? { fullIrr: 0, fullDry: 0, dcIrr: 0, dcDry: 0, unsplit: overall } : null
+}
+
+/** Total assumed acres on a row (0 when none). */
+export function assumedAcresTotal(a: Parameters<typeof assumedSegmentAcres>[0]): number {
+  return segmentTotalAcres(assumedSegmentAcres(a))
+}
+
+export type ResolvedAcres = { seg: SegmentAcres; source: AcresSource }
+
+/**
+ * THE resolution rule for a crop × year's acreage: real plantings ALWAYS win.
+ * A crop present in `segByCrop` (it has at least one planting row this year,
+ * per segmentAcresByCrop) keeps its planted segments and its assumed acres are
+ * ignored. A crop with no plantings falls back to its assumption row's assumed
+ * acres, when any — so next year's marketing has a dashboard before planting.
+ *
+ * `assumedAcres: false` disables the fallback: assumed acres are operation-
+ * level (there is no field to attribute them to), so callers computing a
+ * single entity's view pass false and keep the standing planted-acre rule.
+ */
+export function resolveAcresByCrop(
+  segByCrop: ReadonlyMap<string, SegmentAcres>,
+  assumptions: ReadonlyArray<CropAssumption>,
+  cropYear: number,
+  opts?: { assumedAcres?: boolean },
+): Map<string, ResolvedAcres> {
+  const out = new Map<string, ResolvedAcres>()
+  for (const [cropId, seg] of segByCrop) out.set(cropId, { seg, source: 'planted' })
+  if (opts?.assumedAcres === false) return out
+  for (const a of assumptions) {
+    if (a.crop_year !== cropYear || out.has(a.crop_id)) continue
+    const seg = assumedSegmentAcres(a)
+    if (seg) out.set(a.crop_id, { seg, source: 'assumed' })
   }
   return out
 }
@@ -233,24 +312,41 @@ export function computeMarketing(args: {
   // SeedCropCommitment, assembled by the pages (production from the linked
   // plantings, entity attribution already applied). Absent = no seed book.
   seedCommitmentsByCrop?: Map<string, SeedCropCommitment[]>
+  // Assumed acres (081): a crop with NO plantings this year is shown on its
+  // assumption row's assumed acres (default). Entity-scoped callers pass
+  // false — assumed acres are operation-level and never attribute to an
+  // entity. Plantings always win regardless (resolveAcresByCrop).
+  assumedAcres?: boolean
 }): MarketingRow[] {
   const { cropYear, crops, plantings, contracts, futures, options, assumptions, actualProductionByCrop, expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop, cottonPhysicalByCrop, seedCommitmentsByCrop } = args
 
   const cropIdsWithPlantings = new Set(
     plantings.filter((p) => p.season_year === cropYear).map((p) => p.crop_id),
   )
+  // Crops shown on assumed acres: no planting row this year, assumed acres > 0.
+  const assumedAcresByCrop = new Map<string, number>()
+  if (args.assumedAcres !== false) {
+    for (const a of assumptions) {
+      if (a.crop_year !== cropYear || cropIdsWithPlantings.has(a.crop_id)) continue
+      const total = assumedAcresTotal(a)
+      if (total > 0) assumedAcresByCrop.set(a.crop_id, total)
+    }
+  }
 
   const rows: MarketingRow[] = []
   for (const crop of crops) {
-    if (!cropIdsWithPlantings.has(crop.id)) continue
+    const acresSource: AcresSource | null = cropIdsWithPlantings.has(crop.id) ? 'planted' : assumedAcresByCrop.has(crop.id) ? 'assumed' : null
+    if (acresSource == null) continue
 
-    const acres = plantings
-      .filter((p) => p.crop_id === crop.id && p.season_year === cropYear)
-      .reduce((s, p) => s + Number(p.planted_acres ?? 0), 0)
+    const acres = acresSource === 'planted'
+      ? plantings
+          .filter((p) => p.crop_id === crop.id && p.season_year === cropYear)
+          .reduce((s, p) => s + Number(p.planted_acres ?? 0), 0)
+      : assumedAcresByCrop.get(crop.id)!
 
     if (isCottonCrop(crop.name)) {
       rows.push(computeCottonRow({
-        crop, acres, cropYear, futures, options, assumptions,
+        crop, acres, acresSource, cropYear, futures, options, assumptions,
         expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop,
         physical: cottonPhysicalByCrop?.get(crop.id) ?? null,
       }))
@@ -494,7 +590,7 @@ export function computeMarketing(args: {
     const totalProfit = totalCost != null ? blendedRevenue - totalCost : null
 
     rows.push({
-      cropId: crop.id, cropName: crop.name, unit: 'bu', cottonBales: null, cottonPhysical: null, seed: seedPos, acres, yield: yieldVal, yieldLabel, totalProduction,
+      cropId: crop.id, cropName: crop.name, unit: 'bu', cottonBales: null, cottonPhysical: null, seed: seedPos, acres, acresSource, yield: yieldVal, yieldLabel, totalProduction,
       contractedBu, remaining, avgCashPrice, excludedAwaitingBu,
       futuresPricedBu, physicalFuturesBu, physicalFuturesAvg, openHedgeBu, openHedgeAvg,
       rawAvgFutures, hedgeRealizedPnl, hedgeAdjPerBu, avgFutures, avgBasis, avgBasisAssumed, assumedBasis, assumedFutures,
@@ -524,6 +620,7 @@ export function computeMarketing(args: {
 function computeCottonRow(args: {
   crop: Crop
   acres: number
+  acresSource: AcresSource
   cropYear: number
   futures: FuturesPosition[]
   options: OptionPosition[]
@@ -534,7 +631,7 @@ function computeCottonRow(args: {
   cottonProductionByCrop?: Map<string, { lintLbs: number; bales: number }>
   physical?: CottonPhysicalSummary | null
 }): MarketingRow {
-  const { crop, acres, cropYear, futures, options, assumptions, expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop, physical } = args
+  const { crop, acres, acresSource, cropYear, futures, options, assumptions, expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop, physical } = args
 
   // Yield/production: crop_assumptions.expected_yield is lbs of lint per acre
   // for a cotton crop; actuals come from gin receipts once harvest is complete.
@@ -660,7 +757,7 @@ function computeCottonRow(args: {
     cottonPhysical: physical
       ? { summary: physical, poolValueDollars, poolEstimated, inLoanValueDollars, inLoanFloored, unpricedLbs: uncoveredLbs, hedgedUnsoldLbs: hedgeCovered }
       : null,
-    acres, yield: yieldVal, yieldLabel, totalProduction,
+    acres, acresSource, yield: yieldVal, yieldLabel, totalProduction,
     // Sold physical lbs behave like contracted grain: locked, price-insensitive.
     contractedBu: soldLbs, remaining: Math.max(0, totalProduction - soldLbs - poolLbs),
     avgCashPrice: soldAvgCents, excludedAwaitingBu: physical?.awaitingCallLbs ?? 0,

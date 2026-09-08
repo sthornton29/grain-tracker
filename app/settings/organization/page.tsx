@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { getOrgId } from '@/lib/org'
 import { uploadFileToStorage, deleteStorageObject } from '@/lib/pdf-upload'
+import Dropzone from '@/components/dropzone'
 
 type OrgRow = {
   id: string
@@ -81,7 +82,14 @@ export default function OrganizationSettingsPage() {
   async function onLogo(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     e.target.value = ''
-    if (!file || !org) return
+    if (!file) return
+    await saveLogo(file)
+  }
+
+  // Shared by the picker and a drop; the type/size checks live here so a
+  // dropped .gif or .pdf gets the same message a picked one would.
+  async function saveLogo(file: File) {
+    if (!org) return
     if (!file.type.startsWith('image/')) { setErr('The logo must be an image (PNG or JPG).'); return }
     if (file.size > 2 * 1024 * 1024) { setErr('Keep the logo under 2 MB.'); return }
     setBusy(true); setErr(null); setMsg(null)
@@ -150,11 +158,20 @@ export default function OrganizationSettingsPage() {
         ) : (
           <p className="text-sm text-slate-500">No logo yet — documents show your display name in text.</p>
         )}
-        <label className="inline-block rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm cursor-pointer">
-          {busy ? 'Working…' : org?.branding_logo_url ? 'Replace logo…' : 'Upload logo…'}
-          <input type="file" accept="image/png,image/jpeg" className="hidden" onChange={onLogo} disabled={busy || !org} />
-        </label>
-        <p className="text-xs text-slate-500">PNG with a transparent background looks best. Square or wide, under 2 MB.</p>
+        <Dropzone
+          onFiles={(files) => void saveLogo(files[0])}
+          onReject={() => setErr('The logo must be an image (PNG or JPG).')}
+          accept="image/png,image/jpeg"
+          disabled={busy || !org}
+          hint="Drop the logo here"
+          className="inline-block"
+        >
+          <label className="inline-block rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm cursor-pointer">
+            {busy ? 'Working…' : org?.branding_logo_url ? 'Replace logo…' : 'Upload logo…'}
+            <input type="file" accept="image/png,image/jpeg" className="hidden" onChange={onLogo} disabled={busy || !org} />
+          </label>
+        </Dropzone>
+        <p className="text-xs text-slate-500">PNG with a transparent background looks best. Square or wide, under 2 MB. You can also drag the file onto the button.</p>
       </div>
 
       {err && <p className="text-sm text-red-600">{err}</p>}

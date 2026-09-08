@@ -41,6 +41,8 @@ import {
   depreciationCentsPerBu,
   dryingCost,
   energyCostPerBuPt,
+  fuelPriceForEngine,
+  fuelPriceUnitLabel,
   moistureRows,
   overdryingCost,
   presetFuelPerBuPt,
@@ -48,6 +50,7 @@ import {
   type DryerFuel,
   type DryerSpec,
   type DryingRates,
+  type FuelPriceUnit,
   type WetVsDryVerdict,
 } from '@/lib/dryer-math'
 import {
@@ -132,6 +135,11 @@ export default function DryerMathReport({
   const [mainFuel, setMainFuel] = usePersistentState<DryerFuel>('dryer:fuel', 'lp')
   const [lpPrice, setLpPrice] = usePersistentState('dryer:lpPrice', '1.60')
   const [ngPrice, setNgPrice] = usePersistentState('dryer:ngPrice', '1.20')
+  // The price can also be entered per million BTU (a supplier's quote); it is
+  // converted to the fuel's own unit at ONE boundary (fuelPriceForEngine), so
+  // the table, the comparison, and calibration never know which was typed.
+  const [priceUnit, setPriceUnit] = usePersistentState<FuelPriceUnit>('dryer:priceUnit', 'native')
+  const [mmbtuPrice, setMmbtuPrice] = usePersistentState('dryer:mmbtuPrice', '12.00')
 
   // ---- assumptions (slide-over) ----
   const [panelOpen, setPanelOpen] = useState(false)
@@ -276,7 +284,10 @@ export default function DryerMathReport({
 
   // A saved dryer's own fuel wins; the main selector then displays it fixed.
   const activeFuel: DryerFuel = spec?.fuel ?? mainFuel
-  const fuelPrice = activeFuel === 'ng' ? N(ngPrice) : N(lpPrice)
+  // The price as typed, in the unit the selector shows...
+  const enteredPrice = priceUnit === 'mmbtu' ? N(mmbtuPrice) : activeFuel === 'ng' ? N(ngPrice) : N(lpPrice)
+  // ...and the engine's price in the fuel's own unit ($/gal or $/ccf).
+  const fuelPrice = enteredPrice != null ? fuelPriceForEngine(enteredPrice, priceUnit, activeFuel) : null
   const deprCents = N(deprStr) ?? DEFAULT_DEPRECIATION_CENTS_PER_BU
   const rates: DryingRates | null = useMemo(
     () => (fuelPrice != null && spec
@@ -401,7 +412,7 @@ export default function DryerMathReport({
   useEffect(() => {
     onPayloadChange(() => buildPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, crop?.name, spec, fuelPrice, grainPrice, buyerId, compareOpen, deprCents, includeDeprInCompare])
+  }, [rows, crop?.name, spec, fuelPrice, enteredPrice, priceUnit, activeFuel, grainPrice, buyerId, compareOpen, deprCents, includeDeprInCompare])
 
   function buildPayload(): ExportPayload {
     const dryerLabel = pickedOrgDryer?.name
@@ -412,7 +423,9 @@ export default function DryerMathReport({
       `base ${fmtNum(baseMoisture, 1)}%`,
       dryerLabel,
       spec ? `${spec.fuelPerBuPt.toFixed(4)} ${spec.fuel === 'lp' ? 'gal' : 'ccf'}/bu-pt` : '',
-      fuelPrice != null ? `${activeFuel === 'lp' ? 'LP $' + fmtNum(fuelPrice) + '/gal' : 'NG $' + fmtNum(fuelPrice) + '/ccf'}` : '',
+      enteredPrice != null && fuelPrice != null
+        ? `${activeFuel === 'lp' ? 'LP' : 'NG'} $${fmtNum(enteredPrice)}${fuelPriceUnitLabel(priceUnit, activeFuel).slice(1)}${priceUnit === 'mmbtu' ? ` (= $${fmtNum(fuelPrice, 3)}${fuelPriceUnitLabel('native', activeFuel).slice(1)})` : ''}`
+        : '',
       `depreciation ${fmtNum(Math.max(0, deprCents), 1)}¢/bu dried`,
       grainPrice != null ? `grain $${fmtNum(grainPrice)}/bu` : '',
       comparing ? `vs ${buyers.find((b) => b.id === buyerId)?.name ?? 'buyer'} — ${summarizeMoistureTerms(buyerTerms)}${includeDeprInCompare ? '' : ' (depreciation excluded from the comparison)'}` : '',
@@ -511,14 +524,32 @@ export default function DryerMathReport({
           )}
         </label>
 
-        <label className="text-sm text-slate-700">
-          {activeFuel === 'ng' ? 'Fuel price $/ccf' : 'Fuel price $/gal'}
-          {activeFuel === 'ng' ? (
-            <input type="number" step="0.01" value={ngPrice} onChange={(e) => setNgPrice(e.target.value)} className={`block mt-0.5 w-28 ${inputCls} text-right`} />
-          ) : (
-            <input type="number" step="0.01" value={lpPrice} onChange={(e) => setLpPrice(e.target.value)} className={`block mt-0.5 w-28 ${inputCls} text-right`} />
+        <div className="text-sm text-slate-700">
+          <label htmlFor="dryer-fuel-price">Fuel price</label>
+          <div className="flex items-center gap-1 mt-0.5">
+            {priceUnit === 'mmbtu' ? (
+              <input id="dryer-fuel-price" type="number" step="0.01" value={mmbtuPrice} onChange={(e) => setMmbtuPrice(e.target.value)} className={`w-24 ${inputCls} text-right`} />
+            ) : activeFuel === 'ng' ? (
+              <input id="dryer-fuel-price" type="number" step="0.01" value={ngPrice} onChange={(e) => setNgPrice(e.target.value)} className={`w-24 ${inputCls} text-right`} />
+            ) : (
+              <input id="dryer-fuel-price" type="number" step="0.01" value={lpPrice} onChange={(e) => setLpPrice(e.target.value)} className={`w-24 ${inputCls} text-right`} />
+            )}
+            <select
+              aria-label="Fuel price unit"
+              value={priceUnit}
+              onChange={(e) => setPriceUnit(e.target.value === 'mmbtu' ? 'mmbtu' : 'native')}
+              className={inputCls}
+            >
+              <option value="native">{fuelPriceUnitLabel('native', activeFuel)}</option>
+              <option value="mmbtu">$/MMBtu</option>
+            </select>
+          </div>
+          {priceUnit === 'mmbtu' && fuelPrice != null && (
+            <span className="block text-xs text-slate-500 mt-0.5">
+              = ${fmtNum(fuelPrice, 3)}{fuelPriceUnitLabel('native', activeFuel).slice(1)} at {activeFuel === 'lp' ? '91,500 BTU/gal' : '1,020 BTU/cf'}
+            </span>
           )}
-        </label>
+        </div>
 
         <div className="flex-1" />
         <button

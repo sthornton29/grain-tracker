@@ -7,6 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { parseCsv } from '@/lib/csv'
 import type { Bin, Buyer, Contract, Crop, Field, Truck } from '@/lib/types'
+import Dropzone, { rejectMessage } from '@/components/dropzone'
 
 const TEMPLATE_HEADERS = [
   'date',
@@ -139,6 +140,11 @@ export default function LoadsImportPage() {
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
+    await readCsv(file)
+    e.target.value = ''
+  }
+
+  async function readCsv(file: File) {
     setErr(null); setResult(null)
     setFileName(file.name)
     try {
@@ -150,7 +156,6 @@ export default function LoadsImportPage() {
     } catch (e: any) {
       setErr(e?.message ?? 'Failed to read file')
     }
-    e.target.value = ''
   }
 
   // Find column index by template-header name (case/whitespace-insensitive).
@@ -369,10 +374,18 @@ export default function LoadsImportPage() {
           <button type="button" onClick={downloadTemplate} className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2">
             Download CSV template
           </button>
-          <label className="text-sm rounded-lg bg-slate-700 text-white px-3 py-2 cursor-pointer">
-            Upload CSV
-            <input type="file" accept=".csv,text/csv,text/plain" onChange={onFile} className="hidden" />
-          </label>
+          <Dropzone
+            onFiles={(files) => void readCsv(files[0])}
+            onReject={(rejected) => setErr(rejectMessage('Use a CSV file (download the template above).', rejected))}
+            accept=".csv,text/csv,text/plain"
+            hint="Drop the CSV here"
+            className="inline-block"
+          >
+            <label className="text-sm rounded-lg bg-slate-700 text-white px-3 py-2 cursor-pointer inline-block">
+              Upload CSV
+              <input type="file" accept=".csv,text/csv,text/plain" onChange={onFile} className="hidden" />
+            </label>
+          </Dropzone>
           {fileName && <span className="text-xs text-slate-500">{fileName} · {rows.length} row{rows.length === 1 ? '' : 's'}</span>}
           <button type="button" onClick={reset} className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2 ml-auto">
             Reset

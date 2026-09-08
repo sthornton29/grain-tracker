@@ -10,7 +10,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
-import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, type Planting } from '@/lib/marketing'
+import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, assumedAcresTotal, type Planting } from '@/lib/marketing'
+import { marketingCropYearOptions } from '@/lib/crop-years'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
 import { fetchSeedContracts, type SeedContractData } from '@/lib/seed-contracts-fetch'
 import { buildSeedCommitments } from '@/lib/seed-contracts'
@@ -24,7 +25,7 @@ import { marketingReferenceContract, referenceMonthOptions, fallForwardOnMissing
 import { SupersededNotice } from '@/components/viewer-scenario'
 import { fieldCropAggregates, cropsWithCompleteHarvest, type CombineEntryLike } from '@/lib/yields'
 import { cropToCommodity } from '@/lib/contracts'
-import { cropYearOptionsFromPlantings, buildDoubleCropSet } from '@/lib/plantings'
+import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import {
   computePolicy, harvestContractLabel, policyPremium, resolveHarvestPriceByCrop,
@@ -211,19 +212,31 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     return expectedProductionFromBreakout(segmentAcresByCrop(scopedPlantings, cropYear, doubleCropIds), effAssumptions, cropYear)
   }, [scopedPlantings, cropYear, doubleCropIds, effAssumptions])
 
+  // Future years are on offer too (this year + two), and any year with
+  // contracts, hedges, or assumptions — marketing runs ahead of planting.
   const cropYearOptions = useMemo(
-    () => cropYearOptionsFromPlantings([...plantings.map((p) => p.season_year), ...policies.map((p) => p.crop_year)], cropYear === '' ? null : cropYear),
-    [plantings, policies, cropYear],
+    () => marketingCropYearOptions({
+      plantingYears: plantings.map((p) => p.season_year),
+      contractYears: contracts.map((c) => c.crop_year),
+      hedgeYears: [...futures.map((f) => f.crop_year), ...options.map((o) => o.crop_year)],
+      assumptionYears: assumptions.map((a) => a.crop_year),
+      extraYears: [...policies.map((p) => p.crop_year), cropYear === '' ? null : cropYear],
+    }),
+    [plantings, contracts, futures, options, assumptions, policies, cropYear],
   )
 
   // Live reference-contract quote for EVERY planted crop — the SAME expiry-
   // aware resolver (+ any pinned month) the Marketing dashboard uses, so the
   // price valuing unpriced bushels is identical on both pages and the
   // RevProj − Marketing reconciliation identity keeps holding.
-  const livePriceCropIds = useMemo(
-    () => Array.from(new Set(plantings.filter((p) => p.season_year === cropYear).map((p) => p.crop_id))),
-    [plantings, cropYear],
-  )
+  const livePriceCropIds = useMemo(() => {
+    const ids = new Set(plantings.filter((p) => p.season_year === cropYear).map((p) => p.crop_id))
+    // Crops shown on assumed acres (081, whole operation only) get quoted too.
+    if (!scope.active && cropYear !== '') {
+      for (const a of effAssumptions) if (a.crop_year === cropYear && !ids.has(a.crop_id) && assumedAcresTotal(a) > 0) ids.add(a.crop_id)
+    }
+    return Array.from(ids)
+  }, [plantings, cropYear, scope.active, effAssumptions])
   const refAsOf = useMemo(() => new Date(), [])
   const refByCrop = useMemo(() => {
     const m = new Map<string, ReferenceContract>()
@@ -420,8 +433,10 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       cottonProductionByCrop,
       cottonPhysicalByCrop: cottonPhysical,
       seedCommitmentsByCrop: seedCommitments,
+      // Assumed acres (081) are operation-level: whole-operation view only.
+      assumedAcres: !scope.active,
     })
-  }, [cropYear, viewer.loading, viewerA.ready, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds, cottonProductionByCrop, cottonPhysical, seedCommitments])
+  }, [cropYear, viewer.loading, viewerA.ready, crops, scopedPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, productionByCrop, expProdByCrop, currentFuturesByCrop, harvestCompleteIds, cottonProductionByCrop, cottonPhysical, seedCommitments, scope.active])
 
   // Resolve a harvest price per crop for the MARKET path: final → RMA
   // in-discovery running average → estimate → projected. `source`

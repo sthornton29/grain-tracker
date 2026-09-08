@@ -8,6 +8,7 @@ import {
   deleteStorageObjectByUrl,
   uploadFileToStorage,
 } from '@/lib/pdf-upload'
+import Dropzone, { rejectMessage } from '@/components/dropzone'
 
 type Props = {
   settlementId: string
@@ -25,6 +26,10 @@ export default function SettlementPdfPanel({ settlementId, currentUrl }: Props) 
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
+    await upload(file)
+  }
+
+  async function upload(file: File) {
     setErr(null)
     if (file.size > MAX_PDF_BYTES) {
       setErr('That PDF is larger than 20 MB. Please use a smaller file.')
@@ -76,7 +81,14 @@ export default function SettlementPdfPanel({ settlementId, currentUrl }: Props) 
   }
 
   return (
-    <div className="bg-white rounded-xl shadow p-3 flex flex-wrap items-center gap-2">
+    <Dropzone
+      onFiles={(files) => void upload(files[0])}
+      onReject={(rejected) => setErr(rejectMessage('Use the settlement PDF.', rejected))}
+      accept="application/pdf,.pdf"
+      disabled={busy != null}
+      hint="Drop the settlement PDF here"
+      className="bg-white rounded-xl shadow p-3 flex flex-wrap items-center gap-2"
+    >
       <span className="text-sm font-semibold text-slate-700 mr-1">Settlement PDF</span>
       {currentUrl ? (
         <>
@@ -126,6 +138,6 @@ export default function SettlementPdfPanel({ settlementId, currentUrl }: Props) 
         className="hidden"
       />
       {err && <p className="w-full text-sm text-red-600">{err}</p>}
-    </div>
+    </Dropzone>
   )
 }

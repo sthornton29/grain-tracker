@@ -1,8 +1,8 @@
 ---
 page_route: /reports/dryer-math
 title: Grain Dryer Math
-updated: 2026-09-02
-keywords: dryer, drying, propane, LP, natural gas, moisture, shrink, overdrying, cost per point, bushel point, calibrate, haul wet, discount schedule, assumptions, weight loss, depreciation, ownership cost, total drying cost, shrink factor, excess shrink, elevator, dock
+updated: 2026-09-08
+keywords: dryer, drying, propane, LP, natural gas, moisture, shrink, overdrying, cost per point, bushel point, calibrate, haul wet, discount schedule, assumptions, weight loss, depreciation, ownership cost, total drying cost, shrink factor, excess shrink, elevator, dock, MMBtu, per million BTU, fuel price unit, therm, dekatherm
 ---
 ## What this page is for
 
@@ -12,6 +12,7 @@ What it costs to take a point of moisture out — and what it costs to take out 
 
 - **Crop** — sets the base moisture from the crop's own standard (the same base the rest of Turnrow shrinks to).
 - **Fuel** — propane or natural gas, with its price. If a saved dryer is selected, its fuel applies automatically.
+- **Fuel price and its unit** — type the price and pick the unit beside it: **$/gal** for propane, **$/ccf** for natural gas, or **$/MMBtu** (per million BTU — how many suppliers and utilities quote). A price entered per MMBtu is converted once, using the standard heat contents (91,500 BTU per gallon of propane, 1,020 BTU per cubic foot of natural gas — so 1 MMBtu is 10.93 gallons of propane or 9.80 ccf of gas), and a line under the input shows the equivalent per-gallon or per-ccf figure. The table, the dry-it-or-haul-it comparison, and the calibration all price the same whichever unit you typed. Your choice of unit and the prices you enter are remembered on this device.
 - Everything else lives under **⚙ Assumptions**: your dryer (a saved one, a catalog model, or a standard 0.018 gal-LP-equivalent per bushel-point), the electric rate, the **depreciation** figure, the calibrate-from-records tool, and the grain price. The grain price matters for the rows *below* base (overdrying) and for the buyer comparison — it defaults to today's futures quote for the crop's reference contract, and you can type over it any time. The line under the inputs always says which dryer, depreciation figure, and grain price are in play.
 
 ## Reading the table
@@ -49,7 +50,8 @@ The honest consumption number is yours, not a brochure's: in ⚙ Assumptions, en
 - **Why does hauling wet sometimes win?** A buyer's charge plus the grain they keep can still come in under your cost — a cheap sheet with a lean shrink factor, or a point or two of moisture. The comparison uses their posted sheet — and whether depreciation is in your side is your choice.
 - **The comparison used to favor hauling wet a lot more. What changed?** It counted only the buyer's drying charge and ignored the bushels their shrink factor takes beyond the water. Now it counts both, the way the elevator does.
 - **Is depreciation charged on the overdrying rows too?** No. Those rows are the extra cost of going past base — lost grain and wasted fuel. The bushel already carried its depreciation reaching base.
-- **Does this change any of my data?** No. Only saved dryers, a calibration you choose to save, and the depreciation setting persist — the rest is session inputs.
+- **My gas bill is in therms or dekatherms.** A therm is 100,000 BTU, so $/MMBtu = $/therm × 10; a dekatherm is one MMBtu, so enter that price as-is under $/MMBtu.
+- **Does this change any of my data?** No. Only saved dryers, a calibration you choose to save, and the depreciation setting persist — the rest is session inputs kept on this device.
 
 ## If something looks wrong
 

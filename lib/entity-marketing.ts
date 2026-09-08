@@ -143,5 +143,8 @@ export function computeEntityMarketingRows(inputs: EntityMarketingInputs, entity
     cottonProductionByCrop,
     cottonPhysicalByCrop,
     seedCommitmentsByCrop,
+    // Assumed acres (081) are operation-level; a single entity's view keeps
+    // the planted-acre rule.
+    assumedAcres: false,
   })
 }

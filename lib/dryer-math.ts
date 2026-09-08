@@ -74,6 +74,43 @@ export function presetFuelPerBuPt(galLpPerBuPt: number, fuel: DryerFuel): number
   return fuel === 'lp' ? galLpPerBuPt : lpGalToNgCcf(galLpPerBuPt)
 }
 
+// ---------- fuel price units ----------
+//
+// The engine prices fuel in the fuel's OWN unit ($/gal LP, $/ccf NG). A
+// supplier may quote per million BTU instead; that quote converts at THIS
+// one boundary, using the same heat contents as the consumption parity above:
+//   1 MMBtu = 1,000,000 ÷ 91,500 = 10.93 gal LP = 1,000,000 ÷ 102,000 = 9.80 ccf NG.
+
+/** Gallons of propane in one million BTU (≈ 10.93). */
+export const LP_GAL_PER_MMBTU = 1_000_000 / LP_BTU_PER_GAL
+/** ccf of natural gas in one million BTU (≈ 9.80). */
+export const NG_CCF_PER_MMBTU = 1_000_000 / (NG_BTU_PER_CF * 100)
+
+/** How the fuel price was ENTERED: the fuel's own unit, or $/MMBtu. */
+export type FuelPriceUnit = 'native' | 'mmbtu'
+
+/** $/MMBtu → the engine's per-unit price for the fuel ($/gal LP or $/ccf NG). */
+export function mmbtuPriceToFuelUnit(perMmbtu: number, fuel: DryerFuel): number {
+  return fuel === 'lp' ? perMmbtu / LP_GAL_PER_MMBTU : perMmbtu / NG_CCF_PER_MMBTU
+}
+
+/** The fuel's per-unit price ($/gal LP or $/ccf NG) → $/MMBtu. */
+export function fuelUnitPriceToMmbtu(perUnit: number, fuel: DryerFuel): number {
+  return fuel === 'lp' ? perUnit * LP_GAL_PER_MMBTU : perUnit * NG_CCF_PER_MMBTU
+}
+
+/** THE boundary: whatever unit the price was typed in → the engine's
+ *  DryingRates.fuelPrice ($/gal or $/ccf for the dryer's fuel). */
+export function fuelPriceForEngine(entered: number, unit: FuelPriceUnit, fuel: DryerFuel): number {
+  return unit === 'mmbtu' ? mmbtuPriceToFuelUnit(entered, fuel) : entered
+}
+
+/** The unit label for a price as entered: "$/gal", "$/ccf", or "$/MMBtu". */
+export function fuelPriceUnitLabel(unit: FuelPriceUnit, fuel: DryerFuel): string {
+  if (unit === 'mmbtu') return '$/MMBtu'
+  return fuel === 'lp' ? '$/gal' : '$/ccf'
+}
+
 export type DryerSpec = {
   fuel: DryerFuel
   /** Per bu-pt in the fuel's own unit (gal or ccf). */

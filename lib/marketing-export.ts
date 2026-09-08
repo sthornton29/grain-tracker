@@ -51,11 +51,12 @@ export function buildMarketingExport(args: {
     const seg = segByCrop.get(r.cropId)
     const irrAc = seg ? seg.fullIrr + seg.dcIrr : 0
     const dryAc = seg ? seg.fullDry + seg.dcDry : 0
+    const acresLabel = r.acresSource === 'assumed' ? 'Assumed acres (no plantings yet)' : 'Planted acres'
 
     if (r.unit === 'lbs') {
       // ---- Cotton: lbs of lint + $/lb display; production and futures hedges only. ----
       sub('Production')
-      kv('Planted acres', `${ac(r.acres)}${irrAc > 0 || dryAc > 0 ? ` (irr ${ac(irrAc)} / dry ${ac(dryAc)})` : ''}`)
+      kv(acresLabel, `${ac(r.acres)}${irrAc > 0 || dryAc > 0 ? ` (irr ${ac(irrAc)} / dry ${ac(dryAc)})` : ''}`)
       kv('Yield', r.yield != null ? `${yld(r.yield)} lbs lint/ac ${r.yieldLabel}` : '—')
       kv('Total production', `${lbsf(r.totalProduction)} lbs${r.cottonBales != null ? ` · ${lbsf(r.cottonBales)} bales` : ''}`)
 
@@ -92,7 +93,7 @@ export function buildMarketingExport(args: {
     const qual = r.lockedPriceBu + 0.5 < r.totalProduction ? ' (incl. assumed pricing)' : ''
 
     sub('Production')
-    kv('Planted acres', `${ac(r.acres)}${irrAc > 0 || dryAc > 0 ? ` (irr ${ac(irrAc)} / dry ${ac(dryAc)})` : ''}`)
+    kv(acresLabel, `${ac(r.acres)}${irrAc > 0 || dryAc > 0 ? ` (irr ${ac(irrAc)} / dry ${ac(dryAc)})` : ''}`)
     kv('Yield', r.yield != null ? `${yld(r.yield)} bu/ac ${r.yieldLabel}` : '—')
     kv('Total production', `${buf(r.totalProduction)} bu`)
 
