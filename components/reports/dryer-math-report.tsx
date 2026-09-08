@@ -33,6 +33,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { marketingReferenceContract } from '@/lib/reference-contract'
+import { quoteMapFromWire, quoteProvenance, type Quote } from '@/lib/quotes'
 import {
   DEFAULT_DEPRECIATION_CENTS_PER_BU,
   DEFAULT_ELECTRIC_RATE,
@@ -151,7 +152,7 @@ export default function DryerMathReport({
   const [quickFanKwh, setQuickFanKwh] = usePersistentState('dryer:quickFanKwh', '')
   const [electricRate, setElectricRate] = usePersistentState('dryer:electricRate', String(DEFAULT_ELECTRIC_RATE))
   const [grainPriceStr, setGrainPriceStr] = useState('')
-  const [quote, setQuote] = useState<{ symbol: string; price: number } | null>(null)
+  const [quote, setQuote] = useState<Quote | null>(null)
 
   // ---- dryer ownership (079 dryer_settings, one row per org) ----
   const [settingsRow, setSettingsRow] = useState<DryerSettingsRow | null>(null)
@@ -251,8 +252,8 @@ export default function DryerMathReport({
           body: JSON.stringify({ symbols: [ref.symbol] }),
         })
         const json = await res.json().catch(() => null)
-        const p = (json?.prices ?? []).find((x: { symbol: string; price: number | null }) => x.symbol === ref.symbol)
-        if (!cancelled && p?.price != null) setQuote({ symbol: ref.symbol, price: Number(p.price) })
+        const q = quoteMapFromWire(json?.prices).get(ref.symbol)
+        if (!cancelled && q) setQuote(q)
       } catch { /* manual price still works */ }
     })()
     return () => { cancelled = true }
@@ -563,7 +564,7 @@ export default function DryerMathReport({
       </div>
       <p className="text-xs text-slate-500 no-print -mt-2">
         Using {dryerLabel} · depreciation {fmtNum(Math.max(0, deprCents), 1)}¢/bu dried · grain {grainPrice != null ? `$${fmtNum(grainPrice)}/bu` : '(no price — the overdrying rows and the buyer comparison need one)'}
-        {quote && grainPriceStr === '' ? ` (${quote.symbol} today)` : ''} — adjust under ⚙ Assumptions.
+        {quote && grainPriceStr === '' ? ` (${quote.symbol} ${quote.source === 'manual' ? `manual · ${quoteProvenance(quote).chip?.replace('manual · ', '') ?? ''}` : 'today'})` : ''} — adjust under ⚙ Assumptions.
       </p>
 
       {/* ---- the table: Moisture | Total drying cost/bu ---- */}
@@ -810,7 +811,7 @@ export default function DryerMathReport({
                   className={`block mt-0.5 w-28 ${inputCls} text-right`}
                 />
                 <span className="block text-xs text-slate-500 mt-0.5">
-                  {quote ? `Default: ${quote.symbol} today $${fmtNum(quote.price)}. ` : 'No live quote. '}
+                  {quote ? `Default: ${quote.symbol} ${quote.source === 'manual' ? `manual quote (entered ${quote.priceDate ?? ''})` : 'today'} $${fmtNum(quote.price)}. ` : 'No live quote. '}
                   The overdrying rows (below base) and the buyer comparison use it — drying to base costs fuel, not grain.
                 </span>
               </label>

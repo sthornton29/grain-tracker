@@ -18,6 +18,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type Anthropic from '@anthropic-ai/sdk'
 import { buildEntityScope } from '@/lib/entity-scope'
+import { resolveQuotes } from '@/lib/quote-resolution'
 import {
   aggregateMarketing,
   computeMarketing,
@@ -542,14 +543,21 @@ async function getHedgingPositions(supabase: SupabaseClient, _ctx: AssistantCont
     if (input.crop_year != null) q = q.eq('crop_year', input.crop_year)
     return q.range(f, t)
   }
-  const [futures, options, prices] = await Promise.all([
+  const [futures, options] = await Promise.all([
     allRows<FuturesPosition>(positionsQuery('futures_positions')),
     allRows<OptionPosition>(positionsQuery('options_positions')),
-    all<{ contract_symbol: string; price: number; price_date: string }>(
-      supabase.from('market_prices').select('contract_symbol, price, price_date').order('price_date', { ascending: false })),
   ])
+  // Quotes through THE seam (live → the org's manual quote → none), keyed by
+  // the open symbols; RLS scopes the manual tier to the caller's org.
+  const openSymbols = Array.from(new Set(futures.filter((p) => p.status === 'open' && p.contract_symbol).map((p) => p.contract_symbol!)))
+  const resolved = openSymbols.length > 0 ? await resolveQuotes({ supabase, symbols: openSymbols }) : { prices: [] }
   const priceBySymbol = new Map<string, number>()
-  for (const p of prices) if (!priceBySymbol.has(p.contract_symbol)) priceBySymbol.set(p.contract_symbol, num(p.price))
+  let manualCount = 0
+  for (const p of resolved.prices) {
+    if (p.price == null) continue
+    priceBySymbol.set(p.symbol, num(p.price))
+    if (p.source === 'manual') manualCount += 1
+  }
   type Sum = { crop_year: number | null; commodity: string; open_contracts: number; open_quantity: number; unit: string; unrealized_usd: number; realized_usd: number }
   const byKey = new Map<string, Sum>()
   const bump = (cropYear: number | null, commodity: string, fn: (s: Sum) => void) => {
@@ -574,7 +582,7 @@ async function getHedgingPositions(supabase: SupabaseClient, _ctx: AssistantCont
     }
   }
   return {
-    price_basis: 'last STORED market price per contract symbol (see Hedging for live quotes); open options valued at 0 change',
+    price_basis: `current quote per contract symbol — live where covered, else the operation's MANUAL quote (entered by hand; ${manualCount} of ${openSymbols.length} symbols manual); open options valued at 0 change`,
     positions: [...byKey.values()].map((s) => ({ ...s, open_quantity: r0(s.open_quantity), unrealized_usd: r0(s.unrealized_usd), realized_usd: r0(s.realized_usd) })),
     note: 'Cotton P&L uses $500/point; quantities are lbs for cotton, bushels for grains.',
   }

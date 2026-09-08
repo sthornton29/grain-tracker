@@ -121,13 +121,14 @@ checks(seq, migration, evidence, applied) as (values
   ( 78, '078_freight_math',                   'freight_settings + freight_distances + bin_sites.latitude', exists (select 1 from tbls where t = 'freight_settings') and exists (select 1 from tbls where t = 'freight_distances') and exists (select 1 from cols where t = 'bin_sites' and c = 'latitude')),
   ( 79, '079_wait_hours_dryer_settings',      'delivery_locations.wait_hours + table dryer_settings', exists (select 1 from cols where t = 'delivery_locations' and c = 'wait_hours') and exists (select 1 from tbls where t = 'dryer_settings')),
   ( 80, '080_schedule_shrink_factor',         'buyer_discount_schedule_rules.shrink_factor_pct_per_point', exists (select 1 from cols where t = 'buyer_discount_schedule_rules' and c = 'shrink_factor_pct_per_point')),
-  ( 81, '081_assumed_acres',                  'crop_assumptions.assumed_acres (+ breakout)',   exists (select 1 from cols where t = 'crop_assumptions' and c = 'assumed_acres') and exists (select 1 from cols where t = 'crop_assumptions' and c = 'assumed_acres_dc_dry'))
+  ( 81, '081_assumed_acres',                  'crop_assumptions.assumed_acres (+ breakout)',   exists (select 1 from cols where t = 'crop_assumptions' and c = 'assumed_acres') and exists (select 1 from cols where t = 'crop_assumptions' and c = 'assumed_acres_dc_dry')),
+  ( 82, '082_manual_market_quotes',           'market_prices.source + table manual_market_quotes', exists (select 1 from cols where t = 'market_prices' and c = 'source') and exists (select 1 from tbls where t = 'manual_market_quotes'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 081'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 082'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

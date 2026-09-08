@@ -91,7 +91,7 @@ export function buildPriceDiscoveryRows(args: {
   keepManualProjected: ReadonlySet<string>
   /** Live quotes of each crop's OFFER base contract (futures units — cotton
    *  ¢/lb converts here at display). Keyed by crop_id. */
-  liveQuotes: ReadonlyMap<string, { price: number; priceDate: string | null }>
+  liveQuotes: ReadonlyMap<string, { price: number; priceDate: string | null; source?: 'live' | 'manual' | null }>
 }): PriceDiscoveryRow[] {
   const grownCropIds = new Set<string>([
     ...args.plantings.filter((p) => p.season_year === args.cropYear).map((p) => p.crop_id),
@@ -123,7 +123,7 @@ export function buildPriceDiscoveryRows(args: {
         const contract = r?.harvest_market_symbol
         const starts = r?.harvest_begin_date ? `discovery starts ${fmtMDY(r.harvest_begin_date)}` : null
         harvestLabel = live != null
-          ? ['est.', contract ? `— ${contract} today` : null, starts ? `, ${starts}` : null].filter(Boolean).join(' ')
+          ? ['est.', contract ? `— ${contract} ${live.source === 'manual' ? `manual quote ${live.priceDate ?? ''}`.trim() : 'today'}` : (live.source === 'manual' ? `— manual quote ${live.priceDate ?? ''}`.trim() : null), starts ? `, ${starts}` : null].filter(Boolean).join(' ')
           : starts ?? (r?.no_offer ? 'no RMA offer' : r?.fetch_failed ? 'est. — RMA unreachable' : 'no estimate yet')
       }
       rows.push({

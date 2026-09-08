@@ -33,7 +33,7 @@ import {
   marketingReferenceContract,
   referenceMonthOptions,
 } from '@/lib/reference-contract'
-import { normalizeBarchartPrice } from '@/lib/hedging'
+import { resolveQuotes } from '@/lib/quote-resolution'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
 import { fetchSeedContracts } from '@/lib/seed-contracts-fetch'
@@ -246,65 +246,15 @@ function cottonTotals(
 // deliberately unscoped.
 // ---------------------------------------------------------------------------
 
-const BARCHART_URL = 'https://ondemand.websol.barchart.com/getQuote.json'
-
-function todayISO(): string {
-  const d = new Date()
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10)
-}
-
-async function fetchQuotes(supabase: SupabaseClient, symbols: string[]): Promise<Map<string, number>> {
+/** The dashboard's quote seam, service-role flavored: lib/quote-resolution
+ *  (live day-cache → Barchart → most recent live → the org's MANUAL quote →
+ *  none). Service role bypasses RLS, so the org is passed explicitly for the
+ *  manual tier. */
+async function fetchQuotes(supabase: SupabaseClient, symbols: string[], org: string): Promise<Map<string, number>> {
   const out = new Map<string, number>()
   if (symbols.length === 0) return out
-  const today = todayISO()
-
-  const { data: todaysRows } = await supabase
-    .from('market_prices')
-    .select('contract_symbol, price')
-    .in('contract_symbol', symbols)
-    .eq('price_date', today)
-  for (const r of todaysRows ?? []) out.set(r.contract_symbol as string, Number(r.price))
-
-  const needFetch = symbols.filter((s) => !out.has(s))
-  const apiKey = process.env.BARCHART_API_KEY
-  if (needFetch.length > 0 && apiKey) {
-    try {
-      const url = `${BARCHART_URL}?apikey=${encodeURIComponent(apiKey)}&symbols=${encodeURIComponent(needFetch.join(','))}`
-      const resp = await fetch(url, { cache: 'no-store' })
-      const json: unknown = await resp.json().catch(() => null)
-      const results = Array.isArray((json as { results?: unknown[] } | null)?.results)
-        ? ((json as { results: unknown[] }).results as Array<Record<string, unknown>>)
-        : []
-      const upserts: Array<{ contract_symbol: string; price: number; price_date: string }> = []
-      for (const r of results) {
-        const sym = typeof r?.symbol === 'string' ? r.symbol.toUpperCase() : null
-        const raw = r?.lastPrice ?? r?.close ?? r?.settlement
-        const cents = typeof raw === 'number' ? raw : Number(raw)
-        if (!sym || !Number.isFinite(cents)) continue
-        const price = normalizeBarchartPrice(sym, cents)
-        out.set(sym, price)
-        upserts.push({ contract_symbol: sym, price, price_date: today })
-      }
-      if (upserts.length > 0) {
-        await supabase.from('market_prices').upsert(upserts, { onConflict: 'contract_symbol,price_date' })
-      }
-    } catch {
-      /* fall through to the most recent cached rows */
-    }
-  }
-
-  const stillMissing = symbols.filter((s) => !out.has(s))
-  if (stillMissing.length > 0) {
-    const { data: recent } = await supabase
-      .from('market_prices')
-      .select('contract_symbol, price, price_date')
-      .in('contract_symbol', stillMissing)
-      .order('price_date', { ascending: false })
-    for (const r of recent ?? []) {
-      const sym = r.contract_symbol as string
-      if (!out.has(sym)) out.set(sym, Number(r.price))
-    }
-  }
+  const { prices } = await resolveQuotes({ supabase, symbols, orgId: org })
+  for (const p of prices) if (p.price != null) out.set(p.symbol, p.price)
   return out
 }
 
@@ -314,6 +264,7 @@ async function fetchQuotes(supabase: SupabaseClient, symbols: string[]): Promise
  *  quoted, then the quote. Crops with no traded future are simply absent. */
 async function resolveCurrentFutures(
   supabase: SupabaseClient,
+  org: string,
   crops: readonly Crop[],
   plantedCropIds: ReadonlySet<string>,
   assumptions: readonly CropAssumption[],
@@ -327,7 +278,7 @@ async function resolveCurrentFutures(
     if (opts.length > 0) monthOptsByCrop.set(c.id, opts)
   }
   const symbols = Array.from(new Set([...monthOptsByCrop.values()].flat().map((o) => o.symbol)))
-  const quotes = await fetchQuotes(supabase, symbols)
+  const quotes = await fetchQuotes(supabase, symbols, org)
 
   const out = new Map<string, number>()
   for (const c of crops) {
@@ -391,7 +342,7 @@ export async function loadMarketingInputs(
   const plantedCropIds = new Set(plantings.map((p) => p.crop_id))
   // Crops on assumed acres (081 — no plantings yet) need their quote as well.
   for (const a of assumptions) if (!plantedCropIds.has(a.crop_id) && assumedAcresTotal(a) > 0) plantedCropIds.add(a.crop_id)
-  const currentFuturesByCrop = await resolveCurrentFutures(supabase, crops, plantedCropIds, assumptions, cropYear)
+  const currentFuturesByCrop = await resolveCurrentFutures(supabase, org, crops, plantedCropIds, assumptions, cropYear)
 
   // Seed production contracts (077) — whole-operation commitments; missing
   // tables degrade to none, like the cotton fetch above.

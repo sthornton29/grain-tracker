@@ -1,8 +1,8 @@
 ---
 page_route: /hedging
 title: Hedging
-updated: 2026-08-05
-keywords: hedging, futures, options, positions, open, closed, realized, unrealized, brokerage statement, commissions, P&L, market prices
+updated: 2026-09-08
+keywords: hedging, futures, options, positions, open, closed, realized, unrealized, brokerage statement, commissions, P&L, market prices, manual quote, manual price, cotton price, no live price, enter price, stale quote
 ---
 ## What this page is for
 
@@ -30,13 +30,23 @@ Hedging tracks your futures and options positions alongside the crops they prote
 - Options are valued off their premium: what you paid or collected versus what the option is worth now (open), or what you closed it at (closed).
 - Market prices on this page are for valuing open positions and are delayed quotes — they're a gauge, not a fill price.
 
+## When a price says "manual"
+
+Turnrow's live price feed covers corn, soybeans, and wheat. It does not cover **cotton** (ICE Cotton No. 2), and once in a while a contract month or the whole feed is unavailable. Rather than leave the number blank, any contract with no live price shows an **enter price** box — on the price board here, and anywhere else that price is needed (the Marketing Dashboard's what-if, the Income Sensitivity price axis, the Crop Budget Planner). Type the settlement from your broker or the exchange and it is saved for that contract; every screen then uses it. Cotton can be typed either way, $0.7265 or 72.65 — both mean the same price and display as dollars per pound.
+
+- A price you typed is never dressed up as market data: it carries an amber **manual · 9/2** chip (the date you entered it) everywhere it appears — the price board, the marketing price buildup, axis headers, and the unrealized P&L rows it feeds.
+- The chip warns when the price gets old: after a week it says the quote is a week old; after a month it turns red. Update it by typing over it — the same box.
+- If live coverage comes back for that contract, the live price takes over automatically and the manual one is kept only as a fallback.
+- Importing a brokerage statement that lists a settlement for a contract you have a manual quote on (or none) offers to update the manual quote to the statement's close with one tap.
+
 ## Common questions
 
 - **Why does my unrealized number bounce around?** It's marked to the current market. Only closing the position locks a number in.
 - **My total doesn't match the brokerage's month-end.** Check commissions on manually closed trades, and make sure every statement has been imported. Statement totals are reconciled on import, and disagreements were flagged then.
 - **The import says a position is "possibly closed" but it isn't.** Choose Keep open. The flag only means the statement didn't list it — a partial statement can cause that.
 - **Do hedge results show up in my marketing numbers?** Yes — realized futures results flow into the marketing and revenue reports, counted once, per crop year.
-- **Why are there no live prices right now?** Quotes can be temporarily unavailable; positions are still there, only the unrealized column waits. If prices never load, contact support.
+- **Why are there no live prices right now?** Quotes can be temporarily unavailable; positions are still there, and any contract without a price offers an **enter price** box so you can carry on with a manual quote. If live prices never come back for corn, soybeans, or wheat, contact support.
+- **Why is my cotton price always "manual"?** Cotton (ICE) is not in the live feed. Enter the settlement when you check it — it is remembered until you change it.
 
 ## If something looks wrong
 

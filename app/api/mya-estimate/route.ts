@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { resolveQuotes } from '@/lib/quote-resolution'
 import { commodityToTraded } from '@/lib/government-payments'
 import {
   estimateMyaBlend,
@@ -10,7 +11,6 @@ import {
 export const runtime = 'nodejs'
 export const maxDuration = 30
 
-const BARCHART_URL = 'https://ondemand.websol.barchart.com/getQuote.json'
 
 // Estimates the Marketing Year Average price for each commodity as a
 // month-by-month blend over the marketing year: operator-entered USDA/NASS
@@ -43,13 +43,6 @@ function todayISO(): string {
   const d = new Date()
   const tz = d.getTimezoneOffset() * 60000
   return new Date(d.getTime() - tz).toISOString().slice(0, 10)
-}
-function dateFromTimestamp(ts: unknown, fallback: string): string {
-  if (typeof ts === 'string') {
-    const m = ts.match(/^(\d{4}-\d{2}-\d{2})/)
-    if (m) return m[1]
-  }
-  return fallback
 }
 
 export async function POST(req: NextRequest) {
@@ -116,59 +109,14 @@ export async function POST(req: NextRequest) {
   })
   const symbols = Array.from(new Set(perCommodity.flatMap((c) => c.symbols)))
 
+  // THE quote seam (lib/quote-resolution): live day-cache → Barchart → most
+  // recent live → the org's MANUAL quote → none.
   const quotes = new Map<string, { price: number; price_date: string }>()
-  if (symbols.length > 0) {
-    const { data: todaysRows } = await supabase
-      .from('market_prices')
-      .select('contract_symbol, price, price_date')
-      .in('contract_symbol', symbols)
-      .eq('price_date', today)
-    for (const r of todaysRows ?? []) quotes.set(r.contract_symbol, { price: Number(r.price), price_date: r.price_date as string })
-  }
-
-  const needFetch = force ? symbols : symbols.filter((s) => !quotes.has(s))
-  const apiKey = process.env.BARCHART_API_KEY
   let note: string | undefined
-
-  if (needFetch.length > 0 && apiKey) {
-    try {
-      const url = `${BARCHART_URL}?apikey=${encodeURIComponent(apiKey)}&symbols=${encodeURIComponent(needFetch.join(','))}`
-      const resp = await fetch(url, { cache: 'no-store' })
-      const json = await resp.json().catch(() => null)
-      const results: any[] = Array.isArray(json?.results) ? json.results : []
-      const marketUpserts: Array<{ contract_symbol: string; price: number; price_date: string }> = []
-      for (const r of results) {
-        const sym = typeof r?.symbol === 'string' ? r.symbol.toUpperCase() : null
-        const raw = r?.lastPrice ?? r?.close ?? r?.settlement
-        const cents = typeof raw === 'number' ? raw : Number(raw)
-        if (!sym || !Number.isFinite(cents)) continue
-        const price = Math.round((cents / 100) * 1e6) / 1e6 // cents/bu -> $/bu
-        const price_date = dateFromTimestamp(r?.tradeTimestamp ?? r?.serverTimestamp, today)
-        quotes.set(sym, { price, price_date })
-        marketUpserts.push({ contract_symbol: sym, price, price_date })
-      }
-      if (marketUpserts.length > 0) {
-        await supabase.from('market_prices').upsert(marketUpserts, { onConflict: 'contract_symbol,price_date' })
-      }
-      if (results.length === 0) note = 'Barchart returned no quotes (market closed or contract not yet listed) — using the most recent cached quotes.'
-    } catch (e: any) {
-      note = `Could not reach Barchart (${e?.message ?? 'network error'}) — using the most recent cached quotes.`
-    }
-  } else if (needFetch.length > 0 && !apiKey) {
-    note = 'BARCHART_API_KEY is not configured — using cached quotes and published months only.'
-  }
-
-  // Fall back to the most recent cached price for any symbol still missing.
-  const stillMissing = symbols.filter((s) => !quotes.has(s))
-  if (stillMissing.length > 0) {
-    const { data: recent } = await supabase
-      .from('market_prices')
-      .select('contract_symbol, price, price_date')
-      .in('contract_symbol', stillMissing)
-      .order('price_date', { ascending: false })
-    for (const r of recent ?? []) {
-      if (!quotes.has(r.contract_symbol)) quotes.set(r.contract_symbol, { price: Number(r.price), price_date: r.price_date as string })
-    }
+  if (symbols.length > 0) {
+    const resolved = await resolveQuotes({ supabase, symbols, force, today })
+    note = resolved.note
+    for (const p of resolved.prices) if (p.price != null && p.price_date) quotes.set(p.symbol, { price: p.price, price_date: p.price_date })
   }
 
   // Blend per commodity and persist the estimate (without clobbering a manual

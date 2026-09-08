@@ -8,7 +8,9 @@ import ClosePositionDialog from '@/components/hedging/close-position-dialog'
 import OptionForm from '@/components/hedging/option-form'
 import CloseOptionDialog from '@/components/hedging/close-option-dialog'
 import StatementImport from '@/components/hedging/statement-import'
-import PriceBoard, { type PriceMap } from '@/components/hedging/price-board'
+import PriceBoard, { type PriceMap, infoToQuote } from '@/components/hedging/price-board'
+import { markOpenPosition } from '@/lib/hedging-rows'
+import { QuoteChip } from '@/components/quote-chip'
 import {
   COMMODITIES,
   COMMODITY_SPECS,
@@ -84,7 +86,7 @@ export default function HedgingPage() {
         const data = await res.json()
         const map: PriceMap = new Map()
         for (const p of data.prices ?? []) {
-          map.set(p.symbol, { price: p.price, price_date: p.price_date, stale: p.stale })
+          map.set(p.symbol, { price: p.price, price_date: p.price_date, stale: p.stale, source: p.source ?? null, entered_at: p.entered_at ?? null })
         }
         setPrices(map)
         setPriceDate(data.priceDate ?? null)
@@ -182,9 +184,10 @@ export default function HedgingPage() {
     [base, closedFrom, closedTo],
   )
 
+  // One row model for the mark (lib/hedging-rows): price, provenance, P&L.
+  const markOf = (p: FuturesPosition) => markOpenPosition({ position: p, quote: infoToQuote(p.contract_symbol, prices.get(p.contract_symbol)) })
   const curPrice = (symbol: string) => prices.get(symbol)?.price ?? null
-  const posUnrealized = (p: FuturesPosition) =>
-    unrealizedPnl({ side: p.side, tradePrice: p.trade_price, currentPrice: curPrice(p.contract_symbol), numContracts: p.num_contracts, contractSizeBu: pnlSizeFor(p.commodity) })
+  const posUnrealized = (p: FuturesPosition) => markOf(p).unrealized
   const netRealized = (p: FuturesPosition) => (p.realized_pnl ?? 0) - (p.commission ?? 0)
 
   // Options: same crop-year / commodity / entity filters; status split with the
@@ -427,7 +430,7 @@ export default function HedgingPage() {
       )}
 
       {/* Price board */}
-      <PriceBoard positions={base} prices={prices} priceDate={priceDate} />
+      <PriceBoard positions={base} prices={prices} priceDate={priceDate} onManualSaved={() => void refreshPrices(positions, true)} />
 
       {loading && <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">Loading…</div>}
 
@@ -465,7 +468,10 @@ export default function HedgingPage() {
                               <td className="px-3 py-2 text-right font-mono">{fmtQuantity(p.commodity, p.num_contracts)}</td>
                               <td className="px-3 py-2 whitespace-nowrap">{p.trade_date}</td>
                               <td className="px-3 py-2 text-right font-mono">{fmtCommodityPrice(p.commodity, p.trade_price)}</td>
-                              <td className="px-3 py-2 text-right font-mono">{fmtCommodityPrice(p.commodity, curPrice(p.contract_symbol))}</td>
+                              <td className="px-3 py-2 text-right font-mono whitespace-nowrap">
+                                {fmtCommodityPrice(p.commodity, curPrice(p.contract_symbol))}
+                                {markOf(p).quote?.source === 'manual' && <QuoteChip quote={markOf(p).quote} className="ml-1" />}
+                              </td>
                               <td className={`px-3 py-2 text-right font-mono ${u == null ? 'text-slate-400' : u >= 0 ? 'text-green-700' : 'text-red-700'}`}>{u == null ? '—' : fmtPnl(u)}</td>
                               <td className="px-3 py-2">{p.crop_year}</td>
                               <td className="px-3 py-2 whitespace-nowrap">

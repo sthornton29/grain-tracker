@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-09-08 · version 0.1.0 · build 827c431. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-09-08 · version 0.1.0 · build d78acd3. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -384,13 +384,23 @@ Hedging tracks your futures and options positions alongside the crops they prote
 - Options are valued off their premium: what you paid or collected versus what the option is worth now (open), or what you closed it at (closed).
 - Market prices on this page are for valuing open positions and are delayed quotes — they're a gauge, not a fill price.
 
+## When a price says "manual"
+
+Turnrow's live price feed covers corn, soybeans, and wheat. It does not cover **cotton** (ICE Cotton No. 2), and once in a while a contract month or the whole feed is unavailable. Rather than leave the number blank, any contract with no live price shows an **enter price** box — on the price board here, and anywhere else that price is needed (the Marketing Dashboard's what-if, the Income Sensitivity price axis, the Crop Budget Planner). Type the settlement from your broker or the exchange and it is saved for that contract; every screen then uses it. Cotton can be typed either way, $0.7265 or 72.65 — both mean the same price and display as dollars per pound.
+
+- A price you typed is never dressed up as market data: it carries an amber **manual · 9/2** chip (the date you entered it) everywhere it appears — the price board, the marketing price buildup, axis headers, and the unrealized P&L rows it feeds.
+- The chip warns when the price gets old: after a week it says the quote is a week old; after a month it turns red. Update it by typing over it — the same box.
+- If live coverage comes back for that contract, the live price takes over automatically and the manual one is kept only as a fallback.
+- Importing a brokerage statement that lists a settlement for a contract you have a manual quote on (or none) offers to update the manual quote to the statement's close with one tap.
+
 ## Common questions
 
 - **Why does my unrealized number bounce around?** It's marked to the current market. Only closing the position locks a number in.
 - **My total doesn't match the brokerage's month-end.** Check commissions on manually closed trades, and make sure every statement has been imported. Statement totals are reconciled on import, and disagreements were flagged then.
 - **The import says a position is "possibly closed" but it isn't.** Choose Keep open. The flag only means the statement didn't list it — a partial statement can cause that.
 - **Do hedge results show up in my marketing numbers?** Yes — realized futures results flow into the marketing and revenue reports, counted once, per crop year.
-- **Why are there no live prices right now?** Quotes can be temporarily unavailable; positions are still there, only the unrealized column waits. If prices never load, contact support.
+- **Why are there no live prices right now?** Quotes can be temporarily unavailable; positions are still there, and any contract without a price offers an **enter price** box so you can carry on with a manual quote. If live prices never come back for corn, soybeans, or wheat, contact support.
+- **Why is my cotton price always "manual"?** Cotton (ICE) is not in the live feed. Enter the settlement when you check it — it is remembered until you change it.
 
 ## If something looks wrong
 
@@ -951,7 +961,7 @@ Pick a crop year, then scroll through the crop sections. The chevron on each sec
 - **Crop year and entity filter** — the crop year list always includes this year and the next two, plus any year you already have plantings, contracts, hedges, or assumptions for — so next year's marketing has a place to live before anything is planted. The entity filter narrows acres and production to that entity. Contracts and hedges held by your marketing agent — or entered with no entity — are marketing for the whole operation, so they count toward each entity in proportion to its share of that crop's planted acres. A contract in an entity's own name counts wholly toward it.
 - **Edit Assumptions** — a panel with one section per crop: enter an overall yield and cost per acre, or break them out by irrigated/dryland and full-season/double-crop. A blank breakout cell falls back to the overall figure. The **Harvest complete** checkbox tells Turnrow the crop is finished; checking it snaps the yield to the actual average from your loads.
 - **Assumed acres (planning a year before planting)** — for a crop year with no plantings yet, each crop's section in the panel takes **assumed acres** instead: an overall figure, or split by irrigated/dryland like the yield. The Double-crop rows appear only for a crop designated Double-crop under Settings → Crops (soybeans after wheat); every other crop shows just Irrigated and Dryland. If you later change a crop's designation, acres already entered in a Double-crop row are not lost — a note says so and offers to clear them. Enter the acres and the expected yield and the dashboard values the year's contracts and hedges against that expected production — 2027 wheat you've already sold ahead, 2028 corn you've hedged. Crops with no acres assumed stay off the dashboard. The moment the first field is planted to a crop for that year, the **planted acres take over automatically** and the assumed figure is ignored (the panel then reads "using planted acres"). Assumed acres are for the whole operation, so they show under **All entities**; an entity filter still goes by the fields actually planted.
-- **What-If on Unpriced Bushels** — type an assumed futures price (or use the **use today's price** button, which fills in the current quote for the reference contract shown) and an assumed basis. These are standing assumptions: they save automatically, stay until you change them, and flow into every headline number here and on Revenue Projections. **Clear assumptions** wipes both.
+- **What-If on Unpriced Bushels** — type an assumed futures price (or use the **use today's price** button, which fills in the current quote for the reference contract shown) and an assumed basis. When a contract has no live quote — cotton always, since the live feed doesn't cover it — the reference line offers **enter price**: type the settlement once and every screen uses it, marked with an amber **manual · date** chip so it is never mistaken for market data (see Hedging → "When a price says manual"). These are standing assumptions: they save automatically, stay until you change them, and flow into every headline number here and on Revenue Projections. **Clear assumptions** wipes both.
 - **The reference contract** — shown next to the futures input as the board month and its live quote (for example "ZWU26 · $5.72"). This is the futures contract your unpriced bushels are valued against. The default is the crop year's new-crop month — December corn and cotton, November soybeans, July wheat — and once that contract stops trading (around the middle of its delivery month), Turnrow automatically moves to the next traded month and shows a small note like "Jul 26 expired → Sep 26". You can also pick a different month from the dropdown — any traded month from this crop year through the next — and your choice sticks for that crop and year until you press **Reset to default**. The Income Sensitivity price axis and Revenue Projections follow the same contract, so every page prices unpriced bushels off one answer.
 - **Physical Sales Complete for the Year?** — checkboxes at the bottom, one per crop. Because shrink and small leftovers keep the math from ever landing on exactly zero, this is how you tell Turnrow a year's selling is truly finished.
 - **Export Excel / PDF / Print** — the full dashboard, formatted for handing to a lender.

@@ -5,6 +5,8 @@ import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, assumedAcresTotal, assumedSegmentAcres, resolveAcresByCrop, segmentTotalAcres, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
 import { marketingCropYearOptions } from '@/lib/crop-years'
+import { quoteFromWire, quoteMapFromWire, type Quote } from '@/lib/quotes'
+import ManualQuoteControl, { QuoteChip } from '@/components/quote-chip'
 import { breakoutRowKeys, breakoutRowLabel, breakoutShowsSeason, hiddenDoubleCropAcres, hiddenDoubleCropNotice, type BreakoutRowKey } from '@/lib/breakout-grid'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
@@ -82,7 +84,7 @@ const basisCompositionTitle = (r: MarketingRow) =>
 // (lib/reference-contract.ts): the crop year's new-crop benchmark, rolled
 // forward once it expires, unless the user pinned a month
 // (crop_assumptions.reference_contract_month).
-type RefQuote = { price: number; stale: boolean }
+type RefQuote = { price: number; stale: boolean; source: 'live' | 'manual'; enteredAt: string | null; priceDate: string | null }
 
 // 'SEP 26' → 'Sep 26' for farmer-facing chips and dropdowns.
 function prettyMonth(label: string): string {
@@ -313,6 +315,9 @@ export default function MarketingPage() {
     return m
   }, [plantedCropList, year, asOf])
 
+  // Bumped when a manual quote is entered on this page, so the same fetch
+  // re-runs and every section picks the new price up through the seam.
+  const [quoteNonce, setQuoteNonce] = useState(0)
   useEffect(() => {
     const symbols = Array.from(new Set([...monthOptsByCrop.values()].flat().map((o) => o.symbol)))
     if (symbols.length === 0) { setQuotes(new Map()); return }
@@ -326,14 +331,14 @@ export default function MarketingPage() {
         const json = await res.json().catch(() => null)
         if (cancelled || !json) return
         const m = new Map<string, RefQuote>()
-        for (const p of (json.prices ?? []) as Array<{ symbol: string; price: number | null; stale: boolean }>) {
-          if (p.price != null) m.set(p.symbol.toUpperCase(), { price: Number(p.price), stale: !!p.stale })
+        for (const [sym, q] of quoteMapFromWire(json.prices)) {
+          m.set(sym, { price: q.price, stale: q.stale, source: q.source, enteredAt: q.enteredAt, priceDate: q.priceDate })
         }
         setQuotes(m)
       } catch { /* engine falls back to each crop's raw futures average */ }
     })()
     return () => { cancelled = true }
-  }, [monthOptsByCrop])
+  }, [monthOptsByCrop, quoteNonce])
 
   // The effective reference per crop: the resolver's answer (benchmark, rolled
   // past expiry, or the user's pinned month), falling FORWARD once more when a
@@ -799,6 +804,7 @@ export default function MarketingPage() {
                 onSaveFutures={(v) => saveAssumption(r.cropId, { assumed_futures: v })}
                 onClearAssumptions={() => saveAssumption(r.cropId, { assumed_futures: null, assumed_basis: 0 })}
                 wfScenario={wfScenario}
+                onManualQuote={() => setQuoteNonce((n) => n + 1)}
               />
             ) : (
             <CropSection
@@ -818,6 +824,7 @@ export default function MarketingPage() {
               onSaveFutures={(v) => saveAssumption(r.cropId, { assumed_futures: v })}
               onClearAssumptions={() => saveAssumption(r.cropId, { assumed_futures: null, assumed_basis: 0 })}
               wfScenario={wfScenario}
+              onManualQuote={() => setQuoteNonce((n) => n + 1)}
             />
             )
           })}
@@ -865,10 +872,12 @@ export default function MarketingPage() {
 function CropSection({
   row, advanced, basisOpen, onToggleBasis, detailsOpen, onToggleDetails,
   cropYear, refContract, monthOptions, quotes, onSaveMonth,
-  onSaveBasis, onSaveFutures, onClearAssumptions, wfScenario,
+  onSaveBasis, onSaveFutures, onClearAssumptions, wfScenario, onManualQuote,
 }: {
   row: MarketingRow
   advanced: boolean
+  /** A manual quote was saved for a symbol on this section — the page refetches. */
+  onManualQuote?: (q: Quote) => void
   basisOpen: boolean
   onToggleBasis: () => void
   detailsOpen: boolean
@@ -899,6 +908,7 @@ function CropSection({
   const [wfFutures, setWfFutures] = useState(row.assumedFutures != null ? String(row.assumedFutures) : '')
   const [wfSymbol, setWfSymbol] = useState<string | null>(null)
   const [wfStale, setWfStale] = useState(false)
+  const [wfQuote, setWfQuote] = useState<Quote | null>(null)
   const [wfNote, setWfNote] = useState<string | null>(null)
   const [fetching, setFetching] = useState(false)
   const [basisInput, setBasisInput] = useState(row.assumedBasis ? String(row.assumedBasis) : '')
@@ -949,8 +959,8 @@ function CropSection({
       })
       const json = await res.json().catch(() => null)
       const p = json?.prices?.[0]
-      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(refContract.symbol); setWfStale(!!p.stale); onSaveFutures(Number(p.price)) }
-      else setWfNote('No price available — enter manually.')
+      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(refContract.symbol); setWfStale(!!p.stale); setWfQuote(quoteFromWire(p)); onSaveFutures(Number(p.price)) }
+      else setWfNote('No price available — enter one below (it is saved for every screen) or type your own assumption.')
     } catch {
       setWfNote('Could not fetch — enter manually.')
     } finally { setFetching(false) }
@@ -1242,8 +1252,14 @@ function CropSection({
                         )
                       })}
                     </select>
-                    <span className="text-slate-500 tabular-nums">
-                      {refContract.symbol}{refQuote ? ` · ${price2(refQuote.price)}${refQuote.stale ? ' (not current)' : ''}` : ' · no quote'}
+                    <span className="text-slate-500 tabular-nums inline-flex items-center gap-1">
+                      {refContract.symbol}{refQuote ? ` · ${price2(refQuote.price)}${refQuote.source === 'live' && refQuote.stale ? ' (not current)' : ''}` : ' · no quote'}
+                      {refQuote?.source === 'manual' && <QuoteChip quote={refQuote} />}
+                      {/* No live quote for this contract: enter one here — it is
+                          saved for the operation and every screen prices off it. */}
+                      {refQuote?.source !== 'live' && onManualQuote && (
+                        <ManualQuoteControl symbol={refContract.symbol} quote={refQuote ? { symbol: refContract.symbol, ...refQuote } : null} onSaved={onManualQuote} compact />
+                      )}
                     </span>
                     {refContract.rolled && (
                       <span className="rounded-full bg-amber-100 border border-amber-300 text-amber-800 px-1.5 py-0.5">
@@ -1257,7 +1273,7 @@ function CropSection({
                     )}
                   </div>
                 )}
-                {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{advanced ? `${wfSymbol} · ` : 'Today · '}{price2(wfFut)}{wfStale ? ' (not current)' : ''}</div>}
+                {wfSymbol && wfFut != null && <div className="text-xs text-slate-500 inline-flex items-center gap-1">{advanced ? `${wfSymbol} · ` : 'Today · '}{price2(wfFut)}{wfQuote?.source === 'live' && wfStale ? ' (not current)' : ''}{wfQuote?.source === 'manual' && <QuoteChip quote={wfQuote} />}</div>}
                 {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
                 {/* Explanation under the futures input. */}
                 <div className="text-xs text-slate-400">Assumed {advanced ? 'futures ' : ''}price — saves automatically; values the unpriced bushels until cleared.</div>
@@ -1286,8 +1302,9 @@ function CropSection({
 // isn't tracked yet, and cotton has no basis concept until it is). The What-If
 // re-prices the unhedged lbs at a scenario ¢/lb against the crop-year CTZ.
 // ---------------------------------------------------------------------------
-function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContract, monthOptions, quotes, onSaveMonth, onSaveFutures, onClearAssumptions, wfScenario }: {
+function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContract, monthOptions, quotes, onSaveMonth, onSaveFutures, onClearAssumptions, wfScenario, onManualQuote }: {
   row: MarketingRow
+  onManualQuote?: (q: Quote) => void
   detailsOpen: boolean
   onToggleDetails: () => void
   cropYear: number | null
@@ -1306,6 +1323,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
   const [wfFutures, setWfFutures] = useState(row.assumedFutures != null ? String(row.assumedFutures) : '')
   const [wfSymbol, setWfSymbol] = useState<string | null>(null)
   const [wfStale, setWfStale] = useState(false)
+  const [wfQuote, setWfQuote] = useState<Quote | null>(null)
   const [wfNote, setWfNote] = useState<string | null>(null)
   const [fetching, setFetching] = useState(false)
   // Dollar-style entry (0.70) and legacy cents (70.00) both land as ¢/lb.
@@ -1333,8 +1351,8 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
       })
       const json = await res.json().catch(() => null)
       const p = json?.prices?.[0]
-      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(refContract.symbol); setWfStale(!!p.stale); onSaveFutures(Number(p.price)) }
-      else setWfNote('No price available — enter manually.')
+      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(refContract.symbol); setWfStale(!!p.stale); setWfQuote(quoteFromWire(p)); onSaveFutures(Number(p.price)) }
+      else setWfNote('No price available — enter one below (it is saved for every screen) or type your own assumption.')
     } catch {
       setWfNote('Could not fetch — enter manually.')
     } finally { setFetching(false) }
@@ -1575,8 +1593,14 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
                       )
                     })}
                   </select>
-                  <span className="text-slate-500 tabular-nums">
-                    {refContract.symbol}{refQuote ? ` · ${cents2(refQuote.price)}${refQuote.stale ? ' (not current)' : ''}` : ' · no quote'}
+                  <span className="text-slate-500 tabular-nums inline-flex items-center gap-1">
+                    {refContract.symbol}{refQuote ? ` · ${cents2(refQuote.price)}${refQuote.source === 'live' && refQuote.stale ? ' (not current)' : ''}` : ' · no quote'}
+                    {refQuote?.source === 'manual' && <QuoteChip quote={refQuote} />}
+                    {/* ICE cotton has no live coverage: the manual quote is the
+                        normal path here — enter it once, saved for every screen. */}
+                    {refQuote?.source !== 'live' && onManualQuote && (
+                      <ManualQuoteControl symbol={refContract.symbol} quote={refQuote ? { symbol: refContract.symbol, ...refQuote } : null} onSaved={onManualQuote} compact />
+                    )}
                   </span>
                   {refContract.rolled && (
                     <span className="rounded-full bg-amber-100 border border-amber-300 text-amber-800 px-1.5 py-0.5">
@@ -1590,7 +1614,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
                   )}
                 </div>
               )}
-              {wfSymbol && wfFut != null && <div className="text-xs text-slate-500">{wfSymbol} · {cents2(wfFut)}{wfStale ? ' (not current)' : ''}</div>}
+              {wfSymbol && wfFut != null && <div className="text-xs text-slate-500 inline-flex items-center gap-1">{wfSymbol} · {cents2(wfFut)}{wfQuote?.source === 'live' && wfStale ? ' (not current)' : ''}{wfQuote?.source === 'manual' && <QuoteChip quote={wfQuote} />}</div>}
               {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
               <div className="text-xs text-slate-400">Assumed $/lb — saves automatically; values the unhedged lbs until cleared.</div>
             </div>

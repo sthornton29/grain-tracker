@@ -7,8 +7,6 @@ import {
   COMMODITIES,
   type Commodity,
   contractMonthSortKey,
-  unrealizedPnl,
-  pnlSizeFor,
   optionUnrealizedPnl,
   bushelsFor,
   quantityFor,
@@ -19,6 +17,8 @@ import {
   fmtCents,
 } from '@/lib/hedging'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
+import { quoteMapFromWire, type Quote } from '@/lib/quotes'
+import { markOpenPosition } from '@/lib/hedging-rows'
 import { buildEntityScope } from '@/lib/entity-scope'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import type { Crop, Entity, FuturesPosition, OptionPosition } from '@/lib/types'
@@ -41,7 +41,8 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
   const [positions, setPositions] = useState<FuturesPosition[]>([])
   const [options, setOptions] = useState<OptionPosition[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
-  const [priceBySymbol, setPriceBySymbol] = useState<Map<string, number>>(new Map())
+  const [quoteBySymbol, setQuoteBySymbol] = useState<Map<string, Quote>>(new Map())
+  const [priceDate, setPriceDate] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   const [cropYear, setCropYear] = useState('All')
@@ -52,20 +53,29 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [pos, ent, mp, opt] = await Promise.all([
+      const [pos, ent, opt] = await Promise.all([
         fetchAllRows((f, t) => supabase.from('futures_positions').select('*').order('trade_date', { ascending: false }).order('id').range(f, t)),
         supabase.from('entities').select('*').order('name'),
-        supabase.from('market_prices').select('contract_symbol, price, price_date').order('price_date', { ascending: false }),
         fetchAllRows((f, t) => supabase.from('options_positions').select('*').order('trade_date', { ascending: false }).order('id').range(f, t)),
       ])
-      setPositions((pos.data as FuturesPosition[]) ?? [])
+      const allPos = (pos.data as FuturesPosition[]) ?? []
+      setPositions(allPos)
       setOptions((opt.data as OptionPosition[]) ?? [])
       setEntities((ent.data as Entity[]) ?? [])
-      const m = new Map<string, number>()
-      for (const r of (mp.data as Array<{ contract_symbol: string; price: number }>) ?? []) {
-        if (!m.has(r.contract_symbol)) m.set(r.contract_symbol, Number(r.price))
+      // Quotes for the open symbols through THE seam (/api/market-prices:
+      // live → manual → none) — never a raw newest-row read of the cache, so
+      // a manual cotton quote and its provenance reach this report too.
+      const symbols = Array.from(new Set(allPos.filter((p) => p.status === 'open').map((p) => p.contract_symbol)))
+      const m = new Map<string, Quote>()
+      if (symbols.length > 0) {
+        try {
+          const res = await fetch('/api/market-prices', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ symbols }) })
+          const json = await res.json().catch(() => null)
+          for (const [k, v] of quoteMapFromWire(json?.prices)) m.set(k, v)
+          setPriceDate(typeof json?.priceDate === 'string' ? json.priceDate : null)
+        } catch { /* unrealized stays "—" for unquoted rows */ }
       }
-      setPriceBySymbol(m)
+      setQuoteBySymbol(m)
       setLoading(false)
     })()
   }, [supabase])
@@ -163,10 +173,8 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
     [attributedPositions, viewerReady, viewer.isViewer, cropYear, commodity, entityId, from, to],
   )
 
-  const unrealizedOf = (p: FuturesPosition) =>
-    p.status === 'open'
-      ? unrealizedPnl({ side: p.side, tradePrice: p.trade_price, currentPrice: priceBySymbol.get(p.contract_symbol) ?? null, numContracts: p.num_contracts, contractSizeBu: pnlSizeFor(p.commodity) })
-      : null
+  const markOf = (p: FuturesPosition) => markOpenPosition({ position: p, quote: quoteBySymbol.get(p.contract_symbol) ?? null })
+  const unrealizedOf = (p: FuturesPosition) => (p.status === 'open' ? markOf(p).unrealized : null)
   const netRealizedOf = (p: FuturesPosition) => (p.status === 'closed' ? (p.realized_pnl ?? 0) - (p.commission ?? 0) : 0)
 
   // Options. No live pricing in the report — unrealized uses each option's
@@ -230,7 +238,7 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
     }
     return Array.from(m.values()).sort((a, b) => b.cropYear - a.cropYear || a.commodity.localeCompare(b.commodity))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, priceBySymbol])
+  }, [filtered, quoteBySymbol])
 
   function filtersLabel() {
     const parts = [`Crop year: ${cropYear}`, `Commodity: ${commodity}`]

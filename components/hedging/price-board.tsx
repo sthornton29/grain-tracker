@@ -2,9 +2,17 @@
 
 import { COMMODITIES, type Commodity, contractMonthSortKey, fmtCommodityPrice } from '@/lib/hedging'
 import type { FuturesPosition } from '@/lib/types'
+import type { Quote } from '@/lib/quotes'
+import ManualQuoteControl, { QuoteChip } from '@/components/quote-chip'
 
-export type PriceInfo = { price: number | null; price_date: string | null; stale: boolean }
+/** One quote per symbol as the seam returned it (null price = no quote). */
+export type PriceInfo = { price: number | null; price_date: string | null; stale: boolean; source?: 'live' | 'manual' | null; entered_at?: string | null }
 export type PriceMap = Map<string, PriceInfo>
+
+export function infoToQuote(symbol: string, info: PriceInfo | undefined): Quote | null {
+  if (!info || info.price == null) return null
+  return { symbol, price: info.price, priceDate: info.price_date, stale: info.stale, source: info.source === 'manual' ? 'manual' : 'live', enteredAt: info.entered_at ?? null }
+}
 
 // Compact board of current futures prices for the contract months the user
 // actually holds open positions in, grouped by commodity.
@@ -12,10 +20,13 @@ export default function PriceBoard({
   positions,
   prices,
   priceDate,
+  onManualSaved,
 }: {
   positions: FuturesPosition[]
   prices: PriceMap
   priceDate: string | null
+  /** A manual quote was entered/edited on the board — the page refetches. */
+  onManualSaved?: (q: Quote) => void
 }) {
   // Distinct (symbol, contract_month) per commodity from OPEN positions.
   const byCommodity = new Map<Commodity, Array<{ symbol: string; month: string }>>()
@@ -56,12 +67,20 @@ export default function PriceBoard({
                 <ul className="space-y-1">
                   {list.map(({ symbol }) => {
                     const info = prices.get(symbol)
+                    const q = infoToQuote(symbol, info)
                     return (
-                      <li key={symbol} className="flex justify-between text-sm">
+                      <li key={symbol} className="flex justify-between items-center gap-2 text-sm">
                         <span className="font-mono text-slate-600">{symbol}</span>
-                        <span className="font-mono">
-                          {info?.price != null ? fmtCommodityPrice(c, info.price) : '—'}
-                          {info?.stale && <span className="text-amber-600 text-xs ml-1" title={`as of ${info.price_date}`}>*</span>}
+                        <span className="font-mono inline-flex items-center gap-1.5">
+                          {q ? fmtCommodityPrice(c, q.price) : null}
+                          {q?.source === 'live' && q.stale && <span className="text-amber-600 text-xs" title={`as of ${q.priceDate}`}>*</span>}
+                          {q?.source === 'manual' && <QuoteChip quote={q} />}
+                          {/* No live price (ICE cotton, a dropped month, a feed outage):
+                              the blank becomes an "enter price" box; a manual quote
+                              gets "edit". Saved once, used everywhere. */}
+                          {onManualSaved && q?.source !== 'live' && (
+                            <ManualQuoteControl symbol={symbol} quote={q} onSaved={onManualSaved} compact />
+                          )}
                         </span>
                       </li>
                     )
@@ -72,7 +91,7 @@ export default function PriceBoard({
           )
         })}
       </div>
-      <p className="text-xs text-slate-400 mt-2">* price is from an earlier day (market closed or not yet refreshed).</p>
+      <p className="text-xs text-slate-400 mt-2">* price is from an earlier day (market closed or not yet refreshed). A <span className="rounded-full bg-amber-100 text-amber-800 px-1 font-semibold">manual</span> chip marks a price you entered because there is no live quote for that contract.</p>
     </div>
   )
 }

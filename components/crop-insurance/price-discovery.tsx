@@ -51,7 +51,7 @@ export default function PriceDiscovery({
 }) {
   const supabase = useMemo(() => createClient(), [])
   const [results, setResults] = useState<RmaLookupResult[]>([])
-  const [liveQuotes, setLiveQuotes] = useState<Map<string, { price: number; priceDate: string | null }>>(new Map())
+  const [liveQuotes, setLiveQuotes] = useState<Map<string, { price: number; priceDate: string | null; stale: boolean; source: 'live' | 'manual' }>>(new Map())
   const [busy, setBusy] = useState(false)
   const [rowBusy, setRowBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -123,7 +123,7 @@ export default function PriceDiscovery({
   // > projected) — the harvest cell displays and edits against it.
   const harvestResByCrop = useMemo(() => {
     const liveByCrop = new Map<string, LiveHarvest>()
-    for (const [id, q] of liveQuotes) liveByCrop.set(id, { price: q.price, stale: false, priceDate: q.priceDate })
+    for (const [id, q] of liveQuotes) liveByCrop.set(id, { price: q.price, stale: q.stale, priceDate: q.priceDate })
     return resolveHarvestPriceByCrop({
       cropIds: grownCrops.map((c) => c.id), cropYear,
       policies: policies.filter((p) => p.crop_year === cropYear),
@@ -228,9 +228,9 @@ export default function PriceDiscovery({
         })
         const json = await res.json().catch(() => null)
         if (cancelled || !json) return
-        const m = new Map<string, { price: number; priceDate: string | null }>()
-        for (const e of (json.estimates ?? []) as Array<{ crop_id: string; price: number | null; price_date: string | null }>) {
-          if (e.price != null) m.set(e.crop_id, { price: Number(e.price), priceDate: e.price_date })
+        const m = new Map<string, { price: number; priceDate: string | null; stale: boolean; source: 'live' | 'manual' }>()
+        for (const e of (json.estimates ?? []) as Array<{ crop_id: string; price: number | null; price_date: string | null; stale?: boolean; source?: 'live' | 'manual' | null }>) {
+          if (e.price != null) m.set(e.crop_id, { price: Number(e.price), priceDate: e.price_date, stale: !!e.stale, source: e.source === 'manual' ? 'manual' : 'live' })
         }
         setLiveQuotes(m)
       } catch {

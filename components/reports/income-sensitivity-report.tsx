@@ -21,6 +21,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { buildDoubleCropSet } from '@/lib/plantings'
+import { quoteMapFromWire, type Quote } from '@/lib/quotes'
+import ManualQuoteControl, { QuoteChip } from '@/components/quote-chip'
 import { marketingCropYearOptions } from '@/lib/crop-years'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, type CombineEntryLike } from '@/lib/yields'
@@ -95,6 +97,7 @@ type CropView = {
   symbol: string | null
   /** Today's live discovery-month price — the "you are here" price. */
   currentPrice: number | null
+  currentQuote: Quote | null
   /** Expected yield on the acres the yield axis sensitizes. */
   expectedYield: number | null
   actualYield: number | null
@@ -144,6 +147,11 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
   const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
   // Live discovery-month futures per crop_id.
   const [liveEstimates, setLiveEstimates] = useState<Map<string, number>>(new Map())
+  // The quote behind each crop's axis center, with provenance (a manual
+  // cotton quote shows its chip in the axis header); bumped nonce refetches
+  // after a manual quote is entered here.
+  const [liveQuoteByCrop, setLiveQuoteByCrop] = useState<Map<string, Quote>>(new Map())
+  const [quoteNonce, setQuoteNonce] = useState(0)
   // Physical cotton marketing (044): sold/pool/loan facts that lock lbs and
   // floor in-loan cells at the banked CCC loan value. Raw fetch; the
   // entity-scoped summary is derived below.
@@ -386,24 +394,23 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
         })
         const json = await res.json().catch(() => null)
         if (cancelled || !json) return
-        const bySymbol = new Map<string, number>()
-        for (const p of (json.prices ?? []) as Array<{ symbol: string; price: number | null }>) {
-          if (p.price != null) bySymbol.set(p.symbol.toUpperCase(), Number(p.price))
-        }
+        const quotesBySymbol = quoteMapFromWire(json.prices)
         const prices = new Map<string, number>()
+        const quotesByCrop = new Map<string, Quote>()
         const syms = new Map<string, string>()
         for (const [id, ref] of refByCrop) {
-          const eff = fallForwardOnMissingQuote(ref, optsByCrop.get(id) ?? [], (s) => bySymbol.has(s), bySymbol.size > 0)
+          const eff = fallForwardOnMissingQuote(ref, optsByCrop.get(id) ?? [], (s) => quotesBySymbol.has(s), quotesBySymbol.size > 0)
           syms.set(id, eff.symbol)
-          const price = bySymbol.get(eff.symbol)
-          if (price != null) prices.set(id, price)
+          const q = quotesBySymbol.get(eff.symbol)
+          if (q) { prices.set(id, q.price); quotesByCrop.set(id, q) }
         }
         setLiveEstimates(prices)
+        setLiveQuoteByCrop(quotesByCrop)
         setRefSymbols(syms)
       } catch { /* fall back to stored/assumed prices */ }
     })()
     return () => { cancelled = true }
-  }, [cropYear, refByCrop, cropById, refAsOf])
+  }, [cropYear, refByCrop, cropById, refAsOf, quoteNonce])
 
   // Field-level dry bushels + last load date, splits-aware — narrowed to the
   // entity's fields.
@@ -620,6 +627,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
         // the RMA discovery symbol is only the last-resort label.
         symbol: refSymbols.get(cropId) ?? refByCrop.get(cropId)?.symbol ?? harvestContractSymbol(crop.name, cropYear),
         currentPrice: live,
+        currentQuote: liveQuoteByCrop.get(cropId) ?? null,
         expectedYield: split.state === 'complete' ? actualYield : expectedRemaining,
         actualYield,
         finalHarvestPrice,
@@ -631,7 +639,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       })
     }
     return views.sort((a, b) => a.crop.name.localeCompare(b.crop.name))
-  }, [cropYear, viewer.loading, viewerA.ready, plantedCropIds, acresByCrop, cropById, yearPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, scopedPolicies, scos, ecos, staxes, mcos, effCountyAssumptions, priceEstimates, harvestSplit, remainingExpectedYield, liveEstimates, refSymbols, refByCrop, axes, programCfg, includeGov, govPerAcre, cottonPhysicalSummary, seedCommitments])
+  }, [cropYear, viewer.loading, viewerA.ready, plantedCropIds, acresByCrop, cropById, yearPlantings, scopedContracts, scopedFutures, scopedOptions, effAssumptions, scopedPolicies, scos, ecos, staxes, mcos, effCountyAssumptions, priceEstimates, harvestSplit, remainingExpectedYield, liveEstimates, liveQuoteByCrop, refSymbols, refByCrop, axes, programCfg, includeGov, govPerAcre, cottonPhysicalSummary, seedCommitments])
 
   function setAxis(cropId: string, patch: Partial<AxisCfg>) {
     const key = `${cropYear}:${cropId}`
@@ -810,7 +818,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
           </details>
 
           {cropViews.map((v) => (
-            <CropSensitivitySection
+            <CropSensitivitySection onManualQuote={() => setQuoteNonce((n) => n + 1)}
               key={`${v.crop.id}-${cropYear}`}
               view={v}
               mode={view}
@@ -872,8 +880,9 @@ function AxisField({ label, value, placeholder, onCommit }: {
 // controls, then the two-variable table with the "you are here" cell marked.
 // ---------------------------------------------------------------------------
 function CropSensitivitySection({
-  view: v, mode, onAxisChange,
-}: {
+  view: v, mode, onAxisChange, onManualQuote }: {
+  /** A manual quote was entered on this crop's axis — the report refetches. */
+  onManualQuote?: () => void
   view: CropView
   mode: ViewMode
   onAxisChange: (patch: Partial<AxisCfg>) => void
@@ -1007,7 +1016,10 @@ function CropSensitivitySection({
               <thead className={theadCls}>
                 <tr>
                   <th className="text-right px-2 py-1 whitespace-nowrap">
-                    {v.symbol ? `${v.symbol} futures` : 'Futures'} {isCotton ? '$/lb' : '$/bu'} ↓
+                    <span className="inline-flex items-center gap-1 justify-end">
+                      {v.symbol ? `${v.symbol} futures` : 'Futures'} {isCotton ? '$/lb' : '$/bu'} ↓
+                      {v.currentQuote?.source === 'manual' && <QuoteChip quote={v.currentQuote} />}
+                    </span>
                   </th>
                   {v.yieldValues.map((y, ci) => (
                     <th
@@ -1058,7 +1070,13 @@ function CropSensitivitySection({
         {v.grid.length > 0 && (
           <p className="text-[11px] text-slate-400">
             {mode === 'profit' ? 'Net profit/acre' : 'Revenue/acre'} per scenario.
-            {v.currentPrice != null && ` Highlighted row/column mark today's ${v.symbol ?? ''} price (${fmtP(v.currentPrice)})${v.expectedYield != null ? ` and the ${v.split.state === 'complete' ? 'actual' : 'expected'} yield (${v.expectedYield.toFixed(1)} ${yUnit})` : ''}.`}
+            {v.currentPrice != null && ` Highlighted row/column mark today's ${v.symbol ?? ''} price (${fmtP(v.currentPrice)})${v.currentQuote?.source === 'manual' ? ' — a manual quote' : ''}${v.expectedYield != null ? ` and the ${v.split.state === 'complete' ? 'actual' : 'expected'} yield (${v.expectedYield.toFixed(1)} ${yUnit})` : ''}.`}
+            {v.currentPrice == null && v.symbol && (
+              <span className="ml-1 inline-flex items-center gap-1">
+                No live price for {v.symbol} — the axis centers on your assumptions.{' '}
+                <ManualQuoteControl symbol={v.symbol} quote={null} onSaved={() => onManualQuote?.()} compact />
+              </span>
+            )}
             {' '}Hover a cell for production, sales, and insurance detail.
           </p>
         )}

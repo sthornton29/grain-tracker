@@ -9,6 +9,8 @@ import ClosePositionDialog from './close-position-dialog'
 import CloseOptionDialog from './close-option-dialog'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
+import { saveManualQuote } from '@/components/quote-chip'
+import { hasLiveCoverage } from '@/lib/quotes'
 import {
   MAX_PDF_BYTES,
   PdfTooLargeError,
@@ -929,6 +931,12 @@ export default function StatementImport({ entities, existingPositions, existingO
                         <span className="text-slate-300">·</span>
                         <span className="text-xs text-slate-600">Closed {g.close_trade_date} @ <span className="font-mono">{fmtCommodityPrice(g.commodity, g.close_price)}</span></span>
                         <span className="text-xs text-slate-500">· {lots.length} lot{lots.length === 1 ? '' : 's'}</span>
+                        {/* A contract with no live coverage (ICE cotton): the statement's
+                            close is the freshest price on hand — offer it as the
+                            operation's manual quote, one tap. */}
+                        {!hasLiveCoverage(buildContractSymbol(g.commodity, g.contract_month)) && (
+                          <QuoteFromCloseButton symbol={buildContractSymbol(g.commodity, g.contract_month)} commodity={g.commodity} price={g.close_price} date={g.close_trade_date} />
+                        )}
                       </div>
                       <div className="overflow-x-auto">
                         <table className="min-w-full text-sm">
@@ -1216,5 +1224,35 @@ export default function StatementImport({ entities, existingPositions, existingO
         />
       )}
     </Modal>
+  )
+}
+
+
+/** "Update manual quote to statement close $0.7830 (9/1)?" — one tap, then a
+ *  confirmation. Saves through the same manual_market_quotes row every
+ *  surface reads (lib/quote-resolution: live still outranks it). */
+function QuoteFromCloseButton({ symbol, commodity, price, date }: { symbol: string; commodity: string; price: number; date: string }) {
+  const [state, setState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle')
+  const [err, setErr] = useState<string | null>(null)
+  const mdy = date.replace(/^\d{4}-0?(\d+)-0?(\d+)$/, '$1/$2')
+  if (state === 'done') return <span className="text-xs text-green-700">Manual quote for {symbol} set to {fmtCommodityPrice(commodity, price)}.</span>
+  return (
+    <span className="inline-flex items-center gap-1 text-xs">
+      <button
+        type="button"
+        disabled={state === 'busy'}
+        onClick={async () => {
+          setState('busy'); setErr(null)
+          const { error } = await saveManualQuote({ symbol, price, note: `statement close ${date}` })
+          if (error) { setErr(error); setState('error'); return }
+          setState('done')
+        }}
+        className="rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+        title={`${symbol} has no live price feed. Use this statement's close as the manual quote every screen prices off.`}
+      >
+        {state === 'busy' ? 'Saving…' : `Update manual quote to statement close ${fmtCommodityPrice(commodity, price)} (${mdy})?`}
+      </button>
+      {err && <span className="text-red-600">{err}</span>}
+    </span>
   )
 }

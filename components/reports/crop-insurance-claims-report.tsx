@@ -110,7 +110,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
   const [priceEstimates, setPriceEstimates] = useState<HarvestPriceEstimate[]>([])
   const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
   // Live Barchart estimate keyed by crop_id (from /api/harvest-price-estimate).
-  const [liveEstimates, setLiveEstimates] = useState<Map<string, { price: number; label: string | null; stale: boolean; priceDate: string | null }>>(new Map())
+  const [liveEstimates, setLiveEstimates] = useState<Map<string, { price: number; label: string | null; stale: boolean; priceDate: string | null; source: 'live' | 'manual' }>>(new Map())
   const [priceNote, setPriceNote] = useState<string | null>(null)
 
   const [cropYear, setCropYear] = usePersistentState<number | ''>('ci-claims:cropYear', '')
@@ -233,9 +233,9 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
         })
         const json = await res.json().catch(() => null)
         if (cancelled || !json) return
-        const m = new Map<string, { price: number; label: string | null; stale: boolean; priceDate: string | null }>()
-        for (const e of (json.estimates ?? []) as Array<{ crop_id: string; price: number | null; label: string | null; stale: boolean; price_date: string | null }>) {
-          if (e.price != null) m.set(e.crop_id, { price: Number(e.price), label: e.label, stale: !!e.stale, priceDate: e.price_date })
+        const m = new Map<string, { price: number; label: string | null; stale: boolean; priceDate: string | null; source: 'live' | 'manual' }>()
+        for (const e of (json.estimates ?? []) as Array<{ crop_id: string; price: number | null; label: string | null; stale: boolean; price_date: string | null; source?: 'live' | 'manual' | null }>) {
+          if (e.price != null) m.set(e.crop_id, { price: Number(e.price), label: e.label, stale: !!e.stale, priceDate: e.price_date, source: e.source === 'manual' ? 'manual' : 'live' })
         }
         setLiveEstimates(m)
         setPriceNote(typeof json.note === 'string' ? json.note : null)
@@ -1027,6 +1027,9 @@ export default function CropInsuranceClaimsReport({ onPayloadChange }: Props) {
                           <td className="px-2 py-1 text-right tabular-nums">{fmtPrice(p.projected_price)}</td>
                           <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">
                             {fmtPrice(c.base.harvestPrice)} <span className={`text-xs rounded-full px-1.5 py-0.5 ${harvestTier(c.harvest).cls}`}>{harvestTier(c.harvest).text}{c.harvest?.stale ? ' · not current' : ''}</span>
+                            {c.harvest?.source === 'estimate' && liveEstimates.get(c.policy.crop_id)?.source === 'manual' && (
+                              <span className="ml-1 text-xs rounded-full bg-amber-100 text-amber-800 px-1.5 py-0.5" title="Not a live market price — entered by hand where the feed has no coverage (see Hedging).">manual · {(liveEstimates.get(c.policy.crop_id)?.priceDate ?? '').replace(/^\d{4}-0?(\d+)-0?(\d+)$/, '$1/$2')}</span>
+                            )}
                           </td>
                           <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">
                             {c.assumedYield.toFixed(1)} <span className="text-slate-400">({yieldSrcLabel[yieldBasis.source]}{Math.abs(yieldBasis.value - c.assumedYield) > 0.05 ? ` · audit ${yieldBasis.value.toFixed(1)}` : ''})</span>

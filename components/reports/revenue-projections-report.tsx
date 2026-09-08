@@ -26,6 +26,7 @@ import { SupersededNotice } from '@/components/viewer-scenario'
 import { fieldCropAggregates, cropsWithCompleteHarvest, type CombineEntryLike } from '@/lib/yields'
 import { cropToCommodity } from '@/lib/contracts'
 import { buildDoubleCropSet } from '@/lib/plantings'
+import { quoteMapFromWire, type Quote } from '@/lib/quotes'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import {
   computePolicy, harvestContractLabel, policyPremium, resolveHarvestPriceByCrop,
@@ -90,7 +91,8 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   const [scos, setScos] = useState<CropInsuranceSco[]>([])
   const [ecos, setEcos] = useState<CropInsuranceEco[]>([])
   const [priceEstimates, setPriceEstimates] = useState<HarvestPriceEstimate[]>([])
-  const [liveEstimates, setLiveEstimates] = useState<Map<string, number>>(new Map())
+  const [liveQuotes, setLiveQuotes] = useState<Map<string, Quote>>(new Map())
+  const liveEstimates = useMemo(() => new Map(Array.from(liveQuotes, ([id, q]) => [id, q.price])), [liveQuotes])
   // Government payments data.
   const [commodities, setCommodities] = useState<CoveredCommodity[]>([])
   const [baseAcres, setBaseAcres] = useState<FarmBaseAcres[]>([])
@@ -251,7 +253,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     return m
   }, [cropYear, livePriceCropIds, cropById, effAssumptions, refAsOf])
   useEffect(() => {
-    if (cropYear === '' || refByCrop.size === 0) { setLiveEstimates(new Map()); return }
+    if (cropYear === '' || refByCrop.size === 0) { setLiveQuotes(new Map()); return }
     // Fetch the resolved symbols plus each crop's later listed months so a
     // quoteless contract falls forward identically to the dashboard.
     const optsByCrop = new Map<string, ReturnType<typeof referenceMonthOptions>>()
@@ -272,17 +274,14 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
         })
         const json = await res.json().catch(() => null)
         if (cancelled || !json) return
-        const bySymbol = new Map<string, number>()
-        for (const p of (json.prices ?? []) as Array<{ symbol: string; price: number | null }>) {
-          if (p.price != null) bySymbol.set(p.symbol.toUpperCase(), Number(p.price))
-        }
-        const m = new Map<string, number>()
+        const bySymbol = quoteMapFromWire(json.prices)
+        const m = new Map<string, Quote>()
         for (const [id, ref] of refByCrop) {
           const eff = fallForwardOnMissingQuote(ref, optsByCrop.get(id) ?? [], (s) => bySymbol.has(s), bySymbol.size > 0)
-          const price = bySymbol.get(eff.symbol)
-          if (price != null) m.set(id, price)
+          const q = bySymbol.get(eff.symbol)
+          if (q) m.set(id, q)
         }
-        setLiveEstimates(m)
+        setLiveQuotes(m)
       } catch { /* keep cached/projected */ }
     })()
     return () => { cancelled = true }
@@ -482,7 +481,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       cropYear,
       policies: yearPolsAll,
       estimates: priceEstimates,
-      liveByCrop: new Map(Array.from(liveEstimates, ([id, price]) => [id, { price, stale: false, priceDate: null }])),
+      // The quote's own staleness rides through (a manual or weekend quote is
+      // not "current"); the resolver's tiering is unchanged.
+      liveByCrop: new Map(Array.from(liveQuotes, ([id, q]) => [id, { price: q.price, stale: q.stale, priceDate: q.priceDate }])),
       crops,
     })
     for (const p of yearPols) {
@@ -519,7 +520,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       m.set(p.crop_id, cur)
     }
     return m
-  }, [policies, scos, ecos, cropYear, marketingRows, liveEstimates, priceEstimates, crops, scope])
+  }, [policies, scos, ecos, cropYear, marketingRows, liveQuotes, priceEstimates, crops, scope])
 
   // Current market cash price by crop: harvest price + average basis. Cotton
   // marketing prices are ¢/lb — RMA-native sources (final/projected, $/lb)

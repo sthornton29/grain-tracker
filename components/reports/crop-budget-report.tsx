@@ -35,6 +35,7 @@ import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import ManualQuoteControl, { QuoteChip } from '@/components/quote-chip'
 import { formatCottonPrice, parseCottonPriceInput, fmtPrice } from '@/lib/hedging'
 import {
   blendBudgetLines, breakoutFields, breakoutKeyOf, breakoutKeysFor, budgetContractLabel,
@@ -58,7 +59,7 @@ const usd0 = (n: number | null | undefined) =>
 const usd2 = (n: number | null | undefined) =>
   n == null ? '—' : `${n < 0 ? '(' : ''}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${n < 0 ? ')' : ''}`
 
-type LivePrice = { price: number; priceDate: string | null; stale: boolean }
+type LivePrice = { price: number; priceDate: string | null; stale: boolean; source: 'live' | 'manual'; enteredAt: string | null }
 
 type AxisCfg = { pc?: string; ps?: string; pn?: string; yc?: string; ys?: string; yn?: string }
 
@@ -321,8 +322,8 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
       if (!json) return
       setLivePrices((prev) => {
         const m = new Map(prev)
-        for (const p of (json.prices ?? []) as Array<{ symbol: string; price: number | null; price_date: string | null; stale: boolean }>) {
-          if (p.price != null) m.set(p.symbol, { price: Number(p.price), priceDate: p.price_date, stale: !!p.stale })
+        for (const p of (json.prices ?? []) as Array<{ symbol: string; price: number | null; price_date: string | null; stale: boolean; source?: 'live' | 'manual' | null; entered_at?: string | null }>) {
+          if (p.price != null) m.set(p.symbol, { price: Number(p.price), priceDate: p.price_date, stale: !!p.stale, source: p.source === 'manual' ? 'manual' : 'live', enteredAt: p.entered_at ?? null })
           else m.delete(p.symbol)
         }
         return m
@@ -421,10 +422,10 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
     const chipFor = (card: CropCard): DisplayRow['priceChip'] => {
       const liveMode = (card.carrier?.price_mode ?? 'live') === 'live' && !card.usedManualFallback
       return {
-        label: liveMode ? (card.symbol ?? 'live') : 'manual',
+        label: liveMode ? `${card.symbol ?? 'live'}${card.live?.source === 'manual' ? ' · manual quote' : ''}` : 'manual',
         live: liveMode,
         title: liveMode
-          ? `${budgetContractLabel(card.crop?.name, budgetYear === '' ? defaultBudgetYear : budgetYear, new Date()) ?? 'Live futures'}${card.live ? ` as of ${card.live.priceDate ?? '—'}${card.live.stale ? ' (not current)' : ''}` : ' — not quoted'}${card.carrier?.basis ? ' + basis' : ''}`
+          ? `${budgetContractLabel(card.crop?.name, budgetYear === '' ? defaultBudgetYear : budgetYear, new Date()) ?? 'Live futures'}${card.live ? (card.live.source === 'manual' ? ` — manual quote entered ${card.live.priceDate ?? ''}` : ` as of ${card.live.priceDate ?? '—'}${card.live.stale ? ' (not current)' : ''}`) : ' — not quoted'}${card.carrier?.basis ? ' + basis' : ''}`
           : 'Manual price — ↻ in Assumptions restores the live quote',
       }
     }
@@ -1185,7 +1186,7 @@ function CropAssumptionCard({
                 <span
                   className={`text-[10px] rounded-full px-1.5 py-0.5 border ${liveMode ? 'bg-sky-100 text-sky-800 border-sky-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}
                   title={liveMode
-                    ? `${budgetContractLabel(card.crop?.name, year, new Date()) ?? 'Live futures'}${card.live ? ` as of ${card.live.priceDate ?? '—'}${card.live.stale ? ' (not current)' : ''}` : ' — not quoted'}`
+                    ? `${budgetContractLabel(card.crop?.name, year, new Date()) ?? 'Live futures'}${card.live ? (card.live.source === 'manual' ? ` — manual quote entered ${card.live.priceDate ?? ''}` : ` as of ${card.live.priceDate ?? '—'}${card.live.stale ? ' (not current)' : ''}`) : ' — not quoted'}`
                     : 'Manual price — ↻ restores the live quote'}
                 >
                   {liveMode ? (card.symbol ?? 'live') : 'manual'}
@@ -1197,6 +1198,21 @@ function CropAssumptionCard({
                   onCommit={(s) => onPrice(card, s)}
                   width="w-20"
                 />
+                {/* The quote behind the live mode: a manual (operation-wide)
+                    quote shows its chip; no quote at all offers to enter one —
+                    saved for every screen, unlike the budget's own typed price. */}
+                {liveMode && card.symbol && card.live?.source === 'manual' && (
+                  <QuoteChip quote={{ source: 'manual', priceDate: card.live.priceDate, enteredAt: card.live.enteredAt }} />
+                )}
+                {liveMode && card.symbol && card.live?.source !== 'live' && (
+                  <ManualQuoteControl
+                    symbol={card.symbol}
+                    quote={card.live ? { symbol: card.symbol, price: card.live.price, priceDate: card.live.priceDate, stale: card.live.stale, source: card.live.source, enteredAt: card.live.enteredAt } : null}
+                    onSaved={() => onRefreshQuote(card.symbol!)}
+                    compact
+                    label="enter a quote"
+                  />
+                )}
                 {liveMode && card.symbol ? (
                   <button type="button" className="text-xs text-brand-deep" title="Refresh this quote" onClick={() => onRefreshQuote(card.symbol!)}>↻</button>
                 ) : !liveMode ? (
