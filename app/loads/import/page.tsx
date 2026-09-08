@@ -379,6 +379,8 @@ export default function LoadsImportPage() {
             onReject={(rejected) => setErr(rejectMessage('Use a CSV file (download the template above).', rejected))}
             accept=".csv,text/csv,text/plain"
             hint="Drop the CSV here"
+            variant="compact"
+            accepts="CSV (use the template)"
             className="inline-block"
           >
             <label className="text-sm rounded-lg bg-slate-700 text-white px-3 py-2 cursor-pointer inline-block">

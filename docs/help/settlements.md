@@ -1,7 +1,7 @@
 ---
 page_route: /settlements
 title: Settlements
-updated: 2026-09-01
+updated: 2026-09-08
 keywords: settlements, settlement statement, buyer, paid, unpaid, reconcile, ticket, PDF, upload, revenue, discounts, itemized, drying, test weight, shrink, price per bushel, edit, delete
 ---
 ## What this page is for
@@ -16,6 +16,7 @@ Settlements is where buyer settlement statements live — the paperwork that say
 - **Upload a spreadsheet** — columns for ticket number, net bushels, gross revenue, and discounts (a template is downloadable).
 - **Type the rows** by hand.
 - As you review, each line shows whether its ticket number matches one of your loads. Save, and the settlement is recorded with its lines tied to loads.
+- **Totals and check stubs are not loads.** Settlement packets often end with a check stub that restates the whole settlement ("58,118.929 bu … REF 16936 … 289,432.26"), and many sheets print a TOTAL row under the tickets. Turnrow tells the reader to skip those, and checks its work: a line whose bushels or dollars equal all the other lines added together, whose "ticket number" is really the settlement's own reference or check number, or whose bushels dwarf every other load is shown in amber as **Left out: looks like the settlement total — not a load**, unchecked and not counted. If the guard is ever wrong, tick **Include it** and the line comes back. The settlement's own grand total is read separately and shown under the table next to the sum of the ticket lines, so you can see at a glance whether they match.
 - Open a settlement anytime to see its reconciliation page.
 
 ## The settlement detail page

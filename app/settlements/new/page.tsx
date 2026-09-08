@@ -15,6 +15,7 @@ import {
 } from '@/lib/pdf-upload'
 import { parseDocumentChunked } from '@/lib/parse-chunked'
 import { mergeSettlements } from '@/lib/parse-merge'
+import { flagSummaryLines, reconcileLines } from '@/lib/settlement-lines'
 import { imagesToPdf } from '@/lib/image-capture'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
@@ -44,6 +45,10 @@ type RowDraft = {
   gross_revenue: string
   discounts: string
   notes: string
+  /** Guard verdict (lib/settlement-lines): an excluded row is a summary /
+   *  check-stub line, not a load — kept visible, unchecked, one click back. */
+  excluded?: boolean
+  guard?: string | null
 }
 
 const emptyRow = (): RowDraft => ({
@@ -118,6 +123,8 @@ export default function NewSettlementPage() {
   const [settlementNumber, setSettlementNumber] = useState('')
   const [notes, setNotes] = useState('')
   const [rows, setRows] = useState<RowDraft[]>([])
+  // The statement's own grand total as the AI read it (reconciliation only).
+  const [reportedTotal, setReportedTotal] = useState<string>('')
   const [discountRows, setDiscountRows] = useState<DiscountDraft[]>([])
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -229,14 +236,21 @@ export default function NewSettlementPage() {
       }
       if (data.settlement_number != null) setSettlementNumber(String(data.settlement_number))
 
-      const nextRows: RowDraft[] = extractedLines.map((li) => ({
+      // Belt and suspenders under the prompt: a TOTAL row or a check-stub line
+      // that came back as a "ticket" is flagged and shown excluded.
+      const guards = flagSummaryLines(extractedLines, { settlementNumber: data.settlement_number })
+      const nextRows: RowDraft[] = extractedLines.map((li, i) => ({
         ticket_number: li.ticket_number != null ? String(li.ticket_number) : '',
         net_bushels: li.net_bushels != null ? String(li.net_bushels) : '',
         gross_revenue: li.gross_revenue != null ? String(li.gross_revenue) : '',
         discounts: li.discounts != null ? String(li.discounts) : '',
         notes: '',
+        excluded: guards[i].flagged,
+        guard: guards[i].reason,
       }))
       setRows(nextRows)
+      setReportedTotal(data.statement_reported_total != null ? String(data.statement_reported_total) : '')
+      const flaggedCount = guards.filter((g) => g.flagged).length
       const extractedItems = Array.isArray(data.discount_items) ? data.discount_items : []
       setDiscountRows(extractedItems.map((di) => ({
         category: coerceDiscountCategory(di.category),
@@ -247,9 +261,11 @@ export default function NewSettlementPage() {
         deduction_kind: coerceDeductionKind(di.deduction_kind),
       })))
       setAiBanner(
-        `AI extracted ${nextRows.length} line item${nextRows.length === 1 ? '' : 's'}` +
+        `AI extracted ${nextRows.length - flaggedCount} ticket line${nextRows.length - flaggedCount === 1 ? '' : 's'}` +
         (extractedItems.length > 0 ? ` and ${extractedItems.length} itemized discount${extractedItems.length === 1 ? '' : 's'}` : '') +
-        ' from settlement PDF. Please review before saving.',
+        ' from settlement PDF.' +
+        (flaggedCount > 0 ? ` ${flaggedCount} line${flaggedCount === 1 ? '' : 's'} looked like the settlement total (a TOTAL row or check stub) and ${flaggedCount === 1 ? 'is' : 'are'} left out — tick ${flaggedCount === 1 ? 'it' : 'them'} back in if that's wrong.` : '') +
+        ' Please review before saving.',
       )
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) {
@@ -286,7 +302,8 @@ export default function NewSettlementPage() {
     setErr(null)
     if (!buyerId) { setErr('Pick a buyer.'); return }
     if (!settlementDate) { setErr('Pick a settlement date.'); return }
-    if (rows.length === 0) { setErr('Add at least one line.'); return }
+    const includedRows = rows.filter((r) => !r.excluded)
+    if (includedRows.length === 0) { setErr('Add at least one line.'); return }
     setSaving(true)
 
     let pdfUrl: string | null = null
@@ -318,7 +335,7 @@ export default function NewSettlementPage() {
       setSaving(false); setErr(sErr?.message ?? 'Could not save settlement.'); return
     }
 
-    const lines = rows.map((r) => {
+    const lines = includedRows.map((r) => {
       const m = matchFor(r.ticket_number)
       return {
         settlement_id: settlement.id,
@@ -353,7 +370,7 @@ export default function NewSettlementPage() {
     router.push(`/settlements/${settlement.id}`)
   }
 
-  const totals = rows.reduce(
+  const totals = rows.filter((r) => !r.excluded).reduce(
     (acc, r) => {
       const { netRev } = computed(r)
       const m = matchFor(r.ticket_number)
@@ -425,6 +442,8 @@ export default function NewSettlementPage() {
             onReject={(rejected) => setErr(rejectMessage('Use a CSV file, or the PDF/photo button for the settlement itself.', rejected))}
             accept=".csv,text/csv,text/plain"
             hint="Drop the CSV here"
+            variant="compact"
+            accepts="CSV"
             className="inline-block"
           >
             <label className="text-sm rounded-lg bg-slate-700 text-white px-3 py-2 cursor-pointer inline-block">
@@ -462,13 +481,13 @@ export default function NewSettlementPage() {
             <table className="min-w-full text-sm">
               <thead className="bg-slate-100 text-slate-700">
                 <tr>
-                  {['Ticket #', 'Match', 'Net bu', 'Gross $', 'Discounts $', 'Net $', '$/bu', 'Notes', '']
-                    .map((h) => <th key={h} className="text-left px-2 py-2 whitespace-nowrap">{h}</th>)}
+                  {['', 'Ticket #', 'Match', 'Net bu', 'Gross $', 'Discounts $', 'Net $', '$/bu', 'Notes', '']
+                    .map((h, i) => <th key={i} className="text-left px-2 py-2 whitespace-nowrap">{h}</th>)}
                 </tr>
               </thead>
               <tbody>
                 {rows.length === 0 && (
-                  <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">Upload a CSV, take a photo or upload a PDF (AI), or add rows manually.</td></tr>
+                  <tr><td colSpan={10} className="px-3 py-6 text-center text-slate-400">Upload a CSV, take a photo or upload a PDF (AI), or add rows manually.</td></tr>
                 )}
                 {rows.map((r, i) => {
                   const { netRev, price } = computed(r)
@@ -485,8 +504,31 @@ export default function NewSettlementPage() {
                   } else {
                     status = <span className="text-amber-700 text-xs">No match</span>
                   }
+                  if (r.excluded) {
+                    // The guard's verdict: shown, not counted. One click re-includes.
+                    return (
+                      <tr key={i} className="border-t border-amber-200 bg-amber-50 text-amber-900 align-top">
+                        <td className="px-2 py-1">
+                          <input type="checkbox" checked={false} onChange={() => updateRow(i, { excluded: false })} aria-label="Include this line" title="Include this line after all" />
+                        </td>
+                        <td className="px-2 py-1 font-mono text-sm">{r.ticket_number || '—'}</td>
+                        <td className="px-2 py-1 text-xs" colSpan={6}>
+                          <span className="font-semibold">Left out:</span> {r.guard ?? 'looks like the settlement total — not a load'}.{' '}
+                          <span className="text-amber-700">{r.net_bushels ? `${fmt(num(r.net_bushels) ?? 0)} bu` : ''}{r.gross_revenue ? ` · $${fmt((num(r.gross_revenue) ?? 0) - (num(r.discounts) ?? 0))}` : ''}</span>{' '}
+                          <button type="button" onClick={() => updateRow(i, { excluded: false })} className="underline font-semibold">Include it</button>
+                        </td>
+                        <td className="px-2 py-1" />
+                        <td className="px-2 py-1"><button type="button" onClick={() => deleteRow(i)} className="text-red-600 text-sm" title="Remove">✕</button></td>
+                      </tr>
+                    )
+                  }
                   return (
                     <tr key={i} className="border-t border-slate-100 align-top">
+                      <td className="px-2 py-1">
+                        {r.guard
+                          ? <input type="checkbox" checked onChange={() => updateRow(i, { excluded: true })} aria-label="Included (was flagged as a total)" title={`Included — the guard had flagged it: ${r.guard}`} />
+                          : null}
+                      </td>
                       <td className={`px-2 py-1 ${issues.ticket ? flagCls : ''}`} style={{ minWidth: 120 }}>
                         <input value={r.ticket_number} onChange={(e) => updateRow(i, { ticket_number: e.target.value })} className={inputCls} />
                       </td>
@@ -511,6 +553,24 @@ export default function NewSettlementPage() {
                 })}
               </tbody>
             </table>
+            {/* Ticket lines vs the statement's own grand total (as the AI read
+                it, editable): the reconciliation the guard exists to protect. */}
+            {(rows.length > 0 || reportedTotal !== '') && (() => {
+              const rec = reconcileLines(rows.map((r) => ({ ...r, excluded: !!r.excluded })), reportedTotal)
+              return (
+                <div className={`mt-2 flex flex-wrap items-center gap-2 text-xs rounded-lg border px-2 py-1.5 ${rec.mismatch === true ? 'bg-amber-50 border-amber-300 text-amber-900' : rec.mismatch === false ? 'bg-green-50 border-green-200 text-green-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                  <span>Ticket lines total <span className="font-mono font-semibold">${fmt(rec.linesTotal)}</span></span>
+                  <label className="inline-flex items-center gap-1">
+                    · settlement total
+                    <span className="text-slate-400">$</span>
+                    <input type="number" step="0.01" value={reportedTotal} onChange={(e) => setReportedTotal(e.target.value)} placeholder="from the statement" className="w-28 rounded border border-slate-300 px-1.5 py-0.5 text-xs text-right bg-white" />
+                  </label>
+                  {rec.mismatch === true && <span className="font-semibold">— off by ${fmt(Math.abs(rec.delta ?? 0))}. Check for a missed or doubled line.</span>}
+                  {rec.mismatch === false && <span className="font-semibold">— matches.</span>}
+                  {rec.mismatch == null && <span>— enter the statement&rsquo;s total to check the lines add up.</span>}
+                </div>
+              )
+            })()}
           </div>
 
           {source && (

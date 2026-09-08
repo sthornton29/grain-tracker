@@ -164,6 +164,8 @@ export default function OrganizationSettingsPage() {
           accept="image/png,image/jpeg"
           disabled={busy || !org}
           hint="Drop the logo here"
+          variant="compact"
+          accepts="PNG or JPG under 2 MB"
           className="inline-block"
         >
           <label className="inline-block rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm cursor-pointer">
@@ -171,7 +173,7 @@ export default function OrganizationSettingsPage() {
             <input type="file" accept="image/png,image/jpeg" className="hidden" onChange={onLogo} disabled={busy || !org} />
           </label>
         </Dropzone>
-        <p className="text-xs text-slate-500">PNG with a transparent background looks best. Square or wide, under 2 MB. You can also drag the file onto the button.</p>
+        <p className="text-xs text-slate-500">PNG with a transparent background looks best. Square or wide, under 2 MB.</p>
       </div>
 
       {err && <p className="text-sm text-red-600">{err}</p>}

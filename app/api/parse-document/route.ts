@@ -27,16 +27,25 @@ const MAX_IMAGES = 20
 const MAX_IMAGES_BASE64_LEN = Math.ceil((25 * 1024 * 1024 * 4) / 3) + 16
 const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 
-const SETTLEMENT_PROMPT = `This is a grain settlement sheet from a grain buyer. Extract every line item from this document. For each line item, extract:
+const SETTLEMENT_PROMPT = `This is a grain settlement sheet from a grain buyer. Extract every TICKET line item from this document. For each ticket line, extract:
 - ticket_number (the scale ticket or load ticket number)
 - net_bushels (the net bushels paid for on this line)
 - gross_revenue (the gross dollar amount before any discounts or deductions for this line)
 - discounts (the total dollar amount of all discounts, deductions, checkoff fees, or adjustments subtracted from gross revenue for this line — if there are multiple discount types, sum them into one number)
 
+WHAT COUNTS AS A TICKET LINE — read this carefully, it is the most common extraction mistake:
+(a) Ticket lines come ONLY from the ticket table: rows that have a ticket/load number, a delivery date, and per-load weights or bushels. One row per truckload.
+(b) Lines printed on a CHECK STUB, REMITTANCE ADVICE, or COVER PAGE are NEVER tickets, even when they show bushels and dollars (e.g. "58118.929 bu of yel corn REF 16936 — 289,432.26" on the check stub restates the whole settlement; it is not a load).
+(c) A "ticket number" that is actually the settlement's own REFERENCE / SETTLEMENT / CHECK number is NOT a ticket — leave that line out of line_items.
+(d) TOTAL, GRAND TOTAL, SUBTOTAL, and summary rows printed after the ticket lines are EXCLUDED from line_items.
+(e) Instead, put the settlement's grand total in the document-level fields below: statement_reported_total (the net dollars the settlement pays, as printed on its total line or check stub) and statement_reported_bushels (the total net bushels). These are for reconciliation only — the app checks that the ticket lines add up to them.
+
 Also extract these document-level fields:
 - buyer_name (the company name of the buyer/elevator)
 - settlement_date (the date on the settlement, format YYYY-MM-DD)
 - settlement_number (any reference number, check number, or settlement ID — null if not found)
+- statement_reported_total (the settlement's grand total net dollars as printed — null if not shown)
+- statement_reported_bushels (the settlement's total net bushels as printed — null if not shown)
 
 ALSO itemize the statement's discounts into document-level discount_items. IMPORTANT: every buyer formats discounts differently — some print named line items, some use footnote codes explained at the bottom, some put discounts as columns on the grade line, some bury weight adjustments inside the bushel math (gross bushels quietly reduced to pay bushels), and some print only a combined "LESS DISCOUNTS" total. Read the WHOLE statement for all of these forms. For each deduction you can attribute:
 - category: exactly one of "moisture_shrink" | "drying" | "test_weight" | "damage" | "heat_damage" | "foreign_material" | "dockage" | "splits" | "sprout" | "musty_sour" | "other". NEVER force a category — when a line doesn't clearly fit one (checkoff, service fees, codes you can't resolve), use "other" and keep the statement's exact wording in description rather than guessing.
@@ -53,6 +62,8 @@ Respond ONLY in JSON with no other text, no markdown backticks. Use this exact f
   "buyer_name": "string",
   "settlement_date": "YYYY-MM-DD",
   "settlement_number": "string or null",
+  "statement_reported_total": number or null,
+  "statement_reported_bushels": number or null,
   "line_items": [
     {
       "ticket_number": "string",

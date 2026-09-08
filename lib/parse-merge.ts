@@ -122,6 +122,9 @@ export function mergeSettlements(parts: SettlementExtraction[]): SettlementExtra
       (l) => (l.ticket_number ? norm(l.ticket_number) : null),
     ),
     discount_items: [...byKey.values()],
+    // The grand total prints once (last page / check stub): first non-null.
+    statement_reported_total: firstValue(parts, (p) => p.statement_reported_total ?? null),
+    statement_reported_bushels: firstValue(parts, (p) => p.statement_reported_bushels ?? null),
   }
 }
 

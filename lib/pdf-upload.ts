@@ -112,6 +112,11 @@ export type SettlementExtraction = {
   }>
   // Absent on pre-074 parses; the review screen treats missing as [].
   discount_items?: SettlementDiscountItemExtraction[]
+  // The statement's OWN grand total (net dollars paid) and total bushels, read
+  // from its TOTAL row / check stub — for reconciliation only, never a line.
+  // Absent on older parses.
+  statement_reported_total?: number | null
+  statement_reported_bushels?: number | null
 }
 
 // A buyer's posted discount sheet (document_type 'discount_schedule', 074).

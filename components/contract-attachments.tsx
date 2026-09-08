@@ -98,6 +98,7 @@ export default function ContractAttachments({ contractId }: { contractId: string
       multiple
       disabled={busy}
       hint="Drop to attach"
+      accepts="PDFs and images up to 20 MB"
       className="bg-white rounded-xl shadow p-4 space-y-3 print:hidden"
     >
       <div className="flex items-center gap-2 flex-wrap">
@@ -112,7 +113,7 @@ export default function ContractAttachments({ contractId }: { contractId: string
         </button>
         <input ref={inputRef} type="file" accept="application/pdf,image/*" multiple onChange={onPick} className="hidden" />
       </div>
-      <p className="text-xs text-slate-500">Attach the signed contract PDF or related paperwork. PDFs and images up to 20 MB — or drag them onto this card.</p>
+      <p className="text-xs text-slate-500">Attach the signed contract PDF or related paperwork. PDFs and images up to 20 MB.</p>
 
       {err && <p className="text-sm text-red-600">{err}</p>}
 

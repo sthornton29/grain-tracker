@@ -324,7 +324,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
               onReject={(rejected) => setErr(rejectMessage('Use a CSV or Excel (.xlsx/.xls) file.', rejected))}
               accept={CSV_ACCEPT}
               hint="Drop the spreadsheet here"
-              className="rounded-lg border border-dashed border-slate-300 p-2"
+              accepts="CSV or Excel (.xlsx/.xls)"
             >
               <input
                 ref={fileRef}
@@ -334,7 +334,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
                 className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-slate-700 file:text-white file:px-4 file:py-2"
               />
             </Dropzone>
-            <p className="text-xs text-slate-500 mt-1">For Excel, fill in the Data tab; the first row is the header. You can also drag the file onto the box above.</p>
+            <p className="text-xs text-slate-500 mt-1">For Excel, fill in the Data tab; the first row is the header.</p>
             {fileName && (
               <p className="text-xs text-slate-500 mt-1">
                 {fileName} · {rows.length} data row{rows.length === 1 ? '' : 's'}

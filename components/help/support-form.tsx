@@ -81,9 +81,9 @@ export default function SupportForm({ route, transcript }: { route: string; tran
         className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400" />
       {/* No accept on the dropzone: pickShot already checks the type and says
           "Screenshots must be an image file." — a drop reuses that message. */}
-      <Dropzone onFiles={(files) => void pickShot(files[0])} hint="Drop the screenshot here" className="rounded-lg border border-dashed border-slate-300 p-2">
+      <Dropzone onFiles={(files) => void pickShot(files[0])} hint="Drop the screenshot here" variant="compact" accepts="PNG or JPG up to 3 MB">
         <label className="block text-xs text-slate-500">
-          Screenshot (optional, image up to 3 MB — pick one or drag it here)
+          Screenshot (optional)
           <input type="file" accept="image/*" onChange={(e) => pickShot(e.target.files?.[0])}
             className="mt-1 block w-full text-xs text-slate-700" />
         </label>

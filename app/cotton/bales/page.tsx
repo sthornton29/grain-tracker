@@ -111,7 +111,8 @@ export default function CottonBalesPage() {
           onReject={(rejected) => setErr(rejectMessage("Use the classing office's CSV file.", rejected))}
           accept=".csv,text/csv"
           hint="Drop the classing CSV here"
-          className="inline-block rounded-lg border border-dashed border-slate-300 p-2"
+          accepts="The classing office's CSV"
+          className="inline-block"
         >
           <input
             type="file" accept=".csv,text/csv"

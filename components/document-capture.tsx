@@ -137,6 +137,7 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
       multiple
       disabled={disabled}
       hint="Drop the document here"
+      accepts="PDF, photos, or Excel — spreadsheets are converted automatically"
       className={`flex flex-col gap-2 ${className ?? ''}`}
     >
       <div className="flex flex-wrap items-center gap-2">
@@ -160,9 +161,6 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
         )}
       </div>
 
-      {images.length === 0 && (
-        <p className="text-[11px] text-slate-400">{ACCEPTS_LINE} Or drag a file onto this button.</p>
-      )}
 
       {isCoarse && images.length === 0 && (
         <p className="text-xs text-slate-500">

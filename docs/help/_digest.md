@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-09-08 · version 0.1.0 · build d78acd3. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-09-08 · version 0.1.0 · build 1ed6384. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -1478,6 +1478,7 @@ Settlements is where buyer settlement statements live — the paperwork that say
 - **Upload a spreadsheet** — columns for ticket number, net bushels, gross revenue, and discounts (a template is downloadable).
 - **Type the rows** by hand.
 - As you review, each line shows whether its ticket number matches one of your loads. Save, and the settlement is recorded with its lines tied to loads.
+- **Totals and check stubs are not loads.** Settlement packets often end with a check stub that restates the whole settlement ("58,118.929 bu … REF 16936 … 289,432.26"), and many sheets print a TOTAL row under the tickets. Turnrow tells the reader to skip those, and checks its work: a line whose bushels or dollars equal all the other lines added together, whose "ticket number" is really the settlement's own reference or check number, or whose bushels dwarf every other load is shown in amber as **Left out: looks like the settlement total — not a load**, unchecked and not counted. If the guard is ever wrong, tick **Include it** and the line comes back. The settlement's own grand total is read separately and shown under the table next to the sum of the ticket lines, so you can see at a glance whether they match.
 - Open a settlement anytime to see its reconciliation page.
 
 ## The settlement detail page
@@ -1524,7 +1525,7 @@ Most of what Turnrow needs to know about your operation is already written down 
 
 - Every setup page (Entities, Landowners, Farms, Fields, Plantings, Buyers, Bin Sites, Trucks) has an **Upload (AI)** card — use the one closest to what you're holding, or the **Upload any document (AI)** card at the top of Settings when you're not sure where something belongs.
 - Upload a PDF, a spreadsheet, or photos (snap multiple pages from your phone). Then review what was found.
-- **Drag and drop works everywhere a file can be uploaded.** On a computer, drag the file from your desktop or a folder onto the upload button or card — it highlights while the file is over it — and it uploads exactly as if you had picked it with the button. This applies to every upload in Turnrow: the AI document uploads here and on their own pages (policies, FSA records, brokerage statements, settlements, gin receipts, weight tickets, classing files, cotton marketing documents, seed contracts, discount schedules, leases), the spreadsheet importers, attachments on loads and contracts, your logo, and the screenshot on the support form. Several photos can be dropped together where several are accepted; a file of the wrong kind is refused with the same message the button would give. On an iPad or phone, keep using the buttons — dragging needs a mouse or trackpad.
+- **Every upload spot is a drop target, and looks like one.** On a computer each one is a dashed card that says **Drag & drop files here, or click to browse**, with the file types it takes underneath (PDF, photos, CSV, Excel — whatever that spot accepts). Drag a file from your desktop or a folder onto the card — it turns green while the file is over it — or click anywhere on the card to open the file browser. The file uploads exactly as if you had picked it with the button. Small spots (the support-form screenshot, your logo) use a slimmer version of the same card. On an iPad or phone the card reads **Tap to choose files** instead, because dragging needs a mouse or trackpad. This applies to every upload in Turnrow: the AI document uploads here and on their own pages (policies, FSA records, brokerage statements, settlements, gin receipts, weight tickets, classing files, cotton marketing documents, seed contracts, discount schedules, leases), the spreadsheet importers, attachments on loads and contracts, your logo, and the screenshot on the support form. Several photos can be dropped together where several are accepted; a file of the wrong kind is refused with the same message the button would give. On an iPad or phone, keep using the buttons — dragging needs a mouse or trackpad.
 
 ## What the AI looks for
 

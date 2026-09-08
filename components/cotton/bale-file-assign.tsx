@@ -101,6 +101,8 @@ export default function BaleFileAssign({ target, bales, dispositionByBale, loane
           accept=".csv,.txt,text/csv,text/plain"
           disabled={busy}
           hint="Drop the bale list here"
+          variant="compact"
+          accepts="CSV or text"
           className="inline-block"
         >
           <label className={`${btnGray} cursor-pointer`}>

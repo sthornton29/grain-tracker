@@ -87,6 +87,8 @@ export default function SettlementPdfPanel({ settlementId, currentUrl }: Props) 
       accept="application/pdf,.pdf"
       disabled={busy != null}
       hint="Drop the settlement PDF here"
+      variant="compact"
+      accepts="PDF"
       className="bg-white rounded-xl shadow p-3 flex flex-wrap items-center gap-2"
     >
       <span className="text-sm font-semibold text-slate-700 mr-1">Settlement PDF</span>
