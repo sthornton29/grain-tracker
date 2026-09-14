@@ -15,6 +15,7 @@
 // parseDocument call — same single request, same errors.
 
 import { getPdfPageCount, splitPdfIntoBatches } from '@/lib/pdf-split'
+import { normalizePdfFile } from '@/lib/orientation'
 import { parseDocument, type DocumentType, type ParseImage } from '@/lib/pdf-upload'
 import type { CottonMarketingCategory } from '@/lib/cotton-doc-import'
 
@@ -71,11 +72,16 @@ export async function parseDocumentChunked<T, M = T>(
     }
     if (chunks.length === 0) chunks = [{ input: source, from: 1, to: Math.max(source.length, 1) }]
   } else {
-    total = await getPdfPageCount(source).catch(() => 1)
+    // Orientation first (086): pages a scanner stored sideways are baked
+    // upright before anything is counted, split, or sent.
+    const normalized = await normalizePdfFile(source)
+    const pdfFile = normalized.file
+    if (normalized.changed) opts.onProgress?.('Straightening pages…')
+    total = await getPdfPageCount(pdfFile).catch(() => 1)
     if (total <= pagesPerBatch) {
-      chunks = [{ input: source, from: 1, to: total }]
+      chunks = [{ input: pdfFile, from: 1, to: total }]
     } else {
-      const files = await splitPdfIntoBatches(source, pagesPerBatch)
+      const files = await splitPdfIntoBatches(pdfFile, pagesPerBatch)
       chunks = files.map((f, i) => ({
         input: f,
         from: i * pagesPerBatch + 1,

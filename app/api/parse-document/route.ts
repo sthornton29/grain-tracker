@@ -27,11 +27,16 @@ const MAX_IMAGES = 20
 const MAX_IMAGES_BASE64_LEN = Math.ceil((25 * 1024 * 1024 * 4) / 3) + 16
 const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 
-const SETTLEMENT_PROMPT = `This is a grain settlement sheet from a grain buyer. Extract every TICKET line item from this document. For each ticket line, extract:
-- ticket_number (the scale ticket or load ticket number)
+const SETTLEMENT_PROMPT = `This is a grain settlement sheet from a grain buyer. Pages may be scanned sideways or upside down — read each page in whichever orientation its text runs. Extract every TICKET line item from this document. For each ticket line, extract:
+- ticket_number (the scale ticket or load ticket number, EXACTLY as printed including leading zeros — e.g. "0498074")
+- secondary_ref (any second identifier printed for the same load — a Load Order #, BOL, or reference number — null if none)
+- delivery_date (the date the load was delivered/weighed, format YYYY-MM-DD — null if not shown)
+- vehicle_plate (the truck's license plate or vehicle id when the statement prints one — null otherwise)
+- gross_weight and tare_weight (in POUNDS as printed — null if not shown)
 - net_bushels (the net bushels paid for on this line)
 - gross_revenue (the gross dollar amount before any discounts or deductions for this line)
-- discounts (the total dollar amount of all discounts, deductions, checkoff fees, or adjustments subtracted from gross revenue for this line — if there are multiple discount types, sum them into one number)
+- discounts (the total dollar amount of all discounts, deductions, checkoff, fees, or adjustments subtracted from gross revenue for this line — if there are multiple discount types, sum them into one number)
+- grade_readings: the ticket's grade / quality block as structured numbers. Many statements print TWO rows per ticket — the first with the weights and dollars, the second with the grade factors (Bunge and others print "MO 13.8  FM 1.2  SPLITS 8  TD 1.5  HD 0.2  TW 56.3  OC 0.5  OIL 18.9  PROT 34.1"). Map them to: moisture (%), foreign_material (%), splits (%), total_damage (%), heat_damage (%), test_weight (lb/bu), other_color (%), oil (%), protein (%). Use null for any factor not printed. Never invent a reading.
 
 WHAT COUNTS AS A TICKET LINE — read this carefully, it is the most common extraction mistake:
 (a) Ticket lines come ONLY from the ticket table: rows that have a ticket/load number, a delivery date, and per-load weights or bushels. One row per truckload.
@@ -43,12 +48,20 @@ WHAT COUNTS AS A TICKET LINE — read this carefully, it is the most common extr
 Also extract these document-level fields:
 - buyer_name (the company name of the buyer/elevator)
 - settlement_date (the date on the settlement, format YYYY-MM-DD)
-- settlement_number (any reference number, check number, or settlement ID — null if not found)
+- settlement_number (the settlement / statement number as printed, e.g. "0000161152" — null if not found)
+- contract_number (the buyer's contract number printed in the header, e.g. "2002960604-10" — null if not shown)
+- payment_number, check_number, payment_date (from the CHECK / REMITTANCE page: the payment or remittance number, the check number, and the check date YYYY-MM-DD — null when absent. These are PAYMENT facts, never tickets and never the settlement_number unless the statement uses one number for both.)
 - statement_reported_total (the settlement's grand total net dollars as printed — null if not shown)
 - statement_reported_bushels (the settlement's total net bushels as printed — null if not shown)
+- Rows labelled "Total From", "Contract Total", "Settlement Total", "Grand Total", "Subtotal" and the remittance restatement are NEVER line_items (rule (d)); they only feed statement_reported_total / statement_reported_bushels.
 
 ALSO itemize the statement's discounts into document-level discount_items. IMPORTANT: every buyer formats discounts differently — some print named line items, some use footnote codes explained at the bottom, some put discounts as columns on the grade line, some bury weight adjustments inside the bushel math (gross bushels quietly reduced to pay bushels), and some print only a combined "LESS DISCOUNTS" total. Read the WHOLE statement for all of these forms. For each deduction you can attribute:
-- category: exactly one of "moisture_shrink" | "drying" | "test_weight" | "damage" | "heat_damage" | "foreign_material" | "dockage" | "splits" | "sprout" | "musty_sour" | "other". NEVER force a category — when a line doesn't clearly fit one (checkoff, service fees, codes you can't resolve), use "other" and keep the statement's exact wording in description rather than guessing.
+- category: exactly one of "moisture_shrink" | "drying" | "test_weight" | "damage" | "heat_damage" | "foreign_material" | "dockage" | "splits" | "sprout" | "musty_sour" | "checkoff" | "fee" | "other".
+  * "checkoff" = any promotion / research assessment, under EVERY label buyers use: "checkoff", "check-off", "National Check-Off", "promotion", "assessment", a soybean/corn/wheat/cotton BOARD, COMMISSION or COUNCIL name, Bunge's legend code I02. It is NOT a quality discount and NEVER "other".
+  * "fee" = a non-quality service charge: "vehicle inspection", "grading fee", "unload fee", "administrative", "service charge", "handling", Bunge's legend code I11. NEVER "other".
+  * NEVER force a QUALITY category — when a line doesn't clearly fit one and is not a checkoff or fee (codes you can't resolve, a combined "LESS DISCOUNTS"), use "other" and keep the statement's exact wording in description rather than guessing.
+  * Legend codes: HD → heat_damage, MO → moisture_shrink, ZFM / FM → foreign_material, TW → test_weight, TD / DMG → damage, SPL → splits, I02 → checkoff, I11 → fee. Read the statement's own legend and map by its meaning.
+- QTY DISCOUNTS BY QUALITY FACTOR vs CASH DISCOUNTS: a statement may print two blocks — "QTY DISCOUNTS" (bushels/weight removed per factor, e.g. "ZFM 23.282 bu") and "CASH DISCOUNTS" (dollars per factor). Quantity-block lines are deduction_kind "weight" with the bushels/lbs in quantity_basis and amount 0 unless priced; cash-block lines are deduction_kind "price" with their dollars. Never merge the two blocks into one line.
 - description: the statement's OWN wording for the line, verbatim (e.g. "DRYING CHG", "TW DISC 53.4#", "LESS DISCOUNTS", a footnote code with its legend text)
 - deduction_kind: "price" when the line is DOLLARS subtracted from the check (charges, docks, fees, a combined less-discounts total); "weight" when the line reduces WEIGHT or BUSHELS instead (shrink lbs, FM weight removed, dockage weight). Detect volume-style discounting by comparing the stated gross weights/bushels against the pay weights/bushels: when pay bushels are below gross beyond the printed shrink math, emit a "weight" item describing it, with the implied lbs or bushels in quantity_basis.
 - amount: for "price" items, the total dollars deducted across the whole statement (positive number). For "weight" items, the dollar value ONLY if the statement itself prices the weight taken; otherwise 0 (the app values weight deductions from its own reconciliation — never invent a dollar figure).
@@ -62,14 +75,24 @@ Respond ONLY in JSON with no other text, no markdown backticks. Use this exact f
   "buyer_name": "string",
   "settlement_date": "YYYY-MM-DD",
   "settlement_number": "string or null",
+  "contract_number": "string or null",
+  "payment_number": "string or null",
+  "check_number": "string or null",
+  "payment_date": "YYYY-MM-DD or null",
   "statement_reported_total": number or null,
   "statement_reported_bushels": number or null,
   "line_items": [
     {
       "ticket_number": "string",
+      "secondary_ref": "string or null",
+      "delivery_date": "YYYY-MM-DD or null",
+      "vehicle_plate": "string or null",
+      "gross_weight": number or null,
+      "tare_weight": number or null,
       "net_bushels": number,
       "gross_revenue": number,
-      "discounts": number
+      "discounts": number,
+      "grade_readings": { "moisture": number or null, "foreign_material": number or null, "splits": number or null, "total_damage": number or null, "heat_damage": number or null, "test_weight": number or null, "other_color": number or null, "oil": number or null, "protein": number or null }
     }
   ],
   "discount_items": [

@@ -38,6 +38,7 @@ type Row = {
   truck_label: string | null
   /** Hauler's truck on a pickup-contract load (067) — shown with a badge. */
   hauler_truck: string | null
+  crop_id: string | null
   crop: { name: string; base_moisture_pct: number | null; base_lb_per_bushel: number | null } | null
   from_field: { name_or_number: string } | null
   from_bin: { name_or_number: string } | null
@@ -63,7 +64,7 @@ const SELECT = `
   id, date, time, ticket_number, crop_year,
   gross_weight, tare_weight, net_weight, moisture, test_weight,
   dry_bushels_override,
-  from_type, to_type, from_field_id, to_buyer_id, contract_id,
+  from_type, to_type, from_field_id, to_buyer_id, contract_id, crop_id,
   hauler_truck, truck_label, truck_id, created_at,
   truck:trucks(name_or_number),
   crop:crops(name, base_moisture_pct, base_lb_per_bushel),
@@ -123,6 +124,9 @@ export default function LoadsPage() {
   const [countyId, setCountyId] = useState('')
   const [cropYear, setCropYear] = useState<number | ''>('')
   const [contractId, setContractId] = useState('')
+  // Crop filter (086) — persisted like the Yields page's ('loads:cropId').
+  const [cropId, setCropId] = usePersistentState<string>('loads:cropId', '')
+  const [crops, setCrops] = useState<Array<{ id: string; name: string }>>([])
   const [paidTickets, setPaidTickets] = useState<Set<string>>(new Set())
   const [paidLoadIds, setPaidLoadIds] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -148,7 +152,7 @@ export default function LoadsPage() {
       if (to) query = query.lte('date', to)
       return query.range(f, t)
     })
-    const [loadsRes, entitiesRes, farmsRes, fieldsRes, countiesRes, settlementLinesRes, plantingsRes, contractsRes, splitsRes] = await Promise.all([
+    const [loadsRes, entitiesRes, farmsRes, fieldsRes, countiesRes, settlementLinesRes, plantingsRes, contractsRes, splitsRes, cropsRes] = await Promise.all([
       loadsQ,
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('*'),
@@ -160,8 +164,10 @@ export default function LoadsPage() {
         .select('id, contract_number, buyer_id, crop_id, entity_id, crop_year, buyer:buyers(name), crop:crops(name)')
         .order('contract_number'),
       fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
+      supabase.from('crops').select('id, name').order('name'),
     ])
     setRows((loadsRes.data as unknown as Row[]) || [])
+    setCrops(((cropsRes.data as Array<{ id: string; name: string }>) ?? []))
     const splitMap = new Map<string, LoadSplit[]>()
     for (const s of ((splitsRes.data as LoadSplit[]) || [])) {
       const list = splitMap.get(s.load_id) ?? []
@@ -298,6 +304,11 @@ export default function LoadsPage() {
     }
     if (contractId && r.contract_id !== contractId) return false
     if (cropYear !== '' && r.crop_year !== cropYear) return false
+    if (cropId) {
+      // Split loads carry several crops — match ANY split's crop.
+      const cropIds = rSplits && rSplits.length > 0 ? rSplits.map((s) => s.crop_id) : [r.crop_id]
+      if (!cropIds.includes(cropId)) return false
+    }
     if (!q) return true
     const hay = [
       r.ticket_number, truckDisplay(r).name, r.crop?.name,
@@ -437,11 +448,25 @@ export default function LoadsPage() {
     downloadCsv(filtered)
   }
 
+  // Plain-English summary of the active filters (export sub-title + on screen).
+  function filterSummary(): string {
+    const parts: string[] = []
+    if (from || to) parts.push(`${from || '…'} to ${to || '…'}`)
+    if (entityId) parts.push(entities.find((e) => e.id === entityId)?.name ?? 'Entity')
+    if (countyId) { const c = counties.find((x) => x.id === countyId); if (c) parts.push(`${c.name}, ${c.state_code}`) }
+    if (cropYear !== '') parts.push(`${cropYear} crop`)
+    if (cropId) parts.push(crops.find((c) => c.id === cropId)?.name ?? 'Crop')
+    if (contractId) parts.push(`#${contracts.find((c) => c.id === contractId)?.contract_number ?? contractId}`)
+    if (q) parts.push(`“${q}”`)
+    parts.push(`${filtered.length} load${filtered.length === 1 ? '' : 's'}`)
+    return parts.join(' · ')
+  }
+
   // Formatted PDF/Excel of the filtered loads (mirrors the on-screen list).
   function buildPayload(): ExportPayload {
     return {
       title: 'Load Log',
-      filters: `${filtered.length} load${filtered.length === 1 ? '' : 's'}`,
+      filters: filterSummary(),
       sections: [{
         columns: [
           { label: 'Date' }, { label: 'Ticket' }, { label: 'Truck' }, { label: 'Crop' },
@@ -502,6 +527,7 @@ export default function LoadsPage() {
           + New Load
         </Link>
         <button onClick={exportCsv} className="rounded-lg bg-white border border-slate-300 px-4 py-2">Export CSV</button>
+        {filtered.length > 0 && <span className="text-xs text-slate-500 self-center" title="Active filters — named on every export">{filterSummary()}</span>}
         {filtered.length > 0 && <ExportBar buildPayload={buildPayload} />}
       </div>
 
@@ -544,6 +570,15 @@ export default function LoadsPage() {
         >
           <option value="">All crop years</option>
           {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
+        </select>
+        <select
+          value={cropId}
+          onChange={(e) => setCropId(e.target.value)}
+          className="rounded-lg border border-slate-300 px-3 py-2"
+          title="Filter to loads of this crop (a split load matches any of its crops)"
+        >
+          <option value="">All crops</option>
+          {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         <select
           value={contractId}

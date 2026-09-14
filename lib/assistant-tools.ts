@@ -92,7 +92,7 @@ const PRICE_BASIS = 'stored positions and assumptions — not live futures quote
 
 import { all, allRows, allPaged, COMBINE_SELECT, num, r0, r2, fetchScopeBits, type CombineRow, type ScopeBits } from '@/lib/assistant-tools-shared'
 import {
-  getCottonMarketing, getCottonProduction, getSettlements, getBinTransfers, getCombineEntries, getRentSettlements, getBudget,
+  getCottonMarketing, getCottonProduction, getSettlements, getBinTransfers, getCombineEntries, getRentSettlements, getBudget, getCheckoffPaid,
   MODULE_TOOLS, MODULE_STATUS_LABELS,
 } from '@/lib/assistant-tools-modules'
 import { cumulativePricedPct, blendedElectedPrice, effectivePriceWalk, seedTrackerProgress, SEED_OUTCOME_LABEL, SEED_PAYMENT_TYPE_LABEL } from '@/lib/seed-contracts'
@@ -1206,6 +1206,7 @@ const IMPLS: Record<string, ToolImpl> = {
   get_cotton_production: getCottonProduction as ToolImpl,
   get_seed_contracts: getSeedContracts as ToolImpl,
   get_settlements: getSettlements as ToolImpl,
+  get_checkoff_paid: getCheckoffPaid as ToolImpl,
   get_bin_transfers: getBinTransfers as ToolImpl,
   get_combine_entries: getCombineEntries as ToolImpl,
   get_rent_settlements: getRentSettlements as ToolImpl,

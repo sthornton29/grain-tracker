@@ -8,6 +8,7 @@ import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import ExportBar from '@/components/export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
+import { checkoffByCrop } from '@/lib/checkoff'
 import type { Entity, Farm, Field, FieldPlanting, LoadSplit, Buyer } from '@/lib/types'
 
 type Row = {
@@ -33,6 +34,7 @@ type BuyerLoad = {
   id: string
   to_buyer_id: string | null
   ticket_number: string | null
+  crop_id: string | null
   crop_year: number | null
   contract_id: string | null
   from_type: 'field' | 'bin' | null
@@ -95,7 +97,7 @@ export default function SettlementsListPage() {
         .order('contract_number'),
       fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
       fetchAllRows((f, t) => supabase.from('loads')
-        .select('id, to_buyer_id, ticket_number, crop_year, contract_id, from_type, from_field_id')
+        .select('id, to_buyer_id, ticket_number, crop_id, crop_year, contract_id, from_type, from_field_id')
         .eq('to_type', 'buyer')
         .order('id').range(f, t)),
     ])
@@ -117,6 +119,23 @@ export default function SettlementsListPage() {
     setLoading(false)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [from, to])
+
+  // Checkoff paid (086): the settlements' itemized 'checkoff' lines, keyed to
+  // the crop / crop year their matched loads carry. Loaded once alongside the
+  // list; the block below sums the FILTERED settlements.
+  const [discountItems, setDiscountItems] = useState<Array<{ settlement_id: string; category: string; amount: number | null; deduction_kind: string | null }>>([])
+  const [crops, setCrops] = useState<Array<{ id: string; name: string }>>([])
+  useEffect(() => {
+    ;(async () => {
+      const [items, cr] = await Promise.all([
+        fetchAllRows<{ settlement_id: string; category: string; amount: number | null; deduction_kind: string | null }>((f, t) =>
+          supabase.from('settlement_discount_items').select('settlement_id, category, amount, deduction_kind').order('id').range(f, t)),
+        supabase.from('crops').select('id, name').order('name'),
+      ])
+      setDiscountItems(items.data ?? [])
+      setCrops(((cr.data as Array<{ id: string; name: string }>) ?? []))
+    })()
+  }, [supabase])
 
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings(
@@ -231,6 +250,24 @@ export default function SettlementsListPage() {
     ].filter(Boolean).join(' ').toLowerCase()
     return hay.includes(q.toLowerCase())
   })
+
+  // Checkoff paid by crop × crop year across the filtered settlements (lib/checkoff).
+  const checkoffRows = useMemo(() => {
+    const itemsBy = new Map<string, typeof discountItems>()
+    for (const it of discountItems) { const a = itemsBy.get(it.settlement_id) ?? []; a.push(it); itemsBy.set(it.settlement_id, a) }
+    const mode = <T,>(xs: T[]): T | null => { const m = new Map<T, number>(); for (const x of xs) if (x != null) m.set(x, (m.get(x) ?? 0) + 1); let best: T | null = null, n = 0; for (const [k, v] of m) if (v > n) { best = k; n = v }; return best }
+    return checkoffByCrop(filtered.map((r) => {
+      const matched = matchedLoadsByRow.get(r.id) ?? []
+      return {
+        settlementId: r.id, buyerId: r.buyer_id, settlementDate: r.settlement_date,
+        cropId: mode(matched.map((l) => l.crop_id)), cropYear: mode(matched.map((l) => l.crop_year)),
+        settledBu: (r.settlement_lines ?? []).reduce((s, l) => s + (Number(l.net_bushels) || 0), 0),
+        items: itemsBy.get(r.id) ?? [],
+      }
+    }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, discountItems, matchedLoadsByRow])
+  const cropName = (id: string | null) => (id ? crops.find((c) => c.id === id)?.name ?? 'Unassigned crop' : 'Unassigned crop')
 
   function rowStats(r: Row) {
     const lines = r.settlement_lines ?? []
@@ -369,6 +406,36 @@ export default function SettlementsListPage() {
       <p className="text-xs text-slate-500">
         Tap a settlement to open it — the reconciliation, itemized discounts, and edit/delete live on its page.
       </p>
+
+      {/* Checkoff paid (086) — by crop × crop year over the settlements shown.
+          Some states refund checkoff on request: this is the number to claim. */}
+      {checkoffRows.length > 0 && (
+        <div className="bg-white rounded-xl shadow p-4">
+          <div className="flex flex-wrap items-baseline gap-x-3">
+            <h2 className="font-semibold">Checkoff paid</h2>
+            <span className="text-xs text-slate-500">from the itemized checkoff lines on these settlements — not a quality discount; some states refund it on request</span>
+          </div>
+          <div className="overflow-x-auto mt-2">
+            <table className="text-sm">
+              <thead className="text-slate-500">
+                <tr>{['Crop', 'Crop year', 'Checkoff $', '¢/bu', 'Settled bu', 'Settlements'].map((h, i) => <th key={h} className={`${i >= 2 ? 'text-right' : 'text-left'} pr-6 py-1 font-medium whitespace-nowrap`}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {checkoffRows.map((r) => (
+                  <tr key={`${r.cropId}|${r.cropYear}`} className="border-t border-slate-100">
+                    <td className="pr-6 py-1">{cropName(r.cropId)}</td>
+                    <td className="pr-6 py-1">{r.cropYear ?? '—'}</td>
+                    <td className="pr-6 py-1 text-right tabular-nums font-semibold">${r.dollars.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    <td className="pr-6 py-1 text-right tabular-nums">{r.centsPerBu != null ? `${r.centsPerBu.toFixed(2)}¢` : '—'}</td>
+                    <td className="pr-6 py-1 text-right tabular-nums">{Math.round(r.settledBu).toLocaleString()}</td>
+                    <td className="pr-6 py-1 text-right tabular-nums">{r.settlements}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       <div className="overflow-x-auto bg-white rounded-xl shadow">
         <table className="min-w-full text-sm">

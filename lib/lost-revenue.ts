@@ -23,6 +23,7 @@
 // fallback for buyers with only spot/unlinked settlements.
 
 import { categoryGroup, type CategoryGroup } from '@/lib/buyer-comparison'
+import { isQualityDiscount } from '@/lib/settlement-discounts'
 
 /** The report's category columns: the five price groups + the volume gap. */
 export type LostGroup = CategoryGroup | 'weightDeduction'
@@ -100,6 +101,9 @@ export function settlementLostRevenue(s: Pick<LostRevenueSettlement, 'items' | '
   let priceDollars = 0
   const weightItems: Array<{ group: CategoryGroup; weight: number }> = []
   for (const i of s.items) {
+    // Checkoff and fees (086) are not quality discounts — they are not
+    // "lost" to the buyer's grading and never rank a buyer.
+    if (!isQualityDiscount(i.category)) continue
     const amount = Number(i.amount) || 0
     if (i.deduction_kind === 'weight') {
       weightItems.push({ group: categoryGroup(i.category), weight: Math.max(0, amount) })

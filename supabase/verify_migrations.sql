@@ -125,13 +125,14 @@ checks(seq, migration, evidence, applied) as (values
   ( 82, '082_manual_market_quotes',           'market_prices.source + table manual_market_quotes', exists (select 1 from cols where t = 'market_prices' and c = 'source') and exists (select 1 from tbls where t = 'manual_market_quotes')),
   ( 83, '083_hedge_rolls_and_events',         'futures_positions.roll_group_id + table hedge_position_events + fn hedge_execute_roll', exists (select 1 from cols where t = 'futures_positions' and c = 'roll_group_id') and exists (select 1 from tbls where t = 'hedge_position_events') and exists (select 1 from fns where f = 'hedge_execute_roll')),
   ( 84, '084_assistant_usage_log',            'assistant_usage.tools_used + fn admin_assistant_log', exists (select 1 from cols where t = 'assistant_usage' and c = 'tools_used') and exists (select 1 from fns where f = 'admin_assistant_log')),
-  ( 85, '085_bale_weight_assumption',          'crop_assumptions.bale_weight_lbs',               exists (select 1 from cols where t = 'crop_assumptions' and c = 'bale_weight_lbs'))
+  ( 85, '085_bale_weight_assumption',          'crop_assumptions.bale_weight_lbs',               exists (select 1 from cols where t = 'crop_assumptions' and c = 'bale_weight_lbs')),
+  ( 86, '086_settlement_checkoff_fees_matching', 'settlements.payment_number + settlement_lines.grade_readings + trucks.license_plate', exists (select 1 from cols where t = 'settlements' and c = 'payment_number') and exists (select 1 from cols where t = 'settlement_lines' and c = 'grade_readings') and exists (select 1 from cols where t = 'trucks' and c = 'license_plate'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 085'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 086'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

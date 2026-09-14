@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { compressImage, ImageDecodeError, type CapturedImage } from '@/lib/image-capture'
+import { compressImage, rotateCapturedImage, ImageDecodeError, type CapturedImage } from '@/lib/image-capture'
 import { excelToPdf, isExcelFile } from '@/lib/excel-to-pdf'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
 
@@ -188,6 +188,19 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
                   className="absolute -top-2 -right-2 h-5 w-5 rounded-full bg-red-600 text-white text-xs leading-none disabled:opacity-50"
                 >
                   ✕
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const rotated = await rotateCapturedImage(img).catch(() => null)
+                    if (rotated) setImages((list) => list.map((x) => (x.id === img.id ? rotated : x)))
+                  }}
+                  disabled={disabled}
+                  aria-label={`Rotate page ${i + 1}`}
+                  title="Rotate this page (sideways photo)"
+                  className="absolute -bottom-2 -right-2 h-5 w-5 rounded-full bg-slate-700 text-white text-xs leading-none disabled:opacity-50"
+                >
+                  ↻
                 </button>
               </div>
             ))}

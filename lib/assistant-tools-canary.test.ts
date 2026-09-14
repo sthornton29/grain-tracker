@@ -35,6 +35,7 @@ const NEW_TOOLS = [
   ['get_cotton_production', { crop_year: 2026 }],
   ['get_seed_contracts', { crop_year: 2026 }],
   ['get_settlements', { crop_year: 2026 }],
+  ['get_checkoff_paid', { crop_year: 2026 }],
   ['get_bin_transfers', {}],
   ['get_combine_entries', { crop_year: 2026 }],
   ['get_rent_settlements', { crop_year: 2026 }],

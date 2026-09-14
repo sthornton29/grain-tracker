@@ -9,6 +9,8 @@ import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, analyzeYields, expectedYieldForPlanting, type CombineEntryLike, type ExpectedYieldAssumption } from '@/lib/yields'
 import { isCottonCrop } from '@/lib/marketing'
 import { buildEntityScope } from '@/lib/entity-scope'
+import { checkoffByCrop } from '@/lib/checkoff'
+import { normalizeTicket } from '@/lib/ticket-matching'
 import EntityFilter from '@/components/entity-filter'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
@@ -35,6 +37,15 @@ type LoadRow = {
   crop_year: number | null
   from_type: string | null
   from_field_id: string | null
+  ticket_number: string | null
+  to_buyer_id: string | null
+}
+
+// Settlements + their itemized checkoff lines (086) — the "Checkoff paid"
+// block keys each settlement to a crop / crop year through its matched loads.
+type SettlementLite = {
+  id: string; buyer_id: string; settlement_date: string
+  settlement_lines: Array<{ load_id: string | null; ticket_number: string | null; net_bushels: number | null }> | null
 }
 
 const currentYear = () => new Date().getFullYear()
@@ -60,7 +71,7 @@ export default function SeasonSummaryPage() {
     const [cr, pl, lo, sp, en, fa, fi, ce, ca] = await Promise.all([
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
-      fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id').order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, ticket_number, to_buyer_id').order('id').range(f, t)),
       fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('id, entity_id'),
@@ -85,6 +96,51 @@ export default function SeasonSummaryPage() {
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
 
+  // Checkoff paid (086) — settlements + itemized checkoff lines, keyed to the
+  // crop / crop year of each settlement's matched loads (load_id, else a
+  // unique buyer ticket match on the shared seam).
+  const [settlements, setSettlements] = useState<SettlementLite[]>([])
+  const [discountItems, setDiscountItems] = useState<Array<{ settlement_id: string; category: string; amount: number | null; deduction_kind: string | null }>>([])
+  useEffect(() => {
+    ;(async () => {
+      const [s, items] = await Promise.all([
+        fetchAllRows<SettlementLite>((f, t) => supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_lines(load_id, ticket_number, net_bushels)').order('id').range(f, t)),
+        fetchAllRows<{ settlement_id: string; category: string; amount: number | null; deduction_kind: string | null }>((f, t) =>
+          supabase.from('settlement_discount_items').select('settlement_id, category, amount, deduction_kind').order('id').range(f, t)),
+      ])
+      setSettlements(s.data ?? [])
+      setDiscountItems(items.data ?? [])
+    })()
+  }, [supabase])
+  const checkoffInputs = useMemo(() => {
+    const itemsBy = new Map<string, typeof discountItems>()
+    for (const it of discountItems) { const a = itemsBy.get(it.settlement_id) ?? []; a.push(it); itemsBy.set(it.settlement_id, a) }
+    const loadById = new Map(loads.map((l) => [l.id, l]))
+    const byBuyerTicket = new Map<string, LoadRow[]>()
+    for (const l of loads) {
+      const t = normalizeTicket(l.ticket_number)
+      if (!t || !l.to_buyer_id) continue
+      const key = `${l.to_buyer_id}|${t}`
+      const a = byBuyerTicket.get(key) ?? []; a.push(l); byBuyerTicket.set(key, a)
+    }
+    const mode = <T,>(xs: T[]): T | null => { const m = new Map<T, number>(); for (const x of xs) if (x != null) m.set(x, (m.get(x) ?? 0) + 1); let best: T | null = null, n = 0; for (const [k, v] of m) if (v > n) { best = k; n = v }; return best }
+    return settlements.map((s) => {
+      const matched: LoadRow[] = []
+      for (const ln of s.settlement_lines ?? []) {
+        if (ln.load_id) { const ld = loadById.get(ln.load_id); if (ld) matched.push(ld); continue }
+        const cands = byBuyerTicket.get(`${s.buyer_id}|${normalizeTicket(ln.ticket_number)}`) ?? []
+        if (cands.length === 1) matched.push(cands[0])
+      }
+      return {
+        settlementId: s.id, buyerId: s.buyer_id, settlementDate: s.settlement_date,
+        cropId: mode(matched.map((l) => l.crop_id)), cropYear: mode(matched.map((l) => l.crop_year)),
+        settledBu: (s.settlement_lines ?? []).reduce((t, l) => t + (Number(l.net_bushels) || 0), 0),
+        items: itemsBy.get(s.id) ?? [],
+        fieldIds: matched.filter((l) => l.from_type === 'field' && l.from_field_id).map((l) => l.from_field_id as string),
+      }
+    })
+  }, [settlements, discountItems, loads])
+
   // Viewer role (052): the grant universe caps the entity scope and prunes the
   // entity dropdown; '' then means "all MY entities".
   const viewer = useViewerScope(supabase)
@@ -98,6 +154,15 @@ export default function SeasonSummaryPage() {
   const entityName = entityId
     ? entities.find((e) => e.id === entityId)?.name ?? null
     : viewerAllEntitiesLabel(viewer, entities)
+
+  // Checkoff paid for this season, narrowed to the entity's fields (a
+  // settlement counts when any matched load came off an in-scope field).
+  const checkoffRows = useMemo(
+    () => checkoffByCrop(
+      checkoffInputs.map((s) => (!scope.active || s.fieldIds.some((id) => scope.fieldIds?.has(id)) ? s : { ...s, items: [] })),
+    ).filter((r) => r.cropYear === year),
+    [checkoffInputs, scope, year],
+  )
 
   const distinctYears = useMemo(() => {
     const s = new Set<number>([currentYear()])
@@ -244,7 +309,17 @@ export default function SeasonSummaryPage() {
         ],
         rows,
         rowMeta: [...byCrop.map(() => 'data' as const), 'total'],
-      }],
+      },
+      ...(checkoffRows.length > 0 ? [{
+        title: 'Checkoff paid',
+        columns: [
+          { label: 'Crop' }, { label: 'Crop year', format: 'text' as const },
+          { label: 'Checkoff $', align: 'right' as const, format: 'usd2' as const }, { label: '¢/bu', align: 'right' as const, format: 'dec2' as const },
+          { label: 'Settled bu', align: 'right' as const, format: 'bu' as const }, { label: 'Settlements', align: 'right' as const, format: 'int' as const },
+        ],
+        rows: checkoffRows.map((r) => [cropById.get(r.cropId ?? '')?.name ?? 'Unassigned crop', r.cropYear ?? '', r.dollars, r.centsPerBu != null ? Number(r.centsPerBu.toFixed(2)) : '', Math.round(r.settledBu), r.settlements]),
+      }] : []),
+      ],
     }
   }
 
@@ -327,6 +402,33 @@ export default function SeasonSummaryPage() {
             </div>
           )}
         </>
+      )}
+      {/* Checkoff paid (086) — the itemized checkoff on this season's
+          settlements by crop; some states refund it on request. */}
+      {!loading && checkoffRows.length > 0 && (
+        <section className="bg-white rounded-xl shadow p-4 avoid-break">
+          <h2 className="font-bold text-lg mb-1">Checkoff paid</h2>
+          <p className="text-xs text-slate-500 mb-2">From the itemized checkoff lines on the season&rsquo;s settlements — not a quality discount. Some states refund checkoff on request; this is the number to claim.</p>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className={theadCls}>
+                <tr>{['Crop', 'Crop year', 'Checkoff $', '¢/bu', 'Settled bu', 'Settlements'].map((h, i) => <th key={h} className={`${i >= 2 ? 'text-right' : 'text-left'} pr-4 py-1 font-medium whitespace-nowrap`}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {checkoffRows.map((r) => (
+                  <tr key={`${r.cropId}|${r.cropYear}`} className="border-t border-slate-100">
+                    <td className="pr-4 py-1">{cropById.get(r.cropId ?? '')?.name ?? 'Unassigned crop'}</td>
+                    <td className="pr-4 py-1">{r.cropYear ?? '—'}</td>
+                    <td className="pr-4 py-1 text-right tabular-nums font-semibold">${r.dollars.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    <td className="pr-4 py-1 text-right tabular-nums">{r.centsPerBu != null ? `${r.centsPerBu.toFixed(2)}¢` : '—'}</td>
+                    <td className="pr-4 py-1 text-right tabular-nums">{Math.round(r.settledBu).toLocaleString()}</td>
+                    <td className="pr-4 py-1 text-right tabular-nums">{r.settlements}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
       {/* Cotton module (feature-flagged): lint lbs/acre from gin receipts. */}
       <CottonYieldsSection year={year} entityId={entityId} />

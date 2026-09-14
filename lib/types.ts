@@ -105,7 +105,7 @@ export type BinSite = {
   address: string | null
   notes: string | null
 }
-export type Truck = { id: string; name_or_number: string }
+export type Truck = { id: string; name_or_number: string; license_plate?: string | null }
 // A hauler's truck saved from a pickup-contract load (067) — org-scoped,
 // kept strictly separate from the operation's own trucks. buyer_id is the
 // pickup contract's buyer at save time (null = independent hauler).
@@ -332,6 +332,12 @@ export type Settlement = {
   notes: string | null
   source_pdf_url: string | null
   created_at: string
+  // 086 — the header contract the statement settles against and the
+  // check / remittance page's payment facts (never tickets).
+  contract_id?: string | null
+  payment_number?: string | null
+  check_number?: string | null
+  payment_date?: string | null
 }
 
 export type SettlementLine = {
@@ -345,6 +351,12 @@ export type SettlementLine = {
   net_revenue: number
   price_per_bushel: number | null
   notes: string | null
+  // 086 — the ticket's grade block as readings, the buyer's secondary
+  // identifier (Load Order #), and how the line was matched to its load.
+  grade_readings?: Record<string, number | null> | null
+  buyer_ref?: string | null
+  match_tier?: 'exact' | 'segment' | 'attribute' | 'manual' | null
+  match_reason?: string | null
 }
 
 // An itemized discount/deduction line on a settlement (074). Amounts are

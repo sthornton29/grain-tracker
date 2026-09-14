@@ -16,7 +16,7 @@
 import { describe, expect, it } from 'vitest'
 import { ASSISTANT_TOOLS, toolNamesForRole, toolsForRole, toolStatusLabel } from './assistant-tools'
 
-const MODULE_TOOL_NAMES = ['get_cotton_marketing', 'get_cotton_production', 'get_seed_contracts', 'get_settlements', 'get_bin_transfers', 'get_combine_entries', 'get_rent_settlements', 'get_budget']
+const MODULE_TOOL_NAMES = ['get_cotton_marketing', 'get_cotton_production', 'get_seed_contracts', 'get_settlements', 'get_checkoff_paid', 'get_bin_transfers', 'get_combine_entries', 'get_rent_settlements', 'get_budget']
 
 describe('toolNamesForRole', () => {
   it('owner: every tool, including the eight module tools', () => {
@@ -34,7 +34,7 @@ describe('toolNamesForRole', () => {
 
   it('viewer: no whole-operation tools (bin inventory, cash flow, settlements, transfers, budget); keeps the entity-scoped module tools', () => {
     const names = toolNamesForRole('viewer')
-    for (const n of ['get_bin_inventory', 'get_cash_flow', 'get_settlements', 'get_bin_transfers', 'get_budget']) expect(names).not.toContain(n)
+    for (const n of ['get_bin_inventory', 'get_cash_flow', 'get_settlements', 'get_checkoff_paid', 'get_bin_transfers', 'get_budget']) expect(names).not.toContain(n)
     for (const n of ['get_yields', 'get_marketing_summary', 'get_cotton_marketing', 'get_cotton_production', 'get_seed_contracts', 'get_rent_settlements', 'get_combine_entries']) expect(names).toContain(n)
   })
 

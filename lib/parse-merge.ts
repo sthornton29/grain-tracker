@@ -117,6 +117,11 @@ export function mergeSettlements(parts: SettlementExtraction[]): SettlementExtra
     buyer_name: firstValue(parts, (p) => p.buyer_name),
     settlement_date: firstValue(parts, (p) => p.settlement_date),
     settlement_number: firstValue(parts, (p) => p.settlement_number),
+    // 086: header contract + the remittance page's payment facts print once.
+    contract_number: firstValue(parts, (p) => p.contract_number ?? null),
+    payment_number: firstValue(parts, (p) => p.payment_number ?? null),
+    check_number: firstValue(parts, (p) => p.check_number ?? null),
+    payment_date: firstValue(parts, (p) => p.payment_date ?? null),
     line_items: mergeList(
       parts.map((p) => p.line_items ?? []),
       (l) => (l.ticket_number ? norm(l.ticket_number) : null),

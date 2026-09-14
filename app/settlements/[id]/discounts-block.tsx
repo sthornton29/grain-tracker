@@ -14,7 +14,7 @@ import {
   centsPerBu,
   coerceDeductionKind,
   coerceDiscountCategory,
-  effectivePriceWalk,
+  detailedPriceWalk,
   excessShrink,
   sumCheck,
 } from '@/lib/settlement-discounts'
@@ -65,7 +65,9 @@ export default function DiscountsBlock({
   const [err, setErr] = useState<string | null>(null)
 
   const check = sumCheck(items, discountTotal)
-  const walk = effectivePriceWalk({ grossRevenue, discountTotal, settledBu })
+  // 086: checkoff and fees are not quality discounts — the walk shows them
+  // as their own deductions.
+  const walk = detailedPriceWalk({ grossRevenue, discountTotal, settledBu, items })
   const shrink = ourDryBu != null && avgPricePerBu != null && matchedSettledBu > 0
     ? excessShrink({ ourDryBu, settledBu: matchedSettledBu, pricePerBu: avgPricePerBu })
     : null
@@ -268,8 +270,34 @@ export default function DiscountsBlock({
                 )
               ))}
               {adding && editorRow}
+              {(walk.checkoffDollars > 0 || walk.feeDollars > 0) && (
+                <>
+                  <tr className="border-t border-slate-200 bg-slate-50 text-slate-700">
+                    <td className="px-3 py-1.5" colSpan={2}>Quality discounts</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">${fmt(walk.qualityDollars)}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">{fmtCents(walk.qualityCentsPerBu)}</td>
+                    <td colSpan={2} />
+                  </tr>
+                  {walk.checkoffDollars > 0 && (
+                    <tr className="bg-slate-50 text-slate-700">
+                      <td className="px-3 py-1.5" colSpan={2}>Checkoff <span className="text-xs text-slate-500">(not a quality discount — refundable in some states)</span></td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">${fmt(walk.checkoffDollars)}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{fmtCents(walk.checkoffCentsPerBu)}</td>
+                      <td colSpan={2} />
+                    </tr>
+                  )}
+                  {walk.feeDollars > 0 && (
+                    <tr className="bg-slate-50 text-slate-700">
+                      <td className="px-3 py-1.5" colSpan={2}>Fees <span className="text-xs text-slate-500">(service charges)</span></td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">${fmt(walk.feeDollars)}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{fmtCents(walk.feeCentsPerBu)}</td>
+                      <td colSpan={2} />
+                    </tr>
+                  )}
+                </>
+              )}
               <tr className="border-t border-slate-200 bg-slate-50 font-semibold">
-                <td className="px-3 py-2" colSpan={2}>Total discounts (statement)</td>
+                <td className="px-3 py-2" colSpan={2}>Total deductions (statement)</td>
                 <td className="px-3 py-2 text-right tabular-nums">${fmt(discountTotal)}</td>
                 <td className="px-3 py-2 text-right tabular-nums">{fmtCents(walk.discountCentsPerBu)}</td>
                 <td colSpan={2} />
@@ -286,7 +314,15 @@ export default function DiscountsBlock({
           <div className="tabular-nums">
             Gross <span className="font-semibold">${fmt(walk.grossPerBu)}</span>/bu
             <span className="text-slate-400 mx-1.5">−</span>
-            discounts <span className="font-semibold text-red-700">{fmtCents(walk.discountCentsPerBu)}</span>/bu
+            {walk.checkoffDollars > 0 || walk.feeDollars > 0 ? (
+              <>
+                quality <span className="font-semibold text-red-700">{fmtCents(walk.qualityCentsPerBu)}</span>/bu
+                {walk.checkoffDollars > 0 && <><span className="text-slate-400 mx-1.5">−</span>checkoff <span className="font-semibold text-slate-700">{fmtCents(walk.checkoffCentsPerBu)}</span>/bu</>}
+                {walk.feeDollars > 0 && <><span className="text-slate-400 mx-1.5">−</span>fees <span className="font-semibold text-slate-700">{fmtCents(walk.feeCentsPerBu)}</span>/bu</>}
+              </>
+            ) : (
+              <>discounts <span className="font-semibold text-red-700">{fmtCents(walk.discountCentsPerBu)}</span>/bu</>
+            )}
             <span className="text-slate-400 mx-1.5">=</span>
             net <span className="font-semibold">${fmt(walk.netPerBu)}</span>/bu
           </div>

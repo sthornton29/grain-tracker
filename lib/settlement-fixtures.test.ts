@@ -57,7 +57,7 @@ describe('format 1 — line-item itemizer', () => {
   it('all three lines normalize as price deductions with verbatim wording', () => {
     expect(items).toHaveLength(3)
     expect(items.every((i) => i.deduction_kind === 'price')).toBe(true)
-    expect(items.map((i) => i.category)).toEqual(['drying', 'test_weight', 'other'])
+    expect(items.map((i) => i.category)).toEqual(['drying', 'test_weight', 'checkoff']) // 086: the wording re-files the checkoff line
     expect(items[0].description).toBe('DRYING CHG')
   })
   it('reconciles: itemized $167.64 vs line discounts $167.64 — no flag', () => {

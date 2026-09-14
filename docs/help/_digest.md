@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-09-14 · version 0.1.0 · build bcf37ce. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-09-14 · version 0.1.0 · build 78a8004. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -488,7 +488,7 @@ The load log is the master list of every load you've hauled — to a bin or to a
 ## What the controls do
 
 - **Search** matches ticket number, truck, crop, field, destination, contract, and date.
-- **Date range, entity, county, crop year, contract** filters narrow the list. Entity and county filter by the field the load came from.
+- **Date range, entity, county, crop year, crop, contract** filters narrow the list. Entity and county filter by the field the load came from; the **Crop** filter matches a split load if any of its crops match, and it is remembered the next time you open the page. The active filters are named at the top of every export, and exports, bulk selection and delete all work on the filtered list.
 - **Column headers** sort — date, ticket, truck, crop, net, dry bushels, moisture, and test weight. Tap again to flip the direction.
 - **Paid / Unpaid badges** show on buyer-delivered loads. A load is Paid when a settlement line is tied to it — by ticket number or by a manual match on the settlement screen. Loads that went to a bin get no badge; they haven't been sold.
 - **Export** downloads what's currently filtered, including a payment column. You can also print or export a formatted report.
@@ -1539,7 +1539,9 @@ Settlements is where buyer settlement statements live — the paperwork that say
 
 Open a settlement and everything about it is on one page: the header (editable with **Edit**; **Delete** removes the settlement and its lines after a confirmation, sending its loads back to Unpaid), the original document, gross/discounts/net totals, and the sections below.
 
-**The Discounts block** shows every deduction as its own line — the type, the statement's own wording, the dollars, and what it works out to in cents per settled bushel — then walks the price: gross $/bu, less discounts ¢/bu, equals net $/bu. It also shows the **weight deduction beyond standard shrink**: the buyer's pay bushels compared against your FSA-standard dry bushels, priced out — a real cost the price discounts never show. Statements entered by hand, or ones the upload couldn't fully itemize, can have discount lines added or corrected right here; these lines feed Ask Turnrow&rsquo;s buyer-discount comparisons.
+**The Discounts block** shows every deduction as its own line — the type, the statement's own wording, the dollars, and what it works out to in cents per settled bushel — then walks the price: gross $/bu, less quality discounts ¢/bu, less checkoff, less fees, equals net $/bu.
+
+**Checkoff and fees are not quality discounts.** A checkoff (the promotion assessment, under whatever name the buyer prints — "check-off", "National Check-Off", "assessment", a soybean or corn board or commission) and service charges (vehicle inspection, grading, unload, administrative fees) get their own categories. They are listed outside the quality discounts, they never count against a buyer in Ask Turnrow's buyer comparisons, and the settlements list and the Season Summary report total **Checkoff paid** by crop and crop year, in dollars and cents per bushel. Some states refund checkoff on request — that total is the number to claim. Uploaded statements categorize these automatically; on a hand-entered settlement, add a Checkoff or Fees line in the Discounts block. It also shows the **weight deduction beyond standard shrink**: the buyer's pay bushels compared against your FSA-standard dry bushels, priced out — a real cost the price discounts never show. Statements entered by hand, or ones the upload couldn't fully itemize, can have discount lines added or corrected right here; these lines feed Ask Turnrow&rsquo;s buyer-discount comparisons.
 
 Three sections do the reconciling:
 
@@ -1552,7 +1554,9 @@ Matches are remembered: once a line is tied to a load — automatically by ticke
 ## How the numbers work
 
 - **Net revenue** = gross revenue − discounts, per line; the settlement totals sum its lines.
-- Matching goes by ticket number. A ticket that matches exactly one load ties automatically; shared ticket numbers wait for a manual pick rather than guessing.
+- **How matching works.** Your ticket numbers often carry the buyer's ticket inside your own numbering (498074 stored as 498074-02-A or 12-498074), and buyers print theirs with leading zeros (0498074). Matching tries three things in order: an **exact** match after tidying (spaces, case, leading zeros); a **segment** match, where the buyer's ticket — or the buyer's load-order number — equals one dash-separated part of yours (parts shorter than four characters never count, so "02" can't match anything); and, when the numbers don't line up at all, a match by **date + weight** — same crop and buyer, delivered within a day, bushels within 1% of your dry bushels (or the exact gross and tare), backed up by the truck's license plate when the statement prints one. On the upload review each match shows how it was made; exact matches are certain, the other two are one click to reject ("not this load"). When several loads fit, you pick. Once you save, a load matched by date and weight gets the buyer's ticket written onto it, so the next statement matches exactly; a load's blank moisture or test weight fills in from the statement's grade block.
+- **Statement details kept.** Each line stores the buyer's grade readings (moisture, foreign material, splits, damage, test weight, protein…), the header contract number links the settlement to your contract, and the check page's payment number, check number and date are stored — never mistaken for tickets. Rows labelled Total, Contract Total or Settlement Total are left out, and the lines are reconciled to the statement's printed totals.
+- Sideways or upside-down scans are straightened before reading; a photo page can be rotated with the ↻ button on its thumbnail.
 - The paid/unpaid badge on the Loads page comes straight from this matching — a load is Paid when a settlement line is tied to it.
 
 ## Common questions

@@ -100,16 +100,45 @@ export type SettlementDiscountItemExtraction = {
   deduction_kind?: string | null
 }
 
+// The per-ticket grade block as structured readings (086). Percentages
+// except test_weight (lb/bu). Every field nullable — never invented.
+export type SettlementGradeReadings = {
+  moisture?: number | null
+  foreign_material?: number | null
+  splits?: number | null
+  total_damage?: number | null
+  heat_damage?: number | null
+  test_weight?: number | null
+  other_color?: number | null
+  oil?: number | null
+  protein?: number | null
+}
+
+export type SettlementLineExtraction = {
+  ticket_number: string | null
+  net_bushels: number | null
+  gross_revenue: number | null
+  discounts: number | null
+  // 086 — matching keys and the grade block. Absent on older parses.
+  secondary_ref?: string | null
+  delivery_date?: string | null
+  vehicle_plate?: string | null
+  gross_weight?: number | null
+  tare_weight?: number | null
+  grade_readings?: SettlementGradeReadings | null
+}
+
 export type SettlementExtraction = {
   buyer_name: string | null
   settlement_date: string | null
   settlement_number: string | null
-  line_items: Array<{
-    ticket_number: string | null
-    net_bushels: number | null
-    gross_revenue: number | null
-    discounts: number | null
-  }>
+  // 086 — the header contract number and the check / remittance page's
+  // payment facts (never tickets). Absent on older parses.
+  contract_number?: string | null
+  payment_number?: string | null
+  check_number?: string | null
+  payment_date?: string | null
+  line_items: SettlementLineExtraction[]
   // Absent on pre-074 parses; the review screen treats missing as [].
   discount_items?: SettlementDiscountItemExtraction[]
   // The statement's OWN grand total (net dollars paid) and total bushels, read

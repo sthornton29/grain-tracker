@@ -1,7 +1,7 @@
 ---
 page_route: /loads
 title: Loads
-updated: 2026-08-31
+updated: 2026-09-14
 keywords: loads, load log, tickets, scale, paid, unpaid, splits, export, delete, test weight, moisture, gross, tare, net, irrigated, dryland, practice, combine, yield monitor, no scales, truck, hauler, pickup contract, buyer's truck, add truck, rename truck, edit truck, wrong date, yesterday's date, defaults, low tare, tare warning, use last tare, usual tare, empty weight, field search, find a field, farm, search fields, contract progress, remaining bushels, over delivery
 ---
 ## What this page is for
@@ -32,7 +32,7 @@ The load log is the master list of every load you've hauled — to a bin or to a
 ## What the controls do
 
 - **Search** matches ticket number, truck, crop, field, destination, contract, and date.
-- **Date range, entity, county, crop year, contract** filters narrow the list. Entity and county filter by the field the load came from.
+- **Date range, entity, county, crop year, crop, contract** filters narrow the list. Entity and county filter by the field the load came from; the **Crop** filter matches a split load if any of its crops match, and it is remembered the next time you open the page. The active filters are named at the top of every export, and exports, bulk selection and delete all work on the filtered list.
 - **Column headers** sort — date, ticket, truck, crop, net, dry bushels, moisture, and test weight. Tap again to flip the direction.
 - **Paid / Unpaid badges** show on buyer-delivered loads. A load is Paid when a settlement line is tied to it — by ticket number or by a manual match on the settlement screen. Loads that went to a bin get no badge; they haven't been sold.
 - **Export** downloads what's currently filtered, including a payment column. You can also print or export a formatted report.

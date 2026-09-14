@@ -18,6 +18,8 @@ import { isCottonCrop } from '@/lib/marketing'
 import { DISCOUNT_CATEGORY_LABELS, coerceDiscountCategory, centsPerBu, sumCheck } from '@/lib/settlement-discounts'
 import { parseLeaseTerms, type SettlementStatement } from '@/lib/rent-settlement'
 import { budgetLineMath, scenarioTotals, isCottonName } from '@/lib/crop-budget'
+import { checkoffByCrop } from '@/lib/checkoff'
+import { normalizeTicket } from '@/lib/ticket-matching'
 import type { BudgetLine, BudgetScenario, Crop, FieldPlanting, LeaseTerm, RentSettlement } from '@/lib/types'
 
 const PRICE_BASIS = 'stored positions and assumptions — not live futures quotes; the report pages layer live quotes on top'
@@ -299,6 +301,65 @@ export async function getSettlements(supabase: SupabaseClient, _ctx: AssistantCo
   }
 }
 
+// ---------- checkoff paid (086) ----------
+
+export async function getCheckoffPaid(supabase: SupabaseClient, _ctx: AssistantContext, input: { crop_year: number; crop?: string }) {
+  const cropYear = num(input.crop_year)
+  const [settlements, items, loads, crops, buyers] = await Promise.all([
+    allRows<{ id: string; buyer_id: string | null; settlement_date: string | null; settlement_number: string | null; settlement_lines: Array<{ load_id: string | null; ticket_number: string | null; net_bushels: number | null }> | null }>((f, t) =>
+      supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_number, settlement_lines(load_id, ticket_number, net_bushels)').order('id').range(f, t)),
+    allRows<{ settlement_id: string; category: string; amount: number | null; deduction_kind: string | null; description: string | null }>((f, t) =>
+      supabase.from('settlement_discount_items').select('settlement_id, category, amount, deduction_kind, description').order('id').range(f, t)),
+    allRows<{ id: string; ticket_number: string | null; to_buyer_id: string | null; crop_id: string | null; crop_year: number | null }>((f, t) =>
+      supabase.from('loads').select('id, ticket_number, to_buyer_id, crop_id, crop_year').eq('to_type', 'buyer').order('id').range(f, t)),
+    all<Crop>(supabase.from('crops').select(CROPS_SELECT)),
+    all<{ id: string; name: string }>(supabase.from('buyers').select('id, name')),
+  ])
+  const cropName = nameOf(crops)
+  const buyerName = nameOf(buyers)
+  const wantCrop = resolveByName(crops, input.crop)
+  const itemsBy = new Map<string, typeof items>()
+  for (const it of items) { const a = itemsBy.get(it.settlement_id) ?? []; a.push(it); itemsBy.set(it.settlement_id, a) }
+  const loadById = new Map(loads.map((l) => [l.id, l]))
+  const byBuyerTicket = new Map<string, typeof loads>()
+  for (const l of loads) {
+    const t = normalizeTicket(l.ticket_number)
+    if (!t || !l.to_buyer_id) continue
+    const key = `${l.to_buyer_id}|${t}`
+    const a = byBuyerTicket.get(key) ?? []; a.push(l); byBuyerTicket.set(key, a)
+  }
+  const mode = <T,>(xs: T[]): T | null => { const m = new Map<T, number>(); for (const x of xs) if (x != null) m.set(x, (m.get(x) ?? 0) + 1); let best: T | null = null, n = 0; for (const [k, v] of m) if (v > n) { best = k; n = v }; return best }
+  const inputs = settlements.map((s) => {
+    const matched: typeof loads = []
+    for (const ln of s.settlement_lines ?? []) {
+      if (ln.load_id) { const ld = loadById.get(ln.load_id); if (ld) matched.push(ld); continue }
+      const cands = byBuyerTicket.get(`${s.buyer_id}|${normalizeTicket(ln.ticket_number)}`) ?? []
+      if (cands.length === 1) matched.push(cands[0])
+    }
+    return {
+      settlementId: s.id, buyerId: s.buyer_id, settlementDate: s.settlement_date,
+      cropId: mode(matched.map((l) => l.crop_id)), cropYear: mode(matched.map((l) => l.crop_year)),
+      settledBu: (s.settlement_lines ?? []).reduce((t, l) => t + num(l.net_bushels), 0),
+      items: itemsBy.get(s.id) ?? [],
+    }
+  })
+  const rows = checkoffByCrop(inputs).filter((r) => r.cropYear === cropYear && (!wantCrop || r.cropId === wantCrop.id))
+  if (rows.length === 0) {
+    return { crop_year: cropYear, count: 0, rows: [], note: `No itemized checkoff on any settlement for crop year ${cropYear}${wantCrop ? ` (${wantCrop.name})` : ''}. Checkoff shows once a settlement's discount lines are itemized (uploads do this automatically; hand-entered settlements can add a Checkoff line on their page).` }
+  }
+  return {
+    crop_year: cropYear,
+    count: rows.length,
+    rows: rows.map((r) => ({
+      crop: cropName(r.cropId) ?? 'Unassigned crop', crop_year: r.cropYear, checkoff_usd: r.dollars, cents_per_bu: r.centsPerBu != null ? r2(r.centsPerBu) : null,
+      settled_bu: r0(r.settledBu), settlements: r.settlements,
+      by_settlement: r.settlementIds.map((id) => { const s = settlements.find((x) => x.id === id); const d = (itemsBy.get(id) ?? []).filter((i) => i.category === 'checkoff').reduce((t, i) => t + num(i.amount), 0); return { settlement_number: s?.settlement_number ?? null, date: s?.settlement_date ?? null, buyer: buyerName(s?.buyer_id ?? null), checkoff_usd: r2(d) } }),
+    })),
+    total_checkoff_usd: r2(rows.reduce((t, r) => t + r.dollars, 0)),
+    note: 'Checkoff (promotion assessments) paid per crop × crop year from the itemized settlement lines — NOT a quality discount. Some states refund checkoff on request; this is the number to claim. ¢/bu is over the crop year’s settled bushels.',
+  }
+}
+
 // ---------- bin transfers ----------
 
 export async function getBinTransfers(supabase: SupabaseClient, _ctx: AssistantContext, input: { from_date?: string; to_date?: string; bin?: string; crop?: string; limit?: number }) {
@@ -489,6 +550,11 @@ export const MODULE_TOOLS: Anthropic.Tool[] = [
     input_schema: { type: 'object', properties: { crop_year: { type: 'number' }, buyer: { type: 'string' }, from_date: { type: 'string', description: 'YYYY-MM-DD' }, to_date: { type: 'string' }, limit: { type: 'number', description: 'Max settlements to return (default 40, max 100)' } } },
   },
   {
+    name: 'get_checkoff_paid',
+    description: 'Checkoff (promotion assessment) paid per crop × crop year from the itemized settlement lines — dollars, ¢/bu over settled bushels, settlement count, and the per-settlement breakdown. NOT a quality discount; some states refund checkoff on request — this is the number to claim. Use for "how much checkoff did we pay on soybeans this year".',
+    input_schema: { type: 'object', properties: { crop_year: cropYearProp, crop: { type: 'string', description: 'Optional crop name' } }, required: ['crop_year'] },
+  },
+  {
     name: 'get_bin_transfers',
     description: 'Bin-to-bin grain transfers (dry bushels): date, from/to bin, crop, bushels, with totals by crop. Filter by date range, bin, or crop.',
     input_schema: { type: 'object', properties: { from_date: { type: 'string', description: 'YYYY-MM-DD' }, to_date: { type: 'string' }, bin: { type: 'string' }, crop: { type: 'string' }, limit: { type: 'number' } } },
@@ -514,6 +580,7 @@ export const MODULE_STATUS_LABELS: Record<string, string> = {
   get_cotton_marketing: 'Checking your cotton contracts and loans…',
   get_cotton_production: 'Checking your gin receipts and bales…',
   get_settlements: 'Reading your settlement statements…',
+  get_checkoff_paid: 'Adding up your checkoff…',
   get_bin_transfers: 'Checking your bin transfers…',
   get_combine_entries: 'Checking your combine entries…',
   get_rent_settlements: 'Checking your leases and rent settlements…',

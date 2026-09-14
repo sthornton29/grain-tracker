@@ -29,14 +29,26 @@ import {
 } from '@/lib/settlement-discounts'
 import type { Buyer } from '@/lib/types'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
+import { matchAllTickets, normalizeTicket, type TicketMatch, type TicketMatchResult } from '@/lib/ticket-matching'
+import { computeBushels } from '@/lib/shrink'
+import type { SettlementGradeReadings } from '@/lib/pdf-upload'
 
 type LoadMatch = {
   id: string
   date: string
   ticket_number: string | null
   crop_id: string | null
-  crop: { name: string } | null
+  crop: { name: string; base_moisture_pct: number | null; base_lb_per_bushel: number | null } | null
   contract_id: string | null
+  to_buyer_id: string | null
+  net_weight: number | null
+  gross_weight: number | null
+  tare_weight: number | null
+  moisture: number | null
+  test_weight: number | null
+  dry_bushels_override: number | null
+  truck_id: string | null
+  truck: { license_plate: string | null } | null
 }
 
 type RowDraft = {
@@ -49,6 +61,16 @@ type RowDraft = {
    *  check-stub line, not a load — kept visible, unchecked, one click back. */
   excluded?: boolean
   guard?: string | null
+  // 086 — matching keys + the grade block from the statement.
+  secondary_ref?: string | null
+  delivery_date?: string | null
+  vehicle_plate?: string | null
+  gross_weight?: number | null
+  tare_weight?: number | null
+  grade_readings?: SettlementGradeReadings | null
+  /** The reviewer's say over the automatic match: 'reject' (import
+   *  unmatched) or a load id picked by hand. */
+  matchOverride?: 'reject' | string
 }
 
 const emptyRow = (): RowDraft => ({
@@ -117,10 +139,14 @@ export default function NewSettlementPage() {
   const supabase = useMemo(() => createClient(), [])
   const router = useRouter()
   const [buyers, setBuyers] = useState<Buyer[]>([])
-  const [loadsByTicket, setLoadsByTicket] = useState<Map<string, LoadMatch>>(new Map())
+  const [loads, setLoads] = useState<LoadMatch[]>([])
+  const [contracts, setContracts] = useState<Array<{ id: string; contract_number: string; buyer_id: string | null; crop_id: string | null }>>([])
   const [buyerId, setBuyerId] = useState('')
   const [settlementDate, setSettlementDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [settlementNumber, setSettlementNumber] = useState('')
+  // 086 — the header contract number and the remittance page's payment facts.
+  const [contractNumber, setContractNumber] = useState('')
+  const [payment, setPayment] = useState<{ payment_number: string; check_number: string; payment_date: string }>({ payment_number: '', check_number: '', payment_date: '' })
   const [notes, setNotes] = useState('')
   const [rows, setRows] = useState<RowDraft[]>([])
   // The statement's own grand total as the AI read it (reconciliation only).
@@ -136,30 +162,75 @@ export default function NewSettlementPage() {
 
   useEffect(() => {
     ;(async () => {
-      const [b, l] = await Promise.all([
+      const [b, l, c] = await Promise.all([
         supabase.from('buyers').select('*').order('name'),
-        fetchAllRows((f, t) => supabase.from('loads').select('id, date, ticket_number, crop_id, crop:crops(name), contract_id').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('loads')
+          .select('id, date, ticket_number, crop_id, crop:crops(name, base_moisture_pct, base_lb_per_bushel), contract_id, to_buyer_id, net_weight, gross_weight, tare_weight, moisture, test_weight, dry_bushels_override, truck_id, truck:trucks(license_plate)')
+          .eq('to_type', 'buyer').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('contracts').select('id, contract_number, buyer_id, crop_id').order('contract_number').order('id').range(f, t)),
       ])
       setBuyers((b.data as Buyer[]) || [])
-      const map = new Map<string, LoadMatch>()
-      for (const row of ((l.data as unknown) as LoadMatch[]) ?? []) {
-        if (!row.ticket_number) continue
-        const key = row.ticket_number.trim().toLowerCase()
-        // If duplicate ticket numbers exist, mark ambiguous by skipping.
-        if (map.has(key)) map.set(key, { ...row, id: '__ambiguous__' })
-        else map.set(key, row)
-      }
-      setLoadsByTicket(map)
+      setLoads(((l.data as unknown) as LoadMatch[]) ?? [])
+      setContracts(((c.data as unknown) as Array<{ id: string; contract_number: string; buyer_id: string | null; crop_id: string | null }>) ?? [])
     })()
   }, [supabase])
 
-  function matchFor(ticket: string): LoadMatch | null | 'ambiguous' {
-    const key = ticket.trim().toLowerCase()
-    if (!key) return null
-    const hit = loadsByTicket.get(key)
-    if (!hit) return null
-    if (hit.id === '__ambiguous__') return 'ambiguous'
-    return hit
+  const loadById = useMemo(() => new Map(loads.map((l) => [l.id, l])), [loads])
+  // The header contract (086): the buyer's contract whose number matches.
+  const headerContract = useMemo(() => {
+    const n = normalizeTicket(contractNumber)
+    if (!n) return null
+    return contracts.find((c) => (!buyerId || c.buyer_id === buyerId) && normalizeTicket(c.contract_number) === n)
+      ?? contracts.find((c) => (!buyerId || c.buyer_id === buyerId) && normalizeTicket(c.contract_number).replace(/-.*$/, '') === n.replace(/-.*$/, ''))
+      ?? null
+  }, [contractNumber, contracts, buyerId])
+
+  // Tolerant matching (lib/ticket-matching, 086): exact → segment → attribute,
+  // each load claimed once, in row order. Our dry bushels per load come from
+  // the shrink math so a Bunge net-bushel figure can be compared.
+  const matchResults: TicketMatchResult[] = useMemo(() => {
+    const pool = loads.map((l) => ({
+      id: l.id,
+      ticket_number: l.ticket_number,
+      crop_id: l.crop_id,
+      to_buyer_id: l.to_buyer_id,
+      date: l.date,
+      dry_bushels: computeBushels({
+        netWeightLb: l.net_weight, moisturePct: l.moisture,
+        baseMoisturePct: l.crop?.base_moisture_pct ?? null, baseLbPerBushel: l.crop?.base_lb_per_bushel ?? null,
+        dryBushelsOverride: l.dry_bushels_override,
+      }).dryBushels,
+      gross_weight: l.gross_weight,
+      tare_weight: l.tare_weight,
+      truck_id: l.truck_id,
+      license_plate: l.truck?.license_plate ?? null,
+    }))
+    const ctx = { buyer_id: buyerId || null, crop_id: headerContract?.crop_id ?? null }
+    // Excluded (total) rows never match; rejected rows never claim a load.
+    const raw = matchAllTickets(
+      rows.map((r) => r.excluded || r.matchOverride === 'reject'
+        ? { ticket_number: null }
+        : { ticket_number: r.ticket_number, secondary_refs: [r.secondary_ref], net_bushels: num(r.net_bushels), gross_weight: r.gross_weight, tare_weight: r.tare_weight, delivery_date: r.delivery_date, vehicle_plate: r.vehicle_plate }),
+      pool,
+      ctx,
+    )
+    return raw
+  }, [rows, loads, buyerId, headerContract])
+
+  type RowMatch = { load: LoadMatch | null; match: TicketMatch | null; candidates: TicketMatch[]; status: 'matched' | 'ambiguous' | 'unmatched' | 'rejected' | 'manual' }
+  function matchFor(i: number): RowMatch {
+    const r = rows[i]
+    if (!r) return { load: null, match: null, candidates: [], status: 'unmatched' }
+    if (r.matchOverride === 'reject') return { load: null, match: null, candidates: [], status: 'rejected' }
+    if (r.matchOverride) {
+      const load = loadById.get(r.matchOverride) ?? null
+      return { load, match: load ? { tier: 'exact', confidence: 'high', loadId: load.id, reason: 'picked by hand' } : null, candidates: [], status: load ? 'manual' : 'unmatched' }
+    }
+    const res = matchResults[i]
+    if (!res) return { load: null, match: null, candidates: [], status: 'unmatched' }
+    if (res.status === 'matched') return { load: loadById.get(res.match.loadId) ?? null, match: res.match, candidates: res.candidates, status: 'matched' }
+    if (res.status === 'ambiguous') return { load: null, match: null, candidates: res.candidates, status: 'ambiguous' }
+    return { load: null, match: null, candidates: [], status: 'unmatched' }
   }
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -235,10 +306,27 @@ export default function NewSettlementPage() {
         setSettlementDate(data.settlement_date)
       }
       if (data.settlement_number != null) setSettlementNumber(String(data.settlement_number))
+      // 086 — the header contract number and the check page's payment facts.
+      setContractNumber(data.contract_number != null ? String(data.contract_number) : '')
+      setPayment({
+        payment_number: data.payment_number != null ? String(data.payment_number) : '',
+        check_number: data.check_number != null ? String(data.check_number) : '',
+        payment_date: data.payment_date && /^\d{4}-\d{2}-\d{2}$/.test(String(data.payment_date)) ? String(data.payment_date) : '',
+      })
 
       // Belt and suspenders under the prompt: a TOTAL row or a check-stub line
-      // that came back as a "ticket" is flagged and shown excluded.
-      const guards = flagSummaryLines(extractedLines, { settlementNumber: data.settlement_number })
+      // that came back as a "ticket" is flagged and shown excluded. The
+      // payment / check numbers are references too — a "ticket" equal to one
+      // of them is the remittance restated.
+      const refs = [data.settlement_number, data.payment_number, data.check_number].filter((x): x is string => !!x)
+      const guards = extractedLines.map((li, i) => {
+        const g = flagSummaryLines(extractedLines, { settlementNumber: data.settlement_number })[i]
+        if (g.flagged) return g
+        const tk = normalizeTicket(li.ticket_number).replace(/\D+/g, '')
+        return tk && refs.some((r) => normalizeTicket(r).replace(/\D+/g, '') === tk)
+          ? { flagged: true, reason: 'looks like the settlement total — not a load (its number is the payment or check number)' }
+          : g
+      })
       const nextRows: RowDraft[] = extractedLines.map((li, i) => ({
         ticket_number: li.ticket_number != null ? String(li.ticket_number) : '',
         net_bushels: li.net_bushels != null ? String(li.net_bushels) : '',
@@ -247,6 +335,12 @@ export default function NewSettlementPage() {
         notes: '',
         excluded: guards[i].flagged,
         guard: guards[i].reason,
+        secondary_ref: li.secondary_ref ?? null,
+        delivery_date: li.delivery_date ?? null,
+        vehicle_plate: li.vehicle_plate ?? null,
+        gross_weight: li.gross_weight ?? null,
+        tare_weight: li.tare_weight ?? null,
+        grade_readings: li.grade_readings ?? null,
       }))
       setRows(nextRows)
       setReportedTotal(data.statement_reported_total != null ? String(data.statement_reported_total) : '')
@@ -320,36 +414,63 @@ export default function NewSettlementPage() {
       }
     }
 
-    const { data: settlement, error: sErr } = await supabase
-      .from('settlements')
-      .insert({
-        buyer_id: buyerId,
-        settlement_date: settlementDate,
-        settlement_number: settlementNumber.trim() || null,
-        notes: notes.trim() || null,
-        source_pdf_url: pdfUrl,
-      })
-      .select('id')
-      .single()
-    if (sErr || !settlement) {
-      setSaving(false); setErr(sErr?.message ?? 'Could not save settlement.'); return
+    const baseHeader = {
+      buyer_id: buyerId,
+      settlement_date: settlementDate,
+      settlement_number: settlementNumber.trim() || null,
+      notes: notes.trim() || null,
+      source_pdf_url: pdfUrl,
+    }
+    const header086 = {
+      contract_id: headerContract?.id ?? null,
+      payment_number: payment.payment_number.trim() || null,
+      check_number: payment.check_number.trim() || null,
+      payment_date: payment.payment_date || null,
+    }
+    let inserted = await supabase.from('settlements').insert({ ...baseHeader, ...header086 }).select('id').single()
+    // 086 columns not applied yet → save the header without them.
+    if (inserted.error) inserted = await supabase.from('settlements').insert(baseHeader).select('id').single()
+    const settlement = inserted.data as { id: string } | null
+    if (inserted.error || !settlement) {
+      setSaving(false); setErr(inserted.error?.message ?? 'Could not save settlement.'); return
     }
 
-    const lines = includedRows.map((r) => {
-      const m = matchFor(r.ticket_number)
-      return {
-        settlement_id: settlement.id,
-        ticket_number: r.ticket_number.trim() || null,
-        load_id: m && m !== 'ambiguous' ? m.id : null,
-        net_bushels: num(r.net_bushels) ?? 0,
-        gross_revenue: num(r.gross_revenue) ?? 0,
-        discounts: num(r.discounts) ?? 0,
-        notes: r.notes.trim() || null,
-      }
-    })
-
-    const { error: lErr } = await supabase.from('settlement_lines').insert(lines)
+    const matched = includedRows.map((r) => matchFor(rows.indexOf(r)))
+    const baseLines = includedRows.map((r, i) => ({
+      settlement_id: settlement.id,
+      ticket_number: r.ticket_number.trim() || null,
+      load_id: matched[i].load?.id ?? null,
+      net_bushels: num(r.net_bushels) ?? 0,
+      gross_revenue: num(r.gross_revenue) ?? 0,
+      discounts: num(r.discounts) ?? 0,
+      notes: r.notes.trim() || null,
+    }))
+    const lines086 = includedRows.map((r, i) => ({
+      ...baseLines[i],
+      buyer_ref: r.secondary_ref?.trim() || null,
+      grade_readings: r.grade_readings && Object.values(r.grade_readings).some((v) => v != null) ? r.grade_readings : null,
+      match_tier: matched[i].status === 'manual' ? 'manual' : matched[i].match?.tier ?? null,
+      match_reason: matched[i].match?.reason ?? null,
+    }))
+    let lErr = (await supabase.from('settlement_lines').insert(lines086)).error
+    if (lErr) lErr = (await supabase.from('settlement_lines').insert(baseLines)).error
     if (lErr) { setSaving(false); setErr('Settlement saved but lines failed: ' + lErr.message); return }
+
+    // Write-backs (086), best effort: (a) a load matched by attributes gets the
+    // buyer's ticket when it had none — the next statement matches exactly;
+    // (b) moisture / test weight from the grade block fill a matched load's
+    // EMPTY fields (never overwrite what was weighed in).
+    for (let i = 0; i < includedRows.length; i++) {
+      const m = matched[i]
+      const r = includedRows[i]
+      if (!m.load) continue
+      const patch: Record<string, unknown> = {}
+      if (m.match?.tier === 'attribute' && !normalizeTicket(m.load.ticket_number) && r.ticket_number.trim()) patch.ticket_number = r.ticket_number.trim()
+      const g = r.grade_readings
+      if (g?.moisture != null && m.load.moisture == null) patch.moisture = g.moisture
+      if (g?.test_weight != null && m.load.test_weight == null) patch.test_weight = g.test_weight
+      if (Object.keys(patch).length > 0) await supabase.from('loads').update(patch).eq('id', m.load.id)
+    }
 
     const items = discountRows
       .filter((d) => d.description.trim() || num(d.amount) != null)
@@ -370,11 +491,12 @@ export default function NewSettlementPage() {
     router.push(`/settlements/${settlement.id}`)
   }
 
-  const totals = rows.filter((r) => !r.excluded).reduce(
-    (acc, r) => {
+  const totals = rows.reduce(
+    (acc, r, i) => {
+      if (r.excluded) return acc
       const { netRev } = computed(r)
-      const m = matchFor(r.ticket_number)
-      if (m && m !== 'ambiguous') acc.matched++
+      const m = matchFor(i)
+      if (m.load) acc.matched++
       else if (r.ticket_number.trim()) acc.unmatched++
       else acc.blank++
       acc.netBu += num(r.net_bushels) ?? 0
@@ -474,6 +596,17 @@ export default function NewSettlementPage() {
             {aiBanner}
           </div>
         )}
+        {/* 086 — header contract + payment facts from the statement / check page. */}
+        {(contractNumber || payment.payment_number || payment.check_number || payment.payment_date) && (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">
+            {contractNumber && (
+              <span>Contract <b>{contractNumber}</b>{headerContract ? <span className="text-green-700"> · linked to #{headerContract.contract_number}</span> : <span className="text-amber-700"> · no matching contract for this buyer</span>}</span>
+            )}
+            {payment.payment_number && <span>Payment # <b>{payment.payment_number}</b></span>}
+            {payment.check_number && <span>Check # <b>{payment.check_number}</b></span>}
+            {payment.payment_date && <span>Paid <b>{payment.payment_date}</b></span>}
+          </div>
+        )}
         {err && <p className="text-sm text-red-600">{err}</p>}
 
         <div className={source ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : ''}>
@@ -491,16 +624,43 @@ export default function NewSettlementPage() {
                 )}
                 {rows.map((r, i) => {
                   const { netRev, price } = computed(r)
-                  const m = matchFor(r.ticket_number)
+                  const m = matchFor(i)
                   const issues = rowIssues(r)
                   const flagCls = 'bg-amber-50'
                   let status: React.ReactNode
-                  if (!r.ticket_number.trim()) {
+                  const tierChip = (t: TicketMatch['tier'], confidence: TicketMatch['confidence']) => (
+                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${t === 'exact' ? 'bg-green-100 text-green-800' : t === 'segment' ? 'bg-sky-100 text-sky-800' : 'bg-amber-100 text-amber-800'}`}>
+                      {t === 'exact' ? 'exact' : t === 'segment' ? 'ticket inside ours' : `date + weight${confidence === 'medium' ? ' · check' : ''}`}
+                    </span>
+                  )
+                  const pickList = (cands: TicketMatch[]) => (
+                    <select
+                      value=""
+                      onChange={(e) => { if (e.target.value) updateRow(i, { matchOverride: e.target.value }) }}
+                      className="rounded border border-slate-300 px-1 py-0.5 text-xs bg-white max-w-[220px]"
+                      title="Pick the load this line paid"
+                    >
+                      <option value="">Pick the load…</option>
+                      {cands.map((c) => { const ld = loadById.get(c.loadId); return ld ? <option key={c.loadId} value={c.loadId}>{ld.date} · {ld.ticket_number ?? 'no ticket'} · {ld.crop?.name ?? ''} · {c.reason}</option> : null })}
+                    </select>
+                  )
+                  if (!r.ticket_number.trim() && m.status !== 'manual') {
                     status = <span className="text-slate-400 text-xs">—</span>
-                  } else if (m === 'ambiguous') {
-                    status = <span className="text-amber-700 text-xs">Ambiguous (multiple loads)</span>
-                  } else if (m) {
-                    status = <span className="text-green-700 text-xs">Matched · {m.date} · {m.crop?.name ?? '—'}</span>
+                  } else if (m.status === 'rejected') {
+                    status = <span className="text-xs text-slate-600">Import unmatched <button type="button" className="underline ml-1" onClick={() => updateRow(i, { matchOverride: undefined })}>undo</button></span>
+                  } else if (m.status === 'ambiguous') {
+                    status = <span className="text-amber-700 text-xs flex flex-col gap-1"><span>Several loads fit — {m.candidates[0]?.reason}</span>{pickList(m.candidates)}</span>
+                  } else if (m.load && m.match) {
+                    status = (
+                      <span className="text-xs flex flex-wrap items-center gap-1">
+                        <span className="text-green-700">Matched · {m.load.date} · {m.load.crop?.name ?? '—'}{m.load.ticket_number && normalizeTicket(m.load.ticket_number) !== normalizeTicket(r.ticket_number) ? ` · our #${m.load.ticket_number}` : ''}</span>
+                        {m.status === 'manual' ? <span className="rounded-full bg-slate-200 text-slate-700 px-1.5 py-0.5 text-[10px] font-semibold">picked by hand</span> : tierChip(m.match.tier, m.match.confidence)}
+                        <span className="text-slate-500" title={m.match.reason}>{m.match.reason}</span>
+                        {(m.match.tier !== 'exact' || m.status === 'manual') && (
+                          <button type="button" onClick={() => updateRow(i, { matchOverride: m.status === 'manual' ? undefined : 'reject' })} className="underline text-slate-600" title="Not this load — import the line unmatched">not this load</button>
+                        )}
+                      </span>
+                    )
                   } else {
                     status = <span className="text-amber-700 text-xs">No match</span>
                   }

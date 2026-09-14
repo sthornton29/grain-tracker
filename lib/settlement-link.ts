@@ -1,22 +1,30 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { matchTicket, normalizeTicket } from '@/lib/ticket-matching'
 
-const norm = (s: string | null | undefined) => (s ?? '').trim().toLowerCase()
+// Ticket ↔ load matching persistence — on the SHARED seam (lib/ticket-
+// matching, 086): exact after normalization (trim, case, leading zeros),
+// then segment (the buyer's ticket inside our dash-delimited internal
+// number, or the buyer's Load Order # on the line). Attribute matching
+// (date + weight) needs the statement's per-ticket facts and the reviewer's
+// confirmation, so it lives only on the upload review screen.
 
 // After a buyer-delivered load is created or its ticket number corrected,
 // persist the match: any unsettled settlement line for the SAME buyer whose
-// ticket number now equals this load's ticket gets its load_id back-filled.
+// ticket now matches this load's ticket (exact or segment) gets its load_id
+// back-filled.
 //
-// Settlement lines are paired to loads by ticket number when a settlement is
-// entered (app/settlements/new/page.tsx). If the load doesn't exist yet, or its
-// ticket is wrong at that point, the line is saved with a null load_id. The
-// Review screen re-pairs such lines at view time (app/settlements/[id]/page.tsx)
-// but never writes back — so the DB stays stale and anything reading load_id
-// directly (the list's Unmatched count, exports) keeps showing a mismatch.
-// Calling this when the load is saved makes the match stick.
+// Settlement lines are paired to loads by ticket when a settlement is
+// entered (app/settlements/new/page.tsx). If the load doesn't exist yet, or
+// its ticket is wrong at that point, the line is saved with a null load_id.
+// The Review screen re-pairs such lines at view time
+// (app/settlements/[id]/page.tsx) but never writes back — so the DB stays
+// stale and anything reading load_id directly (the list's Unmatched count,
+// exports) keeps showing a mismatch. Calling this when the load is saved
+// makes the match stick.
 //
-// Skips ambiguous tickets (more than one buyer load sharing the ticket) so we
-// never auto-link the wrong load — the operator resolves those by hand.
+// Skips ambiguous tickets (more than one buyer load matching) so we never
+// auto-link the wrong load — the operator resolves those by hand.
 export async function relinkSettlementLinesForLoad(
   supabase: SupabaseClient,
   load: {
@@ -26,17 +34,13 @@ export async function relinkSettlementLinesForLoad(
     ticket_number: string | null
   },
 ): Promise<void> {
-  const key = norm(load.ticket_number)
+  const key = normalizeTicket(load.ticket_number)
   if (load.to_type !== 'buyer' || !load.to_buyer_id || !key) return
 
-  // Ambiguity guard: bail if another buyer load already carries this ticket.
-  const { data: buyerLoads } = await supabase
-    .from('loads')
-    .select('id, ticket_number')
-    .eq('to_type', 'buyer')
-    .eq('to_buyer_id', load.to_buyer_id)
-  const sameTicket = (buyerLoads ?? []).filter((l) => norm(l.ticket_number) === key)
-  if (sameTicket.length > 1) return
+  const { data: buyerLoads } = await fetchAllRows<{ id: string; ticket_number: string | null }>((f, t) =>
+    supabase.from('loads').select('id, ticket_number').eq('to_type', 'buyer').eq('to_buyer_id', load.to_buyer_id).order('id').range(f, t),
+  )
+  const pool = (buyerLoads ?? []).filter((l) => l.id === load.id || normalizeTicket(l.ticket_number))
 
   const { data: settlements } = await supabase
     .from('settlements')
@@ -47,20 +51,25 @@ export async function relinkSettlementLinesForLoad(
 
   const { data: lines } = await supabase
     .from('settlement_lines')
-    .select('id, ticket_number')
+    .select('id, ticket_number, buyer_ref')
     .in('settlement_id', settlementIds)
     .is('load_id', null)
-  const lineIds = (lines ?? []).filter((l) => norm(l.ticket_number) === key).map((l) => l.id)
-  if (lineIds.length === 0) return
-
-  await supabase.from('settlement_lines').update({ load_id: load.id }).in('id', lineIds)
+  const byTier = new Map<string, string[]>()
+  for (const ln of (lines ?? []) as Array<{ id: string; ticket_number: string | null; buyer_ref?: string | null }>) {
+    const r = matchTicket({ ticket_number: ln.ticket_number, secondary_refs: [ln.buyer_ref] }, pool)
+    if (r.status !== 'matched' || r.match.loadId !== load.id) continue
+    const arr = byTier.get(r.match.tier) ?? []
+    arr.push(ln.id)
+    byTier.set(r.match.tier, arr)
+  }
+  for (const [tier, ids] of byTier) {
+    await supabase.from('settlement_lines').update({ load_id: load.id, match_tier: tier, match_reason: `ticket ${key} (${tier})` }).in('id', ids)
+  }
 }
 
 // Persist ticket→load matches for an ENTIRE settlement. Called when the Review
 // screen loads so the DB stays in sync with what the screen shows: every
-// unlinked line whose ticket matches exactly one of the buyer's delivered loads
-// gets its load_id back-filled. Ambiguous tickets (matching more than one load)
-// are left null for manual resolution. Returns the number of lines persisted.
+// unambiguous exact or segment match gets its load_id (and tier) written.
 export async function relinkSettlementLines(
   supabase: SupabaseClient,
   settlementId: string,
@@ -72,9 +81,10 @@ export async function relinkSettlementLines(
 
   const { data: lines } = await supabase
     .from('settlement_lines')
-    .select('id, ticket_number, load_id')
+    .select('id, ticket_number, load_id, buyer_ref')
     .eq('settlement_id', settlementId)
-  const unlinked = (lines ?? []).filter((l) => !l.load_id && norm(l.ticket_number))
+  const unlinked = ((lines ?? []) as Array<{ id: string; ticket_number: string | null; load_id: string | null; buyer_ref?: string | null }>)
+    .filter((l) => !l.load_id && (normalizeTicket(l.ticket_number) || normalizeTicket(l.buyer_ref)))
   if (unlinked.length === 0) return 0
 
   // Paginated (lib/fetch-all-rows): a buyer's loads exceed the ~1,000-row
@@ -89,31 +99,27 @@ export async function relinkSettlementLines(
       .order('id')
       .range(f, t),
   )
+  const pool = buyerLoads ?? []
 
-  // ticket → list of load ids that carry it.
-  const byTicket = new Map<string, string[]>()
-  for (const l of buyerLoads ?? []) {
-    const t = norm(l.ticket_number)
-    if (!t) continue
-    const arr = byTicket.get(t)
-    if (arr) arr.push(l.id)
-    else byTicket.set(t, [l.id])
-  }
-
-  // load id → line ids to set (only unambiguous, count === 1, matches).
-  const updates = new Map<string, string[]>()
+  // Text tiers only (exact, segment); each load claimed once; ambiguous or
+  // no match → left null for the manual pick.
+  const used = new Set<string>()
+  const updates: Array<{ lineId: string; loadId: string; tier: string; reason: string }> = []
   for (const ln of unlinked) {
-    const cands = byTicket.get(norm(ln.ticket_number)) ?? []
-    if (cands.length !== 1) continue // ambiguous or no match → leave null
-    const arr = updates.get(cands[0])
-    if (arr) arr.push(ln.id)
-    else updates.set(cands[0], [ln.id])
+    const r = matchTicket({ ticket_number: ln.ticket_number, secondary_refs: [ln.buyer_ref] }, pool, {}, used)
+    if (r.status !== 'matched') continue
+    used.add(r.match.loadId)
+    updates.push({ lineId: ln.id, loadId: r.match.loadId, tier: r.match.tier, reason: r.match.reason })
   }
 
   let persisted = 0
-  for (const [loadId, lineIds] of updates) {
-    const { error } = await supabase.from('settlement_lines').update({ load_id: loadId }).in('id', lineIds)
-    if (!error) persisted += lineIds.length
+  for (const u of updates) {
+    const { error } = await supabase.from('settlement_lines').update({ load_id: u.loadId, match_tier: u.tier, match_reason: u.reason }).eq('id', u.lineId)
+    if (error) {
+      // 086 columns not applied yet — persist the link alone.
+      const fallback = await supabase.from('settlement_lines').update({ load_id: u.loadId }).eq('id', u.lineId)
+      if (!fallback.error) persisted += 1
+    } else persisted += 1
   }
   return persisted
 }

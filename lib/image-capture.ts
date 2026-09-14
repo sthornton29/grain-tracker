@@ -104,6 +104,33 @@ export async function compressImage(file: File): Promise<CapturedImage> {
   }
 }
 
+/** Rotate a captured page 90° clockwise (086) — the manual fix for a photo
+ *  of a sideways document (EXIF only tells us how the PHONE was held, not
+ *  how the paper lay). Re-encodes through the canvas; the id is kept so the
+ *  tray's ordering and removal keep working. */
+export async function rotateCapturedImage(img: CapturedImage): Promise<CapturedImage> {
+  const el = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const i = new Image()
+    i.onload = () => resolve(i)
+    i.onerror = () => reject(new ImageDecodeError())
+    i.src = img.dataUrl
+  })
+  const canvas = document.createElement('canvas')
+  canvas.width = img.height
+  canvas.height = img.width
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new ImageDecodeError()
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, canvas.width, canvas.height)
+  ctx.translate(canvas.width, 0)
+  ctx.rotate(Math.PI / 2)
+  ctx.drawImage(el, 0, 0, img.width, img.height)
+  const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY)
+  const comma = dataUrl.indexOf(',')
+  const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl
+  return { ...img, dataUrl, base64, width: canvas.width, height: canvas.height, bytes: Math.floor((base64.length * 3) / 4) }
+}
+
 // Build a single PDF, one image per page, each page sized to the image's pixel
 // dimensions so nothing is cropped or letter-boxed. Returns a File so callers
 // can hand it straight to the existing storage upload helpers.

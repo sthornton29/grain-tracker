@@ -38,6 +38,11 @@ const within = (a: number, b: number, pct: number): boolean => b !== 0 && Math.a
 
 export const SUMMARY_LINE_REASON = 'looks like the settlement total — not a load'
 
+// (4) A "ticket" that is really a labelled total row ("Total From 0498074",
+// "Contract Total 2002960604-10", "Settlement Total", "Subtotal", "Grand
+// Total") — the Bunge shape prints several such rows, one after another.
+const TOTAL_LABEL = /\b(sub)?total\b|\bgrand\s+total\b|\btotal\s+from\b|\bcontract\s+total\b|\bsettlement\s+total\b/i
+
 /** One guard verdict per line, in order. */
 export function flagSummaryLines(
   lines: ReadonlyArray<SettlementLineLike>,
@@ -47,19 +52,29 @@ export function flagSummaryLines(
   return lines.map((line, i) => {
     const others = lines.filter((_, j) => j !== i)
     const reasons: string[] = []
+    // (4) the label says total.
+    if (TOTAL_LABEL.test(String(line.ticket_number ?? ''))) reasons.push('it is labelled as a total')
     // (2) the stub line carrying the settlement's own reference number.
     const tk = digits(line.ticket_number)
     if (ref && tk && tk === ref) reasons.push('its ticket number is the settlement reference number')
     if (others.length >= 2) {
-      const otherBu = others.reduce((s, o) => s + n(o.net_bushels), 0)
-      const otherDollars = others.reduce((s, o) => s + netDollars(o), 0)
-      const otherGross = others.reduce((s, o) => s + n(o.gross_revenue), 0)
       const bu = n(line.net_bushels)
       const dollars = netDollars(line)
       const gross = n(line.gross_revenue)
-      // (1) bushels or dollars restate the sum of everything else.
-      if (bu > 0 && within(bu, otherBu, 0.01)) reasons.push('its bushels equal the other lines added together')
-      else if ((dollars > 0 && within(dollars, otherDollars, 0.01)) || (gross > 0 && within(gross, otherGross, 0.01))) reasons.push('its dollars equal the other lines added together')
+      // (1) bushels or dollars restate the sum of everything else — measured
+      // against the lines SMALLER than this one, so a statement that prints
+      // several total rows (Total From / Contract Total / Settlement Total /
+      // the check stub) flags every one of them, not none.
+      const smaller = others.filter((o) => n(o.net_bushels) < bu * 0.99 || (bu === 0 && netDollars(o) < dollars * 0.99))
+      const sumBu = smaller.reduce((s, o) => s + n(o.net_bushels), 0)
+      const sumDollars = smaller.reduce((s, o) => s + netDollars(o), 0)
+      const sumGross = smaller.reduce((s, o) => s + n(o.gross_revenue), 0)
+      const otherBu = others.reduce((s, o) => s + n(o.net_bushels), 0)
+      const otherDollars = others.reduce((s, o) => s + netDollars(o), 0)
+      const otherGross = others.reduce((s, o) => s + n(o.gross_revenue), 0)
+      if (bu > 0 && (within(bu, otherBu, 0.01) || (smaller.length >= 2 && within(bu, sumBu, 0.01)))) reasons.push('its bushels equal the other lines added together')
+      else if ((dollars > 0 && (within(dollars, otherDollars, 0.01) || (smaller.length >= 2 && within(dollars, sumDollars, 0.01))))
+        || (gross > 0 && (within(gross, otherGross, 0.01) || (smaller.length >= 2 && within(gross, sumGross, 0.01))))) reasons.push('its dollars equal the other lines added together')
       // (3) a quantity that dwarfs every real load.
       const largestOther = Math.max(...others.map((o) => n(o.net_bushels)))
       if (bu > 0 && largestOther > 0 && bu > largestOther * 3) reasons.push('its bushels are more than three times the largest load')
