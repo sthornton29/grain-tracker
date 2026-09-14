@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-09-08 · version 0.1.0 · build 1ed6384. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-09-14 · version 0.1.0 · build 0be0d92. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -34,6 +34,15 @@ Ask Turnrow answers questions about **your own account's numbers** in plain Engl
 ## What it can answer
 
 Marketing and average prices, yields by field/farm/crop/landowner, revenue projections, contract delivery progress, hedge positions, crop insurance estimates, government payment projections, grain cash flow, recent loads, and bin inventory — plus long-tail questions it can look up directly in your records. It always shows units and the crop year it used, and it never makes up a number: if the data isn't there, it says so.
+
+## How answers are laid out
+
+Both assistants — Ask Turnrow and the how-to chat in the Help drawer — write their answers in a readable layout rather than a wall of text.
+
+- Several rows of numbers (per field, per crop, per contract) come as a **table** with the units in the column headings and the total on the last row.
+- Steps come as a **numbered list**; short sets of things as bullets. The headline number is in **bold** in the first sentence.
+- Any link in an answer opens in a new tab, so the conversation stays where it is.
+- Answers appear as they are written, so a table may fill in row by row for a second or two.
 
 ## Who can see what
 
@@ -366,8 +375,10 @@ Hedging tracks your futures and options positions alongside the crops they prote
 
 - **New position** records a trade: commodity, contract month, buy or sell, number of contracts, price, date, and account. Options carry strike and premium as well.
 - When you offset a trade at the brokerage, use **Close** on the position and enter the closing price, date, and commission. The result moves from unrealized to realized.
-- Or skip the typing: **import a brokerage statement** (photo or PDF). Turnrow reads the open positions, closed trades, and cotton alongside the grains, shows everything on a review screen, and saves only what you confirm.
+- When you move a hedge out to a later month, use **Roll…** on the position: pick the new month, enter the price the old month closed at and the price the new month opened at, the date, and any fees. Turnrow closes the old leg, opens the new one, and links the two — the new month keeps the same crop year automatically.
+- Or skip the typing: **import a brokerage statement** (photo or PDF). Turnrow reads the open positions, closed trades, rolls, and cotton alongside the grains, shows everything on a review screen, and saves only what you confirm.
 - Filter between open, closed, and all; closed positions can be narrowed by date range.
+- Switch the page between **Positions** and **History**. History is the running record of everything that ever happened to your hedges, newest first.
 
 ## What the controls do
 
@@ -384,6 +395,25 @@ Hedging tracks your futures and options positions alongside the crops they prote
 - Options are valued off their premium: what you paid or collected versus what the option is worth now (open), or what you closed it at (closed).
 - Market prices on this page are for valuing open positions and are delayed quotes — they're a gauge, not a fill price.
 
+## Rolling a hedge to a later month
+
+A roll closes one contract month and opens the next in the same crop's hedge — say, DEC corn rolled out to MAR. Turnrow treats the two halves as one event, not two unrelated trades.
+
+- **Rolled positions carry a chip** on the open table — "rolled from DEC 26 @ 4.9525" — and, beside the new leg's own open price, an **effective price** since the original entry. That is the original price plus or minus what each roll cost: entered at 4.9525, closed DEC at 5.435 and opened MAR at 5.585, the roll added 15 cents, so the hedge now reads at 5.1025. Roll again and the next spread adds on. It is the price the whole crop-year hedge really sits at.
+- **Statement imports find rolls for you.** When a statement shows a month closed and a different month opened the same day, same commodity, same direction, same number of contracts, the review screen shows it as one line — *Rolled 14 DEC 26 → MAR 27 on 9/03: closed DEC @ 5.435 → realized −$33,775.00; opened MAR @ 5.585 · crop year 2026 (inherited)* — with a single **Treat as roll** box already ticked. Both halves save together, linked, and the new month takes the crop year of the position it replaces. You are never asked for that crop year again.
+- A roll placed as one spread order at the brokerage is recognized with the most confidence. A close and an open placed separately the same day still show as a roll, marked *same day, no spread code*, so you can untick the box if they really were unrelated. Rolling fewer contracts than you held (a partial roll) works the same way; the contracts that did not roll stay open.
+- If you untick **Treat as roll**, the close and the open import as two independent trades, exactly as before.
+- Rolling changes nothing in your marketing numbers: the closed leg's result is counted once and the new leg is valued at its own price, which comes to the same money as the effective price. The effective price is there so you can read the hedge at a glance.
+
+## History — the record of every change
+
+Every open, close, partial close, roll, edit, crop-year change, delete, and statement import is recorded the moment it happens, and the record can be read but never rewritten.
+
+- The **History** view on this page lists one plain line per event, newest first — "9/03 · Rolled 14 DEC 26 → MAR 27 corn · −$33,775.00 realized · from StoneX statement 9/03". Tap a line for the detail: prices, fees, the roll lineage, which statement it came from, who recorded it and when, and for edits, exactly what changed from what to what. The crop year, commodity, and entity filters above apply to History too.
+- **History** on any position (open or closed) shows that position's own chain, and for rolled positions the whole lineage across legs with the effective price.
+- The same trail prints and exports from the **Hedging Summary** report as a *Hedging Activity* section — one row per event, in date order, with every detail column — so a full account history comes out of the report a lender already sees.
+- Positions that existed before this record began carry their opening and closing entries from their own dates, marked *from existing records*.
+
 ## When a price says "manual"
 
 Turnrow's live price feed covers corn, soybeans, and wheat. It does not cover **cotton** (ICE Cotton No. 2), and once in a while a contract month or the whole feed is unavailable. Rather than leave the number blank, any contract with no live price shows an **enter price** box — on the price board here, and anywhere else that price is needed (the Marketing Dashboard's what-if, the Income Sensitivity price axis, the Crop Budget Planner). Type the settlement from your broker or the exchange and it is saved for that contract; every screen then uses it. Cotton can be typed either way, $0.7265 or 72.65 — both mean the same price and display as dollars per pound.
@@ -398,6 +428,8 @@ Turnrow's live price feed covers corn, soybeans, and wheat. It does not cover **
 - **Why does my unrealized number bounce around?** It's marked to the current market. Only closing the position locks a number in.
 - **My total doesn't match the brokerage's month-end.** Check commissions on manually closed trades, and make sure every statement has been imported. Statement totals are reconciled on import, and disagreements were flagged then.
 - **The import says a position is "possibly closed" but it isn't.** Choose Keep open. The flag only means the statement didn't list it — a partial statement can cause that.
+- **A roll came in earlier as two separate trades — can I fix it?** Yes. Import that day's statement again: the review finds the roll, shows both halves as already recorded, and links them when you save. Nothing is duplicated, the new month picks up the right crop year, and the possibly-closed step stops flagging the old month.
+- **Why does the new month show two prices?** The first is what the new leg actually opened at; the smaller *eff.* figure is the effective price since the original entry, with the roll spreads folded in.
 - **Do hedge results show up in my marketing numbers?** Yes — realized futures results flow into the marketing and revenue reports, counted once, per crop year.
 - **Why are there no live prices right now?** Quotes can be temporarily unavailable; positions are still there, and any contract without a price offers an **enter price** box so you can carry on with a manual quote. If live prices never come back for corn, soybeans, or wheat, contact support.
 - **Why is my cotton price always "manual"?** Cotton (ICE) is not in the live feed. Enter the settlement when you check it — it is remembered until you change it.
@@ -844,8 +876,12 @@ Pick a crop year and, if you want, a commodity. The summary table shows each cro
 - **Crop year** — which marketing year's positions to show; each position is tagged to the crop year it hedges.
 - **Commodity** — narrow to corn, soybeans, wheat, cotton, and so on.
 - **Entity filter** — positions in an entity's own name count wholly toward it; positions held by your marketing agent or entered without an entity are hedging for the whole operation.
-- **Date range** — filters positions by trade date, or close date for closed positions.
-- **Export Excel / PDF / Print** — the summary and full position detail with your filters named.
+- **Date range** — filters positions by trade date, or close date for closed positions. The activity section uses each event's trade date.
+- **Export Excel / PDF / Print** — the summary and full position detail with your filters named, plus the activity sheet.
+
+## Hedging activity
+
+Below the positions, **Hedging Activity** is the account's full record for the period: every open, close, roll, edit, crop-year change, and statement import, newest first, in the same plain lines the Hedging page's History shows. Tap a line for the detail. The export adds it as its own sheet — one row per event in date order, with the entry and close prices, realized result, fees, crop year, entity, where it came from (which statement, or entered by hand), when it was recorded and by whom, and what an edit changed — so a lender or partner gets an auditable history from the same report that summarizes the book. Read-only users see the positions but not the activity record.
 
 ## How the numbers work
 

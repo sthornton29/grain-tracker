@@ -44,8 +44,12 @@ import {
   matchExistingOpenPosition,
   resolveClosedGroupSide,
   normalizeTradeDate,
+  possiblyClosedFutures,
   type FieldDifference,
 } from '@/lib/statement-matching'
+import { detectRolls, type RollCandidate } from '@/lib/roll-detection'
+import { executeRoll, type RollClosedLegInput } from '@/lib/hedge-roll'
+import { fmtMd } from '@/lib/hedge-events'
 import type { Entity, FuturesPosition, OptionPosition } from '@/lib/types'
 
 function cropYearOptions(): number[] {
@@ -80,6 +84,9 @@ type OpenRow = {
   crop_year: string
   include: boolean
   existing: boolean // auto-detected as already in the database
+  existingId: string | null // the stored position it matched (roll linking re-uses it)
+  // The statement's trade code on the fill (E / S / SE) — roll detection only.
+  execution_code: string | null
   // The user manually paired this row with a stored open position ("Match to
   // existing") — treated like `existing`: nothing is imported for it.
   manualMatchId: string | null
@@ -99,7 +106,12 @@ type ClosedLotRow = {
   num_contracts: number
   matchedOpenId: string | null // the open DB position this lot closes, if any
   fromDb: boolean // open_price/num_contracts taken from the matched DB record
+  // Contracts the matched DB position holds. When the statement closes FEWER
+  // than held it's a partial close: the closed lot is spun off and the rest
+  // stays open (the Close dialog's partial shape).
+  heldContracts: number | null
   alreadyImported: boolean
+  closedRowId: string | null // the stored closed row it matched (roll linking re-uses it)
   crop_year: string
   include: boolean
 }
@@ -117,6 +129,8 @@ type ClosedGroupRow = {
   // The statement's printed GROSS PROFIT/LOSS for the whole group — used ONLY to
   // reconcile against the sum of per-lot realized P&L, never written to a lot.
   statement_reported_total: number | null
+  // Trade code on the closing transaction (S / SE = one leg of a spread = a roll).
+  close_execution_code: string | null
   lots: ClosedLotRow[]
 }
 type OptionOpenRow = {
@@ -155,7 +169,7 @@ type Props = {
   existingPositions: FuturesPosition[]
   existingOptions: OptionPosition[]
   onClose: () => void
-  onImported: (summary: { inserted: number; closed: number }) => void
+  onImported: (summary: { inserted: number; closed: number; rolled: number }) => void
   // Called after a position is closed via the "possibly closed" step, so the
   // parent reloads — the refreshed existingPositions then drop out of the
   // possibly-closed list automatically. Distinct from onImported (which also
@@ -220,6 +234,8 @@ export default function StatementImport({ entities, existingPositions, existingO
       crop_year: '',
       include: !existing,
       existing,
+      existingId: match?.id ?? null,
+      execution_code: p.execution_code ? String(p.execution_code).trim().toUpperCase() : null,
       manualMatchId: null,
       nearMiss,
     }
@@ -242,6 +258,7 @@ export default function StatementImport({ entities, existingPositions, existingO
           close_price: t.close_price,
           lots: [{ open_date: t.open_trade_date, open_price: t.open_price, contracts: t.num_contracts }],
           statement_reported_total: t.realized_pnl ?? null,
+          close_execution_code: null,
         }))
 
     // Track which open DB positions a lot has already claimed so two lots can't
@@ -269,7 +286,7 @@ export default function StatementImport({ entities, existingPositions, existingO
         // closed trades, so a re-upload would otherwise duplicate them.) Matched
         // on the full per-lot closed fingerprint, ignoring side; dates are
         // normalized and prices compared within tolerance, same as open dedupe.
-        const alreadyImported = existingPositions.some(
+        const alreadyImportedRow = existingPositions.find(
           (ex) =>
             ex.status === 'closed' &&
             ex.commodity === commodity &&
@@ -279,6 +296,7 @@ export default function StatementImport({ entities, existingPositions, existingO
             normalizeTradeDate(ex.close_date) === closeDate &&
             pricesMatch(ex.close_price, close_price),
         )
+        const alreadyImported = alreadyImportedRow != null
 
         // Otherwise, does this lot close an OPEN position we already hold? Match
         // on commodity + month + open date (side and price omitted: the AI can
@@ -286,6 +304,7 @@ export default function StatementImport({ entities, existingPositions, existingO
         // several open lots share that date, prefer the one whose price matches.
         let matchedOpenId: string | null = null
         let fromDb = false
+        let heldContracts: number | null = null
         let open_price = lotOpenPrice
         let num_contracts = lot.contracts
         let crop_year = ''
@@ -304,9 +323,12 @@ export default function StatementImport({ entities, existingPositions, existingO
             fromDb = true
             matchedSides.push(match.side)
             // Part C: anchor the math to the verified DB entry price & size; take
-            // only the close price/date from the statement.
+            // only the close price/date from the statement. A lot that closes
+            // FEWER contracts than the position holds is a partial close and
+            // keeps the statement's count (the remainder stays open).
             open_price = match.trade_price
-            num_contracts = match.num_contracts
+            heldContracts = match.num_contracts
+            num_contracts = lot.contracts < match.num_contracts ? lot.contracts : match.num_contracts
             crop_year = match.crop_year != null ? String(match.crop_year) : ''
             usedOpenIds.add(match.id)
           }
@@ -318,7 +340,9 @@ export default function StatementImport({ entities, existingPositions, existingO
           num_contracts,
           matchedOpenId,
           fromDb,
+          heldContracts,
           alreadyImported,
+          closedRowId: alreadyImportedRow?.id ?? null,
           crop_year,
           include: !alreadyImported,
         })
@@ -336,6 +360,7 @@ export default function StatementImport({ entities, existingPositions, existingO
         close_trade_date: g.close_date,
         close_price,
         statement_reported_total: g.statement_reported_total ?? null,
+        close_execution_code: g.close_execution_code ? String(g.close_execution_code).trim().toUpperCase() : null,
         lots,
       })
     }
@@ -513,15 +538,17 @@ export default function StatementImport({ entities, existingPositions, existingO
     [closedGroups],
   )
   type ComputedLot = (typeof closedComputed)[number]['lots'][number] & {
+    gi: number
     commodity: Commodity
     contract_month: string
     side: Side
     close_trade_date: string
     close_price: number
   }
-  const allClosedLots: ComputedLot[] = closedComputed.flatMap(({ group, lots }) =>
+  const allClosedLots: ComputedLot[] = closedComputed.flatMap(({ group, lots }, gi) =>
     lots.map((l) => ({
       ...l,
+      gi,
       commodity: group.commodity,
       contract_month: group.contract_month,
       side: group.side,
@@ -531,7 +558,59 @@ export default function StatementImport({ entities, existingPositions, existingO
   )
   const closedLotCount = allClosedLots.length
 
-  const newOpen = openRows.filter((r) => r.include && !r.existing && !r.manualMatchId)
+  // --- Rolls (083) -------------------------------------------------------------
+  // A closed group + a same-day, same-side, different-month new open in the
+  // same commodity is a roll (lib/roll-detection). A confirmed roll imports
+  // BOTH legs in one transaction with the linkage (hedge_execute_roll) and the
+  // new leg inherits the closed leg's crop year — it is never asked again.
+  const rollCandidates = useMemo(
+    () =>
+      detectRolls(
+        closedGroups.map((g, gi) => ({
+          key: `g${gi}`,
+          commodity: g.commodity,
+          contract_month: g.contract_month,
+          side: g.side,
+          close_date: g.close_trade_date,
+          close_price: g.close_price,
+          close_execution_code: g.close_execution_code,
+          lots: g.lots.map((l) => ({
+            contracts: l.num_contracts,
+            open_price: l.open_price,
+            open_date: l.open_trade_date,
+            matchedOpenId: l.matchedOpenId,
+            heldContracts: l.heldContracts,
+            alreadyImported: l.alreadyImported,
+            crop_year: l.crop_year || null,
+          })),
+        })),
+        openRows.map((r, i) => ({
+          key: `o${i}`,
+          commodity: r.commodity,
+          contract_month: r.contract_month,
+          side: r.side,
+          num_contracts: r.num_contracts,
+          trade_date: r.trade_date,
+          trade_price: r.trade_price,
+          execution_code: r.execution_code,
+          existingId: r.existingId ?? r.manualMatchId,
+        })),
+      ),
+    [closedGroups, openRows],
+  )
+  const rollKey = (c: RollCandidate) => `${c.closedKey}|${c.openKey}`
+  // "Treat as roll?" per candidate (unset = the detector's default) and the
+  // crop year for rolls whose closed leg isn't a stored position.
+  const [rollOn, setRollOn] = useState<Record<string, boolean>>({})
+  const [rollCropYear, setRollCropYear] = useState<Record<string, string>>({})
+  const isRollOn = (c: RollCandidate) => rollOn[rollKey(c)] ?? c.defaultOn
+  const activeRolls = rollCandidates.filter(isRollOn)
+  const rollOpenIdx = new Set(activeRolls.map((c) => Number(c.openKey.slice(1))))
+  const rollGroupIdx = new Set(activeRolls.map((c) => Number(c.closedKey.slice(1))))
+  const rollCropYearFor = (c: RollCandidate): number | null =>
+    c.inheritedCropYear ?? (rollCropYear[rollKey(c)] ? Number(rollCropYear[rollKey(c)]) : null)
+
+  const newOpen = openRows.filter((r, i) => r.include && !r.existing && !r.manualMatchId && !rollOpenIdx.has(i))
   // Open DB positions already claimed by a manual pairing, so two statement
   // rows can't be pointed at the same stored position.
   const manuallyClaimedIds = new Set(openRows.map((r) => r.manualMatchId).filter((id): id is string => id != null))
@@ -547,9 +626,13 @@ export default function StatementImport({ entities, existingPositions, existingO
         (!manuallyClaimedIds.has(ex.id) || row.manualMatchId === ex.id),
     )
   }
-  const closesMatched = allClosedLots.filter((r) => r.include && r.matchedOpenId && !r.alreadyImported)
-  const closedToImport = allClosedLots.filter((r) => r.include && !r.matchedOpenId && !r.alreadyImported)
-  const totalClosedRealized = [...closesMatched, ...closedToImport].reduce((s, r) => s + r.realized_pnl, 0)
+  const closesMatched = allClosedLots.filter((r) => r.include && r.matchedOpenId && !r.alreadyImported && !rollGroupIdx.has(r.gi))
+  const closedToImport = allClosedLots.filter((r) => r.include && !r.matchedOpenId && !r.alreadyImported && !rollGroupIdx.has(r.gi))
+  const rollRealizedTotal = activeRolls.reduce(
+    (s, c) => s + (closedComputed[Number(c.closedKey.slice(1))]?.recon.computedTotal ?? 0),
+    0,
+  )
+  const totalClosedRealized = [...closesMatched, ...closedToImport].reduce((s, r) => s + r.realized_pnl, 0) + rollRealizedTotal
   const anyClosedMismatch = closedComputed.some(({ recon }) => recon.hasReportedTotal && !recon.matches)
   const newOpenOptions = openOptionRows.filter((r) => r.include && !r.existing)
   const newClosedOptions = closedOptionRows.filter((r) => r.include && !r.alreadyImported)
@@ -596,16 +679,10 @@ export default function StatementImport({ entities, existingPositions, existingO
       ),
     [closedGroups],
   )
-  const possiblyClosedFutures = useMemo(
+  const possiblyClosedFuturesList = useMemo(
     () =>
-      extraction == null ? [] : existingPositions.filter(
-        (p) =>
-          p.status === 'open' &&
-          entityScopeMatches(p.entity_id ?? null) &&
-          !keptOpenIds.has(p.id) &&
-          !matchedCloseIds.has(p.id) &&
-          !statementOpenKeys.has(`${p.commodity}|${up(p.contract_month)}`),
-      ),
+      extraction == null ? [] : possiblyClosedFutures(existingPositions, { statementOpenKeys, matchedCloseIds, keptOpenIds, entityScopeMatches }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [extraction, existingPositions, importEntity, entities, keptOpenIds, matchedCloseIds, statementOpenKeys],
   )
   const possiblyClosedOptions = useMemo(
@@ -617,9 +694,10 @@ export default function StatementImport({ entities, existingPositions, existingO
           !keptOpenIds.has(o.id) &&
           !statementOptionKeys.has(`${o.commodity}|${o.option_type}|${up(o.underlying_contract_month)}|${o.strike_price.toFixed(4)}`),
       ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [extraction, existingOptions, importEntity, entities, keptOpenIds, statementOptionKeys],
   )
-  const possiblyClosedCount = possiblyClosedFutures.length + possiblyClosedOptions.length
+  const possiblyClosedCount = possiblyClosedFuturesList.length + possiblyClosedOptions.length
   function keepOpen(id: string) {
     setKeptOpenIds((s) => { const next = new Set(s); next.add(id); return next })
   }
@@ -630,10 +708,61 @@ export default function StatementImport({ entities, existingPositions, existingO
     if (closedToImport.some((r) => !r.crop_year)) return setErr('Set a crop year on every closed trade you are importing.')
     if (newOpenOptions.some((r) => !r.crop_year)) return setErr('Set a crop year on every new option before saving.')
     if (newClosedOptions.some((r) => !r.crop_year)) return setErr('Set a crop year on every closed option you are importing.')
-    if (newOpen.length === 0 && closesMatched.length === 0 && closedToImport.length === 0 && newOpenOptions.length === 0 && newClosedOptions.length === 0) {
+    for (const c of activeRolls) {
+      if (rollCropYearFor(c) == null) return setErr(`Set the crop year for the ${c.fromMonth} → ${c.toMonth} ${c.commodity} roll.`)
+    }
+    if (newOpen.length === 0 && closesMatched.length === 0 && closedToImport.length === 0 && newOpenOptions.length === 0 && newClosedOptions.length === 0 && activeRolls.length === 0) {
       return setErr('Nothing selected to import.')
     }
     setSaving(true)
+
+    const statementDate = normalizeTradeDate(extraction?.statement_date) ?? null
+    const statementRef = extraction?.broker?.trim() || null
+
+    // Rolls first — each one is a single database transaction (close + open +
+    // linkage, crop year inherited, ledger events appended by the database).
+    let rolledCount = 0
+    for (const c of activeRolls) {
+      const group = closedGroups[Number(c.closedKey.slice(1))]
+      const openRow = openRows[Number(c.openKey.slice(1))]
+      const cropYear = rollCropYearFor(c)!
+      const closedLegs: RollClosedLegInput[] = group.lots.map((l) =>
+        l.matchedOpenId || l.closedRowId
+          ? { positionId: (l.matchedOpenId ?? l.closedRowId)!, quantity: l.num_contracts, side: group.side, commodity: group.commodity, tradePrice: l.open_price }
+          : {
+              row: {
+                entity_id: importEntityId || null,
+                commodity: group.commodity,
+                contract_month: group.contract_month,
+                crop_year: cropYear,
+                side: group.side,
+                num_contracts: l.num_contracts,
+                trade_price: l.open_price,
+                trade_date: normalizeTradeDate(l.open_trade_date) ?? l.open_trade_date,
+              },
+            },
+      )
+      const openLegId = openRow.existingId ?? openRow.manualMatchId
+      const { error } = await executeRoll(supabase, {
+        source: 'statement_import',
+        statementDate,
+        statementRef,
+        executionCode: openRow.execution_code ?? group.close_execution_code ?? null,
+        closePrice: group.close_price,
+        closeDate: normalizeTradeDate(group.close_trade_date) ?? group.close_trade_date,
+        closedLegs,
+        open: openLegId
+          ? { positionId: openLegId }
+          : { row: { contract_month: openRow.contract_month, num_contracts: openRow.num_contracts, trade_price: openRow.trade_price, trade_date: normalizeTradeDate(openRow.trade_date) ?? openRow.trade_date, commission: 0 } },
+      })
+      if (error) {
+        setSaving(false)
+        setErr(`The ${c.fromMonth} → ${c.toMonth} ${c.commodity} roll was not saved: ${error}${rolledCount > 0 ? ` (${rolledCount} earlier roll${rolledCount === 1 ? '' : 's'} on this statement did save.)` : ''}`)
+        onChanged?.()
+        return
+      }
+      rolledCount++
+    }
 
     const inserts = [
       ...newOpen.map((r) => ({
@@ -650,6 +779,9 @@ export default function StatementImport({ entities, existingPositions, existingO
         commission: 0,
         notes: null,
         source: 'statement_import' as const,
+        execution_code: r.execution_code,
+        import_statement_date: statementDate,
+        import_statement_ref: statementRef,
       })),
       ...closedToImport.map((r) => ({
         entity_id: importEntityId || null,
@@ -668,6 +800,8 @@ export default function StatementImport({ entities, existingPositions, existingO
         commission: 0,
         notes: null,
         source: 'statement_import' as const,
+        import_statement_date: statementDate,
+        import_statement_ref: statementRef,
       })),
     ]
 
@@ -722,6 +856,41 @@ export default function StatementImport({ entities, existingPositions, existingO
 
     let closedCount = 0
     for (const r of closesMatched) {
+      const held = existingPositions.find((p) => p.id === r.matchedOpenId)
+      if (held && r.heldContracts != null && r.num_contracts < r.heldContracts) {
+        // Partial close: spin the closed lot off as its own closed row (the
+        // Close dialog's partial shape) and leave the remainder open.
+        const prorated = Math.round((held.commission ?? 0) * (r.num_contracts / held.num_contracts) * 100) / 100
+        const ins = await supabase.from('futures_positions').insert({
+          entity_id: held.entity_id,
+          commodity: held.commodity,
+          contract_month: held.contract_month,
+          contract_symbol: held.contract_symbol,
+          crop_year: held.crop_year,
+          side: held.side,
+          num_contracts: r.num_contracts,
+          trade_price: held.trade_price,
+          trade_date: held.trade_date,
+          status: 'closed',
+          close_price: r.close_price,
+          close_date: r.close_trade_date,
+          realized_pnl: r.realized_pnl,
+          commission: prorated,
+          notes: held.notes,
+          source: held.source,
+          partial_close_of: held.id,
+          import_statement_date: statementDate,
+          import_statement_ref: statementRef,
+        })
+        if (ins.error) { setSaving(false); setErr(`Closing part of a matched position failed: ${ins.error.message}`); return }
+        const upd = await supabase
+          .from('futures_positions')
+          .update({ num_contracts: held.num_contracts - r.num_contracts, commission: Math.round(((held.commission ?? 0) - prorated) * 100) / 100 })
+          .eq('id', held.id)
+        if (upd.error) { setSaving(false); setErr(`Closed portion saved, but updating the remainder failed: ${upd.error.message}`); return }
+        closedCount++
+        continue
+      }
       const { error } = await supabase
         .from('futures_positions')
         .update({
@@ -729,6 +898,8 @@ export default function StatementImport({ entities, existingPositions, existingO
           close_price: r.close_price,
           close_date: r.close_trade_date,
           realized_pnl: r.realized_pnl,
+          import_statement_date: statementDate,
+          import_statement_ref: statementRef,
         })
         .eq('id', r.matchedOpenId!)
       if (error) { setSaving(false); setErr(`Closing matched position failed: ${error.message}`); return }
@@ -736,7 +907,7 @@ export default function StatementImport({ entities, existingPositions, existingO
     }
 
     setSaving(false)
-    onImported({ inserted: inserts.length + optionInserts.length, closed: closedCount })
+    onImported({ inserted: inserts.length + optionInserts.length, closed: closedCount, rolled: rolledCount })
   }
 
   const summary = extraction?.account_summary
@@ -812,6 +983,66 @@ export default function StatementImport({ entities, existingPositions, existingO
             afterward. Every imported contract needs a crop year before you can save.
           </div>
 
+          {/* Rolls — a closed group and a same-day new month in the same
+              commodity, reviewed as ONE linked line and saved as one step. */}
+          {rollCandidates.length > 0 && (
+            <div className="rounded-lg border-2 border-sky-300 bg-white overflow-hidden">
+              <div className="px-3 py-2 bg-sky-50 border-b border-sky-200">
+                <div className="font-semibold text-sky-900">Rolls — {rollCandidates.length} found</div>
+                <p className="text-xs text-sky-800 mt-0.5">
+                  A position closed and the next month opened the same day is a roll. Confirmed rolls save both halves together,
+                  linked, and the new month keeps the crop year of the position it replaces — no crop year to pick. Untick
+                  <b> Treat as roll</b> to import the close and the open as two unrelated trades instead.
+                </p>
+              </div>
+              <ul className="divide-y divide-slate-100">
+                {rollCandidates.map((c) => {
+                  const on = isRollOn(c)
+                  const key = rollKey(c)
+                  const recon = closedComputed[Number(c.closedKey.slice(1))]?.recon
+                  const realized = recon?.computedTotal ?? 0
+                  const year = rollCropYearFor(c)
+                  const chip =
+                    c.confidence === 'high' ? ['bg-green-100 text-green-800', 'spread order'] :
+                    c.confidence === 'medium' ? ['bg-amber-100 text-amber-800', c.partial ? 'partial roll' : 'same day, no spread code'] :
+                    ['bg-red-100 text-red-800', `counts differ: closed ${c.closedContracts}, opened ${c.openContracts}`]
+                  return (
+                    <li key={key} className={`px-3 py-2 text-sm flex flex-wrap items-start gap-x-3 gap-y-1 ${on ? '' : 'opacity-70'}`}>
+                      <label className="flex items-center gap-1.5 whitespace-nowrap font-semibold text-slate-800">
+                        <input type="checkbox" checked={on} onChange={(e) => setRollOn((s) => ({ ...s, [key]: e.target.checked }))} />
+                        Treat as roll
+                      </label>
+                      <div className="flex-1 min-w-[260px]">
+                        <div>
+                          <b>Rolled {c.closedContracts} {c.fromMonth} → {c.toMonth}</b> {c.commodity.toLowerCase()} on {fmtMd(c.date)}
+                          {c.spreadCode ? ' (spread)' : ''}: closed {c.fromMonth} @ <span className="font-mono">{fmtCommodityPrice(c.commodity, c.closePrice)}</span>
+                          {' '}→ realized <span className={`font-mono ${realized >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(realized)}</span>;
+                          {' '}opened {c.toMonth} @ <span className="font-mono">{fmtCommodityPrice(c.commodity, c.openPrice)}</span>
+                          {' '}· crop year {year != null ? <b>{year}</b> : <span className="text-amber-700">needed</span>}
+                          {c.inheritedCropYear != null && <span className="text-slate-500"> (inherited)</span>}
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                          <span className={`rounded-full px-2 py-0.5 ${chip[0]}`} title={c.reasons.join('; ')}>{chip[1]}</span>
+                          {c.openAlreadyRecorded && <span className="rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{c.toMonth} leg already recorded — will be linked</span>}
+                          {c.closedAlreadyRecorded && <span className="rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{c.fromMonth} close already recorded — will be linked</span>}
+                          {on && c.inheritedCropYear == null && (
+                            <label className="flex items-center gap-1 text-slate-700">
+                              Crop year for this hedge
+                              <select value={rollCropYear[key] ?? ''} onChange={(e) => setRollCropYear((s) => ({ ...s, [key]: e.target.value }))} className="rounded border border-slate-300 px-1.5 py-0.5 bg-white">
+                                <option value="">— pick —</option>
+                                {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
+                              </select>
+                            </label>
+                          )}
+                        </div>
+                      </div>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="min-w-0">
               <div className="flex gap-1 border-b border-slate-200 mb-3">
@@ -832,23 +1063,26 @@ export default function StatementImport({ entities, existingPositions, existingO
                     <tbody>
                       {openRows.length === 0 && <tr><td colSpan={10} className="px-3 py-6 text-center text-slate-400">No open positions found.</td></tr>}
                       {openRows.map((r, i) => (
-                        <tr key={i} className={`border-t border-slate-100 align-top ${r.existing || r.manualMatchId ? 'opacity-60' : ''}`}>
+                        <tr key={i} className={`border-t border-slate-100 align-top ${r.existing || r.manualMatchId || rollOpenIdx.has(i) ? 'opacity-60' : ''}`}>
                           <td className="px-2 py-1">
-                            <input type="checkbox" checked={r.include} disabled={r.existing || r.manualMatchId != null} onChange={(e) => setOpen(i, { include: e.target.checked })} />
+                            <input type="checkbox" checked={rollOpenIdx.has(i) ? true : r.include} disabled={r.existing || r.manualMatchId != null || rollOpenIdx.has(i)} onChange={(e) => setOpen(i, { include: e.target.checked })} />
                           </td>
                           <td className="px-2 py-1">
-                            {r.existing
+                            {rollOpenIdx.has(i)
+                              ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5 whitespace-nowrap" title="Saved as the new leg of the roll above">Part of roll</span>
+                              : r.existing
                               ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5 whitespace-nowrap">Already exists</span>
                               : r.manualMatchId
                               ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5 whitespace-nowrap">Matched to existing</span>
                               : <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5 whitespace-nowrap">New</span>}
-                            {!r.existing && !r.manualMatchId && r.nearMiss && (
+                            {r.execution_code && <span className="ml-1 text-[10px] font-mono text-slate-400" title="Trade code on the statement (E electronic, S spread, SE spread electronic)">{r.execution_code}</span>}
+                            {!r.existing && !r.manualMatchId && !rollOpenIdx.has(i) && r.nearMiss && (
                               <div className="mt-1 text-[11px] leading-tight text-amber-700 max-w-[230px]">
                                 Similar existing position: {r.nearMiss.position.num_contracts} @ {fmtCommodityPrice(r.commodity, r.nearMiss.position.trade_price)} on{' '}
                                 {r.nearMiss.position.trade_date} ({r.nearMiss.differences.map((d) => d.message).join(', ')})
                               </div>
                             )}
-                            {!r.existing && pairingOptions(r).length > 0 && (
+                            {!r.existing && !rollOpenIdx.has(i) && pairingOptions(r).length > 0 && (
                               <div className="mt-1">
                                 <select
                                   value={r.manualMatchId ?? ''}
@@ -868,10 +1102,10 @@ export default function StatementImport({ entities, existingPositions, existingO
                           </td>
                           <td className={`px-2 py-1 whitespace-nowrap ${STICKY_CELL_1}`}>{r.commodity}</td>
                           <td
-                            className={`px-2 py-1 sticky left-[130px] z-10 ${!r.existing && !r.manualMatchId && r.include && !r.crop_year ? 'bg-amber-50' : 'bg-white'}`}
+                            className={`px-2 py-1 sticky left-[130px] z-10 ${!r.existing && !r.manualMatchId && !rollOpenIdx.has(i) && r.include && !r.crop_year ? 'bg-amber-50' : 'bg-white'}`}
                             style={{ minWidth: 90 }}
                           >
-                            {r.existing || r.manualMatchId ? <span className="text-slate-400 text-xs">—</span> : (
+                            {rollOpenIdx.has(i) ? <span className="text-slate-400 text-xs">inherited</span> : r.existing || r.manualMatchId ? <span className="text-slate-400 text-xs">—</span> : (
                               <select value={r.crop_year} onChange={(e) => setOpen(i, { crop_year: e.target.value })} className={cellInput}>
                                 <option value="">— pick —</option>
                                 {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
@@ -931,6 +1165,10 @@ export default function StatementImport({ entities, existingPositions, existingO
                         <span className="text-slate-300">·</span>
                         <span className="text-xs text-slate-600">Closed {g.close_trade_date} @ <span className="font-mono">{fmtCommodityPrice(g.commodity, g.close_price)}</span></span>
                         <span className="text-xs text-slate-500">· {lots.length} lot{lots.length === 1 ? '' : 's'}</span>
+                        {g.close_execution_code && <span className="text-[10px] font-mono text-slate-400" title="Trade code on the closing transaction">{g.close_execution_code}</span>}
+                        {rollGroupIdx.has(gi) && (
+                          <span className="text-[11px] rounded-full bg-sky-100 text-sky-800 px-2 py-0.5" title="Saved as the closed leg of the roll above">Part of roll</span>
+                        )}
                         {/* A contract with no live coverage (ICE cotton): the statement's
                             close is the freshest price on hand — offer it as the
                             operation's manual quote, one tap. */}
@@ -947,13 +1185,15 @@ export default function StatementImport({ entities, existingPositions, existingO
                           </thead>
                           <tbody>
                             {lots.map((l, li) => (
-                              <tr key={li} className={`border-t border-slate-100 align-top ${l.alreadyImported ? 'opacity-60' : ''}`}>
-                                <td className="px-2 py-1"><input type="checkbox" checked={l.include} disabled={l.alreadyImported} onChange={(e) => setClosedLot(gi, li, { include: e.target.checked })} /></td>
+                              <tr key={li} className={`border-t border-slate-100 align-top ${l.alreadyImported || rollGroupIdx.has(gi) ? 'opacity-60' : ''}`}>
+                                <td className="px-2 py-1"><input type="checkbox" checked={rollGroupIdx.has(gi) ? true : l.include} disabled={l.alreadyImported || rollGroupIdx.has(gi)} onChange={(e) => setClosedLot(gi, li, { include: e.target.checked })} /></td>
                                 <td className="px-2 py-1 whitespace-nowrap">
-                                  {l.alreadyImported
+                                  {rollGroupIdx.has(gi)
+                                    ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">Part of roll</span>
+                                    : l.alreadyImported
                                     ? <span className="text-xs rounded-full bg-slate-200 text-slate-600 px-2 py-0.5">Already imported</span>
                                     : l.matchedOpenId
-                                    ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">Closes open position</span>
+                                    ? <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">{l.heldContracts != null && l.num_contracts < l.heldContracts ? `Closes ${l.num_contracts} of ${l.heldContracts} held` : 'Closes open position'}</span>
                                     : <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">Import as closed</span>}
                                 </td>
                                 <td className={`px-2 py-1 ${!l.matchedOpenId && !l.alreadyImported && l.include && !l.crop_year ? 'bg-amber-50' : ''}`} style={{ minWidth: 90 }}>
@@ -1144,7 +1384,7 @@ export default function StatementImport({ entities, existingPositions, existingO
                     <tr>{['Type', 'Commodity', 'Contract', 'Side', '#', 'Entry', 'Crop Yr', ''].map((h) => <th key={h} className="text-left px-2 py-1.5 whitespace-nowrap">{h}</th>)}</tr>
                   </thead>
                   <tbody>
-                    {possiblyClosedFutures.map((p) => (
+                    {possiblyClosedFuturesList.map((p) => (
                       <tr key={p.id} className="border-t border-amber-200">
                         <td className="px-2 py-1.5">Futures</td>
                         <td className="px-2 py-1.5 whitespace-nowrap">{p.commodity}</td>
@@ -1185,9 +1425,9 @@ export default function StatementImport({ entities, existingPositions, existingO
           <div className="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3">
             <div className="text-sm text-slate-600 flex-1">
               <div>
-                Will import <b>{newOpen.length}</b> new open · close <b>{closesMatched.length}</b> matched · import <b>{closedToImport.length}</b> closed · <b>{newOpenOptions.length + newClosedOptions.length}</b> options
+                Will {activeRolls.length > 0 && <>record <b>{activeRolls.length}</b> roll{activeRolls.length === 1 ? '' : 's'} · </>}import <b>{newOpen.length}</b> new open · close <b>{closesMatched.length}</b> matched · import <b>{closedToImport.length}</b> closed · <b>{newOpenOptions.length + newClosedOptions.length}</b> options
               </div>
-              {(closesMatched.length > 0 || closedToImport.length > 0) && (
+              {(closesMatched.length > 0 || closedToImport.length > 0 || activeRolls.length > 0) && (
                 <div className="text-xs text-slate-500 mt-0.5">
                   Total realized P&amp;L on closes:{' '}
                   <b className={totalClosedRealized >= 0 ? 'text-green-700' : 'text-red-700'}>{fmtPnl(totalClosedRealized)}</b>

@@ -38,7 +38,8 @@ STORAGE
 - bin_transfers(id, from_bin_id, to_bin_id, crop_id, bushels dry, transfer_date)
 
 MARKETING & HEDGING
-- futures_positions(id, entity_id, commodity, contract_month, contract_symbol, side 'long'|'short', num_contracts, trade_price, trade_date, crop_year, close_price, close_trade_date, realized_pnl, commission, closed_at)
+- futures_positions(id, entity_id, commodity, contract_month, contract_symbol, side 'long'|'short', num_contracts, trade_price, trade_date, crop_year, status 'open'|'closed', close_price, close_date, realized_pnl GROSS, commission, source, roll_group_id, rolled_from_position_id (the leg this one rolled from; a roll = closed leg + new month sharing roll_group_id; effective entry = original entry + Σ(new open − close)), execution_code, import_statement_date, import_statement_ref)
+- hedge_position_events(id, position_id, related_position_id, roll_group_id, event_type 'opened'|'closed'|'partial_close'|'roll_close'|'roll_open'|'edited'|'deleted'|'crop_year_changed'|'imported', occurred_at trade date, recorded_at, source 'statement_import'|'manual'|'roll_action'|'backfill', statement_date, statement_ref, actor_email, commodity, contract_month, side, crop_year, quantity, price, close_price, fees, realized_pnl, note)  -- append-only history of every position change
 - options_positions(id, entity_id, commodity, option_type 'put'|'call', side, num_contracts, strike_price, premium_cents, trade_date, crop_year, realized_pnl, closed_at)
 - market_prices(contract_symbol, price $/bu, price_date)  -- shared cached quotes
 

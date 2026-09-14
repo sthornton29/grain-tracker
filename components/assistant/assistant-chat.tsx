@@ -14,6 +14,7 @@
 //   {"e":"message"}                 error surfaced mid-stream
 
 import { useRef, useState } from 'react'
+import MarkdownMessage from '@/components/markdown-message'
 import type { AppRole } from '@/lib/types'
 
 export type AssistantMessage = { role: 'user' | 'assistant'; content: string }
@@ -177,10 +178,12 @@ export default function AssistantChat({ role, autoFocus }: { role: AppRole; auto
         )}
         {messages.map((m, i) => (
           <div key={i} className={m.role === 'user' ? 'flex justify-end' : 'flex flex-col items-start'}>
-            <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap ${
-              m.role === 'user' ? 'bg-brand text-white rounded-br-sm' : 'bg-slate-100 text-slate-800 rounded-bl-sm'
+            <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${
+              m.role === 'user' ? 'bg-brand text-white rounded-br-sm whitespace-pre-wrap' : 'bg-slate-100 text-slate-800 rounded-bl-sm'
             }`}>
-              {m.content || <span className="opacity-60">{status ?? '…'}</span>}
+              {m.role === 'assistant'
+                ? (m.content ? <MarkdownMessage text={m.content} /> : <span className="opacity-60">{status ?? '…'}</span>)
+                : m.content}
             </div>
             {m.role === 'assistant' && m.content && metaByIndex[i] && footer(metaByIndex[i])}
           </div>

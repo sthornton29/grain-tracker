@@ -246,9 +246,14 @@ IMPORTANT: Dates on these statements use abbreviated years. "3/09/6" means March
 
 IMPORTANT: Extract COTTON (ICE Cotton No. 2) positions too — commodity "Cotton", prices in cents/lb exactly as printed (72.65 means 72.65 cents/lb; do NOT convert).
 
+TRADE (EXECUTION) CODES: lines in the CONFIRMATION section carry a short trade code in their own column: E = electronic, S = spread, SE = spread executed electronically. A spread code means that fill was one leg of a spread order — typically a ROLL (closing one contract month and opening another the same day). These codes NEVER change how you read the quantity, the price, the side, or the dates. Copy the code, exactly as printed, onto the matching OPEN POSITION as execution_code (a same-day fill appears in both CONFIRMATION and OPEN POSITIONS — match on month, quantity, and price), and onto a closed offset group as close_execution_code when its CLOSING transaction appears in CONFIRMATION with a code. null when no code is printed.
+
+BROKER: broker is the issuing firm's name as printed on the statement (e.g. "StoneX", "R.J. O'Brien"); null if not shown.
+
 Respond ONLY in JSON with no other text, no markdown backticks:
 {
   "statement_date": "YYYY-MM-DD",
+  "broker": "string or null",
   "open_positions": [
     {
       "trade_date": "YYYY-MM-DD",
@@ -257,7 +262,8 @@ Respond ONLY in JSON with no other text, no markdown backticks:
       "commodity": "Corn or Soybeans or Chicago Wheat or Cotton",
       "contract_month": "string like DEC 26",
       "trade_price": number,
-      "unrealized_pnl": number
+      "unrealized_pnl": number,
+      "execution_code": "E or S or SE or null"
     }
   ],
   "closed_groups": [
@@ -270,7 +276,8 @@ Respond ONLY in JSON with no other text, no markdown backticks:
       "lots": [
         { "open_date": "YYYY-MM-DD", "open_price": number, "contracts": number }
       ],
-      "statement_reported_total": number
+      "statement_reported_total": number,
+      "close_execution_code": "E or S or SE or null"
     }
   ],
   "open_options": [

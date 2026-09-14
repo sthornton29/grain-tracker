@@ -8,8 +8,13 @@ import ClosePositionDialog from '@/components/hedging/close-position-dialog'
 import OptionForm from '@/components/hedging/option-form'
 import CloseOptionDialog from '@/components/hedging/close-option-dialog'
 import StatementImport from '@/components/hedging/statement-import'
+import RollPositionDialog from '@/components/hedging/roll-position-dialog'
+import PositionHistoryDialog from '@/components/hedging/position-history-dialog'
+import HedgingHistory from '@/components/hedging/hedging-history'
 import PriceBoard, { type PriceMap, infoToQuote } from '@/components/hedging/price-board'
 import { markOpenPosition } from '@/lib/hedging-rows'
+import { buildHedgeTimeline, filterTimeline } from '@/lib/hedge-events'
+import { effectiveEntry } from '@/lib/hedge-lineage'
 import { QuoteChip } from '@/components/quote-chip'
 import {
   COMMODITIES,
@@ -30,9 +35,10 @@ import {
   fmtPnl,
   fmtCents,
 } from '@/lib/hedging'
-import type { Entity, FuturesPosition, OptionPosition } from '@/lib/types'
+import type { Entity, FuturesPosition, HedgePositionEvent, OptionPosition } from '@/lib/types'
 
 type StatusFilter = 'open' | 'closed' | 'all'
+type View = 'positions' | 'history'
 
 export default function HedgingPage() {
   const supabase = useMemo(() => createClient(), [])
@@ -66,6 +72,12 @@ export default function HedgingPage() {
   const [closeOptionTarget, setCloseOptionTarget] = useState<OptionPosition | null>(null)
   const [showImport, setShowImport] = useState(false)
   const [banner, setBanner] = useState<string | null>(null)
+  // 083 — rolls + the history trail.
+  const [rollTarget, setRollTarget] = useState<FuturesPosition | null>(null)
+  const [historyTarget, setHistoryTarget] = useState<FuturesPosition | null>(null)
+  const [events, setEvents] = useState<HedgePositionEvent[]>([])
+  const [historyUnavailable, setHistoryUnavailable] = useState(false)
+  const [view, setView] = useState<View>('positions')
 
   const refreshPrices = useCallback(
     async (pos: FuturesPosition[], force: boolean) => {
@@ -129,16 +141,20 @@ export default function HedgingPage() {
   }, [])
 
   const loadAll = useCallback(async () => {
-    const [pos, ent, opt] = await Promise.all([
+    const [pos, ent, opt, ev] = await Promise.all([
       fetchAllRows((f, t) => supabase.from('futures_positions').select('*').order('trade_date', { ascending: false }).order('id').range(f, t)),
       supabase.from('entities').select('*').order('name'),
       fetchAllRows((f, t) => supabase.from('options_positions').select('*').order('trade_date', { ascending: false }).order('id').range(f, t)),
+      // The history ledger (083). Absent until the migration is applied — the
+      // History view then says so instead of failing the page.
+      fetchAllRows((f, t) => supabase.from('hedge_position_events').select('*').order('occurred_at', { ascending: false }).order('recorded_at', { ascending: false }).order('id').range(f, t)),
     ])
     const list = (pos.data as FuturesPosition[]) ?? []
     const optList = (opt.data as OptionPosition[]) ?? []
     setPositions(list)
     setEntities((ent.data as Entity[]) ?? [])
     setOptions(optList)
+    if (ev.error) { setHistoryUnavailable(true); setEvents([]) } else { setHistoryUnavailable(false); setEvents((ev.data as HedgePositionEvent[]) ?? []) }
     setLoading(false)
     await refreshPrices(list, false)
     await fetchOptionPrices(optList)
@@ -169,6 +185,15 @@ export default function HedgingPage() {
       ),
     [positions, fCropYear, fCommodity, fEntity],
   )
+
+  // The history timeline under the same crop-year / commodity / entity filters.
+  const timeline = useMemo(
+    () => filterTimeline(buildHedgeTimeline(events, { entityName }), { cropYear: fCropYear, commodity: fCommodity, entityId: fEntity }),
+    [events, entityName, fCropYear, fCommodity, fEntity],
+  )
+  // Lineage read-out for a rolled-into open leg: "rolled from DEC 26 @ 4.9525"
+  // + the effective price since the original entry (original ± roll spreads).
+  const lineageOf = (p: FuturesPosition) => (p.rolled_from_position_id ? effectiveEntry(p, positions) : null)
 
   const openPos = useMemo(() => base.filter((p) => p.status === 'open'), [base])
   const closedPos = useMemo(
@@ -288,6 +313,7 @@ export default function HedgingPage() {
     setEditOption(null)
     setCloseOptionTarget(null)
     setShowImport(false)
+    setRollTarget(null)
     loadAll()
   }
 
@@ -322,7 +348,23 @@ export default function HedgingPage() {
   return (
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold flex-1">Hedging</h1>
+        <h1 className="text-2xl font-bold">Hedging</h1>
+        <div className="flex-1 flex items-end">
+          <div className="inline-flex rounded-lg border border-slate-300 bg-white overflow-hidden text-sm font-semibold" role="tablist" aria-label="View">
+            {(['positions', 'history'] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                role="tab"
+                aria-selected={view === v}
+                onClick={() => setView(v)}
+                className={`px-3 py-2 min-h-[40px] ${view === v ? 'bg-brand text-white' : 'text-slate-700 hover:bg-slate-50'}`}
+              >
+                {v === 'positions' ? 'Positions' : 'History'}
+              </button>
+            ))}
+          </div>
+        </div>
         <button onClick={() => setShowImport(true)} className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold">
           Import Brokerage Statement
         </button>
@@ -353,6 +395,7 @@ export default function HedgingPage() {
             {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
         </Filter>
+        {view === 'positions' && (
         <Filter label="Status">
           <select value={fStatus} onChange={(e) => setFStatus(e.target.value as StatusFilter)} className={selCls}>
             <option value="open">Open</option>
@@ -360,7 +403,8 @@ export default function HedgingPage() {
             <option value="all">All</option>
           </select>
         </Filter>
-        {showClosed && (
+        )}
+        {view === 'positions' && showClosed && (
           <>
             <Filter label="Closed from">
               <input type="date" value={closedFrom} onChange={(e) => setClosedFrom(e.target.value)} className={selCls} />
@@ -372,7 +416,32 @@ export default function HedgingPage() {
         )}
       </div>
 
+      {/* History — the auditable trail, one line per event (083). */}
+      {view === 'history' && (
+        <div className="bg-white rounded-xl shadow overflow-hidden">
+          <div className="px-4 pt-3 pb-2 border-b border-slate-100">
+            <h2 className="font-semibold">History</h2>
+            <p className="text-xs text-slate-500">Every open, close, roll, edit, and import — newest first. Tap a line for prices, fees, the statement it came from, and who recorded it.</p>
+          </div>
+          {loading ? (
+            <Empty>Loading…</Empty>
+          ) : historyUnavailable ? (
+            <Empty>The hedging history needs a database update — contact support.</Empty>
+          ) : (
+            <HedgingHistory
+              lines={timeline}
+              emptyText="No hedging activity for these filters."
+              renderAction={(l) => {
+                const p = positions.find((x) => l.positionIds.includes(x.id))
+                return p ? <button type="button" onClick={() => setHistoryTarget(p)} className="text-brand-deep text-xs">Position</button> : null
+              }}
+            />
+          )}
+        </div>
+      )}
+
       {/* Prices + refresh */}
+      {view === 'positions' && (
       <div className="flex items-center gap-3 flex-wrap">
         <span className="text-sm text-slate-500">
           Prices as of <span className="font-semibold text-slate-700">{priceDate ?? '—'}</span>
@@ -385,11 +454,12 @@ export default function HedgingPage() {
           {refreshing ? 'Refreshing…' : 'Refresh Prices'}
         </button>
       </div>
-      {priceNote && <p className="text-xs text-amber-700">{priceNote}</p>}
-      {optionPriceNote && <p className="text-xs text-amber-700">Options: {optionPriceNote}</p>}
+      )}
+      {view === 'positions' && priceNote && <p className="text-xs text-amber-700">{priceNote}</p>}
+      {view === 'positions' && optionPriceNote && <p className="text-xs text-amber-700">Options: {optionPriceNote}</p>}
 
       {/* Hedging summary by crop year — combines futures and options per crop. */}
-      {!loading && cropYearSummaries.length > 0 && (
+      {view === 'positions' && !loading && cropYearSummaries.length > 0 && (
         <div>
           <h2 className="font-semibold mb-2">Hedging Summary by Crop Year</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -430,12 +500,12 @@ export default function HedgingPage() {
       )}
 
       {/* Price board */}
-      <PriceBoard positions={base} prices={prices} priceDate={priceDate} onManualSaved={() => void refreshPrices(positions, true)} />
+      {view === 'positions' && <PriceBoard positions={base} prices={prices} priceDate={priceDate} onManualSaved={() => void refreshPrices(positions, true)} />}
 
-      {loading && <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">Loading…</div>}
+      {view === 'positions' && loading && <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">Loading…</div>}
 
       {/* Open positions */}
-      {!loading && showOpen && (
+      {view === 'positions' && !loading && showOpen && (
         <div className="bg-white rounded-xl shadow overflow-hidden">
           <div className="px-4 pt-3 pb-2 border-b border-slate-100">
             <h2 className="font-semibold">Open Positions</h2>
@@ -447,7 +517,7 @@ export default function HedgingPage() {
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-50 text-slate-600">
-                  <tr>{['Commodity', 'Month', 'Symbol', 'Side', '# Contracts', 'Qty', 'Trade Date', 'Trade Price', 'Current', 'Unrealized P&L', 'Crop Yr', 'Actions'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr>
+                  <tr>{['Commodity', 'Month', 'Symbol', 'Side', '# Contracts', 'Qty', 'Trade Date', 'Trade Price', 'Current', 'Unrealized P&L', 'Crop Yr', 'Actions'].map((h) => <th key={h} className={`px-3 py-2 whitespace-nowrap ${h === 'Trade Price' || h === 'Current' || h === 'Unrealized P&L' || h === '# Contracts' || h === 'Qty' ? 'text-right' : 'text-left'}`}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
                   {COMMODITIES.filter((c) => (openGroups.get(c)?.length ?? 0) > 0).map((c) => {
@@ -458,16 +528,33 @@ export default function HedgingPage() {
                       <FragmentGroup key={c}>
                         {rows.map((p) => {
                           const u = posUnrealized(p)
+                          const lin = lineageOf(p)
                           return (
-                            <tr key={p.id} className="border-t border-slate-100">
+                            <tr key={p.id} className="border-t border-slate-100 align-top">
                               <td className="px-3 py-2">{p.commodity}</td>
-                              <td className="px-3 py-2">{p.contract_month}</td>
+                              <td className="px-3 py-2 whitespace-nowrap">
+                                {p.contract_month}
+                                {lin && (
+                                  <div className="mt-0.5">
+                                    <button type="button" onClick={() => setHistoryTarget(p)} className="text-[11px] rounded-full bg-sky-100 text-sky-800 px-2 py-0.5 whitespace-nowrap" title="See the roll lineage">
+                                      rolled from {lin.steps[lin.steps.length - 1]?.fromMonth ?? lin.originalMonth} @ {fmtCommodityPrice(p.commodity, lin.steps.length > 1 ? lin.steps[lin.steps.length - 1].closePrice : lin.originalEntry)}
+                                    </button>
+                                  </div>
+                                )}
+                              </td>
                               <td className="px-3 py-2 font-mono">{p.contract_symbol}</td>
                               <td className="px-3 py-2 capitalize">{p.side}</td>
                               <td className="px-3 py-2 text-right">{p.num_contracts}</td>
                               <td className="px-3 py-2 text-right font-mono">{fmtQuantity(p.commodity, p.num_contracts)}</td>
                               <td className="px-3 py-2 whitespace-nowrap">{p.trade_date}</td>
-                              <td className="px-3 py-2 text-right font-mono">{fmtCommodityPrice(p.commodity, p.trade_price)}</td>
+                              <td className="px-3 py-2 text-right font-mono whitespace-nowrap">
+                                {fmtCommodityPrice(p.commodity, p.trade_price)}
+                                {lin && (
+                                  <div className="text-[11px] font-sans text-slate-500 whitespace-nowrap" title={`Effective price since ${lin.originalMonth} @ ${fmtCommodityPrice(p.commodity, lin.originalEntry)}: original entry ± roll spreads`}>
+                                    eff. <span className="font-mono text-slate-700">{fmtCommodityPrice(p.commodity, lin.effectivePrice)}</span> since {lin.originalMonth}
+                                  </div>
+                                )}
+                              </td>
                               <td className="px-3 py-2 text-right font-mono whitespace-nowrap">
                                 {fmtCommodityPrice(p.commodity, curPrice(p.contract_symbol))}
                                 {markOf(p).quote?.source === 'manual' && <QuoteChip quote={markOf(p).quote} className="ml-1" />}
@@ -476,7 +563,9 @@ export default function HedgingPage() {
                               <td className="px-3 py-2">{p.crop_year}</td>
                               <td className="px-3 py-2 whitespace-nowrap">
                                 <button onClick={() => setCloseTarget(p)} className="text-brand-deep mr-2">Close</button>
+                                <button onClick={() => setRollTarget(p)} className="text-brand-deep mr-2" title="Close this month and open the next in one step">Roll…</button>
                                 <button onClick={() => setEditTarget(p)} className="text-slate-600 mr-2">Edit</button>
+                                <button onClick={() => setHistoryTarget(p)} className="text-slate-600 mr-2">History</button>
                                 <button onClick={() => deletePosition(p)} className="text-red-600">Delete</button>
                               </td>
                             </tr>
@@ -501,7 +590,7 @@ export default function HedgingPage() {
       )}
 
       {/* Closed positions */}
-      {!loading && showClosed && (
+      {view === 'positions' && !loading && showClosed && (
         <div className="bg-white rounded-xl shadow overflow-hidden">
           <div className="px-4 pt-3 pb-2 border-b border-slate-100">
             <h2 className="font-semibold">Closed Positions</h2>
@@ -512,15 +601,19 @@ export default function HedgingPage() {
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-50 text-slate-600">
-                  <tr>{['Commodity', 'Month', 'Side', '# Contracts', 'Qty', 'Trade Date', 'Trade Price', 'Close Date', 'Close Price', 'Realized P&L', 'Commission', 'Net P&L', 'Crop Yr'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr>
+                  <tr>{['Commodity', 'Month', 'Side', '# Contracts', 'Qty', 'Trade Date', 'Trade Price', 'Close Date', 'Close Price', 'Realized P&L', 'Commission', 'Net P&L', 'Crop Yr', ''].map((h, i) => <th key={i} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr>
                 </thead>
                 <tbody>
                   {closedPos.map((p) => {
                     const net = netRealized(p)
+                    const rolledInto = p.roll_group_id ? positions.find((x) => x.rolled_from_position_id === p.id) : null
                     return (
                       <tr key={p.id} className="border-t border-slate-100">
                         <td className="px-3 py-2">{p.commodity}</td>
-                        <td className="px-3 py-2">{p.contract_month}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          {p.contract_month}
+                          {rolledInto && <div className="mt-0.5"><span className="text-[11px] rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">rolled → {rolledInto.contract_month}</span></div>}
+                        </td>
                         <td className="px-3 py-2 capitalize">{p.side}</td>
                         <td className="px-3 py-2 text-right">{p.num_contracts}</td>
                         <td className="px-3 py-2 text-right font-mono">{fmtQuantity(p.commodity, p.num_contracts)}</td>
@@ -532,6 +625,7 @@ export default function HedgingPage() {
                         <td className="px-3 py-2 text-right font-mono">{fmtPnl(p.commission)}</td>
                         <td className={`px-3 py-2 text-right font-mono ${net >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(net)}</td>
                         <td className="px-3 py-2">{p.crop_year}</td>
+                        <td className="px-3 py-2 whitespace-nowrap"><button onClick={() => setHistoryTarget(p)} className="text-slate-600">History</button></td>
                       </tr>
                     )
                   })}
@@ -540,7 +634,7 @@ export default function HedgingPage() {
                     <td className="px-3 py-2 text-right font-mono">{fmtPnl(closedPos.reduce((s, p) => s + (p.realized_pnl ?? 0), 0))}</td>
                     <td className="px-3 py-2 text-right font-mono">{fmtPnl(closedPos.reduce((s, p) => s + (p.commission ?? 0), 0))}</td>
                     <td className="px-3 py-2 text-right font-mono">{fmtPnl(totalRealizedNet)}</td>
-                    <td />
+                    <td colSpan={2} />
                   </tr>
                 </tbody>
               </table>
@@ -550,7 +644,7 @@ export default function HedgingPage() {
       )}
 
       {/* Open options */}
-      {!loading && showOpen && (
+      {view === 'positions' && !loading && showOpen && (
         <div className="bg-white rounded-xl shadow overflow-hidden">
           <div className="px-4 pt-3 pb-2 border-b border-slate-100 flex items-center gap-3 flex-wrap">
             <div className="flex-1">
@@ -622,7 +716,7 @@ export default function HedgingPage() {
       )}
 
       {/* Closed options */}
-      {!loading && showClosed && (
+      {view === 'positions' && !loading && showClosed && (
         <div className="bg-white rounded-xl shadow overflow-hidden">
           <div className="px-4 pt-3 pb-2 border-b border-slate-100"><h2 className="font-semibold">Closed Options</h2></div>
           {closedOptions.length === 0 ? (
@@ -669,6 +763,8 @@ export default function HedgingPage() {
       {showNew && <PositionForm entities={entities} onClose={() => setShowNew(false)} onSaved={afterMutation} />}
       {editTarget && <PositionForm entities={entities} initial={editTarget} onClose={() => setEditTarget(null)} onSaved={afterMutation} />}
       {closeTarget && <ClosePositionDialog position={closeTarget} onClose={() => setCloseTarget(null)} onSaved={afterMutation} />}
+      {rollTarget && <RollPositionDialog position={rollTarget} allPositions={positions} onClose={() => setRollTarget(null)} onSaved={afterMutation} />}
+      {historyTarget && <PositionHistoryDialog position={historyTarget} allPositions={positions} entityName={entityName} onClose={() => setHistoryTarget(null)} />}
       {showNewOption && <OptionForm entities={entities} onClose={() => setShowNewOption(false)} onSaved={afterMutation} />}
       {editOption && <OptionForm entities={entities} initial={editOption} onClose={() => setEditOption(null)} onSaved={afterMutation} />}
       {closeOptionTarget && <CloseOptionDialog position={closeOptionTarget} onClose={() => setCloseOptionTarget(null)} onSaved={afterMutation} />}
@@ -679,7 +775,16 @@ export default function HedgingPage() {
           existingOptions={options}
           onClose={() => setShowImport(false)}
           onChanged={loadAll}
-          onImported={(s) => { setBanner(`Imported ${s.inserted} item${s.inserted === 1 ? '' : 's'}${s.closed ? ` and closed ${s.closed} matched` : ''}.`); afterMutation() }}
+          onImported={(s) => {
+            const parts = [
+              s.rolled ? `recorded ${s.rolled} roll${s.rolled === 1 ? '' : 's'}` : '',
+              `imported ${s.inserted} item${s.inserted === 1 ? '' : 's'}`,
+              s.closed ? `closed ${s.closed} matched` : '',
+            ].filter(Boolean)
+            const msg = parts.join(', ')
+            setBanner(msg.charAt(0).toUpperCase() + msg.slice(1) + '.')
+            afterMutation()
+          }}
         />
       )}
     </div>

@@ -1,8 +1,8 @@
 ---
 page_route: /reports/hedging-summary
 title: Hedging Summary
-updated: 2026-08-05
-keywords: hedging, futures, options, positions, realized, unrealized, profit and loss, crop year, commodity, lender
+updated: 2026-09-14
+keywords: hedging, futures, options, positions, realized, unrealized, profit and loss, crop year, commodity, lender, hedging activity, history, audit, export events, rolls
 ---
 ## What this page is for
 
@@ -17,8 +17,12 @@ Pick a crop year and, if you want, a commodity. The summary table shows each cro
 - **Crop year** — which marketing year's positions to show; each position is tagged to the crop year it hedges.
 - **Commodity** — narrow to corn, soybeans, wheat, cotton, and so on.
 - **Entity filter** — positions in an entity's own name count wholly toward it; positions held by your marketing agent or entered without an entity are hedging for the whole operation.
-- **Date range** — filters positions by trade date, or close date for closed positions.
-- **Export Excel / PDF / Print** — the summary and full position detail with your filters named.
+- **Date range** — filters positions by trade date, or close date for closed positions. The activity section uses each event's trade date.
+- **Export Excel / PDF / Print** — the summary and full position detail with your filters named, plus the activity sheet.
+
+## Hedging activity
+
+Below the positions, **Hedging Activity** is the account's full record for the period: every open, close, roll, edit, crop-year change, and statement import, newest first, in the same plain lines the Hedging page's History shows. Tap a line for the detail. The export adds it as its own sheet — one row per event in date order, with the entry and close prices, realized result, fees, crop year, entity, where it came from (which statement, or entered by hand), when it was recorded and by whom, and what an edit changed — so a lender or partner gets an auditable history from the same report that summarizes the book. Read-only users see the positions but not the activity record.
 
 ## How the numbers work
 

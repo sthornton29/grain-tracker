@@ -21,7 +21,9 @@ import { quoteMapFromWire, type Quote } from '@/lib/quotes'
 import { markOpenPosition } from '@/lib/hedging-rows'
 import { buildEntityScope } from '@/lib/entity-scope'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
-import type { Crop, Entity, FuturesPosition, OptionPosition } from '@/lib/types'
+import { buildHedgeTimeline, hedgeEventExportRows, HEDGE_EVENT_EXPORT_COLUMNS } from '@/lib/hedge-events'
+import HedgingHistory from '@/components/hedging/hedging-history'
+import type { Crop, Entity, FuturesPosition, HedgePositionEvent, OptionPosition } from '@/lib/types'
 import {
   SummaryCards,
   EmptyState,
@@ -44,6 +46,10 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
   const [quoteBySymbol, setQuoteBySymbol] = useState<Map<string, Quote>>(new Map())
   const [priceDate, setPriceDate] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  // The hedging history ledger (083) — the "Hedging activity" section. Null
+  // when it can't be read (migration not applied, or a viewer: the ledger is
+  // owner-only because it carries whole-book snapshots).
+  const [events, setEvents] = useState<HedgePositionEvent[] | null>(null)
 
   const [cropYear, setCropYear] = useState('All')
   const [commodity, setCommodity] = useState<'All' | Commodity>('All')
@@ -53,15 +59,17 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
 
   useEffect(() => {
     ;(async () => {
-      const [pos, ent, opt] = await Promise.all([
+      const [pos, ent, opt, ev] = await Promise.all([
         fetchAllRows((f, t) => supabase.from('futures_positions').select('*').order('trade_date', { ascending: false }).order('id').range(f, t)),
         supabase.from('entities').select('*').order('name'),
         fetchAllRows((f, t) => supabase.from('options_positions').select('*').order('trade_date', { ascending: false }).order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('hedge_position_events').select('*').order('occurred_at', { ascending: false }).order('recorded_at', { ascending: false }).order('id').range(f, t)),
       ])
       const allPos = (pos.data as FuturesPosition[]) ?? []
       setPositions(allPos)
       setOptions((opt.data as OptionPosition[]) ?? [])
       setEntities((ent.data as Entity[]) ?? [])
+      setEvents(ev.error ? null : ((ev.data as HedgePositionEvent[]) ?? []))
       // Quotes for the open symbols through THE seam (/api/market-prices:
       // live → manual → none) — never a raw newest-row read of the cache, so
       // a manual cotton quote and its provenance reach this report too.
@@ -220,6 +228,27 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
   }, [filteredOptions])
   const optPnlForKey = (cy: number, c: string) => optionsByKey.get(`${cy}|${c}`) ?? 0
 
+  // Hedging activity: the ledger under the same crop-year / commodity /
+  // entity / date filters (dates apply to the event's trade date). Owners
+  // only — a viewer's report never shows the ledger.
+  const filteredEvents = useMemo(
+    () =>
+      viewer.isViewer || events == null ? [] : events.filter(
+        (e) =>
+          (cropYear === 'All' || e.crop_year === Number(cropYear)) &&
+          (commodity === 'All' || e.commodity === commodity) &&
+          (entityId === 'All' || (e.entity_id ?? '') === entityId) &&
+          (!from || e.occurred_at >= from) &&
+          (!to || e.occurred_at <= to),
+      ),
+    [events, viewer.isViewer, cropYear, commodity, entityId, from, to],
+  )
+  const activity = useMemo(() => buildHedgeTimeline(filteredEvents, { entityName }), [filteredEvents]) // eslint-disable-line react-hooks/exhaustive-deps
+  const positionLabel = (id: string | null) => {
+    const p = id ? positions.find((x) => x.id === id) : null
+    return p ? `${p.contract_month} ${p.commodity} ${p.side} ${p.num_contracts} @ ${p.trade_price}` : (id ?? '')
+  }
+
   // Summary by crop year × commodity.
   const summary = useMemo(() => {
     const m = new Map<string, {
@@ -317,6 +346,15 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
         }),
       })
     }
+    // Hedging activity — the auditable trail, one row per event, chronological,
+    // with the detail columns (the same ledger the hedging page's History shows).
+    if (filteredEvents.length > 0) {
+      sections.push({
+        title: 'Hedging Activity',
+        columns: HEDGE_EVENT_EXPORT_COLUMNS,
+        rows: hedgeEventExportRows(filteredEvents, { entityName, positionLabel }),
+      })
+    }
     // Headline band mirroring the on-screen summary cards (formatted through the
     // shared formatter so negatives parenthesize consistently with the tables).
     const gUnrealized = summary.reduce((s, r) => s + r.unrealized, 0)
@@ -336,7 +374,7 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filtered, filteredOptions, summary, cropYear, commodity, entityId, from, to, onPayloadChange])
+  }, [filtered, filteredOptions, filteredEvents, summary, cropYear, commodity, entityId, from, to, onPayloadChange])
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
 
@@ -496,6 +534,17 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
                   </tbody>
                 </table>
               </div>
+            </section>
+          )}
+
+          {/* Hedging activity — the same auditable trail the hedging page's
+              History view shows, in the report's format; exports as one row
+              per event (see buildExportPayload). Owners only. */}
+          {!viewer.isViewer && events != null && (
+            <section className="bg-white rounded-xl shadow p-4 avoid-break">
+              <h2 className="font-bold text-lg mb-1">Hedging Activity</h2>
+              <p className="text-xs text-slate-500 mb-2 no-print">Every open, close, roll, edit, and import in the period, newest first. Tap a line for the detail; the export lists one row per event.</p>
+              <HedgingHistory lines={activity} report emptyText="No hedging activity for these filters." />
             </section>
           )}
         </div>

@@ -175,6 +175,10 @@ export type BrokerageOpenPosition = {
   contract_month: string | null
   trade_price: number | null
   unrealized_pnl: number | null
+  // The trade code printed on the CONFIRMATION line for a same-day fill:
+  // 'E' electronic, 'S' spread, 'SE' spread-electronic. Roll detection reads
+  // it (S/SE = the two legs were one spread order); parsing never does.
+  execution_code?: string | null
 }
 
 // Legacy per-line closed trade (one row per trade with a per-line realized P&L).
@@ -211,6 +215,9 @@ export type BrokerageClosedGroup = {
   close_price: number | null
   lots: BrokerageClosedGroupLot[]
   statement_reported_total: number | null
+  // Trade code on the CLOSING transaction when it appears in CONFIRMATION
+  // (same vocabulary as BrokerageOpenPosition.execution_code).
+  close_execution_code?: string | null
 }
 
 export type BrokerageOpenOption = {
@@ -241,6 +248,9 @@ export type BrokerageClosedOption = {
 
 export type BrokerageStatementExtraction = {
   statement_date: string | null
+  // The issuing firm as printed ('StoneX', 'R.J. O'Brien'…) — the history
+  // trail cites "from StoneX statement 9/03".
+  broker?: string | null
   open_positions: BrokerageOpenPosition[]
   // Closed trades now arrive grouped: one entry per offset group with per-lot
   // opening facts. closed_trades is the legacy shape, still accepted as a

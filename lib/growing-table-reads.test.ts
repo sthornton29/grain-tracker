@@ -36,7 +36,7 @@ const GROWING_TABLES = [
   // per year, unbounded over an account's lifetime
   'contracts', 'contract_attachments',
   'field_plantings', 'field_planting_varieties',
-  'futures_positions', 'options_positions',
+  'futures_positions', 'options_positions', 'hedge_position_events',
   'crop_insurance_policies', 'arc_plc_payments', 'other_government_payments',
   'cotton_sales_contracts', 'cotton_pool_payments', 'cotton_fees',
   'ccc_loans', 'cotton_ldp_records',

@@ -1,8 +1,8 @@
 ---
 page_route: /assistant
 title: Ask Turnrow
-updated: 2026-08-14
-keywords: assistant, ask turnrow, AI, questions, chat, data, numbers, average price, yields, bins, unsold, privacy, who can see
+updated: 2026-09-14
+keywords: assistant, ask turnrow, AI, questions, chat, data, numbers, average price, yields, bins, unsold, privacy, who can see, tables, formatting, links, how-to chat
 ---
 ## What this is for
 
@@ -18,6 +18,15 @@ Ask Turnrow answers questions about **your own account's numbers** in plain Engl
 ## What it can answer
 
 Marketing and average prices, yields by field/farm/crop/landowner, revenue projections, contract delivery progress, hedge positions, crop insurance estimates, government payment projections, grain cash flow, recent loads, and bin inventory — plus long-tail questions it can look up directly in your records. It always shows units and the crop year it used, and it never makes up a number: if the data isn't there, it says so.
+
+## How answers are laid out
+
+Both assistants — Ask Turnrow and the how-to chat in the Help drawer — write their answers in a readable layout rather than a wall of text.
+
+- Several rows of numbers (per field, per crop, per contract) come as a **table** with the units in the column headings and the total on the last row.
+- Steps come as a **numbered list**; short sets of things as bullets. The headline number is in **bold** in the first sentence.
+- Any link in an answer opens in a new tab, so the conversation stays where it is.
+- Answers appear as they are written, so a table may fill in row by row for a second or two.
 
 ## Who can see what
 

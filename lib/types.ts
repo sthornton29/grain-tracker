@@ -461,8 +461,55 @@ export type FuturesPosition = {
   realized_pnl: number | null
   commission: number
   notes: string | null
-  source: 'manual' | 'statement_import'
+  source: 'manual' | 'statement_import' | 'roll_action'
   created_at: string
+  // 083 — rolls as linked events. A roll's closed leg(s) and the leg they
+  // rolled into share roll_group_id; the new leg points back through
+  // rolled_from_position_id (DEC→MAR→MAY chains share a lineage).
+  roll_group_id?: string | null
+  rolled_from_position_id?: string | null
+  // The statement's trade code on the fill: E electronic, S spread, SE
+  // spread-electronic. Detection/display only — never touches the math.
+  execution_code?: string | null
+  // A closed row spun off a larger open position by a partial close → parent.
+  partial_close_of?: string | null
+  // The brokerage statement that last touched this row (import or close).
+  import_statement_date?: string | null
+  import_statement_ref?: string | null
+}
+
+// 083 — one row per mutation of a futures position (append-only ledger).
+export type HedgeEventType =
+  | 'opened' | 'closed' | 'partial_close' | 'roll_close' | 'roll_open'
+  | 'edited' | 'deleted' | 'crop_year_changed' | 'imported'
+export type HedgeEventSource = 'statement_import' | 'manual' | 'roll_action' | 'backfill'
+export type HedgePositionEvent = {
+  id: string
+  position_id: string
+  related_position_id: string | null
+  roll_group_id: string | null
+  event_type: HedgeEventType
+  occurred_at: string // trade date (YYYY-MM-DD)
+  recorded_at: string // ISO timestamp
+  source: HedgeEventSource
+  statement_date: string | null
+  statement_ref: string | null
+  actor_user_id: string | null
+  actor_email: string | null
+  entity_id: string | null
+  commodity: string | null
+  contract_month: string | null
+  contract_symbol: string | null
+  side: 'long' | 'short' | null
+  crop_year: number | null
+  quantity: number | null
+  price: number | null
+  close_price: number | null
+  fees: number | null
+  realized_pnl: number | null
+  before_snapshot: Record<string, unknown> | null
+  after_snapshot: Record<string, unknown> | null
+  note: string | null
 }
 
 export type MarketPrice = {

@@ -3,6 +3,7 @@ import {
   normalizeTradeDate,
   matchExistingOpenPosition,
   resolveClosedGroupSide,
+  possiblyClosedFutures,
   type PositionFingerprint,
 } from '@/lib/statement-matching'
 
@@ -160,5 +161,50 @@ describe('resolveClosedGroupSide', () => {
     const r = resolveClosedGroupSide('long', ['short', 'long'])
     expect(r.side).toBe('long')
     expect(r.overridden).toBe(false)
+  })
+})
+
+// ---------- After the 9/03 roll repair: the 9/11 statement ----------
+// Once the 9/03 statement is re-imported with roll detection, the DEC 26
+// 14-lot is CLOSED (rolled) and the MAR 27 14-lot @ 5.585 (9/03) is open,
+// crop year 2026 inherited. The 9/11 statement then lists MAR 27 twice:
+// the 9/03 14-lot (existing) and a new 12-lot @ 5.4825 filled 9/11.
+
+type DbRow = PositionFingerprint & { id: string; status: 'open' | 'closed'; entity_id: string | null }
+const AFTER_REPAIR: DbRow[] = [
+  { id: 'dec-14', commodity: 'Corn', contract_month: 'DEC 26', side: 'short', num_contracts: 14, trade_date: '2026-04-15', trade_price: 4.9525, status: 'closed', entity_id: null },
+  { id: 'mar-14', commodity: 'Corn', contract_month: 'MAR 27', side: 'short', num_contracts: 14, trade_date: '2026-09-03', trade_price: 5.585, status: 'open', entity_id: null },
+]
+const STATEMENT_0911: PositionFingerprint[] = [
+  { commodity: 'Corn', contract_month: 'MAR 27', side: 'short', num_contracts: 14, trade_date: '2026-09-03', trade_price: 5.585 },
+  { commodity: 'Corn', contract_month: 'MAR 27', side: 'short', num_contracts: 12, trade_date: '2026-09-11', trade_price: 5.4825 },
+]
+
+describe('9/11 dedupe after the roll repair', () => {
+  it('the 9/03 MAR 27 14-lot matches the rolled-into position; the 12-lot @ 5.4825 is New', () => {
+    const first = matchExistingOpenPosition(STATEMENT_0911[0], AFTER_REPAIR)
+    expect(first.match?.id).toBe('mar-14')
+    const second = matchExistingOpenPosition(STATEMENT_0911[1], AFTER_REPAIR)
+    expect(second.match).toBeNull()
+    expect(second.nearMiss?.position.id).toBe('mar-14')
+    expect(second.nearMiss?.differences.map((d) => d.field).sort()).toEqual(['num_contracts', 'trade_date', 'trade_price'])
+  })
+
+  it('the possibly-closed step flags nothing: DEC 26 is closed, MAR 27 is on the statement', () => {
+    const flagged = possiblyClosedFutures(AFTER_REPAIR, {
+      statementOpenKeys: new Set(['Corn|MAR 27']),
+      matchedCloseIds: new Set(),
+      keptOpenIds: new Set(),
+      entityScopeMatches: () => true,
+    })
+    expect(flagged).toEqual([])
+  })
+
+  it('before the repair the still-open DEC 26 WAS flagged — and a roll’s closed leg matched on the 9/03 statement is not', () => {
+    const before: DbRow[] = [{ ...AFTER_REPAIR[0], status: 'open' }, AFTER_REPAIR[1]]
+    const flagged = possiblyClosedFutures(before, { statementOpenKeys: new Set(['Corn|MAR 27']), matchedCloseIds: new Set(), keptOpenIds: new Set(), entityScopeMatches: () => true })
+    expect(flagged.map((p) => p.id)).toEqual(['dec-14'])
+    const withRollMatch = possiblyClosedFutures(before, { statementOpenKeys: new Set(['Corn|MAR 27']), matchedCloseIds: new Set(['dec-14']), keptOpenIds: new Set(), entityScopeMatches: () => true })
+    expect(withRollMatch).toEqual([])
   })
 })

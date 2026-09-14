@@ -167,6 +167,7 @@ export function mergeSeedContracts(parts: SeedContractExtraction[]): SeedContrac
 export function mergeBrokerage(parts: BrokerageStatementExtraction[]): BrokerageStatementExtraction {
   return {
     statement_date: firstValue(parts, (p) => p.statement_date),
+    broker: firstValue(parts, (p) => p.broker ?? null),
     open_positions: mergeList(parts.map((p) => p.open_positions ?? [])),
     closed_groups: mergeList(parts.map((p) => p.closed_groups ?? [])),
     closed_trades: mergeList(parts.map((p) => p.closed_trades ?? [])),

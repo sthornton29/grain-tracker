@@ -6,6 +6,7 @@
 // carried along.
 
 import { useRef, useState } from 'react'
+import MarkdownMessage from '@/components/markdown-message'
 
 export type ChatMessage = { role: 'user' | 'assistant'; content: string }
 
@@ -77,10 +78,12 @@ export default function SupportChat({ route, onEscalate }: {
         )}
         {messages.map((m, i) => (
           <div key={i} className={m.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
-            <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap ${
-              m.role === 'user' ? 'bg-brand text-white rounded-br-sm' : 'bg-slate-100 text-slate-800 rounded-bl-sm'
+            <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm ${
+              m.role === 'user' ? 'bg-brand text-white rounded-br-sm whitespace-pre-wrap' : 'bg-slate-100 text-slate-800 rounded-bl-sm'
             }`}>
-              {m.content || <span className="opacity-60">…</span>}
+              {m.role === 'assistant'
+                ? (m.content ? <MarkdownMessage text={m.content} /> : <span className="opacity-60">…</span>)
+                : m.content}
             </div>
           </div>
         ))}

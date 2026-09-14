@@ -638,3 +638,49 @@ describe('assumed acres — marketing before planting (081)', () => {
     expect(rows).toHaveLength(0)
   })
 })
+
+// ---------------------------------------------------------------------------
+// Rolls (083): the engine needs NO change for a rolled hedge. Realized P&L on
+// the closed leg is counted once and the open leg rides at its own price, so
+// the crop's economics equal a single open leg at the EFFECTIVE price
+// (original entry ± roll spreads) — to the cent. Hand-verified from the 9/03
+// statement: DEC 26 short 14 @ 4.9525 closed 5.435 (−$33,775) → MAR 27 14 @ 5.585;
+// effective entry 4.9525 + (5.585 − 5.435) = 5.1025.
+// ---------------------------------------------------------------------------
+describe('rolled hedge — realized once + open leg at its own price == effective-price economics', () => {
+  const dec = future({ id: 'dec', commodity: 'Corn', contract_month: 'DEC 26', contract_symbol: 'ZCZ26', num_contracts: 14, trade_price: 4.9525, trade_date: '2026-04-15', status: 'closed', close_price: 5.435, close_date: '2026-09-03', realized_pnl: -33775, roll_group_id: 'g1' })
+  const mar = future({ id: 'mar', commodity: 'Corn', contract_month: 'MAR 27', contract_symbol: 'ZCH27', num_contracts: 14, trade_price: 5.585, trade_date: '2026-09-03', status: 'open', roll_group_id: 'g1', rolled_from_position_id: 'dec' })
+  const effective = future({ id: 'eff', commodity: 'Corn', contract_month: 'MAR 27', contract_symbol: 'ZCH27', num_contracts: 14, trade_price: 5.1025, trade_date: '2026-04-15', status: 'open' })
+
+  it('blended revenue and revenue/acre are identical to the cent (market 5.20, basis −0.30)', () => {
+    // 1,000 ac × 180 = 180,000 bu; hedge covers 70,000; 110,000 unpriced @ 5.20 − 0.30.
+    // chain:     70,000 × (5.585 − 0.30) + 110,000 × 4.90 − 33,775 = 369,950 + 539,000 − 33,775 = 875,175
+    // effective: 70,000 × (5.1025 − 0.30) + 110,000 × 4.90         = 336,175 + 539,000          = 875,175
+    const chain = run({ acres: 1000, expectedYield: 180, assumedBasis: -0.30, currentFutures: 5.20, futures: [dec, mar] })
+    const single = run({ acres: 1000, expectedYield: 180, assumedBasis: -0.30, currentFutures: 5.20, futures: [effective] })
+    expect(chain.hedgeRealizedPnl).toBeCloseTo(-33775, 2)
+    expect(chain.openHedgeBu).toBe(70000)
+    expect(single.hedgeRealizedPnl).toBe(0)
+    expect(chain.blendedRevenue).toBeCloseTo(875175, 2)
+    expect(Math.round(chain.blendedRevenue * 100)).toBe(Math.round(single.blendedRevenue * 100))
+    expect(chain.revenuePerAcre!).toBeCloseTo(single.revenuePerAcre!, 6)
+  })
+
+  it('holds at any market price, and for a chain of two rolls', () => {
+    // MAR closed 5.60 → MAY 5.70: effective 5.1025 + 0.10 = 5.2025; MAR realized (5.585 − 5.60) × 70,000 = −1,050.
+    const marClosed = { ...mar, status: 'closed' as const, close_price: 5.6, close_date: '2027-02-20', realized_pnl: -1050, roll_group_id: 'g2' }
+    const may = future({ id: 'may', commodity: 'Corn', contract_month: 'MAY 27', contract_symbol: 'ZCK27', num_contracts: 14, trade_price: 5.7, trade_date: '2027-02-20', status: 'open', roll_group_id: 'g2', rolled_from_position_id: 'mar' })
+    const eff2 = { ...effective, trade_price: 5.2025 }
+    for (const m of [4.25, 5.0, 5.585, 6.4]) {
+      const chain = run({ acres: 1000, expectedYield: 180, assumedBasis: -0.30, currentFutures: m, futures: [dec, marClosed, may] })
+      const single = run({ acres: 1000, expectedYield: 180, assumedBasis: -0.30, currentFutures: m, futures: [eff2] })
+      expect(Math.round(chain.blendedRevenue * 100)).toBe(Math.round(single.blendedRevenue * 100))
+    }
+  })
+
+  it('the open leg still shows at its OWN price in the futures buildup (the effective price is a display aid, not an input)', () => {
+    const chain = run({ acres: 1000, expectedYield: 180, assumedBasis: -0.30, currentFutures: 5.20, futures: [dec, mar] })
+    expect(chain.openHedgeAvg).toBeCloseTo(5.585, 6)
+    expect(chain.futuresSources.find((s) => s.label === 'Open hedges (MAR 27)')?.avgPrice).toBeCloseTo(5.585, 6)
+  })
+})

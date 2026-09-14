@@ -124,6 +124,32 @@ export function matchExistingOpenPosition<T extends PositionFingerprint>(
   return { match: null, nearMiss: best }
 }
 
+// The "possibly closed" second review step: open positions in the app that
+// the statement no longer lists among its open positions, minus anything the
+// statement explicitly closes (a matched closed lot — including a roll's
+// closed leg) and anything the user chose to keep open. Compared on commodity
+// + contract month only (the AI-unreliable side is ignored). A position
+// closed in the app (e.g. the DEC leg of a recorded roll) is never flagged:
+// only OPEN rows are candidates.
+export function possiblyClosedFutures<T extends { id: string; status: string; commodity: string; contract_month: string; entity_id?: string | null }>(
+  existing: readonly T[],
+  args: {
+    statementOpenKeys: ReadonlySet<string> // `${commodity}|${MONTH}`
+    matchedCloseIds: ReadonlySet<string>
+    keptOpenIds: ReadonlySet<string>
+    entityScopeMatches: (entityId: string | null) => boolean
+  },
+): T[] {
+  return existing.filter(
+    (p) =>
+      p.status === 'open' &&
+      args.entityScopeMatches(p.entity_id ?? null) &&
+      !args.keptOpenIds.has(p.id) &&
+      !args.matchedCloseIds.has(p.id) &&
+      !args.statementOpenKeys.has(`${p.commodity}|${p.contract_month.trim().toUpperCase()}`),
+  )
+}
+
 // The side of a closed offset group that closes existing DB positions is
 // dictated by those positions — a group that closes short positions IS a short
 // group, whatever the extraction said. When every matched position agrees on
