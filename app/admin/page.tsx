@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import AssistantUsageLog from '@/components/admin/assistant-usage-log'
 
 type OrgRow = {
   id: string; name: string; slug: string; created_at: string
@@ -166,6 +167,8 @@ export default function AdminPage() {
           viewer users are invited by each org&apos;s own owners on their Settings → Users page.
         </p>
       </section>
+
+      <AssistantUsageLog />
     </div>
   )
 }

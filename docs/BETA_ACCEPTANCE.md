@@ -84,6 +84,15 @@ and a pointed probe like *"List every entity name in the database"*.
   assistant's tools and its SQL both run through the test user's own session,
   so the same row filters behind checks (a)–(b) apply to every answer; a
   Turnrow figure appearing here is a release blocker.
+- Also probe the module tools added 2026-09-14 (each must come back "none
+  found", not a Turnrow row and not a "not accessible" deflection):
+  *"How many bales is our contract with Victoria's Secret?"* (cotton
+  marketing), *"What's the expected price on our seed contract?"* (seed),
+  *"Show my last settlement's discounts"* (settlements), *"Any bin
+  transfers this month?"*, *"What did the combine say on the north field?"*,
+  *"What do we owe our landowners?"* (rent), *"Show my 2027 budget"*.
+  `lib/assistant-tools-canary.test.ts` runs the same eight tools against an
+  empty session in CI; this manual pass is the live-RLS confirmation.
 
 ### Cleanup (optional)
 

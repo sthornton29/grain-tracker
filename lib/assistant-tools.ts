@@ -88,56 +88,14 @@ export type AssistantContext = {
 
 const PRICE_BASIS = 'stored positions and assumptions — not live futures quotes; the report pages layer live quotes on top'
 
-// ---------- shared fetch helpers ----------
+// ---------- shared fetch helpers (lib/assistant-tools-shared.ts) ----------
 
-async function all<T>(q: PromiseLike<{ data: unknown; error: { message: string } | null }>): Promise<T[]> {
-  const { data, error } = await q
-  if (error) throw new Error(error.message)
-  return ((data as unknown) as T[]) ?? []
-}
-
-/** Paginated read of a FILTERED/ordered query — throws on error like all().
- *  The loop (lib/fetch-all-rows) is cap-agnostic and id-ordered builders keep
- *  page boundaries stable. */
-async function allRows<T>(build: Parameters<typeof fetchAllRows>[0]): Promise<T[]> {
-  const { data, error } = await fetchAllRows<T>(build)
-  if (error) throw new Error(error.message)
-  return data
-}
-
-/** Paginated full-table read (the project caps rows per request). Ordered by
- *  id so page boundaries are stable — unordered ranges can skip/double rows. */
-async function allPaged<T>(supabase: SupabaseClient, table: string, select: string): Promise<T[]> {
-  return allRows<T>((f, t) => supabase.from(table).select(select).order('id').range(f, t))
-}
-
-// The combine-entry columns every report page fetches (CombineEntryLike).
-const COMBINE_SELECT = 'id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date'
-type CombineRow = {
-  id: string; field_id: string; crop_id: string; crop_year: number
-  stated_total_bushels: number; adjusted_total_bushels: number
-  adjustment_bu_per_acre: number | null; destination_bin_id: string | null
-  harvest_complete: boolean; entry_date: string
-}
-
-const num = (v: unknown) => Number(v) || 0
-const r0 = (v: number) => Math.round(v)
-const r2 = (v: number) => Math.round(v * 100) / 100
-
-type ScopeBits = {
-  entities: Array<{ id: string; name: string; entity_role: string | null }>
-  farms: Array<{ id: string; name: string; entity_id: string | null; landowner_id: string | null }>
-  fields: Array<{ id: string; farm_id: string | null; name_or_number: string }>
-}
-
-async function fetchScopeBits(supabase: SupabaseClient): Promise<ScopeBits> {
-  const [entities, farms, fields] = await Promise.all([
-    all<ScopeBits['entities'][number]>(supabase.from('entities').select('id, name, entity_role').order('name')),
-    all<ScopeBits['farms'][number]>(supabase.from('farms').select('id, name, entity_id, landowner_id')),
-    all<ScopeBits['fields'][number]>(supabase.from('fields').select('id, farm_id, name_or_number')),
-  ])
-  return { entities, farms, fields }
-}
+import { all, allRows, allPaged, COMBINE_SELECT, num, r0, r2, fetchScopeBits, type CombineRow, type ScopeBits } from '@/lib/assistant-tools-shared'
+import {
+  getCottonMarketing, getCottonProduction, getSettlements, getBinTransfers, getCombineEntries, getRentSettlements, getBudget,
+  MODULE_TOOLS, MODULE_STATUS_LABELS,
+} from '@/lib/assistant-tools-modules'
+import { cumulativePricedPct, blendedElectedPrice, effectivePriceWalk, seedTrackerProgress, SEED_OUTCOME_LABEL, SEED_PAYMENT_TYPE_LABEL } from '@/lib/seed-contracts'
 
 function resolveEntityId(bits: ScopeBits, entityName: string | undefined): { entityId: string; note: string | null } {
   if (!entityName?.trim()) return { entityId: '', note: null }
@@ -157,6 +115,10 @@ type MarketingBundle = {
   scopedContracts: Contract[]
   crops: Crop[]
   entityNote: string | null
+  /** 077 seed production contracts (empty when none / tables absent). */
+  seedCommitmentsByCrop: Map<string, SeedCropCommitment[]>
+  seedBundles: Awaited<ReturnType<typeof fetchSeedContracts>>['bundles']
+  assumptions: CropAssumption[]
 }
 
 async function loadMarketingBundle(
@@ -225,8 +187,10 @@ async function loadMarketingBundle(
 
   // Seed production contracts (077) — tolerates the tables absent → none.
   let seedCommitmentsByCrop: Map<string, SeedCropCommitment[]> | undefined
+  let seedBundles: MarketingBundle['seedBundles'] = []
   try {
     const seed = await fetchSeedContracts(supabase, cropYear, { contracts })
+    seedBundles = seed.bundles
     if (seed.bundles.length > 0) {
       const buyersQ = await supabase.from('buyers').select('id, name')
       seedCommitmentsByCrop = buildSeedCommitments({
@@ -263,7 +227,75 @@ async function loadMarketingBundle(
     cottonPhysicalByCrop: cottonPhysical,
     seedCommitmentsByCrop,
   })
-  return { rows, totals: aggregateMarketing(rows), scope, scopedContracts, crops, entityNote: note }
+  return { rows, totals: aggregateMarketing(rows), scope, scopedContracts, crops, entityNote: note, seedCommitmentsByCrop: seedCommitmentsByCrop ?? new Map(), seedBundles, assumptions }
+}
+
+// ---------- seed production contracts (077) ----------
+
+async function getSeedContracts(supabase: SupabaseClient, ctx: AssistantContext, input: { crop_year: number; buyer?: string }) {
+  const bundle = await loadMarketingBundle(supabase, ctx, input.crop_year)
+  if (bundle.seedBundles.length === 0) {
+    return { crop_year: input.crop_year, count: 0, contracts: [], note: `No seed production contracts recorded for crop year ${input.crop_year}. (Grain contracts are on get_contracts.)` }
+  }
+  const buyers = await all<{ id: string; name: string }>(supabase.from('buyers').select('id, name'))
+  const buyerName = (id: string | null) => (id ? buyers.find((b) => b.id === id)?.name ?? null : null)
+  const cropById = new Map(bundle.crops.map((c) => [c.id, c]))
+  const commitments = [...bundle.seedCommitmentsByCrop.values()].flat()
+  const buyerFilter = input.buyer?.trim().toLowerCase() || null
+  const out = bundle.seedBundles
+    .filter((b) => !buyerFilter || (buyerName(b.contract.buyer_id) ?? '').toLowerCase().includes(buyerFilter))
+    .map((b) => {
+      const crop = b.contract.crop_id ? cropById.get(b.contract.crop_id) : undefined
+      const commitment = commitments.find((c) => c.contractId === b.contract.id)
+      const assumption = bundle.assumptions.find((a) => a.crop_id === b.contract.crop_id && a.crop_year === input.crop_year)
+      const referencePlusBasis = assumption?.assumed_futures != null
+        ? num(assumption.assumed_futures) + num(assumption.assumed_basis)
+        : null
+      const irrigatedShare = commitment?.committed.irrigatedShare ?? 0
+      const walk = effectivePriceWalk({ details: b.details, premiums: b.premiums, elections: b.elections, referencePlusBasis, irrigatedShare })
+      const progress = commitment ? seedTrackerProgress({ elections: b.elections, payments: b.payments, committed: commitment.committed }) : null
+      const received = b.payments.filter((p) => p.status === 'received').reduce((s, p) => s + num(p.amount), 0)
+      const projected = b.payments.filter((p) => p.status === 'projected').reduce((s, p) => s + num(p.amount), 0)
+      return {
+        contract_number: b.contract.contract_number,
+        buyer: buyerName(b.contract.buyer_id),
+        crop: crop?.name ?? null,
+        crop_year: b.contract.crop_year,
+        brand_variety: [b.details.brand, b.details.variety].filter(Boolean).join(' ') || null,
+        production_site: b.details.production_site,
+        contract_acres: num(b.details.contract_acres),
+        forecast_bu_per_acre: num(b.details.forecast_bu_per_acre),
+        estimated_bushels: r0(num(b.details.estimated_bushels)),
+        committed_bushels: commitment ? r0(commitment.committed.bushels) : null,
+        production_basis: progress?.productionLabel ?? null,
+        expected_outcome: SEED_OUTCOME_LABEL[b.details.expected_outcome] ?? b.details.expected_outcome,
+        pricing_deadline: b.details.pricing_deadline,
+        elections: b.elections.map((e) => ({ date: e.election_date, pct_of_bushels: num(e.pct_of_bushels), price_per_bu: r2(num(e.price_per_bu)), method: e.method })),
+        priced_pct: Math.min(100, cumulativePricedPct(b.elections)),
+        blended_elected_price_per_bu: blendedElectedPrice(b.elections) != null ? r2(blendedElectedPrice(b.elections)!) : null,
+        expected_price_walk_per_bu: {
+          elected_base: walk.electedPrice != null ? r2(walk.electedPrice) : null,
+          unpriced_pct: walk.unpricedPct,
+          unpriced_valued_at: walk.unpricedPrice != null ? r2(walk.unpricedPrice) : null,
+          blended_base: walk.blendedBase != null ? r2(walk.blendedBase) : null,
+          premium: r2(walk.premium.weighted),
+          premium_capped: walk.premium.capped,
+          usage_fee: r2(walk.usageFeePerBu),
+          expected_net: walk.expectedNetPerBu != null ? r2(walk.expectedNetPerBu) : null,
+        },
+        payments: b.payments.map((p) => ({ type: SEED_PAYMENT_TYPE_LABEL[p.payment_type] ?? p.payment_type, amount_usd: r2(num(p.amount)), date: p.payment_date, status: p.status })),
+        payments_received_usd: r2(received),
+        payments_projected_usd: r2(projected),
+        completed: progress?.completed ?? false,
+        final_settlement_date: b.details.final_settlement_date,
+      }
+    })
+  return {
+    crop_year: input.crop_year,
+    count: out.length,
+    contracts: out,
+    note: `Seed production contracts (the Contracts → Seed tracker engine). Prices $/bu; the unpriced share is valued at the crop's assumed futures + basis (${PRICE_BASIS}).`,
+  }
 }
 
 function compactMarketingRow(r: MarketingRow) {
@@ -1166,6 +1198,15 @@ const IMPLS: Record<string, ToolImpl> = {
   get_bin_inventory: getBinInventory as ToolImpl,
   get_buyer_discount_schedule: getBuyerDiscountSchedule as ToolImpl,
   get_buyer_discount_history: getBuyerDiscountHistory as ToolImpl,
+  // Module tools (the previously uncovered modules — see lib/assistant-tools-modules.ts).
+  get_cotton_marketing: getCottonMarketing as ToolImpl,
+  get_cotton_production: getCottonProduction as ToolImpl,
+  get_seed_contracts: getSeedContracts as ToolImpl,
+  get_settlements: getSettlements as ToolImpl,
+  get_bin_transfers: getBinTransfers as ToolImpl,
+  get_combine_entries: getCombineEntries as ToolImpl,
+  get_rent_settlements: getRentSettlements as ToolImpl,
+  get_budget: getBudget as ToolImpl,
   query_data: queryData as ToolImpl,
 }
 
@@ -1251,8 +1292,14 @@ export const ASSISTANT_TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'get_seed_contracts',
+    description: 'Seed production contracts for a crop year (the Contracts → Seed tracker): acres, variety, forecast and committed bushels, pricing elections with the cumulative priced %, the expected price walk per bushel (elected base + unpriced share at the reference price + premium − usage fee = expected net), payments received/projected, and completion. Use for any seed-contract question (Pioneer, Bayer, Beck’s… contracts).',
+    input_schema: { type: 'object', properties: { crop_year: cropYearProp, buyer: { type: 'string', description: 'Optional seed company / buyer name filter' } }, required: ['crop_year'] },
+  },
+  ...MODULE_TOOLS,
+  {
     name: 'query_data',
-    description: 'Long-tail questions the other tools do not cover: run ONE read-only SQL SELECT against the account\'s own tables (schema provided in the system prompt). Returns up to 500 rows. Only the user\'s own data is visible. Prefer the curated tools for derived numbers (dry bushels, prices, projections).',
+    description: 'ANY question the curated tools do not cover — every table in the account is in the schema in the system prompt (cotton contracts/pools/loans/LDP/dispositions, gin receipts/bales/grades, seed contracts, settlements + itemized discounts, bin transfers, combine entries, leases/rent settlements, budgets, dryer/freight settings, discount schedules, hedge history, users, settings…). Run ONE read-only SQL SELECT; join buyers/crops/entities/farms/fields for names; use ilike for name matches. Returns up to 500 rows. Only the user\'s own data is visible. Prefer the curated tools for DERIVED numbers (dry bushels, prices, projections); stored facts (counts, names, dates, amounts) are fine here.',
     input_schema: { type: 'object', properties: { sql: { type: 'string', description: 'A single SELECT (or WITH…SELECT) statement' }, purpose: { type: 'string', description: 'One line on what this answers' } }, required: ['sql'] },
   },
 ]
@@ -1261,12 +1308,23 @@ export const ASSISTANT_TOOLS: Anthropic.Tool[] = [
  *  hidden so the model doesn't chase empty results. query_data is always
  *  available; RLS filters it to whatever the role may read. */
 export function toolNamesForRole(role: AppRole): string[] {
-  if (role === 'agronomist') return ['get_yields', 'get_loads', 'query_data']
-  if (role === 'gin') return ['query_data']
+  // Agronomist: the Yields read surface only (061 allowlist) — loads, combine
+  // entries, and the cotton production sources (gin receipts / bales / grades).
+  if (role === 'agronomist') return ['get_yields', 'get_loads', 'get_combine_entries', 'get_cotton_production', 'query_data']
+  // Gin: the cotton production surface it feeds (loads, receipts, bales).
+  if (role === 'gin') return ['get_cotton_production', 'query_data']
   if (role === 'viewer') {
     // Buyer discount tools mirror the viewer-included report (entity-scoped
-    // through matched loads inside the tool, same as the report).
-    return ['get_marketing_summary', 'get_yields', 'get_revenue_projection', 'get_contracts', 'get_hedging_positions', 'get_insurance_estimates', 'get_government_payments', 'get_loads', 'get_buyer_discount_schedule', 'get_buyer_discount_history', 'query_data']
+    // through matched loads inside the tool, same as the report). Cotton
+    // marketing/production, seed contracts, rent settlements and combine
+    // entries are entity-scoped by their 052 policies (or are Yields data);
+    // settlements, bin transfers and budgets are whole-operation → hidden.
+    return [
+      'get_marketing_summary', 'get_yields', 'get_revenue_projection', 'get_contracts', 'get_hedging_positions', 'get_insurance_estimates',
+      'get_government_payments', 'get_loads', 'get_buyer_discount_schedule', 'get_buyer_discount_history',
+      'get_cotton_marketing', 'get_cotton_production', 'get_seed_contracts', 'get_rent_settlements', 'get_combine_entries',
+      'query_data',
+    ]
   }
   return ASSISTANT_TOOLS.map((t) => t.name)
 }
@@ -1307,6 +1365,8 @@ export function toolStatusLabel(name: string): string {
     get_bin_inventory: 'Checking your bins…',
     get_buyer_discount_schedule: 'Reading the buyer’s discount sheet…',
     get_buyer_discount_history: 'Comparing your buyers’ discounts…',
+    get_seed_contracts: 'Checking your seed contracts…',
+    ...MODULE_STATUS_LABELS,
     query_data: 'Looking that up in your data…',
   }
   return map[name] ?? 'Checking your data…'
