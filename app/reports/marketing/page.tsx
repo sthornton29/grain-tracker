@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
-import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, assumedAcresTotal, assumedSegmentAcres, resolveAcresByCrop, segmentTotalAcres, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
+import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, assumedAcresTotal, assumedSegmentAcres, resolveAcresByCrop, segmentTotalAcres, DEFAULT_BALE_LBS, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
 import { marketingCropYearOptions } from '@/lib/crop-years'
 import { quoteFromWire, quoteMapFromWire, type Quote } from '@/lib/quotes'
 import ManualQuoteControl, { QuoteChip } from '@/components/quote-chip'
@@ -651,6 +651,8 @@ export default function MarketingPage() {
       assumed_acres_dry: pick('assumed_acres_dry'),
       assumed_acres_dc_irr: pick('assumed_acres_dc_irr'),
       assumed_acres_dc_dry: pick('assumed_acres_dc_dry'),
+      // Cotton bale weight (085) — null = the 500 lb default.
+      bale_weight_lbs: pick('bale_weight_lbs'),
       notes: pick('notes'),
       updated_at: new Date().toISOString(),
     }
@@ -803,6 +805,7 @@ export default function MarketingPage() {
                 onSaveMonth={(v) => saveAssumption(r.cropId, { reference_contract_month: v })}
                 onSaveFutures={(v) => saveAssumption(r.cropId, { assumed_futures: v })}
                 onClearAssumptions={() => saveAssumption(r.cropId, { assumed_futures: null, assumed_basis: 0 })}
+                onSaveBaleWeight={viewer.isViewer ? undefined : (v) => saveAssumption(r.cropId, { bale_weight_lbs: v })}
                 wfScenario={wfScenario}
                 onManualQuote={() => setQuoteNonce((n) => n + 1)}
               />
@@ -1297,14 +1300,51 @@ function CropSection({
 }
 
 // ---------------------------------------------------------------------------
+// The assumed lbs per bale behind the cotton bales read-out (085): an inline
+// number for owners ("@ [500] lb"), plain text for viewers. Blank restores
+// the 500 lb default.
+function BaleWeightInput({ value, onSave }: { value: number | null; onSave?: (v: number | null) => void }) {
+  const [text, setText] = useState(value != null ? String(value) : '')
+  useEffect(() => { setText(value != null ? String(value) : '') }, [value])
+  if (!onSave) return <span>{value ?? DEFAULT_BALE_LBS} lb</span>
+  const save = onSave
+  function commit() {
+    const t = text.trim()
+    if (t === '') { if (value !== DEFAULT_BALE_LBS) save(null); return }
+    const v = Number(t)
+    if (!Number.isFinite(v) || v <= 0) { setText(value != null ? String(value) : ''); return }
+    if (v !== value) save(v === DEFAULT_BALE_LBS ? null : v)
+  }
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      <input
+        type="number"
+        inputMode="decimal"
+        min="1"
+        step="1"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+        title="Assumed pounds of lint per bale — change it and the bale count follows. Blank = 500 lb."
+        aria-label="Assumed pounds per bale"
+        className="w-14 rounded border border-slate-300 px-1 py-0.5 text-sm text-right tabular-nums bg-white"
+      />
+      lb
+    </span>
+  )
+}
+
 // Cotton crop section — lbs of lint and ¢/lb throughout. Production + futures
 // hedges only: no Sold segment and no basis buildup (physical cotton marketing
 // isn't tracked yet, and cotton has no basis concept until it is). The What-If
 // re-prices the unhedged lbs at a scenario ¢/lb against the crop-year CTZ.
 // ---------------------------------------------------------------------------
-function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContract, monthOptions, quotes, onSaveMonth, onSaveFutures, onClearAssumptions, wfScenario, onManualQuote }: {
+function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContract, monthOptions, quotes, onSaveMonth, onSaveFutures, onClearAssumptions, onSaveBaleWeight, wfScenario, onManualQuote }: {
   row: MarketingRow
   onManualQuote?: (q: Quote) => void
+  /** Owners: save the assumed lbs per bale (null = back to the 500 lb default). Absent for viewers. */
+  onSaveBaleWeight?: (v: number | null) => void
   detailsOpen: boolean
   onToggleDetails: () => void
   cropYear: number | null
@@ -1374,8 +1414,15 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
         <div className="flex flex-wrap items-center gap-x-8 gap-y-3">
           <div>
             <div className="font-bold text-xl leading-tight">{row.cropName}</div>
-            <div className="text-sm text-slate-500 tabular-nums mt-0.5">
-              {bu(prod)} lbs lint{row.cottonBales != null ? ` · ${bu(row.cottonBales)} bales` : ''}
+            <div className="text-sm text-slate-500 tabular-nums mt-0.5 flex flex-wrap items-center gap-x-1">
+              <span>{bu(prod)} lbs lint</span>
+              {row.productionBales != null && (
+                <span className="flex items-center gap-1">
+                  · ≈ <span className="font-semibold text-slate-700">{bu(row.productionBales)}</span> bales @
+                  <BaleWeightInput value={row.baleWeightLbs} onSave={onSaveBaleWeight} />
+                </span>
+              )}
+              {row.cottonBales != null && <span>· {bu(row.cottonBales)} ginned bales</span>}
             </div>
           </div>
           <div>

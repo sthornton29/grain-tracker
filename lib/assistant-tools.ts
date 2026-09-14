@@ -306,6 +306,9 @@ function compactMarketingRow(r: MarketingRow) {
     yield_per_acre: r.yield != null ? r2(r.yield) : null,
     yield_basis: r.yieldLabel, // 'Est.' | 'Actual'
     total_production: r0(r.totalProduction),
+    // Cotton: production quoted in bales at the assumed bale weight (085) —
+    // plus the ACTUAL ginned bale count once receipts exist.
+    ...(r.unit === 'lbs' ? { production_bales: r.productionBales != null ? r0(r.productionBales) : null, assumed_bale_lbs: r.baleWeightLbs, ginned_bales: r.cottonBales } : {}),
     contracted: r0(r.contractedBu),
     unpriced: r0(r.unpricedBu),
     avg_cash_price: r.avgCashPrice != null ? r2(r.avgCashPrice) : null,

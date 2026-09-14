@@ -12,6 +12,12 @@ import type { Contract, Crop, CropAssumption, FuturesPosition, OptionPosition } 
 // Crops the dashboard treats as lbs-native cotton (production + CT hedges only;
 // physical cotton marketing isn't tracked yet). Shared predicate so every
 // consumer draws the same line.
+// Assumed lbs of lint per bale when crop_assumptions.bale_weight_lbs is unset
+// (the dashboard's editable assumption, 085). Distinct from the 480 lb
+// STANDARD_BALE_LBS the cotton-sales engine uses to size undelivered
+// contract commitments.
+export const DEFAULT_BALE_LBS = 500
+
 export function isCottonCrop(cropName: string | null | undefined): boolean {
   return /cotton/i.test(cropName ?? '')
 }
@@ -24,8 +30,14 @@ export type MarketingRow = {
   // holds ¢/lb; the dollar fields (blendedRevenue, costs, profits) are dollars
   // either way, which is why aggregate revenue/profit can mix crops safely.
   unit: 'bu' | 'lbs'
-  // Companion figure for lbs rows ("412,000 lbs · 858 bales"); null for grains.
+  // Companion figure for lbs rows ("412,000 lbs · 858 bales"): the ACTUAL bale
+  // count from gin receipts / bale rows; null for grains or before ginning.
   cottonBales: number | null
+  // lbs rows: production quoted in bales = totalProduction ÷ the assumed bale
+  // weight (crop_assumptions.bale_weight_lbs, default DEFAULT_BALE_LBS = 500).
+  // Always computed for cotton (estimated AND actual production); null for grains.
+  productionBales: number | null
+  baleWeightLbs: number | null
   // Physical cotton marketing valuation (lbs rows with marketing data only):
   // the Sold / Pool / In-Loan / Hedged-unsold / Unpriced segments the dashboard
   // renders, with the dollar value assigned to each in blendedRevenue.
@@ -590,7 +602,7 @@ export function computeMarketing(args: {
     const totalProfit = totalCost != null ? blendedRevenue - totalCost : null
 
     rows.push({
-      cropId: crop.id, cropName: crop.name, unit: 'bu', cottonBales: null, cottonPhysical: null, seed: seedPos, acres, acresSource, yield: yieldVal, yieldLabel, totalProduction,
+      cropId: crop.id, cropName: crop.name, unit: 'bu', cottonBales: null, productionBales: null, baleWeightLbs: null, cottonPhysical: null, seed: seedPos, acres, acresSource, yield: yieldVal, yieldLabel, totalProduction,
       contractedBu, remaining, avgCashPrice, excludedAwaitingBu,
       futuresPricedBu, physicalFuturesBu, physicalFuturesAvg, openHedgeBu, openHedgeAvg,
       rawAvgFutures, hedgeRealizedPnl, hedgeAdjPerBu, avgFutures, avgBasis, avgBasisAssumed, assumedBasis, assumedFutures,
@@ -750,10 +762,17 @@ function computeCottonRow(args: {
   const profitPerAcre = revenuePerAcre != null && costPerAcre != null ? revenuePerAcre - costPerAcre : null
   const totalProfit = totalCost != null ? blendedRevenue - totalCost : null
 
+  // Bales read-out: lbs ÷ the assumed bale weight (editable; 500 lb default).
+  const baleWeightLbs = assumption?.bale_weight_lbs != null && Number(assumption.bale_weight_lbs) > 0
+    ? Number(assumption.bale_weight_lbs)
+    : DEFAULT_BALE_LBS
+  const productionBales = totalProduction > 0 ? round(totalProduction / baleWeightLbs, 1) : 0
+
   return {
     cropId: crop.id, cropName: crop.name, unit: 'lbs',
     seed: null,
     cottonBales: actual.bales > 0 ? actual.bales : null,
+    productionBales, baleWeightLbs,
     cottonPhysical: physical
       ? { summary: physical, poolValueDollars, poolEstimated, inLoanValueDollars, inLoanFloored, unpricedLbs: uncoveredLbs, hedgedUnsoldLbs: hedgeCovered }
       : null,

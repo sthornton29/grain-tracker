@@ -58,7 +58,7 @@ export function buildMarketingExport(args: {
       sub('Production')
       kv(acresLabel, `${ac(r.acres)}${irrAc > 0 || dryAc > 0 ? ` (irr ${ac(irrAc)} / dry ${ac(dryAc)})` : ''}`)
       kv('Yield', r.yield != null ? `${yld(r.yield)} lbs lint/ac ${r.yieldLabel}` : '—')
-      kv('Total production', `${lbsf(r.totalProduction)} lbs${r.cottonBales != null ? ` · ${lbsf(r.cottonBales)} bales` : ''}`)
+      kv('Total production', `${lbsf(r.totalProduction)} lbs${r.productionBales != null ? ` · ≈ ${lbsf(r.productionBales)} bales @ ${r.baleWeightLbs ?? 500} lb` : ''}${r.cottonBales != null ? ` · ${lbsf(r.cottonBales)} ginned bales` : ''}`)
 
       sub('Hedging position')
       kv('Note', 'Physical cotton marketing not yet tracked — production and futures hedges only.')

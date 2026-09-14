@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { aggregateMarketing, computeMarketing, isCottonCrop, type Planting } from '@/lib/marketing'
+import { aggregateMarketing, computeMarketing, isCottonCrop, DEFAULT_BALE_LBS, type Planting } from '@/lib/marketing'
 import { buildMarketingExport } from '@/lib/marketing-export'
 import { computeRevenueProjections, type InsuranceProceeds, type GovtProceeds } from '@/lib/revenue-projections'
 import { formatNumber, excelNumFmt } from '@/lib/exports'
@@ -239,5 +239,47 @@ describe('unit-aware export formats', () => {
     expect(cornSec).toContain('bu/ac')
     expect(cornSec).toContain('$4.50')
     expect(cornSec).not.toContain('¢')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Bales read-out (085): production in bales = lbs ÷ the assumed bale weight,
+// 500 lb unless crop_assumptions.bale_weight_lbs says otherwise; computed for
+// estimated AND actual production, never for grains.
+// ---------------------------------------------------------------------------
+describe('cotton production quoted in bales (085)', () => {
+  it('defaults to 500 lb: 600,000 lbs → 1,200 bales', () => {
+    const row = computeCotton({})
+    expect(row.totalProduction).toBe(600_000)
+    expect(row.baleWeightLbs).toBe(DEFAULT_BALE_LBS)
+    expect(DEFAULT_BALE_LBS).toBe(500)
+    expect(row.productionBales).toBe(1_200)
+    expect(row.cottonBales).toBeNull() // no gin receipts yet
+  })
+
+  it('follows the editable assumption: 480 lb → 1,250 bales; 0/negative falls back to 500', () => {
+    const at480 = computeCotton({ assumptions: [assumption({ crop_id: 'cotton', expected_yield: 1000, bale_weight_lbs: 480 })] })
+    expect(at480.baleWeightLbs).toBe(480)
+    expect(at480.productionBales).toBe(1_250)
+    const bad = computeCotton({ assumptions: [assumption({ crop_id: 'cotton', expected_yield: 1000, bale_weight_lbs: 0 })] })
+    expect(bad.baleWeightLbs).toBe(500)
+  })
+
+  it('with actual production the estimate sits beside the real ginned count', () => {
+    const row = computeCotton({
+      assumptions: [assumption({ crop_id: 'cotton', expected_yield: 1000, harvest_complete: true })],
+      cottonProductionByCrop: new Map([['cotton', { lintLbs: 412_000, bales: 858 }]]),
+    })
+    expect(row.productionBales).toBe(824) // 412,000 ÷ 500
+    expect(row.cottonBales).toBe(858) // what the gin actually pressed
+  })
+
+  it('grain rows carry no bale figures', () => {
+    const corn = computeMarketing({
+      cropYear: CY, crops: [crop('corn', 'Corn')], plantings: [{ crop_id: 'corn', season_year: CY, planted_acres: 100 }], contracts: [], options: [], futures: [],
+      assumptions: [assumption({ crop_id: 'corn', expected_yield: 180 })], actualProductionByCrop: new Map(),
+    })[0]
+    expect(corn.productionBales).toBeNull()
+    expect(corn.baleWeightLbs).toBeNull()
   })
 })

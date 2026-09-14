@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-09-14 · version 0.1.0 · build dd35e25. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-09-14 · version 0.1.0 · build bcf37ce. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -33,7 +33,23 @@ Ask Turnrow answers questions about **your own account's numbers** in plain Engl
 
 ## What it can answer
 
-Marketing and average prices, yields by field/farm/crop/landowner, revenue projections, contract delivery progress, hedge positions, crop insurance estimates, government payment projections, grain cash flow, recent loads, and bin inventory — plus long-tail questions it can look up directly in your records. It always shows units and the crop year it used, and it never makes up a number: if the data isn't there, it says so.
+**Anything in your Turnrow records.** Every part of the app is open to it — it never tells you something "isn't available through the assistant" or sends you to a page instead of answering. If nothing matches, it says exactly what it looked for ("no cotton contracts found for that buyer in 2026") and offers the nearest thing it did find. The only other "can't" is a role limit on your own account, which it says plainly.
+
+What it covers, module by module:
+
+- **Marketing** — average prices, contracted and unpriced bushels, blended revenue, cost and profit per crop.
+- **Yields** — by field, farm, entity, landowner or crop, including combine-monitor entries and how they reconcile with weighed loads.
+- **Contracts** — grain contract delivery progress, prices and status; **seed production contracts** with their pricing elections, the expected price walk, and payments.
+- **Cotton** — sales contracts (bales committed, delivered and remaining, pricing status), pools and their payments, CCC loans, LDPs, the bale disposition board, gin receipts, bales, classing grades, and lint per acre.
+- **Settlements** — each statement's bushels, gross, net and average price, with every itemized discount in dollars and cents per bushel.
+- **Hedging** — open and closed positions, rolls and effective prices, and the full history trail.
+- **Bins** — what is on hand, bin-to-bin transfers, adjustments.
+- **Loads** — recent loads with weights, moisture and bushels; buyer discount schedules and what each buyer's discounting really cost.
+- **Insurance and government** — policy estimates, ARC/PLC and other payment projections.
+- **Leases and rent** — lease terms and recorded rent settlements per landowner; **budgets** — crop budget scenarios with revenue, profit and breakevens; dryer and freight settings.
+- **Cash flow**, entities, farms, fields, landowners, buyers, users and settings.
+
+It always shows units and the crop year it used, and it never makes up a number: if the data isn't there, it says so.
 
 ## How answers are laid out
 
@@ -52,6 +68,7 @@ Both assistants — Ask Turnrow and the how-to chat in the Help drawer — write
 ## Common questions
 
 - **Is this the same as the help chat?** The Ask Turnrow tab answers questions about *your data*; the How-to chat answers questions about *using the software*. Ask Turnrow can handle both, and labels which is which.
+- **It once told me some data wasn't available through the assistant.** That should no longer happen — every module is reachable, and an answer that tries to send you to a page instead of answering is caught and re-asked before you see it. If you still get one, contact support with the question you asked.
 - **Why does it say a year I didn't ask about?** If you don't name a crop year it uses your most recent one with data — and tells you which.
 - **It says it hit a lookup limit.** One question gets a handful of data checks; ask a follow-up and it keeps digging.
 - **How many questions can I ask?** There's an hourly cap to keep things snappy — if you hit it, give it a little while.
@@ -996,6 +1013,7 @@ Pick a crop year, then scroll through the crop sections. The chevron on each sec
 
 - **Crop year and entity filter** — the crop year list always includes this year and the next two, plus any year you already have plantings, contracts, hedges, or assumptions for — so next year's marketing has a place to live before anything is planted. The entity filter narrows acres and production to that entity. Contracts and hedges held by your marketing agent — or entered with no entity — are marketing for the whole operation, so they count toward each entity in proportion to its share of that crop's planted acres. A contract in an entity's own name counts wholly toward it.
 - **Edit Assumptions** — a panel with one section per crop: enter an overall yield and cost per acre, or break them out by irrigated/dryland and full-season/double-crop. A blank breakout cell falls back to the overall figure. The **Harvest complete** checkbox tells Turnrow the crop is finished; checking it snaps the yield to the actual average from your loads.
+- **Cotton in bales** — a cotton section quotes production in bales beside pounds of lint: pounds ÷ an assumed bale weight, 500 lb unless you change it. The **lb** box next to the bale count is that assumption (per crop and crop year); type a different weight and the count follows, or clear it to go back to 500. Once gin receipts exist the actual ginned bale count shows alongside.
 - **Assumed acres (planning a year before planting)** — for a crop year with no plantings yet, each crop's section in the panel takes **assumed acres** instead: an overall figure, or split by irrigated/dryland like the yield. The Double-crop rows appear only for a crop designated Double-crop under Settings → Crops (soybeans after wheat); every other crop shows just Irrigated and Dryland. If you later change a crop's designation, acres already entered in a Double-crop row are not lost — a note says so and offers to clear them. Enter the acres and the expected yield and the dashboard values the year's contracts and hedges against that expected production — 2027 wheat you've already sold ahead, 2028 corn you've hedged. Crops with no acres assumed stay off the dashboard. The moment the first field is planted to a crop for that year, the **planted acres take over automatically** and the assumed figure is ignored (the panel then reads "using planted acres"). Assumed acres are for the whole operation, so they show under **All entities**; an entity filter still goes by the fields actually planted.
 - **What-If on Unpriced Bushels** — type an assumed futures price (or use the **use today's price** button, which fills in the current quote for the reference contract shown) and an assumed basis. When a contract has no live quote — cotton always, since the live feed doesn't cover it — the reference line offers **enter price**: type the settlement once and every screen uses it, marked with an amber **manual · date** chip so it is never mistaken for market data (see Hedging → "When a price says manual"). These are standing assumptions: they save automatically, stay until you change them, and flow into every headline number here and on Revenue Projections. **Clear assumptions** wipes both.
 - **The reference contract** — shown next to the futures input as the board month and its live quote (for example "ZWU26 · $5.72"). This is the futures contract your unpriced bushels are valued against. The default is the crop year's new-crop month — December corn and cotton, November soybeans, July wheat — and once that contract stops trading (around the middle of its delivery month), Turnrow automatically moves to the next traded month and shows a small note like "Jul 26 expired → Sep 26". You can also pick a different month from the dropdown — any traded month from this crop year through the next — and your choice sticks for that crop and year until you press **Reset to default**. The Income Sensitivity price axis and Revenue Projections follow the same contract, so every page prices unpriced bushels off one answer.

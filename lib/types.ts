@@ -316,6 +316,9 @@ export type CropAssumption = {
   cost_per_acre_dry: number | null
   cost_per_acre_dc_irr: number | null
   cost_per_acre_dc_dry: number | null
+  // Cotton only (085): assumed lbs of lint per bale for the bales read-out
+  // (production lbs ÷ this). null = the 500 lb default (DEFAULT_BALE_LBS).
+  bale_weight_lbs?: number | null
   notes: string | null
   created_at: string
   updated_at: string
