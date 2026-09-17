@@ -43,6 +43,7 @@ const GROWING_TABLES = [
   'seed_contract_details', 'seed_contract_premiums', 'seed_pricing_elections',
   'seed_contract_payments', 'seed_contract_plantings',
   'lease_terms', 'rent_settlements',
+  'farm_link_ids', 'farm_link_calls', 'landowner_settlements',
 ] as const
 
 // A read is fine when its chain (the window after `.from('t')`) shows any of:

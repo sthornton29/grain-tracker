@@ -123,13 +123,13 @@ export function parseMigrations(files) {
 // Every tenant table needs an entry; the build fails otherwise.
 export const TABLE_DOCS = {
   // organization & land
-  entities: ['Your farming entities (LLCs, partnerships, individuals) and the marketing-agent entity if you use one', '/settings'],
-  farms: ['Farms (FSA farm numbers) with their entity, county, landowner and rent terms', '/settings'],
-  fields: ['Fields inside each farm with total / irrigated / dryland acres', '/settings'],
+  entities: ['Your farming entities (LLCs, partnerships, individuals) and the marketing-agent entity if you use one; managed_by = turnrow_farm means the row comes from Turnrow Farm (read-only here), archived_at set = archived by that link — exclude archived rows', '/settings'],
+  farms: ['Farms (FSA farm numbers) with their entity, county, landowner and rent terms; managed_by = turnrow_farm means the row comes from Turnrow Farm, archived_at set = archived — exclude archived rows', '/settings'],
+  fields: ['Fields inside each farm with total / irrigated / dryland acres; managed_by = turnrow_farm means the row comes from Turnrow Farm, archived_at set = archived — exclude archived rows', '/settings'],
   landowners: ['Landowners you rent from', '/settings'],
   entity_counties: ['Which counties each entity operates in (for county benchmarks)', '/settings'],
   crops: ['The crops you grow with their moisture / test-weight bases and harvest category', '/settings'],
-  field_plantings: ['What was planted where each season: field × crop × year with acres and practice', '/settings'],
+  field_plantings: ['What was planted where each season: field × crop × year with acres and practice; managed_by = turnrow_farm means the row comes from Turnrow Farm, archived_at set = archived — exclude archived rows', '/settings'],
   field_planting_varieties: ['Seed varieties (and their acres) inside a planting', '/settings'],
   variety_match_dismissals: ['Variety-name near-match suggestions the user dismissed (housekeeping)', '/settings'],
   trucks: ['Your own trucks', '/settings'],
@@ -167,6 +167,10 @@ export const TABLE_DOCS = {
   options_positions: ['Options positions (puts/calls) with premiums and results', '/hedging'],
   hedge_position_events: ['Append-only history of every hedge position change (open, close, roll, edit, import)', '/hedging'],
   manual_market_quotes: ['Hand-entered futures quotes for contracts with no live price (cotton)', '/hedging'],
+  farm_links: ['The pairing with Turnrow Farm (one per organization): status, Farm organization name, granted scopes, last sync per direction; codes and tokens stored hashed', '/settings/farm-link'],
+  farm_link_ids: ['The id map between Grain rows and Turnrow Farm rows (grain_table x grain_id <-> farm_uid); a land row with a map entry is managed in Turnrow Farm', '/settings/farm-link'],
+  farm_link_calls: ['Rolling log of Turnrow Farm link API calls (endpoint, status, record counts), trimmed to 30 days', '/settings/farm-link'],
+  landowner_settlements: ['Landowner rent statements finalized in Turnrow Farm, one per lease year (farm_uid): landowner, crop year, lease type, the statement rows as jsonb; shared to landowners only under the settlements share scope', '/settings/farm-link'],
   // insurance & government
   crop_insurance_policies: ['Crop insurance policies per entity × crop × county × year (plan, coverage, APH, prices, premiums)', '/settings/crop-insurance'],
   crop_insurance_sco: ['SCO endorsement on a policy', '/settings/crop-insurance'],

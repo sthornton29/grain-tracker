@@ -5,6 +5,9 @@ import { createClient } from '@/lib/supabase/client'
 import CsvImport from '@/components/csv-import'
 import { entitiesImportConfig } from '@/lib/import-configs'
 import SettingsDocImport from '@/components/settings-doc-import'
+import { useFarmLink } from '@/lib/use-farm-link'
+import { landImportBlockedMessage, landRowEditable, LAND_MANAGED_MESSAGE } from '@/lib/farm-link'
+import { FarmLinkBanner, ManagedChip, NotLinkedChip } from '@/components/farm-link-banner'
 import type { Entity, County, EntityCounty } from '@/lib/types'
 
 type Role = 'farming' | 'marketing_agent'
@@ -27,6 +30,10 @@ export default function EntitiesPage() {
   const [editForm, setEditForm] = useState<Form>(empty)
   const [editCountyIds, setEditCountyIds] = useState<Set<string>>(new Set())
   const [err, setErr] = useState<string | null>(null)
+  // 087: managed in Turnrow Farm → synced rows are read-only here.
+  const farmLink = useFarmLink(supabase, 'entities')
+  const managed = farmLink.managed
+  const canEdit = (row: Entity) => landRowEditable(row, managed)
 
   async function refresh() {
     const [en, co, ec] = await Promise.all([
@@ -35,7 +42,8 @@ export default function EntitiesPage() {
       supabase.from('entity_counties').select('*'),
     ])
     if (en.error) { setErr(en.error.message); return }
-    setRows((en.data as Entity[]) || [])
+    // Archived by the Turnrow Farm link (087) → out of the list.
+    setRows(((en.data as Entity[]) || []).filter((r) => !r.archived_at))
     setCounties((co.data as County[]) || [])
     setEntityCounties((ec.data as EntityCounty[]) || [])
   }
@@ -77,6 +85,7 @@ export default function EntitiesPage() {
 
   async function add(e: React.FormEvent) {
     e.preventDefault()
+    if (managed) { setErr(`${LAND_MANAGED_MESSAGE} Add the entity in Turnrow Farm.`); return }
     if (!form.name.trim()) return
     if (formCountyIds.size === 0) {
       setErr('Select at least one county before saving.')
@@ -157,9 +166,17 @@ export default function EntitiesPage() {
         Farming business entities (LLCs, partnerships, corporations) that own or operate the farms.
       </p>
 
+      <FarmLinkBanner status={farmLink} noun="Entities" />
+
       <SettingsDocImport primaryTarget="entities" title="Upload a Document (AI)" onSaved={refresh} />
 
-      <CsvImport config={entitiesImportConfig()} onImported={refresh} />
+      <CsvImport config={entitiesImportConfig()} onImported={refresh} blockedReason={managed ? landImportBlockedMessage('entities') : null} />
+
+      {managed && (
+        <div className="bg-white p-4 rounded-xl shadow text-sm text-slate-600">
+          {LAND_MANAGED_MESSAGE} New entities are added in Turnrow Farm and sync here. County assignments and the payment-limit persons stay editable here on every entity.
+        </div>
+      )}
 
       <form onSubmit={add} className="space-y-3 bg-white p-4 rounded-xl shadow">
         <div className="grid grid-cols-1 sm:grid-cols-[1fr_2fr] gap-2">
@@ -226,6 +243,8 @@ export default function EntitiesPage() {
                       value={editForm.name}
                       onChange={(ev) => setEditForm({ ...editForm, name: ev.target.value })}
                       className={inputCls}
+                      disabled={!canEdit(e)}
+                      title={!canEdit(e) ? `${LAND_MANAGED_MESSAGE} Rename it in Turnrow Farm.` : undefined}
                     />
                     <input
                       value={editForm.notes}
@@ -263,6 +282,7 @@ export default function EntitiesPage() {
                   <div className="flex-1 min-w-0">
                     <div className="font-semibold">
                       {e.name}
+                      {managed && (canEdit(e) ? <NotLinkedChip /> : <ManagedChip />)}
                       {e.entity_role === 'marketing_agent' && (
                         <span className="ml-2 rounded-full bg-violet-100 text-violet-800 text-xs font-medium px-2 py-0.5 align-middle" title="Markets on behalf of the farming entities — its contracts/hedges flow down by acre share in the entity-filtered reports">
                           marketing agent
@@ -283,8 +303,8 @@ export default function EntitiesPage() {
                       )}
                     </div>
                   </div>
-                  <button onClick={() => startEdit(e)} className="text-brand-deep">Edit</button>
-                  <button onClick={() => remove(e.id)} className="text-red-600">Delete</button>
+                  <button onClick={() => startEdit(e)} className="text-brand-deep">{canEdit(e) ? 'Edit' : 'Counties & limits'}</button>
+                  {canEdit(e) && <button onClick={() => remove(e.id)} className="text-red-600">Delete</button>}
                 </div>
               )}
             </li>

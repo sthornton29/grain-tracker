@@ -22,6 +22,8 @@ type Share = {
   include_yields: boolean
   share_projected_prices: boolean | null
   share_projected_yields: boolean | null
+  /** 087: rent statements from Turnrow Farm (default OFF). */
+  share_settlements?: boolean | null
   code_expires_at: string
   redeemed_at: string | null
   revoked_at: string | null
@@ -52,9 +54,19 @@ type Preview = {
   /** The farming entities behind the shared fields — how the share's entity
    *  structure presents to the landowner. */
   entities: ShareEntity[]
-  scopes: { yields: boolean; projected_prices: boolean; projected_yields: boolean }
+  scopes: { yields: boolean; projected_prices: boolean; projected_yields: boolean; settlements?: boolean }
   marketing_prices: { records: PriceRecord[]; by_entity: EntityPriceRecord[] } | { denied: string }
   projected_yields: { records: YieldRecord[] } | { denied: string }
+  /** 087: the landowner's rent statements from Turnrow Farm (their own only). */
+  settlements?: { records: SettlementPreviewRecord[] } | { denied: string }
+}
+type SettlementPreviewRecord = {
+  id: string
+  crop_year: number
+  lease_type: string | null
+  landowner_name: string
+  finalized_at: string | null
+  statement: { total_rent?: number; balance_due?: number; sections?: unknown[] } | Record<string, unknown>
 }
 
 // Unambiguous alphabet (no 0/O/1/I) for hand-typed codes.
@@ -76,6 +88,7 @@ const PRICES_BLURB =
   'Share your projected average price per crop. One number per crop; never your contracts, hedges, or how much you have priced.'
 const PROJ_YIELDS_BLURB = 'Share projected yields for the shared fields before harvest.'
 const YIELDS_BLURB = 'Share actual yields for their fields as harvest is recorded.'
+const SETTLEMENTS_BLURB = 'Share their finalized rent statements from Turnrow Farm — only this landowner’s statements, exactly as finalized.'
 
 function fmtPrice(r: PriceRecord): string {
   if (r.projected_avg_price == null) return '—'
@@ -143,6 +156,7 @@ export default function SharesPage() {
   const [includeYields, setIncludeYields] = useState(true)
   const [sharePrices, setSharePrices] = useState(false)
   const [shareProjYields, setShareProjYields] = useState(false)
+  const [shareSettlements, setShareSettlements] = useState(false)
   const [label, setLabel] = useState('')
   const [freshCode, setFreshCode] = useState<{ code: string; landowner: string } | null>(null)
   const [copied, setCopied] = useState(false)
@@ -175,6 +189,8 @@ export default function SharesPage() {
       include_yields: includeYields,
       share_projected_prices: sharePrices,
       share_projected_yields: shareProjYields,
+      // 087 column — sent only when on, so a database without it still creates shares.
+      ...(shareSettlements ? { share_settlements: true } : {}),
       share_code_sha256: await sha256Hex(code),
     })
     if (error) { setErr(error.message); return }
@@ -183,10 +199,11 @@ export default function SharesPage() {
     setLabel('')
     setSharePrices(false)
     setShareProjYields(false)
+    setShareSettlements(false)
     refresh()
   }
 
-  async function updateScopes(s: Share, patch: Partial<Pick<Share, 'include_yields' | 'share_projected_prices' | 'share_projected_yields'>>) {
+  async function updateScopes(s: Share, patch: Partial<Pick<Share, 'include_yields' | 'share_projected_prices' | 'share_projected_yields' | 'share_settlements'>>) {
     setErr(null)
     // Optimistic so the toggle and preview respond immediately.
     setShares((prev) => prev.map((x) => (x.id === s.id ? { ...x, ...patch } : x)))
@@ -265,10 +282,11 @@ export default function SharesPage() {
           </select>
           <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Label (optional)" className={inputCls} />
         </div>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-2">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
           <ScopeToggle checked={includeYields} onChange={setIncludeYields} title="Actual yields" blurb={YIELDS_BLURB} />
           <ScopeToggle checked={sharePrices} onChange={setSharePrices} title="Projected prices" blurb={PRICES_BLURB} />
           <ScopeToggle checked={shareProjYields} onChange={setShareProjYields} title="Projected yields" blurb={PROJ_YIELDS_BLURB} />
+          <ScopeToggle checked={shareSettlements} onChange={setShareSettlements} title="Rent statements" blurb={SETTLEMENTS_BLURB} />
         </div>
         <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">
           Create Share &amp; Get Code
@@ -298,6 +316,7 @@ export default function SharesPage() {
                     <ScopeChip label="Yields" on={s.include_yields} />
                     <ScopeChip label="Prices" on={s.share_projected_prices ?? false} />
                     <ScopeChip label="Proj. yields" on={s.share_projected_yields ?? false} />
+                    <ScopeChip label="Rent statements" on={s.share_settlements ?? false} />
                   </div>
                 </div>
                 <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${status.cls}`}>{status.label}</span>
@@ -341,11 +360,17 @@ export default function SharesPage() {
                       title="Projected yields"
                       blurb={PROJ_YIELDS_BLURB}
                     />
+                    <ScopeToggle
+                      checked={s.share_settlements ?? false}
+                      onChange={(v) => updateScopes(s, { share_settlements: v })}
+                      title="Rent statements"
+                      blurb={SETTLEMENTS_BLURB}
+                    />
                   </div>
                   <SharePreview
                     shareId={s.id}
                     landowner={landownerName.get(s.landowner_id) ?? 'this landowner'}
-                    scopesKey={`${s.include_yields}|${s.share_projected_prices}|${s.share_projected_yields}`}
+                    scopesKey={`${s.include_yields}|${s.share_projected_prices}|${s.share_projected_yields}|${s.share_settlements ?? false}`}
                   />
                 </div>
               )}
@@ -432,6 +457,37 @@ function SharePreview({ shareId, landowner, scopesKey }: { shareId: string; land
 
       {!loading && !error && preview && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          {preview.settlements && (
+            <div className="bg-white rounded-lg border border-slate-200 p-3 lg:col-span-2">
+              <p className="text-[11px] text-slate-500 uppercase tracking-wide mb-2">Rent statements (from Turnrow Farm)</p>
+              {'denied' in preview.settlements ? (
+                <p className="text-sm text-slate-500 italic">
+                  Not shared — their screen says: &ldquo;{preview.settlements.denied}&rdquo;
+                </p>
+              ) : preview.settlements.records.length === 0 ? (
+                <p className="text-sm text-slate-500">No finalized statement for {landowner} this crop year yet.</p>
+              ) : (
+                <ul className="divide-y divide-slate-100">
+                  {preview.settlements.records.map((r) => {
+                    const st = r.statement as { total_rent?: number; balance_due?: number }
+                    return (
+                      <li key={r.id} className="py-2 flex items-baseline justify-between gap-3 text-sm">
+                        <span>
+                          <span className="font-medium">{r.crop_year} · {r.lease_type ?? 'lease'}</span>
+                          {r.finalized_at && <span className="text-slate-500"> · finalized {r.finalized_at.slice(0, 10)}</span>}
+                        </span>
+                        <span className="font-semibold tabular-nums">
+                          {typeof st.total_rent === 'number' ? `$${st.total_rent.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
+                          {typeof st.balance_due === 'number' && <span className="text-slate-500 font-normal"> · balance ${st.balance_due.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>}
+                        </span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+              <p className="text-xs text-slate-500 mt-1">Only this landowner&apos;s statements, exactly as finalized in Turnrow Farm — never another landowner&apos;s.</p>
+            </div>
+          )}
           <div className="bg-white rounded-lg border border-slate-200 p-3">
             <p className="text-[11px] text-slate-500 uppercase tracking-wide mb-2">Projected prices</p>
             {prices && 'denied' in prices ? (

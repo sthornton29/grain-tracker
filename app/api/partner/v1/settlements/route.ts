@@ -1,11 +1,21 @@
-// GET /api/partner/v1/settlements?since= — one record per settlement × crop
-// (crop attributed via each line's matched load): settlement date/number,
-// buyer, crop, net units, net revenue. ?since= is a delta-sync cursor and
-// compares against updated_at (ISO date or timestamp). Read-only.
+// GET /api/partner/v1/settlements — two token classes, two payloads:
+//
+//   * Full-org tokens (?since=): one record per GRAIN settlement × crop (crop
+//     attributed via each line's matched load): settlement date/number, buyer,
+//     crop, net units, net revenue. ?since= is a delta-sync cursor on
+//     updated_at (ISO date or timestamp). Unchanged since 050.
+//   * Landowner-share tokens (?crop_year=, scope `settlements`, 087): the
+//     landowner's own rent statements as Turnrow Farm finalized them
+//     (landowner_settlements) — only the statements bound to THAT landowner
+//     (Grain landowner id), never another landowner's, never an unresolved
+//     one, and never anything beyond the statement rows themselves. Scope
+//     off → 403 not_in_share_scope naming `settlements`.
+//
+// Read-only.
 
 import { NextRequest, NextResponse } from 'next/server'
 import {
-  resolvePartnerOrg,
+  resolvePartnerAccess,
   createServiceClient,
   serviceClientMissingResponse,
   fetchAll,
@@ -18,6 +28,8 @@ import {
   type SettlementLineRow,
   type SettlementRow,
 } from '@/lib/partner-api'
+import { shareScopeError } from '@/lib/partner-marketing'
+import { landownerSettlementsForShare, type LandownerSettlementRecord } from '@/lib/farm-link'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -30,8 +42,42 @@ type LineWithLoad = SettlementLineRow & { loads: EmbeddedLoad | EmbeddedLoad[] |
 export async function GET(req: NextRequest) {
   const supabase = createServiceClient()
   if (!supabase) return serviceClientMissingResponse()
-  const org = await resolvePartnerOrg(req, supabase)
-  if (org instanceof NextResponse) return org
+  const access = await resolvePartnerAccess(req, supabase)
+  if (access instanceof NextResponse) return access
+  const org = access.org
+
+  // ---- Landowner share: rent statements from Turnrow Farm ------------------
+  if (access.share) {
+    const denied = shareScopeError(access.share, 'settlements')
+    if (denied) return NextResponse.json(denied, { status: 403 })
+    const yearRaw = req.nextUrl.searchParams.get('crop_year') ?? req.nextUrl.searchParams.get('year')
+    const cropYear = yearRaw ? Number(yearRaw) : null
+    if (yearRaw && (!Number.isInteger(cropYear) || (cropYear as number) < 1900 || (cropYear as number) > 2200)) {
+      return NextResponse.json({ error: '?crop_year= must be a four-digit year.' }, { status: 400 })
+    }
+    try {
+      // Filtered by the share's landowner in the QUERY as well as in the pure
+      // filter — two fences around another landowner's statement.
+      const rows = await fetchAll<LandownerSettlementRecord>((f, t) =>
+        supabase
+          .from('landowner_settlements')
+          .select('id, farm_uid, landowner_id, landowner_name, crop_year, lease_type, statement, finalized_at, updated_at')
+          .eq('org_id', org)
+          .eq('landowner_id', access.share!.landownerId)
+          .order('id')
+          .range(f, t),
+      )
+      return NextResponse.json({ data: landownerSettlementsForShare(rows, access.share.landownerId, cropYear), crop_year: cropYear })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : ''
+      if (/landowner_settlements/.test(message) && /does not exist|relation/.test(message)) {
+        return NextResponse.json({ data: [], crop_year: cropYear, note: 'Rent statements are not available yet.' })
+      }
+      return errorResponse(e)
+    }
+  }
+
+  // ---- Full-org token: Grain settlements -----------------------------------
   const since = req.nextUrl.searchParams.get('since')
   if (since && !/^\d{4}-\d{2}-\d{2}/.test(since)) {
     return NextResponse.json(

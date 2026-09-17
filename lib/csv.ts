@@ -1,4 +1,23 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { landImportBlockedMessage, landManagedByFarm, type FarmLinkRow } from '@/lib/farm-link'
+
+/** 087: once the Turnrow Farm link manages land, the farms / fields /
+ *  plantings (and entities) importers refuse to run for the organization.
+ *  Tolerant by design — a database without the link tables, or any read
+ *  error, simply allows the import (the pre-087 behavior). */
+export async function assertLandImportAllowed(supabase: SupabaseClient, tableName: string): Promise<void> {
+  const message = landImportBlockedMessage(tableName)
+  if (!message) return
+  try {
+    const res = await supabase.from('farm_links').select('status, scopes, last_sync').eq('status', 'active').limit(1).maybeSingle()
+    if (!res || res.error) return
+    const link = (res.data as Pick<FarmLinkRow, 'status' | 'scopes' | 'last_sync'> | null) ?? null
+    if (landManagedByFarm(link)) throw new Error(message)
+  } catch (e) {
+    if (e instanceof Error && e.message === message) throw e
+    // Anything else (missing table, stub client) → allowed.
+  }
+}
 
 // ---------- Parser (RFC 4180-ish) ----------
 
@@ -413,6 +432,8 @@ export async function runImport(
 ): Promise<ImportResult> {
   const uniqueKeys = Array.isArray(config.uniqueKey) ? config.uniqueKey : [config.uniqueKey]
   const mode = opts.mode
+  // 087: land records managed in Turnrow Farm — refuse before touching anything.
+  await assertLandImportAllowed(supabase, config.tableName)
 
   // Pre-fetch FK lookup tables. Two fk columns on the same table pool their
   // extra columns (scope keys + derive extras) into one fetch.

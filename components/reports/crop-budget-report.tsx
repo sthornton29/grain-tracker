@@ -734,6 +734,22 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
               identical in both view modes. */}
           <div className="bg-white rounded-xl shadow px-4 py-3 flex flex-wrap items-baseline gap-x-6 gap-y-1">
             <h2 className="font-bold">{scenario.budget_crop_year} budget</h2>
+            {/* 087: let the Turnrow Farm link keep this budget's cost per acre
+                current (its next assumptions push rewrites the crop lines). */}
+            <label className="text-sm flex items-center gap-1.5 select-none no-print" title="When on, cost per acre on this budget's crop lines follows Turnrow Farm's latest planning costs.">
+              <input
+                type="checkbox"
+                checked={!!scenario.follow_farm_costs}
+                onChange={async (e) => {
+                  const on = e.target.checked
+                  setScenarios((prev) => prev.map((s) => (s.id === scenario.id ? { ...s, follow_farm_costs: on } : s)))
+                  const { error } = await supabase.from('budget_scenarios').update({ follow_farm_costs: on }).eq('id', scenario.id)
+                  if (error) { setErr(error.message.includes('follow_farm_costs') ? 'Following Turnrow Farm costs needs a database update — contact support.' : error.message); refresh() }
+                }}
+                className="h-4 w-4"
+              />
+              Follow Turnrow Farm costs
+            </label>
             <div className="text-sm">
               <span className="text-slate-500">Total acres</span>{' '}
               <span className="font-bold tabular-nums">{acres0(totals.totalAcres)}</span>

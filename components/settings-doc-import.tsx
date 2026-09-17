@@ -16,6 +16,11 @@ import { PdfTooLargeError, type RawSettingsExtraction } from '@/lib/pdf-upload'
 import { parseDocumentChunked } from '@/lib/parse-chunked'
 import { fetchAllCounties } from '@/lib/counties'
 import { dismissalKey, type VarietyDecision } from '@/lib/variety-resolution'
+import { useFarmLink } from '@/lib/use-farm-link'
+import { LAND_MANAGED_MESSAGE } from '@/lib/farm-link'
+
+// 087: the sections the Turnrow Farm link owns once it manages land.
+const FARM_MANAGED_SECTIONS: ReadonlySet<string> = new Set(['entities', 'farms', 'fields', 'plantings'])
 import {
   normalizeSettingsExtraction, mergeSettingsExtractions, buildSettingsReview,
   planSettingsSave, executeSettingsSave, SECTION_LABELS,
@@ -46,6 +51,8 @@ export default function SettingsDocImport({
 }) {
   const supabase = useMemo(() => createClient(), [])
   const router = useRouter()
+  // 087: land sections are read-only once Turnrow Farm manages land.
+  const farmLink = useFarmLink(supabase)
 
   // Existing data — the review classifies against ALL of it, whatever page
   // the upload started from.
@@ -157,7 +164,7 @@ export default function SettingsDocImport({
     setStage('Saving…')
     // A section-scoped save treats other sections as unchecked — dependencies
     // on unchecked parents surface as skips with reasons, never silent.
-    const scoped: SettingsReview = only
+    const scopedByHost: SettingsReview = only
       ? {
           ...decidedReview,
           sections: decidedReview.sections.map((s) =>
@@ -165,8 +172,22 @@ export default function SettingsDocImport({
           ),
         }
       : decidedReview
+    // 087: land sections never save while Turnrow Farm manages land — their
+    // rows are unchecked here so dependent rows surface as skips with reasons.
+    const scoped: SettingsReview = farmLink.managed
+      ? {
+          ...scopedByHost,
+          sections: scopedByHost.sections.map((s) =>
+            FARM_MANAGED_SECTIONS.has(s.section) ? { ...s, rows: s.rows.map((r) => ({ ...r, include: false })) } : s,
+          ),
+        }
+      : scopedByHost
     try {
       const plan = planSettingsSave(scoped, { possible, varieties: varDecisions })
+      if (farmLink.managed && plan.steps.length === 0 && scopedByHost.sections.some((s) => FARM_MANAGED_SECTIONS.has(s.section) && s.rows.some((r) => r.include && r.cls !== 'exists'))) {
+        setBanner(`${LAND_MANAGED_MESSAGE} Entities, farms, fields, and plantings from this document were not saved — make the change in Turnrow Farm.`)
+        return
+      }
       if (plan.steps.length === 0) {
         setBanner(plan.skipped.length > 0
           ? `Nothing saved — ${plan.skipped.map((s) => `${s.label}: ${s.reason}`).join('; ')}.`
@@ -222,6 +243,11 @@ export default function SettingsDocImport({
       <p className="text-sm text-slate-500">
         {intro ?? 'Upload leases, FSA records, field lists, plantings — Turnrow will sort the information into the right places for your confirmation. Nothing is saved until you check it and press Save.'}
       </p>
+      {farmLink.managed && (
+        <p className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900">
+          {LAND_MANAGED_MESSAGE} Entities, farms, fields, and plantings found in a document are shown for reference but not saved here — make those changes in Turnrow Farm. Buyers, bins, gins, trucks, and crops still save.
+        </p>
+      )}
       {!review && <DocumentCapture onSource={handleSource} busy={busy} stageLabel={stage} pdfLabel="Upload PDF, Photo, or Spreadsheet (AI)" />}
       {banner && <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">{banner}</div>}
       {err && <p className="text-sm text-red-600">{err}</p>}

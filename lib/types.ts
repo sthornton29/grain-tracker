@@ -10,6 +10,10 @@ export type Entity = {
   // entities — its contracts/hedges flow down pro-rata by acre share in the
   // entity-filtered reports. Optional so code degrades before the migration.
   entity_role?: 'farming' | 'marketing_agent' | null
+  // 087: 'turnrow_farm' = written or matched by the Turnrow Farm link (read-
+  // only here); archived_at = the link archived it (never deleted).
+  managed_by?: 'turnrow_farm' | null
+  archived_at?: string | null
 }
 export type Landowner = {
   id: string
@@ -31,6 +35,8 @@ export type Farm = {
   landlord_share_percentage: number | null
   /** Cash rent $/acre (063) — the minimal lease term on the farm linkage. */
   cash_rent_per_acre: number | null
+  managed_by?: 'turnrow_farm' | null
+  archived_at?: string | null
 }
 
 // ---------- Rent settlement (069) ----------
@@ -78,6 +84,8 @@ export type Field = {
   irrigated_acres: number
   dryland_acres: number
   county_id: string | null
+  managed_by?: 'turnrow_farm' | null
+  archived_at?: string | null
 }
 export type County = {
   id: string
@@ -218,6 +226,8 @@ export type FieldPlanting = {
   // Manual override of the yield harvest classification: null = automatic,
   // true = always count this field despite an unharvested/in-progress flag.
   yield_include_override: boolean | null
+  managed_by?: 'turnrow_farm' | null
+  archived_at?: string | null
 }
 
 export type FieldPlantingVariety = {
@@ -319,6 +329,12 @@ export type CropAssumption = {
   // Cotton only (085): assumed lbs of lint per bale for the bales read-out
   // (production lbs ÷ this). null = the 500 lb default (DEFAULT_BALE_LBS).
   bale_weight_lbs?: number | null
+  // 087: cost provenance — 'turnrow_farm' when the Turnrow Farm link wrote the
+  // cost columns (with the timestamp); cost_manual_override = the owner typed
+  // over it and the next push leaves this row's costs alone.
+  cost_source?: 'turnrow_farm' | null
+  cost_source_updated_at?: string | null
+  cost_manual_override?: boolean | null
   notes: string | null
   created_at: string
   updated_at: string
@@ -1171,6 +1187,8 @@ export type BudgetScenario = {
   budget_crop_year: number
   entity_id: string | null // null = whole operation
   notes: string | null
+  /** 087: the Turnrow Farm link keeps this scenario's cost per acre current. */
+  follow_farm_costs?: boolean | null
   created_at: string
   updated_at: string
 }
@@ -1192,6 +1210,8 @@ export type BudgetLine = {
   manual_price: number | null
   basis: number | null
   cost_per_acre: number | null
+  cost_source?: 'turnrow_farm' | null
+  cost_source_updated_at?: string | null
   sort_order: number
   created_at: string
 }

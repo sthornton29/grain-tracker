@@ -9,6 +9,9 @@ import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { plantingsImportConfig } from '@/lib/import-configs'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { dismissalKey } from '@/lib/variety-resolution'
+import { useFarmLink } from '@/lib/use-farm-link'
+import { landImportBlockedMessage, landRowEditable, LAND_MANAGED_MESSAGE } from '@/lib/farm-link'
+import { FarmLinkBanner, ManagedChip, NotLinkedChip } from '@/components/farm-link-banner'
 import type { Crop, Farm, Field, FieldPlanting, FieldPlantingVariety, VarietyMatchDismissal } from '@/lib/types'
 
 type VarietyInput = { variety: string; acres: string }
@@ -381,6 +384,10 @@ export default function PlantingsPage() {
   const [q, setQ] = useState('')
   const [sortKey, setSortKey] = useState<'field' | 'crop' | 'acres'>('field')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+  // 087: managed in Turnrow Farm → synced rows are read-only here.
+  const farmLink = useFarmLink(supabase, 'field_plantings')
+  const managed = farmLink.managed
+  const canEdit = (p: FieldPlanting) => landRowEditable(p, managed)
 
   async function refresh() {
     const [fa, fi, cr, pl, vv, dm] = await Promise.all([
@@ -392,10 +399,11 @@ export default function PlantingsPage() {
       // "Keep both" decisions — tolerate a missing table (043 not applied yet).
       supabase.from('variety_match_dismissals').select('*'),
     ])
-    setFarms((fa.data as Farm[]) || [])
-    setFields((fi.data as Field[]) || [])
+    // Archived by the Turnrow Farm link (087) → out of the lists.
+    setFarms(((fa.data as Farm[]) || []).filter((f) => !f.archived_at))
+    setFields(((fi.data as Field[]) || []).filter((f) => !f.archived_at))
     setCrops((cr.data as Crop[]) || [])
-    setPlantings((pl.data as FieldPlanting[]) || [])
+    setPlantings(((pl.data as FieldPlanting[]) || []).filter((p) => !p.archived_at))
     setVarieties((vv.data as FieldPlantingVariety[]) || [])
     setDismissals((dm.data as VarietyMatchDismissal[]) || [])
   }
@@ -507,6 +515,7 @@ export default function PlantingsPage() {
 
   async function add(e: React.FormEvent) {
     e.preventDefault()
+    if (managed) { setErr(`${LAND_MANAGED_MESSAGE} Add the planting in Turnrow Farm.`); return }
     if (!form.field_id || !form.crop_id || !form.season_year) {
       setErr('Field, crop, and season year are required.')
       return
@@ -586,10 +595,17 @@ export default function PlantingsPage() {
       <p className="text-sm text-slate-500">
         One row per field, per crop, per season. Use the harvest year as the season year.
       </p>
+      <FarmLinkBanner status={farmLink} noun="Plantings" />
+      {managed && (
+        <div className="bg-white p-4 rounded-xl shadow text-sm text-slate-600">
+          {LAND_MANAGED_MESSAGE} New plantings are added in Turnrow Farm and sync here. Plantings marked &ldquo;not linked&rdquo; were created here and can still be edited until you match them in Turnrow Farm.
+        </div>
+      )}
 
       <CsvImport
         defaultOpen
         recommended
+        blockedReason={managed ? landImportBlockedMessage('field_plantings') : null}
         config={plantingsImportConfig({
           fields,
           currentYear: currentYear(),
@@ -734,7 +750,7 @@ export default function PlantingsPage() {
                     </td>
                   ) : (
                     <>
-                      <td className="px-3 py-2">{fieldLabel(p.field_id)}</td>
+                      <td className="px-3 py-2">{fieldLabel(p.field_id)}{managed && (canEdit(p) ? <NotLinkedChip /> : <ManagedChip />)}</td>
                       <td className="px-3 py-2 whitespace-nowrap">
                         {cropNm}
                         {cropCat && <span className="ml-1 text-[10px] uppercase tracking-wide text-slate-400">{cropCat}</span>}
@@ -750,6 +766,9 @@ export default function PlantingsPage() {
                       <td className="px-3 py-2">{p.planting_date ?? ''}</td>
                       <td className="px-3 py-2 text-slate-500">{p.notes ?? ''}</td>
                       <td className="px-3 py-2">
+                        {!canEdit(p) ? (
+                          <span className="text-xs text-slate-400 whitespace-nowrap" title={LAND_MANAGED_MESSAGE}>edit in Turnrow Farm</span>
+                        ) : (
                         <button
                           onClick={() => {
                             const vs = varietiesByPlanting.get(p.id) ?? []
@@ -770,8 +789,9 @@ export default function PlantingsPage() {
                           }}
                           className="text-brand-deep"
                         >Edit</button>
+                        )}
                       </td>
-                      <td className="px-3 py-2"><button onClick={() => remove(p.id)} className="text-red-600">Delete</button></td>
+                      <td className="px-3 py-2">{canEdit(p) && <button onClick={() => remove(p.id)} className="text-red-600">Delete</button>}</td>
                     </>
                   )}
                 </tr>

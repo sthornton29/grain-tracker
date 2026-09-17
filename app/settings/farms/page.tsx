@@ -7,6 +7,9 @@ import SettingsDocImport from '@/components/settings-doc-import'
 import EntitySelect from '@/components/entity-select'
 import LandownerPicker from '@/components/landowner-picker'
 import { farmsImportConfig } from '@/lib/import-configs'
+import { useFarmLink } from '@/lib/use-farm-link'
+import { landImportBlockedMessage, landRowEditable, LAND_MANAGED_MESSAGE } from '@/lib/farm-link'
+import { FarmLinkBanner, ManagedChip, NotLinkedChip } from '@/components/farm-link-banner'
 import type { Entity, Farm, County, EntityCounty, Landowner } from '@/lib/types'
 
 const LAST_COUNTY_KEY = 'lastFarmCountyId'
@@ -36,6 +39,10 @@ export default function FarmsPage() {
   const [err, setErr] = useState<string | null>(null)
   const [q, setQ] = useState('')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+  // 087: managed in Turnrow Farm → synced rows are read-only here.
+  const farmLink = useFarmLink(supabase, 'farms')
+  const managed = farmLink.managed
+  const canEdit = (f: Farm) => landRowEditable(f, managed)
 
   async function refresh() {
     const [fa, en, co, ec, lo] = await Promise.all([
@@ -45,7 +52,8 @@ export default function FarmsPage() {
       supabase.from('entity_counties').select('*'),
       supabase.from('landowners').select('*').order('name'),
     ])
-    setFarms((fa.data as Farm[]) || [])
+    // Archived by the Turnrow Farm link (087) → out of the list.
+    setFarms(((fa.data as Farm[]) || []).filter((f) => !f.archived_at))
     setEntities((en.data as Entity[]) || [])
     setCounties((co.data as County[]) || [])
     setEntityCounties((ec.data as EntityCounty[]) || [])
@@ -202,10 +210,18 @@ export default function FarmsPage() {
         </div>
       )}
 
+      <FarmLinkBanner status={farmLink} noun="Farms" />
+
       <SettingsDocImport primaryTarget="farms" title="Upload FSA Farm Records or a Lease (AI)" onSaved={refresh} />
 
-      <CsvImport config={farmsImportConfig(entities)} onImported={refresh} />
+      <CsvImport config={farmsImportConfig(entities)} onImported={refresh} blockedReason={managed ? landImportBlockedMessage('farms') : null} />
 
+      {managed && (
+        <div className="bg-white p-4 rounded-xl shadow text-sm text-slate-600">
+          {LAND_MANAGED_MESSAGE} New farms are added in Turnrow Farm and sync here.
+        </div>
+      )}
+      {!managed && (
       <form onSubmit={add} className="space-y-2 bg-white p-4 rounded-xl shadow">
         <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr] gap-2">
           <input
@@ -290,6 +306,7 @@ export default function FarmsPage() {
           </p>
         )}
       </form>
+      )}
 
       {err && <p className="text-sm text-red-600">{err}</p>}
 
@@ -438,7 +455,11 @@ export default function FarmsPage() {
                       Share {f.landlord_share_percentage ?? '?'}%
                     </span>
                   )}
+                  {managed && (canEdit(f) ? <NotLinkedChip /> : <ManagedChip />)}
                 </span>
+                {!canEdit(f) ? (
+                  <span className="text-xs text-slate-400" title={LAND_MANAGED_MESSAGE}>edit in Turnrow Farm</span>
+                ) : (<>
                 <button
                   onClick={() => {
                     setEditingId(f.id)
@@ -455,6 +476,7 @@ export default function FarmsPage() {
                   className="text-brand-deep"
                 >Edit</button>
                 <button onClick={() => remove(f.id)} className="text-red-600">Delete</button>
+                </>)}
               </div>
             )}
           </li>

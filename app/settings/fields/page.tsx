@@ -9,6 +9,9 @@ import { fieldsImportConfig } from '@/lib/import-configs'
 import SettingsDocImport from '@/components/settings-doc-import'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { useFarmLink } from '@/lib/use-farm-link'
+import { landImportBlockedMessage, landRowEditable, LAND_MANAGED_MESSAGE } from '@/lib/farm-link'
+import { FarmLinkBanner, ManagedChip, NotLinkedChip } from '@/components/farm-link-banner'
 import type { Crop, Farm, Field, FieldPlanting, County, EntityCounty } from '@/lib/types'
 
 function parseAcres(v: string): number | null {
@@ -61,6 +64,10 @@ export default function FieldsPage() {
   const [farmFilter, setFarmFilter] = usePersistentState<string>('fields-settings:farm', '')
   const [sortKey, setSortKey] = useState<'name' | 'farm' | 'acres' | 'county'>('name')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+  // 087: managed in Turnrow Farm → synced rows are read-only here.
+  const farmLink = useFarmLink(supabase, 'fields')
+  const managed = farmLink.managed
+  const canEdit = (f: Field) => landRowEditable(f, managed)
 
   async function refresh() {
     const [fa, fi, cr, pl, co, ec] = await Promise.all([
@@ -71,10 +78,11 @@ export default function FieldsPage() {
       supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('entity_counties').select('*'),
     ])
-    setFarms((fa.data as Farm[]) || [])
-    setFields((fi.data as Field[]) || [])
+    // Archived by the Turnrow Farm link (087) → out of the lists.
+    setFarms(((fa.data as Farm[]) || []).filter((f) => !f.archived_at))
+    setFields(((fi.data as Field[]) || []).filter((f) => !f.archived_at))
     setCrops((cr.data as Crop[]) || [])
-    setPlantings((pl.data as FieldPlanting[]) || [])
+    setPlantings(((pl.data as FieldPlanting[]) || []).filter((p) => !p.archived_at))
     setCounties((co.data as County[]) || [])
     setEntityCounties((ec.data as EntityCounty[]) || [])
   }
@@ -124,6 +132,7 @@ export default function FieldsPage() {
 
   async function add(e: React.FormEvent) {
     e.preventDefault()
+    if (managed) { setErr(`${LAND_MANAGED_MESSAGE} Add the field in Turnrow Farm.`); return }
     if (!name.trim()) return
     if (addInvalid) return
     const total = parseAcres(totalAcres)
@@ -193,9 +202,17 @@ export default function FieldsPage() {
         </Link>
       </div>
 
-      <CsvImport config={fieldsImportConfig()} onImported={refresh} />
+      <FarmLinkBanner status={farmLink} noun="Fields" />
+
+      <CsvImport config={fieldsImportConfig()} onImported={refresh} blockedReason={managed ? landImportBlockedMessage('fields') : null} />
 
       <SettingsDocImport primaryTarget="fields" title="Upload a Field List (AI)" onSaved={refresh} />
+
+      {managed && (
+        <div className="bg-white p-4 rounded-xl shadow text-sm text-slate-600">
+          {LAND_MANAGED_MESSAGE} New fields are added in Turnrow Farm and sync here. Fields marked &ldquo;not linked&rdquo; were created here and can still be edited until you match them in Turnrow Farm.
+        </div>
+      )}
 
       <form onSubmit={add} className="space-y-2">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -450,7 +467,7 @@ export default function FieldsPage() {
                       </td>
                     ) : (
                       <>
-                        <td className="px-3 py-2">{f.name_or_number}</td>
+                        <td className="px-3 py-2">{f.name_or_number}{managed && (canEdit(f) ? <NotLinkedChip /> : <ManagedChip />)}</td>
                         <td className="px-3 py-2 text-slate-500">{farmName(f.farm_id)}</td>
                         <td className="px-3 py-2 text-slate-500">{countyLabel(f.county_id)}</td>
                         <td className="px-3 py-2 text-right">
@@ -469,6 +486,9 @@ export default function FieldsPage() {
                           >
                             {isExpanded ? 'Hide' : `Plantings (${fieldPlantings.length})`}
                           </button>
+                          {!canEdit(f) ? (
+                            <span className="text-xs text-slate-400" title={LAND_MANAGED_MESSAGE}>edit in Turnrow Farm</span>
+                          ) : (<>
                           <button
                             onClick={() => {
                               setEditingId(f.id)
@@ -481,6 +501,7 @@ export default function FieldsPage() {
                             className="text-brand-deep mr-3"
                           >Edit</button>
                           <button onClick={() => remove(f.id)} className="text-red-600">Delete</button>
+                          </>)}
                         </td>
                       </>
                     )}

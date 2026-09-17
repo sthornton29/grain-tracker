@@ -35,6 +35,9 @@ type Props = {
   defaultOpen?: boolean
   /** Show a "Recommended" badge in the panel header. */
   recommended?: boolean
+  /** 087: when set, the importer will not run (land records are managed in
+   *  Turnrow Farm) and the panel says why. */
+  blockedReason?: string | null
 }
 
 // Emits a CSV with just the header row matching the import config's column
@@ -59,7 +62,7 @@ function downloadTemplate(config: ImportConfig) {
   URL.revokeObjectURL(url)
 }
 
-export default function CsvImport({ config, onImported, defaultOpen, recommended }: Props) {
+export default function CsvImport({ config, onImported, defaultOpen, recommended, blockedReason }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [open, setOpen] = useState(defaultOpen ?? false)
   const [fileName, setFileName] = useState<string | null>(null)
@@ -317,6 +320,11 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
 
       {open && (
         <div className="px-4 pb-4 space-y-4 border-t border-slate-100">
+          {blockedReason && (
+            <div className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900">
+              {blockedReason}
+            </div>
+          )}
           <div className="pt-3">
             <label className="text-sm font-semibold text-slate-700 block mb-1">CSV or Excel file</label>
             <Dropzone
@@ -530,7 +538,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
                 <button
                   type="button"
                   onClick={doImport}
-                  disabled={busy || !requiredOk || rows.length === 0 || !resolutionReady}
+                  disabled={busy || !requiredOk || rows.length === 0 || !resolutionReady || !!blockedReason}
                   className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50"
                 >
                   {busy ? 'Importing…' : `Import ${rows.length} row${rows.length === 1 ? '' : 's'}`}

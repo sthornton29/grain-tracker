@@ -1,8 +1,8 @@
 ---
 page_route: /settings/shares
 title: Landowner Shares
-updated: 2026-08-21
-keywords: landowner shares, share code, Turnrow Landowner, projected prices, projected yields, actual yields, preview, what the landowner sees, revoke, end share, scopes, lease, rent, entities, which entity farms my land, farmed by
+updated: 2026-09-17
+keywords: landowner shares, share code, Turnrow Landowner, projected prices, projected yields, actual yields, rent statements, turnrow farm, preview, what the landowner sees, revoke, end share, scopes, lease, rent, entities, which entity farms my land, farmed by
 ---
 ## What this page is for
 
@@ -15,8 +15,9 @@ Every share includes the landowner's **fields, plantings, and harvest progress**
 - **Actual yields** — harvested results for their fields, as harvest is recorded.
 - **Projected prices** — your projected average price per crop. This is **one number per crop and nothing more**: never your contracts, hedges, how much you've priced, or any cost or profit figures. Until you mark a crop year's selling finished (Settings → Crops), the landowner sees it labeled "projected"; after that it's labeled "final".
 - **Projected yields** — your expected yield for the shared fields before harvest, with the irrigated/dryland split where a field has both. Once a field's harvest wraps up, the real number takes over, labeled "actual".
+- **Rent statements** — the landowner's finalized rent statements from Turnrow Farm (they arrive here through the Turnrow Farm link under Settings). Only that landowner's own statements, exactly as finalized: never another landowner's, and never your costs beyond the cost-share lines the statement itself shows. Until your organization is linked to Turnrow Farm and a statement is finalized there, the landowner simply sees none.
 
-**Projected prices and projected yields start OFF on every share** — including shares you created before these switches existed. Nothing you share changes unless you flip a switch yourself, and a change takes effect the next time the landowner's software checks in, usually right away.
+**Projected prices, projected yields, and rent statements start OFF on every share** — including shares you created before these switches existed. Nothing you share changes unless you flip a switch yourself, and a change takes effect the next time the landowner's software checks in, usually right away.
 
 ## The preview — see exactly what they see
 

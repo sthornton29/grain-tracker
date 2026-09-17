@@ -18,6 +18,7 @@ const items = [
   { href: '/settings/organization', label: 'Organization' },
   { href: '/settings/users', label: 'Users & Modules' },
   { href: '/settings/shares', label: 'Landowner Shares' },
+  { href: '/settings/farm-link', label: 'Turnrow Farm Link' },
 ]
 
 export default function SettingsPage() {

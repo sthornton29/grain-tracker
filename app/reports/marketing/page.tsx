@@ -645,6 +645,9 @@ export default function MarketingPage() {
       cost_per_acre_dry: pick('cost_per_acre_dry'),
       cost_per_acre_dc_irr: pick('cost_per_acre_dc_irr'),
       cost_per_acre_dc_dry: pick('cost_per_acre_dc_dry'),
+      // 087: the manual-override switch rides along only when the editor
+      // touched it (a database without the column keeps saving otherwise).
+      ...(has('cost_manual_override') ? { cost_manual_override: patch.cost_manual_override ?? false } : {}),
       // Assumed acres (081) — a future year's acreage until plantings exist.
       assumed_acres: pick('assumed_acres'),
       assumed_acres_irr: pick('assumed_acres_irr'),
@@ -1936,6 +1939,10 @@ function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSa
   const [cDry, setCDry] = useState(s0(a?.cost_per_acre_dry))
   const [cDcIrr, setCDcIrr] = useState(s0(a?.cost_per_acre_dc_irr))
   const [cDcDry, setCDcDry] = useState(s0(a?.cost_per_acre_dc_dry))
+  // 087: costs pushed by the Turnrow Farm link show their provenance; the
+  // override switch keeps the owner's typed costs through the next push.
+  const costFromFarm = a?.cost_source === 'turnrow_farm'
+  const [costOverride, setCostOverride] = useState(!!a?.cost_manual_override)
   // Assumed acres (081) — the crop's acreage while it has no plantings.
   const [aAll, setAAll] = useState(s0(a?.assumed_acres))
   const [aIrr, setAIrr] = useState(s0(a?.assumed_acres_irr))
@@ -2020,6 +2027,9 @@ function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSa
       cost_per_acre_dry: toNum(cDry),
       cost_per_acre_dc_irr: toNum(cDcIrr),
       cost_per_acre_dc_dry: toNum(cDcDry),
+      // 087: only when the switch exists on screen (Farm-sourced costs) or
+      // was flipped, so ordinary saves never touch the column.
+      ...(costFromFarm || costOverride !== !!a?.cost_manual_override ? { cost_manual_override: costOverride } : {}),
       // assumed_basis is deliberately untouched here — it's edited on the crop
       // section's What-If block, not in this panel (saveAssumption preserves it).
     }
@@ -2131,6 +2141,19 @@ function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSa
           ))}
         </tbody>
       </table>
+      {costFromFarm && (
+        <div className="flex items-center gap-3 flex-wrap text-xs text-slate-600">
+          <span>
+            Cost/ac from Turnrow Farm{a?.cost_source_updated_at ? `, updated ${new Date(a.cost_source_updated_at).toLocaleDateString()}` : ''}.
+          </span>
+          {!viewerMode && (
+            <label className="flex items-center gap-1.5 select-none" title="Keep the costs you type here; Turnrow Farm's next update leaves this crop year alone until you turn this off.">
+              <input type="checkbox" checked={costOverride} onChange={(e) => setCostOverride(e.target.checked)} className="h-4 w-4" />
+              Use my own costs
+            </label>
+          )}
+        </div>
+      )}
       <div className="flex items-center gap-3">
         {harvestDone ? (
           <span className="text-sm text-slate-600">Actual production: <span className="font-mono font-semibold">{bu(actual!.production)}</span> {prodUnit}</span>

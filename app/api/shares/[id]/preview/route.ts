@@ -12,7 +12,8 @@
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
-import { createServiceClient, serviceClientMissingResponse, sharedFieldIds } from '@/lib/partner-api-server'
+import { createServiceClient, serviceClientMissingResponse, sharedFieldIds, fetchAll } from '@/lib/partner-api-server'
+import { landownerSettlementsForShare, type LandownerSettlementRecord } from '@/lib/farm-link'
 import type { ProductionInputs } from '@/lib/marketing-inputs'
 import {
   buildMarketingPricesPayload,
@@ -34,6 +35,7 @@ type ShareRow = {
   include_yields: boolean
   share_projected_prices?: boolean | null
   share_projected_yields?: boolean | null
+  share_settlements?: boolean | null
   revoked_at: string | null
 }
 
@@ -74,6 +76,7 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   const scopeFlags = {
     sharesProjectedPrices: share.share_projected_prices ?? false,
     sharesProjectedYields: share.share_projected_yields ?? false,
+    sharesSettlements: share.share_settlements ?? false,
   }
 
   try {
@@ -110,6 +113,29 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       projectedYields = { records: await buildProjectedYieldsPayload(service, share.org_id, year, fields, production) }
     }
 
+    // 087: rent statements from Turnrow Farm — the same landowner-bound
+    // filter the partner endpoint applies (query fence + pure filter).
+    const settlementsDenied = shareScopeError(scopeFlags, 'settlements')
+    let settlements: { records: ReturnType<typeof landownerSettlementsForShare> } | { denied: string }
+    if (settlementsDenied) {
+      settlements = { denied: settlementsDenied.error }
+    } else {
+      try {
+        const rows = await fetchAll<LandownerSettlementRecord>((f, t) =>
+          service
+            .from('landowner_settlements')
+            .select('id, farm_uid, landowner_id, landowner_name, crop_year, lease_type, statement, finalized_at, updated_at')
+            .eq('org_id', share.org_id)
+            .eq('landowner_id', share.landowner_id)
+            .order('id')
+            .range(f, t),
+        )
+        settlements = { records: landownerSettlementsForShare(rows, share.landowner_id, year) }
+      } catch {
+        settlements = { records: [] } // 087 not applied yet
+      }
+    }
+
     return NextResponse.json({
       landowner_name: (landownerRow as { name: string } | null)?.name ?? null,
       label: share.label,
@@ -120,9 +146,11 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
         yields: share.include_yields,
         projected_prices: scopeFlags.sharesProjectedPrices,
         projected_yields: scopeFlags.sharesProjectedYields,
+        settlements: scopeFlags.sharesSettlements,
       },
       marketing_prices: marketingPrices,
       projected_yields: projectedYields,
+      settlements,
     })
   } catch (e) {
     const message = e instanceof Error ? e.message : 'Unexpected error'

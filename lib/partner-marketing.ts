@@ -21,11 +21,20 @@ import {
 // Share-scope gate
 // ---------------------------------------------------------------------------
 
-export type ProjectionScope = 'projected_prices' | 'projected_yields'
+export type ProjectionScope = 'projected_prices' | 'projected_yields' | 'settlements'
 
 export type ShareScopeFlags = {
   sharesProjectedPrices: boolean
   sharesProjectedYields: boolean
+  /** 087: landowner rent statements from Turnrow Farm. Optional so older
+   *  callers keep compiling; absent reads as OFF (fail closed). */
+  sharesSettlements?: boolean
+}
+
+const SCOPE_DENIED_MESSAGE: Record<ProjectionScope, string> = {
+  projected_prices: 'This share does not include projected prices.',
+  projected_yields: 'This share does not include projected yields.',
+  settlements: 'This share does not include rent statements.',
 }
 
 /** The 403 body for a share token whose scope is off, or null when allowed.
@@ -36,16 +45,12 @@ export function shareScopeError(
   scope: ProjectionScope,
 ): { error: string; code: 'not_in_share_scope'; scope: ProjectionScope } | null {
   if (share == null) return null
-  const allowed = scope === 'projected_prices' ? share.sharesProjectedPrices : share.sharesProjectedYields
+  const allowed =
+    scope === 'projected_prices' ? share.sharesProjectedPrices
+      : scope === 'projected_yields' ? share.sharesProjectedYields
+        : share.sharesSettlements ?? false
   if (allowed) return null
-  return {
-    error:
-      scope === 'projected_prices'
-        ? 'This share does not include projected prices.'
-        : 'This share does not include projected yields.',
-    code: 'not_in_share_scope',
-    scope,
-  }
+  return { error: SCOPE_DENIED_MESSAGE[scope], code: 'not_in_share_scope', scope }
 }
 
 // ---------------------------------------------------------------------------

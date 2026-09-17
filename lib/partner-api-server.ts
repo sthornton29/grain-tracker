@@ -86,6 +86,9 @@ export type ShareScope = {
   // (columns missing) reads as false via the ?? fallbacks below.
   sharesProjectedPrices: boolean
   sharesProjectedYields: boolean
+  // 087: the landowner's finalized rent statements from Turnrow Farm
+  // (landowner_settlements) — default false, same fail-closed read.
+  sharesSettlements: boolean
 }
 export type PartnerAccess = { org: string; share: ShareScope | null }
 
@@ -142,6 +145,7 @@ export async function resolvePartnerAccess(
     include_yields: boolean
     share_projected_prices?: boolean | null
     share_projected_yields?: boolean | null
+    share_settlements?: boolean | null
     revoked_at: string | null
   } | null
   if (!shareRow) return unauthorized
@@ -154,6 +158,7 @@ export async function resolvePartnerAccess(
       includeYields: shareRow.include_yields,
       sharesProjectedPrices: shareRow.share_projected_prices ?? false,
       sharesProjectedYields: shareRow.share_projected_yields ?? false,
+      sharesSettlements: shareRow.share_settlements ?? false,
     },
   }
 }

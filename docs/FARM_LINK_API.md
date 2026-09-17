@@ -1,0 +1,463 @@
+# Turnrow Farm link API (v1)
+
+The private API between Turnrow Grain and Turnrow Farm (the same owner's farm
+management product). Written 2026-09-17 from the code (source of truth:
+`app/api/farm-link/v1/*`, `lib/farm-link.ts`, `lib/farm-link-server.ts`,
+`lib/farm-link-outbound.ts`, migration `supabase/087_farm_link.sql`); update
+this file when those change. Part B (the Turnrow Farm side) is written against
+this document.
+
+Decisions on record: **Turnrow Farm is the master for entities, farms, fields,
+boundaries, and plantings.** Grain is the master for loads, bins, contracts,
+hedging, settlements, yields, crop insurance, government payments, and
+marketing prices. Both hold the same organization's own data, so unlike the
+landowner partner API this link carries financial detail in both directions.
+
+Base URL: `https://<grain host>/api/farm-link/v1`. Every response is JSON. All
+timestamps are ISO-8601 UTC. Every record carries `updated_at`.
+
+## Pairing and authentication
+
+1. The Grain owner opens **Settings > Turnrow Farm Link** and generates a
+   pairing code: `fl_` + 32 hex characters. It is shown once, stored sha256,
+   and expires 7 days after generation. One live (pending or active) link per
+   organization.
+2. Turnrow Farm redeems it:
+
+   ```
+   POST /handshake
+   { "code": "fl_…", "farm_org_id": "<Farm organization uuid>", "farm_org_name": "Turnrow Farms" }
+   ```
+
+   Response `200`:
+
+   ```json
+   { "token": "flt_…", "grain_org_id": "uuid", "grain_org_name": "Turnrow Farm",
+     "scopes": ["land:write","production:read","marketing:read","income:read","bins:read","assumptions:write","settlements:write"],
+     "api_version": "v1",
+     "base_urls": { "api": "…/api/farm-link/v1", "land_snapshot": "…", "land_link": "…", "land_sync": "…",
+                    "production": "…", "marketing": "…", "income": "…", "bins": "…", "assumptions": "…", "settlements": "…", "status": "…" } }
+   ```
+
+   The token (`flt_` + 48 hex) is returned ONCE and stored sha256 in Grain.
+   Errors: `400` malformed body; `404 invalid_code`; `403 link_revoked`;
+   `409 code_used` (one redemption); `410 code_expired`.
+3. Every other call: `Authorization: Bearer flt_…`. Grain resolves the token
+   to its organization and runs every query with the service role scoped to
+   that `org_id`.
+
+Error semantics on authenticated calls:
+
+- `401` — unknown token, a revoked link (`code: link_revoked`), or a link that
+  never completed the handshake (`link_pending`). Treat a 401 as "reconnect".
+- `403 missing_scope` — the owner turned that direction off; the body carries
+  `scope`. Re-check `GET /status` rather than caching authorization; scope
+  changes apply on the next call.
+- `429 rate_limited` — more than 240 calls per minute on one link (per server
+  instance). Back off a minute.
+- `400` — a malformed parameter or body, with the reason.
+- `500` — Grain-side failure; the body carries the message.
+
+Every call is logged with counts (`farm_link_calls`, trimmed to 30 days) and
+stamps the link's `last_seen_at`. Inbound writes and outbound pulls record
+`last_sync.inbound` / `last_sync.outbound` on the link, which the Grain
+settings page shows.
+
+### GET /status
+
+```json
+{ "grain_org_id": "uuid", "grain_org_name": "…", "farm_org_id": "uuid", "farm_org_name": "…",
+  "status": "active", "scopes": [...], "land_managed_in_farm": true,
+  "last_sync": { "inbound": { "at": "…", "endpoint": "land/sync", "counts": {...}, "conflicts": 0 },
+                 "outbound": { "at": "…", "endpoint": "production", "count": 120 } }, "api_version": "v1" }
+```
+
+`land_managed_in_farm` becomes true after the first successful `land/sync`;
+from then on Grain's own land forms and importers refuse with "Land records
+are managed in Turnrow Farm."
+
+### Rotation and revocation
+
+The owner can **rotate** the token (a new `flt_` shown once; the old one 401s
+immediately — paste the new one into Farm) or **revoke** the link (every call
+401s with `link_revoked`; synced land stays in Grain and becomes editable
+again). Farm should surface either as "reconnect in Turnrow Grain".
+
+## Scopes
+
+| Scope | Direction | Endpoints |
+| --- | --- | --- |
+| `land:write` | Farm → Grain | `GET /land/snapshot`, `POST /land/link`, `POST /land/sync` |
+| `production:read` | Grain → Farm | `GET /production` |
+| `marketing:read` | Grain → Farm | `GET /marketing` |
+| `income:read` | Grain → Farm | `GET /income` |
+| `bins:read` | Grain → Farm | `GET /bins` |
+| `assumptions:write` | Farm → Grain | `POST /assumptions` |
+| `settlements:write` | Farm → Grain | `POST /settlements` |
+
+All seven are granted at pairing; the Grain owner can remove any.
+
+## Keys: the id map
+
+Grain never stores Farm uuids on its core tables. `farm_link_ids` maps
+`(grain_table, grain_id) ↔ farm_uid` per organization, with BOTH sides unique.
+`grain_table` is one of `entities`, `farms`, `fields`, `field_plantings`,
+`field_planting_varieties`, `crops`, `landowners`. `farm_uid` is Farm's uuid,
+except for crops where it is Farm's crop **slug** (Farm's crops table is
+slug-keyed). Every outbound record carries the mapped Farm uuid when the row is
+linked, so Farm needs no matching on the way back.
+
+Shape mapping (from Farm's `docs/SEMANTIC_LAYER.md`):
+
+| Turnrow Farm | Turnrow Grain |
+| --- | --- |
+| entities.name, entity_role | entities.name, entity_role (`farming` \| `marketing_agent`) |
+| farms.name + fsa_number | farms.name + fsa_number (exposed as `farm_code`) |
+| farms.county_id | farms.county_id via the shared counties reference — sent as `county` + `state` (two-letter) |
+| lease: crop_share pct / cash rate | farms.is_share_rent + landlord_share_percentage / cash_rent_per_acre |
+| farms.landowner_id | farms.landowner_id (Grain landowners, matched by farm_uid then name) |
+| fields.name within farm | fields.name_or_number within farm |
+| crops.grain_name | crops.name (per organization) |
+| field_crops (field × crop × crop_year) | field_plantings (field × crop × season_year) |
+| field_crops.preceding_field_crop_id | field_plantings.paired_planting_id |
+| field_crops.varieties [{variety, acres}] | field_planting_varieties rows |
+| lease_years.id | landowner_settlements.farm_uid |
+
+## Land, inbound (`land:write`)
+
+### GET /land/snapshot?season_years=2025,2026
+
+Everything Grain holds so Farm can match before it writes. `season_years`
+(comma list; `season_year` also accepted) limits plantings; omit for all
+years. Archived rows are omitted.
+
+```json
+{ "data": {
+    "entities": [{ "id": "uuid", "name": "…", "entity_role": "farming", "managed_by": null, "farm_uid": null, "updated_at": "…" }],
+    "landowners": [{ "id": "uuid", "name": "…", "farm_uid": null, "updated_at": "…" }],
+    "farms": [{ "id": "uuid", "name": "…", "entity_id": "uuid", "farm_code": "1234", "county": "Lawrence", "state": "AL",
+                "landowner_id": null, "is_share_rent": true, "landlord_share_percentage": 33.33, "cash_rent_per_acre": null,
+                "managed_by": null, "farm_uid": null, "updated_at": "…" }],
+    "fields": [{ "id": "uuid", "farm_id": "uuid", "name_or_number": "North 40", "total_acres": 40, "irrigated_acres": 0,
+                 "county": "Lawrence", "state": "AL", "managed_by": null, "farm_uid": null, "updated_at": "…" }],
+    "crops": [{ "id": "uuid", "name": "Corn", "harvest_category": "fall", "double_crop": false, "farm_uid": null, "updated_at": "…" }],
+    "field_plantings": [{ "id": "uuid", "field_id": "uuid", "crop_id": "uuid", "season_year": 2026, "planted_acres": 40,
+                          "planting_date": "2026-04-10", "paired_planting_id": null, "irrigated_acres": 0,
+                          "varieties": [{ "id": "uuid", "variety": "DKC 68-35", "acres": 40, "bushels": null, "farm_uid": null }],
+                          "managed_by": null, "farm_uid": null, "updated_at": "…" }]
+  }, "season_years": [2025, 2026], "generated_at": "…" }
+```
+
+### POST /land/link
+
+```json
+{ "links": [{ "grain_table": "farms", "grain_id": "uuid", "farm_uid": "uuid" }] }
+```
+
+Writes the id map for matches Farm confirmed after review (at most 2,000 per
+call, one transaction). Each result is `linked`, `unchanged` (identical pair
+already mapped), or `rejected` with the reason — a `grain_id` or `farm_uid`
+already mapped elsewhere is never re-pointed; unknown tables/ids and
+duplicates within the request reject too. Linked land rows are marked
+`managed_by = 'turnrow_farm'`.
+
+```json
+{ "data": [{ "grain_table": "farms", "grain_id": "…", "farm_uid": "…", "action": "linked" }],
+  "counts": { "linked": 12, "unchanged": 3, "rejected": 0 } }
+```
+
+### POST /land/sync
+
+Idempotent upserts keyed on `farm_uid` through the id map: create when
+unmapped (after a by-name match attempt — see below), update when mapped.
+Up to **500 records per batch**, applied in dependency order inside **one
+transaction** (`farm_link_apply`); a failing batch rolls back entirely and
+returns `409 batch_rolled_back` with the planned results for diagnosis.
+
+```json
+{ "entities":   [{ "farm_uid": "uuid", "name": "…", "entity_role": "farming" }],
+  "landowners": [{ "farm_uid": "uuid", "name": "…" }],
+  "crops":      [{ "farm_uid": "sunflower", "name": "Sunflower", "harvest_category": "fall", "double_crop": false }],
+  "farms":      [{ "farm_uid": "uuid", "name": "…", "entity_farm_uid": "uuid", "farm_code": "1234", "county": "Lawrence", "state": "AL",
+                   "landowner_farm_uid": "uuid", "is_share_rent": true, "landlord_share_percentage": 33.33, "cash_rent_per_acre": null }],
+  "fields":     [{ "farm_uid": "uuid", "farm_farm_uid": "uuid", "name_or_number": "North 40", "total_acres": 40, "irrigated_acres": 0,
+                   "county": "Lawrence", "state": "AL" }],
+  "plantings":  [{ "farm_uid": "uuid", "field_farm_uid": "uuid", "crop": "Corn", "season_year": 2026, "planted_acres": 40,
+                   "irrigated_acres": 0, "planting_date": "2026-04-10", "preceding_farm_uid": null,
+                   "varieties": [{ "variety": "DKC 68-35", "acres": 40 }] }],
+  "deletions":  [{ "grain_table": "field_plantings", "farm_uid": "uuid" }] }
+```
+
+Rules:
+
+- **Order** is entities → landowners → crops → farms → fields → plantings
+  → pairing → deletions, whatever order the arrays arrive in. A parent may be
+  created in the same batch (the child references it by `*_farm_uid`); a
+  parent that is neither mapped, matched, nor in the batch refuses the child
+  with the reason.
+- **By-name matching** on first contact (Farm's documented keys): entities and
+  landowners by name; farms by name (+ FSA number when both sides have one;
+  the entity breaks ties); fields by name within the farm; plantings by field ×
+  crop × season_year; crops by name. A match writes the id map with
+  `linked_by: match`.
+- **Counties** resolve by name + two-letter state through Grain's counties
+  table; a county without a state, or an unknown county, refuses the record.
+- **Crops**: a name Grain lacks (Sunflower) becomes a per-organization crop
+  with `harvest_category`/`double_crop` from the batch's `crops` entry, or the
+  defaults (fall, false) when a planting simply names it. A `crops` entry
+  without `farm_uid` keys on the name alone.
+- **Plantings**: `crop` is the crop name; `preceding_farm_uid` becomes
+  `paired_planting_id` (resolved from the id map or the same batch, in any
+  order; an unknown preceding planting leaves the pairing as is and notes it in
+  `reason`). `varieties` (objects or plain strings) replace the planting's
+  variety rows **as a set**; omit the key to leave varieties alone.
+  `dryland_acres` derives from planted − irrigated on Grain's side.
+- **Only sent fields change.** An update touches the columns whose values
+  differ; an untouched Grain column is never clobbered.
+- **Conflict rule.** A Grain row whose `managed_by` is null (created or
+  matched in Grain, never written by the link) and whose `updated_at` is later
+  than the last inbound sync — or that has never been synced — is returned as
+  `conflict` with `grain_values` (Grain's current values for the fields Farm
+  sent) and is **never overwritten silently**. Farm resolves it: accept Grain's
+  values, or resend the record with `"force": true` to overwrite. Identical
+  values are `unchanged` and mark the row managed. Once `managed_by =
+  'turnrow_farm'`, Farm's values win.
+- **Every written or matched row gets `managed_by = 'turnrow_farm'`** and
+  becomes read-only in Grain's UI (landowners excepted — Grain keeps their
+  contact details).
+- **Deletions are archive requests.** Grain sets `archived_at` and never
+  deletes. It **refuses** to archive a field or planting that carries loads,
+  load splits, combine yield entries, gin receipts, or yield breakouts
+  (`refused` with the reason); a farm with active fields, or an entity with
+  active farms, is refused until those archive first (same batch counts).
+  Archived rows drop out of the snapshot and Grain's pages.
+
+Response — every record with its action and reason:
+
+```json
+{ "data": [
+    { "grain_table": "farms", "farm_uid": "…", "grain_id": "…", "action": "created" },
+    { "grain_table": "fields", "farm_uid": "…", "grain_id": "…", "action": "updated" },
+    { "grain_table": "field_plantings", "farm_uid": "…", "grain_id": "…", "action": "conflict",
+      "reason": "edited in Turnrow Grain since the last sync; send force: true to overwrite with Turnrow Farm's values",
+      "grain_values": { "planted_acres": 42 } },
+    { "grain_table": "fields", "farm_uid": "…", "grain_id": "…", "action": "refused", "reason": "field has loads, yields, or settlements in Turnrow Grain" },
+    { "grain_table": "field_plantings", "farm_uid": "…", "grain_id": "…", "action": "archived" } ],
+  "counts": { "created": 1, "updated": 1, "unchanged": 0, "conflict": 1, "refused": 1, "archived": 1, "records": 5 },
+  "synced_at": "…" }
+```
+
+Actions: `created` | `updated` | `unchanged` | `conflict` | `refused` |
+`archived`. After a successful sync (any response other than a rollback),
+`land_managed_in_farm` is true.
+
+## Outbound (`*:read`)
+
+All four endpoints share the paging contract: `?limit=` (default 500, max
+1,000) and `?cursor=` (opaque; from the previous response's `next_cursor`,
+ordered by `updated_at` then id), plus `?since=` (ISO date/timestamp; keeps
+records with `updated_at >= since`). Response envelope:
+
+```json
+{ "data": [...], "next_cursor": "…" | null, "crop_year": 2026, "generated_at": "…" }
+```
+
+The marketing, income, and bins figures are computed per request (their
+`updated_at` is the generation time); production carries the newest
+contributing row's `updated_at`.
+
+### GET /production?season_year=2026 (`crop_year` also accepted)
+
+One record per field planting (fields with production but no planting
+appear keyed on `field|crop|year`). The same classification and quantities
+the Yields pages show.
+
+```json
+{ "id": "planting uuid", "planting_id": "uuid", "planting_farm_uid": "uuid|null", "field_id": "uuid", "field_farm_uid": "uuid|null",
+  "field_name": "North 40", "farm_id": "uuid", "entity_id": "uuid|null", "entity": "…", "crop": "Corn", "crop_year": 2026,
+  "planted_acres": 40, "harvest_status": "complete", "harvested_acres": 40, "production": 7400, "unit": "bu",
+  "yield_per_acre": 185, "yield_unit": "bu_per_ac", "moisture": 16.4, "source": "combine_yield_entries", "updated_at": "…" }
+```
+
+- `unit`: dry bushels (`bu`) for grains, lint pounds (`lbs`) for cotton;
+  `yield_unit` follows.
+- `harvest_status`: `complete` | `in_progress` | `unharvested`, exactly the
+  Yields page's classification (crop-level harvest-complete flags, combine
+  entry flags, the "count anyway" override). `harvested_acres` equals planted
+  acres when complete, else 0 — Grain has no per-field harvested-acre figure;
+  do not divide until complete.
+- `yield_per_acre` is the actual only once complete (null while in progress).
+- `moisture` is net-lb-weighted over the field's weighed loads (splits
+  pro-rated); null for cotton and combine-only fields.
+- `source`: Grain's precedence — a combine entry replaces weighed loads for
+  the field × crop × year (`combine_yield_entries`), else `loads`; cotton
+  is `gin_receipts`.
+
+### GET /marketing?crop_year=2026
+
+Per crop (whole operation, `entity_id: null`) and per farming entity.
+
+```json
+{ "id": "cropId|entityId", "crop_id": "uuid", "crop": "Corn", "crop_year": 2026, "entity_id": null, "entity_name": null, "entity_farm_uid": null,
+  "unit": "usd_per_bu", "quantity_unit": "bu",
+  "settled_average_price": 4.35, "settled_quantity": 4000, "settled_revenue": 17400, "settled_attribution": "operation",
+  "projected_average_price": 4.37, "price_is_final": false,
+  "basis": { "average": -0.30, "state": "blended", "assumed": -0.35, "locked_quantity": 9000, "assumed_quantity": 9000 },
+  "percent_sold": 50, "sold_quantity": 9000, "total_production": 18000, "production_basis": "estimated",
+  "hedging_realized": { "net": 1250, "per_unit": 0.0694 },
+  "basis_notes": ["basis blends locked contracts with the assumed basis on unpriced bushels"], "as_of": "…", "updated_at": "…" }
+```
+
+- **Cotton** rows: `unit: cents_per_lb` (¢/lb as Grain stores it),
+  `quantity_unit: lbs` (lint); settled figures come from the physical cotton
+  sales (sold lbs and dollars); `sold_quantity` is sold lint.
+- `settled_average_price` (grain) = settlement lines' net revenue ÷ net
+  units for the crop year's matched loads (net of the statement's
+  deductions, as Grain records them). Entity rows carry the entity's acre
+  share (`settled_attribution: by_acres`).
+- `projected_average_price` is the Marketing dashboard's headline (futures
+  average + basis, blended once assumptions apply); `price_is_final` is the
+  Settings > Crops "physical sales complete" flag.
+- `percent_sold` = contracted (plus seed-committed) bushels ÷ total
+  production, capped at 100; cotton uses sold lint ÷ production.
+- `hedging_realized.net` = closed futures (net of commission) + closed
+  options, the figure the dashboard folds into the price.
+- Entity rows are the dashboard with that entity selected: own-name
+  positions whole, agent-held / operation-level positions pro rata by the
+  entity's acre share of the crop (lib/entity-scope.ts).
+
+### GET /income?crop_year=2026
+
+Per crop × entity (whole-operation rows first, `entity_id: null`). Grain
+attributes nothing to a single field planting, so no per-planting rows are
+emitted; the `attribution` fields state the basis Grain uses.
+
+```json
+{ "id": "cropId|all", "crop_id": "uuid", "crop": "Corn", "crop_year": 2026, "entity_id": null, "entity_name": null, "entity_farm_uid": null,
+  "unit": "bu", "acres": 300, "total_production": 54000,
+  "crop_revenue": { "total": 235980, "components": { "settled_revenue": 17400, "hedging_realized": 1250, "checkoff": 40, "fees": 12.5 }, "attribution": "operation" },
+  "government_payments": { "total": 6750, "arc_plc": 6000, "other_crop_specific": 0, "other_allocated": 750,
+    "by_program_farm": [{ "program": "PLC", "farm_id": "uuid", "farm_code": "1234", "farm_farm_uid": "uuid", "commodity": "Corn", "net": 6000 }],
+    "attribution": "by_acres" },
+  "crop_insurance": { "indemnities": 2000, "premium": 5000, "net": -3000, "attribution": "by_entity" },
+  "other_income": { "total": 0 }, "total_revenue": 239730, "as_of": "…", "updated_at": "…" }
+```
+
+- `crop_revenue.total` is the Revenue Projections figure: settlements,
+  contracts, unpriced bushels at the market/assumed price, and realized
+  hedging folded in exactly once (never re-summed from the components, which
+  are informational: settled dollars, realized hedging, checkoff and fees from
+  the settlements' itemized deductions).
+- Government payments: ARC/PLC projected per FSA farm × commodity for the
+  program year (payment received in this crop year), filtered to the
+  entity's farms, then **allocated to crops by planted-acre share**; other
+  USDA payments go whole to their crop when crop-specific, else by acre
+  share. `by_program_farm` lists the pieces with the FSA farm number and the
+  farm's Farm uuid.
+- Crop insurance: policies attribute by their **own entity**; indemnities are
+  Grain's projections (RP/YP/area plans + SCO/ECO/STAX/MCO) at the current
+  harvest-price tier; `net` = indemnities − premium.
+- `other_income` is reserved (always 0 today).
+
+### GET /bins?crop_year=2026&as_of=2026-09-17
+
+Per bin × crop.
+
+```json
+{ "id": "binId|cropId", "bin_id": "uuid", "bin_name": "Bin 1", "site_id": "uuid", "site_name": "Home", "entity_id": "uuid", "entity_farm_uid": "uuid|null",
+  "capacity_bushels": 20000, "crop_id": "uuid", "crop": "Corn", "crop_year": 2026, "as_of": "…",
+  "bushels_on_hand": 2300, "bushels_in_for_year": 2000, "updated_at": "…" }
+```
+
+- `bushels_on_hand` is the /inventory page's assembly as of `as_of`: dry
+  bushels in − out on loads, ± inventory adjustments, ± bin-to-bin
+  transfers, + netted combine remainders.
+- `bushels_in_for_year`: dry bushels delivered INTO the bin on loads of the
+  crop year (+ that year's positive combine remainders) on or before `as_of`.
+- Transfers are not loads and never touch production or marketing.
+
+## Inbound (`assumptions:write`, `settlements:write`)
+
+### POST /assumptions
+
+```json
+{ "crop_year": 2026, "rows": [{ "crop": "Corn", "cost_per_acre": 600, "cost_per_acre_irrigated": 700, "cost_per_acre_dryland": 500,
+                                "cost_per_acre_dc_irrigated": null, "cost_per_acre_dc_dryland": 350, "source": "budget", "computed_at": "…" }] }
+```
+
+Writes `crop_assumptions.cost_per_acre` and the four breakouts for the
+organization's crop (matched by name) and crop year, stamping `cost_source =
+'turnrow_farm'` and `cost_source_updated_at` (= `computed_at`, else now), so
+the Marketing report shows "Cost/ac from Turnrow Farm, updated <date>" with a
+**Use my own costs** switch. A crop whose switch is on is `skipped` and says
+so; an unknown crop is `skipped` ("sync land first"). Budget scenarios for
+the crop year marked **Follow Turnrow Farm costs** get their crop lines'
+`cost_per_acre` from the matching breakout (irrigated/non-irrigated ×
+full-season/double-crop; blended cells take the overall figure). Yields,
+basis, futures, and acres assumptions are never touched.
+
+```json
+{ "data": [{ "crop": "Corn", "action": "updated", "budget_lines_updated": 3 },
+           { "crop": "Soybean", "action": "skipped", "reason": "manual override is on in Turnrow Grain for this crop year", "budget_lines_updated": 0 }],
+  "counts": { "rows": 2, "updated": 1, "skipped": 1, "budget_lines": 3 }, "crop_year": 2026 }
+```
+
+### POST /settlements
+
+```json
+{ "settlements": [{ "farm_uid": "<lease_years.id>", "landowner_name": "Smith Family Trust", "landowner_farm_uid": "<Farm landowner uuid>",
+                    "crop_year": 2026, "lease_type": "crop_share", "finalized_at": "…",
+                    "statement": { ...the LandownerStatement / section rows exactly as lib/leases/statement.ts produced them... } }] }
+```
+
+Upserts `landowner_settlements` by `(org, farm_uid)` — Farm's lease year id
+is the identity. Grain's landowner resolves through the id map
+(`landowners` × `landowner_farm_uid`), then by exact name; an unresolved
+landowner is stored (`landowner_id: null`) but **never served to a landowner
+share**. The statement is stored verbatim; Grain adds nothing and strips
+nothing. Up to 500 per call.
+
+```json
+{ "data": [{ "farm_uid": "…", "action": "upserted", "grain_id": "…", "landowner_id": "uuid|null" }],
+  "counts": { "settlements": 1, "upserted": 1, "refused": 0 } }
+```
+
+## The landowner partner API's `settlements` scope
+
+A landowner share (Turnrow Landowner) with the **Rent statements** switch on
+(`partner_shares.share_settlements`, default OFF) reads its own statements at
+`GET /api/partner/v1/settlements?crop_year=` with its `trps_` token — only
+the rows whose Grain `landowner_id` is the share's landowner, filtered in the
+query and again in code, never another landowner's, never an unresolved one.
+See `docs/PARTNER_API.md`.
+
+## Grain UI for a linked organization
+
+- Settings > Turnrow Farm Link: pairing code, status + Farm organization
+  name, scope toggles, last sync per direction with counts and the conflicts
+  returned, recent calls, Rotate token, Revoke. A super admin sees links
+  across organizations on /admin (status and dates only).
+- Entities / Farms / Fields / Plantings: "Managed in Turnrow Farm; last
+  synced <time>" banner once land is managed; synced rows read-only with a
+  link to Turnrow Farm; unmanaged rows keep a "not linked" chip and stay
+  editable; the add forms and the CSV / document importers refuse with "Land
+  records are managed in Turnrow Farm." Entities keep county assignments and
+  payment-limit persons editable.
+- Marketing assumptions: Farm-sourced costs carry their provenance and the
+  manual override switch; Crop Budget scenarios carry "Follow Turnrow Farm
+  costs".
+- Ask Turnrow's schema digest knows the new tables and the `managed_by` /
+  `archived_at` rule.
+
+## Consumer guidance for Turnrow Farm
+
+- Pull `/land/snapshot`, match, `POST /land/link` the confirmed pairs, then
+  `POST /land/sync` in batches of ≤ 500 in dependency order. Store every
+  `grain_id` from the response in `external_ids (system = grain)`.
+- Surface `conflict` results for the operator; resend with `force: true` only
+  on an explicit choice.
+- Show `refused` archive results as "still has harvest data in Turnrow Grain".
+- Pull the four outbound endpoints per crop year with `since` for deltas;
+  key on the `*_farm_uid` fields, fall back to Grain ids when null.
+- Re-check `/status` on each sync; a `403 missing_scope` means the Grain
+  owner turned that direction off.

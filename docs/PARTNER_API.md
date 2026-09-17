@@ -44,9 +44,11 @@ Two token classes:
    code. Scoped to the fields on the farms belonging to that share's
    landowner. May call: `/handshake`, `/fields`, `/plantings`, `/production`
    (the last only when the share includes yields), and — each behind its own
-   opt-in scope, default OFF — `/marketing-prices` and `/projected-yields`.
-   The farm-wide endpoints (`/settlements`, `/hedging`, `/crop-year-status`)
-   return 403 with code `not_in_share_scope`.
+   opt-in scope, default OFF — `/marketing-prices`, `/projected-yields`, and
+   `/settlements` (the `settlements` scope, 087: the landowner's OWN rent
+   statements from Turnrow Farm — a different payload from the full-org
+   `/settlements`, see below). The farm-wide endpoints (`/hedging`,
+   `/crop-year-status`) return 403 with code `not_in_share_scope`.
 
 Error semantics:
 
@@ -66,8 +68,8 @@ Error semantics:
 
 1. Farmer: Settings > Landowner Shares > pick landowner, choose the scopes,
    create. Plantings and harvest status are always shared; **actual yields**
-   (on by default), **projected prices**, and **projected yields** (both off
-   by default) are separate opt-ins the farmer can flip at any time — the
+   (on by default), **projected prices**, **projected yields**, and **rent
+   statements** (all three off by default) are separate opt-ins the farmer can flip at any time — the
    change applies on the consumer's next call. A one-time code (format
    `TRW-XXXX-XXXX-XXXX`) is shown exactly once; it expires after 7 days if
    unredeemed. Codes and tokens are stored sha256-hashed.
@@ -291,9 +293,38 @@ the 403 described above.
 - A crop the tenant has set no yield expectation for is simply absent until
   harvest data exists.
 
-### GET /crop-year-status, /settlements, /hedging (full-org tokens only)
+### GET /settlements?crop_year=YYYY (share tokens; scope `settlements`, default OFF)
 
-Farmer-facing financial/status endpoints; out of scope for landowner shares.
+The landowner's own **rent statements**, exactly as the farmer finalized
+them in Turnrow Farm (they reach Grain through the Turnrow Farm link, 087 —
+see `docs/FARM_LINK_API.md`). One record per lease year. Strictly the
+statements bound to THIS share's landowner: the query is fenced by the
+landowner id and the response is filtered again in code; another landowner's
+statement, or a statement Grain could not tie to a landowner, never appears.
+`crop_year` is optional (all years when omitted). Scope off → the 403 above
+with `scope: "settlements"`.
+
+```json
+{ "data": [
+    { "id": "uuid", "farm_uid": "<Turnrow Farm lease year id>", "landowner_name": "Smith Family Trust",
+      "crop_year": 2026, "lease_type": "crop_share", "finalized_at": "2026-12-15T…",
+      "statement": { "...the statement rows as Turnrow Farm produced them: farms, fields, acres, crops, yields, prices, shares, cost shares, adjustments, payments, notes..." },
+      "updated_at": "…" } ],
+  "crop_year": 2026 }
+```
+
+- `statement` is passed through verbatim — Grain adds nothing and strips
+  nothing. Its cost-share lines are the only cost figures a landowner ever
+  sees; the tenant's other costs are not in the statement and are not served.
+- Before the Grain organization is linked to Turnrow Farm, or before a
+  statement is finalized there, `data` is simply empty.
+
+### GET /crop-year-status, /settlements (full-org tokens), /hedging
+
+Farmer-facing financial/status endpoints for full-org tokens; a landowner
+share hitting `/hedging` or `/crop-year-status` gets 403
+`not_in_share_scope`. For a full-org token `/settlements?since=` is the
+GRAIN settlements feed (one record per settlement × crop), unchanged.
 
 ## Consumer guidance
 
