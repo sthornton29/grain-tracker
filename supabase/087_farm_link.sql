@@ -67,7 +67,7 @@ create table if not exists public.farm_links (
   -- FARM_LINK_SCOPES
   scopes text[] not null default array[
     'land:write', 'production:read', 'marketing:read', 'income:read',
-    'bins:read', 'assumptions:write', 'settlements:write'
+    'bins:read', 'insurance:read', 'assumptions:write', 'settlements:write'
   ],
   status text not null default 'pending' check (status in ('pending', 'active', 'revoked')),
   created_by uuid,
@@ -80,7 +80,7 @@ create table if not exists public.farm_links (
   updated_at timestamptz not null default now(),
   constraint farm_links_scopes_known check (
     scopes <@ array['land:write', 'production:read', 'marketing:read', 'income:read',
-                    'bins:read', 'assumptions:write', 'settlements:write']
+                    'bins:read', 'insurance:read', 'assumptions:write', 'settlements:write']
   )
 );
 

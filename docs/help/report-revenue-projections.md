@@ -1,7 +1,7 @@
 ---
 page_route: /reports/revenue-projections
 title: Revenue Projections
-updated: 2026-08-05
+updated: 2026-09-21
 keywords: revenue, profit, breakeven, crop sales, insurance proceeds, government payments, ARC, PLC, cost per acre, average price
 ---
 ## What this page is for
@@ -33,6 +33,10 @@ This page and the Marketing Dashboard are built on the same math, so with no ins
 - **Why does profit here differ from the Marketing Dashboard?** Only because this page adds insurance proceeds and government payments. The crop sales line itself is identical.
 - **Are these final numbers?** Not until after harvest. Insurance proceeds and harvest prices are estimates until RMA finalizes them, and unpriced bushels ride on your assumptions — watch for figures that depend on them.
 - **I'm a read-only user — do my assumption edits show here?** Yes, as your private scenario: values you change flow into your view of this page, and an administrator's change replaces them.
+
+## Insurance when your cost per acre comes from Turnrow Farm
+
+If your cost per acre came from Turnrow Farm and already includes the crop insurance premium, this report says so under the Cost, Profit & Breakeven table and marks those crops **+ins** beside their cost. For those crops, Insurance Proceeds shows the expected insurance payment on its own instead of the payment minus the premium, because the premium is already in the cost. Every other crop is unchanged.
 
 ## If something looks wrong
 

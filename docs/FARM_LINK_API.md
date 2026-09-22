@@ -1,9 +1,10 @@
 # Turnrow Farm link API (v1)
 
 The private API between Turnrow Grain and Turnrow Farm (the same owner's farm
-management product). Written 2026-09-17 from the code (source of truth:
-`app/api/farm-link/v1/*`, `lib/farm-link.ts`, `lib/farm-link-server.ts`,
-`lib/farm-link-outbound.ts`, migration `supabase/087_farm_link.sql`); update
+management product). Written 2026-09-17, crop insurance added 2026-09-21, from
+the code (source of truth: `app/api/farm-link/v1/*`, `lib/farm-link.ts`,
+`lib/farm-link-server.ts`, `lib/farm-link-outbound.ts`, migrations
+`supabase/087_farm_link.sql` and `supabase/088_farm_link_insurance.sql`); update
 this file when those change. Part B (the Turnrow Farm side) is written against
 this document.
 
@@ -92,10 +93,17 @@ again). Farm should surface either as "reconnect in Turnrow Grain".
 | `marketing:read` | Grain → Farm | `GET /marketing` |
 | `income:read` | Grain → Farm | `GET /income` |
 | `bins:read` | Grain → Farm | `GET /bins` |
+| `insurance:read` | Grain → Farm | `GET /insurance` |
 | `assumptions:write` | Farm → Grain | `POST /assumptions` |
 | `settlements:write` | Farm → Grain | `POST /settlements` |
 
-All seven are granted at pairing; the Grain owner can remove any.
+All eight are granted at pairing; the Grain owner can remove any.
+
+`insurance:read` arrived with 088, after the first pairings. A pairing made
+before it keeps the scopes it was granted, so `GET /insurance` answers 403 with
+`{"code": "missing_scope", "scope": "insurance:read"}` — the Farm side reads
+`scope` off that body and tells the owner to turn the switch on under Settings
+› Turnrow Farm link in Grain, or to re-pair.
 
 ## Keys: the id map
 
@@ -253,7 +261,7 @@ Actions: `created` | `updated` | `unchanged` | `conflict` | `refused` |
 
 ## Outbound (`*:read`)
 
-All four endpoints share the paging contract: `?limit=` (default 500, max
+All five endpoints share the paging contract: `?limit=` (default 500, max
 1,000) and `?cursor=` (opaque; from the previous response's `next_cursor`,
 ordered by `updated_at` then id), plus `?since=` (ISO date/timestamp; keeps
 records with `updated_at >= since`). Response envelope:
@@ -376,14 +384,103 @@ Per bin × crop.
   crop year (+ that year's positive combine remainders) on or before `as_of`.
 - Transfers are not loads and never touch production or marketing.
 
+### GET /insurance?crop_year=2026 (`insurance:read`)
+
+The crop insurance premiums Grain already allocates by entity and crop, so the
+Farm side's cost per acre does not ask for them a second time. One row per
+**entity × crop × practice** for the crop year. Envelope:
+
+```json
+{ "crop_year": 2026, "generated_at": "…", "rows": [ … ], "data": [ … ], "next_cursor": null }
+```
+
+`rows` is this endpoint's name for the page; `data` is the same array under the
+name the other four pulls use, so a generic pager works here unchanged. `?since=`,
+`?limit=`, and `?cursor=` behave exactly as on `/production`.
+
+```json
+{ "id": "entityId|cropId|irrigated|2026", "entity_code": "F-ENT-1", "entity_id": "uuid|null", "entity_name": "Turnrow Farms LLC",
+  "entity_farm_uid": "F-ENT-1", "crop_id": "uuid", "crop": "Corn", "crop_year": 2026,
+  "practice": "irrigated", "plan": "RP", "coverage_level": 0.8, "unit_structure": "enterprise",
+  "acres_insured": 640, "producer_premium": 18240, "subsidy": 27360, "total_premium": 45600,
+  "indemnity_received": null, "indemnity_expected": 0, "allocation_basis": "entity_crop",
+  "effective_date": null, "policy_count": 2, "updated_at": "…" }
+```
+
+- **The aggregation.** Grain carries crop insurance per POLICY — entity × crop ×
+  county × crop year × practice, plus its SCO / ECO / STAX / MCO riders. Two
+  policies for the same entity, crop, and practice in different counties sum
+  into one row. Nothing in Grain is per field, so `allocation_basis` is always
+  `entity_crop` and the Farm side spreads by planted acres. A policy with no
+  entity rolls up to a single operation-level row (`entity_id: null`,
+  `entity_code: null`, id prefix `operation`).
+- `entity_code` is the Farm side's key for the entity (the id map's `farm_uid`),
+  `null` until the land sync has linked that entity — match on `entity_name`
+  then. `entity_farm_uid` is the same value under the name the other four pulls
+  use.
+- `practice`: `irrigated` or `dryland` (Grain stores `non_irrigated`). `null` is
+  reserved for a policy that does not split by practice; Grain's schema always
+  splits, so it does not occur today.
+- `producer_premium` is the **farmer-paid** premium — the base policy plus every
+  rider — the same figure the Claims Monitor and `/income` subtract. It is the
+  number the Farm side records as a cost.
+- `subsidy` and `total_premium` are informational and derived from the policy's
+  `premium_subsidy_pct`: the stored premium is AFTER subsidy, so
+  `subsidy = producer × pct ÷ (100 − pct)` and `total_premium = producer +
+  subsidy`. The percentage lives on the base policy only, so rider premiums
+  raise `producer_premium` and `total_premium` without adding subsidy. A row
+  whose policies carry no percentage returns `null` for both rather than a
+  made-up zero. **Note the name:** the API's `total_premium` is the GROSS
+  premium; Grain's `crop_insurance_policies.total_premium` column is the
+  producer-paid one.
+- `plan` is `RP`, `YP`, `RPHPE`, `ARP`, or `other` (`other` covers AYP and any
+  row whose policies disagree). `unit_structure` is `basic`, `optional`,
+  `enterprise`, or `mixed` when the policies disagree. `coverage_level` is
+  acre-weighted across the row's policies.
+- `indemnity_expected` is Grain's projection at the current harvest-price tier
+  (RP/YP/area plans + SCO/ECO/STAX/MCO). `indemnity_received` repeats it only
+  once **every** contributing policy resolves to a FINAL harvest price — Grain
+  records no cheque, so a number that could still move is never called received.
+  Both are informational here: indemnities already flow through `/income`, and
+  they stay there.
+- `effective_date` is always `null`. Grain records the crop year, not a sales
+  closing or policy date; the field is in the contract for when it does.
+- `policy_count` is how many policies (not riders) rolled into the row.
+- **Deletions.** A deleted policy is not by itself a deleted row — the row only
+  goes away once nothing covers that entity × crop × practice any more. On a
+  `?since=` pull, a key that has gone comes back as
+  `{ "id": …, "deleted": true, "updated_at": "<when it went>" , … }` with zeroed
+  figures, so the Farm side can remove it. A full pull (no `?since=`) is the
+  current picture and never carries `deleted` rows. Removing a RIDER off a
+  policy that is still there does not touch the policy's own `updated_at`, so
+  that too is recorded and moves the row's `updated_at` — a delta pull sees the
+  new premium. (`crop_insurance_deletions`, written by triggers in 088.)
+- Every call is written to the sync log (`farm_link_calls`) with the endpoint,
+  the token's link, the rows returned, the deleted count, and the elapsed time,
+  exactly as the other pulls are.
+
 ## Inbound (`assumptions:write`, `settlements:write`)
 
 ### POST /assumptions
 
 ```json
-{ "crop_year": 2026, "rows": [{ "crop": "Corn", "cost_per_acre": 600, "cost_per_acre_irrigated": 700, "cost_per_acre_dryland": 500,
-                                "cost_per_acre_dc_irrigated": null, "cost_per_acre_dc_dryland": 350, "source": "budget", "computed_at": "…" }] }
+{ "crop_year": 2026, "includes_insurance": true,
+  "rows": [{ "crop": "Corn", "cost_per_acre": 600, "cost_per_acre_irrigated": 700, "cost_per_acre_dryland": 500,
+             "cost_per_acre_dc_irrigated": null, "cost_per_acre_dc_dryland": 350, "source": "budget", "computed_at": "…" }] }
 ```
+
+`includes_insurance` (088, optional, default `false`) says the pushed cost per
+acre **already carries the crop insurance premium** — which it will once the
+Farm side's insurance pull is running. Grain stores it on the crop year's
+`crop_assumptions` rows (`cost_includes_insurance`) and then stops charging its
+own premium a second time: every margin built on those rows counts the
+**indemnity alone** instead of indemnity − premium (Revenue Projections, the
+`/income` pull, and Ask Turnrow's revenue tool all go through the one engine,
+`computeRevenueProjections`). The Marketing dashboard's cost line and the
+Revenue Projections report say *"Insurance included in the Turnrow Farm cost per
+acre"* beside the figure. Absent or `false` behaves exactly as before. The flag
+is echoed back on the response. Grain's breakeven has never included insurance,
+so it is unaffected either way.
 
 Writes `crop_assumptions.cost_per_acre` and the four breakouts for the
 organization's crop (matched by name) and crop year, stamping `cost_source =

@@ -23,6 +23,7 @@ export const FARM_LINK_SCOPES = [
   'marketing:read',
   'income:read',
   'bins:read',
+  'insurance:read',
   'assumptions:write',
   'settlements:write',
 ] as const
@@ -53,6 +54,11 @@ export const FARM_LINK_SCOPE_LABELS: Record<FarmLinkScope, { title: string; blur
   'bins:read': {
     title: 'Bins to Turnrow Farm',
     blurb: 'Bushels on hand and bushels in for the year, per bin and crop.',
+    direction: 'out',
+  },
+  'insurance:read': {
+    title: 'Crop insurance premiums to Turnrow Farm',
+    blurb: 'Producer-paid premiums by entity, crop, and irrigated or dryland, so you do not enter them again over there.',
     direction: 'out',
   },
   'assumptions:write': {
@@ -966,6 +972,10 @@ export type AssumptionUpsert = {
   cost_per_acre_dc_dry: number | null
   cost_source: 'turnrow_farm'
   cost_source_updated_at: string
+  /** 088: Turnrow Farm's cost per acre already carries the crop insurance
+   *  premium (the push's `includes_insurance`), so Grain must not subtract its
+   *  own premium again in any margin built on this row. */
+  cost_includes_insurance: boolean
 }
 
 export type BudgetLineUpdate = { id: string; cost_per_acre: number | null; cost_source: 'turnrow_farm'; cost_source_updated_at: string }
@@ -988,6 +998,9 @@ export function budgetCellCost(line: { practice: string | null; cropping: string
 export function planAssumptionsWrite(args: {
   cropYear: number
   rows: readonly AssumptionRow[]
+  /** The push's `includes_insurance`: Turnrow Farm's cost per acre already
+   *  carries the crop insurance premium. Absent = false = behave as before. */
+  includesInsurance?: boolean
   crops: ReadonlyArray<{ id: string; name: string }>
   existing: ReadonlyArray<{ crop_id: string; crop_year: number; cost_manual_override?: boolean | null }>
   scenarios: ReadonlyArray<{ id: string; budget_crop_year: number; follow_farm_costs?: boolean | null }>
@@ -1021,6 +1034,7 @@ export function planAssumptionsWrite(args: {
       cost_per_acre_dc_irr: num(r.cost_per_acre_dc_irrigated),
       cost_per_acre_dc_dry: num(r.cost_per_acre_dc_dryland),
       cost_source: 'turnrow_farm', cost_source_updated_at: stamp,
+      cost_includes_insurance: !!args.includesInsurance,
     }
     upserts.push(up)
     let n = 0

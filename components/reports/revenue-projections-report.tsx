@@ -34,7 +34,7 @@ import {
 } from '@/lib/crop-insurance'
 import { formatCottonPrice } from '@/lib/hedging'
 import { projectPayments, applyMyaResolution, programYearFor, otherPaymentsInRevenueYear } from '@/lib/government-payments'
-import { computeRevenueProjections, type InsuranceProceeds, type GovtProceeds } from '@/lib/revenue-projections'
+import { computeRevenueProjections, cropsWithInsuranceInCost, type InsuranceProceeds, type GovtProceeds } from '@/lib/revenue-projections'
 import {
   SummaryCards, EmptyState, fmtUsd, signedTone, toneText,
   theadCls, grandTotalRowCls, type SummaryCardData,
@@ -576,13 +576,30 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     return m
   }, [cropYear, arcPriceData, baseAcres, commodities, elections, arcPayments, otherPayments, marketingRows, scope])
 
+  // 088: a crop whose cost/acre came from Turnrow Farm WITH the premium in it
+  // counts the indemnity alone, so the premium is not charged twice.
+  const insuranceInCost = useMemo(
+    () => cropsWithInsuranceInCost(effAssumptions, cropYear === '' ? 0 : cropYear),
+    [effAssumptions, cropYear],
+  )
+
   const { rows, totals } = useMemo(
     () => computeRevenueProjections({
       marketingRows, contracts: scopedContracts.filter((c) => c.crop_year === cropYear),
       cropYear: cropYear === '' ? 0 : cropYear, marketPriceByCrop, insuranceByCrop, govtByCrop,
+      costIncludesInsuranceCropIds: insuranceInCost,
     }),
-    [marketingRows, scopedContracts, cropYear, marketPriceByCrop, insuranceByCrop, govtByCrop],
+    [marketingRows, scopedContracts, cropYear, marketPriceByCrop, insuranceByCrop, govtByCrop, insuranceInCost],
   )
+
+  // 088: plain-English note for the crops whose cost/acre arrived from Turnrow
+  // Farm with the premium already in it.
+  const insuranceInCostNote = useMemo(() => {
+    const names = rows.filter((r) => r.insurancePremiumInCost).map((r) => r.cropName)
+    if (names.length === 0) return null
+    const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+    return `Insurance included in the Turnrow Farm cost per acre for ${list}. Insurance proceeds show the payment only for those crops, so the premium is not counted twice.`
+  }, [rows])
 
   const harvestLabelFor = (cropId: string) => {
     const c = cropById.get(cropId)
@@ -590,7 +607,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   }
 
   function buildExportPayload(): ExportPayload {
-    const filters = `Crop year: ${cropYear || '—'}${entityName ? ` · Entity: ${entityName}` : ''}`
+    const filters = `Crop year: ${cropYear || '—'}${entityName ? ` · Entity: ${entityName}` : ''}${insuranceInCostNote ? ` · ${insuranceInCostNote}` : ''}`
     const revenueSection: ExportPayload['sections'][number] = {
       title: 'Revenue by Crop',
       columns: [
@@ -797,7 +814,10 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                 {rows.map((r) => (
                   <tr key={r.cropId} className="border-t border-slate-100">
                     <td className="px-2 py-1 font-semibold">{r.cropName}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.costPerAcre)}</td>
+                    <td className="px-2 py-1 text-right font-mono tabular-nums" title={r.insurancePremiumInCost ? 'Insurance included in the Turnrow Farm cost per acre' : undefined}>
+                      {usd(r.costPerAcre)}
+                      {r.insurancePremiumInCost && <span className="ml-1 font-sans text-xs text-slate-500">+ins</span>}
+                    </td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.totalCost)}</td>
                     <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.totalRevenue)}</td>
                     <td className={`px-2 py-1 text-right font-mono tabular-nums font-semibold ${r.profit == null ? toneText('muted') : toneText(signedTone(r.profit))}`}>{r.profit != null ? usd(r.profit) : 'no cost'}</td>
@@ -818,6 +838,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
                 </tr>
               </tbody>
             </table>
+            {insuranceInCostNote && <p className="text-xs text-slate-600 mt-2">{insuranceInCostNote}</p>}
           </section>
 
           {/* Harvest price reference */}

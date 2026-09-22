@@ -1,7 +1,7 @@
 ---
 page_route: /reports/marketing
 title: Marketing Dashboard
-updated: 2026-09-14
+updated: 2026-09-21
 keywords: marketing, contracts, futures, basis, cash price, unpriced bushels, assumptions, what-if, profit, breakeven, harvest complete, still harvesting, count anyway, cotton, reference contract, contract month, expired, front month, assumed acres, next year, future crop year, no plantings yet, plan ahead, sold ahead
 ---
 ## What this page is for
@@ -39,6 +39,10 @@ A crop with a **seed production contract** shows a "Seed — [company]" tag and 
 - **I'm a read-only user — can I try my own numbers?** Yes. Your edits are private "your scenario" values only you see, marked with a chip (assumed acres included). If an administrator later changes the official assumption, your scenario value is replaced and a notice tells you.
 - **I picked next year and the page says there are no plantings yet.** That's expected before planting — open **Edit Assumptions**, give each crop you plan to grow its assumed acres and expected yield, and the dashboard fills in with the contracts and hedges already on file for that year.
 - **I entered assumed acres but the dashboard shows a different number.** Fields have been planted to that crop for the year, and planted acres always win. Check Settings → Plantings; the assumptions panel names the planted total it is using.
+
+## Cost per acre from Turnrow Farm
+
+When the cost per acre for a crop came from Turnrow Farm, the assumptions box says "Cost/ac from Turnrow Farm, updated (date)" with a **Use my own costs** switch that keeps whatever you type. If that cost already includes the crop insurance premium, the same line adds "Insurance included in the Turnrow Farm cost per acre" — Revenue Projections then counts the insurance payment on its own so the premium is not charged twice.
 
 ## If something looks wrong
 

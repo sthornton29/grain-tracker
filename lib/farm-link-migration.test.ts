@@ -12,7 +12,19 @@ import { describe, expect, it } from 'vitest'
 import { FARM_LINK_SCOPES, GRAIN_LINK_TABLES, LAND_TABLES } from '@/lib/farm-link'
 
 const sql = readFileSync(join(process.cwd(), 'supabase', '087_farm_link.sql'), 'utf8')
+const sql088 = readFileSync(join(process.cwd(), 'supabase', '088_farm_link_insurance.sql'), 'utf8')
+const CROP_INSURANCE_TABLES = [
+  'crop_insurance_policies', 'crop_insurance_sco', 'crop_insurance_eco',
+  'crop_insurance_stax', 'crop_insurance_mco',
+]
 const NEW_TABLES = ['farm_links', 'farm_link_ids', 'farm_link_calls', 'landowner_settlements']
+
+function section088(start: string, end: string): string {
+  const a = sql088.indexOf(start)
+  expect(a, `marker "${start}" missing in 088`).toBeGreaterThan(-1)
+  const b = sql088.indexOf(end, a + start.length)
+  return b === -1 ? sql088.slice(a) : sql088.slice(a, b)
+}
 
 function section(start: string, end: string): string {
   const a = sql.indexOf(start)
@@ -31,7 +43,7 @@ describe('087 farm link migration', () => {
     }
   })
 
-  it('farm_links: hashed code + token, scopes default to all seven and are constrained to the known set, one live link per org', () => {
+  it('farm_links: hashed code + token, scopes default to all eight and are constrained to the known set, one live link per org', () => {
     const block = section('create table if not exists public.farm_links (', '\n);')
     expect(block).toMatch(/code_hash text not null unique/)
     expect(block).toMatch(/token_hash text unique/)
@@ -143,6 +155,87 @@ describe('087 farm link migration', () => {
     }
     const vm = read('verify_migrations.sql')
     expect(vm).toMatch(/\( 87, '087_farm_link'/)
-    expect(vm).toContain('schema is at 087')
+    expect(vm).toMatch(/\( 88, '088_farm_link_insurance'/)
+    expect(vm).toContain('schema is at 088')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 088 — crop insurance over the link
+// ---------------------------------------------------------------------------
+
+describe('088 farm link insurance migration', () => {
+  it('widens the farm_links scope default AND the known-scope check to every FARM_LINK_SCOPES entry, insurance:read included', () => {
+    const scopesBlock = section088('-- FARM_LINK_SCOPES', 'end $$;')
+    for (const scope of FARM_LINK_SCOPES) expect(scopesBlock).toContain(`'${scope}'`)
+    expect(scopesBlock).toContain("insurance:read")
+    // The constraint is dropped and re-added, so re-running is safe and an
+    // already-applied 087 widens in place.
+    expect(scopesBlock).toMatch(/drop constraint if exists farm_links_scopes_known/)
+    expect(scopesBlock).toMatch(/add constraint farm_links_scopes_known check/)
+  })
+
+  it('gives every crop insurance table updated_at with the set_updated_at trigger, backfilled ONLY on the add', () => {
+    const block = section088('-- CROP_INSURANCE_TABLES', '-- 3.')
+    for (const t of CROP_INSURANCE_TABLES) expect(block).toContain(`'${t}'`)
+    expect(block).toMatch(/add column updated_at timestamptz not null default now\(\)/)
+    expect(block).toMatch(/set updated_at = created_at/)
+    // Guarded on the column NOT already existing: a re-run must never reset a
+    // genuinely-edited row's stamp back to its creation.
+    expect(block).toMatch(/if not exists \(select 1 from information_schema\.columns c/)
+    expect(block).toMatch(/execute function public\.set_updated_at\(\)/)
+  })
+
+  it('creates the tombstone log as a tenant table with the 054 stamping default and the org index', () => {
+    const block = section088('create table if not exists public.crop_insurance_deletions (', '\n);')
+    expect(block).toMatch(/org_id uuid not null references public\.organizations\(id\) on delete cascade\s+default coalesce\(public\.current_org_id\(\), public\.default_org_id\(\)\)/)
+    expect(block).toMatch(/crop_year integer not null/)
+    expect(block).toMatch(/practice text/)
+    expect(block).toMatch(/deleted_at timestamptz not null default now\(\)/)
+    // policy_id traces the row that went; it is deliberately NOT a FK.
+    expect(block).toMatch(/policy_id uuid,/)
+    expect(block).not.toMatch(/policy_id uuid[^,]*references/)
+    expect(sql088).toMatch(/create index if not exists crop_insurance_deletions_org_idx on public\.crop_insurance_deletions \(org_id\)/)
+  })
+
+  it('writes the log from an AFTER DELETE trigger on the policies AND every rider, keyed off the parent policy', () => {
+    expect(sql088).toMatch(/create or replace function public\.log_crop_insurance_deletion\(\)/)
+    for (const t of CROP_INSURANCE_TABLES) {
+      expect(sql088).toMatch(new RegExp(`after delete on public\\.%I`))
+      expect(sql088).toContain(`'${t}'`)
+    }
+    // A rider whose parent is already gone logs nothing (the policy's own row
+    // covers it) — otherwise one cascade would raise two tombstones.
+    expect(sql088).toMatch(/if not found then return old; end if;/)
+  })
+
+  it('adds the includes_insurance flag to crop_assumptions, defaulting to today behavior', () => {
+    expect(sql088).toMatch(/alter table public\.crop_assumptions\s+add column if not exists cost_includes_insurance boolean not null default false/)
+  })
+
+  it('gives the tombstone log the full policy stack: org isolation, gin, viewer, agronomist', () => {
+    const block = section088('-- FARM_LINK_TENANT_TABLES', 'end $$;')
+    expect(block).toContain("'crop_insurance_deletions'")
+    expect(block).toMatch(/enable row level security/)
+    expect(block).toMatch(/_org_isolation/)
+    expect(block).toMatch(/app_role\(\) <> ''gin''/)
+    expect(block).toMatch(/_viewer_block_all/)
+    expect(block).toMatch(/_agronomist_block_all/)
+  })
+
+  it('is in every tenant-table array and verify script', () => {
+    for (const file of ['053_multitenant_phase1.sql', '054_org_isolation.sql', 'verify_053.sql', 'verify_054.sql']) {
+      const text = readFileSync(join(process.cwd(), 'supabase', file), 'utf8')
+      expect(text, file).toContain('crop_insurance_deletions')
+    }
+    const verify = readFileSync(join(process.cwd(), 'supabase', 'verify_migrations.sql'), 'utf8')
+    expect(verify).toContain('088_farm_link_insurance')
+  })
+
+  it('053 and 054 skip a tenant table a LATER migration creates, so a fresh install runs in order', () => {
+    for (const file of ['053_multitenant_phase1.sql', '054_org_isolation.sql']) {
+      const text = readFileSync(join(process.cwd(), 'supabase', file), 'utf8')
+      expect(text, file).toMatch(/if to_regclass\('public\.' \|\| t\) is null then continue; end if;/)
+    }
   })
 })

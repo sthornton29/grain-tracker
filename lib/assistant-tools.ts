@@ -46,7 +46,7 @@ import {
   programYearFor,
   projectPayments,
 } from '@/lib/government-payments'
-import { computeRevenueProjections, type GovtProceeds, type InsuranceProceeds } from '@/lib/revenue-projections'
+import { computeRevenueProjections, cropsWithInsuranceInCost, type GovtProceeds, type InsuranceProceeds } from '@/lib/revenue-projections'
 import { resolveProgramYearConfig } from '@/lib/program-config'
 import { unrealizedPnl, optionUnrealizedPnl, quantityFor, pnlSizeFor, contractUnit } from '@/lib/hedging'
 import { applyCombineRemainders, applyTransfers, cellFor, cellTotal, type OnHandBag } from '@/lib/bin-inventory'
@@ -489,7 +489,7 @@ async function getRevenueProjection(supabase: SupabaseClient, ctx: AssistantCont
   // Market price per crop from stored data (avg cash as the fallback tier).
   const marketPriceByCrop = new Map<string, number>()
   for (const r of b.rows) if (r.avgCashPrice != null) marketPriceByCrop.set(r.cropId, r.avgCashPrice)
-  const { rows, totals } = computeRevenueProjections({ marketingRows: b.rows, contracts: b.scopedContracts, cropYear, marketPriceByCrop, insuranceByCrop, govtByCrop })
+  const { rows, totals } = computeRevenueProjections({ marketingRows: b.rows, contracts: b.scopedContracts, cropYear, marketPriceByCrop, insuranceByCrop, govtByCrop, costIncludesInsuranceCropIds: cropsWithInsuranceInCost(b.assumptions, cropYear) })
   return {
     crop_year: cropYear,
     entity_note: b.entityNote,

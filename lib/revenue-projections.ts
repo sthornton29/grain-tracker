@@ -1,7 +1,8 @@
 // Revenue Projections — assembles a per-crop financial picture for a crop year
 // by combining three sources: crop sales revenue (priced contracts + uncontracted
 // bushels valued at the current market price), net insurance proceeds (indemnity
-// − premium from the Crop Insurance Claims Monitor engine), and government
+// − premium from the Crop Insurance Claims Monitor engine — the indemnity ALONE
+// for a crop whose cost/acre already carries the premium, 088), and government
 // payments (a placeholder until that section is built). Then layers cost, profit,
 // and a simple breakeven. Pure: the report fetches and computes the pieces and
 // passes them in, so the page can recompute live as any source changes.
@@ -47,6 +48,10 @@ export type RevenueRow = {
   insuranceProceeds: number
   insuranceIndemnity: number
   insurancePremium: number
+  // 088: Turnrow Farm's cost per acre already carries this crop's premium, so
+  // insuranceProceeds is the INDEMNITY alone here — subtracting the premium
+  // again would count it twice against the same cost line.
+  insurancePremiumInCost: boolean
   // Government payments (allocated from ARC/PLC + other USDA payments)
   govtPayments: number
   govtArcPlc: number
@@ -85,6 +90,18 @@ export type RevenueTotals = {
   profitPerAcre: number | null
 }
 
+/** 088: the crop ids whose cost/acre for the year came from Turnrow Farm with
+ *  the crop insurance premium already in it. Hand the result to
+ *  computeRevenueProjections so the premium is not counted twice. */
+export function cropsWithInsuranceInCost(
+  assumptions: ReadonlyArray<{ crop_id: string; crop_year: number; cost_includes_insurance?: boolean | null }>,
+  cropYear: number,
+): Set<string> {
+  const out = new Set<string>()
+  for (const a of assumptions) if (a.crop_year === cropYear && a.cost_includes_insurance) out.add(a.crop_id)
+  return out
+}
+
 export function computeRevenueProjections(args: {
   marketingRows: MarketingRow[]
   contracts: Contract[]
@@ -92,6 +109,10 @@ export function computeRevenueProjections(args: {
   marketPriceByCrop: Map<string, number>
   insuranceByCrop: Map<string, InsuranceProceeds>
   govtByCrop?: Map<string, GovtProceeds>
+  /** 088: crops whose cost/acre came from Turnrow Farm WITH the insurance
+   *  premium already in it (crop_assumptions.cost_includes_insurance). Their
+   *  insurance proceeds count the indemnity only. Omitted = today's behavior. */
+  costIncludesInsuranceCropIds?: ReadonlySet<string>
 }): { rows: RevenueRow[]; totals: RevenueTotals } {
   const { marketingRows, contracts, cropYear, marketPriceByCrop, insuranceByCrop, govtByCrop } = args
 
@@ -128,10 +149,15 @@ export function computeRevenueProjections(args: {
     const salesPriceSource: RevenueRow['salesPriceSource'] = m.totalProduction > 0 ? 'blended' : null
 
     const ins = insuranceByCrop.get(m.cropId) ?? { netPnl: 0, totalIndemnity: 0, premium: 0 }
+    // When the cost/acre already carries the premium (a Turnrow Farm push with
+    // includes_insurance), the safety net contributes its INDEMNITY only; the
+    // premium is already in totalCost below.
+    const insurancePremiumInCost = args.costIncludesInsuranceCropIds?.has(m.cropId) ?? false
+    const insuranceProceeds = insurancePremiumInCost ? ins.totalIndemnity : ins.netPnl
     const g = govtByCrop?.get(m.cropId) ?? { arcPlc: 0, cropSpecificOther: 0, allocatedOther: 0 }
     const govtPayments = g.arcPlc + g.cropSpecificOther + g.allocatedOther
 
-    const totalRevenue = cropSalesRevenue + ins.netPnl + govtPayments
+    const totalRevenue = cropSalesRevenue + insuranceProceeds + govtPayments
     const revenuePerAcre = m.acres > 0 ? totalRevenue / m.acres : null
 
     const costPerAcre = m.costPerAcre
@@ -169,9 +195,10 @@ export function computeRevenueProjections(args: {
       avgSalesPrice,
       salesPriceSource,
       cropSalesRevenue,
-      insuranceProceeds: ins.netPnl,
+      insuranceProceeds,
       insuranceIndemnity: ins.totalIndemnity,
       insurancePremium: ins.premium,
+      insurancePremiumInCost,
       govtPayments,
       govtArcPlc: g.arcPlc,
       govtCropSpecificOther: g.cropSpecificOther,

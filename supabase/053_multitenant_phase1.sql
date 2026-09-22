@@ -161,7 +161,7 @@ begin
     'farm_links', 'farm_link_ids', 'farm_link_calls', 'landowner_settlements',
     -- crop insurance
     'crop_insurance_policies', 'crop_insurance_sco', 'crop_insurance_eco',
-    'crop_insurance_stax', 'crop_insurance_mco',
+    'crop_insurance_stax', 'crop_insurance_mco', 'crop_insurance_deletions',
     -- government payments
     'farm_base_acres', 'arc_plc_elections', 'arc_plc_payments',
     'other_government_payments', 'payment_limit_config',
@@ -175,6 +175,10 @@ begin
     -- roles / settings
     'user_entity_access', 'viewer_assumption_overrides', 'app_settings'
   ] loop
+    -- A table created by a LATER migration (087's link tables, 088's crop
+    -- insurance deletion log) is not here yet on a fresh install: it ships
+    -- with org_id built in, so skip it rather than error.
+    if to_regclass('public.' || t) is null then continue; end if;
     execute format('alter table public.%I add column if not exists org_id uuid references public.organizations(id)', t);
     execute format('update public.%I set org_id = public.default_org_id() where org_id is null', t);
     execute format('alter table public.%I alter column org_id set default public.default_org_id()', t);

@@ -27,7 +27,7 @@ insert into _tenant_tables values
   ('freight_settings'), ('freight_distances'), ('dryer_settings'), ('manual_market_quotes'), ('hedge_position_events'),
   ('farm_links'), ('farm_link_ids'), ('farm_link_calls'), ('landowner_settlements'),
   ('crop_insurance_policies'), ('crop_insurance_sco'), ('crop_insurance_eco'),
-  ('crop_insurance_stax'), ('crop_insurance_mco'),
+  ('crop_insurance_stax'), ('crop_insurance_mco'), ('crop_insurance_deletions'),
   ('farm_base_acres'), ('arc_plc_elections'), ('arc_plc_payments'),
   ('other_government_payments'), ('payment_limit_config'),
   ('budget_scenarios'), ('budget_lines'),

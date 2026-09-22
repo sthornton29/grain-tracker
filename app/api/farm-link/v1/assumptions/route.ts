@@ -5,6 +5,9 @@
 // timestamp, so the Marketing page shows "from Turnrow Farm, updated <date>")
 // and budget_lines.cost_per_acre in scenarios marked to follow Turnrow Farm.
 // A crop whose manual override switch is on is skipped and says so.
+// includes_insurance (088): the pushed cost per acre already carries the crop
+// insurance premium, so Grain stops subtracting its own premium again in the
+// margins built on these rows.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient, serviceClientMissingResponse, errorResponse, resolveFarmLink, requireScope, farmLinkRateLimited, rateLimitedResponse, finish, readJson, fetchAll } from '@/lib/farm-link-server'
@@ -27,6 +30,7 @@ export async function POST(req: NextRequest) {
   if (!Number.isInteger(cropYear) || cropYear < 1900 || cropYear > 2200) return NextResponse.json({ error: 'crop_year is required.' }, { status: 400 })
   const rows = Array.isArray(body.rows) ? (body.rows as AssumptionRow[]) : null
   if (!rows) return NextResponse.json({ error: 'rows must be an array.' }, { status: 400 })
+  const includesInsurance = body.includes_insurance === true
   if (rows.length > 200) return NextResponse.json({ error: 'At most 200 rows per request.' }, { status: 400 })
 
   try {
@@ -40,9 +44,16 @@ export async function POST(req: NextRequest) {
       fetchAll<{ id: string; scenario_id: string; crop_id: string; practice: string | null; cropping: string | null }>((f, t) =>
         supabase.from('budget_lines').select('id, scenario_id, crop_id, practice, cropping').eq('org_id', org).order('id').range(f, t)).catch(() => []),
     ])
-    const plan = planAssumptionsWrite({ cropYear, rows, crops, existing, scenarios, budgetLines, now: new Date().toISOString() })
+    const plan = planAssumptionsWrite({ cropYear, rows, crops, existing, scenarios, budgetLines, includesInsurance, now: new Date().toISOString() })
     for (const up of plan.upserts) {
-      const { error } = await supabase.from('crop_assumptions').upsert({ ...up, org_id: org, updated_at: new Date().toISOString() }, { onConflict: 'crop_id,crop_year' })
+      const row = { ...up, org_id: org, updated_at: new Date().toISOString() }
+      let { error } = await supabase.from('crop_assumptions').upsert(row, { onConflict: 'crop_id,crop_year' })
+      if (error && /cost_includes_insurance/.test(error.message)) {
+        // 088 not applied yet: write the costs without the flag rather than
+        // refuse the whole push.
+        const { cost_includes_insurance: _drop, ...withoutFlag } = row
+        ;({ error } = await supabase.from('crop_assumptions').upsert(withoutFlag, { onConflict: 'crop_id,crop_year' }))
+      }
       if (error) throw new Error(`crop_assumptions: ${error.message}`)
     }
     for (const bl of plan.budgetLineUpdates) {
@@ -51,7 +62,7 @@ export async function POST(req: NextRequest) {
       if (error) throw new Error(`budget_lines: ${error.message}`)
     }
     const counts = { rows: rows.length, updated: plan.upserts.length, skipped: plan.results.filter((r) => r.action === 'skipped').length, budget_lines: plan.budgetLineUpdates.length }
-    const res = NextResponse.json({ data: plan.results, counts, crop_year: cropYear })
+    const res = NextResponse.json({ data: plan.results, counts, crop_year: cropYear, includes_insurance: includesInsurance })
     return finish(supabase, ctx, res, { endpoint: 'assumptions', method: 'POST', counts, direction: 'inbound' })
   } catch (e) {
     return errorResponse(e)

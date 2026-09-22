@@ -170,6 +170,7 @@ export const TABLE_DOCS = {
   farm_links: ['The pairing with Turnrow Farm (one per organization): status, Farm organization name, granted scopes, last sync per direction; codes and tokens stored hashed', '/settings/farm-link'],
   farm_link_ids: ['The id map between Grain rows and Turnrow Farm rows (grain_table x grain_id <-> farm_uid); a land row with a map entry is managed in Turnrow Farm', '/settings/farm-link'],
   farm_link_calls: ['Rolling log of Turnrow Farm link API calls (endpoint, status, record counts), trimmed to 30 days', '/settings/farm-link'],
+  crop_insurance_deletions: ['Tombstones for deleted crop insurance policies and endorsements (entity, crop, practice, crop year, when), so the Turnrow Farm link can tell its side a premium row is gone; written by a trigger, never by hand', '/settings/crop-insurance'],
   landowner_settlements: ['Landowner rent statements finalized in Turnrow Farm, one per lease year (farm_uid): landowner, crop year, lease type, the statement rows as jsonb; shared to landowners only under the settlements share scope', '/settings/farm-link'],
   // insurance & government
   crop_insurance_policies: ['Crop insurance policies per entity × crop × county × year (plan, coverage, APH, prices, premiums)', '/settings/crop-insurance'],

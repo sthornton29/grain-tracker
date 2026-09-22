@@ -146,6 +146,9 @@ export default function FarmLinkPage() {
     : { label: `Waiting for Turnrow Farm (code expires ${link.code_expires_at.slice(0, 10)})`, cls: 'bg-slate-100 text-slate-600' }
   const inbound = link?.last_sync?.inbound ?? null
   const outbound = link?.last_sync?.outbound ?? null
+  // last_sync keeps only the most recent outbound pull of any kind, so the
+  // insurance line reads the call log instead (088).
+  const lastInsurance = calls.find((c) => c.endpoint === 'insurance' && c.status < 400) ?? null
   const managed = landManagedByFarm(link)
   const scopes = new Set(link?.scopes ?? [])
 
@@ -259,6 +262,13 @@ export default function FarmLinkPage() {
                     <p className="text-slate-600">{outbound.count} record{outbound.count === 1 ? '' : 's'}</p>
                   </>
                 ) : <p className="text-slate-500">Nothing pulled yet.</p>}
+                <p className="text-xs text-slate-500">
+                  {lastInsurance
+                    ? `Crop insurance premiums: ${fmtSyncTime(lastInsurance.called_at)} · ${lastInsurance.counts?.served ?? 0} row${(lastInsurance.counts?.served ?? 0) === 1 ? '' : 's'}`
+                    : scopes.has('insurance:read')
+                      ? 'Crop insurance premiums: not pulled yet. In Turnrow Farm, open the Turnrow Grain settings and choose Sync now.'
+                      : 'Crop insurance premiums are turned off. Turn the switch on above, then re-pair in Turnrow Farm if it does not offer them.'}
+                </p>
               </div>
             </div>
 

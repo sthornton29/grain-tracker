@@ -127,13 +127,14 @@ checks(seq, migration, evidence, applied) as (values
   ( 84, '084_assistant_usage_log',            'assistant_usage.tools_used + fn admin_assistant_log', exists (select 1 from cols where t = 'assistant_usage' and c = 'tools_used') and exists (select 1 from fns where f = 'admin_assistant_log')),
   ( 85, '085_bale_weight_assumption',          'crop_assumptions.bale_weight_lbs',               exists (select 1 from cols where t = 'crop_assumptions' and c = 'bale_weight_lbs')),
   ( 86, '086_settlement_checkoff_fees_matching', 'settlements.payment_number + settlement_lines.grade_readings + trucks.license_plate', exists (select 1 from cols where t = 'settlements' and c = 'payment_number') and exists (select 1 from cols where t = 'settlement_lines' and c = 'grade_readings') and exists (select 1 from cols where t = 'trucks' and c = 'license_plate')),
-  ( 87, '087_farm_link',                      'tables farm_links + farm_link_ids + landowner_settlements + farms.managed_by + partner_shares.share_settlements + fn farm_link_apply', exists (select 1 from tbls where t = 'farm_links') and exists (select 1 from tbls where t = 'farm_link_ids') and exists (select 1 from tbls where t = 'landowner_settlements') and exists (select 1 from cols where t = 'farms' and c = 'managed_by') and exists (select 1 from cols where t = 'partner_shares' and c = 'share_settlements') and exists (select 1 from fns where f = 'farm_link_apply'))
+  ( 87, '087_farm_link',                      'tables farm_links + farm_link_ids + landowner_settlements + farms.managed_by + partner_shares.share_settlements + fn farm_link_apply', exists (select 1 from tbls where t = 'farm_links') and exists (select 1 from tbls where t = 'farm_link_ids') and exists (select 1 from tbls where t = 'landowner_settlements') and exists (select 1 from cols where t = 'farms' and c = 'managed_by') and exists (select 1 from cols where t = 'partner_shares' and c = 'share_settlements') and exists (select 1 from fns where f = 'farm_link_apply')),
+  ( 88, '088_farm_link_insurance',           'table crop_insurance_deletions + crop_insurance_policies.updated_at + crop_assumptions.cost_includes_insurance', exists (select 1 from tbls where t = 'crop_insurance_deletions') and exists (select 1 from cols where t = 'crop_insurance_policies' and c = 'updated_at') and exists (select 1 from cols where t = 'crop_assumptions' and c = 'cost_includes_insurance'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 087'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 088'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

@@ -1,14 +1,14 @@
 ---
 page_route: /settings/farm-link
 title: Turnrow Farm Link
-updated: 2026-09-17
-keywords: turnrow farm, farm link, pairing code, link token, integrations, sync, managed in turnrow farm, not linked, entities, farms, fields, plantings, production, marketing, income, bins, cost assumptions, rent statements, revoke, rotate token, conflict
+updated: 2026-09-21
+keywords: turnrow farm, farm link, pairing code, link token, integrations, sync, managed in turnrow farm, not linked, entities, farms, fields, plantings, production, marketing, income, bins, crop insurance premiums, insurance included in cost, cost assumptions, rent statements, revoke, rotate token, conflict
 ---
 ## What this page is for
 
 Turnrow Farm and Turnrow Grain are two halves of the same operation. Turnrow Farm keeps your land: entities, farms, fields, boundaries, and what was planted where. Turnrow Grain keeps what happens after: loads, bins, contracts, settlements, hedging, crop insurance, government payments, and marketing. This page connects the two so each side stops re-typing the other's work.
 
-Once connected, Turnrow Farm sends your entities, farms, fields, and plantings here and keeps them current. Turnrow Grain sends back production, marketing, income, and bin inventory. Because both sides are your own organization, everything is shared unless you turn a switch off.
+Once connected, Turnrow Farm sends your entities, farms, fields, and plantings here and keeps them current. Turnrow Grain sends back production, marketing, income, bin inventory, and your crop insurance premiums. Because both sides are your own organization, everything is shared unless you turn a switch off.
 
 ## How to connect
 
@@ -33,7 +33,8 @@ If you edit a record here after the last sync and Turnrow Farm later sends a dif
 - **Marketing to Turnrow Farm** — average sale prices, projected prices with basis, percent sold, and realized hedging results by crop.
 - **Income to Turnrow Farm** — crop revenue, government payments, and crop insurance by crop and entity.
 - **Bins to Turnrow Farm** — bushels on hand and bushels in for the year, per bin and crop.
-- **Cost assumptions from Turnrow Farm** — Turnrow Farm's planning cost per acre lands in the Marketing report's assumptions (with the irrigated, dryland, and double-crop breakouts) and in any Crop Budget marked to follow Turnrow Farm. The Marketing report labels these "from Turnrow Farm, updated (date)" and has a **Use my own costs** switch per crop that keeps what you type.
+- **Crop insurance premiums to Turnrow Farm** — what you pay for crop insurance, by entity, crop, and irrigated or dryland, so you do not enter it again when you build a cost per acre over there. Turnrow Farm gets the premium you pay; the subsidy and the full premium go with it for reference, and so do the expected indemnities.
+- **Cost assumptions from Turnrow Farm** — Turnrow Farm's planning cost per acre lands in the Marketing report's assumptions (with the irrigated, dryland, and double-crop breakouts) and in any Crop Budget marked to follow Turnrow Farm. The Marketing report labels these "from Turnrow Farm, updated (date)" and has a **Use my own costs** switch per crop that keeps what you type. When that cost already has crop insurance in it, both the Marketing report and Revenue Projections say "Insurance included in the Turnrow Farm cost per acre" beside the figure, and Revenue Projections then shows the insurance payment on its own so the premium is not charged twice.
 - **Landowner statements from Turnrow Farm** — finalized rent statements are kept here so a landowner share can include them (see Landowner Shares).
 
 Turning a switch off applies the next time Turnrow Farm checks in.
@@ -49,6 +50,8 @@ Turning a switch off applies the next time Turnrow Farm checks in.
 - **A field I created here says "not linked".** Open Turnrow Farm and match it to the field there. Until you do, it stays editable here.
 - **The last sync shows conflicts.** Open Turnrow Farm; it lists the records and lets you choose which side is right.
 - **Nothing has synced yet.** The land pages stay fully editable until Turnrow Farm sends its first land sync.
+- **Turnrow Farm does not offer crop insurance premiums.** This switch is newer than the link. Make sure **Crop insurance premiums to Turnrow Farm** is on above, then pair again from Turnrow Farm and choose **Sync now**.
+- **The premium in Turnrow Farm does not match mine.** It is the total of every policy for that entity, crop, and practice, riders included, and it is the amount you pay after the subsidy. Check the policies under Settings > Crop Insurance for the same crop year.
 
 ## If something looks wrong
 

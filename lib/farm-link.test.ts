@@ -501,7 +501,7 @@ describe('assumptions write', () => {
     })
     expect(plan.upserts).toEqual([{
       crop_id: 'corn', crop_year: 2026, cost_per_acre: 600, cost_per_acre_irr: 700, cost_per_acre_dry: 500, cost_per_acre_dc_irr: null, cost_per_acre_dc_dry: 350,
-      cost_source: 'turnrow_farm', cost_source_updated_at: '2026-09-16T08:00:00Z',
+      cost_source: 'turnrow_farm', cost_source_updated_at: '2026-09-16T08:00:00Z', cost_includes_insurance: false,
     }])
     expect(plan.budgetLineUpdates).toEqual([
       { id: 'bl-1', cost_per_acre: 600, cost_source: 'turnrow_farm', cost_source_updated_at: '2026-09-16T08:00:00Z' },
@@ -516,7 +516,7 @@ describe('assumptions write', () => {
     ])
   })
   it('budget cells fall back to the blended cost when the breakout is blank', () => {
-    const row = { crop_id: 'c', crop_year: 2026, cost_per_acre: 500, cost_per_acre_irr: null, cost_per_acre_dry: 450, cost_per_acre_dc_irr: null, cost_per_acre_dc_dry: null, cost_source: 'turnrow_farm' as const, cost_source_updated_at: 'x' }
+    const row = { crop_id: 'c', crop_year: 2026, cost_per_acre: 500, cost_per_acre_irr: null, cost_per_acre_dry: 450, cost_per_acre_dc_irr: null, cost_per_acre_dc_dry: null, cost_source: 'turnrow_farm' as const, cost_source_updated_at: 'x', cost_includes_insurance: false }
     expect(budgetCellCost({ practice: 'irrigated', cropping: null }, row)).toBe(500)
     expect(budgetCellCost({ practice: 'non_irrigated', cropping: 'full_season' }, row)).toBe(450)
     expect(budgetCellCost({ practice: 'non_irrigated', cropping: 'double_crop' }, row)).toBe(500)

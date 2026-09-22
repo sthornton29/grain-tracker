@@ -2145,6 +2145,7 @@ function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSa
         <div className="flex items-center gap-3 flex-wrap text-xs text-slate-600">
           <span>
             Cost/ac from Turnrow Farm{a?.cost_source_updated_at ? `, updated ${new Date(a.cost_source_updated_at).toLocaleDateString()}` : ''}.
+            {a?.cost_includes_insurance ? ' Insurance included in the Turnrow Farm cost per acre.' : ''}
           </span>
           {!viewerMode && (
             <label className="flex items-center gap-1.5 select-none" title="Keep the costs you type here; Turnrow Farm's next update leaves this crop year alone until you turn this off.">

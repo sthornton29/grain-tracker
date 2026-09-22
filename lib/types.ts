@@ -335,6 +335,10 @@ export type CropAssumption = {
   cost_source?: 'turnrow_farm' | null
   cost_source_updated_at?: string | null
   cost_manual_override?: boolean | null
+  // 088: the pushed cost/acre already carries the crop insurance premium
+  // (POST /api/farm-link/v1/assumptions with includes_insurance). Margins
+  // built on this row count the indemnity alone, never indemnity − premium.
+  cost_includes_insurance?: boolean | null
   notes: string | null
   created_at: string
   updated_at: string

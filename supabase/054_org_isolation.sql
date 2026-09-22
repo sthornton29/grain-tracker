@@ -60,7 +60,7 @@ begin
     'freight_settings', 'freight_distances', 'dryer_settings', 'manual_market_quotes', 'hedge_position_events',
     'farm_links', 'farm_link_ids', 'farm_link_calls', 'landowner_settlements',
     'crop_insurance_policies', 'crop_insurance_sco', 'crop_insurance_eco',
-    'crop_insurance_stax', 'crop_insurance_mco',
+    'crop_insurance_stax', 'crop_insurance_mco', 'crop_insurance_deletions',
     'farm_base_acres', 'arc_plc_elections', 'arc_plc_payments',
     'other_government_payments', 'payment_limit_config',
     'budget_scenarios', 'budget_lines',
@@ -70,6 +70,10 @@ begin
     'cotton_bale_dispositions', 'cotton_fees', 'cotton_fee_schedule',
     'user_entity_access', 'viewer_assumption_overrides', 'app_settings', 'user_profiles'
   ] loop
+    -- A table created by a LATER migration (087's link tables, 088's crop
+    -- insurance deletion log) is simply not here yet on a fresh install: it
+    -- ships with this stack built in, so skip it rather than error.
+    if to_regclass('public.' || t) is null then continue; end if;
     -- Session inserts stamp the member's org; service-role (no session)
     -- falls back to the Phase-1 shim and must scope explicitly in code.
     execute format('alter table public.%I alter column org_id set default coalesce(public.current_org_id(), public.default_org_id())', t);
