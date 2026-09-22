@@ -9,6 +9,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { bearerTokenFrom } from '@/lib/partner-api'
 import { fetchAll, sha256Hex } from '@/lib/partner-api-server'
+import { PDF_BUCKET } from '@/lib/pdf-upload'
+import type {
+  FieldChangeRow,
+  LandownerApplyOp,
+  LandownerRow,
+  LeaseTermRow,
+  ShareFacts,
+} from '@/lib/farm-link-landowners'
 import { fetchAllCounties } from '@/lib/counties'
 import {
   IdMap,
@@ -234,4 +242,176 @@ export function requireIntParam(req: NextRequest, name: string, opts?: { optiona
   const n = Number(raw)
   if (!Number.isInteger(n) || n < 1900 || n > 2200) return NextResponse.json({ error: `?${name}= must be a four-digit year.` }, { status: 400 })
   return n
+}
+
+// ---------------------------------------------------------------------------
+// Landowners (089)
+// ---------------------------------------------------------------------------
+
+/** The landowner columns the link reads. select('*') would break the moment
+ *  089 is unapplied on some database, so the list is explicit and the caller
+ *  tolerates a missing column. */
+const LANDOWNER_COLUMNS =
+  'id, name, kind, contact_name, phone, email, address_street, address_city, address_state, address_zip, payee_name, notes, archived_at, merged_into_id, updated_at'
+
+/** Every landowner in the org, archived and merged rows included: the Farm
+ *  side needs to see an archive to mirror it. Degrades to the pre-089 columns
+ *  when the migration is not applied yet. */
+export async function loadLandowners(supabase: SupabaseClient, org: string): Promise<LandownerRow[]> {
+  try {
+    return await fetchAll<LandownerRow>((f, t) =>
+      supabase.from('landowners').select(LANDOWNER_COLUMNS).eq('org_id', org).order('id').range(f, t))
+  } catch {
+    return await fetchAll<LandownerRow>((f, t) =>
+      supabase.from('landowners').select('id, name, phone, email, notes, updated_at').eq('org_id', org).order('id').range(f, t))
+  }
+}
+
+/** The change log from `since` (all of it when since is null). Empty until 089
+ *  is applied, which simply makes every field look unchanged since the base -
+ *  Farm's writes then all apply, which is the pre-089 behavior. */
+export async function loadLandownerChanges(
+  supabase: SupabaseClient,
+  org: string,
+  since: string | null,
+): Promise<FieldChangeRow[]> {
+  try {
+    return await fetchAll<FieldChangeRow>((f, t) => {
+      let q = supabase
+        .from('landowner_field_changes')
+        .select('landowner_id, field, old_value, new_value, changed_at, changed_by')
+        .eq('org_id', org)
+      if (since) q = q.gte('changed_at', since)
+      return q.order('id').range(f, t)
+    })
+  } catch {
+    return []
+  }
+}
+
+/** The share facts the landowners pull reports for display: is the share live,
+ *  what did the farmer switch on, and has the landowner ever opened it. */
+export async function loadShareFacts(supabase: SupabaseClient, org: string): Promise<ShareFacts[]> {
+  const rows = await fetchAll<{
+    landowner_id: string
+    revoked_at: string | null
+    redeemed_at: string | null
+    include_yields: boolean | null
+    share_projected_prices?: boolean | null
+    share_projected_yields?: boolean | null
+    share_settlements?: boolean | null
+    last_viewed_at?: string | null
+  }>((f, t) => supabase.from('partner_shares').select('*').eq('org_id', org).order('id').range(f, t)).catch(() => [])
+  const byLandowner = new Map<string, ShareFacts>()
+  for (const r of rows) {
+    const scopes: string[] = []
+    if (r.include_yields) scopes.push('yields')
+    if (r.share_projected_prices) scopes.push('projected_prices')
+    if (r.share_projected_yields) scopes.push('projected_yields')
+    if (r.share_settlements) scopes.push('settlements')
+    const active = r.revoked_at == null
+    const prev = byLandowner.get(r.landowner_id)
+    // A landowner can hold more than one share; report the live one, and the
+    // newest view across them.
+    const merged: ShareFacts = {
+      landowner_id: r.landowner_id,
+      active: (prev?.active ?? false) || active,
+      scopes: active ? scopes : prev?.scopes ?? [],
+      last_viewed_at: maxIso(prev?.last_viewed_at ?? null, r.last_viewed_at ?? null),
+    }
+    byLandowner.set(r.landowner_id, merged)
+  }
+  return Array.from(byLandowner.values())
+}
+
+const maxIso = (a: string | null, b: string | null): string | null => (a && b ? (a > b ? a : b) : a ?? b)
+
+/** Active (unrevoked) shares by landowner - the merge and archive guards. */
+export async function loadActiveShareLandownerIds(supabase: SupabaseClient, org: string): Promise<Set<string>> {
+  const rows = await fetchAll<{ landowner_id: string; revoked_at: string | null }>((f, t) =>
+    supabase.from('partner_shares').select('landowner_id, revoked_at').eq('org_id', org).order('id').range(f, t)).catch(() => [])
+  return new Set(rows.filter((r) => r.revoked_at == null).map((r) => r.landowner_id))
+}
+
+/** Crop years with a rent settlement, per landowner - the archive guard. */
+export async function loadSettlementYearsByLandowner(
+  supabase: SupabaseClient,
+  org: string,
+): Promise<Map<string, number[]>> {
+  const rows = await fetchAll<{ landowner_id: string; crop_year: number }>((f, t) =>
+    supabase.from('rent_settlements').select('landowner_id, crop_year').eq('org_id', org).order('id').range(f, t)).catch(() => [])
+  const out = new Map<string, number[]>()
+  for (const r of rows) {
+    const list = out.get(r.landowner_id) ?? []
+    list.push(r.crop_year)
+    out.set(r.landowner_id, list)
+  }
+  return out
+}
+
+export async function loadLeaseTerms(supabase: SupabaseClient, org: string): Promise<LeaseTermRow[]> {
+  try {
+    return await fetchAll<LeaseTermRow>((f, t) =>
+      supabase.from('lease_terms')
+        .select('id, landowner_id, farm_ids, lease_type, share_terms, expense_terms, pricing_method, cash_terms, flex_terms, payment_timing, notes, source_file_name, source_file_path, managed_by, farm_lease_uid, updated_at')
+        .eq('org_id', org).order('id').range(f, t))
+  } catch {
+    return await fetchAll<LeaseTermRow>((f, t) =>
+      supabase.from('lease_terms')
+        .select('id, landowner_id, farm_ids, lease_type, share_terms, expense_terms, pricing_method, cash_terms, flex_terms, payment_timing, notes, source_file_name, source_file_path, updated_at')
+        .eq('org_id', org).order('id').range(f, t))
+  }
+}
+
+/** A short-lived signed URL for a lease document. The Farm side reads the
+ *  lease once as a proposal, so the link never hands out a durable URL. */
+export const LEASE_DOCUMENT_URL_TTL_SECONDS = 15 * 60
+
+export async function signLeaseDocuments(
+  supabase: SupabaseClient,
+  paths: readonly string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>()
+  const wanted = Array.from(new Set(paths.filter(Boolean)))
+  if (wanted.length === 0) return out
+  try {
+    const { data, error } = await supabase.storage.from(PDF_BUCKET).createSignedUrls(wanted, LEASE_DOCUMENT_URL_TTL_SECONDS)
+    if (error || !data) return out
+    for (const row of data as Array<{ path?: string | null; signedUrl?: string | null }>) {
+      if (row.path && row.signedUrl) out.set(row.path, row.signedUrl)
+    }
+  } catch {
+    // A missing object is not a reason to fail the whole pull.
+  }
+  return out
+}
+
+/** The ONE transactional writer for the landowner endpoints (089). Mirrors
+ *  applyOps: one RPC call, one transaction, service role only. */
+export async function applyLandownerOps(
+  supabase: SupabaseClient,
+  org: string,
+  ops: readonly LandownerApplyOp[],
+): Promise<{ refs: Record<string, string>; counts: Record<string, number> }> {
+  if (ops.length === 0) return { refs: {}, counts: {} }
+  const { data, error } = await supabase.rpc('farm_link_landowner_apply', { p_org: org, p_ops: ops })
+  if (error) throw new Error(error.message)
+  const out = (data as { refs?: Record<string, string>; counts?: Record<string, number> } | null) ?? {}
+  return { refs: out.refs ?? {}, counts: out.counts ?? {} }
+}
+
+/** 90-day retention on the change log, at most once a day per instance (the
+ *  farm_link_calls pattern). Never fails a call. */
+let lastChangeTrimAt = 0
+export const LANDOWNER_CHANGE_RETENTION_DAYS = 90
+
+export async function trimLandownerChanges(supabase: SupabaseClient): Promise<void> {
+  const now = Date.now()
+  if (now - lastChangeTrimAt < 24 * 60 * 60 * 1000) return
+  lastChangeTrimAt = now
+  try {
+    await supabase.rpc('trim_landowner_field_changes', { p_days: LANDOWNER_CHANGE_RETENTION_DAYS })
+  } catch {
+    // The trim never fails a call.
+  }
 }

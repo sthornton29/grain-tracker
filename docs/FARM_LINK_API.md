@@ -1,15 +1,17 @@
 # Turnrow Farm link API (v1)
 
 The private API between Turnrow Grain and Turnrow Farm (the same owner's farm
-management product). Written 2026-09-17, crop insurance added 2026-09-21, from
-the code (source of truth: `app/api/farm-link/v1/*`, `lib/farm-link.ts`,
-`lib/farm-link-server.ts`, `lib/farm-link-outbound.ts`, migrations
-`supabase/087_farm_link.sql` and `supabase/088_farm_link_insurance.sql`); update
-this file when those change. Part B (the Turnrow Farm side) is written against
+management product). Written 2026-09-17; crop insurance and two-way landowners
+added 2026-09-21, from the code (source of truth: `app/api/farm-link/v1/*`,
+`lib/farm-link.ts`, `lib/farm-link-server.ts`, `lib/farm-link-outbound.ts`,
+`lib/farm-link-landowners.ts`, `lib/landowner-match.ts`, migrations
+`supabase/087_farm_link.sql`, `supabase/088_farm_link_insurance.sql` and
+`supabase/089_farm_link_landowners.sql`); update this file when those change. Part B (the Turnrow Farm side) is written against
 this document.
 
 Decisions on record: **Turnrow Farm is the master for entities, farms, fields,
-boundaries, and plantings.** Grain is the master for loads, bins, contracts,
+boundaries, and plantings** — with ONE exception, landowners, which from 089 are
+shared both ways and merged field by field (see `landowners:write`). Grain is the master for loads, bins, contracts,
 hedging, settlements, yields, crop insurance, government payments, and
 marketing prices. Both hold the same organization's own data, so unlike the
 landowner partner API this link carries financial detail in both directions.
@@ -94,14 +96,20 @@ again). Farm should surface either as "reconnect in Turnrow Grain".
 | `income:read` | Grain → Farm | `GET /income` |
 | `bins:read` | Grain → Farm | `GET /bins` |
 | `insurance:read` | Grain → Farm | `GET /insurance` |
+| `landowners:write` | **both ways** | `GET /landowners`, `POST /landowners/sync`, `POST /landowners/merge`, `POST /landowners/archive`, `GET /lease-terms`, `POST /lease-terms/managed` |
 | `assumptions:write` | Farm → Grain | `POST /assumptions` |
 | `settlements:write` | Farm → Grain | `POST /settlements` |
 
-All eight are granted at pairing; the Grain owner can remove any.
+All nine are granted at pairing; the Grain owner can remove any.
 
-`insurance:read` arrived with 088, after the first pairings. A pairing made
-before it keeps the scopes it was granted, so `GET /insurance` answers 403 with
-`{"code": "missing_scope", "scope": "insurance:read"}` — the Farm side reads
+`landowners:write` is ONE scope for the pull and the writes on purpose: a
+landowner is shared both ways, and reading them without being able to write
+back has no use.
+
+`insurance:read` (088) and `landowners:write` (089) arrived after the first
+pairings. A pairing made before a scope existed keeps the scopes it was
+granted, so the endpoint answers 403 with
+`{"code": "missing_scope", "scope": "<the scope>"}` — the Farm side reads
 `scope` off that body and tells the owner to turn the switch on under Settings
 › Turnrow Farm link in Grain, or to re-pair.
 
@@ -459,6 +467,152 @@ name the other four pulls use, so a generic pager works here unchanged. `?since=
   the token's link, the rows returned, the deleted count, and the elapsed time,
   exactly as the other pulls are.
 
+## Landowners, both ways (`landowners:write`)
+
+Landowners are the ONE exception to "Farm is the master for the land tables".
+Grain is where the rent settlement, the partner share, and the payee name live,
+so the farmer edits landowners on both sides. From 089 a landowner is a record
+either side may edit, merged **field by field**, with conflicts surfaced rather
+than overwritten. Everything else on the land tables, every lease, and every
+landowner statement stays Farm's.
+
+### The shared fields
+
+`name`, `kind` (`individual` | `family` | `company` | `trust` | `estate` |
+`government` | `other`), `contact_name`, `phone`, `email`, `address_street`,
+`address_city`, `address_state`, `address_zip`, `payee_name`, `notes`.
+
+Grain's pre-089 free-text `address` is kept and split into the parts where it
+parses ("123 Main St, Greenville, MS 38701"); where it does not, the whole
+string stays in `address_street`. Nothing is ever discarded.
+
+### Name matching
+
+Both sides normalize a landowner name the same way (`lib/landowner-match.ts`):
+case and punctuation go, `&` reads as "and", `/` as a separator, "Estate of X"
+as X, and the legal form (LLC, Inc, Co, Ltd…) and the "Farm(s)" descriptor are
+dropped. So "Smith Family Farms, LLC" and "Smith Family Farm LLC" are one
+landowner. Deliberately NOT collapsed: "Mary Smith Trust" against "Mary Smith",
+and "Smith Family Farms" against "Smith Farms" — those are different legal
+payees and come back as *near* matches for a person to decide on.
+
+### GET /landowners?since=&cursor=&limit=
+
+Every landowner, **archived and merged rows included** (the Farm side needs to
+see an archive to mirror it). Paging and `?since=` exactly as `/production`.
+
+```json
+{ "id": "uuid", "farm_uid": "F-LO-1|null", "name": "Smith Farms", "kind": "company",
+  "contact_name": "Ann Smith", "phone": "…", "email": "…",
+  "address_street": "1 Main St", "address_city": "Greenville", "address_state": "MS", "address_zip": "38701",
+  "payee_name": "Smith Farms LLC", "notes": null,
+  "archived_at": null, "merged_into_id": null, "merged_into_farm_uid": null,
+  "share_active": true, "share_scopes": ["yields", "settlements"], "share_last_viewed_at": "…",
+  "changes": [{ "field": "phone", "old": "555-0100", "new": "555-0999", "changed_at": "…", "changed_by": "<user uuid>" }],
+  "updated_at": "…" }
+```
+
+- `farm_uid` is null until the landowner is linked; match on `name` then.
+- `share_*` are **read-only facts** about the landowner's Turnrow Landowner
+  share — is it live, what the farmer switched on, and whether the landowner
+  has ever opened it. Nothing about any other organization is ever included.
+- `changes` is Grain's own per-field history since `?since=`
+  (`landowner_field_changes`, kept 90 days). **A change the link itself wrote
+  is never listed** — Farm's own edits cannot come back at it as Grain's.
+
+### POST /landowners/sync
+
+```json
+{ "rows": [{ "farm_uid": "F-LO-1", "grain_id": "uuid (optional)",
+             "fields": { "phone": "555-0999", "payee_name": "Smith Farms LLC" },
+             "base": { "phone": "2026-02-01T00:00:00Z", "payee_name": "2026-02-01T00:00:00Z" },
+             "create": false }] }
+```
+
+`base` is when Farm last saw Grain's value for that field. **The rule:** a field
+applies unless Grain's own change log shows a change to it AFTER that base AND
+to a different value than Farm is sending. Those fields come back as conflicts
+carrying Grain's value and when it changed; every other field in the row still
+applies. A Grain change to the *same* value Farm is sending is not a conflict —
+the two sides simply agree. A field with **no base** is treated as base = the
+beginning of time, so any Grain change conflicts: missing information surfaces,
+it never silently overwrites.
+
+A row with no `grain_id` and no id map entry is created **only** when
+`create: true` (Farm has already run its duplicate search). Otherwise it answers
+`unmatched` with Grain's closest names so Farm can offer a link. Up to 500 rows,
+one transaction.
+
+```json
+{ "data": [
+    { "farm_uid": "F-LO-1", "grain_id": "uuid", "action": "conflict",
+      "applied": ["payee_name"],
+      "conflicts": [{ "field": "phone", "grain_value": "555-0100", "farm_value": "555-0999",
+                      "changed_at": "…", "changed_by": "<user uuid>" }] },
+    { "farm_uid": "F-NEW", "grain_id": null, "action": "unmatched",
+      "candidates": [{ "grain_id": "uuid", "name": "Smith Farms", "score": 1, "kind": "exact" }] }],
+  "counts": { "rows": 2, "created": 0, "updated": 0, "unchanged": 0, "conflict": 1, "unmatched": 1, "refused": 0 } }
+```
+
+Every row answers `created` | `updated` | `unchanged` | `conflict` |
+`unmatched` | `refused` with a reason. Writes are stamped
+`changed_by: 'turnrow_farm'`.
+
+### POST /landowners/merge
+
+```json
+{ "survivor_grain_id": "uuid", "merged_grain_id": "uuid", "move_share": false }
+```
+
+Moves farms, lease terms, rent settlements, and landowner statements to the
+survivor, then sets `merged_into_id` + `archived_at` on the other. One
+transaction. **Refuses (409 `share_active`) when the merged landowner has a
+live Turnrow Landowner share** unless `move_share: true`, which moves the share
+too — silently moving someone's live share is a surprise, not a merge.
+
+```json
+{ "survivor_grain_id": "…", "merged_grain_id": "…",
+  "moved": { "farms": 3, "lease_terms": 1, "rent_settlements": 2, "landowner_settlements": 1, "partner_shares": 0 } }
+```
+
+### POST /landowners/archive
+
+```json
+{ "grain_id": "uuid" }
+```
+
+Archives (Grain archives, never deletes). Refuses with 409 and the reason when
+the landowner has a live share (`share_active`) or a rent settlement in an open
+crop year (`open_settlement`, the current calendar year or later) — archiving
+someone Stuart is still settling with would drop them out of the Rent
+Settlement report mid-season.
+
+### GET /lease-terms?since=
+
+Every `lease_terms` row Farm has **not yet adopted**, as proposals: Farm reads
+these once, builds the lease over there, then calls `/lease-terms/managed`.
+
+```json
+{ "id": "uuid", "landowner_grain_id": "uuid", "landowner_farm_uid": "F-LO-1", "landowner_name": "Smith Farms",
+  "farm_grain_ids": ["uuid"], "farm_farm_uids": ["F-FARM-1"], "lease_type": "crop_share",
+  "share_terms": {…}, "expense_terms": {…}, "pricing_method": {…}, "cash_terms": {…}, "flex_terms": {…},
+  "payment_timing": "at settlement", "notes": null,
+  "source_document_url": "<signed, 15 minutes>", "source_document_name": "lease.pdf", "updated_at": "…" }
+```
+
+The terms json goes out exactly as Grain stores it. The lease document is a
+**short-lived signed URL** (15 minutes) — the link never hands out a durable
+link to a file.
+
+### POST /lease-terms/managed
+
+```json
+{ "grain_id": "uuid", "farm_lease_uid": "<Farm lease id>" }
+```
+
+Marks the lease managed in Turnrow Farm: read-only in Grain's UI with a link
+over there, and no longer offered by `GET /lease-terms`.
+
 ## Inbound (`assumptions:write`, `settlements:write`)
 
 ### POST /assumptions
@@ -503,9 +657,16 @@ basis, futures, and acres assumptions are never touched.
 
 ```json
 { "settlements": [{ "farm_uid": "<lease_years.id>", "landowner_name": "Smith Family Trust", "landowner_farm_uid": "<Farm landowner uuid>",
-                    "crop_year": 2026, "lease_type": "crop_share", "finalized_at": "…",
+                    "crop_year": 2026, "lease_type": "crop_share", "finalized_at": "…", "status": "final",
                     "statement": { ...the LandownerStatement / section rows exactly as lib/leases/statement.ts produced them... } }] }
 ```
+
+`status` (089) is `final` (the default) or **`withdrawn`** — how Turnrow Farm
+deletes a statement. Grain KEEPS the row (a landowner may already have seen it)
+and marks it withdrawn, and a withdrawn statement is **never served to a
+landowner share** again. A withdrawal needs no `statement` body. On a database
+without 089 a withdrawal is refused per row rather than stored as final and
+served on. The response's `action` is `upserted` | `withdrawn` | `refused`.
 
 Upserts `landowner_settlements` by `(org, farm_uid)` — Farm's lease year id
 is the identity. Grain's landowner resolves through the id map
@@ -524,7 +685,8 @@ nothing. Up to 500 per call.
 A landowner share (Turnrow Landowner) with the **Rent statements** switch on
 (`partner_shares.share_settlements`, default OFF) reads its own statements at
 `GET /api/partner/v1/settlements?crop_year=` with its `trps_` token — only
-the rows whose Grain `landowner_id` is the share's landowner, filtered in the
+`status: 'final'` rows (089) whose Grain `landowner_id` is the share's
+landowner, filtered in the
 query and again in code, never another landowner's, never an unresolved one.
 See `docs/PARTNER_API.md`.
 

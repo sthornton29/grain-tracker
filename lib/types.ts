@@ -20,9 +20,25 @@ export type Landowner = {
   name: string
   phone: string | null
   email: string | null
+  /** The pre-089 free-text address. KEPT: 089 splits it into the parts below
+   *  where it parses, and leaves it whole in address_street where it does not,
+   *  but the original is never destroyed. */
   address: string | null
   notes: string | null
   created_at: string
+  // 089 — the fields shared both ways with Turnrow Farm.
+  kind?: 'individual' | 'family' | 'company' | 'trust' | 'estate' | 'government' | 'other' | null
+  contact_name?: string | null
+  /** Who the rent cheque is made out to, when that is not the name. */
+  payee_name?: string | null
+  address_street?: string | null
+  address_city?: string | null
+  address_state?: string | null
+  address_zip?: string | null
+  archived_at?: string | null
+  /** Set when this landowner was merged away; points at the survivor. */
+  merged_into_id?: string | null
+  updated_at?: string | null
 }
 export type Farm = {
   id: string
@@ -47,6 +63,10 @@ export type Farm = {
 export type LeaseTerm = {
   id: string
   landowner_id: string
+  // 089: once Turnrow Farm adopts a lease it is managed there — read-only
+  // here, with a link — and Grain stops offering it as a proposal.
+  managed_by?: 'turnrow_farm' | null
+  farm_lease_uid?: string | null
   /** Farms covered; empty = every farm linked to the landowner. */
   farm_ids: string[]
   lease_type: 'crop_share' | 'cash' | 'flex'
@@ -69,6 +89,9 @@ export type LeaseTerm = {
 export type RentSettlement = {
   id: string
   landowner_id: string
+  /** 089: the landowner_settlements row from Turnrow Farm that replaced this
+   *  one, when Farm has since issued its own statement for the same lease. */
+  superseded_by_settlement_id?: string | null
   lease_term_id: string | null
   crop_year: number
   statement: unknown

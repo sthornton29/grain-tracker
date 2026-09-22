@@ -24,6 +24,7 @@ export const FARM_LINK_SCOPES = [
   'income:read',
   'bins:read',
   'insurance:read',
+  'landowners:write',
   'assumptions:write',
   'settlements:write',
 ] as const
@@ -60,6 +61,11 @@ export const FARM_LINK_SCOPE_LABELS: Record<FarmLinkScope, { title: string; blur
     title: 'Crop insurance premiums to Turnrow Farm',
     blurb: 'Producer-paid premiums by entity, crop, and irrigated or dryland, so you do not enter them again over there.',
     direction: 'out',
+  },
+  'landowners:write': {
+    title: 'Landowners shared with Turnrow Farm',
+    blurb: 'Names, contacts, and mailing addresses stay the same on both sides. Either side can edit them; a change you both made at once is shown to you rather than overwritten.',
+    direction: 'in',
   },
   'assumptions:write': {
     title: 'Cost assumptions from Turnrow Farm',
@@ -1060,6 +1066,9 @@ export type LandownerSettlementInput = {
   lease_type?: string | null
   statement: unknown
   finalized_at?: string | null
+  /** 089: 'withdrawn' is how Turnrow Farm deletes a statement. Grain keeps the
+   *  row (a landowner may already have seen it) and stops serving it. */
+  status?: string | null
 }
 
 export type LandownerSettlementUpsert = {
@@ -1072,6 +1081,13 @@ export type LandownerSettlementUpsert = {
   statement: unknown
   finalized_at: string | null
   received_at: string
+  status: LandownerSettlementStatus
+}
+
+export const LANDOWNER_SETTLEMENT_STATUSES = ['final', 'withdrawn'] as const
+export type LandownerSettlementStatus = (typeof LANDOWNER_SETTLEMENT_STATUSES)[number]
+export function isLandownerSettlementStatus(v: unknown): v is LandownerSettlementStatus {
+  return v === 'final' || v === 'withdrawn'
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -1089,7 +1105,13 @@ export function normalizeLandownerSettlement(
   if (!name) return { error: 'landowner_name is required' }
   const year = num(input.crop_year)
   if (year == null || !Number.isInteger(year)) return { error: 'crop_year is required' }
-  if (input.statement == null || typeof input.statement !== 'object') return { error: 'statement must be an object' }
+  const status = input.status == null ? 'final' : str(input.status)
+  if (!isLandownerSettlementStatus(status)) return { error: "status must be 'final' or 'withdrawn'" }
+  // A withdrawn statement is a tombstone: Farm deleted it, so its body is not
+  // required (and is kept as an empty object when absent).
+  if (status === 'final' && (input.statement == null || typeof input.statement !== 'object')) {
+    return { error: 'statement must be an object' }
+  }
   const loUid = str(input.landowner_farm_uid)
   let landownerId = loUid ? ctx.idMap.grainId('landowners', loUid) : null
   if (!landownerId) landownerId = ctx.landowners.find((l) => norm(l.name) === norm(name))?.id ?? null
@@ -1097,7 +1119,7 @@ export function normalizeLandownerSettlement(
     row: {
       farm_uid: farmUid, landowner_name: name, landowner_farm_uid: loUid, landowner_id: landownerId,
       crop_year: year, lease_type: str(input.lease_type), statement: input.statement,
-      finalized_at: str(input.finalized_at), received_at: ctx.now,
+      finalized_at: str(input.finalized_at), received_at: ctx.now, status,
     },
   }
 }
@@ -1112,12 +1134,15 @@ export type LandownerSettlementRecord = {
   statement: unknown
   finalized_at: string | null
   updated_at: string | null
+  /** 089. Absent on a pre-089 database, which reads as 'final'. */
+  status?: string | null
 }
 
 /** The partner-share view: only the statements bound to THIS landowner (by
- *  Grain landowner id); an unresolved landowner is never another's. The
- *  statement rows pass through exactly as Farm finalized them for that
- *  landowner — Grain adds nothing and strips nothing. */
+ *  Grain landowner id); an unresolved landowner is never another's, and a
+ *  statement Farm has WITHDRAWN is never served (089). The statement rows pass
+ *  through exactly as Farm finalized them for that landowner — Grain adds
+ *  nothing and strips nothing. */
 export function landownerSettlementsForShare(
   rows: readonly LandownerSettlementRecord[],
   landownerId: string,
@@ -1125,6 +1150,8 @@ export function landownerSettlementsForShare(
 ): Array<Omit<LandownerSettlementRecord, 'landowner_id'>> {
   return rows
     .filter((r) => r.landowner_id != null && r.landowner_id === landownerId && (cropYear == null || r.crop_year === cropYear))
+    // 089: a statement Turnrow Farm withdrew is kept here but never served.
+    .filter((r) => (r.status ?? 'final') === 'final')
     .map(({ landowner_id: _lo, ...rest }) => { void _lo; return rest })
     .sort((a, b) => b.crop_year - a.crop_year || a.landowner_name.localeCompare(b.landowner_name) || a.id.localeCompare(b.id))
 }

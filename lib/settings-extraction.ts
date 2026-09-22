@@ -31,6 +31,7 @@ import { defaultEntityId } from '@/lib/entity-default'
 import { matchExistingBuyer } from '@/lib/ai-lookups'
 import { buildVarietyPlan, resolvedName, varietyKey, type VarietyPlan, type VarietyDecision } from '@/lib/variety-resolution'
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { landownerDuplicateSearch } from '@/lib/farm-link-landowners'
 
 // ---------------------------------------------------------------------------
 // Raw response shape (the prompt's JSON, everything defensive-nullable).
@@ -320,6 +321,21 @@ function resolveCounty(
   return { id: null, hint: `county “${[county, state].filter(Boolean).join(', ')}” not recognized` }
 }
 
+/** Landowners get their OWN classifier (089): the shared normalization that
+ *  Turnrow Farm uses, so "Smith Farms, LLC" is recognized as the "Smith Farms
+ *  LLC" already on file and lands as `exists` with Use existing preselected,
+ *  never as a near-duplicate the reviewer has to catch. A looser near match
+ *  still comes back as `possible` with the candidate named. */
+function classifyLandownerByName<T extends { id: string; name: string }>(
+  name: string,
+  existing: ReadonlyArray<T>,
+): { cls: RowClass; matched: T | null; candidate: T | null } {
+  const { exact, near } = landownerDuplicateSearch(name, existing)
+  if (exact) return { cls: 'exists', matched: exact, candidate: null }
+  if (near.length > 0) return { cls: 'possible', matched: null, candidate: near[0] }
+  return { cls: 'new', matched: null, candidate: null }
+}
+
 /** exists/update/new/possible for a simple named record. */
 function classifyByName<T extends { id: string }>(
   name: string,
@@ -388,7 +404,7 @@ export function buildSettingsReview(
 
   // --- Landowners ---
   x.landowners.forEach((l, i) => {
-    const { cls: base, matched, candidate } = classifyByName(l.name, ctx.landowners, (t) => t.name)
+    const { cls: base, matched, candidate } = classifyLandownerByName(l.name, ctx.landowners)
     const diffs = matched
       ? diffFields([
           { label: 'Phone', existing: matched.phone, incoming: l.phone },
@@ -407,9 +423,12 @@ export function buildSettingsReview(
     })
   })
   const landownerRowByName = new Map(rows.filter((r) => r.section === 'landowners').map((r) => [ci(r.label), r]))
+  // 089: the same normalization the classifier used, so a farm naming
+  // "Smith Farms, LLC" attaches to the "Smith Farms LLC" row rather than
+  // creating a second landowner behind the reviewer's back.
   const landownerRefFor = (name: string | null): ParentRef => {
     if (!name) return null
-    const existing = ctx.landowners.find((e) => ci(e.name) === ci(name))
+    const existing = landownerDuplicateSearch(name, ctx.landowners).exact ?? null
     if (existing) return { id: existing.id }
     const inBatch = landownerRowByName.get(ci(name))
     if (inBatch) return inBatch.cls === 'exists' ? { id: inBatch.matchedId! } : { ref: inBatch.key }

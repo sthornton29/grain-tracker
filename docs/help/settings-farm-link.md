@@ -2,7 +2,7 @@
 page_route: /settings/farm-link
 title: Turnrow Farm Link
 updated: 2026-09-21
-keywords: turnrow farm, farm link, pairing code, link token, integrations, sync, managed in turnrow farm, not linked, entities, farms, fields, plantings, production, marketing, income, bins, crop insurance premiums, insurance included in cost, cost assumptions, rent statements, revoke, rotate token, conflict
+keywords: turnrow farm, farm link, landowners both ways, landowner conflict, merge landowners, archive landowner, lease managed in turnrow farm, withdrawn statement, pairing code, link token, integrations, sync, managed in turnrow farm, not linked, entities, farms, fields, plantings, production, marketing, income, bins, crop insurance premiums, insurance included in cost, cost assumptions, rent statements, revoke, rotate token, conflict
 ---
 ## What this page is for
 
@@ -33,6 +33,7 @@ If you edit a record here after the last sync and Turnrow Farm later sends a dif
 - **Marketing to Turnrow Farm** — average sale prices, projected prices with basis, percent sold, and realized hedging results by crop.
 - **Income to Turnrow Farm** — crop revenue, government payments, and crop insurance by crop and entity.
 - **Bins to Turnrow Farm** — bushels on hand and bushels in for the year, per bin and crop.
+- **Landowners shared with Turnrow Farm** — names, contact people, mailing addresses, and who the rent cheque is made out to stay the same on both sides. This one goes **both ways**: you can edit a landowner here or there. If you and Turnrow Farm both changed the same thing before the next sync, Turnrow Grain keeps yours and tells Turnrow Farm, so nothing is quietly overwritten. Leases you have entered here are offered to Turnrow Farm once; after it takes one over, that lease is read-only here with a link.
 - **Crop insurance premiums to Turnrow Farm** — what you pay for crop insurance, by entity, crop, and irrigated or dryland, so you do not enter it again when you build a cost per acre over there. Turnrow Farm gets the premium you pay; the subsidy and the full premium go with it for reference, and so do the expected indemnities.
 - **Cost assumptions from Turnrow Farm** — Turnrow Farm's planning cost per acre lands in the Marketing report's assumptions (with the irrigated, dryland, and double-crop breakouts) and in any Crop Budget marked to follow Turnrow Farm. The Marketing report labels these "from Turnrow Farm, updated (date)" and has a **Use my own costs** switch per crop that keeps what you type. When that cost already has crop insurance in it, both the Marketing report and Revenue Projections say "Insurance included in the Turnrow Farm cost per acre" beside the figure, and Revenue Projections then shows the insurance payment on its own so the premium is not charged twice.
 - **Landowner statements from Turnrow Farm** — finalized rent statements are kept here so a landowner share can include them (see Landowner Shares).
@@ -51,6 +52,9 @@ Turning a switch off applies the next time Turnrow Farm checks in.
 - **The last sync shows conflicts.** Open Turnrow Farm; it lists the records and lets you choose which side is right.
 - **Nothing has synced yet.** The land pages stay fully editable until Turnrow Farm sends its first land sync.
 - **Turnrow Farm does not offer crop insurance premiums.** This switch is newer than the link. Make sure **Crop insurance premiums to Turnrow Farm** is on above, then pair again from Turnrow Farm and choose **Sync now**.
+- **I changed a landowner here and Turnrow Farm still shows the old one.** It arrives on the next sync. If you both changed the same thing, Turnrow Farm shows it as something to settle rather than picking a winner.
+- **A landowner shows "from Turnrow Farm" beside a field.** That field was changed over there in the last day. It is only a note; you can edit it here whenever you like.
+- **Turnrow Farm wants to merge two landowners.** Merging moves their farms, leases, settlements, and statements onto the one you keep, and archives the other. A landowner with a live Turnrow Landowner share is not merged or archived until you end the share or choose to move it.
 - **The premium in Turnrow Farm does not match mine.** It is the total of every policy for that entity, crop, and practice, riders included, and it is the amount you pay after the subsidy. Check the policies under Settings > Crop Insurance for the same crop year.
 
 ## If something looks wrong

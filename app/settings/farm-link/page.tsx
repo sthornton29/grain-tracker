@@ -58,6 +58,8 @@ export default function FarmLinkPage() {
   const [loaded, setLoaded] = useState(false)
   const [unavailable, setUnavailable] = useState(false)
   const [calls, setCalls] = useState<CallRow[]>([])
+  // 089: what the landowners exchange currently holds, for the line below.
+  const [landownerStats, setLandownerStats] = useState<{ landowners: number; linked: number; changes: number } | null>(null)
   const [fresh, setFresh] = useState<{ kind: 'code' | 'token'; value: string } | null>(null)
   const [copied, setCopied] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -72,8 +74,16 @@ export default function FarmLinkPage() {
       const c = await fetchAllRows<CallRow>((f, t) =>
         supabase.from('farm_link_calls').select('id, endpoint, method, status, counts, duration_ms, called_at').eq('link_id', row.id).order('called_at', { ascending: false }).order('id').range(f, t), 50)
       setCalls((c.data ?? []).slice(0, 50))
+      // Counts only — head requests, so a big operation costs nothing here.
+      const [lo, linked, ch] = await Promise.all([
+        supabase.from('landowners').select('id', { count: 'exact', head: true }),
+        supabase.from('farm_link_ids').select('id', { count: 'exact', head: true }).eq('grain_table', 'landowners'),
+        supabase.from('landowner_field_changes').select('id', { count: 'exact', head: true }),
+      ])
+      setLandownerStats({ landowners: lo.count ?? 0, linked: linked.count ?? 0, changes: ch.count ?? 0 })
     } else {
       setCalls([])
+      setLandownerStats(null)
     }
     setLoaded(true)
   }, [supabase])
@@ -149,6 +159,7 @@ export default function FarmLinkPage() {
   // last_sync keeps only the most recent outbound pull of any kind, so the
   // insurance line reads the call log instead (088).
   const lastInsurance = calls.find((c) => c.endpoint === 'insurance' && c.status < 400) ?? null
+  const lastLandowners = calls.find((c) => c.endpoint.startsWith('landowners') && c.status < 400) ?? null
   const managed = landManagedByFarm(link)
   const scopes = new Set(link?.scopes ?? [])
 
@@ -271,6 +282,28 @@ export default function FarmLinkPage() {
                 </p>
               </div>
             </div>
+
+            {scopes.has('landowners:write') && (
+              <div className="rounded-lg border border-slate-200 p-3 text-sm space-y-1">
+                <p className="font-semibold">Landowners (both ways)</p>
+                {landownerStats ? (
+                  <p className="text-slate-600">
+                    {landownerStats.landowners} landowner{landownerStats.landowners === 1 ? '' : 's'}
+                    {' · '}{landownerStats.linked} shared with Turnrow Farm
+                  </p>
+                ) : <p className="text-slate-500">Nothing shared yet.</p>}
+                <p className="text-slate-600">
+                  {lastLandowners
+                    ? `Last exchange ${fmtSyncTime(lastLandowners.called_at)} · ${Object.entries(lastLandowners.counts ?? {}).map(([k, v]) => `${k} ${v}`).join(' · ') || 'no counts'}`
+                    : 'No exchange yet. In Turnrow Farm, open the Turnrow Grain settings and choose Sync now.'}
+                </p>
+                <p className="text-xs text-slate-500">
+                  Either side can edit a landowner. Turnrow Grain keeps a 90-day history of what changed so the two sides
+                  merge field by field instead of overwriting each other
+                  {landownerStats ? ` (${landownerStats.changes} change${landownerStats.changes === 1 ? '' : 's'} on file)` : ''}.
+                </p>
+              </div>
+            )}
 
             {calls.length > 0 && (
               <div>

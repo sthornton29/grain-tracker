@@ -10,14 +10,23 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { FARM_LINK_SCOPES, GRAIN_LINK_TABLES, LAND_TABLES } from '@/lib/farm-link'
+import { LANDOWNER_SHARED_FIELDS } from '@/lib/farm-link-landowners'
 
 const sql = readFileSync(join(process.cwd(), 'supabase', '087_farm_link.sql'), 'utf8')
 const sql088 = readFileSync(join(process.cwd(), 'supabase', '088_farm_link_insurance.sql'), 'utf8')
+const sql089 = readFileSync(join(process.cwd(), 'supabase', '089_farm_link_landowners.sql'), 'utf8')
 const CROP_INSURANCE_TABLES = [
   'crop_insurance_policies', 'crop_insurance_sco', 'crop_insurance_eco',
   'crop_insurance_stax', 'crop_insurance_mco',
 ]
 const NEW_TABLES = ['farm_links', 'farm_link_ids', 'farm_link_calls', 'landowner_settlements']
+
+function section089(start: string, end: string): string {
+  const a = sql089.indexOf(start)
+  expect(a, `marker "${start}" missing in 089`).toBeGreaterThan(-1)
+  const b = sql089.indexOf(end, a + start.length)
+  return b === -1 ? sql089.slice(a) : sql089.slice(a, b)
+}
 
 function section088(start: string, end: string): string {
   const a = sql088.indexOf(start)
@@ -156,7 +165,8 @@ describe('087 farm link migration', () => {
     const vm = read('verify_migrations.sql')
     expect(vm).toMatch(/\( 87, '087_farm_link'/)
     expect(vm).toMatch(/\( 88, '088_farm_link_insurance'/)
-    expect(vm).toContain('schema is at 088')
+    expect(vm).toMatch(/\( 89, '089_farm_link_landowners'/)
+    expect(vm).toContain('schema is at 089')
   })
 })
 
@@ -165,9 +175,12 @@ describe('087 farm link migration', () => {
 // ---------------------------------------------------------------------------
 
 describe('088 farm link insurance migration', () => {
-  it('widens the farm_links scope default AND the known-scope check to every FARM_LINK_SCOPES entry, insurance:read included', () => {
+  it('widens the farm_links scope default AND the known-scope check to the scopes that existed at 088, insurance:read included', () => {
     const scopesBlock = section088('-- FARM_LINK_SCOPES', 'end $$;')
-    for (const scope of FARM_LINK_SCOPES) expect(scopesBlock).toContain(`'${scope}'`)
+    // 088's own list, pinned: a LATER migration adding a scope restates the
+    // whole list itself (089 does), so this one is not chased forward.
+    const AT_088 = ['land:write', 'production:read', 'marketing:read', 'income:read', 'bins:read', 'insurance:read', 'assumptions:write', 'settlements:write']
+    for (const scope of AT_088) expect(scopesBlock).toContain(`'${scope}'`)
     expect(scopesBlock).toContain("insurance:read")
     // The constraint is dropped and re-added, so re-running is safe and an
     // already-applied 087 widens in place.
@@ -236,6 +249,107 @@ describe('088 farm link insurance migration', () => {
     for (const file of ['053_multitenant_phase1.sql', '054_org_isolation.sql']) {
       const text = readFileSync(join(process.cwd(), 'supabase', file), 'utf8')
       expect(text, file).toMatch(/if to_regclass\('public\.' \|\| t\) is null then continue; end if;/)
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 089 — landowners shared both ways
+// ---------------------------------------------------------------------------
+
+describe('089 farm link landowners migration', () => {
+  it('widens the scope default AND the known-scope check to every FARM_LINK_SCOPES entry, landowners:write included', () => {
+    const scopesBlock = section089('-- FARM_LINK_SCOPES', 'end $$;')
+    for (const scope of FARM_LINK_SCOPES) expect(scopesBlock).toContain(`'${scope}'`)
+    expect(scopesBlock).toContain('landowners:write')
+    expect(scopesBlock).toMatch(/drop constraint if exists farm_links_scopes_known/)
+    expect(scopesBlock).toMatch(/add constraint farm_links_scopes_known check/)
+  })
+
+  it('adds every shared field to landowners, plus archived_at and merged_into_id, and KEEPS the old address column', () => {
+    for (const col of ['kind', 'contact_name', 'payee_name', 'address_street', 'address_city', 'address_state', 'address_zip', 'archived_at', 'merged_into_id']) {
+      expect(sql089, col).toMatch(new RegExp(`add column if not exists ${col}\\b`))
+    }
+    // The free-text address is split where it parses, never dropped.
+    expect(sql089).not.toMatch(/drop column .*address\b/)
+    expect(sql089).toMatch(/regexp_match/)
+    // The split runs only on rows not split yet, so a re-run is a no-op.
+    expect(sql089).toMatch(/address_street is null and address_city is null/)
+    expect(sql089).toMatch(/landowners_kind_known/)
+    expect(sql089).toMatch(/landowners_merge_not_self/)
+  })
+
+  it('creates the change log as a tenant table with the 054 default, and a lookup index on (org, landowner, field)', () => {
+    const block = section089('create table if not exists public.landowner_field_changes (', '\n);')
+    expect(block).toMatch(/org_id uuid not null references public\.organizations\(id\) on delete cascade\s+default coalesce\(public\.current_org_id\(\), public\.default_org_id\(\)\)/)
+    expect(block).toMatch(/field text not null/)
+    expect(block).toMatch(/old_value text/)
+    expect(block).toMatch(/new_value text/)
+    expect(block).toMatch(/changed_at timestamptz not null default now\(\)/)
+    expect(block).toMatch(/changed_by text not null/)
+    expect(sql089).toMatch(/landowner_field_changes_lookup_idx[\s\S]*?\(org_id, landowner_id, field, changed_at desc\)/)
+  })
+
+  it('the trigger logs exactly the shared fields, stamped with who changed them', () => {
+    const fn = section089('create or replace function public.log_landowner_field_changes()', 'end $$;')
+    for (const field of LANDOWNER_SHARED_FIELDS) expect(fn, field).toContain(`'${field}'`)
+    // The link's own writes are stamped turnrow_farm via a session flag, so
+    // they never come back to Farm as Grain edits.
+    expect(fn).toMatch(/current_setting\('app\.change_actor', true\)/)
+    expect(fn).toMatch(/is distinct from/)
+    expect(sql089).toMatch(/after update on public\.landowners/)
+  })
+
+  it('keeps the change log 90 days through a service-role-only function', () => {
+    expect(sql089).toMatch(/create or replace function public\.trim_landowner_field_changes\(p_days integer default 90\)/)
+    expect(sql089).toMatch(/revoke execute on function public\.trim_landowner_field_changes\(integer\) from public, anon/)
+    expect(sql089).toMatch(/grant execute on function public\.trim_landowner_field_changes\(integer\) to service_role/)
+  })
+
+  it('adds the lease and settlement columns: managed_by + farm_lease_uid, superseded_by, and the withdrawn status', () => {
+    expect(sql089).toMatch(/alter table public\.lease_terms[\s\S]*?add column if not exists managed_by text/)
+    expect(sql089).toMatch(/add column if not exists farm_lease_uid text/)
+    expect(sql089).toMatch(/lease_terms_managed_by_known/)
+    expect(sql089).toMatch(/lease_terms_farm_lease_uid_unique[\s\S]*?\(org_id, farm_lease_uid\)/)
+    expect(sql089).toMatch(/add column if not exists superseded_by_settlement_id uuid\s+references public\.landowner_settlements\(id\)/)
+    expect(sql089).toMatch(/alter table public\.landowner_settlements\s+add column if not exists status text not null default 'final'/)
+    expect(sql089).toMatch(/check \(status in \('final', 'withdrawn'\)\)/)
+    expect(sql089).toMatch(/alter table public\.partner_shares\s+add column if not exists last_viewed_at timestamptz/)
+  })
+
+  it('farm_link_landowner_apply is service-role only, forces the org, allowlists the shared columns, and stamps the actor', () => {
+    const fn = section089('create or replace function public.farm_link_landowner_apply(p_org uuid, p_ops jsonb)', 'revoke execute')
+    expect(fn).toMatch(/security definer set search_path = public/)
+    // Every write in the call is Turnrow Farm's, for the change log.
+    expect(fn).toMatch(/set_config\('app\.change_actor', 'turnrow_farm', true\)/)
+    for (const field of LANDOWNER_SHARED_FIELDS) expect(fn, field).toContain(`'${field}'`)
+    expect(fn).toMatch(/if not \(k = any\(allowed\)\) then continue; end if;/)
+    // The org is forced on inserts and every update/merge/archive is scoped.
+    expect(fn).toMatch(/jsonb_build_object\('id', new_id, 'org_id', p_org\)/)
+    expect(fn).toMatch(/where t\.id = \$2 and t\.org_id = \$3/)
+    expect(fn).toMatch(/both landowners must belong to the organization/)
+    // The merge moves every dependent; the share only with move_share.
+    for (const table of ['farms', 'lease_terms', 'rent_settlements', 'landowner_settlements']) {
+      expect(fn, table).toMatch(new RegExp(`update public\\.${table} set landowner_id = survivor`))
+    }
+    expect(fn).toMatch(/if coalesce\(\(op->>'move_share'\)::boolean, false\) then[\s\S]*?update public\.partner_shares set landowner_id = survivor/)
+    // Archive, never delete.
+    expect(fn).toMatch(/set archived_at = coalesce\(archived_at, now\(\)\)/)
+    expect(fn).not.toMatch(/delete from public\.landowners/)
+    expect(sql089).toMatch(/revoke execute on function public\.farm_link_landowner_apply\(uuid, jsonb\) from public, anon, authenticated/)
+    expect(sql089).toMatch(/grant execute on function public\.farm_link_landowner_apply\(uuid, jsonb\) to service_role/)
+  })
+
+  it('gives the change log the full policy stack and registers it everywhere a tenant table belongs', () => {
+    const block = section089('-- FARM_LINK_TENANT_TABLES', 'end $$;')
+    expect(block).toContain("'landowner_field_changes'")
+    expect(block).toMatch(/enable row level security/)
+    expect(block).toMatch(/_org_isolation/)
+    expect(block).toMatch(/app_role\(\) <> ''gin''/)
+    expect(block).toMatch(/_viewer_block_all/)
+    expect(block).toMatch(/_agronomist_block_all/)
+    for (const file of ['053_multitenant_phase1.sql', '054_org_isolation.sql', 'verify_053.sql', 'verify_054.sql']) {
+      expect(readFileSync(join(process.cwd(), 'supabase', file), 'utf8'), file).toContain('landowner_field_changes')
     }
   })
 })

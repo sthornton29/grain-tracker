@@ -247,6 +247,14 @@ export type ImportConfig = {
    * the preview rows; FK-resolution annotations (scoped FKs) take precedence.
    */
   previewAnnotate?: (colKey: string, rowCells: Record<string, string>) => { text: string; ok: boolean } | null
+  /**
+   * Optional per-column normalization for UNIQUE-KEY matching only (never for
+   * the value written). The default is trim + lowercase, which is too literal
+   * for a name a person types twice: landowners use it so "Smith Farms, LLC"
+   * matches the "Smith Farms LLC" already on file instead of creating a second
+   * record (lib/landowner-match.ts, the same normalization Turnrow Farm uses).
+   */
+  normalizeUniqueValue?: (columnKey: string, value: unknown) => string
 }
 
 /**
@@ -462,7 +470,9 @@ export async function runImport(
   if (existingRes.error) throw new Error(`Could not read ${config.tableName}: ${existingRes.error.message}`)
   const existing = ((existingRes.data as unknown) as AnyRow[]) || []
   const existingByKey = new Map<string, AnyRow>()
-  for (const r of existing) existingByKey.set(uniqueKeys.map((k) => normValue(r[k])).join('|'), r)
+  const keyOf = (row: AnyRow) =>
+    uniqueKeys.map((k) => (config.normalizeUniqueValue ? config.normalizeUniqueValue(k, row[k]) : normValue(row[k]))).join('|')
+  for (const r of existing) existingByKey.set(keyOf(r), r)
 
   // Existing child rows per child table, grouped by parent id — so sync mode
   // can ADD child values a matched row doesn't carry yet (e.g. a variety the
@@ -623,7 +633,7 @@ export async function runImport(
         if (col.virtual) { delete payload[col.key]; provided.delete(col.key) }
       }
 
-      const dedupKey = uniqueKeys.map((k) => normValue(payload[k])).join('|')
+      const dedupKey = keyOf(payload)
 
       // The same unique key twice in one file: handle the first, skip the rest.
       if (seenKeys.has(dedupKey)) { skipped++; continue }

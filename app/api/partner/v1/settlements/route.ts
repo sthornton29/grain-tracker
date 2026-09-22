@@ -8,7 +8,8 @@
 //     landowner's own rent statements as Turnrow Farm finalized them
 //     (landowner_settlements) — only the statements bound to THAT landowner
 //     (Grain landowner id), never another landowner's, never an unresolved
-//     one, and never anything beyond the statement rows themselves. Scope
+//     one, never one Turnrow Farm has WITHDRAWN (089), and never anything
+//     beyond the statement rows themselves. Scope
 //     off → 403 not_in_share_scope naming `settlements`.
 //
 // Read-only.
@@ -58,14 +59,26 @@ export async function GET(req: NextRequest) {
     try {
       // Filtered by the share's landowner in the QUERY as well as in the pure
       // filter — two fences around another landowner's statement.
+      // 089's status column, with a fallback for a database without it (where
+      // every statement reads as final, the pre-089 behavior).
       const rows = await fetchAll<LandownerSettlementRecord>((f, t) =>
         supabase
           .from('landowner_settlements')
-          .select('id, farm_uid, landowner_id, landowner_name, crop_year, lease_type, statement, finalized_at, updated_at')
+          .select('id, farm_uid, landowner_id, landowner_name, crop_year, lease_type, statement, finalized_at, updated_at, status')
           .eq('org_id', org)
           .eq('landowner_id', access.share!.landownerId)
           .order('id')
           .range(f, t),
+      ).catch(() =>
+        fetchAll<LandownerSettlementRecord>((f, t) =>
+          supabase
+            .from('landowner_settlements')
+            .select('id, farm_uid, landowner_id, landowner_name, crop_year, lease_type, statement, finalized_at, updated_at')
+            .eq('org_id', org)
+            .eq('landowner_id', access.share!.landownerId)
+            .order('id')
+            .range(f, t),
+        ),
       )
       return NextResponse.json({ data: landownerSettlementsForShare(rows, access.share.landownerId, cropYear), crop_year: cropYear })
     } catch (e) {

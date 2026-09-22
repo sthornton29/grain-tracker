@@ -15,6 +15,7 @@
 import { defaultEntityId } from '@/lib/entity-default'
 import { normalizeCountyName } from '@/lib/fsa-benchmark-file'
 import type { ImportConfig } from '@/lib/csv'
+import { landownerNameKey } from '@/lib/landowner-match'
 
 const SOY_ALIASES = { soybeans: 'Soybean', beans: 'Soybean', soy: 'Soybean' }
 
@@ -262,12 +263,22 @@ export function landownersImportConfig(): ImportConfig {
     tableName: 'landowners',
     uniqueKey: 'name',
     title: 'Import landowners from a spreadsheet',
-    note: 'One row per landowner. Only Name is required — import these before farms so the farms import can match landowner names.',
+    note: 'One row per landowner. Only Name is required — import these before farms so the farms import can match landowner names. A name that is already on file under a different spelling ("Smith Farms, LLC" against "Smith Farms LLC") updates that landowner instead of adding a second one.',
+    // 089: the name is matched the way a person reads it, not character by
+    // character — punctuation, "&" against "and", and the LLC / Farms / Trust
+    // noise are ignored, so an import cannot quietly split a landowner in two.
+    normalizeUniqueValue: (key, value) => (key === 'name' ? landownerNameKey(value == null ? '' : String(value)) : String(value ?? '').trim().toLowerCase()),
     columns: [
       { key: 'name', required: true },
+      { key: 'kind', label: 'Kind' },
+      { key: 'contact_name', label: 'Contact Name' },
+      { key: 'payee_name', label: 'Payee Name' },
       { key: 'phone' },
       { key: 'email' },
-      { key: 'address' },
+      { key: 'address_street', label: 'Street' },
+      { key: 'address_city', label: 'City' },
+      { key: 'address_state', label: 'State' },
+      { key: 'address_zip', label: 'ZIP' },
       { key: 'notes' },
     ],
   }

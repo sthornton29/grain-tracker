@@ -3,6 +3,8 @@
 // upserts landowner_settlements by farm_uid (Turnrow Farm's lease year id).
 // Grain's landowner resolves through the id map, then by exact name; an
 // unresolved landowner is stored but never served to a landowner share.
+// status: 'withdrawn' (089) is how Turnrow Farm deletes a statement: Grain
+// keeps the row, marks it withdrawn, and stops serving it to the share.
 
 import { NextRequest, NextResponse } from 'next/server'
 import { createServiceClient, serviceClientMissingResponse, errorResponse, resolveFarmLink, requireScope, farmLinkRateLimited, rateLimitedResponse, finish, readJson, fetchAll, loadIdMap } from '@/lib/farm-link-server'
@@ -32,19 +34,39 @@ export async function POST(req: NextRequest) {
       fetchAll<{ id: string; name: string }>((f, t) => supabase.from('landowners').select('id, name').eq('org_id', org).order('id').range(f, t)),
     ])
     const now = new Date().toISOString()
-    const results: Array<{ farm_uid: string; action: 'upserted' | 'refused'; grain_id?: string; landowner_id?: string | null; reason?: string }> = []
+    const results: Array<{ farm_uid: string; action: 'upserted' | 'withdrawn' | 'refused'; grain_id?: string; landowner_id?: string | null; reason?: string }> = []
     for (const input of inputs) {
       const n = normalizeLandownerSettlement(input, { idMap, landowners, now })
       if ('error' in n) { results.push({ farm_uid: String(input?.farm_uid ?? ''), action: 'refused', reason: n.error }); continue }
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from('landowner_settlements')
         .upsert({ ...n.row, org_id: org }, { onConflict: 'org_id,farm_uid' })
         .select('id')
         .single()
+      if (error && /status/.test(error.message)) {
+        // 089 not applied yet: a withdrawal cannot be recorded, so refuse that
+        // one row rather than silently storing it as final and serving it on.
+        if (n.row.status === 'withdrawn') {
+          results.push({ farm_uid: n.row.farm_uid, action: 'refused', reason: 'Turnrow Grain needs a database update before a statement can be withdrawn.' })
+          continue
+        }
+        const { status: _drop, ...withoutStatus } = n.row
+        void _drop
+        ;({ data, error } = await supabase
+          .from('landowner_settlements')
+          .upsert({ ...withoutStatus, org_id: org }, { onConflict: 'org_id,farm_uid' })
+          .select('id')
+          .single())
+      }
       if (error) throw new Error(error.message)
-      results.push({ farm_uid: n.row.farm_uid, action: 'upserted', grain_id: (data as { id: string }).id, landowner_id: n.row.landowner_id })
+      results.push({ farm_uid: n.row.farm_uid, action: n.row.status === 'withdrawn' ? 'withdrawn' : 'upserted', grain_id: (data as { id: string }).id, landowner_id: n.row.landowner_id })
     }
-    const counts = { settlements: inputs.length, upserted: results.filter((r) => r.action === 'upserted').length, refused: results.filter((r) => r.action === 'refused').length }
+    const counts = {
+      settlements: inputs.length,
+      upserted: results.filter((r) => r.action === 'upserted').length,
+      withdrawn: results.filter((r) => r.action === 'withdrawn').length,
+      refused: results.filter((r) => r.action === 'refused').length,
+    }
     const res = NextResponse.json({ data: results, counts })
     return finish(supabase, ctx, res, { endpoint: 'settlements', method: 'POST', counts, direction: 'inbound' })
   } catch (e) {

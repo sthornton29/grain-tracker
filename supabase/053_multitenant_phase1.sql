@@ -158,6 +158,7 @@ begin
     'variety_match_dismissals', 'combine_yield_entries', 'external_trucks', 'assistant_usage', 'lease_terms', 'rent_settlements', 'org_dryers',
     'seed_contract_details', 'seed_contract_premiums', 'seed_pricing_elections', 'seed_contract_payments', 'seed_contract_plantings',
     'freight_settings', 'freight_distances', 'dryer_settings', 'manual_market_quotes', 'hedge_position_events',
+    'landowner_field_changes',
     'farm_links', 'farm_link_ids', 'farm_link_calls', 'landowner_settlements',
     -- crop insurance
     'crop_insurance_policies', 'crop_insurance_sco', 'crop_insurance_eco',

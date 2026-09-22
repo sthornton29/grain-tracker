@@ -25,6 +25,8 @@ import { uploadFileToStorage, PdfTooLargeError, type LeaseAgreementExtraction } 
 import { fieldCropAggregates } from '@/lib/yields'
 import { findBestMatch } from '@/lib/fuzzy'
 import { exportToExcel, exportToPdf } from '@/lib/exports'
+import { useFarmLink } from '@/lib/use-farm-link'
+import { TURNROW_FARM_URL } from '@/components/farm-link-banner'
 import { fetchOrgBranding, type OrgBrandingInfo } from '@/lib/branding'
 import {
   buildSettlement,
@@ -108,6 +110,8 @@ export default function RentSettlementReport() {
   const [combineEntries, setCombineEntries] = useState<CombineRow[]>([])
   const [lines, setLines] = useState<LineRow[]>([])
   const [leases, setLeases] = useState<LeaseTerm[]>([])
+  // 089: leases Turnrow Farm has adopted are read-only here.
+  const farmLink = useFarmLink(supabase)
   const [settlements, setSettlements] = useState<RentSettlement[]>([])
   const [branding, setBranding] = useState<OrgBrandingInfo | null>(null)
   const [tablesMissing, setTablesMissing] = useState(false)
@@ -412,6 +416,9 @@ export default function RentSettlementReport() {
     await refresh()
   }
 
+  // The lease chips only make sense once the organization is actually paired.
+  const farmLinked = farmLink.link?.status === 'active'
+
   function leaseLabel(l: LeaseTerm): string {
     const name = landownerById.get(l.landowner_id)?.name ?? '?'
     const farmNames = (l.farm_ids?.length ? l.farm_ids : farms.filter((f) => f.landowner_id === l.landowner_id).map((f) => f.id))
@@ -436,15 +443,32 @@ export default function RentSettlementReport() {
         <h2 className="font-semibold">Leases on file</h2>
         {leases.length === 0 && <p className="text-sm text-slate-400">No leases yet — upload one or enter it by hand.</p>}
         <ul className="divide-y divide-slate-100">
-          {leases.map((l) => (
-            <li key={l.id} className="py-2 flex items-center gap-3">
-              <span className="flex-1 text-sm">{leaseLabel(l)}</span>
-              {l.source_file_url && (
-                <a href={l.source_file_url} target="_blank" rel="noreferrer" className="text-xs text-brand-deep underline decoration-dotted">lease doc</a>
-              )}
-              <button type="button" onClick={() => editLease(l)} className="text-sm text-brand-deep">Edit</button>
-            </li>
-          ))}
+          {leases.map((l) => {
+            // 089: once Turnrow Farm adopts a lease it is managed there and is
+            // read-only here. A lease Farm has not taken yet says so, because
+            // it will show up over there as a proposal.
+            const managed = l.managed_by === 'turnrow_farm'
+            return (
+              <li key={l.id} className="py-2 flex items-center gap-3 flex-wrap">
+                <span className="flex-1 min-w-[12rem] text-sm">
+                  {leaseLabel(l)}
+                  {farmLinked && (
+                    <span className={`ml-2 rounded-full px-1.5 py-0.5 text-[11px] font-medium ${managed ? 'bg-sky-100 text-sky-800' : 'bg-slate-100 text-slate-600'}`}>
+                      {managed ? 'Managed in Turnrow Farm' : 'Not yet in Turnrow Farm'}
+                    </span>
+                  )}
+                </span>
+                {l.source_file_url && (
+                  <a href={l.source_file_url} target="_blank" rel="noreferrer" className="text-xs text-brand-deep underline decoration-dotted">lease doc</a>
+                )}
+                {managed ? (
+                  <a href={TURNROW_FARM_URL} target="_blank" rel="noreferrer" className="text-sm text-brand-deep underline">Open in Turnrow Farm</a>
+                ) : (
+                  <button type="button" onClick={() => editLease(l)} className="text-sm text-brand-deep">Edit</button>
+                )}
+              </li>
+            )
+          })}
         </ul>
         <div className="flex items-start gap-3 flex-wrap border-t border-slate-100 pt-3">
           <DocumentCapture onSource={(s) => void onLeaseSource(s)} busy={aiStage != null} stageLabel={aiStage} pdfLabel="Upload lease (AI)" />
