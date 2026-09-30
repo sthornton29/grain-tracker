@@ -1,7 +1,7 @@
 ---
 page_route: /settings/government-payments
-title: Government Payments Settings
-updated: 2026-08-13
+title: Government Payments
+updated: 2026-09-24
 keywords: base acres, PLC yield, elections, MYA, WASDE, benchmark, ARC-CO, program year, payment limit, sequestration, FSA import
 ---
 ## What this page is for

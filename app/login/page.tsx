@@ -1,6 +1,7 @@
 import LoginForm from '@/components/login-form'
 import MarketBoard from '@/components/market-board'
 import { fetchPublicQuotes } from '@/lib/barchart-quotes'
+import AddToHomeHint from '@/components/add-to-home-hint'
 
 // Server component: renders the sign-in form plus a server-fetched grain-futures
 // board (market-data display required at the login screen). The quote fetch is
@@ -23,6 +24,7 @@ export default async function LoginPage({
           <img src="/brand/logo-lockup.png" alt="Turnrow" className="h-12 w-auto" />
         </div>
         <LoginForm next={next} />
+        <AddToHomeHint />
         <MarketBoard quotes={board.quotes} asOf={board.asOf} available={board.available} />
       </div>
     </div>

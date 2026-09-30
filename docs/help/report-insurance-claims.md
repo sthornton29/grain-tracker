@@ -1,7 +1,7 @@
 ---
 page_route: /reports/crop-insurance-claims
 title: Crop Insurance Claims Monitor
-updated: 2026-08-16
+updated: 2026-09-24
 keywords: claims, indemnity, RP, RP-HPE, YP, SCO, ECO, STAX, MCO, ARP, AYP, harvest price, county yield, premium, APH
 ---
 ## What this page is for

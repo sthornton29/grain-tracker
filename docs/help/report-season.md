@@ -1,22 +1,22 @@
 ---
 page_route: /reports/season
 title: Season Summary
-updated: 2026-08-05
+updated: 2026-09-24
 keywords: season, acres, yield, bushels, irrigated, dryland, double crop, harvest, cotton, lint
 ---
 ## What this page is for
 
-The Season Summary is the one-table answer to "what did we plant and what did it make?" For a chosen season it shows every crop with its acres — full-season, double-crop, total, irrigated, and dryland — plus total dry bushels and yield per acre, with a grand total row at the bottom. Headline tiles above the table show crops planted, total acres, irrigated acres, and dryland acres at a glance.
+The Season Summary is the one-table answer to "what did we plant and what did it make?" For a chosen crop year it shows every crop with its acres — full-season, double-crop, total, irrigated, and dryland — plus total dry bushels and yield per acre, with a grand total row at the bottom. Headline tiles above the table show total acres (with the irrigated and dryland split underneath), dry bushels from finished fields, the weighted yield across those fields, and the share of acres harvested so far.
 
 ## How to use it
 
-Pick the season year at the top. If you run more than one entity, use the entity filter to narrow the report to one of them — acres, production, and yield then reflect that entity's fields only. Leave it on all entities for the whole operation. Both filters are remembered between visits.
+The report opens on the current crop year; pick another at the top. If you run more than one entity, use the entity filter to narrow the report to one of them — acres, production, and yield then reflect that entity's fields only. Leave it on all entities for the whole operation. Both filters are remembered between visits.
 
 When harvest is running, check back as loads come in: the production and yield columns build up as fields finish.
 
 ## What the controls do
 
-- **Season** — chooses the crop season the whole page reports on.
+- **Crop year** — chooses the crop year the whole page reports on.
 - **Entity filter** — narrows acres and production to the fields belonging to that entity's farms.
 - **Export Excel / Export PDF / Print** — exports the table exactly as shown, with the season and entity named in the header.
 
@@ -24,7 +24,7 @@ When harvest is running, check back as loads come in: the production and yield c
 
 - **Acres** count every planted field, split into full-season and double-crop, and into irrigated and dryland where you have entered that breakout.
 - **Dry bushels** come from your recorded loads, adjusted to each crop's base moisture — the same dry-bushel rules used everywhere else in Turnrow.
-- **Yield per acre** divides production by the acres of fields that are actually finished. Fields that are unharvested or still in progress are left out of both production and yield, so a half-picked field never drags the average down. Their acres still show in the acreage columns.
+- **Yield per acre** divides production by the acres of fields that are actually finished. Fields that are unharvested or still in progress are left out of both production and yield, so a half-picked field never drags the average down. Their acres still show in the acreage columns. The **% harvested** tile is finished acres over all planted acres; the **weighted yield** tile is grain bushels over finished grain acres.
 - **Average yields** for recent seasons appear in the header strip, computed the same way.
 - **Cotton** rows keep their acres in this table, but production and yield for cotton are measured in pounds of lint, not bushels — the row points you to the Cotton Yields section below, which shows lint pounds per acre, seed cotton pounds per acre, turnout percentage, and any loads still on the yard awaiting ginning, field by field.
 

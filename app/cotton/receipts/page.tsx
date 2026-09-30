@@ -8,6 +8,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { reportError } from '@/lib/friendly-error'
+import { useDialogs } from '@/components/use-dialogs'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { findBestMatch } from '@/lib/fuzzy'
@@ -22,6 +24,7 @@ const lbs = (n: number | null | undefined) => (n == null ? '—' : Number(n).toL
 const num = (s: string): number | null => { const n = Number(s); return s.trim() !== '' && Number.isFinite(n) ? n : null }
 
 export default function GinReceiptsPage() {
+  const { confirmText, dialogs } = useDialogs()
   const supabase = useMemo(() => createClient(), [])
   const [receipts, setReceipts] = useState<GinReceipt[]>([])
   const [balesByReceipt, setBalesByReceipt] = useState<Map<string, number>>(new Map())
@@ -111,7 +114,7 @@ export default function GinReceiptsPage() {
       })))
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) setErr(e.message)
-      else setErr(e?.message ? `Couldn't read this document: ${e.message}` : "Couldn't read this document.")
+      else setErr(reportError(e, { action: 'read this document' }))
     } finally {
       setStage(null)
     }
@@ -135,7 +138,7 @@ export default function GinReceiptsPage() {
         seed_lbs: x.seed_lbs, lint_turnout_pct: x.lint_turnout_pct, lint_lbs_per_bale: x.lint_lbs_per_bale,
         source: 'document_import',
       }).select('id').single()
-      if (recErr || !rec) { setErr(recErr?.message ?? 'Could not save the receipt.'); return }
+      if (recErr || !rec) { setErr(reportError(recErr, { action: 'save the receipt', noun: 'gin receipt' })); return }
       receiptId = (rec as { id: string }).id
 
       // Load lines: link existing by load_number; create the checked missing ones.
@@ -147,13 +150,18 @@ export default function GinReceiptsPage() {
         const existing = yearLoadsByNumber.get(ln)
         if (existing) { linkIds.push(existing.id); continue }
         if (!createMissing.has(i)) continue
-        const { data: nl, error: nlErr } = await supabase.from('cotton_loads').insert({
+        const newLoad = {
           load_number: ln, crop_year: year, farm_id: farmId || null, field_id: fieldId || null,
           entity_id: farmId ? farmById.get(farmId)?.entity_id ?? null : null,
           gross_weight: line.gross, tare_weight: line.tare,
           net_weight: line.net ?? (line.gross != null && line.tare != null ? line.gross - line.tare : null),
           gin_id, source: 'document_import',
-        }).select('id').single()
+        }
+        // Rolls (090) from the statement's load table; before that migration
+        // the same load is created without the column.
+        let ins = await supabase.from('cotton_loads').insert({ ...newLoad, rolls: line.rolls != null && Number.isFinite(Number(line.rolls)) ? Math.round(Number(line.rolls)) : null }).select('id').single()
+        if (ins.error) ins = await supabase.from('cotton_loads').insert(newLoad).select('id').single()
+        const { data: nl, error: nlErr } = ins
         if (nlErr || !nl) throw new Error(nlErr?.message ?? `Could not create load ${ln}.`)
         linkIds.push((nl as { id: string }).id)
       }
@@ -173,7 +181,7 @@ export default function GinReceiptsPage() {
       // Best-effort atomicity: a failure after the receipt insert removes the
       // receipt (bales/links cascade) so a partial statement never lingers.
       if (receiptId) await supabase.from('gin_receipts').delete().eq('id', receiptId)
-      setErr(`Could not save the statement: ${e?.message ?? 'unknown error'} — nothing was kept.`)
+      setErr(`${reportError(e, { action: 'save the statement', noun: 'gin receipt' })} Nothing was kept.`)
     } finally {
       setSaving(false)
     }
@@ -195,14 +203,14 @@ export default function GinReceiptsPage() {
       avg_bale_weight: lint != null && num(m.bales) ? Math.round((lint / num(m.bales)!) * 100) / 100 : null,
       source: 'manual',
     })
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'save the gin receipt', noun: 'gin receipt', name: m.receipt_number.trim() || undefined })); return }
     setM({ receipt_number: '', receipt_date: '', gin_id: m.gin_id, farm_id: m.farm_id, field_id: '', modules: '', seedwt: '', bales: '', balewt: '', seedlbs: '' })
     setMsg('Receipt saved — add its bales via the Bales & Grades CSV/AI flows or re-upload the statement.')
     refresh()
   }
 
   async function deleteReceipt(id: string) {
-    if (!confirm('Delete this gin receipt (its bales and load links go with it)?')) return
+    if (!(await confirmText('Delete this gin receipt? Its bales and load links go with it.'))) return
     await supabase.from('gin_receipts').delete().eq('id', id)
     refresh()
   }
@@ -221,7 +229,7 @@ export default function GinReceiptsPage() {
       </div>
 
       <section className="bg-white rounded-xl shadow p-4 space-y-3">
-        <h2 className="font-semibold">Upload Statement of Ginning (AI)</h2>
+        <h2 className="font-semibold">Upload a Statement of Ginning</h2>
         <DocumentCapture onSource={onSource} busy={stage != null} stageLabel={stage} pdfLabel="Upload Statement PDF or Photo (AI)" />
         {x && (
           <div className="space-y-3 text-sm">
@@ -235,7 +243,7 @@ export default function GinReceiptsPage() {
                 <option value="">— field —</option>
                 {fields.filter((f) => !farmId || f.farm_id === farmId).map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
               </select>
-              {(x.farm_name || x.producer || x.field) && <span className="text-xs text-amber-700">AI: {x.producer ?? x.farm_name}{x.farm_number ? ` #${x.farm_number}` : ''}{x.field ? ` · ${x.field}` : ''}</span>}
+              {(x.farm_name || x.producer || x.field) && <span className="text-xs text-amber-700">From the document: {x.producer ?? x.farm_name}{x.farm_number ? ` #${x.farm_number}` : ''}{x.field ? ` · ${x.field}` : ''}</span>}
             </div>
             <div className="flex flex-wrap gap-2 text-xs">
               <span className="rounded bg-slate-50 border border-slate-200 px-2 py-1">{x.modules_count ?? '—'} modules</span>
@@ -339,6 +347,7 @@ export default function GinReceiptsPage() {
           </tbody>
         </table>
       </div>
+      {dialogs}
     </div>
   )
 }

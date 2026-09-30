@@ -1,46 +1,46 @@
 import Link from 'next/link'
 import SettingsDocImport from '@/components/settings-doc-import'
+import { SETTINGS_GROUPS } from './settings-nav'
 
-const items = [
-  { href: '/settings/entities', label: 'Entities' },
-  { href: '/settings/landowners', label: 'Landowners' },
-  { href: '/settings/farms', label: 'Farms' },
-  { href: '/settings/fields', label: 'Fields' },
-  { href: '/settings/plantings', label: 'Field Plantings' },
-  { href: '/settings/bin-sites', label: 'Bin Sites & Bins' },
-  { href: '/settings/trucks', label: 'Trucks' },
-  { href: '/settings/buyers', label: 'Buyers & Delivery Locations' },
-  { href: '/settings/crops', label: 'Crops' },
-  { href: '/settings/varieties', label: 'Varieties' },
-  { href: '/settings/contracts', label: 'Contracts' },
-  { href: '/settings/crop-insurance', label: 'Crop Insurance' },
-  { href: '/settings/government-payments', label: 'Government Payments' },
-  { href: '/settings/organization', label: 'Organization' },
-  { href: '/settings/users', label: 'Users & Modules' },
-  { href: '/settings/shares', label: 'Landowner Shares' },
-  { href: '/settings/farm-link', label: 'Turnrow Farm Link' },
-]
-
+// The Settings hub: the catch-all document uploader up top, then one tile
+// per settings page, grouped and described exactly as the left rail
+// (app/settings/layout.tsx) lists them — both render from settings-nav.ts.
 export default function SettingsPage() {
   return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-bold">Settings</h1>
-      {/* The catch-all uploader: no target hint — the AI classifies and the
-          review presents whatever it found, most-populated section first. */}
-      <SettingsDocImport title="Upload any document (AI)" />
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        {items.map((i) => (
-          <Link key={i.href} href={i.href} className="bg-white rounded-xl shadow p-4 text-center font-semibold hover:bg-slate-50">
-            {i.label}
-          </Link>
-        ))}
+    <div className="space-y-5">
+      <div>
+        <h1 className="text-2xl font-bold font-display">Settings</h1>
+        <p className="text-sm text-slate-500 mt-1">
+          Where your operation&rsquo;s structure lives. Set it up once — most of it can come straight from your paperwork.
+        </p>
       </div>
+      {/* The catch-all uploader: no target hint — the reader sorts what it
+          finds and the review presents it, most-populated section first. */}
+      <SettingsDocImport title="Upload any document — FSA-578, 156-EZ, a lease, a field list" />
+
+      {SETTINGS_GROUPS.map((g) => (
+        <section key={g.title}>
+          <h2 className="text-xs uppercase tracking-wide text-slate-500 font-semibold mb-2">{g.title}</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {g.items.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                className="group bg-white rounded-xl border border-slate-200 p-4 hover:border-slate-300 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+              >
+                <div className="font-semibold text-slate-900 group-hover:text-brand-deep">{item.label}</div>
+                <div className="mt-0.5 text-xs sm:text-sm text-slate-500">{item.description}</div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      ))}
 
       <div className="border-t border-slate-200 pt-6 mt-4">
         <form action="/logout" method="post">
           <button
             type="submit"
-            className="rounded-xl bg-slate-800 text-white px-5 py-2.5 font-semibold hover:bg-slate-900"
+            className="rounded-xl bg-slate-800 text-white px-5 min-h-11 font-semibold hover:bg-slate-900"
           >
             Sign Out
           </button>

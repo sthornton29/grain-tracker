@@ -16,7 +16,9 @@ import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { fieldCropAggregates, practiceOf, combineEntryTotals, combineNegativeNetMessage } from '@/lib/yields'
 import { rememberHarvestEntryPath } from '@/lib/harvest-entry-path'
+import { reportError } from '@/lib/friendly-error'
 import { FieldPicker } from '@/components/field-picker'
+import { ConfirmDialog } from '@/components/app-dialog'
 import type { CombineYieldEntry, Crop, Farm, Field, FieldPlanting, LoadSplit } from '@/lib/types'
 
 type LoadRow = {
@@ -72,6 +74,8 @@ export default function CombineYieldPage() {
   const [notes, setNotes] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  // "Weighed loads exceed the combine total — save anyway?"
+  const [negativeAsk, setNegativeAsk] = useState(false)
 
   useEffect(() => {
     ;(async () => {
@@ -209,7 +213,7 @@ export default function CombineYieldPage() {
     }
   }
 
-  async function save() {
+  function save() {
     setErr(null)
     if (!planting || !crop) { setErr('Pick a field first.'); return }
     if (stated == null || !Number.isFinite(stated) || stated < 0) {
@@ -219,7 +223,13 @@ export default function CombineYieldPage() {
     if (mode === 'yield_per_acre' && acres <= 0) { setErr('This planting has no acres — set them under Settings → Field Plantings.'); return }
     if (totals.adjustedTotalBu < 0) { setErr('The adjustment takes the total below zero — check the sign.'); return }
     if (subEntryActive && !subEntrySumOk) { setErr('The irrigated + dryland figures must add up to the adjusted total.'); return }
-    if (negativeNet && !confirm(`${negativeNet}\n\nSave anyway?`)) return
+    if (negativeNet) { setNegativeAsk(true); return }
+    void doSave()
+  }
+
+  async function doSave() {
+    if (!planting || !crop) return
+    setNegativeAsk(false)
     setBusy(true)
 
     const payload = {
@@ -242,7 +252,7 @@ export default function CombineYieldPage() {
     const { error } = await supabase
       .from('combine_yield_entries')
       .upsert(payload, { onConflict: 'field_id,crop_id,crop_year' })
-    if (error) { setBusy(false); setErr(error.message); return }
+    if (error) { setBusy(false); setErr(reportError(error, { action: 'save this combine entry', noun: 'combine entry' })); return }
 
     // The adjustment becomes the crop's default for the next combine entry;
     // clearing it clears the default.
@@ -264,16 +274,16 @@ export default function CombineYieldPage() {
     router.push('/yields')
   }
 
-  const inputCls = 'w-full rounded-lg border border-slate-300 px-3 py-2'
+  const inputCls = 'w-full rounded-lg border border-slate-300 px-3 py-2 min-h-11'
   const modeBtn = (active: boolean) =>
-    `rounded-lg px-3 py-2 text-sm font-semibold border ${active ? 'bg-brand text-white border-brand' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}`
+    `rounded-lg px-3 min-h-11 text-sm font-semibold border ${active ? 'bg-brand text-white border-brand' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}`
 
   return (
     <div className="max-w-2xl space-y-4">
       <div className="flex flex-wrap gap-3 items-end">
         <h1 className="text-2xl font-bold flex-1">Yield from Combine</h1>
-        <Link href="/loads/new" className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Weighed load entry</Link>
-        <Link href="/loads" className="text-slate-500 text-sm py-2">Cancel</Link>
+        <Link href="/loads/new" className="inline-flex items-center rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm">Weighed load entry</Link>
+        <Link href="/loads" className="inline-flex items-center text-slate-500 text-sm min-h-11 px-2">Cancel</Link>
       </div>
       <p className="text-sm text-slate-500">
         No scale tickets? Record a field&rsquo;s production straight off the combine monitor. Any loads you did
@@ -415,12 +425,22 @@ export default function CombineYieldPage() {
             type="button"
             disabled={busy || loading || !planting}
             onClick={save}
-            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50"
+            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold disabled:opacity-50"
           >
-            {existing ? 'Save changes' : 'Save combine entry'}
+            {busy ? 'Saving…' : existing ? 'Save changes' : 'Save combine entry'}
           </button>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={negativeAsk}
+        title="Weighed loads are more than the combine total"
+        body={negativeNet}
+        confirmLabel="Save anyway"
+        cancelLabel="Go back"
+        onConfirm={() => void doSave()}
+        onCancel={() => setNegativeAsk(false)}
+      />
     </div>
   )
 }

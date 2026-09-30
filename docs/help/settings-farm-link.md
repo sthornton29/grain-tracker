@@ -1,8 +1,8 @@
 ---
 page_route: /settings/farm-link
 title: Turnrow Farm Link
-updated: 2026-09-21
-keywords: turnrow farm, farm link, landowners both ways, landowner conflict, merge landowners, archive landowner, lease managed in turnrow farm, withdrawn statement, pairing code, link token, integrations, sync, managed in turnrow farm, not linked, entities, farms, fields, plantings, production, marketing, income, bins, crop insurance premiums, insurance included in cost, cost assumptions, rent statements, revoke, rotate token, conflict
+updated: 2026-09-24
+keywords: turnrow farm, farm link, landowners both ways, landowner conflict, merge landowners, archive landowner, lease managed in turnrow farm, withdrawn statement, pairing code, link token, integrations, sync, managed in turnrow farm, not linked, entities, farms, fields, plantings, production, marketing, income, bins, crop insurance premiums, insurance included in cost, cost assumptions, rent statements, disconnect, replace token, conflict
 ---
 ## What this page is for
 
@@ -18,13 +18,13 @@ Once connected, Turnrow Farm sends your entities, farms, fields, and plantings h
 
 If the code expires or you lose it, press **New pairing code**; the old one stops working.
 
-## What changes once land is synced
+## What changes once land has come across
 
 After Turnrow Farm's first land sync lands, the **Entities, Farms, Fields, and Plantings** pages show a "Managed in Turnrow Farm" banner. Rows that came from Turnrow Farm are read-only here (edit them there; the change syncs back). Rows you created here that Turnrow Farm has not matched yet show a **not linked** chip and stay editable until you match them in Turnrow Farm. The spreadsheet and document importers for those four pages stop running and say so. Entities keep their county assignments and payment-limit persons editable here, because Turnrow Farm does not track those.
 
 Deleting a farm, field, or planting in Turnrow Farm archives it here rather than deleting it, and Turnrow Grain refuses to archive a field or planting that already has loads, yields, or settlements; Turnrow Farm shows you that refusal.
 
-If you edit a record here after the last sync and Turnrow Farm later sends a different value for it, Turnrow Grain keeps yours and hands the conflict back to Turnrow Farm to resolve. Nothing is overwritten quietly. The count of conflicts from the last sync shows on this page.
+If you edit a record here after the last update and Turnrow Farm later sends a different value for it, Turnrow Grain keeps yours and hands the conflict back to Turnrow Farm to resolve. Nothing is overwritten quietly. The count of conflicts from the last update shows on this page.
 
 ## What the switches do
 
@@ -40,18 +40,18 @@ If you edit a record here after the last sync and Turnrow Farm later sends a dif
 
 Turning a switch off applies the next time Turnrow Farm checks in.
 
-## Rotate token and Revoke
+## Replace token and Disconnect
 
-- **Rotate token** issues a new link token, shown once. Paste it into Turnrow Farm under the same Integrations page; the old token stops working immediately.
-- **Revoke** ends the link. Turnrow Farm loses access at once. Records already synced stay here and become editable again.
+- **Replace token** issues a new link token, shown once. Paste it into Turnrow Farm under the same Integrations page; the old token stops working immediately.
+- **Disconnect** ends the link. Turnrow Farm loses access at once. Records that already came across stay here and become editable again.
 
 ## Common questions
 
 - **A farm shows "edit in Turnrow Farm" but I need to change its county.** Change it in Turnrow Farm; the next sync brings it here.
 - **A field I created here says "not linked".** Open Turnrow Farm and match it to the field there. Until you do, it stays editable here.
-- **The last sync shows conflicts.** Open Turnrow Farm; it lists the records and lets you choose which side is right.
-- **Nothing has synced yet.** The land pages stay fully editable until Turnrow Farm sends its first land sync.
-- **Turnrow Farm does not offer crop insurance premiums.** This switch is newer than the link. Make sure **Crop insurance premiums to Turnrow Farm** is on above, then pair again from Turnrow Farm and choose **Sync now**.
+- **The last update shows conflicts.** Open Turnrow Farm; it lists the records and lets you choose which side is right.
+- **Nothing has come across yet.** The land pages stay fully editable until Turnrow Farm sends its land records the first time.
+- **Turnrow Farm does not offer crop insurance premiums.** This switch is newer than the link. Make sure **Crop insurance premiums to Turnrow Farm** is on above, then pair again from Turnrow Farm and choose **Update now**.
 - **I changed a landowner here and Turnrow Farm still shows the old one.** It arrives on the next sync. If you both changed the same thing, Turnrow Farm shows it as something to settle rather than picking a winner.
 - **A landowner shows "from Turnrow Farm" beside a field.** That field was changed over there in the last day. It is only a note; you can edit it here whenever you like.
 - **Turnrow Farm wants to merge two landowners.** Merging moves their farms, leases, settlements, and statements onto the one you keep, and archives the other. A landowner with a live Turnrow Landowner share is not merged or archived until you end the share or choose to move it.
@@ -60,5 +60,5 @@ Turning a switch off applies the next time Turnrow Farm checks in.
 ## If something looks wrong
 
 - Turnrow Farm says the pairing code is invalid or expired: generate a new code here and paste it again.
-- Turnrow Farm reports "unauthorized": rotate the token here and paste the new one there.
+- Turnrow Farm says it isn't allowed in: replace the token here and paste the new one there.
 - The page says the link needs a database update: contact support.

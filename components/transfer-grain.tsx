@@ -4,6 +4,9 @@ import { useEffect, useId, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { estimateTransferBushels, overInventoryMessage } from '@/lib/bin-inventory'
+import { reportError } from '@/lib/friendly-error'
+import { fmtDate } from '@/lib/format-date'
+import { ConfirmDialog } from '@/components/app-dialog'
 import type { BinTransfer } from '@/lib/types'
 
 export type TransferBinOption = {
@@ -26,14 +29,9 @@ function todayISO() {
   return new Date(d.getTime() - tz).toISOString().slice(0, 10)
 }
 
-function fmtDate(iso: string) {
-  const [y, m, d] = iso.split('-').map(Number)
-  if (!y || !m || !d) return iso
-  return `${m}/${d}/${y}`
-}
-
+/** Bushels on screen: whole numbers. */
 function fmtBu(n: number) {
-  return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
+  return n.toLocaleString(undefined, { maximumFractionDigits: 0 })
 }
 
 /** The from-bin's crop with the most grain in it; falls back to the bin's assigned crop. */
@@ -70,6 +68,8 @@ function TransferPanel({
   const [notes, setNotes] = useState(existing?.notes ?? '')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  // The over-inventory warning waiting on "Record anyway".
+  const [overAsk, setOverAsk] = useState<string | null>(null)
   // Radio-group name must be unique per open panel (several bin cards can
   // have their panels open at once).
   const modeGroup = useId()
@@ -117,7 +117,7 @@ function TransferPanel({
     if (est != null) setBushels(String(est))
   }
 
-  async function save() {
+  function save() {
     setErr(null)
     if (!fromBinId) { setErr('Pick the bin the grain came from.'); return }
     if (!toBinId) { setErr('Pick the bin the grain went to.'); return }
@@ -143,8 +143,13 @@ function TransferPanel({
       fromBinName: fromBin?.name ?? 'this bin',
       cropName,
     })
-    if (warning && !confirm(warning)) return
+    if (warning) { setOverAsk(warning); return }
+    void doSave()
+  }
 
+  async function doSave() {
+    setOverAsk(null)
+    const bu = Number(bushels)
     setBusy(true)
     const supabase = createClient()
     const payload = {
@@ -162,59 +167,59 @@ function TransferPanel({
       ? await supabase.from('bin_transfers').update(payload).eq('id', existing.id)
       : await supabase.from('bin_transfers').insert(payload)
     setBusy(false)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: existing ? 'save this transfer' : 'record this transfer', noun: 'transfer' })); return }
     onDone()
     router.refresh()
   }
 
-  const inputCls = 'w-full rounded-lg border border-slate-300 px-2 py-1 text-sm'
+  const inputCls = 'mt-1 w-full rounded-lg border border-slate-300 px-3 min-h-11 text-base'
   const binLabel = (b: TransferBinOption) => `${b.name}${b.siteName ? ` · ${b.siteName}` : ''}`
 
   return (
     <div className="w-full mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
       <div className="text-sm font-semibold">{existing ? 'Edit transfer' : 'Transfer grain between bins'}</div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <label className="text-xs text-slate-700">
+        <label className="text-sm text-slate-700">
           From bin
           <select value={fromBinId} onChange={(e) => pickFrom(e.target.value)} className={inputCls}>
             <option value="">— select —</option>
             {bins.map((b) => <option key={b.id} value={b.id}>{binLabel(b)}</option>)}
           </select>
         </label>
-        <label className="text-xs text-slate-700">
+        <label className="text-sm text-slate-700">
           To bin
           <select value={toBinId} onChange={(e) => setToBinId(e.target.value)} className={inputCls}>
             <option value="">— select —</option>
             {bins.filter((b) => b.id !== fromBinId).map((b) => <option key={b.id} value={b.id}>{binLabel(b)}</option>)}
           </select>
         </label>
-        <label className="text-xs text-slate-700">
+        <label className="text-sm text-slate-700">
           Crop
           <select value={cropId} onChange={(e) => setCropId(e.target.value)} className={inputCls}>
             <option value="">— select —</option>
             {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </label>
-        <label className="text-xs text-slate-700">
+        <label className="text-sm text-slate-700">
           Date
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls} />
         </label>
       </div>
 
-      <div className="flex gap-4 text-xs text-slate-700 pt-1">
-        <label className="flex items-center gap-1">
-          <input type="radio" name={modeGroup} checked={mode === 'entered'} onChange={() => setMode('entered')} />
+      <div className="flex flex-wrap gap-4 text-sm text-slate-700 pt-1">
+        <label className="flex items-center gap-2 min-h-11">
+          <input type="radio" className="h-5 w-5" name={modeGroup} checked={mode === 'entered'} onChange={() => setMode('entered')} />
           Enter bushels
         </label>
-        <label className="flex items-center gap-1">
-          <input type="radio" name={modeGroup} checked={mode === 'estimated'} onChange={() => setMode('estimated')} />
+        <label className="flex items-center gap-2 min-h-11">
+          <input type="radio" className="h-5 w-5" name={modeGroup} checked={mode === 'estimated'} onChange={() => setMode('estimated')} />
           Estimate from run time
         </label>
       </div>
 
       {mode === 'estimated' && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <label className="text-xs text-slate-700">
+          <label className="text-sm text-slate-700">
             Throughput (bu/hr)
             <input
               type="number" inputMode="decimal" step="1" min="0"
@@ -224,7 +229,7 @@ function TransferPanel({
               className={inputCls}
             />
           </label>
-          <label className="text-xs text-slate-700">
+          <label className="text-sm text-slate-700">
             Hours run
             <input
               type="number" inputMode="decimal" step="0.1" min="0"
@@ -242,7 +247,7 @@ function TransferPanel({
         </div>
       )}
 
-      <label className="text-xs text-slate-700 block">
+      <label className="text-sm text-slate-700 block">
         Bushels (dry)
         <input
           type="number" inputMode="decimal" step="0.01" min="0"
@@ -252,7 +257,7 @@ function TransferPanel({
           className={inputCls}
         />
       </label>
-      <label className="text-xs text-slate-700 block">
+      <label className="text-sm text-slate-700 block">
         Notes <span className="text-slate-400">(optional)</span>
         <input
           type="text"
@@ -262,24 +267,33 @@ function TransferPanel({
           className={inputCls}
         />
       </label>
-      {err && <p className="text-xs text-red-600">{err}</p>}
+      {err && <p className="text-sm text-red-600">{err}</p>}
       <div className="flex gap-2">
         <button
           type="button"
           onClick={save}
           disabled={busy}
-          className="text-xs rounded-lg bg-brand hover:bg-brand-deep text-white font-semibold px-3 py-1 disabled:opacity-50"
+          className="text-sm rounded-lg bg-brand hover:bg-brand-deep text-white font-semibold px-4 min-h-11 disabled:opacity-50"
         >
           {busy ? 'Saving…' : existing ? 'Save changes' : 'Record transfer'}
         </button>
         <button
           type="button"
           onClick={onDone}
-          className="text-xs rounded-lg bg-white border border-slate-300 px-3 py-1"
+          className="text-sm rounded-lg bg-white border border-slate-300 px-4 min-h-11"
         >
           Cancel
         </button>
       </div>
+      <ConfirmDialog
+        open={overAsk != null}
+        title="More than the bin shows on hand"
+        body={overAsk}
+        confirmLabel="Record anyway"
+        cancelLabel="Go back"
+        onConfirm={() => void doSave()}
+        onCancel={() => setOverAsk(null)}
+      />
     </div>
   )
 }
@@ -295,8 +309,8 @@ export default function TransferGrainButton({
         type="button"
         onClick={() => setOpen(true)}
         className={prominent
-          ? 'rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold hover:bg-slate-50'
-          : 'text-xs rounded-lg bg-white border border-slate-300 px-2 py-1 hover:bg-slate-50'}
+          ? 'rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm font-semibold hover:bg-slate-50'
+          : 'text-sm rounded-lg bg-white border border-slate-300 px-3 min-h-11 hover:bg-slate-50'}
         title="Record grain moved from one bin to another"
       >
         Transfer grain
@@ -325,28 +339,32 @@ export function BinTransferHistory({
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
-
-  if (transfers.length === 0) return null
+  const [removeAsk, setRemoveAsk] = useState<BinTransfer | null>(null)
+  const [removing, setRemoving] = useState(false)
 
   const binName = (id: string) => bins.find((b) => b.id === id)?.name ?? '(deleted bin)'
   const cropName = (id: string) => crops.find((c) => c.id === id)?.name ?? '—'
+  const direction = (t: BinTransfer) => (t.to_bin_id === binId ? `in from ${binName(t.from_bin_id)}` : `out to ${binName(t.to_bin_id)}`)
 
   async function remove(t: BinTransfer) {
-    const dir = t.to_bin_id === binId ? `in from ${binName(t.from_bin_id)}` : `out to ${binName(t.to_bin_id)}`
-    if (!confirm(`Delete this transfer of ${fmtBu(Number(t.bushels))} bu ${dir}? Inventory in both bins will be recalculated.`)) return
+    setRemoving(true)
     const supabase = createClient()
     const { error } = await supabase.from('bin_transfers').delete().eq('id', t.id)
-    if (error) { setErr(error.message); return }
+    setRemoving(false)
+    setRemoveAsk(null)
+    if (error) { setErr(reportError(error, { action: 'delete this transfer', noun: 'transfer' })); return }
     setErr(null)
     router.refresh()
   }
+
+  if (transfers.length === 0) return null
 
   return (
     <div className="mt-2">
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="text-xs text-slate-600 underline decoration-dotted"
+        className="text-sm text-slate-600 underline decoration-dotted min-h-11"
       >
         {open ? 'Hide transfers' : `Transfers (${transfers.length})`}
       </button>
@@ -379,8 +397,8 @@ export function BinTransferHistory({
                       )}
                       {t.notes && <span className="text-slate-400"> — {t.notes}</span>}
                     </span>
-                    <button type="button" onClick={() => setEditing(t.id)} className="text-brand-deep">Edit</button>
-                    <button type="button" onClick={() => remove(t)} className="text-red-600">Delete</button>
+                    <button type="button" onClick={() => setEditing(t.id)} className="text-brand-deep text-sm min-h-11 px-2">Edit</button>
+                    <button type="button" onClick={() => setRemoveAsk(t)} className="text-red-600 text-sm min-h-11 px-2">Delete</button>
                   </div>
                 )}
               </li>
@@ -388,7 +406,17 @@ export function BinTransferHistory({
           })}
         </ul>
       )}
-      {err && <p className="text-xs text-red-600 mt-1">{err}</p>}
+      {err && <p className="text-sm text-red-600 mt-1">{err}</p>}
+      <ConfirmDialog
+        open={removeAsk != null}
+        title="Delete this transfer?"
+        body={removeAsk ? `${fmtBu(Number(removeAsk.bushels))} bu ${cropName(removeAsk.crop_id)} ${direction(removeAsk)} on ${fmtDate(removeAsk.transfer_date)}. Both bins will recalculate.` : undefined}
+        confirmLabel="Delete"
+        danger
+        busy={removing}
+        onConfirm={() => { if (removeAsk) void remove(removeAsk) }}
+        onCancel={() => { if (!removing) setRemoveAsk(null) }}
+      />
     </div>
   )
 }

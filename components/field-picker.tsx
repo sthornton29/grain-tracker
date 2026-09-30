@@ -80,7 +80,7 @@ export function FieldPicker({
       <button
         type="button"
         onClick={openPanel}
-        className={`${className ?? 'w-full rounded-lg border border-slate-300 px-3 py-2 bg-white'} flex items-center justify-between gap-2 text-left`}
+        className={`${className ?? 'w-full rounded-lg border border-slate-300 px-3 py-2 bg-white'} min-h-11 flex items-center justify-between gap-2 text-left`}
       >
         {selected ? (
           <span className="truncate">
@@ -115,7 +115,7 @@ export function FieldPicker({
               <button
                 type="button"
                 onClick={close}
-                className="rounded-lg bg-white border border-slate-300 px-3 py-2.5 text-sm text-slate-600"
+                className="rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm text-slate-600"
               >
                 Cancel
               </button>
@@ -125,7 +125,7 @@ export function FieldPicker({
                 <button
                   type="button"
                   onClick={() => pick('')}
-                  className="w-full text-left rounded-lg px-3 py-2.5 text-sm text-slate-500 hover:bg-slate-50"
+                  className="w-full text-left rounded-lg px-3 py-2.5 min-h-11 text-sm text-slate-500 hover:bg-slate-50"
                 >
                   {placeholder} <span className="text-slate-400">(clear)</span>
                 </button>
@@ -140,7 +140,7 @@ export function FieldPicker({
                       key={f.id}
                       type="button"
                       onClick={() => pick(f.id)}
-                      className={`w-full text-left rounded-lg px-3 py-2.5 text-base flex items-center justify-between gap-2 ${
+                      className={`w-full text-left rounded-lg px-3 py-2.5 min-h-11 text-base flex items-center justify-between gap-2 ${
                         f.id === value ? 'bg-brand/10 text-brand-deep font-semibold' : 'hover:bg-slate-50'
                       }`}
                     >

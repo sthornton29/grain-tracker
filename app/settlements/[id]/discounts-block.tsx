@@ -8,6 +8,8 @@
 
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { ConfirmDialog } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
 import {
   DISCOUNT_CATEGORIES,
   DISCOUNT_CATEGORY_LABELS,
@@ -63,6 +65,8 @@ export default function DiscountsBlock({
   const [draft, setDraft] = useState<ItemDraft>(emptyDraft())
   const [adding, setAdding] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [removing, setRemoving] = useState<SettlementDiscountItem | null>(null)
+  const [removeBusy, setRemoveBusy] = useState(false)
 
   const check = sumCheck(items, discountTotal)
   // 086: checkoff and fees are not quality discounts — the walk shows them
@@ -105,7 +109,7 @@ export default function DiscountsBlock({
         .insert({ settlement_id: settlementId, ...row })
         .select('*')
         .single()
-      if (error) { setErr(error.message); return }
+      if (error) { setErr(reportError(error, { action: 'add this discount line', noun: 'discount line' })); return }
       setItems((xs) => [...xs, data as SettlementDiscountItem])
       setAdding(false)
     } else if (editingId) {
@@ -113,7 +117,7 @@ export default function DiscountsBlock({
         .from('settlement_discount_items')
         .update(row)
         .eq('id', editingId)
-      if (error) { setErr(error.message); return }
+      if (error) { setErr(reportError(error, { action: 'save this discount line', noun: 'discount line' })); return }
       setItems((xs) => xs.map((x) => (x.id === editingId ? { ...x, ...row } : x)))
       setEditingId(null)
     }
@@ -121,10 +125,12 @@ export default function DiscountsBlock({
   }
 
   async function removeItem(item: SettlementDiscountItem) {
-    if (!confirm('Delete this discount line?')) return
     setErr(null)
+    setRemoveBusy(true)
     const { error } = await supabase.from('settlement_discount_items').delete().eq('id', item.id)
-    if (error) { setErr(error.message); return }
+    setRemoveBusy(false)
+    setRemoving(null)
+    if (error) { setErr(reportError(error, { action: 'delete this discount line', noun: 'discount line' })); return }
     setItems((xs) => xs.filter((x) => x.id !== item.id))
   }
 
@@ -142,11 +148,12 @@ export default function DiscountsBlock({
           value={draft.deduction_kind}
           onChange={(e) => setDraft((d) => ({ ...d, deduction_kind: e.target.value }))}
           className="rounded-lg border border-slate-300 px-2 py-1 text-sm mt-1 block"
-          title="Price = dollars off the check. Weight = bushels/pounds taken instead — valued from the load reconciliation, not this line."
+          aria-label="How the deduction was taken"
         >
-          <option value="price">Price $</option>
-          <option value="weight">Weight</option>
+          <option value="price">Dollars off the check</option>
+          <option value="weight">Bushels or pounds taken</option>
         </select>
+        <span className="block text-[11px] text-slate-500 mt-0.5 max-w-[12rem]">A weight deduction is valued from your own loads (the shrink line below), not from this line.</span>
       </td>
       <td className="px-3 py-2">
         <input
@@ -205,7 +212,17 @@ export default function DiscountsBlock({
         )}
       </div>
 
-      {err && <p className="px-4 py-2 text-sm text-red-600">{err}</p>}
+      {err && <p className="px-4 py-2 text-sm text-red-700">{err}</p>}
+      <ConfirmDialog
+        open={removing != null}
+        title="Delete this discount line?"
+        body={<p>{removing?.description ? `“${removing.description}” comes off the itemized list.` : 'It comes off the itemized list.'} The settlement&rsquo;s own discount total is unchanged.</p>}
+        confirmLabel="Delete"
+        danger
+        busy={removeBusy}
+        onConfirm={() => { if (removing) void removeItem(removing) }}
+        onCancel={() => setRemoving(null)}
+      />
 
       {check.mismatch && (
         <div className="mx-4 mt-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">
@@ -237,8 +254,8 @@ export default function DiscountsBlock({
                     <td className="px-3 py-2 whitespace-nowrap">
                       {DISCOUNT_CATEGORY_LABELS[coerceDiscountCategory(item.category)]}
                       {coerceDeductionKind(item.deduction_kind) === 'weight' && (
-                        <span className="ml-1.5 text-[10px] uppercase tracking-wide bg-slate-100 text-slate-500 rounded px-1.5 py-0.5" title="A weight/bushel deduction — valued once from the load reconciliation (the shrink line below), not counted as dollars here">
-                          weight
+                        <span className="ml-1.5 text-[10px] uppercase tracking-wide bg-slate-100 text-slate-500 rounded px-1.5 py-0.5">
+                          weight — see shrink line below
                         </span>
                       )}
                     </td>
@@ -262,7 +279,7 @@ export default function DiscountsBlock({
                       {canEdit && (
                         <>
                           <button type="button" onClick={() => startEdit(item)} className="text-brand-deep text-sm mr-2">Edit</button>
-                          <button type="button" onClick={() => removeItem(item)} className="text-red-600 text-sm">Delete</button>
+                          <button type="button" onClick={() => setRemoving(item)} className="text-red-600 text-sm">Delete</button>
                         </>
                       )}
                     </td>

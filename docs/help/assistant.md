@@ -1,7 +1,7 @@
 ---
 page_route: /assistant
 title: Ask Turnrow
-updated: 2026-09-14
+updated: 2026-09-24
 keywords: assistant, ask turnrow, AI, questions, chat, data, numbers, average price, yields, bins, unsold, privacy, who can see, tables, formatting, links, how-to chat
 ---
 ## What this is for
@@ -51,7 +51,8 @@ Both assistants — Ask Turnrow and the how-to chat in the Help drawer — write
 
 ## Common questions
 
-- **Is this the same as the help chat?** The Ask Turnrow tab answers questions about *your data*; the How-to chat answers questions about *using the software*. Ask Turnrow can handle both, and labels which is which.
+- **Where do I find it?** Press the **?** button on any page and open the **Ask** tab — **My numbers** is Ask Turnrow on your own data; **How Turnrow works** answers questions about using Turnrow from these help guides. The full-page version is at Ask Turnrow from the home page.
+- **Is this the same as the help chat?** My numbers answers questions about *your data*; How Turnrow works answers questions about *using Turnrow*. Ask Turnrow can handle both, and labels which is which.
 - **It once told me some data wasn't available through the assistant.** That should no longer happen — every module is reachable, and an answer that tries to send you to a page instead of answering is caught and re-asked before you see it. If you still get one, contact support with the question you asked.
 - **Why does it say a year I didn't ask about?** If you don't name a crop year it uses your most recent one with data — and tells you which.
 - **It says it hit a lookup limit.** One question gets a handful of data checks; ask a follow-up and it keeps digging.

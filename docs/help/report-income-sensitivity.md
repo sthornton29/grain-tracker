@@ -1,7 +1,7 @@
 ---
 page_route: /reports/income-sensitivity
 title: Income Sensitivity
-updated: 2026-09-01
+updated: 2026-09-24
 keywords: sensitivity, price, yield, table, scenarios, futures, contracts, insurance, indemnity, county yield, government payments, revenue per acre, profit per acre
 ---
 ## What this page is for
@@ -10,7 +10,7 @@ Income Sensitivity answers "what happens to my income if prices or yields move?"
 
 ## How to use it
 
-Pick a crop year and scroll to a crop. The row and column closest to today's futures price and your expected yield are highlighted — that cell is "you are here." Read down for cheaper prices, left for lower yields, and watch where insurance kicks in to flatten the damage. A badge above each table says how many bushels are contracted at locked prices, or that the crop is fully price-sensitive.
+The report opens on the current crop year (or the year you last picked); scroll to a crop. The row and column closest to today's futures price and your expected yield are highlighted — that cell is "you are here." Read down for cheaper prices, left for lower yields, and watch where insurance kicks in to flatten the damage. A badge above each table says how many bushels are contracted at locked prices, or that the crop is fully price-sensitive.
 
 ## What the controls do
 

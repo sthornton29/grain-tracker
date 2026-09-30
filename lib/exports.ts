@@ -606,6 +606,71 @@ export async function exportToPdf(payload: ExportPayload): Promise<void> {
   doc.save(`${payload.filename || defaultFilename(payload.title)}.pdf`)
 }
 
+// ---------- CSV ----------
+
+// A plain spreadsheet file built from the SAME payload as Excel/PDF, so a
+// report never keeps a bespoke CSV path beside its formatted exports. Numbers
+// are written as plain numbers (no commas, no $ or %) rounded to the column's
+// decimals so the file sorts and sums in any spreadsheet; strings are quoted
+// when they need it. Subhead rows collapse to their label; every section
+// after the first is separated by a blank line and its title.
+
+function csvEscape(s: string): string {
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+/** Decimal places a NumFmt carries in a plain CSV cell. */
+function csvDecimals(fmt?: NumFmt): number | null {
+  switch (fmt) {
+    case 'int': case 'bu': case 'lbs': case 'usd0': case 'pct0': return 0
+    case 'dec1': case 'acres': case 'yield': case 'pct1': return 1
+    case 'dec2': case 'usd2': case 'price': return 2
+    case 'cents': return 4
+    default: return null // 'text' and inference pass the raw number through
+  }
+}
+
+/** The CSV cell for a value: plain number text or the escaped string. */
+export function csvCellText(raw: string | number | null, fmt?: NumFmt): string {
+  if (raw == null) return ''
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw)) return ''
+    const value = fmt === 'cents' ? raw / 100 : raw
+    const d = csvDecimals(fmt)
+    return d == null ? String(value) : value.toFixed(d)
+  }
+  return csvEscape(String(raw))
+}
+
+/** Build the CSV text for a payload (exported for tests). */
+export function buildCsv(payload: ExportPayload): string {
+  const lines: string[] = []
+  payload.sections.forEach((section, si) => {
+    if (si > 0) lines.push('')
+    if (section.title && payload.sections.length > 1) lines.push(csvEscape(section.title))
+    lines.push(section.columns.map((c) => csvEscape(c.label)).join(','))
+    section.rows.forEach((row, ri) => {
+      const kind: RowKind = section.rowMeta?.[ri] ?? 'data'
+      if (kind === 'subhead') {
+        const label = row.map(normCell).find((c) => c.raw != null && c.raw !== '')?.raw ?? ''
+        lines.push(csvEscape(String(label)))
+        return
+      }
+      lines.push(row.map((cell, i) => {
+        const { raw, format } = normCell(cell)
+        return csvCellText(raw, format ?? section.columns[i]?.format)
+      }).join(','))
+    })
+  })
+  return lines.join('\r\n') + '\r\n'
+}
+
+export async function exportToCsv(payload: ExportPayload): Promise<void> {
+  // The byte-order mark makes Excel open the file as UTF-8 (em dashes, ×).
+  const text = '﻿' + buildCsv(payload)
+  browserDownload(new Blob([text], { type: 'text/csv;charset=utf-8' }), `${payload.filename || defaultFilename(payload.title)}.csv`)
+}
+
 // ---------- Print ----------
 
 // Opens the browser print dialog. Print CSS in globals.css hides nav/sidebar/

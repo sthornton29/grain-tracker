@@ -1,7 +1,7 @@
 ---
 page_route: /reports/crop-budget
 title: Crop Budget Planner
-updated: 2026-08-05
+updated: 2026-09-24
 keywords: budget, planning, pre-season, acres, yield, cost, price, matrix, breakeven, APH, futures, sandbox
 ---
 ## What this page is for

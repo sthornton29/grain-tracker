@@ -12,6 +12,8 @@ import SeedContractDetail from '@/components/seed-contract-detail'
 import type { SeedContractDetails, SeedContractPayment, SeedContractPremium, SeedPricingElection } from '@/lib/seed-contracts'
 import StaticExportBar from '@/components/static-export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
+import { fmtDate } from '@/lib/format-date'
+import { fmtInt, fmtUsd, fmtNum, theadCls } from '@/components/reports/report-kit'
 
 export const dynamic = 'force-dynamic'
 
@@ -68,9 +70,6 @@ type SettlementLineRow = {
   net_bushels: number
   net_revenue: number | null
 }
-
-const fmt = (n: number, d = 2) =>
-  n.toLocaleString(undefined, { maximumFractionDigits: d })
 
 async function fetchAllLoadsForContract(
   supabase: SupabaseClient,
@@ -256,12 +255,12 @@ export default async function ContractDetailPage({ params }: { params: { id: str
     ['Contract type', CONTRACT_TYPE_LABEL[effectiveContractType(contract)]],
     ['Pricing status', PRICING_STATUS_LABEL[contract.pricing_status]],
     ['Entity', contract.entity?.name ?? '—'],
-    ['Contracted bushels', fmt(Number(contract.contracted_bushels))],
-    ['Futures price', contract.futures_price != null ? `$${Number(contract.futures_price).toFixed(4)}` : '—'],
-    ['Basis', contract.basis != null ? Number(contract.basis).toFixed(4) : '—'],
-    ['Service fee', contract.service_fee ? `$${Number(contract.service_fee).toFixed(4)}` : '—'],
-    ['Cash price', contract.cash_price != null ? `$${Number(contract.cash_price).toFixed(4)}` : (contract.pricing_status === 'awaiting_basis' ? 'Pending — awaiting basis' : contract.pricing_status === 'awaiting_futures' ? 'Pending — awaiting futures' : '—')],
-    ['Total revenue (at cash price)', contractRevenue != null ? `$${fmt(contractRevenue)}` : '—'],
+    ['Contracted bushels', fmtInt(Number(contract.contracted_bushels))],
+    ['Futures price', contract.futures_price != null ? fmtUsd(Number(contract.futures_price), 4) : '—'],
+    ['Basis', contract.basis != null ? fmtNum(Number(contract.basis), 4) : '—'],
+    ['Service fee', contract.service_fee ? fmtUsd(Number(contract.service_fee), 4) : '—'],
+    ['Cash price', contract.cash_price != null ? fmtUsd(Number(contract.cash_price), 4) : (contract.pricing_status === 'awaiting_basis' ? 'Pending — basis still open' : contract.pricing_status === 'awaiting_futures' ? 'Pending — futures still open' : '—')],
+    ['Contract value (cash price × bushels)', contractRevenue != null ? fmtUsd(contractRevenue) : '—'],
     ['Delivery type', contract.delivery_type === 'delivered' ? 'Delivered' : 'Pickup'],
     [
       'Delivery location',
@@ -277,10 +276,10 @@ export default async function ContractDetailPage({ params }: { params: { id: str
     [
       'Delivery window',
       (contract.delivery_start_date || contract.delivery_end_date)
-        ? `${contract.delivery_start_date ?? '?'} → ${contract.delivery_end_date ?? '?'}`
+        ? `${contract.delivery_start_date ? fmtDate(contract.delivery_start_date) : 'open'} → ${contract.delivery_end_date ? fmtDate(contract.delivery_end_date) : 'open'}`
         : '—',
     ],
-    ['Date sold', contract.date_sold ?? '—'],
+    ['Date sold', contract.date_sold ? fmtDate(contract.date_sold) : '—'],
     ['Notes', contract.notes ?? '—'],
   ]
 
@@ -292,7 +291,7 @@ export default async function ContractDetailPage({ params }: { params: { id: str
       { label: 'Contracted', value: `${formatNumber(Number(contract.contracted_bushels), 'bu')} bu` },
       { label: 'Delivered', value: `${formatNumber(delivered, 'bu')} bu` },
       { label: 'Remaining', value: `${formatNumber(remaining, 'bu')} bu` },
-      { label: 'Total revenue', value: contractRevenue != null ? formatNumber(contractRevenue, 'usd0') : '—' },
+      { label: 'Contract value', value: contractRevenue != null ? formatNumber(contractRevenue, 'usd0') : '—' },
     ],
     sections: [
       {
@@ -311,8 +310,8 @@ export default async function ContractDetailPage({ params }: { params: { id: str
           ['Futures price', contract.futures_price != null ? formatNumber(Number(contract.futures_price), 'price') : '—'],
           ['Basis', contract.basis != null ? Number(contract.basis).toFixed(4) : '—'],
           ['Cash price', contract.cash_price != null ? formatNumber(Number(contract.cash_price), 'price') : '—'],
-          ['Total revenue', contractRevenue != null ? formatNumber(contractRevenue, 'usd0') : '—'],
-          ['Delivery', contract.delivery_type === 'delivered' ? `Delivered → ${contract.delivery_location?.name ?? '—'}` : 'Pickup'],
+          ['Contract value', contractRevenue != null ? formatNumber(contractRevenue, 'usd0') : '—'],
+          ['Delivery', contract.delivery_type === 'delivered' ? `Delivered to ${contract.delivery_location?.name ?? '—'}` : 'Pickup'],
         ],
       },
       {
@@ -320,14 +319,14 @@ export default async function ContractDetailPage({ params }: { params: { id: str
         columns: [
           { label: 'Date' }, { label: 'Ticket' }, { label: 'Truck' }, { label: 'From' },
           { label: 'Net wt (lb)', align: 'right', format: 'int' }, { label: 'Moisture %', align: 'right', format: 'dec1' },
-          { label: 'Dry bu', align: 'right', format: 'bu' }, { label: 'Paid bu', align: 'right', format: 'bu' }, { label: 'Revenue', align: 'right', format: 'usd0' },
+          { label: 'Dry bu', align: 'right', format: 'bu' }, { label: 'Paid bu', align: 'right', format: 'bu' }, { label: 'Paid $', align: 'right', format: 'usd0' },
         ],
         rows: [
           ...loads.map((l) => {
             const ln = lineFor(l)
             const fromName = l.from_type === 'bin' ? l.from_bin?.name_or_number : l.from_field?.name_or_number
             return [
-              l.date, l.ticket_number ?? '', truckExportLabel(l), fromName ?? '',
+              fmtDate(l.date), l.ticket_number ?? '', truckExportLabel(l), fromName ?? '',
               l.net_weight ?? '', l.moisture ?? '', dryBu(l), ln ? Number(ln.net_bushels) : '', ln?.net_revenue != null ? Number(ln.net_revenue) : '',
             ]
           }),
@@ -364,10 +363,10 @@ export default async function ContractDetailPage({ params }: { params: { id: str
             </div>
           </div>
           <div className="text-right text-xs text-slate-500 space-y-1">
-            <div>Created {contract.created_at?.slice(0, 10)}</div>
+            <div>Entered {fmtDate(contract.created_at)}</div>
             {isComplete && (
               <div className="inline-flex items-center gap-1 rounded-full bg-slate-900 text-white px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide">
-                Complete{contract.completed_at ? ` · ${contract.completed_at.slice(0, 10)}` : ' · auto'}
+                {contract.completed_at ? `Complete · ${fmtDate(contract.completed_at)}` : 'Fully delivered'}
               </div>
             )}
           </div>
@@ -390,25 +389,25 @@ export default async function ContractDetailPage({ params }: { params: { id: str
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <div>
               <div className="text-xs text-slate-500">Delivered</div>
-              <div className="text-lg font-semibold">{fmt(delivered)} bu</div>
+              <div className="text-lg font-semibold tabular-nums">{fmtInt(delivered)} bu</div>
             </div>
             <div>
               <div className="text-xs text-slate-500">Remaining</div>
-              <div className="text-lg font-semibold">{fmt(remaining)} bu</div>
+              <div className="text-lg font-semibold tabular-nums">{fmtInt(remaining)} bu</div>
             </div>
             <div>
-              <div className="text-xs text-slate-500">Paid (bu)</div>
-              <div className="text-lg font-semibold">{fmt(paidBu)} bu</div>
+              <div className="text-xs text-slate-500">Paid bu <span className="text-slate-400">(buyer&rsquo;s settled bushels)</span></div>
+              <div className="text-lg font-semibold tabular-nums">{fmtInt(paidBu)} bu</div>
             </div>
             <div>
-              <div className="text-xs text-slate-500">Paid revenue</div>
-              <div className="text-lg font-semibold">${fmt(paidRev)}</div>
+              <div className="text-xs text-slate-500">Paid so far</div>
+              <div className="text-lg font-semibold tabular-nums">{fmtUsd(paidRev)}</div>
             </div>
           </div>
           <div className="mt-3 h-2 bg-slate-200 rounded-full overflow-hidden">
             <div className="h-2 bg-green-600" style={{ width: `${pct}%` }} />
           </div>
-          <div className="text-xs text-slate-500 mt-1">{pct.toFixed(1)}% delivered</div>
+          <div className="text-xs text-slate-500 mt-1">{pct.toFixed(0)}% delivered</div>
         </section>
 
         <section>
@@ -420,17 +419,17 @@ export default async function ContractDetailPage({ params }: { params: { id: str
           ) : (
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
-                <thead className="bg-slate-100 text-slate-700">
+                <thead className={theadCls}>
                   <tr>
                     <th className="text-left px-3 py-2 whitespace-nowrap">Date</th>
                     <th className="text-left px-3 py-2 whitespace-nowrap">Ticket</th>
                     <th className="text-left px-3 py-2 whitespace-nowrap">Truck</th>
                     <th className="text-left px-3 py-2 whitespace-nowrap">From</th>
-                    <th className="text-right px-3 py-2 whitespace-nowrap">Net wt (lb)</th>
-                    <th className="text-right px-3 py-2 whitespace-nowrap">Moisture</th>
+                    <th className="text-right px-3 py-2 whitespace-nowrap">Net weight (lb)</th>
+                    <th className="text-right px-3 py-2 whitespace-nowrap">Moisture %</th>
                     <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
                     <th className="text-right px-3 py-2 whitespace-nowrap">Paid bu</th>
-                    <th className="text-right px-3 py-2 whitespace-nowrap">Revenue</th>
+                    <th className="text-right px-3 py-2 whitespace-nowrap">Paid $</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -442,18 +441,18 @@ export default async function ContractDetailPage({ params }: { params: { id: str
                       : l.from_field?.name_or_number
                     return (
                       <tr key={l.id} className="border-t border-slate-100">
-                        <td className="px-3 py-2 whitespace-nowrap">{l.date}</td>
+                        <td className="px-3 py-2 whitespace-nowrap"><Link href={`/loads/${l.id}`} className="text-brand-deep hover:underline">{fmtDate(l.date)}</Link></td>
                         <td className="px-3 py-2 whitespace-nowrap">{l.ticket_number ?? ''}</td>
                         <td className="px-3 py-2 whitespace-nowrap">
                           {truckDisplay(l).name}
                           {truckDisplay(l).hauler && <span className="ml-1.5 text-[10px] uppercase tracking-wide bg-slate-100 text-slate-500 rounded px-1.5 py-0.5">hauler</span>}
                         </td>
                         <td className="px-3 py-2 whitespace-nowrap">{fromName ?? ''}</td>
-                        <td className="px-3 py-2 text-right">{l.net_weight != null ? fmt(Number(l.net_weight), 0) : ''}</td>
-                        <td className="px-3 py-2 text-right">{l.moisture != null ? Number(l.moisture).toFixed(2) : ''}</td>
-                        <td className="px-3 py-2 text-right">{fmt(bu)}</td>
-                        <td className="px-3 py-2 text-right">{ln ? fmt(Number(ln.net_bushels)) : ''}</td>
-                        <td className="px-3 py-2 text-right">{ln?.net_revenue != null ? `$${fmt(Number(ln.net_revenue))}` : ''}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{l.net_weight != null ? fmtInt(Number(l.net_weight)) : ''}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{l.moisture != null ? fmtNum(Number(l.moisture), 1) : ''}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{fmtInt(bu)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{ln ? fmtInt(Number(ln.net_bushels)) : ''}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{ln?.net_revenue != null ? fmtUsd(Number(ln.net_revenue)) : ''}</td>
                       </tr>
                     )
                   })}
@@ -461,9 +460,9 @@ export default async function ContractDetailPage({ params }: { params: { id: str
                 <tfoot>
                   <tr className="border-t-2 border-slate-300 font-semibold">
                     <td className="px-3 py-2" colSpan={6}>Totals</td>
-                    <td className="px-3 py-2 text-right">{fmt(delivered)}</td>
-                    <td className="px-3 py-2 text-right">{fmt(paidBu)}</td>
-                    <td className="px-3 py-2 text-right">${fmt(paidRev)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{fmtInt(delivered)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{fmtInt(paidBu)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{fmtUsd(paidRev)}</td>
                   </tr>
                 </tfoot>
               </table>

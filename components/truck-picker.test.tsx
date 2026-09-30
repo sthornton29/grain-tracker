@@ -89,7 +89,10 @@ describe('TruckPicker — own-truck rename', () => {
     await flush()
 
     expect(onUpdated).not.toHaveBeenCalled()
-    expect(screen.getByText('row-level security says no')).toBeTruthy()
+    // The raw message is logged for support; the modal shows the farmer
+    // sentence (lib/friendly-error) — never the database wording.
+    expect(screen.getByText(/don't have permission/)).toBeTruthy()
+    expect(screen.queryByText('row-level security says no')).toBeNull()
     expect(screen.getByText('Save Name')).toBeTruthy() // still open
   })
 
@@ -167,6 +170,8 @@ describe('HaulerTruckField — hauler-truck rename', () => {
     fireEvent.change(screen.getByPlaceholderText('Truck name or number (required)'), { target: { value: 'X' } })
     fireEvent.click(screen.getByText('Save Name'))
     await flush()
-    expect(screen.getByText('nope')).toBeTruthy()
+    // Unrecognized failure → the generic action sentence, still inside the modal.
+    expect(screen.getByText(/couldn't rename the truck/)).toBeTruthy()
+    expect(screen.queryByText('nope')).toBeNull()
   })
 })

@@ -4,6 +4,7 @@ import { COMMODITIES, type Commodity, contractMonthSortKey, fmtCommodityPrice } 
 import type { FuturesPosition } from '@/lib/types'
 import type { Quote } from '@/lib/quotes'
 import ManualQuoteControl, { QuoteChip } from '@/components/quote-chip'
+import { fmtDate, fmtDateShort } from '@/lib/format-date'
 
 /** One quote per symbol as the seam returned it (null price = no quote). */
 export type PriceInfo = { price: number | null; price_date: string | null; stale: boolean; source?: 'live' | 'manual' | null; entered_at?: string | null }
@@ -52,7 +53,7 @@ export default function PriceBoard({
       <div className="flex items-baseline gap-3 mb-3">
         <h2 className="font-semibold">Price Board</h2>
         <span className="text-xs text-slate-500">
-          {priceDate ? `Prices as of ${priceDate}` : 'No prices yet'}
+          {priceDate ? `Prices as of ${fmtDate(priceDate)}` : 'No prices yet'}
         </span>
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -73,7 +74,7 @@ export default function PriceBoard({
                         <span className="font-mono text-slate-600">{symbol}</span>
                         <span className="font-mono inline-flex items-center gap-1.5">
                           {q ? fmtCommodityPrice(c, q.price) : null}
-                          {q?.source === 'live' && q.stale && <span className="text-amber-600 text-xs" title={`as of ${q.priceDate}`}>*</span>}
+                          {q?.source === 'live' && q.stale && <span className="text-amber-600 text-xs whitespace-nowrap">* {fmtDateShort(q.priceDate)}</span>}
                           {q?.source === 'manual' && <QuoteChip quote={q} />}
                           {/* No live price (ICE cotton, a dropped month, a feed outage):
                               the blank becomes an "enter price" box; a manual quote
@@ -91,7 +92,7 @@ export default function PriceBoard({
           )
         })}
       </div>
-      <p className="text-xs text-slate-400 mt-2">* price is from an earlier day (market closed or not yet refreshed). A <span className="rounded-full bg-amber-100 text-amber-800 px-1 font-semibold">manual</span> chip marks a price you entered because there is no live quote for that contract.</p>
+      <p className="text-xs text-slate-400 mt-2">* the price is from the day shown (market closed or not yet refreshed). A <span className="rounded-full bg-amber-100 text-amber-800 px-1 font-semibold">manual</span> chip marks a price you entered because there is no live quote for that contract.</p>
     </div>
   )
 }

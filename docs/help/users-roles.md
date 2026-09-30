@@ -1,41 +1,42 @@
 ---
 page_route: /settings/users
-title: Users & Roles
-updated: 2026-08-10
-keywords: users, roles, invite, owner, gin operator, viewer, agronomist, entity access, permissions, cotton module
+title: Users
+updated: 2026-09-24
+keywords: users, people, add a person, invite, invitation link, owner, manager, gin, landlord, stakeholder, viewer, agronomist, entity access, permissions, what they see, roles
 ---
 ## What this page is for
 
-This page controls who can sign in and what they can see: invite new people, assign roles, and turn the Cotton module on or off. It's how you give your gin a place to key in loads without seeing your finances, give a landlord read-only access to their own numbers, or give your agronomist the whole operation's yields without any of the money.
+Who can sign in to your operation and what each person sees. It's how you give your gin a place to key in seed cotton loads without seeing your finances, give a landlord read-only reports for their own farms, or give your agronomist the whole operation's yields without any of the money.
 
 ## How to use it
 
-- **Invite a user**: enter their email, pick a role (the dropdown starts on Owner — change it if they should see less), and either press **Send invite** (they get an email with a set-your-password link and land in your operation with that role) or press **Invite link** (no email is sent — you get a one-time link to copy and text or email yourself). Inviting a viewer requires picking at least one entity they may see; the other roles need nothing extra.
-- **Assign a role to an existing login** with the form below, or **edit any user inline** — press Edit on their row to change the role and, for viewers, the entities they're granted.
+- **Add a person**: enter their email, choose what they should see (nothing is pre-selected — the Send button stays off until you choose), and press **Send invitation**. They get an email with a set-your-password link and land in your operation with that access. **Get a link instead** creates the same one-time link without sending an email, so you can text it yourself.
+- Choosing **Landlord or stakeholder** asks which entities they may see — pick at least one.
+- **Change what someone sees** from their row: press **Edit**, pick the new access (and entities, for a landlord or stakeholder), and Save.
 
 ## What the controls do
 
-- The four roles, in plain terms:
-- **Owner** — full access to everything. This is the default role.
-- **Gin** — the gin operator role: only the Cotton intake pages (seed cotton loads, gin receipts, bales and grades). No marketing, no reports, no settings.
-- **Viewer** — read-only reports and yields, limited to the entities you grant. A viewer sees only their entities' share of the numbers; whole-operation pages with no entity split (like the bundled settlement statements) are hidden from them. When a viewer tries out what-if values — assumed prices, yield assumptions, county differentials — those changes are **private to that viewer** and never touch your real numbers.
-- **Agronomist** — the Yields page only, for the whole operation. They see every entity's production data — yields by field, farm, entity, variety, and landowner, including the load-by-load detail — but nothing financial: no contracts, settlements, hedging, insurance, payments, or budgets, ever. They can look and export, not edit, and they need no entity checkboxes.
-- **Entity checkboxes** — which entities a viewer may see. Required for viewers; at least one must be picked. Agronomists don't use these — they always see the whole operation's yields.
-- **Cotton module toggle** — turns the Cotton tab on or off for the whole operation. Turning it off hides the cotton pages and reports; it doesn't delete any data.
+The four kinds of access, in plain terms:
+
+- **Farm owner or manager** — everything: loads, contracts, reports, settings, and this page.
+- **Gin** — enters seed cotton loads, gin receipts, and bales only. No dollars, no reports, no settings.
+- **Landlord or stakeholder** — read-only reports and yields, limited to the entities you pick. They see only those entities' share of the numbers; whole-operation pages with no entity split (like the bundled settlement statements) are hidden from them. When they try what-if values — assumed prices, yield assumptions — those changes are private to them and never touch your real numbers.
+- **Agronomist** — the Yields page only, for the whole operation: yields by field, farm, entity, variety, and landowner, down to the load. Nothing financial, ever, and no entity checkboxes needed.
+
+The **Cotton** switch for the whole operation is on Settings → Organization.
 
 ## Common questions
 
-- **Why can't I change my own role?** Your own row is locked on purpose. If the last owner demoted themselves, nobody could manage roles anymore. Have another owner change your role, or contact support.
-- **Email invite or invite link — which should I use?** Send invite is the easy path. Use Invite link when the person's email is unreliable or you'd rather text it — the link is their one-time set-a-password link, so treat it like a key.
-- **Can a landlord see other landlords' numbers?** No. A viewer sees only the entities granted to them, and only in read-only reports.
-- **What's the difference between a viewer and an agronomist?** A viewer is a stakeholder — they see reports and yields for just the entities you pick. An agronomist is a production advisor — they see yields for the whole operation, but only yields: no reports, no dollars anywhere.
-- **What happens to a viewer's what-if numbers?** They live only in that viewer's view. Your saved assumptions and everyone else's screens are untouched, and if you later change the underlying value, the viewer sees a notice that their private value is out of date.
-- **Someone needs both cotton intake and reports.** Roles are one per user. Give them owner if you trust them with everything, or set up which access matters more — there's no combined role.
+- **Why can't I change my own access?** Your own row is locked on purpose. If the last owner stepped down, nobody could manage people anymore. Have another owner change it, or contact support.
+- **Send invitation or get a link — which should I use?** Send invitation is the easy path. Use the link when the person's email is unreliable or you'd rather text it — it's their one-time set-a-password link, so treat it like a key.
+- **Can a landlord see other landlords' numbers?** No. They see only the entities granted to them, and only in read-only reports.
+- **Landlord or agronomist — what's the difference?** A landlord or stakeholder sees reports and yields for just the entities you pick. An agronomist sees yields for the whole operation, but only yields: no reports, no dollars anywhere.
+- **Someone needs both cotton intake and reports.** Each person has one kind of access. Give them owner or manager if you trust them with everything — there's no combined option.
+- **They already have a login.** Sending an invitation to an email that already exists tells you so — use Get a link instead, or change what they see from their row.
 
 ## If something looks wrong
 
-- If an invited user never got the email, re-invite with **Invite link** and send it to them directly.
-- If assigning a role says no login exists for that email, use the invite form first — role assignment applies to existing logins.
-- If a viewer reports missing numbers, check which entities are granted on their row.
-- If your agronomist says a page keeps sending them back to Yields, that's the role working as designed — Yields is their whole app.
+- If an invited person never got the email, press **Get a link instead** and send it to them directly.
+- If a landlord reports missing numbers, check which entities are picked on their row.
+- If your agronomist says a page keeps sending them back to Yields, that's their access working as designed — Yields is their whole app.
 - Anything else, contact support.

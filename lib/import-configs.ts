@@ -23,7 +23,7 @@ export function farmsImportConfig(entities: ReadonlyArray<{ id: string }>): Impo
   return {
     tableName: 'farms',
     uniqueKey: 'name',
-    note: 'Entity and landowner match by name against what already exists — import entities and landowners first. If your operation has one entity, you can leave the entity column out — it’s filled in for you. Counties match by name + state together (two-letter state code, e.g. AL), so a "Lawrence" resolves to the right state’s Lawrence County. Share rent: yes/no (blank means no), with the landlord share as a percent (e.g. 33.33) when yes.',
+    note: 'Entity and landowner match by name against what already exists — import entities and landowners first. If your operation has one entity, you can leave the entity column out — it’s filled in for you. Counties match by name + state together (two-letter state code, e.g. ST), so a "Prairie" resolves to the right state’s Prairie County. Share rent: yes/no (blank means no), with the landlord share as a percent (e.g. 33.33) when yes.',
     columns: [
       { key: 'name', required: true },
       // fallbackId auto-assigns the lone entity for single-entity
@@ -43,7 +43,7 @@ export function farmsImportConfig(entities: ReadonlyArray<{ id: string }>): Impo
           scopeRequired: true,
           scopeMissingError: 'county requires a state — add a state_code column',
           // Same normalization as the rest of the app's county matching
-          // ("Lawrence County" ≡ "LAWRENCE" ≡ "Lawrence").
+          // ("Prairie County" ≡ "PRAIRIE" ≡ "Prairie").
           normalizeMatch: normalizeCountyName,
         },
       },
@@ -240,7 +240,7 @@ export function buyersImportConfig(): ImportConfig {
     tableName: 'buyers',
     uniqueKey: 'name',
     title: 'Import buyers & delivery locations from a spreadsheet',
-    note: 'One row per buyer. Put all of a buyer’s delivery locations in one cell, separated by semicolons; add an address after an @ sign — e.g. "North Elevator @ 105 Grain Rd, Decatur AL; River Terminal". Re-importing an existing buyer adds any NEW locations without touching the rest.',
+    note: 'One row per buyer. Put all of a buyer’s delivery locations in one cell, separated by semicolons; add an address after an @ sign — e.g. "North Elevator @ 105 Grain Rd, Anytown ST; River Terminal". Re-importing an existing buyer adds any NEW locations without touching the rest.',
     columns: [
       { key: 'name', label: 'buyer', required: true },
       {

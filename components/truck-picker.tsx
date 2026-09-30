@@ -41,6 +41,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { createClient } from '@/lib/supabase/client'
 import { getOrgId } from '@/lib/org'
+import { reportError } from '@/lib/friendly-error'
 import { findExternalTruck, ownTruckInsert } from '@/lib/trucks'
 import type { ExternalTruck, Truck } from '@/lib/types'
 
@@ -48,7 +49,7 @@ export { findExternalTruck }
 
 const ADD_NEW = '__add_new__'
 const TYPE_IN = '__type_in__'
-const INPUT = 'w-full rounded-lg border border-slate-300 px-3 py-2'
+const INPUT = 'w-full rounded-lg border border-slate-300 px-3 min-h-11'
 
 const RENAME_RULE = 'Renaming won’t change past loads — they keep the truck name as it was entered.'
 
@@ -72,15 +73,15 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
 function ModalButtons({ busy, label, onCancel }: { busy: boolean; label: string; onCancel: () => void }) {
   return (
     <div className="flex gap-2 justify-end">
-      <button type="button" onClick={onCancel} className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Cancel</button>
-      <button type="submit" disabled={busy} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold disabled:opacity-50">
+      <button type="button" onClick={onCancel} className="rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm">Cancel</button>
+      <button type="submit" disabled={busy} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 min-h-11 text-sm font-semibold disabled:opacity-50">
         {busy ? 'Saving…' : label}
       </button>
     </div>
   )
 }
 
-export function TruckPicker({ value, onChange, trucks, onCreated, onUpdated, className }: {
+export function TruckPicker({ value, onChange, trucks, onCreated, onUpdated, className, id }: {
   value: string
   onChange: (id: string) => void
   trucks: Truck[]
@@ -89,6 +90,8 @@ export function TruckPicker({ value, onChange, trucks, onCreated, onUpdated, cla
   /** Called with the renamed row so the parent can refresh its list. */
   onUpdated?: (t: Truck) => void
   className?: string
+  /** DOM id for the select, so a parent can move focus to it. */
+  id?: string
 }) {
   const supabase = useMemo(() => createClient(), [])
   const [open, setOpen] = useState(false)
@@ -116,7 +119,7 @@ export function TruckPicker({ value, onChange, trucks, onCreated, onUpdated, cla
     const orgId = await getOrgId(supabase)
     const { data, error } = await supabase.from('trucks').insert(ownTruckInsert(trimmed, orgId)).select('*').single()
     setBusy(false)
-    if (error || !data) { setErr(error?.message ?? 'Could not create the truck.'); return }
+    if (error || !data) { setErr(reportError(error, { action: 'add the truck', noun: 'truck', name: trimmed })); return }
     const created = data as Truck
     onCreated?.(created)
     onChange(created.id)
@@ -142,7 +145,7 @@ export function TruckPicker({ value, onChange, trucks, onCreated, onUpdated, cla
       .select('*')
       .single()
     setBusy(false)
-    if (error || !data) { setErr(error?.message ?? 'Could not rename the truck.'); return }
+    if (error || !data) { setErr(reportError(error, { action: 'rename the truck', noun: 'truck', name: trimmed })); return }
     onUpdated?.(data as Truck)
     close()
   }
@@ -151,6 +154,7 @@ export function TruckPicker({ value, onChange, trucks, onCreated, onUpdated, cla
     <>
       <div className="flex items-center gap-1.5">
         <select
+          id={id}
           value={value}
           onChange={(e) => { if (e.target.value === ADD_NEW) setOpen(true); else onChange(e.target.value) }}
           className={`flex-1 min-w-0 ${className ?? INPUT}`}
@@ -163,7 +167,7 @@ export function TruckPicker({ value, onChange, trucks, onCreated, onUpdated, cla
           <button
             type="button"
             onClick={() => { setEditing(true); setName(selected.name_or_number) }}
-            className="rounded-lg bg-white border border-slate-300 px-2.5 py-2 text-sm text-slate-600"
+            className="rounded-lg bg-white border border-slate-300 min-h-11 min-w-11 px-2.5 text-base text-slate-600"
             title="Edit truck name"
             aria-label="Edit truck name"
           >
@@ -180,8 +184,8 @@ export function TruckPicker({ value, onChange, trucks, onCreated, onUpdated, cla
               <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 space-y-1.5">
                 <p>A truck named <b>{dupe.name_or_number}</b> already exists.</p>
                 <div className="flex gap-2">
-                  <button type="button" onClick={() => { onChange(dupe.id); close() }} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold">Use existing</button>
-                  <button type="submit" className="rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-sm">Create anyway</button>
+                  <button type="button" onClick={() => { onChange(dupe.id); close() }} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 min-h-11 text-sm font-semibold">Use existing</button>
+                  <button type="submit" className="rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm">Create anyway</button>
                 </div>
               </div>
             )}
@@ -215,6 +219,7 @@ export function HaulerTruckField({
   onChangeSaveTruck,
   onExternalUpdated,
   className,
+  id,
 }: {
   /** Free-text hauler truck (loads.hauler_truck). */
   haulerTruck: string
@@ -230,6 +235,8 @@ export function HaulerTruckField({
   /** Called with the renamed row so the parent can refresh its list. */
   onExternalUpdated?: (t: ExternalTruck) => void
   className?: string
+  /** DOM id for the select, so a parent can move focus to it. */
+  id?: string
 }) {
   const supabase = useMemo(() => createClient(), [])
   const matched = findExternalTruck(externalTrucks, haulerTruck)
@@ -293,7 +300,7 @@ export function HaulerTruckField({
       .select('*')
       .single()
     setBusy(false)
-    if (error || !data) { setErr(error?.message ?? 'Could not rename the truck.'); return }
+    if (error || !data) { setErr(reportError(error, { action: 'rename the truck', noun: 'hauler truck', name: trimmed })); return }
     onExternalUpdated?.(data as ExternalTruck)
     // The selection mirrors the free text, so follow the rename — this load
     // (not yet saved) should carry the corrected name.
@@ -304,7 +311,7 @@ export function HaulerTruckField({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center gap-1.5">
-        <select value={selectValue} onChange={(e) => onSelect(e.target.value)} className={`flex-1 min-w-0 ${className ?? INPUT}`}>
+        <select id={id} value={selectValue} onChange={(e) => onSelect(e.target.value)} className={`flex-1 min-w-0 ${className ?? INPUT}`}>
           <option value="">— hauler’s truck —</option>
           {externalTrucks.length > 0 && (
             <optgroup label="Hauler trucks">
@@ -322,7 +329,7 @@ export function HaulerTruckField({
           <button
             type="button"
             onClick={() => { setEditing(true); setName(matched.name) }}
-            className="rounded-lg bg-white border border-slate-300 px-2.5 py-2 text-sm text-slate-600"
+            className="rounded-lg bg-white border border-slate-300 min-h-11 min-w-11 px-2.5 text-base text-slate-600"
             title="Edit truck name"
             aria-label="Edit truck name"
           >
@@ -339,14 +346,14 @@ export function HaulerTruckField({
             className={className ?? INPUT}
           />
           {haulerTruck.trim() !== '' && !matched && (
-            <label className="flex items-center gap-2 text-xs text-slate-600">
-              <input type="checkbox" checked={saveTruck} onChange={(e) => onChangeSaveTruck(e.target.checked)} />
+            <label className="flex items-center gap-2 text-sm text-slate-600 min-h-11">
+              <input type="checkbox" checked={saveTruck} onChange={(e) => onChangeSaveTruck(e.target.checked)} className="h-5 w-5" />
               Save this truck for future pickup loads
             </label>
           )}
         </>
       )}
-      <p className="text-[11px] text-slate-500">
+      <p className="text-xs text-slate-500">
         Pickup contract — the buyer’s truck loads at your farm. Type or pick the hauler’s truck; your own trucks are at the bottom if you haul it yourself.
       </p>
       {editing && matched && (

@@ -1,7 +1,7 @@
 ---
 page_route: /reports/arc-plc-decision-aid
 title: ARC/PLC Decision Aid
-updated: 2026-08-05
+updated: 2026-09-24
 keywords: ARC, PLC, ARC-CO, election, base acres, MYA, reference price, benchmark, FSA, SCO, decision aid, what-if
 ---
 ## What this page is for
@@ -27,7 +27,7 @@ Every year you elect ARC or PLC for each farm and covered commodity at the FSA o
 
 - **PLC** pays when the MYA falls below the effective reference price: the spread, times the farm's PLC yield, times base acres, times the payment factor, less sequestration.
 - **ARC-CO** pays on county revenue: a guarantee built from the benchmark price and benchmark county yield, compared against actual county revenue, capped at a percentage of benchmark revenue.
-- Counties without benchmark data fall back to a flat per-acre estimate, marked with a **"flat est."** chip — hover it to see why (no county on the farm, or no benchmark entered for that county and year). Enter benchmarks under Settings, Government Payments to replace the flat estimate with the real calculation.
+- Counties without benchmark data fall back to a flat per-acre estimate, marked with a **"on a flat estimate"** chip — tap it to see why (no county on the farm, or no benchmark entered for that county and year). Enter benchmarks under Settings, Government Payments to replace the flat estimate with the real calculation. A row that cannot be figured yet says **needs the marketing-year price**.
 - The Payment Tracker uses the identical math, so the two pages always agree.
 - **SCO note**: for 2025 and later crop years, SCO can be purchased regardless of your ARC/PLC election, with an 80 percent premium subsidy. And for 2025 only, FSA automatically pays the higher of ARC or PLC per farm and commodity.
 
@@ -38,6 +38,6 @@ Every year you elect ARC or PLC for each farm and covered commodity at the FSA o
 
 ## If something looks wrong
 
-- A "flat est." chip means benchmark data is missing — add it in Settings, Government Payments.
+- A "flat estimate" chip means benchmark data is missing — add it in Settings, Government Payments.
 - A notice about benchmark years means your benchmarks are entered under a different program year; the notice links you to the right spot.
 - Anything else, contact support.

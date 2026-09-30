@@ -8,8 +8,9 @@
 // computeCommodityPayment — the two pages agree to the cent), with a badge
 // when the payment-rate cap binds.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
+import { useReportCropYear } from '@/lib/report-filters'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
@@ -28,7 +29,8 @@ import {
 import { resolveProgramYearConfig, programConfigNotice, type ResolvedProgramConfig } from '@/lib/program-config'
 import { fmtPrice } from '@/lib/hedging'
 import {
-  SummaryCards, EmptyState, theadCls, grandTotalRowCls, toneText,
+  SummaryCards, EmptyState, ReportHeader, ReportFilterBar, FilterField, Disclosure, InfoTip,
+  theadCls, grandTotalRowCls, stickyColCls, stickyColHeadCls, selectCls, toneText, fmtUsd, fmtInt, filterSummaryOf,
   type SummaryCardData,
 } from '@/components/reports/report-kit'
 import { formatNumber, type ExportPayload, type ExportCell } from '@/lib/exports'
@@ -38,12 +40,13 @@ import type {
   ArcBenchmarkData, MyaMonthlyPrice,
 } from '@/lib/types'
 
-type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
+type Props = {
+  onPayloadChange?: (build: () => ExportPayload) => void
+  /** Rendered in the report header's action slot (the page passes <ExportBar/>). */
+  headerActions?: ReactNode
+}
 
-const usd = (n: number | null | undefined, d = 0) =>
-  n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`
-
-export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
+export default function GovernmentPaymentsReport({ onPayloadChange, headerActions }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [loading, setLoading] = useState(true)
   const [farms, setFarms] = useState<Farm[]>([])
@@ -60,7 +63,9 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   const [counties, setCounties] = useState<County[]>([])
   const [benchmarks, setBenchmarks] = useState<ArcBenchmarkData[]>([])
   const [monthlyPrices, setMonthlyPrices] = useState<MyaMonthlyPrice[]>([])
-  const [cropYear, setCropYear] = usePersistentState<number | ''>('gov-pay:cropYear', '')
+  // Crop year: current year by default, persisted, never overwritten on load
+  // (lib/report-filters). The option list always carries the current year.
+  const [cropYear, setCropYear] = useReportCropYear('gov-pay:cropYear')
   const [entityId, setEntityId] = usePersistentState('gov-pay:entity', '')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   // Year framing: 'payment' (default) = the selected year is the crop year the
@@ -74,11 +79,10 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   const programYear: number | '' = cropYear === '' ? '' : yearBasis === 'payment' ? programYearFor(cropYear) : cropYear
   const paymentYear: number | '' = cropYear === '' ? '' : yearBasis === 'payment' ? cropYear : revenueCropYearFor(cropYear)
 
+  // Switching the basis keeps the year the user picked (the number never
+  // shifts under them); only the label and the math's framing change.
   function switchBasis(b: 'payment' | 'program') {
     if (b === yearBasis) return
-    // Keep the same payment pool on screen: the selected number shifts by ±1
-    // so "2026 payments" and "2025 program year" stay the same view.
-    if (cropYear !== '') setCropYear(b === 'payment' ? cropYear + 1 : cropYear - 1)
     setYearBasis(b)
   }
 
@@ -114,11 +118,6 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
       setCounties(co || [])
       setBenchmarks((bm.data as ArcBenchmarkData[]) || [])
       setMonthlyPrices((mp.data as MyaMonthlyPrice[]) || [])
-      // Seed the year from the latest election's PROGRAM year — shown as its
-      // payment year (program + 1) under the default payment-year basis.
-      const yrs = (el.data as ArcPlcElection[] | null)?.map((e) => e.crop_year) ?? []
-      const seedProgram = yrs.length > 0 ? Math.max(...yrs) : new Date().getFullYear()
-      setCropYear((cy) => (cy === '' ? (yearBasis === 'payment' ? revenueCropYearFor(seedProgram) : seedProgram) : cy))
       setLoading(false)
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -265,9 +264,9 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
 
   // Headline summary straight from the already-computed totals (no new math).
   const summaryCards: SummaryCardData[] = useMemo(() => [
-    { label: 'Total ARC/PLC', value: usd(totals.arcPlc), tone: 'favorable' },
-    { label: 'Other USDA', value: usd(totals.other) },
-    { label: 'Grand Total', value: usd(totals.grand), tone: 'favorable', sub: `${shownFarms.length} farm${shownFarms.length === 1 ? '' : 's'}` },
+    { label: 'Total ARC/PLC', value: fmtUsd(totals.arcPlc), tone: 'neutral' },
+    { label: 'Other USDA', value: fmtUsd(totals.other) },
+    { label: 'Grand Total', value: fmtUsd(totals.grand), tone: 'favorable', sub: `${shownFarms.length} farm${shownFarms.length === 1 ? '' : 's'}` },
   ], [totals, shownFarms])
 
   // Per-entity payment-limit status: sum ARC/PLC for that entity's farms + the
@@ -346,6 +345,14 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
   const entityName = entityId
     ? entityById.get(entityId)?.name ?? null
     : viewerAllEntitiesLabel(viewer, entities)
+  const filterSummary = filterSummaryOf(
+    cropYear === ''
+      ? null
+      : yearBasis === 'payment'
+        ? `Payments received in ${paymentYear} (${programYear} program year)`
+        : `${programYear} program year (paid Oct ${paymentYear})`,
+    entityName ?? 'All Entities',
+  )
 
   function buildExportPayload(): ExportPayload {
     // Same column order as the screen: totals first, then per commodity —
@@ -439,11 +446,9 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
 
     return {
       title: 'Government Payment Tracker',
-      filters: `${yearBasis === 'payment'
-        ? `Payments received in crop year ${paymentYear || '—'} (${programYear || '—'} program year, paid Oct ${paymentYear || '—'})`
-        : `Program year ${programYear || '—'} (paid Oct ${paymentYear || '—'})`}${entityName ? ` · Entity: ${entityName}` : ''}`,
+      filters: filterSummary,
       summary: [
-        { label: 'Total ARC/PLC', value: formatNumber(totals.arcPlc, 'usd0'), tone: 'favorable' },
+        { label: 'Total ARC/PLC', value: formatNumber(totals.arcPlc, 'usd0'), tone: 'neutral' },
         { label: 'Other USDA', value: formatNumber(totals.other, 'usd0') },
         { label: 'Grand Total', value: formatNumber(totals.grand, 'usd0'), tone: 'favorable', sub: `${shownFarms.length} farm${shownFarms.length === 1 ? '' : 's'}` },
       ],
@@ -456,82 +461,96 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [farmRows, totals, shownCommodities, limitRows, entityMatrix, matrixCommodities, cropYear, yearBasis, entityName, onPayloadChange])
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   if (loading) return <p className="text-slate-500">Loading…</p>
+
+  const canOpenSettings = viewer.role === 'owner'
+  const setupNotices: ReactNode[] = []
+  if (benchmarkYearsElsewhere.length > 0) {
+    setupNotices.push(
+      <div key="bench">
+        <strong>Program-year mismatch</strong> — this view computes <b>program year {programYear}</b>
+        {yearBasis === 'payment' ? <> (its payments arrive in {paymentYear})</> : null}, but your ARC-CO benchmark
+        rows are for {benchmarkYearsElsewhere.join(', ')} — so ARC-CO falls back to flat estimates. Benchmarks and
+        elections are keyed to the program year:{' '}
+        {canOpenSettings ? (
+          <Link href={`/settings/government-payments?year=${programYear}#bench`} className="underline font-semibold">
+            add {programYear} rows in Settings
+          </Link>
+        ) : <>ask the operator to add {programYear} rows</>}
+        , or switch the year / year basis above if you meant a different program year.
+      </div>,
+    )
+  }
+  if (suspects.length > 0 && !suspectNoteDismissed) {
+    setupNotices.push(
+      <div key="suspects" className="flex items-start gap-3">
+        <span className="flex-1">
+          <strong>Review other-payment years</strong> — the crop year on an Other USDA payment now means the year the
+          payment is <em>received</em>. {suspects.length} existing entr{suspects.length === 1 ? 'y has' : 'ies have'} a
+          payment date in the year after {suspects.length === 1 ? 'its' : 'their'} crop year
+          ({suspects.slice(0, 4).map((o) => `${o.program_name} ${o.crop_year}`).join(', ')}{suspects.length > 4 ? ', …' : ''}) —
+          if those crop years were meant as program years, update them to the payment year under Settings → Government
+          Payments → Other USDA Payments.
+        </span>
+        <button type="button" onClick={() => setSuspectNoteDismissed(true)} className="min-h-10 px-2 text-xs underline whitespace-nowrap">Dismiss</button>
+      </div>,
+    )
+  }
+  if (programNotice) setupNotices.push(<div key="program">{programNotice}</div>)
 
   return (
     <div className="space-y-4 print-area">
-      <div className="flex flex-wrap gap-3 items-end no-print">
-        <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">{yearBasis === 'payment' ? 'Crop year (payments received) *' : 'Program year *'}</span>
-          <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
-            <option value="">— pick a year —</option>
+      <ReportHeader title="Government Payment Tracker" filterSummary={filterSummary} actions={headerActions} />
+      <ReportFilterBar activeCount={entityId ? 1 : 0}>
+        <FilterField label={yearBasis === 'payment' ? 'Crop year (payments received)' : 'Program year'}>
+          <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={selectCls}>
             {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
-        </label>
-        <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Year basis</span>
+        </FilterField>
+        <FilterField label="Year basis">
           <span className="inline-flex rounded-lg border border-slate-300 overflow-hidden text-sm">
             <button
+              type="button"
               onClick={() => switchBasis('payment')}
-              className={`px-3 py-2 ${yearBasis === 'payment' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
-              title="Show the payments received in the selected crop year (the year's program payments were earned the prior program year)"
+              aria-pressed={yearBasis === 'payment'}
+              className={`px-3 min-h-10 ${yearBasis === 'payment' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
             >
               By payment year
             </button>
             <button
+              type="button"
               onClick={() => switchBasis('program')}
-              className={`px-3 py-2 border-l border-slate-300 ${yearBasis === 'program' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
-              title="Show a program year's payments (paid the following October) — for FSA reconciliation"
+              aria-pressed={yearBasis === 'program'}
+              className={`px-3 min-h-10 border-l border-slate-300 ${yearBasis === 'program' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
             >
               By program year
             </button>
           </span>
-        </label>
+        </FilterField>
         <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} />
-        <Link
-          href={`/settings/government-payments${programYear !== '' ? `?year=${programYear}` : ''}#bench`}
-          className="ml-auto rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-        >
-          ARC-CO settings: benchmarks &amp; county yields →
-        </Link>
-      </div>
-
-      {benchmarkYearsElsewhere.length > 0 && (
-        <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print">
-          <strong>Program-year mismatch</strong> — this view computes <b>program year {programYear}</b>
-          {yearBasis === 'payment' ? <> (its payments arrive in {paymentYear})</> : null}, but your ARC-CO benchmark
-          rows are for {benchmarkYearsElsewhere.join(', ')} — so ARC-CO falls back to flat estimates. Benchmarks and
-          elections are keyed to the program year:{' '}
-          <Link href={`/settings/government-payments?year=${programYear}#bench`} className="underline font-semibold">
-            add {programYear} rows in Settings
+        {canOpenSettings && (
+          <Link
+            href={`/settings/government-payments${programYear !== '' ? `?year=${programYear}` : ''}#bench`}
+            className="inline-flex items-center rounded-lg bg-white border border-slate-300 px-3 min-h-10 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            ARC-CO settings: benchmarks &amp; county yields →
           </Link>
-          , or switch the year / year basis above if you meant a different program year.
-        </div>
-      )}
+        )}
+      </ReportFilterBar>
+      <p className="text-xs text-slate-500 no-print">
+        {yearBasis === 'payment'
+          ? <>Showing the payments received in the selected crop year. They were earned in the prior program year.</>
+          : <>Showing a program year&rsquo;s payments, paid the following October — the framing the FSA office uses.</>}
+      </p>
 
-      {suspects.length > 0 && !suspectNoteDismissed && (
-        <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print flex items-start gap-3">
-          <span className="flex-1">
-            <strong>Review other-payment years</strong> — the crop year on an Other USDA payment now means the year the
-            payment is <em>received</em>. {suspects.length} existing entr{suspects.length === 1 ? 'y has' : 'ies have'} a
-            payment date in the year after {suspects.length === 1 ? 'its' : 'their'} crop year
-            ({suspects.slice(0, 4).map((o) => `${o.program_name} ${o.crop_year}`).join(', ')}{suspects.length > 4 ? ', …' : ''}) —
-            if those crop years were meant as program years, update them to the payment year under Settings → Government
-            Payments → Other USDA Payments.
-          </span>
-          <button onClick={() => setSuspectNoteDismissed(true)} className="text-xs underline whitespace-nowrap">dismiss</button>
-        </div>
-      )}
-
-      {programNotice && (
-        <div className="rounded-lg bg-yellow-50 border border-yellow-300 px-3 py-2 text-sm text-yellow-900">
-          {programNotice}
-        </div>
+      {setupNotices.length > 0 && (
+        <Disclosure title="Check your setup" count={setupNotices.length} tone="warning">
+          {setupNotices}
+        </Disclosure>
       )}
 
       {cropYear !== '' && farmRows.length === 0 && (
-        <EmptyState message="No base acres on file." linkHref="/settings/government-payments" linkLabel="Add base acres" />
+        <EmptyState message="No base acres on file." linkHref="/settings/government-payments" linkLabel="Add base acres" role={viewer.role} />
       )}
 
       {cropYear !== '' && farmRows.length > 0 && (
@@ -572,22 +591,22 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
                         <td className="px-2 py-1 font-semibold whitespace-nowrap">{r.name}</td>
                         {matrixCommodities.map((c) => {
                           const v = r.byCommodity.get(c.id)
-                          return <td key={c.id} className="px-2 py-1 text-right font-mono tabular-nums">{v ? usd(v) : <span className="text-slate-300">—</span>}</td>
+                          return <td key={c.id} className="px-2 py-1 text-right tabular-nums">{v ? fmtUsd(v) : <span className="text-slate-300">—</span>}</td>
                         })}
-                        <td className="px-2 py-1 text-right font-mono tabular-nums">{r.other !== 0 ? usd(r.other) : <span className="text-slate-300">—</span>}</td>
+                        <td className="px-2 py-1 text-right tabular-nums">{r.other !== 0 ? fmtUsd(r.other) : <span className="text-slate-300">—</span>}</td>
                         <td
-                          className={`px-2 py-1 text-right font-mono tabular-nums font-bold ${r.limitPct != null && r.limitPct > 1 ? 'text-red-700' : r.limitPct != null && r.limitPct > 0.8 ? 'text-amber-700' : ''}`}
-                          title={r.limitPct != null ? `${Math.round(r.limitPct * 100)}% of this entity's payment limit (see Payment Limit Status below)` : undefined}
+                          className={`px-2 py-1 text-right tabular-nums font-bold ${r.limitPct != null ? toneText(r.limitPct > 1 ? 'unfavorable' : r.limitPct > 0.8 ? 'warning' : 'neutral') : ''}`}
                         >
-                          {usd(r.total)}
+                          {fmtUsd(r.total)}
+                          {r.limitPct != null && <span className="block text-[10px] font-normal text-slate-500">{Math.round(r.limitPct * 100)}% of limit</span>}
                         </td>
                       </tr>
                     ))}
                     <tr className={grandTotalRowCls}>
                       <td className="px-2 py-1">Total</td>
-                      {matrixCommodities.map((c) => <td key={c.id} className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.byCommodity.get(c.id) ?? 0)}</td>)}
-                      <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.other)}</td>
-                      <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.grand)}</td>
+                      {matrixCommodities.map((c) => <td key={c.id} className="px-2 py-1 text-right tabular-nums">{fmtUsd(totals.byCommodity.get(c.id) ?? 0)}</td>)}
+                      <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(totals.other)}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(totals.grand)}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -634,7 +653,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
                   {/* Farm stays frozen on horizontal scroll (sticky inside the
                       section's overflow-x-auto); totals sit before the per-crop
                       amounts so the number that matters is never scrolled away. */}
-                  <th className="text-left px-2 py-1 sticky left-0 z-20 bg-slate-100 shadow-[1px_0_0_0_#cbd5e1]">Farm</th><th className="text-left px-2 py-1">FSA #</th><th className="text-left px-2 py-1">Entity</th>
+                  <th className={`text-left px-2 py-1 ${stickyColHeadCls}`}>Farm</th><th className="text-left px-2 py-1">FSA #</th><th className="text-left px-2 py-1">Entity</th>
                   <th className="text-right px-2 py-1 whitespace-nowrap">Total Govt</th>
                   <th className="text-right px-2 py-1 whitespace-nowrap">Total ARC/PLC</th>
                   <th className="text-right px-2 py-1 whitespace-nowrap">Other</th>
@@ -645,45 +664,45 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
               <tbody>
                 {farmRows.map((r) => (
                   <tr key={r.farm.id} className="border-t border-slate-100 align-top">
-                    <td className="px-2 py-1 font-semibold sticky left-0 z-10 bg-white shadow-[1px_0_0_0_#cbd5e1]">{r.farm.name}</td>
-                    <td className="px-2 py-1 font-mono text-xs">{r.farm.fsa_number ?? ''}</td>
+                    <td className={`px-2 py-1 font-semibold ${stickyColCls}`}>{r.farm.name}</td>
+                    <td className="px-2 py-1 text-xs tabular-nums">{r.farm.fsa_number ?? ''}</td>
                     <td className="px-2 py-1">{entityById.get(r.farm.entity_id ?? '')?.name ?? '—'}</td>
-                    <td className="px-2 py-1 text-right font-mono font-bold tabular-nums">{usd(r.total)}</td>
-                    <td className="px-2 py-1 text-right font-mono font-semibold tabular-nums">{usd(r.arcPlcTotal)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.other)}</td>
+                    <td className="px-2 py-1 text-right font-bold tabular-nums">{fmtUsd(r.total)}</td>
+                    <td className="px-2 py-1 text-right font-semibold tabular-nums">{fmtUsd(r.arcPlcTotal)}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(r.other)}</td>
                     {shownCommodities.map((c) => {
                       const p = r.byCommodity.get(c.id)
                       if (!p) return <td key={c.id} className="px-2 py-1 text-right tabular-nums text-slate-300">—</td>
                       return (
                         <td key={c.id} className={`px-2 py-1 text-right tabular-nums ${p.result.net > 0 ? '' : 'text-slate-400'}`}>
-                          <div className="font-mono">{usd(p.result.net)}</div>
+                          <div className="tabular-nums">{fmtUsd(p.result.net)}</div>
                           <div className="text-[10px] text-slate-500">
-                            {Number(p.baseAcres).toLocaleString()} ac · {ELECTION_LABEL[p.election]}
+                            {fmtInt(p.baseAcres)} ac · {ELECTION_LABEL[p.election]}
                             {p.result.arcMethod === 'engine' && p.result.arcDetail?.capped && (
-                              <span className="ml-1 rounded-full bg-violet-100 text-violet-800 px-1.5 py-0.5 whitespace-nowrap">capped at {Math.round(p.result.arcDetail.capPct * 100)}%</span>
+                              <span className="ml-1 rounded-full bg-slate-100 text-slate-700 px-1.5 py-0.5 whitespace-nowrap">capped at {Math.round(p.result.arcDetail.capPct * 100)}%</span>
                             )}
                             {p.result.arcMethod === 'flat' && p.result.computable && (
-                              <span className="ml-1 rounded-full bg-amber-100 text-amber-800 px-1.5 py-0.5 whitespace-nowrap" title="No county benchmark data — flat $/acre estimate">flat est.</span>
+                              <InfoTip label="flat estimate" tone="warning" className="ml-1">No county benchmark data for this county and crop yet, so this is your flat dollars-per-acre estimate.</InfoTip>
                             )}
                           </div>
                         </td>
                       )
                     })}
-                    <td className="px-2 py-1 no-print"><button onClick={() => toggle(r.farm.id)} className="text-brand-deep text-xs">{expanded.has(r.farm.id) ? 'Hide' : 'Detail'}</button></td>
+                    <td className="px-2 py-1 no-print"><button type="button" onClick={() => toggle(r.farm.id)} aria-expanded={expanded.has(r.farm.id)} className="inline-flex items-center min-h-10 px-2 rounded-lg text-brand-deep text-xs font-semibold hover:bg-slate-100">{expanded.has(r.farm.id) ? 'Hide' : 'Detail'}</button></td>
                   </tr>
                 ))}
                 <tr className={grandTotalRowCls}>
-                  <td className="px-2 py-1 sticky left-0 z-10 bg-slate-100 shadow-[1px_0_0_0_#cbd5e1]">Total</td>
+                  <td className={`px-2 py-1 ${stickyColCls} bg-slate-100`}>Total</td>
                   <td className="px-2 py-1" colSpan={2} />
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.grand)}</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.arcPlc)}</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.other)}</td>
-                  {shownCommodities.map((c) => <td key={c.id} className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.byCommodity.get(c.id) ?? 0)}</td>)}
+                  <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(totals.grand)}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(totals.arcPlc)}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(totals.other)}</td>
+                  {shownCommodities.map((c) => <td key={c.id} className="px-2 py-1 text-right tabular-nums">{fmtUsd(totals.byCommodity.get(c.id) ?? 0)}</td>)}
                   <td className="no-print" />
                 </tr>
               </tbody>
             </table>
-            {nonFarmOther > 0 && <p className="text-xs text-slate-500 mt-2">Includes {usd(nonFarmOther)} of non-farm-specific other payments in the Other total.</p>}
+            {nonFarmOther > 0 && <p className="text-xs text-slate-500 mt-2">Includes {fmtUsd(nonFarmOther)} of non-farm-specific other payments in the Other total.</p>}
           </section>
 
           {/* Per-farm detail */}
@@ -703,14 +722,14 @@ export default function GovernmentPaymentsReport({ onPayloadChange }: Props) {
               </h2>
               <div className="overflow-x-auto">
                 <table className="min-w-full text-sm">
-                  <thead className="bg-slate-50 text-slate-600"><tr>{['Entity', 'Limit', 'Projected', 'Remaining', 'Status'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+                  <thead className={theadCls}><tr>{['Entity', 'Limit', 'Projected', 'Remaining', 'Status'].map((h, i) => <th key={h} className={`${i >= 1 && i <= 3 ? 'text-right' : 'text-left'} px-3 py-2 whitespace-nowrap font-semibold`}>{h}</th>)}</tr></thead>
                   <tbody>
                     {limitRows.map((l) => (
                       <tr key={l.entity.id} className="border-t border-slate-100">
                         <td className="px-3 py-2 font-semibold">{l.entity.name}</td>
-                        <td className="px-3 py-2 text-right font-mono tabular-nums">{usd(l.limit)} <span className="text-xs text-slate-400">({l.persons} × {usd(l.perPerson)})</span></td>
-                        <td className={`px-3 py-2 text-right font-mono tabular-nums ${toneText(l.pct > 1 ? 'unfavorable' : l.pct > 0.8 ? 'warning' : 'neutral')}`}>{usd(l.projTotal)}</td>
-                        <td className={`px-3 py-2 text-right font-mono tabular-nums ${l.remaining < 0 ? 'text-red-700' : ''}`}>{usd(l.remaining)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{fmtUsd(l.limit)} <span className="text-xs text-slate-400">({l.persons} × {fmtUsd(l.perPerson)})</span></td>
+                        <td className={`px-3 py-2 text-right tabular-nums ${toneText(l.pct > 1 ? 'unfavorable' : l.pct > 0.8 ? 'warning' : 'neutral')}`}>{fmtUsd(l.projTotal)}</td>
+                        <td className={`px-3 py-2 text-right tabular-nums ${l.remaining < 0 ? toneText('unfavorable') : ''}`}>{fmtUsd(l.remaining)}</td>
                         <td className="px-3 py-2">
                           {l.pct > 1 ? <span className="text-xs rounded-full bg-red-100 text-red-800 px-2 py-0.5">Exceeds limit</span>
                             : l.pct > 0.8 ? <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">Approaching limit</span>
@@ -738,7 +757,7 @@ function FarmDetail({ farmRow, commodityById, otherForFarm, crops, programCfg }:
   programCfg: ResolvedProgramConfig
 }) {
   const Line = ({ label, value }: { label: string; value: string }) => (
-    <div className="flex justify-between gap-4 border-b border-slate-100 py-0.5"><span className="text-slate-500">{label}</span><span className="font-mono">{value}</span></div>
+    <div className="flex justify-between gap-4 border-b border-slate-100 py-0.5"><span className="text-slate-500">{label}</span><span className="tabular-nums">{value}</span></div>
   )
   return (
     <section className="bg-white rounded-xl shadow p-4 space-y-4 avoid-break">
@@ -752,14 +771,14 @@ function FarmDetail({ farmRow, commodityById, otherForFarm, crops, programCfg }:
             <div key={p.commodityId}>
               <div className="font-semibold mb-1">
                 {commodity.name} — {ELECTION_LABEL[p.election]}
-                {p.result.arcMethod === 'engine' && <span className="ml-1 text-[10px] rounded-full bg-sky-100 text-sky-800 px-1.5 py-0.5">county engine</span>}
+                {p.result.arcMethod === 'engine' && <span className="ml-1 text-[10px] rounded-full bg-sky-100 text-sky-800 px-1.5 py-0.5">county figures</span>}
                 {p.result.arcMethod === 'flat' && <span className="ml-1 text-[10px] rounded-full bg-amber-100 text-amber-800 px-1.5 py-0.5">flat estimate</span>}
               </div>
-              <Line label="Base acres" value={p.baseAcres.toLocaleString()} />
+              <Line label="Base acres" value={fmtInt(p.baseAcres)} />
               <Line label="Effective reference price" value={fmtPrice(p.result.effectiveReferencePrice)} />
               {p.election === 'PLC' ? (
                 <>
-                  <Line label="MYA price" value={p.result.myaPrice != null ? fmtPrice(p.result.myaPrice) : 'needs MYA'} />
+                  <Line label="MYA price" value={p.result.myaPrice != null ? fmtPrice(p.result.myaPrice) : 'needs the marketing-year price'} />
                   <Line label="Effective price (floored at loan)" value={p.result.effectivePrice != null ? fmtPrice(p.result.effectivePrice) : '—'} />
                   <Line label="Payment rate/unit" value={fmtPrice(p.result.paymentRatePerUnit)} />
                   <Line label="PLC yield" value={String(p.plcYield)} />
@@ -767,7 +786,7 @@ function FarmDetail({ farmRow, commodityById, otherForFarm, crops, programCfg }:
                 </>
               ) : arcD ? (
                 <>
-                  <Line label="MYA price" value={p.result.myaPrice != null ? fmtPrice(p.result.myaPrice) : 'needs MYA'} />
+                  <Line label="MYA price" value={p.result.myaPrice != null ? fmtPrice(p.result.myaPrice) : 'needs the marketing-year price'} />
                   <Line label={`Benchmark revenue (${fmtPrice(arcD.benchmarkPrice)} × ${arcD.benchmarkYield})`} value={`$${arcD.benchmarkRevenue.toFixed(2)}/ac`} />
                   <Line label={`Guarantee (${Math.round(arcD.guaranteePct * 100)}%)`} value={`$${arcD.guarantee.toFixed(2)}/ac`} />
                   <Line label={`Actual county revenue (${arcD.actualCountyYield} yd${arcD.countyYieldVsBenchmarkPct !== 0 ? `, ${arcD.countyYieldVsBenchmarkPct > 0 ? '+' : ''}${arcD.countyYieldVsBenchmarkPct}% vs benchmark` : ''})`} value={`$${arcD.actualRevenue.toFixed(2)}/ac`} />
@@ -776,9 +795,9 @@ function FarmDetail({ farmRow, commodityById, otherForFarm, crops, programCfg }:
               ) : (
                 <Line label="Projected rate/acre (flat)" value={`$${p.result.grossPerAcre.toFixed(2)}`} />
               )}
-              <Line label="Gross payment" value={`$${p.result.gross.toLocaleString()}`} />
-              <Line label={`× ${factor} base factor × (1 − ${(programCfg.sequestrationPct * 100).toFixed(1)}% seq.)`} value={`$${p.result.net.toLocaleString()}`} />
-              <Line label="Net payment" value={`$${p.result.net.toLocaleString()}`} />
+              <Line label="Gross payment" value={fmtUsd(p.result.gross)} />
+              <Line label={`× ${factor} base factor × (1 − ${(programCfg.sequestrationPct * 100).toFixed(1)}% sequestration)`} value={fmtUsd(p.result.net)} />
+              <Line label="Net payment" value={fmtUsd(p.result.net)} />
             </div>
           )
         })}
@@ -789,7 +808,7 @@ function FarmDetail({ farmRow, commodityById, otherForFarm, crops, programCfg }:
           {otherForFarm.map((o) => (
             <div key={o.id} className="flex justify-between gap-4 border-b border-slate-100 py-0.5">
               <span className="text-slate-500">{o.program_name}{o.crop_id ? ` · ${crops.find((c) => c.id === o.crop_id)?.name ?? ''}` : ''} ({o.payment_status})</span>
-              <span className="font-mono">${Number(o.amount).toLocaleString()}</span>
+              <span className="tabular-nums">{fmtUsd(o.amount)}</span>
             </div>
           ))}
         </div>

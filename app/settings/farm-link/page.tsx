@@ -21,6 +21,8 @@ import {
   type FarmLinkScope,
 } from '@/lib/farm-link'
 import { fmtSyncTime, TURNROW_FARM_URL } from '@/components/farm-link-banner'
+import { reportError } from '@/lib/friendly-error'
+import { useDialogs } from '@/components/use-dialogs'
 
 type CallRow = { id: string; endpoint: string; method: string; status: number; counts: Record<string, number>; duration_ms: number | null; called_at: string }
 
@@ -64,6 +66,7 @@ export default function FarmLinkPage() {
   const [copied, setCopied] = useState(false)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const { confirm, dialogs } = useDialogs()
 
   const refresh = useCallback(async () => {
     const { data, error } = await supabase.from('farm_links').select('*').neq('status', 'revoked').order('created_at', { ascending: false }).limit(1).maybeSingle()
@@ -97,17 +100,17 @@ export default function FarmLinkPage() {
       if (link && link.status === 'pending') {
         // Replace the outstanding code: the old one stops working immediately.
         const { error } = await supabase.from('farm_links').update({ code_hash: codeHash, code_expires_at: new Date(Date.now() + 7 * 86400000).toISOString() }).eq('id', link.id)
-        if (error) throw new Error(error.message)
+        if (error) throw error
       } else {
         const { data: userData } = await supabase.auth.getUser()
         const { error } = await supabase.from('farm_links').insert({ code_hash: codeHash, created_by: userData?.user?.id ?? null })
-        if (error) throw new Error(error.message)
+        if (error) throw error
       }
       setFresh({ kind: 'code', value: code })
       setCopied(false)
       await refresh()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Could not generate a pairing code.')
+      setErr(reportError(e as Error, { action: 'create a pairing code' }))
     } finally {
       setBusy(false)
     }
@@ -115,17 +118,18 @@ export default function FarmLinkPage() {
 
   async function rotateToken() {
     if (!link) return
-    if (!confirm('Rotate the link token? Turnrow Farm stops working with the old token right away — paste the new one there.')) return
+    const ok = await confirm({ title: 'Replace the link token?', body: 'Turnrow Farm stops working with the old token right away — paste the new one there as soon as it appears.', confirmLabel: 'Replace token' })
+    if (!ok) return
     setErr(null); setBusy(true)
     try {
       const token = formatFarmLinkSecret('token', randomHex(24))
       const { error } = await supabase.from('farm_links').update({ token_hash: await sha256Hex(token), token_rotated_at: new Date().toISOString() }).eq('id', link.id)
-      if (error) throw new Error(error.message)
+      if (error) throw error
       setFresh({ kind: 'token', value: token })
       setCopied(false)
       await refresh()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Could not rotate the token.')
+      setErr(reportError(e as Error, { action: 'replace the link token' }))
     } finally {
       setBusy(false)
     }
@@ -133,11 +137,12 @@ export default function FarmLinkPage() {
 
   async function revoke() {
     if (!link) return
-    if (!confirm('Revoke the Turnrow Farm link? Turnrow Farm loses access immediately. Land records already synced stay here and become editable again.')) return
+    const ok = await confirm({ title: 'Disconnect Turnrow Farm?', body: 'Turnrow Farm loses access immediately. Land records that already came across stay here and become editable again.', confirmLabel: 'Disconnect', danger: true })
+    if (!ok) return
     setErr(null); setBusy(true)
     const { error } = await supabase.from('farm_links').update({ status: 'revoked', revoked_at: new Date().toISOString() }).eq('id', link.id)
     setBusy(false)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'disconnect Turnrow Farm' })); return }
     setFresh(null)
     await refresh()
   }
@@ -147,7 +152,7 @@ export default function FarmLinkPage() {
     const next = normalizeScopes(on ? [...link.scopes, scope] : link.scopes.filter((s) => s !== scope))
     setLink({ ...link, scopes: next })
     const { error } = await supabase.from('farm_links').update({ scopes: next }).eq('id', link.id)
-    if (error) { setErr(error.message); refresh() }
+    if (error) { setErr(reportError(error, { action: 'change what is shared' })); refresh() }
   }
 
   const status = !link ? null
@@ -174,7 +179,7 @@ export default function FarmLinkPage() {
 
       {unavailable && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          The Turnrow Farm link needs a database update before it can be used — contact support.
+          The Turnrow Farm link isn’t available for your account yet — contact support.
         </div>
       )}
 
@@ -228,10 +233,10 @@ export default function FarmLinkPage() {
             )}
             {link.status === 'active' && (
               <button onClick={rotateToken} disabled={busy} className="rounded-lg border border-brand text-brand-deep hover:bg-green-50 px-3 py-1.5 text-sm font-semibold disabled:opacity-50">
-                Rotate token
+                Replace token
               </button>
             )}
-            <button onClick={revoke} disabled={busy} className="text-sm font-semibold text-red-600 hover:underline disabled:opacity-50">Revoke</button>
+            <button onClick={revoke} disabled={busy} className="text-sm font-semibold text-red-600 hover:underline disabled:opacity-50 min-h-11 px-2">Disconnect</button>
           </div>
 
           <div className="border-t border-slate-100 px-4 py-4 space-y-4">
@@ -247,7 +252,7 @@ export default function FarmLinkPage() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="rounded-lg border border-slate-200 p-3 text-sm space-y-1">
-                <p className="font-semibold">From Turnrow Farm (last sync)</p>
+                <p className="font-semibold">From Turnrow Farm (last update)</p>
                 {inbound ? (
                   <>
                     <p>{fmtSyncTime(inbound.at)} · {inbound.endpoint}</p>
@@ -256,13 +261,13 @@ export default function FarmLinkPage() {
                     </p>
                     {(inbound.conflicts ?? 0) > 0 && (
                       <p className="text-amber-700">
-                        {inbound.conflicts} conflict{inbound.conflicts === 1 ? '' : 's'} returned to Turnrow Farm — a record edited here after the last sync. Resolve it in Turnrow Farm.
+                        {inbound.conflicts} conflict{inbound.conflicts === 1 ? '' : 's'} returned to Turnrow Farm — a record edited here after the last update. Resolve it in Turnrow Farm.
                       </p>
                     )}
                   </>
                 ) : <p className="text-slate-500">Nothing received yet.</p>}
                 <p className="text-xs text-slate-500">
-                  {managed ? 'Land records are managed in Turnrow Farm; the Entities, Farms, Fields, and Plantings pages are read-only for synced rows.' : 'Until the first land sync lands, land records stay editable here.'}
+                  {managed ? 'Land records are managed in Turnrow Farm; the Entities, Farms, Fields, and Plantings pages are read-only for records that came from there.' : 'Until the first land records arrive from Turnrow Farm, they stay editable here.'}
                 </p>
               </div>
               <div className="rounded-lg border border-slate-200 p-3 text-sm space-y-1">
@@ -277,7 +282,7 @@ export default function FarmLinkPage() {
                   {lastInsurance
                     ? `Crop insurance premiums: ${fmtSyncTime(lastInsurance.called_at)} · ${lastInsurance.counts?.served ?? 0} row${(lastInsurance.counts?.served ?? 0) === 1 ? '' : 's'}`
                     : scopes.has('insurance:read')
-                      ? 'Crop insurance premiums: not pulled yet. In Turnrow Farm, open the Turnrow Grain settings and choose Sync now.'
+                      ? 'Crop insurance premiums: not pulled yet. In Turnrow Farm, open the Turnrow Grain settings and choose Update now.'
                       : 'Crop insurance premiums are turned off. Turn the switch on above, then re-pair in Turnrow Farm if it does not offer them.'}
                 </p>
               </div>
@@ -295,7 +300,7 @@ export default function FarmLinkPage() {
                 <p className="text-slate-600">
                   {lastLandowners
                     ? `Last exchange ${fmtSyncTime(lastLandowners.called_at)} · ${Object.entries(lastLandowners.counts ?? {}).map(([k, v]) => `${k} ${v}`).join(' · ') || 'no counts'}`
-                    : 'No exchange yet. In Turnrow Farm, open the Turnrow Grain settings and choose Sync now.'}
+                    : 'No exchange yet. In Turnrow Farm, open the Turnrow Grain settings and choose Update now.'}
                 </p>
                 <p className="text-xs text-slate-500">
                   Either side can edit a landowner. Turnrow Grain keeps a 90-day history of what changed so the two sides
@@ -334,6 +339,7 @@ export default function FarmLinkPage() {
       <p className="text-sm text-slate-500">
         Turnrow Farm: <a href={TURNROW_FARM_URL} target="_blank" rel="noopener noreferrer" className="text-brand-deep underline">turnrowfm.com</a>
       </p>
+      {dialogs}
     </div>
   )
 }

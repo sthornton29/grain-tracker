@@ -17,7 +17,8 @@
 //   * insurance is net of premium, at the scenario price as harvest price;
 //   * government payments (toggle) add one flat $/acre to every crop's cells.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useReportCropYear } from '@/lib/report-filters'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { buildDoubleCropSet } from '@/lib/plantings'
@@ -48,7 +49,7 @@ import {
   splitHarvestByCrop, buildScenarioGrid, flatGovPerAcre,
   type CropScenarioInputs, type HarvestSplit, type ScenarioCell,
 } from '@/lib/income-sensitivity'
-import { EmptyState, theadCls, toneText, signedTone } from '@/components/reports/report-kit'
+import { EmptyState, ReportHeader, ReportFilterBar, FilterField, InfoTip, theadCls, toneText, signedTone, selectCls, filterSummaryOf, cropYearLabel } from '@/components/reports/report-kit'
 import { formatNumber, type ExportPayload, type ExportCell } from '@/lib/exports'
 import type {
   CropInsuranceStax, CropInsuranceMco, CountyYieldAssumption,
@@ -70,7 +71,11 @@ type LoadRow = {
 }
 type SplitRow = { load_id: string; field_id: string; crop_id: string; dry_bushels: number | null }
 
-type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
+type Props = {
+  onPayloadChange?: (build: () => ExportPayload) => void
+  /** Rendered in the report header's action slot (the page passes <ExportBar/>). */
+  headerActions?: ReactNode
+}
 
 // Per-crop axis overrides, persisted as strings ('' / missing = automatic).
 // Keyed `${cropYear}:${cropId}` inside one localStorage record.
@@ -121,7 +126,7 @@ type CropView = {
   cfg: AxisCfg
 }
 
-export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
+export default function IncomeSensitivityReport({ onPayloadChange, headerActions }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [loading, setLoading] = useState(true)
   const [crops, setCrops] = useState<Crop[]>([])
@@ -185,7 +190,9 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
     return () => { cancelled = true }
   }, [supabase])
 
-  const [cropYear, setCropYear] = usePersistentState<number | ''>('income-sens:cropYear', '')
+  // Crop year: current year by default, persisted, never overwritten on load
+  // (lib/report-filters). The marketing option list always carries this year.
+  const [cropYear, setCropYear] = useReportCropYear('income-sens:cropYear')
 
   // Fetch the year's physical cotton marketing (tolerates 044 absent → null).
   useEffect(() => {
@@ -280,8 +287,6 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
       setArcPriceData((apd.data as ArcPlcPriceData[]) || [])
       setArcPayments((apay.data as ArcPlcPayment[]) || [])
       setOtherPayments((ogp.data as OtherGovernmentPayment[]) || [])
-      const yrs = (pl.data as FieldPlanting[] | null)?.map((p) => p.season_year) ?? []
-      if (yrs.length > 0) setCropYear((cy) => (cy === '' ? Math.max(...yrs) : cy))
       setLoading(false)
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -701,7 +706,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
     const countyLabel = countyLabels.length > 0 ? `County: ${countyLabels.join(', ')}` : null
     return {
       title: 'Income Sensitivity',
-      filters: [`Crop year: ${cropYear || '—'}`, entityName ? `Entity: ${entityName}` : null, `View: ${viewLabel}`, govLabel, countyLabel].filter(Boolean).join(' · '),
+      filters: filterSummaryOf(cropYear === '' ? null : cropYearLabel(cropYear), entityName ?? 'All Entities', viewLabel, govLabel, countyLabel),
       // Never export zero sections (exceljs needs at least one sheet).
       sections: sections.length > 0 ? sections : [{ columns: [{ label: 'No sensitivity tables' }], rows: [] }],
       orientation: 'landscape',
@@ -713,53 +718,50 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cropViews, view, includeGov, govPerAcre, cropYear, entityName, onPayloadChange])
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   if (loading) return <p className="text-slate-500">Loading…</p>
 
   return (
     <div className="space-y-4 print-area">
+      <ReportHeader
+        title="Income Sensitivity"
+        filterSummary={filterSummaryOf(cropYear === '' ? null : cropYearLabel(cropYear), entityName ?? 'All Entities', view === 'revenue' ? 'Revenue per acre' : 'Net profit per acre')}
+        actions={headerActions}
+      />
       {/* Filters + display toggles */}
-      <div className="flex flex-wrap gap-3 items-end no-print">
-        <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Crop year *</span>
-          <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
-            <option value="">— pick a crop year —</option>
-            {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
+      <ReportFilterBar activeCount={(entityId ? 1 : 0) + (includeGov ? 1 : 0)}>
+        <FilterField label="Crop year">
+          <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={selectCls}>
+            {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
-        </label>
+        </FilterField>
         <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} />
-        <div className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Cell value</span>
+        <FilterField label="Cell value">
           <span className="inline-flex rounded-lg border border-slate-300 overflow-hidden">
             {(['revenue', 'profit'] as const).map((m) => (
               <button
                 key={m}
+                type="button"
                 onClick={() => setView(m)}
-                className={`px-3 py-2 text-sm font-semibold ${view === m ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'} ${m === 'profit' ? 'border-l border-slate-300' : ''}`}
+                aria-pressed={view === m}
+                className={`px-3 min-h-10 text-sm font-semibold ${view === m ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'} ${m === 'profit' ? 'border-l border-slate-300' : ''}`}
               >
                 {m === 'revenue' ? 'Revenue/acre' : 'Net profit/acre'}
               </button>
             ))}
           </span>
-        </div>
-        <label className="text-sm flex items-center gap-2 self-end pb-2.5">
-          <input type="checkbox" checked={includeGov} onChange={(e) => setIncludeGov(e.target.checked)} className="h-4 w-4" />
+        </FilterField>
+        <label className="text-sm flex items-center gap-2 min-h-10 self-end">
+          <input type="checkbox" checked={includeGov} onChange={(e) => setIncludeGov(e.target.checked)} className="h-5 w-5" />
           <span className="text-slate-600">
             Include government payments <span className="text-slate-400">(flat {formatNumber(govPerAcre, 'usd2')}/ac across all crops)</span>
           </span>
         </label>
-      </div>
+      </ReportFilterBar>
 
       <SupersededNotice show={viewerA.superseded} onDismiss={viewerA.dismissSuperseded} />
 
-      {cropYear === '' && <p className="text-amber-700 text-sm">Pick a crop year to build the sensitivity tables.</p>}
-
-      {entityName && cropYear !== '' && (
-        <p className="text-sm text-slate-600">Entity: <span className="font-semibold">{entityName}</span></p>
-      )}
-
       {programNotice && (
-        <div className="rounded-lg bg-yellow-50 border border-yellow-300 px-3 py-2 text-sm text-yellow-900">{programNotice}</div>
+        <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">{programNotice}</div>
       )}
 
       {cropYear !== '' && cropViews.length === 0 && (
@@ -768,6 +770,7 @@ export default function IncomeSensitivityReport({ onPayloadChange }: Props) {
           hint="Add plantings for this crop year to run scenarios."
           linkHref="/settings/plantings"
           linkLabel="Add plantings"
+          role={viewer.role}
         />
       )}
 
@@ -924,14 +927,14 @@ function CropSensitivitySection({
             </span>
           )}
           {v.finalHarvestPrice != null && (
-            <span className="text-xs rounded-full bg-green-100 text-green-800 px-2.5 py-1" title="Insurance in every cell uses the RMA final; the price axis moves crop sales only.">
-              RMA final harvest price {price2(v.finalHarvestPrice)} on file — insurance pinned to it
-            </span>
+            <InfoTip label={`RMA final harvest price ${price2(v.finalHarvestPrice)} on file — insurance pinned to it`} tone="favorable">
+              Insurance in every cell uses the RMA final price; the price axis moves crop sales only.
+            </InfoTip>
           )}
           {isCotton && v.inputs.cottonPhysical != null && v.inputs.cottonPhysical.loanFloorCents != null && v.inputs.cottonPhysical.inLoanLbs > 0 && (
-            <span className="text-xs rounded-full bg-indigo-100 text-indigo-800 px-2.5 py-1" title="In-loan lbs are valued at max(banked CCC loan value, scenario price) — cells below the floor flatten there, like the RP floor.">
-              CCC loan floor {cents2(v.inputs.cottonPhysical.loanFloorCents)} on {bu(v.inputs.cottonPhysical.inLoanLbs)} lbs
-            </span>
+            <InfoTip label={`CCC loan floor ${cents2(v.inputs.cottonPhysical.loanFloorCents)} on ${bu(v.inputs.cottonPhysical.inLoanLbs)} lbs`} tone="neutral">
+              Pounds in the CCC loan are valued at the higher of the banked loan value and the scenario price, so cells below the floor flatten there — the same way the RP floor works.
+            </InfoTip>
           )}
         </div>
 
@@ -968,9 +971,9 @@ function CropSensitivitySection({
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs font-semibold text-slate-600 uppercase tracking-wide">County yield scenario</span>
               {v.countyPinned ? (
-                <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5" title="The RMA final county yield is on file — the county estimate is a fact in every cell; scenario modes are disabled.">
-                  final county yield on file — modes disabled
-                </span>
+                <InfoTip label="final county yield on file — modes disabled" tone="favorable">
+                  The RMA final county yield is on file, so the county figure is a fact in every cell and the scenario modes are turned off.
+                </InfoTip>
               ) : (
                 <>
                   <label className="flex items-center gap-1 text-xs">

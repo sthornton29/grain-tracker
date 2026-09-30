@@ -22,12 +22,12 @@ export function FarmLinkBanner({ status, noun }: { status: FarmLinkStatus; noun:
     <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900 flex items-center gap-2 flex-wrap">
       <span className="font-semibold">Managed in Turnrow Farm</span>
       <span className="text-sky-800">
-        · {noun} come from Turnrow Farm and are edited there; last synced {fmtSyncTime(status.lastSyncAt)}.
+        · {noun} come from Turnrow Farm and are edited there; last updated from there {fmtSyncTime(status.lastSyncAt)}.
         Rows marked <span className="rounded-full bg-amber-100 text-amber-800 px-1.5 py-0.5 text-xs font-medium">not linked</span> were
         created here and can still be edited — match them in Turnrow Farm to link them.
       </span>
-      <a href={TURNROW_FARM_URL} target="_blank" rel="noopener noreferrer" className="ml-auto text-brand-deep font-semibold underline">Open Turnrow Farm ↗</a>
-      <Link href="/settings/farm-link" className="text-brand-deep underline">Link settings</Link>
+      <a href={TURNROW_FARM_URL} target="_blank" rel="noopener noreferrer" className="ml-auto text-brand-deep font-semibold underline min-h-11 inline-flex items-center">Open Turnrow Farm ↗</a>
+      <Link href="/settings/farm-link" className="text-brand-deep underline min-h-11 inline-flex items-center">Link settings</Link>
     </div>
   )
 }

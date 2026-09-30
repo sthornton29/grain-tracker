@@ -11,6 +11,8 @@ import EmptyBinButton from '@/components/empty-bin-button'
 import BeginningInventoryButton from '@/components/beginning-inventory-button'
 import TransferGrainButton, { BinTransferHistory, type TransferBinOption } from '@/components/transfer-grain'
 import ExportInventoryCsv, { type InventoryCsvRow } from '@/components/export-inventory-csv'
+import InventoryFilters from './inventory-filters'
+import { fmtDate } from '@/lib/format-date'
 import type { BinInventoryAdjustment, BinTransfer, Crop } from '@/lib/types'
 
 type LoadRow = {
@@ -42,14 +44,9 @@ function todayISO() {
   return new Date(d.getTime() - tz).toISOString().slice(0, 10)
 }
 
-function fmtDate(iso: string) {
-  const [y, m, d] = iso.split('-').map(Number)
-  if (!y || !m || !d) return iso
-  return `${m}/${d}/${y}`
-}
-
+/** Bushels on screen are whole numbers (the 'bu' convention in lib/exports). */
 function fmtBu(n: number) {
-  return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
+  return n.toLocaleString(undefined, { maximumFractionDigits: 0 })
 }
 
 // A beginning inventory is still the live baseline only if it was entered and
@@ -320,47 +317,27 @@ export default async function InventoryPage({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-end gap-3 flex-wrap">
+      <div className="flex items-center gap-3 flex-wrap">
         <h1 className="text-2xl font-bold flex-1">Bin Inventory</h1>
-        <form className="flex items-center gap-2 flex-wrap">
-          <select
-            name="entity"
-            defaultValue={entityId}
-            className="rounded-lg border border-slate-300 px-3 py-2"
-          >
-            <option value="">All entities</option>
-            {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-          </select>
-          <select
-            name="site"
-            defaultValue={siteFilter}
-            className="rounded-lg border border-slate-300 px-3 py-2"
-          >
-            <option value="">All sites</option>
-            {siteOptions.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}{!entityId ? ` · ${entityNameById.get(s.entity_id) ?? ''}` : ''}
-              </option>
-            ))}
-          </select>
-          <select
-            name="crop"
-            defaultValue={cropFilter}
-            className="rounded-lg border border-slate-300 px-3 py-2"
-          >
-            <option value="">All crops</option>
-            {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
-          <button className="rounded-lg bg-slate-700 text-white px-3 py-2 text-sm">Apply</button>
-        </form>
         {allBins.length > 1 && (
           <TransferGrainButton bins={transferBins} crops={transferCrops} onHand={onHandRecord} prominent />
         )}
         <ExportInventoryCsv rows={csvRows} />
       </div>
+      <InventoryFilters
+        entityId={entityId}
+        siteId={siteFilter}
+        cropId={cropFilter}
+        entities={entities.map((e) => ({ value: e.id, label: e.name }))}
+        sites={siteOptions.map((s) => ({
+          value: s.id,
+          label: `${s.name}${!entityId ? ` · ${entityNameById.get(s.entity_id) ?? ''}` : ''}`,
+        }))}
+        crops={crops.map((c) => ({ value: c.id, label: c.name }))}
+      />
       <p className="text-sm text-slate-500">
-        Live snapshot of dry bushels on hand: bushels delivered to bin − bushels pulled from bin + beginning inventory − empty-bin adjustments ± bin-to-bin transfers.
-        Loads from any source/crop year are counted; this view shows what is physically in the bins right now.
+        What’s in each bin right now, in dry bushels: loads hauled in, minus loads hauled out, plus any beginning inventory, minus cleanouts, plus or minus bin-to-bin transfers.
+        Loads from every crop year count — this is what’s physically in the bins today.
       </p>
 
       {visibleSites.length === 0 && unsited.length === 0 && (
@@ -391,7 +368,7 @@ export default async function InventoryPage({
               {cropEntries.length > 0 && (
                 <div className="mt-1 text-xs text-slate-600 flex flex-wrap gap-x-3 gap-y-1">
                   {cropEntries.map(([cid, t]) => (
-                    <span key={cid}>{cropName(cid)}: <span className="font-mono">{fmtBu(t)}</span></span>
+                    <span key={cid}>{cropName(cid)}: <span className="tabular-nums">{fmtBu(t)}</span></span>
                   ))}
                 </div>
               )}
@@ -507,7 +484,7 @@ function BinCard({
           <thead>
             <tr className="text-xs text-slate-500">
               <th className="text-left py-1">Crop</th>
-              <th className="text-right py-1">Load-backed</th>
+              <th className="text-right py-1">From loads</th>
               {showTransferCol && <th className="text-right py-1">Transfers</th>}
               <th className="text-right py-1">Beginning</th>
               <th className="text-right py-1">Total</th>
@@ -521,16 +498,16 @@ function BinCard({
               return (
                 <tr key={r.cid} className="border-t border-slate-100">
                   <td className="py-1">{cropName(r.cid)}</td>
-                  <td className="py-1 text-right font-mono">{fmtBu(loadBacked)}</td>
+                  <td className="py-1 text-right tabular-nums">{fmtBu(loadBacked)}</td>
                   {showTransferCol && (
-                    <td className="py-1 text-right font-mono text-slate-500">
+                    <td className="py-1 text-right tabular-nums text-slate-500">
                       {Math.abs(transferNet) >= 0.005 ? `${transferNet > 0 ? '+' : ''}${fmtBu(transferNet)}` : '—'}
                     </td>
                   )}
-                  <td className="py-1 text-right font-mono text-slate-500">
+                  <td className="py-1 text-right tabular-nums text-slate-500">
                     {beginning > 0 ? fmtBu(beginning) : '—'}
                   </td>
-                  <td className="py-1 text-right font-mono font-semibold">{fmtBu(r.total)}</td>
+                  <td className="py-1 text-right tabular-nums font-semibold">{fmtBu(r.total)}</td>
                 </tr>
               )
             })}
@@ -542,7 +519,7 @@ function BinCard({
             {rows.map((r) => (
               <tr key={r.cid} className="border-t border-slate-100">
                 <td className="py-1">{cropName(r.cid)}</td>
-                <td className="py-1 text-right font-mono font-semibold">{fmtBu(r.total)}</td>
+                <td className="py-1 text-right tabular-nums font-semibold">{fmtBu(r.total)}</td>
               </tr>
             ))}
           </tbody>

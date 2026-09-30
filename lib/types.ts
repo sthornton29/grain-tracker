@@ -941,6 +941,7 @@ export type CottonLoad = {
   gross_weight: number | null
   tare_weight: number | null
   net_weight: number | null // lbs seed cotton
+  rolls: number | null // 090 - round modules on the load
   gin_id: string | null
   location: string | null
   notes: string | null

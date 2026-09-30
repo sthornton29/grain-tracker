@@ -6,15 +6,19 @@
 // staple, mic, strength ranges). Cotton-module report; exports through the
 // shared layer.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
-import { usePersistentState } from '@/lib/use-persistent-state'
-import { theadCls, grandTotalRowCls } from '@/components/reports/report-kit'
+import { useReportCropYear, cropYearChoices } from '@/lib/report-filters'
+import { theadCls, grandTotalRowCls, ReportHeader, ReportFilterBar, FilterField, EmptyState, selectCls, fmtInt, cropYearLabel } from '@/components/reports/report-kit'
 import type { ExportPayload, ExportCell } from '@/lib/exports'
 import type { CottonBale, CottonBaleGrade, GinReceipt, Farm, Field, Entity } from '@/lib/types'
 
-type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
+type Props = {
+  onPayloadChange?: (build: () => ExportPayload) => void
+  /** Rendered in the report header's action slot (the page passes <ExportBar/>). */
+  headerActions?: ReactNode
+}
 
 const MIC_RANGES: Array<[string, (m: number) => boolean]> = [
   ['Mic <3.5 (disc)', (m) => m < 3.5],
@@ -32,7 +36,7 @@ const STR_RANGES: Array<[string, (s: number) => boolean]> = [
   ['Str >30', (s) => s > 30],
 ]
 
-export default function BaleQualityReport({ onPayloadChange }: Props) {
+export default function BaleQualityReport({ onPayloadChange, headerActions }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [bales, setBales] = useState<CottonBale[]>([])
   const [grades, setGrades] = useState<CottonBaleGrade[]>([])
@@ -40,7 +44,11 @@ export default function BaleQualityReport({ onPayloadChange }: Props) {
   const [farms, setFarms] = useState<Farm[]>([])
   const [fields, setFields] = useState<Field[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
-  const [cropYear, setCropYear] = usePersistentState<number>('cotton:cropYear', new Date().getFullYear())
+  // Crop year: current year by default, persisted (the same key the Cotton
+  // pages use), never overwritten on load (lib/report-filters).
+  const [cropYearValue, setCropYear] = useReportCropYear('cotton:cropYear')
+  const cropYear = typeof cropYearValue === 'number' ? cropYearValue : new Date().getFullYear()
+  const yearChoices = useMemo(() => cropYearChoices(bales.map((b) => b.crop_year), cropYear), [bales, cropYear])
 
   useEffect(() => {
     ;(async () => {
@@ -151,12 +159,21 @@ export default function BaleQualityReport({ onPayloadChange }: Props) {
 
   return (
     <div className="space-y-3">
-      <label className="text-sm flex items-center gap-2 no-print">
-        <span className="text-slate-500">Crop year</span>
-        <input type="number" value={cropYear} onChange={(e) => setCropYear(Number(e.target.value))} className="rounded-lg border border-slate-300 px-3 py-2 w-24" />
-      </label>
+      <ReportHeader title="Bale Quality Summary" filterSummary={cropYearLabel(cropYear)} actions={headerActions} />
+      <ReportFilterBar>
+        <FilterField label="Crop year">
+          <select value={cropYear} onChange={(e) => setCropYear(Number(e.target.value))} className={selectCls}>
+            {yearChoices.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </FilterField>
+      </ReportFilterBar>
       {rows.length === 0 ? (
-        <p className="text-slate-400">No {cropYear} bales — bales come from gin receipts (Cotton → Gin Receipts).</p>
+        <EmptyState
+          message={`No ${cropYear} bales yet.`}
+          hint="Bales come from gin receipts."
+          linkHref="/cotton/receipts"
+          linkLabel="Add gin receipts"
+        />
       ) : (
         <div className="bg-white rounded-xl shadow overflow-x-auto">
           <table className="min-w-full text-sm border-collapse">
@@ -169,8 +186,8 @@ export default function BaleQualityReport({ onPayloadChange }: Props) {
                   <td className="px-2 py-1.5">{r.entity}</td>
                   <td className="px-2 py-1.5">{r.farm}</td>
                   <td className="px-2 py-1.5 font-semibold">{r.field}</td>
-                  <td className="px-2 py-1.5 text-right">{r.bales}</td>
-                  <td className="px-2 py-1.5 text-right font-mono">{Math.round(r.lintLbs).toLocaleString()}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{r.bales}</td>
+                  <td className="px-2 py-1.5 text-right tabular-nums">{fmtInt(r.lintLbs)}</td>
                   <td className="px-2 py-1.5 text-right">{r.classed}</td>
                   <td className="px-2 py-1.5 text-right font-semibold">{(() => { const a = avgLoan(r.loanValue, r.loanLbs); return a != null ? `$${(a / 100).toFixed(4)}` : '—' })()}</td>
                   <td className="px-2 py-1.5 text-xs">{colorDist(r.colors) || '—'}</td>
@@ -181,8 +198,8 @@ export default function BaleQualityReport({ onPayloadChange }: Props) {
               ))}
               <tr className={grandTotalRowCls}>
                 <td className="px-2 py-1.5" colSpan={3}>Total</td>
-                <td className="px-2 py-1.5 text-right">{totals.bales}</td>
-                <td className="px-2 py-1.5 text-right font-mono">{Math.round(totals.lintLbs).toLocaleString()}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums">{totals.bales}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums">{fmtInt(totals.lintLbs)}</td>
                 <td className="px-2 py-1.5 text-right">{totals.classed}</td>
                 <td className="px-2 py-1.5 text-right">{(() => { const a = avgLoan(totals.loanValue, totals.loanLbs); return a != null ? `$${(a / 100).toFixed(4)}` : '—' })()}</td>
                 <td className="px-2 py-1.5 text-xs" colSpan={4}>{colorDist(totals.colors)}</td>

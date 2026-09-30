@@ -10,6 +10,8 @@ import { farmsImportConfig } from '@/lib/import-configs'
 import { useFarmLink } from '@/lib/use-farm-link'
 import { landImportBlockedMessage, landRowEditable, LAND_MANAGED_MESSAGE } from '@/lib/farm-link'
 import { FarmLinkBanner, ManagedChip, NotLinkedChip } from '@/components/farm-link-banner'
+import { reportError } from '@/lib/friendly-error'
+import { useDialogs, plural } from '@/components/use-dialogs'
 import type { Entity, Farm, County, EntityCounty, Landowner } from '@/lib/types'
 
 const LAST_COUNTY_KEY = 'lastFarmCountyId'
@@ -39,6 +41,8 @@ export default function FarmsPage() {
   const [err, setErr] = useState<string | null>(null)
   const [q, setQ] = useState('')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const { confirm, dialogs } = useDialogs()
   // 087: managed in Turnrow Farm → synced rows are read-only here.
   const farmLink = useFarmLink(supabase, 'farms')
   const managed = farmLink.managed
@@ -52,7 +56,8 @@ export default function FarmsPage() {
       supabase.from('entity_counties').select('*'),
       supabase.from('landowners').select('*').order('name'),
     ])
-    // Archived by the Turnrow Farm link (087) → out of the list.
+    if (fa.error) { setErr(reportError(fa.error, { action: 'load your farms', noun: 'farm' })); return }
+    // Archived (by the Turnrow Farm link or from here) → out of the list.
     setFarms(((fa.data as Farm[]) || []).filter((f) => !f.archived_at))
     setEntities((en.data as Entity[]) || [])
     setCounties((co.data as County[]) || [])
@@ -141,15 +146,20 @@ export default function FarmsPage() {
     return null
   }
 
+  const nameTaken = (n: string, exceptId?: string) =>
+    farms.some((f) => f.id !== exceptId && f.name.trim().toLowerCase() === n.toLowerCase())
+
   async function add(e: React.FormEvent) {
     e.preventDefault()
-    if (!name.trim()) return
+    const n = name.trim()
+    if (!n) return
     if (!entityId) { setErr('Pick an entity before saving.'); return }
     if (!countyId) { setErr('Pick a county before saving.'); return }
+    if (nameTaken(n)) { setErr(`A farm named “${n}” already exists.`); return }
     const shareErr = validateShareRent(isShareRent, landlordSharePct)
     if (shareErr) { setErr(shareErr); return }
     const { error } = await supabase.from('farms').insert({
-      name: name.trim(),
+      name: n,
       entity_id: entityId,
       county_id: countyId,
       fsa_number: fsaNumber.trim() || null,
@@ -157,7 +167,7 @@ export default function FarmsPage() {
       is_share_rent: isShareRent,
       landlord_share_percentage: isShareRent ? parsePct(landlordSharePct) : null,
     })
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'add the farm', noun: 'farm', name: n })); return }
     rememberCounty(countyId)
     setName(''); setFsaNumber(''); setLandownerId(''); setIsShareRent(false); setLandlordSharePct('')
     setErr(null); refresh()
@@ -165,13 +175,15 @@ export default function FarmsPage() {
   }
 
   async function save(id: string) {
-    if (!editName.trim()) return
+    const n = editName.trim()
+    if (!n) return
     if (!editEntityId) { setErr('Pick an entity before saving.'); return }
     if (!editCountyId) { setErr('Pick a county before saving.'); return }
+    if (nameTaken(n, id)) { setErr(`A farm named “${n}” already exists.`); return }
     const shareErr = validateShareRent(editIsShareRent, editLandlordSharePct)
     if (shareErr) { setErr(shareErr); return }
     const { error } = await supabase.from('farms').update({
-      name: editName.trim(),
+      name: n,
       entity_id: editEntityId,
       county_id: editCountyId,
       fsa_number: editFsaNumber.trim() || null,
@@ -179,19 +191,65 @@ export default function FarmsPage() {
       is_share_rent: editIsShareRent,
       landlord_share_percentage: editIsShareRent ? parsePct(editLandlordSharePct) : null,
     }).eq('id', id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'save the farm', noun: 'farm', name: n })); return }
     rememberCounty(editCountyId)
     setEditingId(null); setErr(null); refresh()
   }
 
-  async function remove(id: string) {
-    if (!confirm('Delete this farm? Fields under it will also be deleted.')) return
-    const { error } = await supabase.from('farms').delete().eq('id', id)
-    if (error) { setErr(error.message); return }
+  /** What hangs off a farm: its fields, their plantings, and loads from those fields. */
+  async function dependents(farmId: string) {
+    const { data: fieldRows } = await supabase.from('fields').select('id').eq('farm_id', farmId)
+    const fieldIds = ((fieldRows as Array<{ id: string }> | null) ?? []).map((r) => r.id)
+    if (fieldIds.length === 0) return { fields: 0, plantings: 0, loads: 0 }
+    const [pl, lo] = await Promise.all([
+      supabase.from('field_plantings').select('id', { count: 'exact', head: true }).in('field_id', fieldIds),
+      supabase.from('loads').select('id', { count: 'exact', head: true }).in('from_field_id', fieldIds),
+    ])
+    return { fields: fieldIds.length, plantings: pl.count ?? 0, loads: lo.count ?? 0 }
+  }
+
+  async function archive(f: Farm) {
+    setErr(null)
+    const ok = await confirm({
+      title: `Archive ${f.name}?`,
+      body: 'The farm disappears from this list and from new-record pickers. Everything already recorded against it — fields, plantings, loads — stays exactly as it is.',
+      confirmLabel: 'Archive',
+    })
+    if (!ok) return
+    setBusyId(f.id)
+    const { error } = await supabase.from('farms').update({ archived_at: new Date().toISOString() }).eq('id', f.id)
+    setBusyId(null)
+    if (error) { setErr(reportError(error, { action: 'archive the farm', noun: 'farm', name: f.name })); return }
     refresh()
   }
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
+  async function remove(f: Farm) {
+    setErr(null)
+    setBusyId(f.id)
+    const d = await dependents(f.id)
+    setBusyId(null)
+    if (d.loads > 0) {
+      setErr(`${f.name} has ${plural(d.loads, 'load')} recorded on its fields, so it can’t be deleted. Archive it instead — the loads and yields stay.`)
+      return
+    }
+    const parts = [d.fields > 0 ? plural(d.fields, 'field') : null, d.plantings > 0 ? plural(d.plantings, 'planting') : null].filter(Boolean)
+    const ok = await confirm({
+      title: parts.length > 0 ? `Delete ${f.name} and its ${parts.join(' and ')}?` : `Delete ${f.name}?`,
+      body: parts.length > 0 ? 'The fields and plantings under this farm are deleted with it. This can’t be undone.' : 'This can’t be undone. If you might need it again, archive it instead.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
+    setBusyId(f.id)
+    const { error } = await supabase.from('farms').delete().eq('id', f.id)
+    setBusyId(null)
+    if (error) { setErr(reportError(error, { action: 'delete the farm', noun: 'farm', name: f.name })); return }
+    refresh()
+  }
+
+  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2 min-h-11 w-full'
+  const labelCls = 'block text-sm text-slate-700'
+  const btnCls = 'min-h-11 px-3 rounded-lg text-sm font-semibold'
   const farmsMissingCounty = farms.filter((f) => !f.county_id).length
   const createCountyList = entityId ? (countiesForEntity.get(entityId) ?? []) : []
   const editCountyList = editEntityId ? (countiesForEntity.get(editEntityId) ?? []) : []
@@ -212,66 +270,68 @@ export default function FarmsPage() {
 
       <FarmLinkBanner status={farmLink} noun="Farms" />
 
-      <SettingsDocImport primaryTarget="farms" title="Upload FSA Farm Records or a Lease (AI)" onSaved={refresh} />
+      <SettingsDocImport primaryTarget="farms" title="Upload FSA farm records or a lease" onSaved={refresh} />
 
       <CsvImport config={farmsImportConfig(entities)} onImported={refresh} blockedReason={managed ? landImportBlockedMessage('farms') : null} />
 
       {managed && (
         <div className="bg-white p-4 rounded-xl shadow text-sm text-slate-600">
-          {LAND_MANAGED_MESSAGE} New farms are added in Turnrow Farm and sync here.
+          {LAND_MANAGED_MESSAGE} New farms are added in Turnrow Farm and come across from there.
         </div>
       )}
       {!managed && (
-      <form onSubmit={add} className="space-y-2 bg-white p-4 rounded-xl shadow">
-        <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr] gap-2">
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Farm name"
-            className={inputCls}
-          />
-          <EntitySelect entities={entities} value={entityId} onChange={onEntityChange} className={inputCls} />
+      <form onSubmit={add} className="space-y-3 bg-white p-4 rounded-xl shadow">
+        <h2 className="font-semibold">Add a farm</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <label className={labelCls}>
+            Farm name
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Home Place" className={`${inputCls} mt-1`} />
+          </label>
+          <EntitySelect label="Entity" entities={entities} value={entityId} onChange={onEntityChange} className={inputCls} />
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-[1fr_160px_auto] gap-2">
-          {entityId && createCountyList.length === 1 ? (
-            <div className={`${inputCls} bg-slate-50 text-slate-600`}>
-              {countyLabel(createCountyList[0])}
-            </div>
-          ) : (
-            <select
-              value={countyId}
-              onChange={(e) => setCountyId(e.target.value)}
-              className={inputCls}
-              disabled={!entityId}
-            >
-              <option value="">
-                {!entityId
-                  ? 'pick entity first'
-                  : createCountyList.length === 0
-                    ? 'entity has no counties — add some first'
-                    : '— county —'}
-              </option>
-              {createCountyList.map((c) => <option key={c.id} value={c.id}>{countyLabel(c)}</option>)}
-            </select>
-          )}
-          <input
-            value={fsaNumber}
-            onChange={(e) => setFsaNumber(e.target.value)}
-            placeholder="FSA #"
-            className={inputCls}
-          />
-          <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add</button>
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_160px] gap-2">
+          <label className={labelCls}>
+            County
+            {entityId && createCountyList.length === 1 ? (
+              <div className={`${inputCls} mt-1 bg-slate-50 text-slate-600 flex items-center`}>
+                {countyLabel(createCountyList[0])}
+              </div>
+            ) : (
+              <select
+                value={countyId}
+                onChange={(e) => setCountyId(e.target.value)}
+                className={`${inputCls} mt-1`}
+                disabled={!entityId}
+              >
+                <option value="">
+                  {!entityId
+                    ? 'pick the entity first'
+                    : createCountyList.length === 0
+                      ? 'this entity has no counties yet — add some under Entities'
+                      : '— county —'}
+                </option>
+                {createCountyList.map((c) => <option key={c.id} value={c.id}>{countyLabel(c)}</option>)}
+              </select>
+            )}
+          </label>
+          <label className={labelCls}>
+            FSA farm #
+            <input value={fsaNumber} onChange={(e) => setFsaNumber(e.target.value)} placeholder="optional" className={`${inputCls} mt-1`} />
+          </label>
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_160px] gap-2 items-center">
-          <LandownerPicker
-            value={landownerId}
-            onChange={setLandownerId}
-            landowners={landowners}
-            farms={farms}
-            onCreated={(l) => setLandowners((rs) => [...rs, l].sort((a, b) => a.name.localeCompare(b.name)))}
-            className="w-full"
-          />
-          <label className="text-sm flex items-center gap-2 select-none">
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_160px] gap-2 items-end">
+          <div className={labelCls}>
+            <span>Landowner</span>
+            <LandownerPicker
+              value={landownerId}
+              onChange={setLandownerId}
+              landowners={landowners}
+              farms={farms}
+              onCreated={(l) => setLandowners((rs) => [...rs, l].sort((a, b) => a.name.localeCompare(b.name)))}
+              className="w-full mt-1"
+            />
+          </div>
+          <label className="text-sm flex items-center gap-2 select-none min-h-11">
             <input
               type="checkbox"
               checked={isShareRent}
@@ -280,22 +340,25 @@ export default function FarmsPage() {
                 setIsShareRent(next)
                 if (!next) setLandlordSharePct('')
               }}
-              className="h-4 w-4"
+              className="h-5 w-5"
             />
             Share rent
           </label>
           {isShareRent ? (
-            <input
-              type="number"
-              inputMode="decimal"
-              step="0.01"
-              min={0}
-              max={100}
-              value={landlordSharePct}
-              onChange={(e) => setLandlordSharePct(e.target.value)}
-              placeholder="Landlord %"
-              className={inputCls}
-            />
+            <label className={labelCls}>
+              Landlord share %
+              <input
+                type="number"
+                inputMode="decimal"
+                step="0.01"
+                min={0}
+                max={100}
+                value={landlordSharePct}
+                onChange={(e) => setLandlordSharePct(e.target.value)}
+                placeholder="e.g. 33.33"
+                className={`${inputCls} mt-1`}
+              />
+            </label>
           ) : (
             <div />
           )}
@@ -305,6 +368,9 @@ export default function FarmsPage() {
             Enter the percentage of production the landowner is entitled to (0–100).
           </p>
         )}
+        <div className="flex justify-end">
+          <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold">Add farm</button>
+        </div>
       </form>
       )}
 
@@ -313,15 +379,16 @@ export default function FarmsPage() {
       <div className="flex items-center gap-2 flex-wrap">
         <input
           type="search"
+          aria-label="Search farms"
           placeholder="Search farms…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          className="rounded-lg border border-slate-300 px-3 py-2 flex-1 min-w-[12rem]"
+          className="rounded-lg border border-slate-300 px-3 py-2 min-h-11 flex-1 min-w-[12rem]"
         />
         <button
           type="button"
           onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
-          className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2"
+          className="text-sm rounded-lg bg-white border border-slate-300 px-3 min-h-11"
         >
           Name {sortDir === 'asc' ? '↑' : '↓'}
         </button>
@@ -343,67 +410,69 @@ export default function FarmsPage() {
           .sort((a, b) => (sortDir === 'asc' ? 1 : -1) * a.name.localeCompare(b.name))
         return (
       <ul className="bg-white rounded-xl shadow divide-y">
-        {visible.length === 0 && <li className="px-4 py-6 text-center text-slate-400">{farms.length === 0 ? 'No farms yet.' : 'No farms match.'}</li>}
+        {visible.length === 0 && (
+          <li className="px-4 py-6 text-center text-slate-500">
+            {farms.length === 0
+              ? (managed ? 'No farms yet — they arrive from Turnrow Farm on its next update.' : 'No farms yet — add the first one above, or upload your FSA farm records.')
+              : 'No farms match that search.'}
+          </li>
+        )}
         {visible.map((f) => {
           const c = f.county_id ? countyById.get(f.county_id) : null
           return (
-          <li key={f.id} className="px-4 py-2">
+          <li key={f.id} className="px-3 sm:px-4 py-2">
             {editingId === f.id ? (
               <div className="space-y-2">
-                <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr] gap-2">
-                  <input
-                    value={editName}
-                    onChange={(e) => setEditName(e.target.value)}
-                    className={inputCls}
-                  />
-                  <EntitySelect
-                    entities={entities}
-                    value={editEntityId}
-                    onChange={onEditEntityChange}
-                    className={inputCls}
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label className={labelCls}>
+                    Farm name
+                    <input value={editName} onChange={(e) => setEditName(e.target.value)} className={`${inputCls} mt-1`} />
+                  </label>
+                  <EntitySelect label="Entity" entities={entities} value={editEntityId} onChange={onEditEntityChange} className={inputCls} />
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-[1fr_160px_auto_auto] gap-2 items-center">
-                  {editEntityId && editCountyList.length === 1 ? (
-                    <div className={`${inputCls} bg-slate-50 text-slate-600`}>
-                      {countyLabel(editCountyList[0])}
-                    </div>
-                  ) : (
-                    <select
-                      value={editCountyId}
-                      onChange={(e) => setEditCountyId(e.target.value)}
-                      className={inputCls}
-                      disabled={!editEntityId}
-                    >
-                      <option value="">
-                        {!editEntityId
-                          ? 'pick entity first'
-                          : editCountyList.length === 0
-                            ? 'entity has no counties'
-                            : '— county —'}
-                      </option>
-                      {editCountyList.map((c) => <option key={c.id} value={c.id}>{countyLabel(c)}</option>)}
-                    </select>
-                  )}
-                  <input
-                    value={editFsaNumber}
-                    onChange={(e) => setEditFsaNumber(e.target.value)}
-                    placeholder="FSA #"
-                    className={inputCls}
-                  />
-                  <button onClick={() => save(f.id)} className="text-green-700 font-semibold">Save</button>
-                  <button onClick={() => setEditingId(null)} className="text-slate-500">Cancel</button>
+                <div className="grid grid-cols-1 sm:grid-cols-[1fr_160px] gap-2">
+                  <label className={labelCls}>
+                    County
+                    {editEntityId && editCountyList.length === 1 ? (
+                      <div className={`${inputCls} mt-1 bg-slate-50 text-slate-600 flex items-center`}>
+                        {countyLabel(editCountyList[0])}
+                      </div>
+                    ) : (
+                      <select
+                        value={editCountyId}
+                        onChange={(e) => setEditCountyId(e.target.value)}
+                        className={`${inputCls} mt-1`}
+                        disabled={!editEntityId}
+                      >
+                        <option value="">
+                          {!editEntityId
+                            ? 'pick the entity first'
+                            : editCountyList.length === 0
+                              ? 'this entity has no counties yet'
+                              : '— county —'}
+                        </option>
+                        {editCountyList.map((c) => <option key={c.id} value={c.id}>{countyLabel(c)}</option>)}
+                      </select>
+                    )}
+                  </label>
+                  <label className={labelCls}>
+                    FSA farm #
+                    <input value={editFsaNumber} onChange={(e) => setEditFsaNumber(e.target.value)} placeholder="optional" className={`${inputCls} mt-1`} />
+                  </label>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_160px] gap-2 items-center">
-                  <LandownerPicker
-                    value={editLandownerId}
-                    onChange={setEditLandownerId}
-                    landowners={landowners}
-                    farms={farms}
-                    onCreated={(l) => setLandowners((rs) => [...rs, l].sort((a, b) => a.name.localeCompare(b.name)))}
-                    className="w-full"
-                  />
-                  <label className="text-sm flex items-center gap-2 select-none">
+                <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_160px] gap-2 items-end">
+                  <div className={labelCls}>
+                    <span>Landowner</span>
+                    <LandownerPicker
+                      value={editLandownerId}
+                      onChange={setEditLandownerId}
+                      landowners={landowners}
+                      farms={farms}
+                      onCreated={(l) => setLandowners((rs) => [...rs, l].sort((a, b) => a.name.localeCompare(b.name)))}
+                      className="w-full mt-1"
+                    />
+                  </div>
+                  <label className="text-sm flex items-center gap-2 select-none min-h-11">
                     <input
                       type="checkbox"
                       checked={editIsShareRent}
@@ -412,22 +481,25 @@ export default function FarmsPage() {
                         setEditIsShareRent(next)
                         if (!next) setEditLandlordSharePct('')
                       }}
-                      className="h-4 w-4"
+                      className="h-5 w-5"
                     />
                     Share rent
                   </label>
                   {editIsShareRent ? (
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      step="0.01"
-                      min={0}
-                      max={100}
-                      value={editLandlordSharePct}
-                      onChange={(e) => setEditLandlordSharePct(e.target.value)}
-                      placeholder="Landlord %"
-                      className={inputCls}
-                    />
+                    <label className={labelCls}>
+                      Landlord share %
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        step="0.01"
+                        min={0}
+                        max={100}
+                        value={editLandlordSharePct}
+                        onChange={(e) => setEditLandlordSharePct(e.target.value)}
+                        placeholder="e.g. 33.33"
+                        className={`${inputCls} mt-1`}
+                      />
+                    </label>
                   ) : (
                     <div />
                   )}
@@ -437,10 +509,14 @@ export default function FarmsPage() {
                     Enter the percentage of production the landowner is entitled to (0–100).
                   </p>
                 )}
+                <div className="flex gap-2 justify-end">
+                  <button type="button" onClick={() => setEditingId(null)} className={`${btnCls} border border-slate-300 bg-white text-slate-700`}>Cancel</button>
+                  <button type="button" onClick={() => save(f.id)} className={`${btnCls} bg-brand hover:bg-brand-deep text-white px-4`}>Save</button>
+                </div>
               </div>
             ) : (
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="flex-1">
+                <span className="flex-1 min-w-[12rem] py-1">
                   {f.name}
                   {f.entity_id && <span className="text-slate-400 text-sm"> · {entityName(f.entity_id)}</span>}
                   {c
@@ -461,6 +537,7 @@ export default function FarmsPage() {
                   <span className="text-xs text-slate-400" title={LAND_MANAGED_MESSAGE}>edit in Turnrow Farm</span>
                 ) : (<>
                 <button
+                  type="button"
                   onClick={() => {
                     setEditingId(f.id)
                     setEditName(f.name)
@@ -473,9 +550,10 @@ export default function FarmsPage() {
                       f.landlord_share_percentage != null ? String(f.landlord_share_percentage) : '',
                     )
                   }}
-                  className="text-brand-deep"
+                  className={`${btnCls} text-brand-deep`}
                 >Edit</button>
-                <button onClick={() => remove(f.id)} className="text-red-600">Delete</button>
+                <button type="button" disabled={busyId === f.id} onClick={() => archive(f)} className={`${btnCls} text-slate-600 disabled:opacity-50`}>Archive</button>
+                <button type="button" disabled={busyId === f.id} onClick={() => remove(f)} className={`${btnCls} text-red-600 disabled:opacity-50`}>Delete</button>
                 </>)}
               </div>
             )}
@@ -484,6 +562,7 @@ export default function FarmsPage() {
         })}
       </ul>
       ) })()}
+      {dialogs}
     </div>
   )
 }

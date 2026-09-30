@@ -13,6 +13,7 @@ import HedgingHistory from './hedging-history'
 import { effectiveEntry, lineageChain } from '@/lib/hedge-lineage'
 import { buildHedgeTimeline } from '@/lib/hedge-events'
 import { fmtCommodityPrice, fmtPnl } from '@/lib/hedging'
+import { fmtDate } from '@/lib/format-date'
 import type { FuturesPosition, HedgePositionEvent } from '@/lib/types'
 
 type Props = {
@@ -53,9 +54,9 @@ export default function PositionHistoryDialog({ position, allPositions, entityNa
         <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-sm">
           <div className="flex flex-wrap gap-x-6 gap-y-1">
             <span><span className="text-slate-500">Position</span> <span className="font-semibold capitalize">{position.side} {position.num_contracts} {position.contract_month} {position.commodity}</span></span>
-            <span><span className="text-slate-500">Entry</span> <span className="font-mono">{fmtCommodityPrice(position.commodity, position.trade_price)}</span> on {position.trade_date}</span>
+            <span><span className="text-slate-500">Entry</span> <span className="font-mono">{fmtCommodityPrice(position.commodity, position.trade_price)}</span> on {fmtDate(position.trade_date)}</span>
             {position.status === 'closed' && (
-              <span><span className="text-slate-500">Closed</span> <span className="font-mono">{fmtCommodityPrice(position.commodity, position.close_price)}</span> on {position.close_date}{position.realized_pnl != null && <> · <span className={`font-mono ${position.realized_pnl >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(position.realized_pnl)}</span></>}</span>
+              <span><span className="text-slate-500">Closed</span> <span className="font-mono">{fmtCommodityPrice(position.commodity, position.close_price)}</span> on {fmtDate(position.close_date)}{position.realized_pnl != null && <> · <span className={`font-mono ${position.realized_pnl >= 0 ? 'text-green-700' : 'text-red-700'}`}>{fmtPnl(position.realized_pnl)}</span></>}</span>
             )}
             <span><span className="text-slate-500">Crop year</span> <span className="font-semibold">{position.crop_year}</span></span>
             {entityName(position.entity_id) && <span><span className="text-slate-500">Entity</span> {entityName(position.entity_id)}</span>}

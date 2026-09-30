@@ -9,10 +9,11 @@
 
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { reportError } from '@/lib/friendly-error'
 import type { Buyer, DeliveryLocation } from '@/lib/types'
 
 const ADD_NEW = '__add_new__'
-const INPUT = 'w-full rounded-lg border border-slate-300 px-3 py-2'
+const INPUT = 'w-full rounded-lg border border-slate-300 px-3 min-h-11'
 
 function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
   return (
@@ -53,7 +54,7 @@ export function BuyerPicker({ value, onChange, buyers, onCreated, className }: {
     setBusy(true)
     const { data, error } = await supabase.from('buyers').insert({ name: trimmed }).select('*').single()
     setBusy(false)
-    if (error || !data) { setErr(error?.message ?? 'Could not create the buyer.'); return }
+    if (error || !data) { setErr(reportError(error, { action: 'add the buyer', noun: 'buyer', name: trimmed })); return }
     const created = data as Buyer
     onCreated?.(created)
     onChange(created.id)
@@ -80,15 +81,15 @@ export function BuyerPicker({ value, onChange, buyers, onCreated, className }: {
               <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 space-y-1.5">
                 <p>A buyer named <b>{dupe.name}</b> already exists.</p>
                 <div className="flex gap-2">
-                  <button type="button" onClick={() => { onChange(dupe.id); close() }} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold">Use existing</button>
-                  <button type="submit" className="rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-sm">Create anyway</button>
+                  <button type="button" onClick={() => { onChange(dupe.id); close() }} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 min-h-11 text-sm font-semibold">Use existing</button>
+                  <button type="submit" className="rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm">Create anyway</button>
                 </div>
               </div>
             )}
             {err && <p className="text-sm text-red-600">{err}</p>}
             <div className="flex gap-2 justify-end">
-              <button type="button" onClick={close} className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Cancel</button>
-              <button type="submit" disabled={busy} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold disabled:opacity-50">
+              <button type="button" onClick={close} className="rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm">Cancel</button>
+              <button type="submit" disabled={busy} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 min-h-11 text-sm font-semibold disabled:opacity-50">
                 {busy ? 'Saving…' : 'Add Buyer'}
               </button>
             </div>
@@ -134,7 +135,7 @@ export function DeliveryLocationPicker({ value, onChange, buyerId, buyerName, lo
       .select('*')
       .single()
     setBusy(false)
-    if (error || !data) { setErr(error?.message ?? 'Could not create the delivery location.'); return }
+    if (error || !data) { setErr(reportError(error, { action: 'add the delivery location', noun: 'delivery location', name: trimmed })); return }
     const created = data as DeliveryLocation
     onCreated?.(created)
     onChange(created.id)
@@ -162,15 +163,15 @@ export function DeliveryLocationPicker({ value, onChange, buyerId, buyerName, lo
               <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 space-y-1.5">
                 <p>{buyerName ?? 'This buyer'} already has a location named <b>{dupe.name}</b>.</p>
                 <div className="flex gap-2">
-                  <button type="button" onClick={() => { onChange(dupe.id); close() }} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold">Use existing</button>
-                  <button type="submit" className="rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-sm">Create anyway</button>
+                  <button type="button" onClick={() => { onChange(dupe.id); close() }} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 min-h-11 text-sm font-semibold">Use existing</button>
+                  <button type="submit" className="rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm">Create anyway</button>
                 </div>
               </div>
             )}
             {err && <p className="text-sm text-red-600">{err}</p>}
             <div className="flex gap-2 justify-end">
-              <button type="button" onClick={close} className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Cancel</button>
-              <button type="submit" disabled={busy} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold disabled:opacity-50">
+              <button type="button" onClick={close} className="rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm">Cancel</button>
+              <button type="submit" disabled={busy} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 min-h-11 text-sm font-semibold disabled:opacity-50">
                 {busy ? 'Saving…' : 'Add Location'}
               </button>
             </div>

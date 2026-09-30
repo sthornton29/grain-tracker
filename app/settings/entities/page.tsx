@@ -8,6 +8,8 @@ import SettingsDocImport from '@/components/settings-doc-import'
 import { useFarmLink } from '@/lib/use-farm-link'
 import { landImportBlockedMessage, landRowEditable, LAND_MANAGED_MESSAGE } from '@/lib/farm-link'
 import { FarmLinkBanner, ManagedChip, NotLinkedChip } from '@/components/farm-link-banner'
+import { reportError } from '@/lib/friendly-error'
+import { useDialogs, plural } from '@/components/use-dialogs'
 import type { Entity, County, EntityCounty } from '@/lib/types'
 
 type Role = 'farming' | 'marketing_agent'
@@ -30,7 +32,8 @@ export default function EntitiesPage() {
   const [editForm, setEditForm] = useState<Form>(empty)
   const [editCountyIds, setEditCountyIds] = useState<Set<string>>(new Set())
   const [err, setErr] = useState<string | null>(null)
-  // 087: managed in Turnrow Farm → synced rows are read-only here.
+  const { confirm, dialogs } = useDialogs()
+  // 087: managed in Turnrow Farm → rows that came from there are read-only here.
   const farmLink = useFarmLink(supabase, 'entities')
   const managed = farmLink.managed
   const canEdit = (row: Entity) => landRowEditable(row, managed)
@@ -41,7 +44,7 @@ export default function EntitiesPage() {
       supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('entity_counties').select('*'),
     ])
-    if (en.error) { setErr(en.error.message); return }
+    if (en.error) { setErr(reportError(en.error, { action: 'load your entities', noun: 'entity' })); return }
     // Archived by the Turnrow Farm link (087) → out of the list.
     setRows(((en.data as Entity[]) || []).filter((r) => !r.archived_at))
     setCounties((co.data as County[]) || [])
@@ -87,6 +90,7 @@ export default function EntitiesPage() {
     e.preventDefault()
     if (managed) { setErr(`${LAND_MANAGED_MESSAGE} Add the entity in Turnrow Farm.`); return }
     if (!form.name.trim()) return
+    if (rows.some((r) => r.name.trim().toLowerCase() === form.name.trim().toLowerCase())) { setErr(`An entity named “${form.name.trim()}” already exists.`); return }
     if (formCountyIds.size === 0) {
       setErr('Select at least one county before saving.')
       return
@@ -100,11 +104,11 @@ export default function EntitiesPage() {
       .insert(payload)
       .select('id')
       .single()
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'add the entity', noun: 'entity', name: form.name.trim() })); return }
     try {
       await syncEntityCounties((data as { id: string }).id, formCountyIds)
     } catch (e) {
-      setErr((e as Error).message); return
+      setErr(reportError(e as Error, { action: 'save the entity’s counties', noun: 'county' })); return
     }
     setForm(empty); setFormCountyIds(new Set()); setErr(null); refresh()
   }
@@ -123,20 +127,40 @@ export default function EntitiesPage() {
       payment_limit_persons: persons,
     }
     if (roleSupported) payload.entity_role = editForm.role
+    if (rows.some((r) => r.id !== id && r.name.trim().toLowerCase() === editForm.name.trim().toLowerCase())) { setErr(`An entity named “${editForm.name.trim()}” already exists.`); return }
     const { error } = await supabase.from('entities').update(payload).eq('id', id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'save the entity', noun: 'entity', name: editForm.name.trim() })); return }
     try {
       await syncEntityCounties(id, editCountyIds)
     } catch (e) {
-      setErr((e as Error).message); return
+      setErr(reportError(e as Error, { action: 'save the entity’s counties', noun: 'county' })); return
     }
     setEditingId(null); setErr(null); refresh()
   }
 
-  async function remove(id: string) {
-    if (!confirm('Delete this entity? Farms will be unassigned but not deleted.')) return
-    const { error } = await supabase.from('entities').delete().eq('id', id)
-    if (error) { setErr(error.message); return }
+  async function remove(en: Entity) {
+    setErr(null)
+    const [fa, lo] = await Promise.all([
+      supabase.from('farms').select('id', { count: 'exact', head: true }).eq('entity_id', en.id),
+      supabase.from('loads').select('id', { count: 'exact', head: true }).eq('entity_id', en.id),
+    ])
+    const farms = fa.count ?? 0
+    const loads = lo.count ?? 0
+    if (loads > 0) {
+      setErr(`${en.name} has ${plural(loads, 'load')} recorded against it, so it can’t be deleted. Rename it if the name is wrong.`)
+      return
+    }
+    const ok = await confirm({
+      title: `Delete ${en.name}?`,
+      body: farms > 0
+        ? `${plural(farms, 'farm')} will be left without an entity — they aren’t deleted, but reports group by entity, so reassign them afterwards. This can’t be undone.`
+        : 'Nothing points at this entity yet, so it can be removed. This can’t be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
+    const { error } = await supabase.from('entities').delete().eq('id', en.id)
+    if (error) { setErr(reportError(error, { action: 'delete the entity', noun: 'entity', name: en.name })); return }
     refresh()
   }
 
@@ -149,7 +173,9 @@ export default function EntitiesPage() {
     setEditCountyIds(new Set(entityCountyIds.get(e.id) ?? []))
   }
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
+  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2 min-h-11 w-full'
+  const labelCls = 'block text-sm text-slate-700'
+  const btnCls = 'min-h-11 px-3 rounded-lg text-sm font-semibold'
 
   function renderCountyList(ids: Iterable<string>) {
     const list = [...ids]
@@ -168,30 +194,36 @@ export default function EntitiesPage() {
 
       <FarmLinkBanner status={farmLink} noun="Entities" />
 
-      <SettingsDocImport primaryTarget="entities" title="Upload a Document (AI)" onSaved={refresh} />
+      <SettingsDocImport primaryTarget="entities" title="Upload a document with your entities" onSaved={refresh} />
 
       <CsvImport config={entitiesImportConfig()} onImported={refresh} blockedReason={managed ? landImportBlockedMessage('entities') : null} />
 
       {managed && (
         <div className="bg-white p-4 rounded-xl shadow text-sm text-slate-600">
-          {LAND_MANAGED_MESSAGE} New entities are added in Turnrow Farm and sync here. County assignments and the payment-limit persons stay editable here on every entity.
+          {LAND_MANAGED_MESSAGE} New entities are added in Turnrow Farm and come across from there. County assignments and the payment-limit persons stay editable here on every entity.
         </div>
       )}
 
       <form onSubmit={add} className="space-y-3 bg-white p-4 rounded-xl shadow">
+        <h2 className="font-semibold">Add an entity</h2>
         <div className="grid grid-cols-1 sm:grid-cols-[1fr_2fr] gap-2">
-          <input
-            value={form.name}
-            onChange={(e) => setForm({ ...form, name: e.target.value })}
-            placeholder="Entity name"
-            className={inputCls}
-          />
-          <input
-            value={form.notes}
-            onChange={(e) => setForm({ ...form, notes: e.target.value })}
-            placeholder="Notes (optional)"
-            className={inputCls}
-          />
+          <label className={labelCls}>
+            Entity name
+            <input
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              placeholder="e.g. Prairie Farms LLC"
+              className={`${inputCls} mt-1`}
+            />
+          </label>
+          <label className={labelCls}>
+            Notes <span className="text-slate-400">(optional)</span>
+            <input
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              className={`${inputCls} mt-1`}
+            />
+          </label>
         </div>
         <label className="text-sm flex items-center gap-2 flex-wrap">
           <span className="font-semibold">Payment-limit persons</span>
@@ -200,6 +232,7 @@ export default function EntitiesPage() {
             value={form.persons}
             onChange={(e) => setForm({ ...form, persons: e.target.value })}
             className={`${inputCls} w-20`}
+            aria-label="Payment-limit persons"
           />
           <span className="text-slate-500">
             Eligible persons for FSA payment limits — total ARC/PLC limit = persons × the program year&apos;s
@@ -216,13 +249,13 @@ export default function EntitiesPage() {
           />
         </div>
         <div className="flex justify-end">
-          <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Entity</button>
+          <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold">Add entity</button>
         </div>
       </form>
 
       {!roleSupported && (
         <p className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">
-          Entity roles (farming vs marketing agent) aren&rsquo;t set up yet — contact support. Once enabled, you can
+          Entity roles (farming vs marketing agent) aren&rsquo;t available for your account yet — contact support. Once they are, you can
           mark the marketing entity so its contracts and hedges flow down to the farming entities in the
           entity-filtered reports.
         </p>
@@ -231,7 +264,7 @@ export default function EntitiesPage() {
       {err && <p className="text-sm text-red-600">{err}</p>}
 
       <ul className="bg-white rounded-xl shadow divide-y">
-        {rows.length === 0 && <li className="px-4 py-6 text-center text-slate-400">No entities yet.</li>}
+        {rows.length === 0 && <li className="px-4 py-6 text-center text-slate-500">{managed ? 'No entities yet — they arrive from Turnrow Farm on its next update.' : 'No entities yet — add the first one above, or upload your FSA farm records.'}</li>}
         {rows.map((e) => {
           const ids = entityCountyIds.get(e.id) ?? []
           return (
@@ -239,19 +272,24 @@ export default function EntitiesPage() {
               {editingId === e.id ? (
                 <div className="space-y-2">
                   <div className="grid grid-cols-1 sm:grid-cols-[1fr_2fr] gap-2">
-                    <input
-                      value={editForm.name}
-                      onChange={(ev) => setEditForm({ ...editForm, name: ev.target.value })}
-                      className={inputCls}
-                      disabled={!canEdit(e)}
-                      title={!canEdit(e) ? `${LAND_MANAGED_MESSAGE} Rename it in Turnrow Farm.` : undefined}
-                    />
-                    <input
-                      value={editForm.notes}
-                      onChange={(ev) => setEditForm({ ...editForm, notes: ev.target.value })}
-                      className={inputCls}
-                      placeholder="Notes"
-                    />
+                    <label className={labelCls}>
+                      Entity name
+                      <input
+                        value={editForm.name}
+                        onChange={(ev) => setEditForm({ ...editForm, name: ev.target.value })}
+                        className={`${inputCls} mt-1`}
+                        disabled={!canEdit(e)}
+                        title={!canEdit(e) ? `${LAND_MANAGED_MESSAGE} Rename it in Turnrow Farm.` : undefined}
+                      />
+                    </label>
+                    <label className={labelCls}>
+                      Notes <span className="text-slate-400">(optional)</span>
+                      <input
+                        value={editForm.notes}
+                        onChange={(ev) => setEditForm({ ...editForm, notes: ev.target.value })}
+                        className={`${inputCls} mt-1`}
+                      />
+                    </label>
                   </div>
                   <label className="text-sm flex items-center gap-2 flex-wrap">
                     <span className="font-semibold">Payment-limit persons</span>
@@ -260,6 +298,7 @@ export default function EntitiesPage() {
                       value={editForm.persons}
                       onChange={(ev) => setEditForm({ ...editForm, persons: ev.target.value })}
                       className={`${inputCls} w-20`}
+                      aria-label="Payment-limit persons"
                     />
                     <span className="text-slate-500">× the program year&apos;s per-person limit = the entity&apos;s total ARC/PLC cap.</span>
                   </label>
@@ -272,9 +311,9 @@ export default function EntitiesPage() {
                       onChange={setEditCountyIds}
                     />
                   </div>
-                  <div className="flex gap-3">
-                    <button onClick={() => save(e.id)} className="text-green-700 font-semibold">Save</button>
-                    <button onClick={() => setEditingId(null)} className="text-slate-500">Cancel</button>
+                  <div className="flex gap-2 justify-end">
+                    <button type="button" onClick={() => setEditingId(null)} className={`${btnCls} border border-slate-300 bg-white text-slate-700`}>Cancel</button>
+                    <button type="button" onClick={() => save(e.id)} className={`${btnCls} bg-brand hover:bg-brand-deep text-white px-4`}>Save</button>
                   </div>
                 </div>
               ) : (
@@ -303,14 +342,15 @@ export default function EntitiesPage() {
                       )}
                     </div>
                   </div>
-                  <button onClick={() => startEdit(e)} className="text-brand-deep">{canEdit(e) ? 'Edit' : 'Counties & limits'}</button>
-                  {canEdit(e) && <button onClick={() => remove(e.id)} className="text-red-600">Delete</button>}
+                  <button type="button" onClick={() => startEdit(e)} className={`${btnCls} text-brand-deep`}>{canEdit(e) ? 'Edit' : 'Counties & limits'}</button>
+                  {canEdit(e) && <button type="button" onClick={() => remove(e)} className={`${btnCls} text-red-600`}>Delete</button>}
                 </div>
               )}
             </li>
           )
         })}
       </ul>
+      {dialogs}
     </div>
   )
 }
@@ -322,7 +362,7 @@ function RolePicker({ value, onChange }: { value: Role; onChange: (r: Role) => v
       <select
         value={value}
         onChange={(e) => onChange(e.target.value as Role)}
-        className="rounded-lg border border-slate-300 px-3 py-2 bg-white"
+        className="rounded-lg border border-slate-300 px-3 py-2 bg-white min-h-11"
       >
         <option value="farming">Farming entity</option>
         <option value="marketing_agent">Marketing agent</option>
@@ -376,7 +416,7 @@ function CountyMultiPicker({
     onChange(next)
   }
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
+  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2 min-h-11'
   const selectedList = [...selectedIds]
     .map((id) => countyById.get(id))
     .filter(Boolean) as County[]
@@ -387,6 +427,7 @@ function CountyMultiPicker({
       <div className="grid grid-cols-1 sm:grid-cols-[200px_1fr_auto] gap-2">
         <select
           value={stateCode}
+          aria-label="State"
           onChange={(e) => { setStateCode(e.target.value); setCountyId('') }}
           className={inputCls}
         >
@@ -395,6 +436,7 @@ function CountyMultiPicker({
         </select>
         <select
           value={countyId}
+          aria-label="County"
           onChange={(e) => setCountyId(e.target.value)}
           className={inputCls}
           disabled={!stateCode}
@@ -406,9 +448,9 @@ function CountyMultiPicker({
           type="button"
           onClick={addCounty}
           disabled={!countyId}
-          className="rounded-lg bg-sky-700 text-white px-4 py-2 font-semibold disabled:opacity-40"
+          className="rounded-lg bg-sky-700 text-white px-4 min-h-11 font-semibold disabled:opacity-40"
         >
-          Add
+          Add county
         </button>
       </div>
       {selectedList.length > 0 && (
@@ -422,7 +464,7 @@ function CountyMultiPicker({
               <button
                 type="button"
                 onClick={() => removeCounty(c.id)}
-                className="text-brand-deep hover:text-red-600 font-bold"
+                className="text-brand-deep hover:text-red-600 font-bold min-h-11 min-w-8 -my-2"
                 aria-label={`Remove ${c.name}`}
               >
                 ×

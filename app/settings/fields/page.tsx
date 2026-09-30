@@ -12,6 +12,8 @@ import { usePersistentState } from '@/lib/use-persistent-state'
 import { useFarmLink } from '@/lib/use-farm-link'
 import { landImportBlockedMessage, landRowEditable, LAND_MANAGED_MESSAGE } from '@/lib/farm-link'
 import { FarmLinkBanner, ManagedChip, NotLinkedChip } from '@/components/farm-link-banner'
+import { reportError } from '@/lib/friendly-error'
+import { useDialogs, plural } from '@/components/use-dialogs'
 import type { Crop, Farm, Field, FieldPlanting, County, EntityCounty } from '@/lib/types'
 
 function parseAcres(v: string): number | null {
@@ -60,6 +62,8 @@ export default function FieldsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [q, setQ] = useState('')
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const { confirm, dialogs } = useDialogs()
   // Farm filter for the list, persisted like the app's other filters ('' = all).
   const [farmFilter, setFarmFilter] = usePersistentState<string>('fields-settings:farm', '')
   const [sortKey, setSortKey] = useState<'name' | 'farm' | 'acres' | 'county'>('name')
@@ -78,7 +82,8 @@ export default function FieldsPage() {
       supabase.from('counties').select('*').order('state_code').order('name'),
       supabase.from('entity_counties').select('*'),
     ])
-    // Archived by the Turnrow Farm link (087) → out of the lists.
+    if (fi.error) { setErr(reportError(fi.error, { action: 'load your fields', noun: 'field' })); return }
+    // Archived (by the Turnrow Farm link or from here) → out of the lists.
     setFarms(((fa.data as Farm[]) || []).filter((f) => !f.archived_at))
     setFields(((fi.data as Field[]) || []).filter((f) => !f.archived_at))
     setCrops((cr.data as Crop[]) || [])
@@ -130,48 +135,89 @@ export default function FieldsPage() {
   const editInvalid =
     irrigatedExceedsTotal(editAcres, editIrrigated) || irrigatedNegative(editIrrigated)
 
+  const nameTaken = (n: string, fId: string, exceptId?: string) =>
+    fields.some((f) => f.id !== exceptId && (f.farm_id ?? '') === (fId ?? '') && f.name_or_number.trim().toLowerCase() === n.toLowerCase())
+
   async function add(e: React.FormEvent) {
     e.preventDefault()
     if (managed) { setErr(`${LAND_MANAGED_MESSAGE} Add the field in Turnrow Farm.`); return }
-    if (!name.trim()) return
+    const n = name.trim()
+    if (!n) return
     if (addInvalid) return
+    if (nameTaken(n, farmId)) { setErr(`A field named “${n}” already exists on that farm.`); return }
     const total = parseAcres(totalAcres)
     const irr = parseAcres(irrigatedAcres) ?? 0
     const dry = total != null ? Math.max(0, total - irr) : 0
     const { error } = await supabase.from('fields').insert({
-      name_or_number: name.trim(),
+      name_or_number: n,
       farm_id: farmId || null,
       county_id: countyId || null,
       total_acres: total,
       irrigated_acres: irr,
       dryland_acres: dry,
     })
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'add the field', noun: 'field', name: n })); return }
     setName(''); setTotalAcres(''); setIrrigatedAcres(''); setErr(null); refresh()
     // Keep farmId + countyId so adding a sibling field is one-click.
   }
 
   async function save(id: string) {
     if (editInvalid) return
+    const n = editName.trim()
+    if (!n) return
+    if (nameTaken(n, editFarmId, id)) { setErr(`A field named “${n}” already exists on that farm.`); return }
     const total = parseAcres(editAcres)
     const irr = parseAcres(editIrrigated) ?? 0
     const dry = total != null ? Math.max(0, total - irr) : 0
     const { error } = await supabase.from('fields').update({
-      name_or_number: editName.trim(),
+      name_or_number: n,
       farm_id: editFarmId || null,
       county_id: editCountyId || null,
       total_acres: total,
       irrigated_acres: irr,
       dryland_acres: dry,
     }).eq('id', id)
-    if (error) { setErr(error.message); return }
-    setEditingId(null); refresh()
+    if (error) { setErr(reportError(error, { action: 'save the field', noun: 'field', name: n })); return }
+    setEditingId(null); setErr(null); refresh()
   }
 
-  async function remove(id: string) {
-    if (!confirm('Delete this field? All of its plantings will also be deleted.')) return
-    const { error } = await supabase.from('fields').delete().eq('id', id)
-    if (error) { setErr(error.message); return }
+  async function archive(f: Field) {
+    setErr(null)
+    const ok = await confirm({
+      title: `Archive ${f.name_or_number}?`,
+      body: 'The field disappears from this list and from new-record pickers. Its plantings, loads, and yields stay exactly as they are.',
+      confirmLabel: 'Archive',
+    })
+    if (!ok) return
+    setBusyId(f.id)
+    const { error } = await supabase.from('fields').update({ archived_at: new Date().toISOString() }).eq('id', f.id)
+    setBusyId(null)
+    if (error) { setErr(reportError(error, { action: 'archive the field', noun: 'field', name: f.name_or_number })); return }
+    refresh()
+  }
+
+  async function remove(f: Field) {
+    setErr(null)
+    setBusyId(f.id)
+    const { count } = await supabase.from('loads').select('id', { count: 'exact', head: true }).eq('from_field_id', f.id)
+    setBusyId(null)
+    const loads = count ?? 0
+    if (loads > 0) {
+      setErr(`${f.name_or_number} has ${plural(loads, 'load')} recorded, so it can’t be deleted. Archive it instead — the loads and yields stay.`)
+      return
+    }
+    const nPlantings = plantings.filter((p) => p.field_id === f.id).length
+    const ok = await confirm({
+      title: nPlantings > 0 ? `Delete ${f.name_or_number} and its ${plural(nPlantings, 'planting')}?` : `Delete ${f.name_or_number}?`,
+      body: nPlantings > 0 ? 'The plantings recorded on this field are deleted with it. This can’t be undone.' : 'This can’t be undone. If you might need it again, archive it instead.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
+    setBusyId(f.id)
+    const { error } = await supabase.from('fields').delete().eq('id', f.id)
+    setBusyId(null)
+    if (error) { setErr(reportError(error, { action: 'delete the field', noun: 'field', name: f.name_or_number })); return }
     refresh()
   }
 
@@ -187,8 +233,10 @@ export default function FieldsPage() {
     () => buildDoubleCropSet(plantings, cropById),
     [plantings, cropById],
   )
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
-  const readonlyCls = 'rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-slate-600'
+  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2 min-h-11 w-full'
+  const readonlyCls = 'rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 min-h-11 w-full text-slate-600'
+  const labelCls = 'block text-sm text-slate-700'
+  const btnCls = 'min-h-11 px-3 rounded-lg text-sm font-semibold'
 
   const createCountyOptions = farmId ? countiesForFarm(farmId) : []
   const editCountyOptions = editFarmId ? countiesForFarm(editFarmId) : []
@@ -197,7 +245,7 @@ export default function FieldsPage() {
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
         <h1 className="text-2xl font-bold flex-1">Fields</h1>
-        <Link href="/settings/plantings" className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2">
+        <Link href="/settings/plantings" className="text-sm rounded-lg bg-white border border-slate-300 px-3 min-h-11 inline-flex items-center">
           Manage plantings →
         </Link>
       </div>
@@ -206,78 +254,86 @@ export default function FieldsPage() {
 
       <CsvImport config={fieldsImportConfig()} onImported={refresh} blockedReason={managed ? landImportBlockedMessage('fields') : null} />
 
-      <SettingsDocImport primaryTarget="fields" title="Upload a Field List (AI)" onSaved={refresh} />
+      <SettingsDocImport primaryTarget="fields" title="Upload a field list" onSaved={refresh} />
 
       {managed && (
         <div className="bg-white p-4 rounded-xl shadow text-sm text-slate-600">
-          {LAND_MANAGED_MESSAGE} New fields are added in Turnrow Farm and sync here. Fields marked &ldquo;not linked&rdquo; were created here and can still be edited until you match them in Turnrow Farm.
+          {LAND_MANAGED_MESSAGE} New fields are added in Turnrow Farm and come across from there. Fields marked &ldquo;not linked&rdquo; were created here and can still be edited until you match them in Turnrow Farm.
         </div>
       )}
 
-      <form onSubmit={add} className="space-y-2">
+      {!managed && (
+      <form onSubmit={add} className="space-y-3 bg-white p-4 rounded-xl shadow">
+        <h2 className="font-semibold">Add a field</h2>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Field name or number"
-            className={inputCls}
-          />
-          <select value={farmId} onChange={(e) => onFarmChange(e.target.value)} className={inputCls}>
-            <option value="">— farm (optional) —</option>
-            {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-          </select>
-          <select
-            value={countyId}
-            onChange={(e) => setCountyId(e.target.value)}
-            className={inputCls}
-            disabled={!farmId}
-          >
-            <option value="">
-              {!farmId ? 'pick farm first' : createCountyOptions.length === 0 ? 'farm entity has no counties' : '— county —'}
-            </option>
-            {createCountyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
-          </select>
+          <label className={labelCls}>
+            Field name or number
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. North 40" className={`${inputCls} mt-1`} />
+          </label>
+          <label className={labelCls}>
+            Farm
+            <select value={farmId} onChange={(e) => onFarmChange(e.target.value)} className={`${inputCls} mt-1`}>
+              <option value="">— no farm yet —</option>
+              {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          </label>
+          <label className={labelCls}>
+            County
+            <select
+              value={countyId}
+              onChange={(e) => setCountyId(e.target.value)}
+              className={`${inputCls} mt-1`}
+              disabled={!farmId}
+            >
+              <option value="">
+                {!farmId ? 'pick the farm first' : createCountyOptions.length === 0 ? 'the farm’s entity has no counties yet' : '— county —'}
+              </option>
+              {createCountyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
+            </select>
+          </label>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-[1fr_1fr_1fr_auto] gap-2 items-start">
-          <label className="text-xs text-slate-500 flex flex-col gap-1">
+        <div className="grid grid-cols-2 sm:grid-cols-[1fr_1fr_1fr_auto] gap-2 items-end">
+          <label className={labelCls}>
             Total acres
             <input
               type="number"
+              inputMode="decimal"
               step="0.01"
               min="0"
               value={totalAcres}
               onChange={(e) => setTotalAcres(e.target.value)}
               placeholder="0"
-              className={inputCls}
+              className={`${inputCls} mt-1`}
             />
           </label>
-          <label className="text-xs text-slate-500 flex flex-col gap-1">
+          <label className={labelCls}>
             Irrigated acres
             <input
               type="number"
+              inputMode="decimal"
               step="0.01"
               min="0"
               value={irrigatedAcres}
               onChange={(e) => setIrrigatedAcres(e.target.value)}
               placeholder="0"
-              className={inputCls}
+              className={`${inputCls} mt-1`}
             />
           </label>
-          <label className="text-xs text-slate-500 flex flex-col gap-1">
+          <label className={labelCls}>
             Dryland acres
             <input
               type="text"
               value={totalAcres === '' && irrigatedAcres === '' ? '' : String(dryFromInputs(totalAcres, irrigatedAcres))}
               readOnly
               tabIndex={-1}
-              className={readonlyCls}
+              className={`${readonlyCls} mt-1`}
             />
           </label>
           <button
             disabled={addInvalid}
-            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold self-end disabled:opacity-50"
+            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold disabled:opacity-50"
           >
-            Add
+            Add field
           </button>
         </div>
         {addInvalid && (
@@ -288,23 +344,25 @@ export default function FieldsPage() {
           </p>
         )}
       </form>
+      )}
 
       {err && <p className="text-sm text-red-600">{err}</p>}
 
       <div className="flex items-center gap-2 flex-wrap">
         <input
           type="search"
+          aria-label="Search fields"
           placeholder="Search fields…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          className="rounded-lg border border-slate-300 px-3 py-2 flex-1 min-w-[12rem]"
+          className="rounded-lg border border-slate-300 px-3 py-2 min-h-11 flex-1 min-w-[12rem]"
         />
         <label className="text-sm flex items-center gap-2">
           Farm
           <select
             value={farmFilter}
             onChange={(e) => setFarmFilter(e.target.value)}
-            className="rounded-lg border border-slate-300 px-3 py-2"
+            className="rounded-lg border border-slate-300 px-3 py-2 min-h-11"
           >
             <option value="">All farms</option>
             {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
@@ -312,8 +370,9 @@ export default function FieldsPage() {
         </label>
         <select
           value={sortKey}
+          aria-label="Sort by"
           onChange={(e) => setSortKey(e.target.value as 'name' | 'farm' | 'acres' | 'county')}
-          className="text-sm rounded-lg border border-slate-300 px-3 py-2"
+          className="text-sm rounded-lg border border-slate-300 px-3 py-2 min-h-11"
         >
           <option value="name">Sort: Name</option>
           <option value="farm">Sort: Farm</option>
@@ -322,8 +381,9 @@ export default function FieldsPage() {
         </select>
         <button
           type="button"
+          aria-label={sortDir === 'asc' ? 'Sorted ascending — switch to descending' : 'Sorted descending — switch to ascending'}
           onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
-          className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2"
+          className="text-sm rounded-lg bg-white border border-slate-300 px-3 min-h-11 min-w-11"
         >
           {sortDir === 'asc' ? '↑' : '↓'}
         </button>
@@ -373,8 +433,10 @@ export default function FieldsPage() {
           </thead>
           <tbody>
             {visible.length === 0 && (
-              <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400">
-                {fields.length === 0 ? 'No fields yet.' : 'No fields match.'}
+              <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-500">
+                {fields.length === 0
+                  ? (managed ? 'No fields yet — they arrive from Turnrow Farm on its next update.' : 'No fields yet — add the first one above, or upload a field list.')
+                  : farmFilter ? 'No fields on that farm match. Try “All farms”.' : 'No fields match that search.'}
               </td></tr>
             )}
             {visible.map((f) => {
@@ -388,64 +450,67 @@ export default function FieldsPage() {
                     {isEditing ? (
                       <td colSpan={7} className="px-3 py-3">
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-2">
-                          <input
-                            value={editName}
-                            onChange={(e) => setEditName(e.target.value)}
-                            className={inputCls}
-                          />
-                          <select
-                            value={editFarmId}
-                            onChange={(e) => onEditFarmChange(e.target.value)}
-                            className={inputCls}
-                          >
-                            <option value="">— no farm —</option>
-                            {farms.map((fm) => <option key={fm.id} value={fm.id}>{fm.name}</option>)}
-                          </select>
-                          <select
-                            value={editCountyId}
-                            onChange={(e) => setEditCountyId(e.target.value)}
-                            className={inputCls}
-                            disabled={!editFarmId}
-                          >
-                            <option value="">
-                              {!editFarmId ? 'pick farm' : editOptions.length === 0 ? 'no counties' : '— county —'}
-                            </option>
-                            {editOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
-                          </select>
+                          <label className={labelCls}>
+                            Field name or number
+                            <input value={editName} onChange={(e) => setEditName(e.target.value)} className={`${inputCls} mt-1`} />
+                          </label>
+                          <label className={labelCls}>
+                            Farm
+                            <select value={editFarmId} onChange={(e) => onEditFarmChange(e.target.value)} className={`${inputCls} mt-1`}>
+                              <option value="">— no farm —</option>
+                              {farms.map((fm) => <option key={fm.id} value={fm.id}>{fm.name}</option>)}
+                            </select>
+                          </label>
+                          <label className={labelCls}>
+                            County
+                            <select
+                              value={editCountyId}
+                              onChange={(e) => setEditCountyId(e.target.value)}
+                              className={`${inputCls} mt-1`}
+                              disabled={!editFarmId}
+                            >
+                              <option value="">
+                                {!editFarmId ? 'pick the farm first' : editOptions.length === 0 ? 'no counties on that farm’s entity' : '— county —'}
+                              </option>
+                              {editOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
+                            </select>
+                          </label>
                         </div>
                         <div className="grid grid-cols-3 gap-2 mb-2">
-                          <label className="text-xs text-slate-500 flex flex-col gap-1">
+                          <label className={labelCls}>
                             Total acres
                             <input
                               type="number"
+                              inputMode="decimal"
                               step="0.01"
                               min="0"
                               value={editAcres}
                               onChange={(e) => setEditAcres(e.target.value)}
                               placeholder="0"
-                              className={inputCls}
+                              className={`${inputCls} mt-1`}
                             />
                           </label>
-                          <label className="text-xs text-slate-500 flex flex-col gap-1">
+                          <label className={labelCls}>
                             Irrigated acres
                             <input
                               type="number"
+                              inputMode="decimal"
                               step="0.01"
                               min="0"
                               value={editIrrigated}
                               onChange={(e) => setEditIrrigated(e.target.value)}
                               placeholder="0"
-                              className={inputCls}
+                              className={`${inputCls} mt-1`}
                             />
                           </label>
-                          <label className="text-xs text-slate-500 flex flex-col gap-1">
+                          <label className={labelCls}>
                             Dryland acres
                             <input
                               type="text"
                               value={editAcres === '' && editIrrigated === '' ? '' : String(dryFromInputs(editAcres, editIrrigated))}
                               readOnly
                               tabIndex={-1}
-                              className={readonlyCls}
+                              className={`${readonlyCls} mt-1`}
                             />
                           </label>
                         </div>
@@ -456,13 +521,14 @@ export default function FieldsPage() {
                               : 'Irrigated acres cannot exceed total acres'}
                           </p>
                         )}
-                        <div className="flex gap-3">
+                        <div className="flex gap-2 justify-end">
+                          <button type="button" onClick={() => setEditingId(null)} className={`${btnCls} border border-slate-300 bg-white text-slate-700`}>Cancel</button>
                           <button
+                            type="button"
                             onClick={() => save(f.id)}
                             disabled={editInvalid}
-                            className="text-green-700 font-semibold disabled:opacity-50"
+                            className={`${btnCls} bg-brand hover:bg-brand-deep text-white px-4 disabled:opacity-50`}
                           >Save</button>
-                          <button onClick={() => setEditingId(null)} className="text-slate-500">Cancel</button>
                         </div>
                       </td>
                     ) : (
@@ -470,26 +536,28 @@ export default function FieldsPage() {
                         <td className="px-3 py-2">{f.name_or_number}{managed && (canEdit(f) ? <NotLinkedChip /> : <ManagedChip />)}</td>
                         <td className="px-3 py-2 text-slate-500">{farmName(f.farm_id)}</td>
                         <td className="px-3 py-2 text-slate-500">{countyLabel(f.county_id)}</td>
-                        <td className="px-3 py-2 text-right">
-                          {f.total_acres != null ? Number(f.total_acres) : '—'}
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {f.total_acres != null ? Number(f.total_acres).toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—'}
                         </td>
-                        <td className="px-3 py-2 text-right">
-                          {Number(f.irrigated_acres) > 0 ? Number(f.irrigated_acres) : '—'}
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {Number(f.irrigated_acres) > 0 ? Number(f.irrigated_acres).toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—'}
                         </td>
-                        <td className="px-3 py-2 text-right">
-                          {Number(f.dryland_acres) > 0 ? Number(f.dryland_acres) : '—'}
+                        <td className="px-3 py-2 text-right tabular-nums">
+                          {Number(f.dryland_acres) > 0 ? Number(f.dryland_acres).toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—'}
                         </td>
-                        <td className="px-3 py-2 whitespace-nowrap">
+                        <td className="px-1 py-1 whitespace-nowrap">
                           <button
+                            type="button"
                             onClick={() => setExpandedId(isExpanded ? null : f.id)}
-                            className="text-slate-600 text-sm mr-3"
+                            className={`${btnCls} text-slate-600 font-normal`}
                           >
                             {isExpanded ? 'Hide' : `Plantings (${fieldPlantings.length})`}
                           </button>
                           {!canEdit(f) ? (
-                            <span className="text-xs text-slate-400" title={LAND_MANAGED_MESSAGE}>edit in Turnrow Farm</span>
+                            <span className="text-xs text-slate-400 px-2" title={LAND_MANAGED_MESSAGE}>edit in Turnrow Farm</span>
                           ) : (<>
                           <button
+                            type="button"
                             onClick={() => {
                               setEditingId(f.id)
                               setEditName(f.name_or_number)
@@ -498,9 +566,10 @@ export default function FieldsPage() {
                               setEditAcres(f.total_acres != null ? String(f.total_acres) : '')
                               setEditIrrigated(Number(f.irrigated_acres) > 0 ? String(f.irrigated_acres) : '')
                             }}
-                            className="text-brand-deep mr-3"
+                            className={`${btnCls} text-brand-deep`}
                           >Edit</button>
-                          <button onClick={() => remove(f.id)} className="text-red-600">Delete</button>
+                          <button type="button" disabled={busyId === f.id} onClick={() => archive(f)} className={`${btnCls} text-slate-600 disabled:opacity-50`}>Archive</button>
+                          <button type="button" disabled={busyId === f.id} onClick={() => remove(f)} className={`${btnCls} text-red-600 disabled:opacity-50`}>Delete</button>
                           </>)}
                         </td>
                       </>
@@ -510,8 +579,8 @@ export default function FieldsPage() {
                     <tr className="bg-slate-50">
                       <td colSpan={7} className="px-3 py-2">
                         {fieldPlantings.length === 0 ? (
-                          <p className="text-sm text-slate-400">
-                            No plantings recorded.{' '}
+                          <p className="text-sm text-slate-500">
+                            No plantings recorded for this field yet.{' '}
                             <Link href="/settings/plantings" className="text-brand-deep underline">Add one</Link>.
                           </p>
                         ) : (
@@ -530,7 +599,7 @@ export default function FieldsPage() {
                                 <tr key={p.id} className="border-t border-slate-100">
                                   <td className="py-1">{p.season_year}</td>
                                   <td className="py-1">{cropName(p.crop_id)}</td>
-                                  <td className="py-1 text-right">{Number(p.planted_acres)}</td>
+                                  <td className="py-1 text-right tabular-nums">{Number(p.planted_acres).toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
                                   <td className="py-1">{p.planting_date ?? ''}</td>
                                   <td className="py-1">
                                     {doubleCropIds.has(p.id) && (
@@ -553,6 +622,7 @@ export default function FieldsPage() {
       </div>
       </div>
       ) })()}
+      {dialogs}
     </div>
   )
 }

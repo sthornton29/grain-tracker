@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
@@ -19,14 +19,17 @@ import { mergeTickets } from '@/lib/parse-merge'
 import { imagesToPdf } from '@/lib/image-capture'
 import { practiceOf } from '@/lib/yields'
 import { rememberHarvestEntryPath } from '@/lib/harvest-entry-path'
+import { reportError } from '@/lib/friendly-error'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
+import { ConfirmDialog } from '@/components/app-dialog'
+import { fmtInt } from '@/components/reports/report-kit'
 import type { Bin, Buyer, Contract, Crop, Field, FieldPlanting, Truck } from '@/lib/types'
 import { buildTareStatsIndex, lowTareWarning, truckTareKey, type TareHistoryLoad } from '@/lib/truck-tare'
 import { fetchTrucksTareHistory } from '@/lib/truck-tare-fetch'
 
 type Row = {
-  // Original AI-extracted values, kept for display when no match found.
+  // What was read off the ticket, kept for display when no match is found.
   raw_truck: string | null
   raw_crop: string | null
   raw_from: string | null
@@ -81,7 +84,7 @@ function ticketToRow(
   const crop = findBestMatch(t.crop, crops, (c) => c.name)
   const truck = findBestMatch(t.truck, trucks, (tr) => tr.name_or_number)
 
-  // From: type from AI, fallback to inferring from name match.
+  // From: type as read, fallback to inferring from name match.
   let from_type: '' | 'field' | 'bin' = (t.from_type as any) || ''
   let from_field_id = ''
   let from_bin_id = ''
@@ -160,6 +163,19 @@ function rowStatus(r: Row, cropYear: string): 'ready' | 'review' {
   return 'ready'
 }
 
+const COLUMNS = ['Status', 'Date', 'Time', 'Ticket #', 'Truck', 'Crop', 'Gross lb', 'Tare lb', 'Net lb', 'Moisture %', 'Test wt', 'From', 'To', 'Contract', 'Bushels', ''] as const
+
+// A labelled cell in the stacked-card layout. Module-level on purpose: a
+// component defined inside render remounts its inputs on every keystroke.
+function Field({ label, children, span }: { label: string; children: ReactNode; span?: boolean }) {
+  return (
+    <div className={span ? 'col-span-2' : ''}>
+      <div className="text-xs text-slate-500 mb-1">{label}</div>
+      {children}
+    </div>
+  )
+}
+
 export default function ScanTicketsPage() {
   const supabase = useMemo(() => createClient(), [])
   const router = useRouter()
@@ -175,15 +191,16 @@ export default function ScanTicketsPage() {
 
   const [cropYear, setCropYear] = useState<string>('')
   const [source, setSource] = useState<DocumentSource | null>(null)
-  const [aiStage, setAiStage] = useState<string | null>(null)
+  const [readStage, setReadStage] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
   const [rows, setRows] = useState<Row[]>([])
   const [saving, setSaving] = useState(false)
+  const [saveAsk, setSaveAsk] = useState(false)
   const [saveSummary, setSaveSummary] = useState<{ savedCount: number; remaining: number } | null>(null)
   const savedIdsRef = useRef<string[]>([])
   // Tare history for the trucks on the review rows (lib/truck-tare): a
-  // mis-scanned tare gets the low-tare badge before save. Advisory only.
+  // mis-read tare gets the low-tare badge before save. Advisory only.
   const [tareHistory, setTareHistory] = useState<TareHistoryLoad[]>([])
   const fetchedTruckIdsRef = useRef<Set<string>>(new Set())
 
@@ -282,38 +299,35 @@ export default function ScanTicketsPage() {
     }
     setSource(src)
     setRows([])
-    setAiStage('Reading document…')
+    setReadStage('Reading the tickets…')
     try {
       await new Promise((r) => setTimeout(r, 250))
-      setAiStage('Extracting data…')
+      setReadStage('Reading the tickets…')
       // Chunked parse for big ticket stacks (PDF pages or photo batches):
       // per-chunk retry, failed pages reported, a ticket repeated across a
       // batch boundary resolves once (mergeTickets).
       const { data, warning } = await parseDocumentChunked<TicketsExtraction>(
         src.kind === 'pdf' ? src.file : src.images,
         'tickets',
-        { onProgress: setAiStage, merge: mergeTickets },
+        { onProgress: setReadStage, merge: mergeTickets },
       )
       const tickets = Array.isArray(data.tickets) ? data.tickets : []
       if (tickets.length === 0) {
-        setErr(warning ?? 'No records found in this document. The scan may be too blurry or the format may not be readable.')
+        setErr(warning ?? 'No tickets were found in this document. The photo may be too blurry, or the layout may not be readable.')
         return
       }
       if (warning) setErr(warning)
       const next = tickets.map((t) => ticketToRow(t, crops, trucks, fields, bins, buyers, plantings))
       setRows(next)
-      setBanner(`AI extracted ${next.length} ticket${next.length === 1 ? '' : 's'}. Please review before saving.`)
+      setBanner(`Turnrow read ${next.length} ticket${next.length === 1 ? '' : 's'} — please check them against the original before saving.`)
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) setErr(e.message)
       else {
-        setErr(
-          e?.message
-            ? `Couldn't read this PDF: ${e.message}. Try uploading a clearer scan or use the manual entry method.`
-            : "Couldn't read this PDF. Try uploading a clearer scan or use the manual entry method.",
-        )
+        reportError(e, { action: 'read these tickets' })
+        setErr("Turnrow couldn't read this document. Try a clearer photo or scan, or enter the loads at New Load.")
       }
     } finally {
-      setAiStage(null)
+      setReadStage(null)
     }
   }
 
@@ -383,17 +397,16 @@ export default function ScanTicketsPage() {
   const readyCount = rows.filter((r) => statusFor(r) === 'ready').length
   const reviewCount = rows.length - readyCount
 
-  async function saveAll() {
+  function askSave() {
     if (readyCount === 0) {
-      setErr('No rows are ready to save.')
+      setErr('No tickets are ready to save yet.')
       return
     }
-    const confirmMsg =
-      reviewCount > 0
-        ? `Save ${readyCount} load${readyCount === 1 ? '' : 's'}? ${reviewCount} load${reviewCount === 1 ? '' : 's'} still need review and will not be saved.`
-        : `Save ${readyCount} load${readyCount === 1 ? '' : 's'}?`
-    if (!window.confirm(confirmMsg)) return
+    setSaveAsk(true)
+  }
 
+  async function saveAll() {
+    setSaveAsk(false)
     setSaving(true)
     setErr(null)
     setBanner(null)
@@ -407,7 +420,7 @@ export default function ScanTicketsPage() {
         pdfUrl = await uploadPdfToStorage(supabase, fileToStore, 'tickets')
       } catch (e: any) {
         setSaving(false)
-        setErr(e?.message ?? 'Could not upload the ticket PDF.')
+        setErr(reportError(e, { action: 'store the ticket document' }))
         return
       }
     }
@@ -461,7 +474,7 @@ export default function ScanTicketsPage() {
     const { data, error } = res
     setSaving(false)
     if (error) {
-      setErr(`Could not save: ${error.message}`)
+      setErr(reportError(error, { action: 'save these loads', noun: 'load' }))
       return
     }
     savedIdsRef.current = (data as Array<{ id: string }> | null)?.map((d) => d.id) ?? []
@@ -472,16 +485,174 @@ export default function ScanTicketsPage() {
     setSaveSummary({ savedCount: payloads.length, remaining: remaining.length })
   }
 
-  const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm w-full bg-white'
+  const inputCls = 'rounded-lg border border-slate-300 px-2 min-h-11 text-base xl:text-sm w-full bg-white'
+  const toggleCls = (active: boolean) =>
+    `flex-1 text-sm px-2 min-h-11 rounded-lg border ${active ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white border-slate-300'}`
+  const hl = (cond: boolean) => (cond ? 'bg-amber-50 rounded-lg' : '')
+  const readHint = (text: string | null) => text ? <div className="text-xs text-amber-700 mt-1">Ticket says “{text}”</div> : null
+
+  // One set of controls per ticket, rendered into the wide table (xl+) and
+  // into stacked cards (below xl) — the same inputs, two layouts.
+  function fieldsFor(r: Row, i: number): Record<(typeof COLUMNS)[number], ReactNode> & { tareWarn: string | null } {
+    const st = statusFor(r)
+    const crop = crops.find((c) => c.id === r.crop_id)
+    const { wetBushels, dryBushels } = computeBushels({
+      netWeightLb: num(r.net_weight),
+      moisturePct: num(r.moisture),
+      baseMoisturePct: crop?.base_moisture_pct ?? null,
+      baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
+    })
+    const ff = fieldsForCrop(r.crop_id)
+    const bb = binsForCrop(r.crop_id)
+    const cc = contractsFor(r.to_buyer_id, r.crop_id)
+    const tareWarn = lowTareWarning(num(r.tare_weight), tareStatsIndex.get(truckTareKey({ truck_id: r.truck_id }) ?? ''))
+    const fromMissing = !r.from_type || (r.from_type === 'field' && !r.from_field_id) || (r.from_type === 'bin' && !r.from_bin_id)
+    const toMissing = !r.to_type || (r.to_type === 'bin' && !r.to_bin_id) || (r.to_type === 'buyer' && !r.to_buyer_id)
+    return {
+      tareWarn,
+      Status: st === 'ready' ? (
+        <span className="inline-block rounded-full bg-green-100 text-green-800 px-2 py-0.5 text-xs font-semibold">Ready</span>
+      ) : (
+        <span className="inline-block rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 text-xs font-semibold">Needs a look</span>
+      ),
+      Date: <input type="date" aria-label="Date" value={r.date} onChange={(e) => updateRow(i, { date: e.target.value })} className={`${inputCls} ${hl(!r.date)}`} />,
+      Time: <input type="time" aria-label="Time" value={r.time} onChange={(e) => updateRow(i, { time: e.target.value })} className={inputCls} />,
+      'Ticket #': <input aria-label="Ticket number" value={r.ticket_number} onChange={(e) => updateRow(i, { ticket_number: e.target.value })} className={inputCls} />,
+      Truck: (
+        <div className={hl(!r.truck_id)}>
+          <select aria-label="Truck" value={r.truck_id} onChange={(e) => updateRow(i, { truck_id: e.target.value })} className={inputCls}>
+            <option value="">— select —</option>
+            {trucks.map((t) => <option key={t.id} value={t.id}>{t.name_or_number}</option>)}
+          </select>
+          {!r.truck_id && readHint(r.raw_truck)}
+        </div>
+      ),
+      Crop: (
+        <div className={hl(!r.crop_id)}>
+          <select aria-label="Crop" value={r.crop_id} onChange={(e) => updateRow(i, { crop_id: e.target.value })} className={inputCls}>
+            <option value="">— select —</option>
+            {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          {!r.crop_id && readHint(r.raw_crop)}
+        </div>
+      ),
+      'Gross lb': <input type="number" step="0.01" inputMode="decimal" aria-label="Gross pounds" value={r.gross_weight} onChange={(e) => updateRow(i, { gross_weight: e.target.value })} className={`${inputCls} tabular-nums`} />,
+      'Tare lb': (
+        <div className={hl(!!tareWarn)}>
+          <input type="number" step="0.01" inputMode="decimal" aria-label="Tare pounds" value={r.tare_weight} onChange={(e) => updateRow(i, { tare_weight: e.target.value })} className={`${inputCls} tabular-nums ${tareWarn ? 'border-amber-400' : ''}`} />
+          {tareWarn && (
+            <div className="mt-1" title={tareWarn}>
+              <span className="inline-block rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 text-xs font-semibold">Low tare?</span>
+              <div className="text-xs text-amber-800 mt-0.5 max-w-[220px]">{tareWarn}</div>
+            </div>
+          )}
+        </div>
+      ),
+      'Net lb': <input type="number" step="0.01" inputMode="decimal" aria-label="Net pounds" value={r.net_weight} onChange={(e) => updateRow(i, { net_weight: e.target.value })} className={`${inputCls} tabular-nums ${hl((num(r.net_weight) ?? 0) <= 0)}`} />,
+      'Moisture %': <input type="number" step="0.01" inputMode="decimal" aria-label="Moisture percent" value={r.moisture} onChange={(e) => updateRow(i, { moisture: e.target.value })} className={`${inputCls} tabular-nums`} />,
+      'Test wt': <input type="number" step="0.01" inputMode="decimal" aria-label="Test weight" value={r.test_weight} onChange={(e) => updateRow(i, { test_weight: e.target.value })} className={`${inputCls} tabular-nums`} />,
+      From: (
+        <div className={`${hl(fromMissing)} space-y-1`}>
+          <div className="flex gap-1">
+            {(['field', 'bin'] as const).map((typ) => (
+              <button key={typ} type="button" onClick={() => updateRow(i, { from_type: typ })} aria-pressed={r.from_type === typ} className={toggleCls(r.from_type === typ)}>
+                {typ === 'field' ? 'Field' : 'Bin'}
+              </button>
+            ))}
+          </div>
+          {r.from_type === 'field' && (
+            <select aria-label="From field" value={r.from_field_id} onChange={(e) => updateRow(i, { from_field_id: e.target.value })} className={inputCls}>
+              <option value="">— select field —</option>
+              {ff.map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
+            </select>
+          )}
+          {r.from_type === 'field' && isMixedField(r.from_field_id, r.crop_id) && (
+            <div className="flex gap-1">
+              {(['irrigated', 'dryland'] as const).map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => updateRow(i, { practice: r.practice === p ? '' : p })}
+                  aria-pressed={r.practice === p}
+                  className={toggleCls(r.practice === p)}
+                  title="Optional — this field has both irrigated and dryland acres"
+                >
+                  {p === 'irrigated' ? 'Irrigated' : 'Dryland'}
+                </button>
+              ))}
+            </div>
+          )}
+          {r.from_type === 'bin' && (
+            <select aria-label="From bin" value={r.from_bin_id} onChange={(e) => updateRow(i, { from_bin_id: e.target.value })} className={inputCls}>
+              <option value="">— select bin —</option>
+              {bb.map((b) => <option key={b.id} value={b.id}>{b.name_or_number}</option>)}
+            </select>
+          )}
+          {fromMissing && readHint(r.raw_from)}
+        </div>
+      ),
+      To: (
+        <div className={`${hl(toMissing)} space-y-1`}>
+          <div className="flex gap-1">
+            {(['bin', 'buyer'] as const).map((typ) => (
+              <button key={typ} type="button" onClick={() => updateRow(i, { to_type: typ })} aria-pressed={r.to_type === typ} className={toggleCls(r.to_type === typ)}>
+                {typ === 'bin' ? 'Bin' : 'Buyer'}
+              </button>
+            ))}
+          </div>
+          {r.to_type === 'bin' && (
+            <select aria-label="To bin" value={r.to_bin_id} onChange={(e) => updateRow(i, { to_bin_id: e.target.value })} className={inputCls}>
+              <option value="">— select bin —</option>
+              {bb.map((b) => <option key={b.id} value={b.id}>{b.name_or_number}</option>)}
+            </select>
+          )}
+          {r.to_type === 'buyer' && (
+            <select aria-label="Buyer" value={r.to_buyer_id} onChange={(e) => updateRow(i, { to_buyer_id: e.target.value })} className={inputCls}>
+              <option value="">— select buyer —</option>
+              {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          )}
+          {toMissing && readHint(r.raw_to)}
+        </div>
+      ),
+      Contract: r.to_type === 'buyer' ? (
+        <select
+          aria-label="Contract"
+          value={r.contract_id}
+          onChange={(e) => updateRow(i, { contract_id: e.target.value })}
+          className={inputCls}
+          disabled={!cropYear}
+        >
+          <option value="">{cropYear ? '— none —' : 'Select crop year first'}</option>
+          {cc.map((c) => <option key={c.id} value={c.id}>{c.contract_number}</option>)}
+        </select>
+      ) : (
+        <span className="text-xs text-slate-400">—</span>
+      ),
+      Bushels: (
+        <div className="text-right tabular-nums whitespace-nowrap">
+          <div className="text-xs text-slate-500">wet</div>
+          <div>{wetBushels != null ? fmtInt(wetBushels) : '—'}</div>
+          <div className="text-xs text-slate-500 mt-1">dry</div>
+          <div className="font-semibold">{dryBushels != null ? fmtInt(dryBushels) : '—'}</div>
+        </div>
+      ),
+      '': (
+        <button type="button" onClick={() => deleteRow(i)} className="text-red-600 text-base min-h-11 min-w-11 rounded-lg" aria-label={`Remove ticket ${r.ticket_number || i + 1}`}>✕</button>
+      ),
+    }
+  }
+
+  const hasRows = rows.length > 0
 
   return (
     <div className="space-y-4">
-      <div className="flex items-end gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold flex-1">Scan Tickets</h1>
-        <Link href="/loads/new" className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">
-          Manual entry
+      <div className="flex items-center gap-2 flex-wrap">
+        <h1 className="text-2xl font-bold flex-1">Scan tickets</h1>
+        <Link href="/loads/new" className="inline-flex items-center rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm">
+          Enter by hand
         </Link>
-        <Link href="/loads" className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">
+        <Link href="/loads" className="inline-flex items-center rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm">
           Cancel
         </Link>
       </div>
@@ -493,7 +664,7 @@ export default function ScanTicketsPage() {
             <select
               value={cropYear}
               onChange={(e) => setCropYear(e.target.value)}
-              className="mt-1 w-40 rounded-lg border border-slate-300 px-3 py-2 text-base bg-white"
+              className="mt-1 w-40 rounded-lg border border-slate-300 px-3 min-h-11 text-base bg-white"
             >
               <option value="">— select —</option>
               {seasonYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
@@ -501,24 +672,24 @@ export default function ScanTicketsPage() {
           </label>
           <DocumentCapture
             onSource={onSource}
-            busy={aiStage != null}
-            stageLabel={aiStage}
-            pdfLabel="Upload Ticket PDF or Image"
+            busy={readStage != null}
+            stageLabel={readStage}
+            pdfLabel="Upload ticket PDF or photo"
           />
-          {source && !aiStage && (
+          {source && !readStage && (
             <button
               type="button"
               onClick={discard}
-              className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2"
+              className="text-sm rounded-lg bg-white border border-slate-300 px-3 min-h-11"
             >
-              Discard &amp; Start Over
+              Start over
             </button>
           )}
           <div className="flex-1" />
-          {refsLoaded && rows.length > 0 && (
+          {refsLoaded && hasRows && (
             <div className="text-sm text-slate-600">
               <span className="font-semibold text-green-700">{readyCount}</span> ready ·{' '}
-              <span className="font-semibold text-amber-700">{reviewCount}</span> need review
+              <span className="font-semibold text-amber-700">{reviewCount}</span> need a look
             </div>
           )}
         </div>
@@ -530,11 +701,11 @@ export default function ScanTicketsPage() {
         )}
         {saveSummary && (
           <div className="rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-sm text-green-900 flex items-center gap-3 flex-wrap">
-            <span>{saveSummary.savedCount} load{saveSummary.savedCount === 1 ? '' : 's'} saved successfully.</span>
-            <Link href="/loads" className="underline">View loads list</Link>
+            <span>{saveSummary.savedCount} load{saveSummary.savedCount === 1 ? '' : 's'} saved.</span>
+            <Link href="/loads" className="underline">View the load list</Link>
             {saveSummary.remaining > 0 && (
               <span className="text-amber-800">
-                {saveSummary.remaining} row{saveSummary.remaining === 1 ? '' : 's'} still need review — finish and save again, or discard.
+                {saveSummary.remaining} ticket{saveSummary.remaining === 1 ? '' : 's'} still need a look — finish and save again, or start over.
               </span>
             )}
           </div>
@@ -542,198 +713,54 @@ export default function ScanTicketsPage() {
         {err && <p className="text-sm text-red-600">{err}</p>}
       </div>
 
-      {!source && !aiStage && rows.length === 0 && (
+      {!source && !readStage && !hasRows && (
         <div className="bg-white rounded-xl shadow p-6 text-center text-slate-500">
-          Take a photo or upload a PDF of scanned scale tickets to extract loads. Each ticket becomes one editable row.
+          Take a photo or upload a PDF of your scale tickets. Each ticket becomes one load you can check and fix before saving.
         </div>
       )}
 
-      {(source || rows.length > 0) && (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          <div className="bg-white rounded-xl shadow p-3 overflow-x-auto">
+      {(source || hasRows) && (
+        <div className="flex flex-col xl:grid xl:grid-cols-2 gap-4">
+          {/* Source preview: ABOVE the tickets below xl, beside them at xl+. */}
+          <div className="order-first xl:order-last xl:sticky xl:top-3 self-start w-full h-[45vh] xl:h-[80vh] min-h-[280px] xl:min-h-[400px]">
+            <div className="text-xs text-slate-500 mb-1">The original — check each ticket against it</div>
+            <SourcePreview source={source} className="h-full" title="Tickets" />
+          </div>
+
+          {/* Wide table at xl+. */}
+          <div className="hidden xl:block bg-white rounded-xl shadow p-3 overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead className="bg-slate-100 text-slate-700">
                 <tr>
-                  {['Status', 'Date', 'Time', 'Ticket #', 'Truck', 'Crop', 'Gross lb', 'Tare lb', 'Net lb', 'Moisture %', 'Test wt', 'From', 'To', 'Contract', 'Bushels', '']
-                    .map((h) => <th key={h} className="text-left px-2 py-2 whitespace-nowrap">{h}</th>)}
+                  {COLUMNS.map((h) => <th key={h} className="text-left px-2 py-2 whitespace-nowrap">{h}</th>)}
                 </tr>
               </thead>
               <tbody>
-                {rows.length === 0 && (
-                  <tr><td colSpan={16} className="px-3 py-6 text-center text-slate-400">
-                    {aiStage ? 'Working…' : 'No tickets yet — take a photo or upload a PDF.'}
+                {!hasRows && (
+                  <tr><td colSpan={COLUMNS.length} className="px-3 py-6 text-center text-slate-400">
+                    {readStage ? 'Working…' : 'No tickets yet — take a photo or upload a PDF.'}
                   </td></tr>
                 )}
                 {rows.map((r, i) => {
-                  const st = statusFor(r)
-                  const crop = crops.find((c) => c.id === r.crop_id)
-                  const { wetBushels, dryBushels } = computeBushels({
-                    netWeightLb: num(r.net_weight),
-                    moisturePct: num(r.moisture),
-                    baseMoisturePct: crop?.base_moisture_pct ?? null,
-                    baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
-                  })
-                  const ff = fieldsForCrop(r.crop_id)
-                  const bb = binsForCrop(r.crop_id)
-                  const cc = contractsFor(r.to_buyer_id, r.crop_id)
-                  const hl = (cond: boolean) => (cond ? 'bg-amber-50' : '')
+                  const f = fieldsFor(r, i)
                   return (
                     <tr key={i} className="border-t border-slate-100 align-top">
-                      <td className="px-2 py-1 whitespace-nowrap">
-                        {st === 'ready' ? (
-                          <span className="inline-block rounded-full bg-green-100 text-green-800 px-2 py-0.5 text-xs font-semibold">Ready</span>
-                        ) : (
-                          <span className="inline-block rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 text-xs font-semibold">Needs Review</span>
-                        )}
-                      </td>
-                      <td className={`px-2 py-1 ${hl(!r.date)}`} style={{ minWidth: 130 }}>
-                        <input type="date" value={r.date} onChange={(e) => updateRow(i, { date: e.target.value })} className={inputCls} />
-                      </td>
-                      <td className="px-2 py-1" style={{ minWidth: 100 }}>
-                        <input type="time" value={r.time} onChange={(e) => updateRow(i, { time: e.target.value })} className={inputCls} />
-                      </td>
-                      <td className="px-2 py-1" style={{ minWidth: 110 }}>
-                        <input value={r.ticket_number} onChange={(e) => updateRow(i, { ticket_number: e.target.value })} className={inputCls} />
-                      </td>
-                      <td className={`px-2 py-1 ${hl(!r.truck_id)}`} style={{ minWidth: 130 }}>
-                        <select value={r.truck_id} onChange={(e) => updateRow(i, { truck_id: e.target.value })} className={inputCls}>
-                          <option value="">— select —</option>
-                          {trucks.map((t) => <option key={t.id} value={t.id}>{t.name_or_number}</option>)}
-                        </select>
-                        {!r.truck_id && r.raw_truck && (
-                          <div className="text-xs text-amber-700 mt-1">AI: “{r.raw_truck}”</div>
-                        )}
-                      </td>
-                      <td className={`px-2 py-1 ${hl(!r.crop_id)}`} style={{ minWidth: 130 }}>
-                        <select value={r.crop_id} onChange={(e) => updateRow(i, { crop_id: e.target.value })} className={inputCls}>
-                          <option value="">— select —</option>
-                          {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-                        </select>
-                        {!r.crop_id && r.raw_crop && (
-                          <div className="text-xs text-amber-700 mt-1">AI: “{r.raw_crop}”</div>
-                        )}
-                      </td>
-                      <td className="px-2 py-1" style={{ minWidth: 90 }}>
-                        <input type="number" step="0.01" inputMode="decimal" value={r.gross_weight} onChange={(e) => updateRow(i, { gross_weight: e.target.value })} className={inputCls} />
-                      </td>
-                      {(() => {
-                        const warn = lowTareWarning(num(r.tare_weight), tareStatsIndex.get(truckTareKey({ truck_id: r.truck_id }) ?? ''))
-                        return (
-                          <td className={`px-2 py-1 ${hl(!!warn)}`} style={{ minWidth: 90 }}>
-                            <input type="number" step="0.01" inputMode="decimal" value={r.tare_weight} onChange={(e) => updateRow(i, { tare_weight: e.target.value })} className={`${inputCls} ${warn ? 'border-amber-400' : ''}`} />
-                            {warn && (
-                              <div className="mt-1" title={warn}>
-                                <span className="inline-block rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 text-xs font-semibold">Low tare?</span>
-                                <div className="text-xs text-amber-800 mt-0.5" style={{ maxWidth: 220 }}>{warn}</div>
-                              </div>
-                            )}
-                          </td>
-                        )
-                      })()}
-                      <td className={`px-2 py-1 ${hl((num(r.net_weight) ?? 0) <= 0)}`} style={{ minWidth: 90 }}>
-                        <input type="number" step="0.01" inputMode="decimal" value={r.net_weight} onChange={(e) => updateRow(i, { net_weight: e.target.value })} className={inputCls} />
-                      </td>
-                      <td className="px-2 py-1" style={{ minWidth: 80 }}>
-                        <input type="number" step="0.01" inputMode="decimal" value={r.moisture} onChange={(e) => updateRow(i, { moisture: e.target.value })} className={inputCls} />
-                      </td>
-                      <td className="px-2 py-1" style={{ minWidth: 80 }}>
-                        <input type="number" step="0.01" inputMode="decimal" value={r.test_weight} onChange={(e) => updateRow(i, { test_weight: e.target.value })} className={inputCls} />
-                      </td>
-                      <td className={`px-2 py-1 ${hl(!r.from_type || (r.from_type === 'field' && !r.from_field_id) || (r.from_type === 'bin' && !r.from_bin_id))}`} style={{ minWidth: 200 }}>
-                        <div className="flex gap-1 mb-1">
-                          {(['field', 'bin'] as const).map((typ) => (
-                            <button
-                              key={typ}
-                              type="button"
-                              onClick={() => updateRow(i, { from_type: typ })}
-                              className={`flex-1 text-xs px-2 py-1 rounded border ${r.from_type === typ ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white border-slate-300'}`}
-                            >
-                              {typ === 'field' ? 'Field' : 'Bin'}
-                            </button>
-                          ))}
-                        </div>
-                        {r.from_type === 'field' && (
-                          <select value={r.from_field_id} onChange={(e) => updateRow(i, { from_field_id: e.target.value })} className={inputCls}>
-                            <option value="">— select field —</option>
-                            {ff.map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
-                          </select>
-                        )}
-                        {r.from_type === 'field' && isMixedField(r.from_field_id, r.crop_id) && (
-                          <div className="flex gap-1 mt-1">
-                            {(['irrigated', 'dryland'] as const).map((p) => (
-                              <button
-                                key={p}
-                                type="button"
-                                onClick={() => updateRow(i, { practice: r.practice === p ? '' : p })}
-                                className={`flex-1 text-xs px-2 py-1 rounded border ${r.practice === p ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white border-slate-300'}`}
-                                title="Optional — this field has both irrigated and dryland acres"
-                              >
-                                {p === 'irrigated' ? 'Irrigated' : 'Dryland'}
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                        {r.from_type === 'bin' && (
-                          <select value={r.from_bin_id} onChange={(e) => updateRow(i, { from_bin_id: e.target.value })} className={inputCls}>
-                            <option value="">— select bin —</option>
-                            {bb.map((b) => <option key={b.id} value={b.id}>{b.name_or_number}</option>)}
-                          </select>
-                        )}
-                        {((r.from_type === 'field' && !r.from_field_id) || (r.from_type === 'bin' && !r.from_bin_id) || !r.from_type) && r.raw_from && (
-                          <div className="text-xs text-amber-700 mt-1">AI: “{r.raw_from}”</div>
-                        )}
-                      </td>
-                      <td className={`px-2 py-1 ${hl(!r.to_type || (r.to_type === 'bin' && !r.to_bin_id) || (r.to_type === 'buyer' && !r.to_buyer_id))}`} style={{ minWidth: 200 }}>
-                        <div className="flex gap-1 mb-1">
-                          {(['bin', 'buyer'] as const).map((typ) => (
-                            <button
-                              key={typ}
-                              type="button"
-                              onClick={() => updateRow(i, { to_type: typ })}
-                              className={`flex-1 text-xs px-2 py-1 rounded border ${r.to_type === typ ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white border-slate-300'}`}
-                            >
-                              {typ === 'bin' ? 'Bin' : 'Buyer'}
-                            </button>
-                          ))}
-                        </div>
-                        {r.to_type === 'bin' && (
-                          <select value={r.to_bin_id} onChange={(e) => updateRow(i, { to_bin_id: e.target.value })} className={inputCls}>
-                            <option value="">— select bin —</option>
-                            {bb.map((b) => <option key={b.id} value={b.id}>{b.name_or_number}</option>)}
-                          </select>
-                        )}
-                        {r.to_type === 'buyer' && (
-                          <select value={r.to_buyer_id} onChange={(e) => updateRow(i, { to_buyer_id: e.target.value })} className={inputCls}>
-                            <option value="">— select buyer —</option>
-                            {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-                          </select>
-                        )}
-                        {((r.to_type === 'bin' && !r.to_bin_id) || (r.to_type === 'buyer' && !r.to_buyer_id) || !r.to_type) && r.raw_to && (
-                          <div className="text-xs text-amber-700 mt-1">AI: “{r.raw_to}”</div>
-                        )}
-                      </td>
-                      <td className="px-2 py-1" style={{ minWidth: 140 }}>
-                        {r.to_type === 'buyer' ? (
-                          <select
-                            value={r.contract_id}
-                            onChange={(e) => updateRow(i, { contract_id: e.target.value })}
-                            className={inputCls}
-                            disabled={!cropYear}
-                          >
-                            <option value="">{cropYear ? '— none —' : 'Select crop year first'}</option>
-                            {cc.map((c) => <option key={c.id} value={c.id}>{c.contract_number}</option>)}
-                          </select>
-                        ) : (
-                          <span className="text-xs text-slate-400">—</span>
-                        )}
-                      </td>
-                      <td className="px-2 py-1 text-right font-mono whitespace-nowrap" style={{ minWidth: 110 }}>
-                        <div className="text-xs text-slate-500">wet</div>
-                        <div>{wetBushels != null ? wetBushels.toFixed(2) : '—'}</div>
-                        <div className="text-xs text-slate-500 mt-1">dry</div>
-                        <div>{dryBushels != null ? dryBushels.toFixed(2) : '—'}</div>
-                      </td>
-                      <td className="px-2 py-1"><button type="button" onClick={() => deleteRow(i)} className="text-red-600 text-sm">✕</button></td>
+                      <td className="px-2 py-1 whitespace-nowrap">{f.Status}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 130 }}>{f.Date}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 100 }}>{f.Time}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 110 }}>{f['Ticket #']}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 130 }}>{f.Truck}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 130 }}>{f.Crop}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 90 }}>{f['Gross lb']}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 90 }}>{f['Tare lb']}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 90 }}>{f['Net lb']}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 80 }}>{f['Moisture %']}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 80 }}>{f['Test wt']}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 200 }}>{f.From}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 200 }}>{f.To}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 140 }}>{f.Contract}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 110 }}>{f.Bushels}</td>
+                      <td className="px-2 py-1">{f['']}</td>
                     </tr>
                   )
                 })}
@@ -741,37 +768,80 @@ export default function ScanTicketsPage() {
             </table>
           </div>
 
-          <div className="xl:sticky xl:top-3 self-start h-[80vh] min-h-[400px]">
-            <div className="text-xs text-slate-500 mb-1">Source document — cross-reference while reviewing</div>
-            <SourcePreview source={source} className="h-full" title="Tickets" />
+          {/* Stacked cards below xl — one ticket per card, fields labelled. */}
+          <div className="xl:hidden space-y-3">
+            {!hasRows && (
+              <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">
+                {readStage ? 'Working…' : 'No tickets yet — take a photo or upload a PDF.'}
+              </div>
+            )}
+            {rows.map((r, i) => {
+              const f = fieldsFor(r, i)
+              return (
+                <div key={i} className="bg-white rounded-xl shadow p-3 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-slate-700 flex-1">Ticket {i + 1}{r.ticket_number ? ` · #${r.ticket_number}` : ''}</span>
+                    {f.Status}
+                    {f['']}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field label="Date">{f.Date}</Field>
+                    <Field label="Time">{f.Time}</Field>
+                    <Field label="Ticket #">{f['Ticket #']}</Field>
+                    <Field label="Truck">{f.Truck}</Field>
+                    <Field label="Crop" span>{f.Crop}</Field>
+                    <Field label="Gross lb">{f['Gross lb']}</Field>
+                    <Field label="Tare lb">{f['Tare lb']}</Field>
+                    <Field label="Net lb">{f['Net lb']}</Field>
+                    <Field label="Moisture %">{f['Moisture %']}</Field>
+                    <Field label="Test wt">{f['Test wt']}</Field>
+                    <Field label="Bushels"><div className="flex justify-end">{f.Bushels}</div></Field>
+                    <Field label="From" span>{f.From}</Field>
+                    <Field label="To" span>{f.To}</Field>
+                    {r.to_type === 'buyer' && <Field label="Contract" span>{f.Contract}</Field>}
+                  </div>
+                </div>
+              )
+            })}
           </div>
         </div>
       )}
 
-      {rows.length > 0 && (
-        <div className="sticky bottom-3 bg-white rounded-xl shadow p-3 flex flex-wrap items-center gap-3">
+      {hasRows && (
+        <div className="sticky bottom-0 -mx-4 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-white/95 backdrop-blur border-t border-slate-200 flex flex-wrap items-center gap-3 no-print">
           <div className="text-sm text-slate-700 flex-1">
             <span className="font-semibold text-green-700">{readyCount}</span> ready ·{' '}
-            <span className="font-semibold text-amber-700">{reviewCount}</span> need review
+            <span className="font-semibold text-amber-700">{reviewCount}</span> need a look
             {!cropYear && <span className="ml-2 text-red-600">Pick a crop year above.</span>}
           </div>
           <button
             type="button"
-            onClick={saveAll}
+            onClick={askSave}
             disabled={saving || readyCount === 0 || !cropYear}
-            className="rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-3 px-5 disabled:opacity-50"
+            className="rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold min-h-12 px-5 disabled:opacity-50"
           >
-            {saving ? 'Saving…' : `Save All Loads (${readyCount})`}
+            {saving ? 'Saving…' : `Save ${readyCount} load${readyCount === 1 ? '' : 's'}`}
           </button>
           <button
             type="button"
             onClick={() => router.push('/loads')}
-            className="rounded-xl bg-white border border-slate-300 px-4 py-3 text-sm"
+            className="rounded-xl bg-white border border-slate-300 px-4 min-h-12 text-sm"
           >
             Done
           </button>
         </div>
       )}
+
+      <ConfirmDialog
+        open={saveAsk}
+        title={`Save ${readyCount} load${readyCount === 1 ? '' : 's'}?`}
+        body={reviewCount > 0
+          ? `${reviewCount} ticket${reviewCount === 1 ? '' : 's'} still need a look and won’t be saved yet — they stay on screen so you can finish them.`
+          : undefined}
+        confirmLabel="Save"
+        onConfirm={() => void saveAll()}
+        onCancel={() => setSaveAsk(false)}
+      />
     </div>
   )
 }

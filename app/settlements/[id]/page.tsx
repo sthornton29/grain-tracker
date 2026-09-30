@@ -4,8 +4,11 @@ import { createClient } from '@/lib/supabase/server'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
 import { relinkSettlementLines } from '@/lib/settlement-link'
+import { fmtDate } from '@/lib/format-date'
+import { fmtInt, fmtUsd, fmtNum, signedTone, toneText, theadCls, type Tone } from '@/components/reports/report-kit'
 import SettlementPdfPanel from '@/components/settlement-pdf-panel'
 import LineMatchSelect, { type LoadOption } from './line-match-select'
+import AddLineButton from './add-line-button'
 import DiscountsBlock from './discounts-block'
 import SettlementHeaderActions from './header-actions'
 import type { SettlementDiscountItem } from '@/lib/types'
@@ -48,9 +51,6 @@ type LoadShape = {
   contract: { id: string; contract_number: string; delivery_start_date: string | null; delivery_end_date: string | null } | null
 }
 
-const fmt = (n: number | null | undefined, d = 2) =>
-  n == null ? '' : Number(n).toLocaleString(undefined, { maximumFractionDigits: d })
-
 function dryBu(l: LoadShape) {
   const { dryBushels } = computeBushels({
     netWeightLb: l.net_weight,
@@ -62,7 +62,15 @@ function dryBu(l: LoadShape) {
   return dryBushels ?? 0
 }
 
-export default async function SettlementDetailPage({ params }: { params: { id: string } }) {
+// The banner the New Settlement screen sends the user here with when the
+// header saved but part of the detail did not.
+const SAVED_NOTES: Record<string, string> = {
+  'partial-lines': 'Saved, but the line detail didn’t come through — add the lines here, or contact support.',
+  'partial-items': 'Saved with its lines, but the itemized discounts didn’t come through — add them in the Discounts block below, or contact support.',
+  'partial-writeback': 'Saved. A couple of matched loads couldn’t be updated with the statement’s ticket or grade readings — nothing is missing from the settlement itself.',
+}
+
+export default async function SettlementDetailPage({ params, searchParams }: { params: { id: string }; searchParams?: { saved?: string } }) {
   const supabase = createClient()
 
   const sRes = await supabase
@@ -73,9 +81,9 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
   const settlement = sRes.data as unknown as Settlement | null
   if (!settlement) notFound()
 
-  // Persist unambiguous ticket→load matches before reading, so the DB matches
-  // what this screen shows — keeping the list's Unmatched count and every export
-  // consistent with the Review screen (no more view-time-only re-pairing).
+  // Persist unambiguous ticket→load matches before reading, so what is stored
+  // matches what this screen shows — keeping the list's Unmatched count and every
+  // export consistent with the Review screen (no more view-time-only re-pairing).
   await relinkSettlementLines(supabase, params.id)
 
   const linesRes = await supabase
@@ -148,7 +156,7 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
   // Candidate loads for the manual-match dropdown.
   const loadOption = (l: LoadShape): LoadOption => ({
     id: l.id,
-    label: `${l.date} · ${l.ticket_number ? '#' + l.ticket_number : 'no ticket'} · ${l.crop?.name ?? ''} · ${fmt(dryBu(l))} bu`,
+    label: `${fmtDate(l.date)} · ${l.ticket_number ? '#' + l.ticket_number : 'no ticket'} · ${l.crop?.name ?? ''} · ${fmtInt(dryBu(l))} bu`,
   })
   const allLoadOptions: LoadOption[] = [...allBuyerLoads]
     .sort((a, b) => (a.date < b.date ? 1 : -1))
@@ -193,13 +201,16 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
     .eq('settlement_id', params.id)
     .order('created_at')
 
+  const savedNote = searchParams?.saved ? SAVED_NOTES[searchParams.saved] ?? null : null
+  const numCls = 'px-3 py-2 text-right tabular-nums whitespace-nowrap'
+
   return (
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
         <div className="flex-1">
           <h1 className="text-2xl font-bold">Settlement {settlement.settlement_number ?? ''}</h1>
           <p className="text-sm text-slate-500">
-            {settlement.buyer?.name} · {settlement.settlement_date}
+            {settlement.buyer?.name} · {fmtDate(settlement.settlement_date)}
             {settlement.notes && <> · {settlement.notes}</>}
           </p>
         </div>
@@ -209,18 +220,28 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
           settlementNumber={settlement.settlement_number}
           notes={settlement.notes}
         />
-        <Link href="/settlements" className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Back</Link>
+        <Link href="/settlements" className="rounded-lg bg-white border border-slate-300 px-3 min-h-10 inline-flex items-center text-sm">Back</Link>
       </div>
+
+      {savedNote && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" role="status">
+          {savedNote}
+        </div>
+      )}
 
       <SettlementPdfPanel settlementId={settlement.id} currentUrl={settlement.source_pdf_url} />
 
+      {/* Net revenue leads — it is the number the check is for. */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        <StatCard label="Lines" value={String(lines.length)} />
-        <StatCard label="Matched" value={String(matched.length)} tone="green" />
-        <StatCard label="Unmatched" value={String(unmatchedCount)} tone={unmatchedCount > 0 ? 'amber' : 'slate'} />
-        <StatCard label="Gross revenue" value={`$${fmt(totalGross)}`} />
-        <StatCard label="Discounts" value={`$${fmt(totalDisc)}`} tone={totalDisc > 0 ? 'amber' : 'slate'} />
-        <StatCard label="Net revenue" value={`$${fmt(totalNetRev)}`} />
+        <div className="col-span-2 bg-white rounded-xl shadow p-4">
+          <div className="text-xs text-slate-500 uppercase tracking-wide">Net revenue</div>
+          <div className="text-3xl font-bold mt-1 tabular-nums text-slate-900">{fmtUsd(totalNetRev)}</div>
+          <div className="text-xs text-slate-500 mt-0.5">{fmtInt(totalNetBu)} settled bu{totalNetBu > 0 ? ` · ${fmtUsd(totalNetRev / totalNetBu, 2)}/bu` : ''}</div>
+        </div>
+        <StatCard label="Gross revenue" value={fmtUsd(totalGross)} />
+        <StatCard label="Discounts" value={fmtUsd(totalDisc)} tone={totalDisc > 0 ? 'warning' : 'muted'} />
+        <StatCard label="Matched lines" value={`${matched.length} of ${lines.length}`} tone={matched.length === lines.length && lines.length > 0 ? 'favorable' : 'neutral'} />
+        <StatCard label="Need matching" value={String(unmatchedCount)} tone={unmatchedCount > 0 ? 'warning' : 'muted'} />
       </div>
 
       <DiscountsBlock
@@ -235,27 +256,27 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
         canEdit
       />
 
-      <Section title="Matched loads" subtitle="Lines tied to a load. Diffs &gt;1% between our dry bu and their net bu are flagged.">
-        {matched.length === 0 ? <Empty>None.</Empty> : (
-          <Table headers={['Ticket', 'Load date', 'Crop', 'Our dry bu', 'Their net bu', 'Diff', 'Net $', '$/bu']}>
+      <Section title="Matched loads" subtitle="Lines tied to a load. Their net bushels beside our dry bushels — green when they paid on more than we weighed, red when less; anything over 1% either way is worth a look.">
+        {matched.length === 0 ? <Empty>None yet.</Empty> : (
+          <Table headers={['Ticket', 'Load date', 'Crop', 'Our dry bu', 'Their net bu', 'Difference', 'Net $', '$/bu']} rightFrom={3}>
             {matched.map((l) => {
               const ld = l.load!
               const ourBu = dryBu(ld)
               const theirBu = Number(l.net_bushels ?? 0)
               const diff = ourBu > 0 ? ((theirBu - ourBu) / ourBu) * 100 : null
-              const flag = diff != null && Math.abs(diff) > 1
+              const big = diff != null && Math.abs(diff) > 1
               return (
                 <tr key={l.id} className="border-t border-slate-100">
                   <td className="px-3 py-2">{l.ticket_number}</td>
-                  <td className="px-3 py-2">{ld.date}</td>
+                  <td className="px-3 py-2 whitespace-nowrap"><Link href={`/loads/${ld.id}`} className="text-brand-deep hover:underline">{fmtDate(ld.date)}</Link></td>
                   <td className="px-3 py-2">{ld.crop?.name ?? ''}</td>
-                  <td className="px-3 py-2 text-right font-mono">{fmt(ourBu)}</td>
-                  <td className="px-3 py-2 text-right font-mono">{fmt(theirBu)}</td>
-                  <td className={`px-3 py-2 text-right ${flag ? 'text-red-700 font-semibold' : 'text-slate-500'}`}>
-                    {diff != null ? `${diff >= 0 ? '+' : ''}${diff.toFixed(2)}%` : ''}
+                  <td className={numCls}>{fmtInt(ourBu)}</td>
+                  <td className={numCls}>{fmtInt(theirBu)}</td>
+                  <td className={`${numCls} ${toneText(signedTone(diff))} ${big ? 'font-semibold' : ''}`}>
+                    {diff != null ? `${diff > 0 ? '+' : diff < 0 ? '−' : ''}${fmtNum(Math.abs(diff), 1)}%` : ''}
                   </td>
-                  <td className="px-3 py-2 text-right font-mono">${fmt(l.net_revenue)}</td>
-                  <td className="px-3 py-2 text-right font-mono">{fmt(l.price_per_bushel, 4)}</td>
+                  <td className={numCls}>{fmtUsd(l.net_revenue, 2)}</td>
+                  <td className={numCls}>{l.price_per_bushel != null ? fmtUsd(l.price_per_bushel, 2) : ''}</td>
                 </tr>
               )
             })}
@@ -263,43 +284,46 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
         )}
       </Section>
 
-      <Section title="Needs matching" subtitle="Buyer paid us, but we couldn't auto-match the ticket to a single load. Pick the right load and it saves immediately.">
+      <Section title="Needs matching" subtitle="The buyer paid these tickets, but Turnrow couldn't tie each one to a single load. Pick the right load and it saves right away.">
         {unmatchedCount === 0 ? <Empty>None — every paid ticket matched a load.</Empty> : (
-          <Table headers={['Ticket', 'Status', 'Net bu', 'Net $', '$/bu', 'Match to load']}>
+          <Table headers={['Ticket', 'Why', 'Net bu', 'Net $', '$/bu', 'Match to load']} rightFrom={2} rightTo={4}>
             {ambiguous.map((l) => (
               <tr key={l.id} className="border-t border-slate-100 bg-amber-50">
                 <td className="px-3 py-2 font-semibold">{l.ticket_number || <span className="text-slate-400">—</span>}</td>
-                <td className="px-3 py-2"><span className="rounded-full bg-amber-200 text-amber-900 px-2 py-0.5 text-xs font-semibold whitespace-nowrap">Ambiguous — needs manual match</span></td>
-                <td className="px-3 py-2 text-right font-mono">{fmt(l.net_bushels)}</td>
-                <td className="px-3 py-2 text-right font-mono">${fmt(l.net_revenue)}</td>
-                <td className="px-3 py-2 text-right font-mono">{fmt(l.price_per_bushel, 4)}</td>
-                <td className="px-3 py-2"><LineMatchSelect settlementId={settlement.id} lineId={l.id} currentLoadId={l.load_id} options={optionsForTicket(l.ticket_number)} /></td>
+                <td className="px-3 py-2"><span className="rounded-full bg-amber-200 text-amber-900 px-2 py-0.5 text-xs font-semibold whitespace-nowrap">Several loads share this ticket</span></td>
+                <td className={numCls}>{fmtInt(l.net_bushels)}</td>
+                <td className={numCls}>{fmtUsd(l.net_revenue, 2)}</td>
+                <td className={numCls}>{l.price_per_bushel != null ? fmtUsd(l.price_per_bushel, 2) : ''}</td>
+                <td className="px-3 py-2"><LineMatchSelect settlementId={settlement.id} lineId={l.id} currentLoadId={l.load_id} options={optionsForTicket(l.ticket_number)} ticket={l.ticket_number} /></td>
               </tr>
             ))}
             {noMatch.map((l) => (
-              <tr key={l.id} className="border-t border-slate-100 bg-red-50">
+              <tr key={l.id} className="border-t border-slate-100 bg-slate-50">
                 <td className="px-3 py-2 font-semibold">{l.ticket_number || <span className="text-slate-400">—</span>}</td>
-                <td className="px-3 py-2"><span className="rounded-full bg-slate-200 text-slate-700 px-2 py-0.5 text-xs font-semibold whitespace-nowrap">No match found</span></td>
-                <td className="px-3 py-2 text-right font-mono">{fmt(l.net_bushels)}</td>
-                <td className="px-3 py-2 text-right font-mono">${fmt(l.net_revenue)}</td>
-                <td className="px-3 py-2 text-right font-mono">{fmt(l.price_per_bushel, 4)}</td>
-                <td className="px-3 py-2"><LineMatchSelect settlementId={settlement.id} lineId={l.id} currentLoadId={l.load_id} options={allLoadOptions} /></td>
+                <td className="px-3 py-2"><span className="rounded-full bg-slate-200 text-slate-700 px-2 py-0.5 text-xs font-semibold whitespace-nowrap">No load with this ticket</span></td>
+                <td className={numCls}>{fmtInt(l.net_bushels)}</td>
+                <td className={numCls}>{fmtUsd(l.net_revenue, 2)}</td>
+                <td className={numCls}>{l.price_per_bushel != null ? fmtUsd(l.price_per_bushel, 2) : ''}</td>
+                <td className="px-3 py-2"><LineMatchSelect settlementId={settlement.id} lineId={l.id} currentLoadId={l.load_id} options={allLoadOptions} ticket={l.ticket_number} /></td>
               </tr>
             ))}
           </Table>
         )}
       </Section>
 
-      <Section title="Missing loads" subtitle="Loads we delivered to this buyer in the contract's delivery window with no settlement info on any settlement yet.">
-        {missing.length === 0 ? <Empty>None — every buyer-delivered load in-window has been settled.</Empty> : (
-          <Table headers={['Date', 'Ticket', 'Crop', 'Contract', 'Dry bu']}>
+      <Section title="Missing loads" subtitle="Loads you delivered to this buyer inside the contract's delivery window that aren't on any settlement yet — the ones you haven't been paid for. Add line puts one on this settlement, tied to the load, so you only type the dollars.">
+        {missing.length === 0 ? <Empty>None — every load delivered to this buyer in the window has been settled.</Empty> : (
+          <Table headers={['Date', 'Ticket', 'Crop', 'Contract', 'Dry bu', '']} rightFrom={4} rightTo={4}>
             {missing.map((l) => (
-              <tr key={l.id} className="border-t border-slate-100 bg-red-50">
-                <td className="px-3 py-2">{l.date}</td>
+              <tr key={l.id} className="border-t border-slate-100 bg-amber-50">
+                <td className="px-3 py-2 whitespace-nowrap"><Link href={`/loads/${l.id}`} className="text-brand-deep hover:underline font-semibold">{fmtDate(l.date)}</Link></td>
                 <td className="px-3 py-2">{l.ticket_number ?? <span className="text-slate-400">no ticket</span>}</td>
                 <td className="px-3 py-2">{l.crop?.name ?? ''}</td>
-                <td className="px-3 py-2">{l.contract?.contract_number ? `#${l.contract.contract_number}` : ''}</td>
-                <td className="px-3 py-2 text-right font-mono">{fmt(dryBu(l))}</td>
+                <td className="px-3 py-2">{l.contract?.contract_number ? <Link href={`/contracts/${l.contract.id}`} className="text-brand-deep hover:underline">#{l.contract.contract_number}</Link> : ''}</td>
+                <td className={numCls}>{fmtInt(dryBu(l))}</td>
+                <td className="px-3 py-2 whitespace-nowrap">
+                  <AddLineButton settlementId={settlement.id} loadId={l.id} ticketNumber={l.ticket_number} dryBushels={dryBu(l)} />
+                </td>
               </tr>
             ))}
           </Table>
@@ -307,7 +331,7 @@ export default async function SettlementDetailPage({ params }: { params: { id: s
       </Section>
 
       <p className="text-xs text-slate-400">
-        Total net bu: {fmt(totalNetBu)} · Total net revenue: ${fmt(totalNetRev)}
+        Total settled: {fmtInt(totalNetBu)} bu · Net revenue: {fmtUsd(totalNetRev)}
       </p>
     </div>
   )
@@ -325,12 +349,14 @@ function Section({ title, subtitle, children }: { title: string; subtitle?: stri
   )
 }
 
-function Table({ headers, children }: { headers: string[]; children: React.ReactNode }) {
+// rightFrom / rightTo: the header columns (inclusive) that are numeric and
+// right-aligned; the rest are left.
+function Table({ headers, children, rightFrom = 999, rightTo = 999 }: { headers: string[]; children: React.ReactNode; rightFrom?: number; rightTo?: number }) {
   return (
     <div className="overflow-x-auto">
       <table className="min-w-full text-sm">
-        <thead className="bg-slate-50 text-slate-600">
-          <tr>{headers.map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr>
+        <thead className={theadCls}>
+          <tr>{headers.map((h, i) => <th key={`${h}-${i}`} className={`${i >= rightFrom && i <= rightTo ? 'text-right' : 'text-left'} px-3 py-2 whitespace-nowrap`}>{h}</th>)}</tr>
         </thead>
         <tbody>{children}</tbody>
       </table>
@@ -342,15 +368,11 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <div className="px-4 py-4 text-sm text-slate-400">{children}</div>
 }
 
-function StatCard({ label, value, tone = 'slate' }: { label: string; value: string; tone?: 'slate' | 'green' | 'amber' }) {
-  const color =
-    tone === 'green' ? 'text-green-700'
-    : tone === 'amber' ? 'text-amber-700'
-    : 'text-slate-700'
+function StatCard({ label, value, tone = 'neutral' }: { label: string; value: string; tone?: Tone }) {
   return (
     <div className="bg-white rounded-xl shadow p-4">
       <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
-      <div className={`text-2xl font-bold mt-1 ${color}`}>{value}</div>
+      <div className={`text-2xl font-bold mt-1 tabular-nums ${toneText(tone)}`}>{value}</div>
     </div>
   )
 }

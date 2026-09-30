@@ -9,6 +9,10 @@ import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import ContractActions from '@/app/contracts/[id]/contract-actions'
+import { ConfirmDialog } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
+import { fmtDate as fmtDateLib } from '@/lib/format-date'
+import { fmtUsd } from '@/components/reports/report-kit'
 import {
   SEED_ELECTION_INCREMENTS, SEED_OUTCOME_LABEL, SEED_PAYMENT_TYPE_LABEL,
   SEED_PREMIUM_TEMPLATE, cumulativePricedPct, effectivePriceWalk,
@@ -20,12 +24,16 @@ import type {
 } from '@/lib/seed-contracts'
 
 const fmt = (n: number, d = 2) => n.toLocaleString(undefined, { maximumFractionDigits: d })
-const usd = (n: number) => (n < 0 ? `($${fmt(Math.abs(n))})` : `$${fmt(n)}`)
+const usd = (n: number) => fmtUsd(n, 2)
+const fmtDate = (iso: string | null) => fmtDateLib(iso) || '—'
 
-function fmtDate(iso: string | null): string {
-  if (!iso) return '—'
-  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/)
-  return m ? `${Number(m[2])}/${m[3]}/${m[1]}` : iso
+// Payment direction follows the payment type: a usage fee is always money
+// netted OUT of the settlement, everything else comes in. The farmer types
+// the amount as a plain positive number.
+const DEDUCTION_TYPES: ReadonlySet<SeedPaymentType> = new Set<SeedPaymentType>(['usage_fee'])
+export function signedSeedPayment(type: SeedPaymentType, amount: number): number {
+  const abs = Math.abs(amount)
+  return DEDUCTION_TYPES.has(type) ? -abs : abs
 }
 
 type LinkedPlanting = {
@@ -62,6 +70,8 @@ export default function SeedContractDetail(props: {
   const router = useRouter()
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
+  // One confirm dialog for every "remove …" / "replace schedule" question.
+  const [ask, setAsk] = useState<null | { title: string; body: string; label: string; danger?: boolean; run: () => Promise<void> }>(null)
 
   const totalAcres = linkedPlantings.reduce((s, p) => s + p.plantedAcres, 0)
   const irrAcres = linkedPlantings.reduce((s, p) => s + p.irrigatedAcres, 0)
@@ -102,16 +112,23 @@ export default function SeedContractDetail(props: {
       price_per_bu: price, method: eMethod, notes: eNotes.trim() || null,
     })
     setBusy(false)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'record this pricing election', noun: 'election' })); return }
     setEPrice(''); setENotes('')
     router.refresh()
   }
 
-  async function deleteElection(id: string) {
-    if (!confirm('Remove this pricing election?')) return
-    const { error } = await supabase.from('seed_pricing_elections').delete().eq('id', id)
-    if (error) { setErr(error.message); return }
-    router.refresh()
+  function deleteElection(id: string) {
+    setAsk({
+      title: 'Remove this pricing election?',
+      body: 'The share of bushels it priced goes back to unpriced.',
+      label: 'Remove',
+      danger: true,
+      run: async () => {
+        const { error } = await supabase.from('seed_pricing_elections').delete().eq('id', id)
+        if (error) { setErr(reportError(error, { action: 'remove this pricing election', noun: 'election' })); return }
+        router.refresh()
+      },
+    })
   }
 
   // --- payment entry state --------------------------------------------------
@@ -123,24 +140,32 @@ export default function SeedContractDetail(props: {
 
   async function addPayment() {
     setErr('')
-    const amount = Number(pAmount)
-    if (!Number.isFinite(amount) || amount === 0) { setErr('Enter the payment amount (the usage fee as a negative).'); return }
+    const typed = Number(pAmount.replace(/[$,]/g, ''))
+    if (!Number.isFinite(typed) || typed === 0) { setErr('Enter the payment amount.'); return }
+    const amount = signedSeedPayment(pType, typed)
     setBusy(true)
     const { error } = await supabase.from('seed_contract_payments').insert({
       contract_id: contract.id, payment_type: pType, amount,
       payment_date: pDate, status: pStatus, notes: pNotes.trim() || null,
     })
     setBusy(false)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'record this payment', noun: 'payment' })); return }
     setPAmount(''); setPNotes('')
     router.refresh()
   }
 
-  async function deletePayment(id: string) {
-    if (!confirm('Remove this payment entry?')) return
-    const { error } = await supabase.from('seed_contract_payments').delete().eq('id', id)
-    if (error) { setErr(error.message); return }
-    router.refresh()
+  function deletePayment(id: string) {
+    setAsk({
+      title: 'Remove this payment entry?',
+      body: 'The payments ledger and the cash-flow projection update right away.',
+      label: 'Remove',
+      danger: true,
+      run: async () => {
+        const { error } = await supabase.from('seed_contract_payments').delete().eq('id', id)
+        if (error) { setErr(reportError(error, { action: 'remove this payment', noun: 'payment' })); return }
+        router.refresh()
+      },
+    })
   }
 
   async function setOutcome(outcome: SeedOutcome) {
@@ -149,7 +174,7 @@ export default function SeedContractDetail(props: {
       .from('seed_contract_details')
       .update({ expected_outcome: outcome })
       .eq('id', details.id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'change the expected outcome', noun: 'contract' })); return }
     router.refresh()
   }
 
@@ -184,7 +209,7 @@ export default function SeedContractDetail(props: {
       contract_id: contract.id, ...premiumPayload(premiumDraft), sort_order: premiums.length,
     })
     setBusy(false)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'add this premium row', noun: 'premium' })); return }
     setPremiumDraft(emptyPremiumDraft)
     router.refresh()
   }
@@ -196,35 +221,47 @@ export default function SeedContractDetail(props: {
     setBusy(true)
     const { error } = await supabase.from('seed_contract_premiums').update(premiumPayload(editDraft)).eq('id', id)
     setBusy(false)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'save this premium row', noun: 'premium' })); return }
     setEditingPremiumId(null)
     router.refresh()
   }
 
-  async function deletePremium(id: string) {
-    if (!confirm('Remove this premium row?')) return
-    const { error } = await supabase.from('seed_contract_premiums').delete().eq('id', id)
-    if (error) { setErr(error.message); return }
-    router.refresh()
+  function deletePremium(id: string) {
+    setAsk({
+      title: 'Remove this premium row?',
+      body: 'Projections for that outcome drop the premium right away.',
+      label: 'Remove',
+      danger: true,
+      run: async () => {
+        const { error } = await supabase.from('seed_contract_premiums').delete().eq('id', id)
+        if (error) { setErr(reportError(error, { action: 'remove this premium row', noun: 'premium' })); return }
+        router.refresh()
+      },
+    })
   }
 
-  // Replace the whole schedule with the standard Bayer Southern template
-  // (all four outcomes, full component stack) after explicit confirmation.
-  async function applyStandardSchedule() {
-    const msg = premiums.length > 0
-      ? `Replace the current ${premiums.length} premium row${premiums.length === 1 ? '' : 's'} with the standard Bayer Southern schedule (all four outcomes)?`
-      : 'Apply the standard Bayer Southern premium schedule (all four outcomes)?'
-    if (!confirm(msg)) return
-    setErr('')
-    setBusy(true)
-    const del = await supabase.from('seed_contract_premiums').delete().eq('contract_id', contract.id)
-    if (del.error) { setBusy(false); setErr(del.error.message); return }
-    const { error } = await supabase.from('seed_contract_premiums').insert(
-      SEED_PREMIUM_TEMPLATE.map((p) => ({ contract_id: contract.id, ...p })),
-    )
-    setBusy(false)
-    if (error) { setErr(error.message); return }
-    router.refresh()
+  // Replace the whole schedule with the standard soybean seed schedule (all
+  // four outcomes, full component stack) after explicit confirmation.
+  function applyStandardSchedule() {
+    setAsk({
+      title: 'Apply the standard soybean seed schedule?',
+      body: premiums.length > 0
+        ? `The current ${premiums.length} premium row${premiums.length === 1 ? '' : 's'} will be replaced with the standard schedule for all four outcomes. Edit any row afterwards to match your agreement.`
+        : 'The standard schedule for all four outcomes will be filled in. Edit any row afterwards to match your agreement.',
+      label: 'Apply schedule',
+      run: async () => {
+        setErr('')
+        setBusy(true)
+        const del = await supabase.from('seed_contract_premiums').delete().eq('contract_id', contract.id)
+        if (del.error) { setBusy(false); setErr(reportError(del.error, { action: 'replace the premium schedule', noun: 'premium' })); return }
+        const { error } = await supabase.from('seed_contract_premiums').insert(
+          SEED_PREMIUM_TEMPLATE.map((p) => ({ contract_id: contract.id, ...p })),
+        )
+        setBusy(false)
+        if (error) { setErr(reportError(error, { action: 'apply the premium schedule', noun: 'premium' })); return }
+        router.refresh()
+      },
+    })
   }
 
   const receivedTotal = payments.filter((p) => p.status === 'received').reduce((s, p) => s + Number(p.amount), 0)
@@ -235,19 +272,25 @@ export default function SeedContractDetail(props: {
       <div className="flex items-center gap-3 flex-wrap no-print">
         <Link href="/contracts" className="text-brand-deep hover:underline text-sm">← Back to contracts</Link>
         <div className="flex-1" />
-        <Link
-          href={`/contracts/seed/${contract.id}/edit`}
-          className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-        >
-          Edit
-        </Link>
         <ContractActions
           contractId={contract.id}
           contractNumber={contract.contract_number}
           isManuallyComplete={contract.completed_at != null}
           isAutoComplete={finalReceived}
+          editHref={`/contracts/seed/${contract.id}/edit`}
         />
       </div>
+
+      <ConfirmDialog
+        open={ask != null}
+        title={ask?.title ?? ''}
+        body={ask ? <p>{ask.body}</p> : null}
+        confirmLabel={ask?.label ?? 'OK'}
+        danger={ask?.danger}
+        busy={busy}
+        onConfirm={async () => { const a = ask; setAsk(null); if (a) await a.run() }}
+        onCancel={() => setAsk(null)}
+      />
 
       {err && <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">{err}</div>}
 
@@ -323,7 +366,7 @@ export default function SeedContractDetail(props: {
                   {walk?.expectedNetPerBu != null ? `$${walk.expectedNetPerBu.toFixed(4)}/bu` : '—'}
                 </div>
                 {walk?.expectedNetPerBu != null && committedBu > 0 && (
-                  <div className="text-xs text-slate-500">≈ {usd(walk.expectedNetPerBu * committedBu)} on {fmt(committedBu, 0)} bu (est.)</div>
+                  <div className="text-xs text-slate-500">≈ {fmtUsd(walk.expectedNetPerBu * committedBu)} on {fmt(committedBu, 0)} bu (est.)</div>
                 )}
               </div>
             </div>
@@ -565,7 +608,7 @@ export default function SeedContractDetail(props: {
               {payments.map((p) => (
                 <li key={p.id} className="py-2 flex items-center gap-3">
                   <span className="font-medium">{SEED_PAYMENT_TYPE_LABEL[p.payment_type]}</span>
-                  <span className={`font-mono ${Number(p.amount) < 0 ? 'text-red-700' : ''}`}>{usd(Number(p.amount))}</span>
+                  <span className={`tabular-nums ${Number(p.amount) < 0 ? 'text-red-700' : ''}`}>{usd(Number(p.amount))}{Number(p.amount) < 0 ? ' taken out' : ''}</span>
                   <span className="text-slate-500">{fmtDate(p.payment_date)}</span>
                   <span className={`text-xs rounded-full px-2 py-0.5 ${p.status === 'received' ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-600'}`}>
                     {p.status}
@@ -586,8 +629,8 @@ export default function SeedContractDetail(props: {
             </select>
           </label>
           <label className="text-sm">
-            <span className="block text-slate-500 text-xs">Amount $ (fee as negative)</span>
-            <input inputMode="decimal" value={pAmount} onChange={(e) => setPAmount(e.target.value)} className="w-28 rounded-lg border border-slate-300 px-3 py-2" />
+            <span className="block text-slate-500 text-xs">Amount $ {DEDUCTION_TYPES.has(pType) ? '(taken out)' : '(received)'}</span>
+            <input inputMode="decimal" value={pAmount} onChange={(e) => setPAmount(e.target.value)} placeholder="0.00" className="w-28 rounded-lg border border-slate-300 px-3 py-2" />
           </label>
           <label className="text-sm">
             <span className="block text-slate-500 text-xs">Date</span>

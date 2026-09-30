@@ -26,8 +26,13 @@ import { roleCanEditYields } from '@/lib/app-role'
 import { useViewerAssumptions } from '@/lib/use-viewer-assumptions'
 import { resolveCropAssumptions } from '@/lib/viewer-assumptions'
 import { SupersededNotice } from '@/components/viewer-scenario'
-import { EmptyState, theadCls, grandTotalRowCls } from '@/components/reports/report-kit'
-import { exportToExcel, exportToPdf, type ExportPayload } from '@/lib/exports'
+import { EmptyState, ReportHeader, ReportFilterBar, FilterField, theadCls, grandTotalRowCls, stickyColCls, stickyColHeadCls, selectCls, fmtNum, fmtInt, filterSummaryOf, cropYearLabel } from '@/components/reports/report-kit'
+import ExportBar from '@/components/export-bar'
+import { ConfirmDialog } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
+import { useReportCropYear } from '@/lib/report-filters'
+import { isCottonCrop } from '@/lib/marketing'
+import { type ExportPayload } from '@/lib/exports'
 import type {
   County, Crop, CropAssumption, Entity, Farm, Field, FieldPlanting, LoadSplit,
 } from '@/lib/types'
@@ -95,8 +100,10 @@ function practiceLabel(p: Practice): string {
   return p === 'irrigated' ? 'Irrigated' : 'Dryland'
 }
 
-function fmt(n: number, d = 2): string {
-  return n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })
+// The unit each crop's production and yield columns carry on screen (the
+// export keeps the agent-form "Bu. Or Lbs." wording).
+function unitOf(crop: Crop): 'bu' | 'lbs' {
+  return isCottonCrop(crop.name) ? 'lbs' : 'bu'
 }
 
 export default function CropInsuranceReport() {
@@ -113,8 +120,12 @@ export default function CropInsuranceReport() {
   const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
 
-  // Filters persist across visits (see usePersistentState).
-  const [cropYear, setCropYear] = usePersistentState<number | ''>('crop-insurance:cropYear', '')
+  // Filters persist across visits. The crop year follows the one report rule
+  // (lib/report-filters): current year by default, a saved pick is never
+  // overwritten on load; only an untouched default falls back to the newest
+  // year with plantings.
+  const [plantingYears, setPlantingYears] = useState<number[]>([])
+  const [cropYear, setCropYear] = useReportCropYear('crop-insurance:cropYear', { options: plantingYears, loaded: !loading })
   const [entityId, setEntityId] = usePersistentState('crop-insurance:entityId', '')
   // Optional crop filter — empty means all crops. Multi-select via toggle chips.
   const [cropIds, setCropIds] = usePersistentState<string[]>('crop-insurance:cropIds', [])
@@ -123,9 +134,6 @@ export default function CropInsuranceReport() {
   // upstream or accept that production rolls into dryland.
   const [acceptedAsDryland, setAcceptedAsDryland] = useState(false)
   const [activeTab, setActiveTab] = useState<string>('summary')
-  const [exportErr, setExportErr] = useState<string | null>(null)
-  const [exporting, setExporting] = useState<null | 'xlsx' | 'pdf'>(null)
-
   useEffect(() => {
     ;(async () => {
       const [cr, en, fa, fi, co, pl, lo, sp, ca, ce] = await Promise.all([
@@ -151,9 +159,7 @@ export default function CropInsuranceReport() {
       setSplits((sp.data as LoadSplit[]) || [])
       setAssumptions((ca.data as CropAssumption[]) || [])
       setCombineEntries((ce.data as CombineEntryLike[]) || [])
-      // Default to the most recent crop year with plantings.
-      const yrs = (pl.data as FieldPlanting[] | null)?.map((p) => p.season_year) ?? []
-      if (yrs.length > 0) setCropYear(Math.max(...yrs))
+      setPlantingYears(Array.from(new Set(((pl.data as FieldPlanting[] | null) ?? []).map((p) => p.season_year))))
       setLoading(false)
     })()
   }, [supabase])
@@ -169,9 +175,10 @@ export default function CropInsuranceReport() {
   // field counts as finished everywhere. Only the plantings are refetched.
   const [overrideSavingId, setOverrideSavingId] = useState<string | null>(null)
   const [overrideErr, setOverrideErr] = useState<string | null>(null)
+  // The "count anyway" confirmation (an app dialog, not window.confirm).
+  const [countAsk, setCountAsk] = useState<{ p: FieldPlanting; name: string } | null>(null)
   async function countAnyway(p: FieldPlanting) {
-    const name = fieldById.get(p.field_id)?.name_or_number ?? 'this field'
-    if (!confirm(`Count ${name} as finished? Its current bushels will be treated as the field's final yield. You can undo this from the field's detail on the Yields page.`)) return
+    setCountAsk(null)
     setOverrideErr(null)
     setOverrideSavingId(p.id)
     const { error } = await supabase
@@ -183,7 +190,7 @@ export default function CropInsuranceReport() {
       setPlantings((pl.data as FieldPlanting[]) || [])
     }
     setOverrideSavingId(null)
-    if (error) setOverrideErr(error.message)
+    if (error) setOverrideErr(reportError(error, { action: 'count this field as finished' }))
   }
 
   // Viewer role (052): grants prune the entity dropdown and name the export's
@@ -483,7 +490,6 @@ export default function CropInsuranceReport() {
     }
   }, [detailSheets, activeTab])
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   // A viewer with no entity selected reports over their granted entities, and
   // the title/filter line must say so by name.
   const entityName = entityId
@@ -563,67 +569,51 @@ export default function CropInsuranceReport() {
     }
   }
 
-  async function onExportExcel() {
-    setExportErr(null)
-    setExporting('xlsx')
-    try {
-      await exportToExcel(buildPayload())
-    } catch (e) {
-      setExportErr((e as Error)?.message ?? 'Excel export failed.')
-    } finally {
-      setExporting(null)
-    }
-  }
-
-  async function onExportPdf() {
-    setExportErr(null)
-    setExporting('pdf')
-    try {
-      await exportToPdf(buildPayload())
-    } catch (e) {
-      setExportErr((e as Error)?.message ?? 'PDF export failed.')
-    } finally {
-      setExporting(null)
-    }
-  }
-
-  function onPrint() {
-    if (typeof window !== 'undefined') window.print()
-  }
-
   // Hold the report until the viewer scope/overrides resolve too, so a viewer
   // never sees a flash of unresolved numbers. Inert timing for owners.
   if (loading || viewer.loading || !viewerA.ready) return <p className="text-slate-500">Loading…</p>
 
+  // Exports go through the shared ExportBar; it appears only once the report
+  // can be generated (a year picked, no breakout gate, at least one sheet) —
+  // the same rule the old per-button disabled state enforced.
+  const canExport = cropYear !== '' && !isBlocked && detailSheets.length > 0
+  const filterSummary = filterSummaryOf(
+    cropYear === '' ? null : cropYearLabel(cropYear),
+    entityName || 'All Entities',
+    cropIds.length === 0 ? 'All Crops' : cropIds.map((id) => cropById.get(id)?.name ?? '').filter(Boolean).join(', '),
+  )
+
   return (
     <div className="space-y-4">
+      <ReportHeader
+        title="Crop Insurance Production Report"
+        filterSummary={filterSummary}
+        actions={canExport ? <ExportBar buildPayload={buildPayload} /> : undefined}
+      />
       {/* Filter strip — hidden when printing. */}
-      <div className="flex flex-wrap gap-3 items-end no-print">
-        <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Crop year *</span>
+      <ReportFilterBar activeCount={(entityId ? 1 : 0) + (cropIds.length > 0 ? 1 : 0)}>
+        <FilterField label="Crop year">
           <select
             value={cropYear}
             onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))}
-            className={inputCls}
+            className={selectCls}
           >
-            <option value="">— pick a crop year —</option>
-            {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
+            {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
-        </label>
+        </FilterField>
         {/* A viewer with a single grant has nothing to switch between (the
             EntityFilter component's <=1 hide rule); owners keep the select. */}
         {(!viewer.isViewer || entityOptions.length > 1) && (
-          <label className="text-sm flex flex-col gap-1">
-            <span className="text-slate-500">Entity (optional)</span>
-            <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
+          <FilterField label="Entity">
+            <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={selectCls}>
               <option value="">All entities</option>
               {entityOptions.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
             </select>
-          </label>
+          </FilterField>
         )}
         {cropFilterOptions.length > 0 && (
           <div className="text-sm flex flex-col gap-1">
-            <span className="text-slate-500">Crops (optional)</span>
+            <span className="text-slate-500">Crops</span>
             <div className="flex flex-wrap gap-1.5 items-center">
               {cropFilterOptions.map((c) => {
                 const on = cropIds.includes(c.id)
@@ -635,8 +625,8 @@ export default function CropInsuranceReport() {
                     onClick={() => setCropIds((prev) => (prev.includes(c.id) ? prev.filter((x) => x !== c.id) : [...prev, c.id]))}
                     className={
                       on
-                        ? 'rounded-full bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-xs font-semibold'
-                        : 'rounded-full bg-white border border-slate-300 text-slate-700 px-3 py-1.5 text-xs'
+                        ? 'rounded-full bg-brand hover:bg-brand-deep text-white px-3 min-h-10 text-xs font-semibold'
+                        : 'rounded-full bg-white border border-slate-300 text-slate-700 px-3 min-h-10 text-xs'
                     }
                   >
                     {c.name}
@@ -644,46 +634,24 @@ export default function CropInsuranceReport() {
                 )
               })}
               {cropIds.length > 0 && (
-                <button type="button" onClick={() => setCropIds([])} className="text-xs text-slate-500 underline px-1">
+                <button type="button" onClick={() => setCropIds([])} className="text-xs text-slate-500 underline px-2 min-h-10">
                   Clear
                 </button>
               )}
             </div>
           </div>
         )}
-        <div className="ml-auto flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={onExportExcel}
-            disabled={cropYear === '' || isBlocked || detailSheets.length === 0 || exporting != null}
-            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
-          >
-            {exporting === 'xlsx' ? 'Exporting…' : 'Export Excel'}
-          </button>
-          <button
-            type="button"
-            onClick={onExportPdf}
-            disabled={cropYear === '' || isBlocked || detailSheets.length === 0 || exporting != null}
-            className="rounded-lg bg-slate-700 text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
-          >
-            {exporting === 'pdf' ? 'Exporting…' : 'Export PDF'}
-          </button>
-          <button
-            type="button"
-            onClick={onPrint}
-            disabled={cropYear === '' || isBlocked || detailSheets.length === 0}
-            className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm disabled:opacity-50"
-          >
-            Print
-          </button>
-        </div>
-      </div>
+      </ReportFilterBar>
       <SupersededNotice show={viewerA.superseded} onDismiss={viewerA.dismissSuperseded} />
-      {exportErr && <p className="text-sm text-red-600 no-print">{exportErr}</p>}
 
-      {cropYear === '' && (
-        <p className="text-amber-700 text-sm">Pick a crop year to run the report.</p>
-      )}
+      <ConfirmDialog
+        open={countAsk != null}
+        title={`Count ${countAsk?.name ?? 'this field'} as finished?`}
+        body={<p>Its current bushels will be treated as the field&rsquo;s final yield. You can undo this from the field&rsquo;s detail on the Yields page.</p>}
+        confirmLabel="Count it"
+        onConfirm={() => { if (countAsk) countAnyway(countAsk.p) }}
+        onCancel={() => setCountAsk(null)}
+      />
 
       {/* Mixed-practice gate. */}
       {cropYear !== '' && mixedWithoutBreakout.length > 0 && !acceptedAsDryland && (
@@ -713,14 +681,14 @@ export default function CropInsuranceReport() {
           <div className="flex gap-2 flex-wrap">
             <Link
               href="/yields?breakout=1"
-              className="rounded-lg bg-sky-700 text-white px-3 py-2 text-sm font-semibold"
+              className="inline-flex items-center rounded-lg bg-slate-700 text-white px-3 min-h-10 text-sm font-semibold"
             >
               Enter breakouts on Yields →
             </Link>
             <button
               type="button"
               onClick={() => setAcceptedAsDryland(true)}
-              className="rounded-lg bg-amber-700 text-white px-3 py-2 text-sm font-semibold"
+              className="rounded-lg bg-amber-700 text-white px-3 min-h-10 text-sm font-semibold"
             >
               Generate as dryland
             </button>
@@ -754,9 +722,9 @@ export default function CropInsuranceReport() {
                     <button
                       type="button"
                       disabled={overrideSavingId === p.id}
-                      onClick={() => countAnyway(p)}
-                      className="ml-2 text-brand-deep underline disabled:opacity-50"
-                    >Count anyway</button>
+                      onClick={() => setCountAsk({ p, name: fld?.name_or_number ?? 'this field' })}
+                      className="ml-2 inline-flex items-center min-h-10 px-2 rounded-lg border border-slate-300 bg-white text-brand-deep text-xs font-semibold disabled:opacity-50"
+                    >{overrideSavingId === p.id ? 'Saving…' : 'Count anyway'}</button>
                   )}
                 </li>
               )
@@ -774,6 +742,7 @@ export default function CropInsuranceReport() {
           }
           linkHref="/settings/plantings"
           linkLabel="Add field plantings"
+          role={viewer.role}
         />
       )}
 
@@ -831,10 +800,12 @@ function TabButton({
     <button
       type="button"
       onClick={onClick}
+      role="tab"
+      aria-selected={active}
       className={
         active
-          ? 'px-3 py-2 text-sm font-semibold border-b-2 border-slate-900 -mb-px'
-          : 'px-3 py-2 text-sm text-slate-600 border-b-2 border-transparent hover:text-slate-900'
+          ? 'px-3 min-h-10 text-sm font-semibold border-b-2 border-brand text-brand-dark -mb-px'
+          : 'px-3 min-h-10 text-sm text-slate-600 border-b-2 border-transparent hover:text-slate-900'
       }
     >
       {children}
@@ -875,69 +846,75 @@ function SummaryTable({
     <table className="min-w-full text-sm border-collapse">
       <thead className={theadCls}>
         <tr>
-          <th rowSpan={2} className="border border-slate-300 bg-slate-100 px-2 py-1 text-left align-bottom">
+          <th rowSpan={2} className={`border border-slate-300 px-2 py-1 text-left align-bottom ${stickyColHeadCls}`}>
             County / Practice
           </th>
           <th colSpan={reportCrops.length} className="border border-slate-300 bg-slate-100 px-2 py-1 text-center">
             Certified Acres
           </th>
           <th colSpan={reportCrops.length} className="border border-slate-300 bg-slate-100 px-2 py-1 text-center">
-            Production (Bu. Or Lbs.)
+            Production
           </th>
           <th colSpan={reportCrops.length} className="border border-slate-300 bg-slate-100 px-2 py-1 text-center">
-            Yield/Acre (Bu. Or Lbs.)
+            Yield per Acre
           </th>
         </tr>
         <tr>
-          {[...reportCrops, ...reportCrops, ...reportCrops].map((c, i) => (
-            <th key={i} className="border border-slate-300 bg-slate-50 px-2 py-1 text-center">{c.name}</th>
+          {reportCrops.map((c) => (
+            <th key={`ha-${c.id}`} className="border border-slate-300 bg-slate-50 px-2 py-1 text-center">{c.name}</th>
+          ))}
+          {reportCrops.map((c) => (
+            <th key={`hb-${c.id}`} className="border border-slate-300 bg-slate-50 px-2 py-1 text-center">{c.name} <span className="font-normal text-slate-500">({unitOf(c)})</span></th>
+          ))}
+          {reportCrops.map((c) => (
+            <th key={`hy-${c.id}`} className="border border-slate-300 bg-slate-50 px-2 py-1 text-center">{c.name} <span className="font-normal text-slate-500">({unitOf(c)}/ac)</span></th>
           ))}
         </tr>
       </thead>
       <tbody>
         {summaryRows.map((row) => (
           <tr key={row.sheetName} className="border-t border-slate-100">
-            <td className="border border-slate-200 px-2 py-1 font-semibold">{row.sheetName}</td>
+            <td className={`border border-slate-200 px-2 py-1 font-semibold whitespace-nowrap ${stickyColCls}`}>{row.sheetName}</td>
             {reportCrops.map((c) => {
               const v = row.byCrop.get(c.id)
-              return <td key={`a-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono tabular-nums">
-                {v && v.acres > 0 ? fmt(v.acres) : ''}
+              return <td key={`a-${c.id}`} className="border border-slate-200 px-2 py-1 text-right tabular-nums">
+                {v && v.acres > 0 ? fmtNum(v.acres, 1) : ''}
               </td>
             })}
             {reportCrops.map((c) => {
               const v = row.byCrop.get(c.id)
-              return <td key={`b-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono tabular-nums">
-                {v && v.bu > 0 ? fmt(v.bu) : ''}
+              return <td key={`b-${c.id}`} className="border border-slate-200 px-2 py-1 text-right tabular-nums">
+                {v && v.bu > 0 ? fmtInt(v.bu) : ''}
               </td>
             })}
             {reportCrops.map((c) => {
               const v = row.byCrop.get(c.id)
               const yld = v && v.acres > 0 && v.bu > 0 ? v.bu / v.acres : null
-              return <td key={`y-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono tabular-nums">
-                {yld != null ? yld.toFixed(1) : ''}
+              return <td key={`y-${c.id}`} className="border border-slate-200 px-2 py-1 text-right tabular-nums">
+                {yld != null ? fmtNum(yld, 1) : ''}
               </td>
             })}
           </tr>
         ))}
         <tr className={`border-t-2 border-slate-400 ${grandTotalRowCls}`}>
-          <td className="border border-slate-300 px-2 py-1">Total</td>
+          <td className={`border border-slate-300 px-2 py-1 ${stickyColCls} bg-slate-100`}>Total</td>
           {reportCrops.map((c) => {
             const v = summaryTotals.get(c.id)
-            return <td key={`ta-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono tabular-nums">
-              {v && v.acres > 0 ? fmt(v.acres) : ''}
+            return <td key={`ta-${c.id}`} className="border border-slate-300 px-2 py-1 text-right tabular-nums">
+              {v && v.acres > 0 ? fmtNum(v.acres, 1) : ''}
             </td>
           })}
           {reportCrops.map((c) => {
             const v = summaryTotals.get(c.id)
-            return <td key={`tb-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono tabular-nums">
-              {v && v.bu > 0 ? fmt(v.bu) : ''}
+            return <td key={`tb-${c.id}`} className="border border-slate-300 px-2 py-1 text-right tabular-nums">
+              {v && v.bu > 0 ? fmtInt(v.bu) : ''}
             </td>
           })}
           {reportCrops.map((c) => {
             const v = summaryTotals.get(c.id)
             const yld = v && v.acres > 0 && v.bu > 0 ? v.bu / v.acres : null
-            return <td key={`ty-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono tabular-nums">
-              {yld != null ? yld.toFixed(1) : ''}
+            return <td key={`ty-${c.id}`} className="border border-slate-300 px-2 py-1 text-right tabular-nums">
+              {yld != null ? fmtNum(yld, 1) : ''}
             </td>
           })}
         </tr>
@@ -989,15 +966,21 @@ function DetailTable({ sheet, reportCrops }: { sheet: DetailSheet; reportCrops: 
             Certified {practice} Acres
           </th>
           <th colSpan={sheetCrops.length} className="border border-slate-300 bg-slate-100 px-2 py-1 text-center">
-            {practice} Production (Bu. Or Lbs.)
+            {practice} Production
           </th>
           <th colSpan={sheetCrops.length} className="border border-slate-300 bg-slate-100 px-2 py-1 text-center">
-            Yield/Acre (Bu. Or Lbs.)
+            Yield per Acre
           </th>
         </tr>
         <tr>
-          {[...sheetCrops, ...sheetCrops, ...sheetCrops].map((c, i) => (
-            <th key={i} className="border border-slate-300 bg-slate-50 px-2 py-1 text-center">{c.name}</th>
+          {sheetCrops.map((c) => (
+            <th key={`ha-${c.id}`} className="border border-slate-300 bg-slate-50 px-2 py-1 text-center">{c.name}</th>
+          ))}
+          {sheetCrops.map((c) => (
+            <th key={`hb-${c.id}`} className="border border-slate-300 bg-slate-50 px-2 py-1 text-center">{c.name} <span className="font-normal text-slate-500">({unitOf(c)})</span></th>
+          ))}
+          {sheetCrops.map((c) => (
+            <th key={`hy-${c.id}`} className="border border-slate-300 bg-slate-50 px-2 py-1 text-center">{c.name} <span className="font-normal text-slate-500">({unitOf(c)}/ac)</span></th>
           ))}
         </tr>
       </thead>
@@ -1005,24 +988,24 @@ function DetailTable({ sheet, reportCrops }: { sheet: DetailSheet; reportCrops: 
         {farmRows.map((farm) => (
           <tr key={farm.farmName + (farm.fsaNumber ?? '')} className="border-t border-slate-100">
             <td className="border border-slate-200 px-2 py-1 font-semibold">{farm.farmName}</td>
-            <td className="border border-slate-200 px-2 py-1 font-mono text-xs">{farm.fsaNumber ?? ''}</td>
+            <td className="border border-slate-200 px-2 py-1 text-xs tabular-nums">{farm.fsaNumber ?? ''}</td>
             {sheetCrops.map((c) => {
               const cell = farm.byCrop.get(c.id)
-              return <td key={`a-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono tabular-nums">
-                {cell && cell.acres > 0 ? fmt(cell.acres) : ''}
+              return <td key={`a-${c.id}`} className="border border-slate-200 px-2 py-1 text-right tabular-nums">
+                {cell && cell.acres > 0 ? fmtNum(cell.acres, 1) : ''}
               </td>
             })}
             {sheetCrops.map((c) => {
               const cell = farm.byCrop.get(c.id)
-              return <td key={`b-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono tabular-nums">
-                {cell && cell.bu > 0 ? fmt(cell.bu) : ''}
+              return <td key={`b-${c.id}`} className="border border-slate-200 px-2 py-1 text-right tabular-nums">
+                {cell && cell.bu > 0 ? fmtInt(cell.bu) : ''}
               </td>
             })}
             {sheetCrops.map((c) => {
               const cell = farm.byCrop.get(c.id)
               const yld = cell && cell.acres > 0 && cell.bu > 0 ? cell.bu / cell.acres : null
-              return <td key={`y-${c.id}`} className="border border-slate-200 px-2 py-1 text-right font-mono tabular-nums">
-                {yld != null ? yld.toFixed(1) : ''}
+              return <td key={`y-${c.id}`} className="border border-slate-200 px-2 py-1 text-right tabular-nums">
+                {yld != null ? fmtNum(yld, 1) : ''}
               </td>
             })}
           </tr>
@@ -1031,21 +1014,21 @@ function DetailTable({ sheet, reportCrops }: { sheet: DetailSheet; reportCrops: 
           <td colSpan={2} className="border border-slate-300 px-2 py-1">Total</td>
           {sheetCrops.map((c) => {
             const t = totalsByCrop.get(c.id)
-            return <td key={`ta-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono tabular-nums">
-              {t && t.acres > 0 ? fmt(t.acres) : ''}
+            return <td key={`ta-${c.id}`} className="border border-slate-300 px-2 py-1 text-right tabular-nums">
+              {t && t.acres > 0 ? fmtNum(t.acres, 1) : ''}
             </td>
           })}
           {sheetCrops.map((c) => {
             const t = totalsByCrop.get(c.id)
-            return <td key={`tb-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono tabular-nums">
-              {t && t.bu > 0 ? fmt(t.bu) : ''}
+            return <td key={`tb-${c.id}`} className="border border-slate-300 px-2 py-1 text-right tabular-nums">
+              {t && t.bu > 0 ? fmtInt(t.bu) : ''}
             </td>
           })}
           {sheetCrops.map((c) => {
             const t = totalsByCrop.get(c.id)
             const yld = t && t.acres > 0 && t.bu > 0 ? t.bu / t.acres : null
-            return <td key={`ty-${c.id}`} className="border border-slate-300 px-2 py-1 text-right font-mono tabular-nums">
-              {yld != null ? yld.toFixed(1) : ''}
+            return <td key={`ty-${c.id}`} className="border border-slate-300 px-2 py-1 text-right tabular-nums">
+              {yld != null ? fmtNum(yld, 1) : ''}
             </td>
           })}
         </tr>

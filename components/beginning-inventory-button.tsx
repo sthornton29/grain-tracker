@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { reportError } from '@/lib/friendly-error'
 import type { Crop } from '@/lib/types'
 
 type Props = { binId: string; binName: string; crops: Crop[]; defaultCropId: string | null }
@@ -50,7 +51,7 @@ export default function BeginningInventoryButton({ binId, binName, crops, defaul
       notes: notes.trim() || null,
     })
     setBusy(false)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'save the beginning inventory', noun: 'beginning inventory' })); return }
     setOpen(false)
     reset()
     router.refresh()
@@ -61,7 +62,7 @@ export default function BeginningInventoryButton({ binId, binName, crops, defaul
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="text-xs rounded-lg bg-white border border-slate-300 px-2 py-1 hover:bg-slate-50"
+        className="text-sm rounded-lg bg-white border border-slate-300 px-3 min-h-11 hover:bg-slate-50"
         title={`Add beginning inventory to bin ${binName}`}
       >
         + Beginning inventory
@@ -69,20 +70,20 @@ export default function BeginningInventoryButton({ binId, binName, crops, defaul
     )
   }
 
-  const inputCls = 'w-full rounded-lg border border-slate-300 px-2 py-1 text-sm'
+  const inputCls = 'mt-1 w-full rounded-lg border border-slate-300 px-3 min-h-11 text-base'
 
   return (
     <div className="w-full mt-2 rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
       <div className="text-sm font-semibold">Beginning inventory · Bin {binName}</div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <label className="text-xs text-slate-700">
+        <label className="text-sm text-slate-700">
           Crop
           <select value={cropId} onChange={(e) => setCropId(e.target.value)} className={inputCls}>
             <option value="">— select —</option>
             {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </label>
-        <label className="text-xs text-slate-700">
+        <label className="text-sm text-slate-700">
           Dry bushels
           <input
             type="number"
@@ -94,7 +95,7 @@ export default function BeginningInventoryButton({ binId, binName, crops, defaul
             className={inputCls}
           />
         </label>
-        <label className="text-xs text-slate-700">
+        <label className="text-sm text-slate-700">
           Moisture % <span className="text-slate-400">(optional)</span>
           <input
             type="number"
@@ -105,7 +106,7 @@ export default function BeginningInventoryButton({ binId, binName, crops, defaul
             className={inputCls}
           />
         </label>
-        <label className="text-xs text-slate-700">
+        <label className="text-sm text-slate-700">
           As-of date
           <input
             type="date"
@@ -115,7 +116,7 @@ export default function BeginningInventoryButton({ binId, binName, crops, defaul
           />
         </label>
       </div>
-      <label className="text-xs text-slate-700 block">
+      <label className="text-sm text-slate-700 block">
         Notes
         <input
           type="text"
@@ -125,20 +126,20 @@ export default function BeginningInventoryButton({ binId, binName, crops, defaul
           className={inputCls}
         />
       </label>
-      {err && <p className="text-xs text-red-600">{err}</p>}
+      {err && <p className="text-sm text-red-600">{err}</p>}
       <div className="flex gap-2">
         <button
           type="button"
           onClick={save}
           disabled={busy}
-          className="text-xs rounded-lg bg-brand hover:bg-brand-deep text-white font-semibold px-3 py-1 disabled:opacity-50"
+          className="text-sm rounded-lg bg-brand hover:bg-brand-deep text-white font-semibold px-4 min-h-11 disabled:opacity-50"
         >
           {busy ? 'Saving…' : 'Save'}
         </button>
         <button
           type="button"
           onClick={() => { setOpen(false); reset() }}
-          className="text-xs rounded-lg bg-white border border-slate-300 px-3 py-1"
+          className="text-sm rounded-lg bg-white border border-slate-300 px-4 min-h-11"
         >
           Cancel
         </button>

@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { reportError } from '@/lib/friendly-error'
 
 type StatusRow = { crop_id: string; physical_sales_complete: boolean }
 
@@ -53,7 +54,7 @@ export default function CropYearSalesStatus({ year: yearProp }: { year?: number 
           .select('crop_id, physical_sales_complete')
           .eq('crop_year', year),
       ])
-      if (plantingsRes.error) { setErr(plantingsRes.error.message); setLoading(false); return }
+      if (plantingsRes.error) { setErr(reportError(plantingsRes.error, { action: 'load the crops for this year', noun: 'planting' })); setLoading(false); return }
       // PostgREST types the embedded crops relation as object-or-array.
       type CropRef = { id: string; name: string }
       const byId = new Map<string, string>()
@@ -64,11 +65,7 @@ export default function CropYearSalesStatus({ year: yearProp }: { year?: number 
       setCrops([...byId.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name)))
       if (statusRes.error) {
         // 42P01 = the table doesn't exist yet.
-        setErr(
-          statusRes.error.code === '42P01'
-            ? 'This part of Turnrow isn’t set up yet — contact support.'
-            : statusRes.error.message,
-        )
+        setErr(reportError(statusRes.error, { action: 'load the sales-complete flags', noun: 'record' }))
         setFlags(new Map())
       } else {
         setFlags(new Map(((statusRes.data ?? []) as StatusRow[]).map((r) => [r.crop_id, r.physical_sales_complete])))
@@ -86,11 +83,7 @@ export default function CropYearSalesStatus({ year: yearProp }: { year?: number 
         { onConflict: 'crop_id,crop_year' },
       )
     if (error) {
-      setErr(
-        error.code === '42P01'
-          ? 'This part of Turnrow isn’t set up yet — contact support.'
-          : error.message,
-      )
+      setErr(reportError(error, { action: 'save that change', noun: 'record' }))
       setFlags((m) => new Map(m).set(cropId, !complete))
     }
   }

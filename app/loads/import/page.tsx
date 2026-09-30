@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { parseCsv } from '@/lib/csv'
+import { reportError } from '@/lib/friendly-error'
 import type { Bin, Buyer, Contract, Crop, Field, Truck } from '@/lib/types'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
 
@@ -154,7 +155,7 @@ export default function LoadsImportPage() {
       setHeaders(parsed.headers)
       setRows(parsed.rows)
     } catch (e: any) {
-      setErr(e?.message ?? 'Failed to read file')
+      setErr(reportError(e, { action: 'read that file' }))
     }
   }
 
@@ -335,7 +336,7 @@ export default function LoadsImportPage() {
           if (e2 && user?.id && e2.message.includes('created_by')) {
             ;({ error: e2 } = await supabase.from('loads').insert(payload))
           }
-          if (e2) failed.push({ rowIdx, reason: e2.message })
+          if (e2) failed.push({ rowIdx, reason: reportError(e2, { action: 'save this row', noun: 'load' }) })
           else ok++
         }
       } else {
@@ -365,14 +366,14 @@ export default function LoadsImportPage() {
   return (
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold flex-1">Import Loads from CSV</h1>
-        <Link href="/loads" className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Back to loads</Link>
+        <h1 className="text-2xl font-bold flex-1">Import loads from a spreadsheet</h1>
+        <Link href="/loads" className="inline-flex items-center rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm">Back to loads</Link>
       </div>
 
       <div className="bg-white rounded-xl shadow p-4 space-y-3">
         <div className="flex flex-wrap gap-2 items-center">
-          <button type="button" onClick={downloadTemplate} className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2">
-            Download CSV template
+          <button type="button" onClick={downloadTemplate} className="text-sm rounded-lg bg-white border border-slate-300 px-3 min-h-11">
+            Download the template
           </button>
           <Dropzone
             onFiles={(files) => void readCsv(files[0])}
@@ -383,14 +384,14 @@ export default function LoadsImportPage() {
             accepts="CSV (use the template)"
             className="inline-block"
           >
-            <label className="text-sm rounded-lg bg-slate-700 text-white px-3 py-2 cursor-pointer inline-block">
-              Upload CSV
+            <label className="text-sm rounded-lg bg-slate-700 text-white px-3 min-h-11 cursor-pointer inline-flex items-center">
+              Upload spreadsheet (CSV)
               <input type="file" accept=".csv,text/csv,text/plain" onChange={onFile} className="hidden" />
             </label>
           </Dropzone>
           {fileName && <span className="text-xs text-slate-500">{fileName} · {rows.length} row{rows.length === 1 ? '' : 's'}</span>}
-          <button type="button" onClick={reset} className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2 ml-auto">
-            Reset
+          <button type="button" onClick={reset} className="text-sm rounded-lg bg-white border border-slate-300 px-3 min-h-11 ml-auto">
+            Start over
           </button>
         </div>
 
@@ -451,15 +452,15 @@ export default function LoadsImportPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
-            <label className="text-sm flex items-center gap-2">
-              <input type="checkbox" checked={skipDupes} onChange={(e) => setSkipDupes(e.target.checked)} />
+            <label className="text-sm flex items-center gap-2 min-h-11">
+              <input type="checkbox" className="h-5 w-5" checked={skipDupes} onChange={(e) => setSkipDupes(e.target.checked)} />
               Skip duplicates by ticket number
             </label>
             <button
               type="button"
               onClick={doImport}
               disabled={busy || totals.ok === 0}
-              className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50"
+              className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold disabled:opacity-50"
             >
               {busy ? 'Importing…' : `Import ${totals.ok} load${totals.ok === 1 ? '' : 's'}`}
             </button>
@@ -467,7 +468,7 @@ export default function LoadsImportPage() {
               <button
                 type="button"
                 onClick={() => router.push('/loads')}
-                className="rounded-lg bg-white border border-slate-300 px-4 py-2 text-sm"
+                className="rounded-lg bg-white border border-slate-300 px-4 min-h-11 text-sm"
               >
                 View loads
               </button>

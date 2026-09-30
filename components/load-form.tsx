@@ -12,6 +12,11 @@ import { rememberHarvestEntryPath } from '@/lib/harvest-entry-path'
 import { relinkSettlementLinesForLoad } from '@/lib/settlement-link'
 import { getOrgId } from '@/lib/org'
 import { externalTruckInsert, truckLabelForSave } from '@/lib/trucks'
+import { reportError } from '@/lib/friendly-error'
+import { fmtDate, fmtDateShort } from '@/lib/format-date'
+import { checkLoad } from '@/lib/load-checks'
+import { compressImage } from '@/lib/image-capture'
+import { uploadFileToStorage } from '@/lib/pdf-upload'
 import {
   LAST_LOAD_DEFAULTS_SELECT,
   applyLastLoadDefaults,
@@ -24,6 +29,7 @@ import {
 import { contractDeliveredTotals, contractProgress } from '@/lib/contract-progress'
 import { HaulerTruckField, TruckPicker, findExternalTruck } from '@/components/truck-picker'
 import { FieldPicker } from '@/components/field-picker'
+import { ConfirmDialog, NoticeDialog } from '@/components/app-dialog'
 import { lowTareWarning, truckTareKey, truckTareStats, type TareHistoryLoad } from '@/lib/truck-tare'
 import { fetchTruckTareHistory } from '@/lib/truck-tare-fetch'
 import type { Bin, Buyer, Contract, Crop, ExternalTruck, Farm, Field, FieldPlanting, Load, LoadSplit, Truck } from '@/lib/types'
@@ -63,6 +69,13 @@ type FormState = {
   practice: PracticeChoice
 }
 
+/** A ticket photo waiting for the load to save (create mode). */
+type PendingPhoto = { id: string; file: File; previewUrl: string }
+
+/** How long a save may hang on a weak signal before the form gives the
+ *  buttons back and says so. The typing is kept either way. */
+const SAVE_TIMEOUT_MS = 15_000
+
 function todayISO() {
   const d = new Date()
   const tz = d.getTimezoneOffset() * 60000
@@ -71,6 +84,42 @@ function todayISO() {
 function nowHHMM() {
   const d = new Date()
   return d.toTimeString().slice(0, 5)
+}
+
+/** A client-side load id so a retried save is idempotent: if the first
+ *  attempt landed but the reply was lost, the retry hits the primary key and
+ *  we treat that as success instead of writing the load twice. */
+function newLoadId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  // Older iPad Safari: RFC 4122 v4 from getRandomValues / Math.random.
+  const bytes = new Uint8Array(16)
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') crypto.getRandomValues(bytes)
+  else for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256)
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+}
+
+/** True when a duplicate-key error is on the loads PRIMARY KEY — the retry
+ *  case above. Any other unique violation is a real rejection. */
+function isDuplicateLoadId(err: { code?: string | null; message?: string | null; details?: string | null } | null): boolean {
+  if (!err) return false
+  const text = `${err.message ?? ''} ${err.details ?? ''}`
+  return (err.code === '23505' || /duplicate key/i.test(text)) && /loads_pkey|\(id\)/.test(text)
+}
+
+/** Run a Supabase call with a timeout: the builder is thenable, so awaiting
+ *  it inside works; the signal aborts the fetch and the client returns an
+ *  AbortError result (never throws) that reads as a connection error. */
+async function withSaveTimeout<T>(run: (signal: AbortSignal) => PromiseLike<T>): Promise<T> {
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), SAVE_TIMEOUT_MS)
+  try {
+    return await run(ctrl.signal)
+  } finally {
+    clearTimeout(t)
+  }
 }
 
 function toForm(initial?: Partial<Load>): FormState {
@@ -105,15 +154,27 @@ function num(s: string): number | null {
   return Number.isFinite(n) ? n : null
 }
 
+/** On-screen bushels: whole numbers, commas. */
 function fmt(n: number | null): string {
   if (n == null) return '—'
-  return n.toLocaleString(undefined, { maximumFractionDigits: 2 })
+  return n.toLocaleString(undefined, { maximumFractionDigits: 0 })
+}
+
+/** The JPEG the camera tray compressed, as a File for the attachments bucket. */
+function jpegFile(base64: string, name: string): File {
+  const bin = atob(base64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return new File([bytes], name, { type: 'image/jpeg' })
 }
 
 export default function LoadForm({ initial, initialSplits, mode }: Props) {
   const router = useRouter()
   const supabase = useMemo(() => createClient(), [])
   const [form, setForm] = useState<FormState>(toForm(initial))
+  // The form as it was seeded (initial values + last-load defaults) — the
+  // unsaved-changes guard compares against this, never against "blank".
+  const seedRef = useRef<string>(JSON.stringify(toForm(initial)))
   const [splitMode, setSplitMode] = useState<boolean>(() => (initialSplits?.length ?? 0) > 0)
   const [splitEntryMode, setSplitEntryMode] = useState<'weight' | 'percentage'>('weight')
   const [splits, setSplits] = useState<SplitRow[]>(() =>
@@ -124,6 +185,10 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
           practice: (s.practice as PracticeChoice) ?? '',
         }))
       : [],
+  )
+  const initialSplitsKey = useMemo(
+    () => JSON.stringify((initialSplits ?? []).map((s) => [s.field_id, String(s.net_weight), s.practice ?? ''])),
+    [initialSplits],
   )
   // Tracks whether the user has manually typed into the last split row. When
   // false, the last row auto-fills as (total net − sum of earlier rows). On
@@ -153,9 +218,41 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   const [tareRefresh, setTareRefresh] = useState(0)
   useEffect(() => {
     if (!justSaved) return
-    const t = setTimeout(() => setJustSaved(null), 5000)
+    const t = setTimeout(() => setJustSaved(null), 6000)
     return () => clearTimeout(t)
   }, [justSaved])
+  // Client-side id for the NEXT insert (see newLoadId). Regenerated after
+  // every successful Save & New so the next load never reuses it.
+  const [draftId, setDraftId] = useState<string>(() => newLoadId())
+  // Plausibility warnings waiting on "Save anyway" / "Go back".
+  const [pendingWarnings, setPendingWarnings] = useState<string[] | null>(null)
+  // Cancel with unsaved typing.
+  const [leaveAsk, setLeaveAsk] = useState(false)
+  // Net is computed from gross − tare; a small "edit" affordance unlocks it.
+  const [netEditable, setNetEditable] = useState(false)
+  // The dry-bushels override lives behind a disclosure — rarely needed.
+  const [showOverride, setShowOverride] = useState(() => (initial?.dry_bushels_override ?? null) != null)
+  // Ticket photos captured before the load exists (create mode): uploaded
+  // right after the insert returns the id, using the load_attachments shape
+  // from components/load-attachments.tsx.
+  const [photos, setPhotos] = useState<PendingPhoto[]>([])
+  const [photoBusy, setPhotoBusy] = useState(false)
+  const [photoErr, setPhotoErr] = useState<string | null>(null)
+  const [isCoarse, setIsCoarse] = useState(false)
+  const cameraRef = useRef<HTMLInputElement>(null)
+  const libraryRef = useRef<HTMLInputElement>(null)
+  const [notice, setNotice] = useState<{ title: string; body: string } | null>(null)
+  // Bumped after Save & New so focus lands on the (cleared) Truck select.
+  const [focusTruckKey, setFocusTruckKey] = useState(0)
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return
+    setIsCoarse(window.matchMedia('(pointer: coarse)').matches)
+  }, [])
+  useEffect(() => {
+    if (focusTruckKey === 0) return
+    const el = document.getElementById('load-truck')
+    el?.focus({ preventScroll: true })
+  }, [focusTruckKey])
   // Last-load date default (create mode): which date the seam applied, and
   // whether the user touched the date before the default could land.
   const [defaultedDate, setDefaultedDate] = useState<string | null>(null)
@@ -223,8 +320,13 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       setTrucks((t.data as Truck[]) || [])
       setExternalTrucks((xt.data as ExternalTruck[]) || [])
       setCrops((c.data as Crop[]) || [])
-      setFields((f.data as Field[]) || [])
-      setFarms((fa.data as Farm[]) || [])
+      // Archived land (Settings → Archive, or retired over the Turnrow Farm
+      // link) stays on old loads but leaves the pickers for new ones. The
+      // column is absent on a pre-087 database, which reads as "not archived".
+      const live = <T extends { archived_at?: string | null }>(rows: T[] | null | undefined): T[] =>
+        (rows || []).filter((r) => r.archived_at == null)
+      setFields(live(f.data as Field[]))
+      setFarms(live(fa.data as Farm[]))
       setBins((b.data as Bin[]) || [])
       setBuyers((by.data as Buyer[]) || [])
       setContracts((ct.data as Contract[]) || [])
@@ -271,7 +373,13 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       if (!recent) return
       const dateUntouched = !dateTouchedRef.current
       if (dateUntouched && recent.date) setDefaultedDate(recent.date)
-      setForm((f) => applyLastLoadDefaults(f, recent, { dateUntouched }).form)
+      setForm((f) => {
+        const untouched = JSON.stringify(f) === seedRef.current
+        const next = applyLastLoadDefaults(f, recent, { dateUntouched }).form
+        // Pre-fills are the seed, not the user's typing.
+        if (untouched) seedRef.current = JSON.stringify(next)
+        return next
+      })
     })()
   }, [refsLoaded, mode, supabase])
 
@@ -285,6 +393,8 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.gross_weight, form.tare_weight])
+  const netIsAuto = num(form.gross_weight) != null && num(form.tare_weight) != null
+  const netLocked = netIsAuto && !netEditable
 
   const selectedCrop = crops.find((c) => c.id === form.crop_id)
   const { wetBushels, dryBushels, computedDryBushels, overridden } = computeBushels({
@@ -413,10 +523,29 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       if (next.from_field_id && !filteredFields.some((x) => x.id === next.from_field_id)) next.from_field_id = ''
       if (next.from_bin_id && !filteredBins.some((x) => x.id === next.from_bin_id)) next.from_bin_id = ''
       if (next.to_bin_id && !filteredBins.some((x) => x.id === next.to_bin_id)) next.to_bin_id = ''
+      // A seeded selection dropped by the filter is still "untouched".
+      if (JSON.stringify(f) === seedRef.current) seedRef.current = JSON.stringify(next)
       return next
     })
   }, [refsLoaded, filteredFields, filteredBins])
 
+  // Unsaved-changes guard: the form differs from its seed, or split rows have
+  // been typed into. Off while saving and once the save has gone through.
+  const splitsKey = JSON.stringify(splits.map((s) => [s.field_id, s.weight, s.practice]))
+  const dirty = !busy && (
+    JSON.stringify(form) !== seedRef.current ||
+    (splitMode ? splitsKey !== initialSplitsKey && splits.some((s) => s.field_id || s.weight) : (initialSplits?.length ?? 0) > 0) ||
+    photos.length > 0
+  )
+  useEffect(() => {
+    if (!dirty) return
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [dirty])
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }))
@@ -562,7 +691,60 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   const splitTotalPct = totalNetLb > 0 ? (splitTotalLb / totalNetLb) * 100 : 0
   const splitError = splitMode ? validateSplitDrafts(splitsResolved, totalNetLb) : null
 
-  async function onSubmit(e: React.FormEvent) {
+  // ---- ticket photo tray (create mode) ----
+  async function addPhotos(files: File[]) {
+    if (files.length === 0) return
+    setPhotoErr(null)
+    setPhotoBusy(true)
+    try {
+      const next: PendingPhoto[] = []
+      for (const file of files) {
+        if (file.type === 'application/pdf') {
+          next.push({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, file, previewUrl: '' })
+          continue
+        }
+        // Same compression as the scan flow — a phone photo lands well under 1 MB.
+        const img = await compressImage(file)
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+        next.push({ id: img.id, file: jpegFile(img.base64, `ticket-${stamp}.jpg`), previewUrl: img.dataUrl })
+      }
+      setPhotos((prev) => [...prev, ...next])
+    } catch (e) {
+      setPhotoErr(reportError(e as Error, { action: 'read that photo' }))
+    } finally {
+      setPhotoBusy(false)
+    }
+  }
+  function onPhotoPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files ? Array.from(e.target.files) : []
+    e.target.value = ''
+    void addPhotos(files)
+  }
+  /** Upload the tray to the saved load. Returns how many failed. */
+  async function uploadPhotos(loadId: string): Promise<number> {
+    let failed = 0
+    for (const p of photos) {
+      try {
+        const { publicUrl, path } = await uploadFileToStorage(supabase, p.file, 'load-attachments')
+        const { error } = await supabase.from('load_attachments').insert({
+          load_id: loadId,
+          file_url: publicUrl,
+          file_path: path,
+          file_name: p.file.name,
+          mime_type: p.file.type || null,
+          file_size: p.file.size,
+        })
+        if (error) throw error
+      } catch (e) {
+        failed++
+        reportError(e as Error, { action: 'attach the ticket photo' })
+      }
+    }
+    return failed
+  }
+
+  // ---- submit: pre-flight, then the save proper ----
+  function onSubmit(e: React.FormEvent) {
     e.preventDefault()
     // Synchronous guard against double-submit (iPad double-tap, double-click,
     // Enter+tap). React's `busy` state only disables the button on the next
@@ -582,9 +764,40 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       }
     }
 
+    // Plausibility (lib/load-checks): a negative net blocks; everything else
+    // asks "Save anyway / Go back" in the app's own dialog.
+    const checks = checkLoad({
+      gross: num(form.gross_weight),
+      tare: num(form.tare_weight),
+      net: num(form.net_weight),
+      moisture: num(form.moisture),
+      testWeight: num(form.test_weight),
+      truckPicked: !!form.truck_id || (isPickup && form.hauler_truck.trim() !== ''),
+      crop: selectedCrop ?? null,
+    })
+    if (checks.blockers.length > 0) {
+      setError(checks.blockers.join(' '))
+      return
+    }
+    if (checks.warnings.length > 0) {
+      setPendingWarnings(checks.warnings)
+      return
+    }
+    void doSave()
+  }
+
+  function failSave(message: string) {
+    submittingRef.current = false
+    setBusy(false)
+    setError(message)
+  }
+
+  async function doSave() {
+    if (submittingRef.current) return
     submittingRef.current = true
     setBusy(true)
     setError(null)
+    const useSplits = splitMode && form.from_type === 'field'
 
     const payload = {
       date: form.date,
@@ -643,38 +856,47 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         .from('external_trucks')
         .insert(externalTruckInsert(form.hauler_truck, selectedContract?.buyer_id ?? null, orgId))
       if (xtErr) {
-        submittingRef.current = false
-        setBusy(false)
-        setError(`Couldn’t save the hauler truck for future loads: ${xtErr.message}. The load was not saved — try again, or untick “Save this truck”.`)
+        failSave(`${reportError(xtErr, { action: 'save the hauler truck', noun: 'hauler truck', name: form.hauler_truck.trim() })} The load was not saved — try again, or untick “Save this truck”.`)
         return
       }
     }
 
     let savedLoadId: string | null = null
-    let err: { message: string } | null = null
-    if (mode === 'create') {
-      // Stamp who entered it (073 — powers the per-user last-load defaults).
-      // If created_by isn't applied yet the insert retries without it, so a
-      // late migration apply degrades to org-level defaults, never a failure.
-      const { data: { user } } = await supabase.auth.getUser()
-      let res = user?.id
-        ? await supabase.from('loads').insert({ ...payload, created_by: user.id }).select('id').single()
-        : await supabase.from('loads').insert(payload).select('id').single()
-      if (res.error && user?.id && res.error.message.includes('created_by')) {
-        res = await supabase.from('loads').insert(payload).select('id').single()
+    let err: { code?: string | null; message: string; details?: string | null } | null = null
+    try {
+      if (mode === 'create') {
+        // Stamp who entered it (073 — powers the per-user last-load defaults).
+        // If created_by isn't applied yet the insert retries without it, so a
+        // late migration apply degrades to org-level defaults, never a failure.
+        // The id is ours (draftId): a retry after a lost reply can't double up.
+        const { data: { user } } = await supabase.auth.getUser()
+        const row = { ...payload, id: draftId }
+        const insertOnce = (r: typeof row | (typeof row & { created_by: string })) =>
+          withSaveTimeout((signal) => supabase.from('loads').insert(r).select('id').abortSignal(signal).single())
+        let res = user?.id ? await insertOnce({ ...row, created_by: user.id }) : await insertOnce(row)
+        if (res.error && user?.id && res.error.message.includes('created_by')) {
+          res = await insertOnce(row)
+        }
+        if (res.error && isDuplicateLoadId(res.error)) {
+          // The first attempt landed; the reply was lost. That IS the save.
+          savedLoadId = draftId
+        } else {
+          err = res.error
+          savedLoadId = (res.data as { id: string } | null)?.id ?? null
+        }
+      } else if (initial?.id) {
+        const editId = initial.id
+        const res = await withSaveTimeout((signal) => supabase.from('loads').update(payload).eq('id', editId).abortSignal(signal))
+        err = res.error
+        savedLoadId = editId
       }
-      err = res.error
-      savedLoadId = (res.data as { id: string } | null)?.id ?? null
-    } else if (initial?.id) {
-      const res = await supabase.from('loads').update(payload).eq('id', initial.id)
-      err = res.error
-      savedLoadId = initial.id
+    } catch (e) {
+      err = { message: (e as Error)?.message ?? 'Failed to fetch' }
     }
 
     if (err) {
-      submittingRef.current = false
-      setBusy(false)
-      setError(err.message)
+      // Connection trouble keeps the typing and gives both buttons back.
+      failSave(reportError(err, { action: 'save this load', noun: 'load' }))
       return
     }
 
@@ -689,9 +911,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
           .delete()
           .eq('load_id', savedLoadId)
         if (delErr) {
-          submittingRef.current = false
-          setBusy(false)
-          setError(`Saved load but couldn’t update splits: ${delErr.message}`)
+          failSave(`The load saved, but its field split didn't. ${reportError(delErr, { action: 'update the field split', noun: 'split' })}`)
           return
         }
       }
@@ -708,9 +928,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         const rows = allocated.map((a) => ({ ...a, load_id: savedLoadId }))
         const { error: insErr } = await supabase.from('load_splits').insert(rows)
         if (insErr) {
-          submittingRef.current = false
-          setBusy(false)
-          setError(`Saved load but couldn’t save splits: ${insErr.message}`)
+          failSave(`The load saved, but its field split didn't. ${reportError(insErr, { action: 'save the field split', noun: 'split' })}`)
           return
         }
       }
@@ -733,15 +951,31 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       }
     }
 
+    // Ticket photos: the load exists now, so attach them. A failed upload
+    // never un-saves the load — say so and point at the load's page.
+    let photoFailures = 0
+    if (savedLoadId && photos.length > 0) {
+      photoFailures = await uploadPhotos(savedLoadId)
+      setPhotos([])
+    }
+
     rememberHarvestEntryPath('load')
 
     // "Save & New" — stay on the form for the next load of the session.
     if (mode === 'create' && saveAndNewRef.current) {
       saveAndNewRef.current = false
       startNextLoad(payload.ticket_number)
+      if (photoFailures > 0) {
+        setNotice({
+          title: 'Load saved — photo not attached',
+          body: `The load saved, but ${photoFailures === 1 ? 'the ticket photo' : `${photoFailures} ticket photos`} didn't upload. Open the load from the Loads page and attach it there.`,
+        })
+      }
       return
     }
 
+    // Saved and leaving: the guard must not fire on the way out.
+    seedRef.current = JSON.stringify(form)
     // Leave submittingRef = true; we're navigating away. Resetting it here
     // would briefly re-enable the button before the route change commits.
     router.push('/loads')
@@ -756,12 +990,17 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   // (saveAndNewPatch): consecutive harvest loads rotate between trucks, so an
   // inherited truck silently writes wrong-truck records.
   function startNextLoad(ticket: string | null) {
-    setForm((f) => ({ ...f, ...saveAndNewPatch(nowHHMM()) }))
+    const next = { ...form, ...saveAndNewPatch(nowHHMM()) }
+    setForm(next)
+    seedRef.current = JSON.stringify(next)
     // Splits describe the load just saved, not the next one.
     setSplitMode(false)
     setSplits([])
     setLastSplitManual(false)
     setSaveHaulerTruck(false)
+    setNetEditable(false)
+    setShowOverride(false)
+    setDraftId(newLoadId())
     setJustSaved(ticket ? `Saved — ticket ${ticket}` : 'Load saved')
     setTareRefresh((n) => n + 1) // the saved tare joins the truck's baseline
     setContractRefresh((n) => n + 1) // the tracker recounts WITH the saved load
@@ -769,13 +1008,24 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     setBusy(false)
     setError(null)
     if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
+    // The truck was cleared on purpose — it's the next thing to fill.
+    setFocusTruckKey((n) => n + 1)
   }
 
-  const inputCls = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 text-base bg-white'
+  function onCancel() {
+    if (dirty) { setLeaveAsk(true); return }
+    router.back()
+  }
+
+  const inputCls = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 min-h-11 text-base bg-white'
+  const weightCls = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 min-h-12 text-base bg-white tabular-nums'
   const labelCls = 'block text-sm text-slate-700'
+  const quietBtn = 'rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm'
+  const toggleCls = (active: boolean) =>
+    `flex-1 min-h-11 rounded-lg border ${active ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white'}`
 
   return (
-    <form onSubmit={onSubmit} className="space-y-5">
+    <form onSubmit={onSubmit} className="space-y-5 pb-4">
       <h1 className="text-2xl font-bold">{mode === 'create' ? 'New Load' : 'Edit Load'}</h1>
 
       <div className="grid grid-cols-2 gap-3">
@@ -801,12 +1051,14 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         </label>
       </div>
 
+      {/* Truck and ticket number first — they're the first things on the paper ticket. */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className={labelCls}>
           Truck
           {isPickup ? (
             <div className="mt-1">
               <HaulerTruckField
+                id="load-truck"
                 haulerTruck={form.hauler_truck}
                 truckId={form.truck_id}
                 onChangeHauler={(v) => set('hauler_truck', v)}
@@ -818,11 +1070,12 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                 onExternalUpdated={(t) =>
                   setExternalTrucks((xs) => xs.map((x) => (x.id === t.id ? t : x)).sort((a, b) => a.name.localeCompare(b.name)))
                 }
-                className="w-full rounded-lg border border-slate-300 px-3 py-3 text-base bg-white"
+                className="w-full rounded-lg border border-slate-300 px-3 py-3 min-h-11 text-base bg-white"
               />
             </div>
           ) : (
             <TruckPicker
+              id="load-truck"
               value={form.truck_id}
               onChange={(id) => set('truck_id', id)}
               trucks={trucks}
@@ -837,25 +1090,38 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
           )}
         </label>
         <label className={labelCls}>
+          Ticket #
+          <input
+            type="text"
+            inputMode="text"
+            autoComplete="off"
+            value={form.ticket_number}
+            onChange={(e) => set('ticket_number', e.target.value)}
+            className={inputCls}
+          />
+        </label>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <label className={labelCls}>
           Crop
           <select value={form.crop_id} onChange={(e) => set('crop_id', e.target.value)} className={inputCls}>
             <option value="">— select —</option>
             {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </label>
+        <label className={labelCls}>
+          Crop year
+          <select
+            value={form.crop_year}
+            onChange={(e) => setForm((f) => ({ ...f, crop_year: e.target.value, contract_id: '' }))}
+            className={inputCls}
+          >
+            <option value="">— select —</option>
+            {seasonYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </label>
       </div>
-
-      <label className={labelCls}>
-        Crop year <span className="text-xs text-slate-400">from set-up seasons</span>
-        <select
-          value={form.crop_year}
-          onChange={(e) => setForm((f) => ({ ...f, crop_year: e.target.value, contract_id: '' }))}
-          className={inputCls}
-        >
-          <option value="">— select —</option>
-          {seasonYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
-        </select>
-      </label>
 
       <fieldset className="border border-slate-200 rounded-xl p-3 space-y-3">
         <legend className="px-2 text-sm font-semibold">From</legend>
@@ -865,9 +1131,8 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
               key={t}
               type="button"
               onClick={() => applyTypeChange({ from_type: t })}
-              className={`flex-1 py-2 rounded-lg border ${
-                form.from_type === t ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white'
-              }`}
+              aria-pressed={form.from_type === t}
+              className={toggleCls(form.from_type === t)}
             >
               {t === 'field' ? 'Field' : 'Bin'}
             </button>
@@ -898,9 +1163,8 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                       key={p}
                       type="button"
                       onClick={() => set('practice', form.practice === p ? '' : p)}
-                      className={`flex-1 py-2 rounded-lg border text-sm ${
-                        form.practice === p ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white'
-                      }`}
+                      aria-pressed={form.practice === p}
+                      className={`${toggleCls(form.practice === p)} text-sm`}
                     >
                       {p === 'irrigated' ? 'Irrigated' : 'Dryland'}
                     </button>
@@ -911,7 +1175,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
             <button
               type="button"
               onClick={() => setSplitMode(true)}
-              className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2 w-full sm:w-auto"
+              className={`${quietBtn} w-full sm:w-auto`}
             >
               Split load across multiple fields
             </button>
@@ -929,7 +1193,8 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                     key={m}
                     type="button"
                     onClick={() => setSplitEntryMode(m)}
-                    className={`px-3 py-2 text-sm ${splitEntryMode === m ? 'bg-brand hover:bg-brand-deep text-white' : 'bg-white'}`}
+                    aria-pressed={splitEntryMode === m}
+                    className={`px-3 min-h-11 text-sm ${splitEntryMode === m ? 'bg-brand hover:bg-brand-deep text-white' : 'bg-white'}`}
                   >
                     {m === 'weight' ? 'By weight' : 'By percentage'}
                   </button>
@@ -938,7 +1203,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
               <button
                 type="button"
                 onClick={() => setSplitMode(false)}
-                className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2"
+                className={quietBtn}
               >
                 Use single field
               </button>
@@ -965,15 +1230,15 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                         onChange={(id) => setSplitField(i, id)}
                         fields={filteredFields}
                         farms={farms}
-                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-base bg-white"
+                        className="w-full rounded-lg border border-slate-300 px-3 py-2 min-h-11 text-base bg-white"
                       />
                     </div>
                     {splits.length > 2 && (
                       <button
                         type="button"
                         onClick={() => removeSplit(i)}
-                        className="text-red-600 text-sm px-2"
-                        aria-label="Remove split"
+                        className="text-red-600 text-base min-h-11 min-w-11 px-2 rounded-lg"
+                        aria-label={`Remove field ${i + 1} from the split`}
                       >
                         ✕
                       </button>
@@ -989,7 +1254,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                           step="0.01"
                           value={weightVal}
                           onChange={(e) => setSplitWeight(i, e.target.value)}
-                          className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-base bg-white"
+                          className="flex-1 rounded-lg border border-slate-300 px-3 py-2 min-h-11 text-base bg-white tabular-nums"
                           placeholder={isAutoFilled ? 'auto' : ''}
                         />
                         <span className="text-xs text-slate-500 w-20 text-right">
@@ -1005,17 +1270,17 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                           step="0.01"
                           value={pctVal}
                           onChange={(e) => setSplitPct(i, e.target.value)}
-                          className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-base bg-white"
+                          className="flex-1 rounded-lg border border-slate-300 px-3 py-2 min-h-11 text-base bg-white tabular-nums"
                           disabled={totalNetLb <= 0}
                         />
-                        <span className="text-xs text-slate-500 w-24 text-right font-mono">
-                          {weightVal ? `${Number(weightVal).toLocaleString()} lb` : ''}
+                        <span className="text-xs text-slate-500 w-24 text-right tabular-nums">
+                          {weightVal ? `${Number(weightVal).toLocaleString(undefined, { maximumFractionDigits: 0 })} lb` : ''}
                         </span>
                       </>
                     )}
                   </div>
                   {isAutoFilled && (
-                    <p className="text-[11px] text-slate-500">Auto-filled from remainder — type a value to override.</p>
+                    <p className="text-xs text-slate-500">Filled in from what’s left — type a value to change it.</p>
                   )}
                   {isMixedField(row.field_id) && (
                     <div className="flex items-center gap-2">
@@ -1026,15 +1291,14 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                             key={p}
                             type="button"
                             onClick={() => setSplitPractice(i, row.practice === p ? '' : p)}
-                            className={`flex-1 py-1.5 rounded-lg border text-sm ${
-                              row.practice === p ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white'
-                            }`}
+                            aria-pressed={row.practice === p}
+                            className={`${toggleCls(row.practice === p)} text-sm`}
                           >
                             {p === 'irrigated' ? 'Irrigated' : 'Dryland'}
                           </button>
                         ))}
                       </div>
-                      <span className="text-[11px] text-slate-400 w-14 text-right">optional</span>
+                      <span className="text-xs text-slate-400 w-14 text-right">optional</span>
                     </div>
                   )}
                 </div>
@@ -1044,13 +1308,13 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
             <button
               type="button"
               onClick={addSplit}
-              className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2"
+              className={quietBtn}
             >
               + Add another field
             </button>
 
             <div className={`rounded-lg p-2 text-sm ${splitError ? 'bg-red-50 text-red-700' : 'bg-slate-100 text-slate-700'}`}>
-              <div className="flex justify-between font-mono">
+              <div className="flex justify-between tabular-nums">
                 <span>Total:</span>
                 <span>
                   {splitTotalLb.toLocaleString(undefined, { maximumFractionDigits: 0 })} / {totalNetLb.toLocaleString(undefined, { maximumFractionDigits: 0 })} lb
@@ -1064,7 +1328,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         )}
         {form.from_type === 'bin' && (
           <>
-            <select value={form.from_bin_id} onChange={(e) => set('from_bin_id', e.target.value)} className={inputCls}>
+            <select value={form.from_bin_id} onChange={(e) => set('from_bin_id', e.target.value)} className={inputCls} aria-label="From bin">
               <option value="">— select bin —</option>
               {filteredBins.map((b) => <option key={b.id} value={b.id}>{b.name_or_number}</option>)}
             </select>
@@ -1085,9 +1349,8 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
               key={t}
               type="button"
               onClick={() => applyTypeChange({ to_type: t })}
-              className={`flex-1 py-2 rounded-lg border ${
-                form.to_type === t ? 'bg-brand hover:bg-brand-deep text-white border-green-700' : 'bg-white'
-              }`}
+              aria-pressed={form.to_type === t}
+              className={toggleCls(form.to_type === t)}
             >
               {t === 'bin' ? 'Bin' : 'Buyer'}
             </button>
@@ -1095,7 +1358,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         </div>
         {form.to_type === 'bin' && (
           <>
-            <select value={form.to_bin_id} onChange={(e) => set('to_bin_id', e.target.value)} className={inputCls}>
+            <select value={form.to_bin_id} onChange={(e) => set('to_bin_id', e.target.value)} className={inputCls} aria-label="To bin">
               <option value="">— select bin —</option>
               {filteredBins.map((b) => <option key={b.id} value={b.id}>{b.name_or_number}</option>)}
             </select>
@@ -1108,12 +1371,12 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         )}
         {form.to_type === 'buyer' && (
           <>
-            <select value={form.to_buyer_id} onChange={(e) => { set('to_buyer_id', e.target.value); set('contract_id', '') }} className={inputCls}>
+            <select value={form.to_buyer_id} onChange={(e) => { set('to_buyer_id', e.target.value); set('contract_id', '') }} className={inputCls} aria-label="Buyer">
               <option value="">— select buyer —</option>
               {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
             <label className={labelCls}>
-              Contract (filtered to buyer + crop + crop year)
+              Contract
               <select
                 value={form.contract_id}
                 onChange={(e) => set('contract_id', e.target.value)}
@@ -1129,6 +1392,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                   </option>
                 ))}
               </select>
+              <span className="mt-1 block text-xs text-slate-500">Showing this buyer’s contracts for this crop and year.</span>
             </label>
 
             {selectedContract && (
@@ -1137,7 +1401,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                   <span className="font-semibold text-slate-700">
                     #{selectedContract.contract_number} · {buyerName(selectedContract.buyer_id)}
                   </span>
-                  <span className="font-mono text-slate-600">{contractTotal.toLocaleString()} bu contracted</span>
+                  <span className="tabular-nums text-slate-600">{contractTotal.toLocaleString()} bu contracted</span>
                 </div>
                 <div className="h-3 w-full rounded-full bg-slate-200 overflow-hidden flex">
                   <div className="bg-green-600 h-full" style={{ width: `${pctDelivered}%` }} title="Delivered" />
@@ -1145,7 +1409,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                 </div>
                 <div className="flex justify-between flex-wrap gap-x-4 gap-y-1 text-xs">
                   <span className="text-slate-600">
-                    Delivered <span className="font-mono font-semibold text-slate-800">{Math.round(deliveredBu).toLocaleString()}</span> bu
+                    Delivered <span className="tabular-nums font-semibold text-slate-800">{Math.round(deliveredBu).toLocaleString()}</span> bu
                     {contractDelivered && <span className="text-slate-400"> · {contractDelivered.count} load{contractDelivered.count === 1 ? '' : 's'}</span>}
                     {contractProgressLoading && <span className="text-slate-400"> · updating…</span>}
                   </span>
@@ -1154,8 +1418,8 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                   )}
                   <span className={remainingBu < 0 ? 'text-amber-700 font-semibold' : 'text-slate-600'}>
                     {remainingBu >= 0
-                      ? <>Remaining <span className="font-mono font-semibold">{Math.round(remainingBu).toLocaleString()}</span> bu</>
-                      : <>Over by <span className="font-mono font-semibold">{Math.round(-remainingBu).toLocaleString()}</span> bu</>}
+                      ? <>Remaining <span className="tabular-nums font-semibold">{Math.round(remainingBu).toLocaleString()}</span> bu</>
+                      : <>Over by <span className="tabular-nums font-semibold">{Math.round(-remainingBu).toLocaleString()}</span> bu</>}
                   </span>
                 </div>
               </div>
@@ -1167,159 +1431,263 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       <div className="grid grid-cols-2 gap-3">
         <label className={labelCls}>
           Gross (lb)
-          <input type="number" inputMode="decimal" step="0.01" value={form.gross_weight} onChange={(e) => set('gross_weight', e.target.value)} className={inputCls} />
+          <input type="number" inputMode="decimal" step="0.01" value={form.gross_weight} onChange={(e) => set('gross_weight', e.target.value)} className={weightCls} />
         </label>
-        <label className={labelCls}>
-          <span className="flex items-baseline justify-between gap-2">
-            <span>Tare (lb)</span>
-            {lastTareOffer && (
-              <button
-                type="button"
-                onClick={() => set('tare_weight', String(lastTareOffer.tare))}
-                title={lastTareOffer.date ? `From this truck's last load on ${new Date(lastTareOffer.date + 'T00:00:00').toLocaleDateString()}` : "From this truck's last load"}
-                className="shrink-0 rounded-lg border border-brand/60 bg-white px-2.5 py-1.5 text-xs font-semibold text-brand-deep hover:bg-brand/10 active:bg-brand/20 whitespace-nowrap"
-              >
-                Use last tare: {Math.round(lastTareOffer.tare).toLocaleString()}
-              </button>
-            )}
-          </span>
-          <input
-            type="number"
-            inputMode="decimal"
-            step="0.01"
-            value={form.tare_weight}
-            onChange={(e) => set('tare_weight', e.target.value)}
-            aria-describedby={tareWarning ? 'tare-warning' : undefined}
-            className={`${inputCls} ${tareWarning ? 'border-amber-400 bg-amber-50' : ''}`}
-          />
+        <div>
+          <label className={labelCls}>
+            Tare (lb)
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              value={form.tare_weight}
+              onChange={(e) => set('tare_weight', e.target.value)}
+              aria-describedby={tareWarning ? 'tare-warning' : undefined}
+              className={`${weightCls} ${tareWarning ? 'border-amber-400 bg-amber-50' : ''}`}
+            />
+          </label>
           {tareWarning && (
             <span id="tare-warning" role="status" className="mt-1 block text-xs font-normal text-amber-800">
               {tareWarning}
             </span>
           )}
-        </label>
-        <label className={labelCls}>
-          Net (lb) <span className="text-xs text-slate-400">auto</span>
-          <input type="number" inputMode="decimal" step="0.01" value={form.net_weight} onChange={(e) => set('net_weight', e.target.value)} className={inputCls} />
-        </label>
+          {lastTareOffer && (
+            <button
+              type="button"
+              onClick={() => set('tare_weight', String(lastTareOffer.tare))}
+              title={lastTareOffer.date ? `From this truck's last load on ${fmtDate(lastTareOffer.date)}` : "From this truck's last load"}
+              className="mt-2 w-full rounded-lg border border-brand/60 bg-white px-3 min-h-11 text-sm font-semibold text-brand-deep hover:bg-brand/10 active:bg-brand/20"
+            >
+              Use last tare: {Math.round(lastTareOffer.tare).toLocaleString()}
+              {lastTareOffer.date && <span className="font-normal text-slate-500"> · {fmtDateShort(lastTareOffer.date)}</span>}
+            </button>
+          )}
+        </div>
+        <div>
+          <label className={labelCls}>
+            <span className="flex items-baseline justify-between gap-2">
+              <span>Net (lb) {netIsAuto && <span className="text-xs text-slate-400">gross − tare</span>}</span>
+              {netLocked && (
+                <button
+                  type="button"
+                  onClick={() => setNetEditable(true)}
+                  className="text-xs font-semibold text-brand-deep min-h-8 px-1"
+                >
+                  edit
+                </button>
+              )}
+            </span>
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              value={form.net_weight}
+              onChange={(e) => set('net_weight', e.target.value)}
+              readOnly={netLocked}
+              tabIndex={netLocked ? -1 : undefined}
+              aria-readonly={netLocked || undefined}
+              className={`${weightCls} ${netLocked ? 'bg-slate-50 text-slate-700' : ''}`}
+            />
+          </label>
+        </div>
         <label className={labelCls}>
           Moisture %
-          <input type="number" inputMode="decimal" step="0.01" value={form.moisture} onChange={(e) => set('moisture', e.target.value)} className={inputCls} />
+          <input type="number" inputMode="decimal" step="0.01" value={form.moisture} onChange={(e) => set('moisture', e.target.value)} className={weightCls} />
         </label>
         <label className={labelCls}>
-          Test Weight
-          <input type="number" inputMode="decimal" step="0.01" value={form.test_weight} onChange={(e) => set('test_weight', e.target.value)} className={inputCls} />
+          Test weight
+          <input type="number" inputMode="decimal" step="0.01" value={form.test_weight} onChange={(e) => set('test_weight', e.target.value)} className={weightCls} />
         </label>
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 space-y-3">
         <div className="text-sm font-semibold text-slate-700">
-          Bushels {selectedCrop ? `— base ${selectedCrop.base_moisture_pct ?? '?'}% MC, ${selectedCrop.base_lb_per_bushel ?? '?'} lb/bu` : ''}
+          Bushels {selectedCrop ? `— base ${selectedCrop.base_moisture_pct ?? '?'}% moisture, ${selectedCrop.base_lb_per_bushel ?? '?'} lb/bu` : ''}
         </div>
         <div className="grid grid-cols-3 gap-3 text-sm">
           <div>
             <div className="text-xs text-slate-500">Wet</div>
-            <div className="font-mono text-lg">{fmt(wetBushels)}</div>
+            <div className="tabular-nums text-lg">{fmt(wetBushels)}</div>
           </div>
           <div>
-            <div className="text-xs text-slate-500">Dry (auto)</div>
-            <div className="font-mono text-lg">{fmt(computedDryBushels)}</div>
+            <div className="text-xs text-slate-500">Dry</div>
+            <div className="tabular-nums text-lg">{fmt(computedDryBushels)}</div>
           </div>
           <div>
             <div className="text-xs text-slate-500">Shrink</div>
-            <div className="font-mono text-lg">{fmt(shrinkBu)}</div>
+            <div className="tabular-nums text-lg">{fmt(shrinkBu)}</div>
           </div>
-        </div>
-
-        <div className="flex items-end gap-2 flex-wrap">
-          <label className="text-sm text-slate-700 flex-1 min-w-[10rem]">
-            Dry bushels override <span className="text-xs text-slate-400">optional</span>
-            <input
-              type="number"
-              inputMode="decimal"
-              step="0.01"
-              value={form.dry_bushels_override}
-              onChange={(e) => set('dry_bushels_override', e.target.value)}
-              placeholder={computedDryBushels != null ? fmt(computedDryBushels) : ''}
-              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-3 text-base bg-white"
-            />
-          </label>
-          {form.dry_bushels_override !== '' && (
-            <button
-              type="button"
-              onClick={() => set('dry_bushels_override', '')}
-              className="rounded-lg bg-white border border-slate-300 px-3 py-3 text-sm"
-            >
-              Clear
-            </button>
-          )}
         </div>
 
         <div className="text-sm">
           <span className="text-slate-500">Used for reports: </span>
-          <span className="font-mono font-semibold">{fmt(dryBushels)} bu</span>
-          {overridden && <span className="text-amber-700 text-xs ml-2">(manual override)</span>}
+          <span className="tabular-nums font-semibold">{fmt(dryBushels)} bu</span>
+          {overridden && <span className="text-amber-700 text-xs ml-2">(entered by hand)</span>}
         </div>
+
+        {!showOverride ? (
+          <button
+            type="button"
+            onClick={() => setShowOverride(true)}
+            className="text-sm text-brand-deep font-semibold min-h-11 px-1"
+          >
+            Override dry bushels…
+          </button>
+        ) : (
+          <div className="flex items-end gap-2 flex-wrap">
+            <label className="text-sm text-slate-700 flex-1 min-w-[10rem]">
+              Dry bushels (by hand) <span className="text-xs text-slate-400">optional</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                step="0.01"
+                value={form.dry_bushels_override}
+                onChange={(e) => set('dry_bushels_override', e.target.value)}
+                placeholder={computedDryBushels != null ? fmt(computedDryBushels) : ''}
+                className={weightCls}
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => { set('dry_bushels_override', ''); setShowOverride(false) }}
+              className={quietBtn}
+            >
+              {form.dry_bushels_override !== '' ? 'Clear' : 'Hide'}
+            </button>
+          </div>
+        )}
 
         {selectedCrop && selectedCrop.base_lb_per_bushel == null && (
           <p className="text-xs text-amber-700">
-            This crop has no base lb/bushel set — auto calc unavailable; enter a dry bushels override.
+            This crop has no pounds per bushel set, so bushels can’t be worked out — enter the dry bushels by hand, or set it under Settings → Crops.
           </p>
         )}
       </div>
 
-      <label className={labelCls}>
-        Ticket #
-        <input type="text" value={form.ticket_number} onChange={(e) => set('ticket_number', e.target.value)} className={inputCls} />
-      </label>
-
-      {error && <p className="text-sm text-red-600">{error}</p>}
-      {justSaved && (
-        <p aria-live="polite" className="rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-sm font-medium text-green-800">
-          {justSaved} — ready for the next one.
-        </p>
+      {mode === 'create' && (
+        <div className="rounded-xl border border-slate-200 p-3 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold text-slate-700 flex-1">Ticket photo <span className="font-normal text-slate-400">optional</span></span>
+            {isCoarse && (
+              <button type="button" onClick={() => cameraRef.current?.click()} disabled={photoBusy || busy} className={`${quietBtn} font-semibold disabled:opacity-50`}>
+                {photoBusy ? 'Adding…' : '📷 Take ticket photo'}
+              </button>
+            )}
+            <button type="button" onClick={() => libraryRef.current?.click()} disabled={photoBusy || busy} className={`${quietBtn} disabled:opacity-50`}>
+              {isCoarse ? 'Choose photo' : photoBusy ? 'Adding…' : 'Add ticket photo'}
+            </button>
+          </div>
+          {photos.length === 0 ? (
+            <p className="text-xs text-slate-500">Snap the scale ticket now and it’s attached to the load when you save.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {photos.map((p, i) => (
+                <div key={p.id} className="relative">
+                  {p.previewUrl ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={p.previewUrl} alt={`Ticket photo ${i + 1}`} className="h-20 w-20 object-cover rounded border border-slate-300" />
+                  ) : (
+                    <div className="h-20 w-20 rounded border border-slate-300 bg-white flex items-center justify-center text-xs font-semibold text-slate-500">PDF</div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setPhotos((list) => list.filter((x) => x.id !== p.id))}
+                    disabled={busy}
+                    aria-label={`Remove ticket photo ${i + 1}`}
+                    className="absolute -top-2 -right-2 h-7 w-7 rounded-full bg-red-600 text-white text-xs leading-none"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {photoErr && <p className="text-sm text-red-600">{photoErr}</p>}
+          <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={onPhotoPick} className="hidden" />
+          <input ref={libraryRef} type="file" accept="image/*,application/pdf" multiple onChange={onPhotoPick} className="hidden" />
+        </div>
       )}
 
-      <div className="flex gap-3 sticky bottom-3">
-        {mode === 'create' ? (
-          <>
-            {/* The harvest-entry workhorse: save, then a fresh form seeded
-                from this load — so it leads, full-primary. Both save buttons
-                share the row equally (flex-1). */}
-            <button
-              type="submit"
-              disabled={busy}
-              onClick={() => { saveAndNewRef.current = true }}
-              className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-4 shadow disabled:opacity-60"
-            >
-              {busy ? 'Saving…' : 'Save & New'}
-            </button>
-            <button
-              type="submit"
-              disabled={busy}
-              onClick={() => { saveAndNewRef.current = false }}
-              className="flex-1 rounded-xl bg-white border-2 border-brand text-brand-deep font-semibold py-4 disabled:opacity-60"
-            >
-              Save
-            </button>
-          </>
-        ) : (
-          <button
-            type="submit"
-            disabled={busy}
-            className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-4 shadow disabled:opacity-60"
-          >
-            {busy ? 'Saving…' : 'Update Load'}
-          </button>
+      {/* Sticky save bar — always visible, with the save confirmation and any
+          error inside it so they can't scroll out of sight. iOS safe area. */}
+      <div className="sticky bottom-0 -mx-4 px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-white/95 backdrop-blur border-t border-slate-200 space-y-2 no-print">
+        {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
+        {justSaved && (
+          <p aria-live="polite" className="rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-sm font-medium text-green-800">
+            {justSaved} — ready for the next one.
+          </p>
         )}
-        <button
-          type="button"
-          onClick={() => router.back()}
-          className="rounded-xl bg-white border border-slate-300 px-4 py-4"
-        >
-          Cancel
-        </button>
+        <div className="flex gap-3">
+          {mode === 'create' ? (
+            <>
+              {/* The harvest-entry workhorse: save, then a fresh form seeded
+                  from this load — so it leads, full-primary. Both save buttons
+                  share the row equally (flex-1). */}
+              <button
+                type="submit"
+                disabled={busy}
+                onClick={() => { saveAndNewRef.current = true }}
+                className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold min-h-12 py-3 shadow disabled:opacity-60"
+              >
+                {busy ? 'Saving…' : 'Save & New'}
+              </button>
+              <button
+                type="submit"
+                disabled={busy}
+                onClick={() => { saveAndNewRef.current = false }}
+                className="flex-1 rounded-xl bg-white border-2 border-brand text-brand-deep font-semibold min-h-12 py-3 disabled:opacity-60"
+              >
+                Save
+              </button>
+            </>
+          ) : (
+            <button
+              type="submit"
+              disabled={busy}
+              className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold min-h-12 py-3 shadow disabled:opacity-60"
+            >
+              {busy ? 'Saving…' : 'Update Load'}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-xl bg-white border border-slate-300 px-4 min-h-12"
+          >
+            Cancel
+          </button>
+        </div>
       </div>
+
+      <ConfirmDialog
+        open={pendingWarnings != null}
+        title="Check this load"
+        body={
+          <ul className="list-disc pl-5 space-y-1">
+            {(pendingWarnings ?? []).map((w) => <li key={w}>{w}</li>)}
+          </ul>
+        }
+        confirmLabel="Save anyway"
+        cancelLabel="Go back"
+        onConfirm={() => { setPendingWarnings(null); void doSave() }}
+        onCancel={() => setPendingWarnings(null)}
+      />
+      <ConfirmDialog
+        open={leaveAsk}
+        title="Leave without saving this load?"
+        body="What you’ve typed on this load will be lost."
+        confirmLabel="Leave"
+        cancelLabel="Keep editing"
+        danger
+        onConfirm={() => { setLeaveAsk(false); seedRef.current = JSON.stringify(form); router.back() }}
+        onCancel={() => setLeaveAsk(false)}
+      />
+      <NoticeDialog
+        open={notice != null}
+        title={notice?.title ?? ''}
+        body={notice?.body}
+        onClose={() => setNotice(null)}
+      />
     </form>
   )
 }

@@ -1,7 +1,7 @@
 {
   "name": "Turnrow",
   "short_name": "Turnrow",
-  "description": "Turnrow — farm operations for Turnrow Farm",
+  "description": "Turnrow — farm operations",
   "start_url": "/",
   "display": "standalone",
   "orientation": "portrait",

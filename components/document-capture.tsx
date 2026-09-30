@@ -125,7 +125,7 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
     onSource({ kind: 'images', images: captured })
   }
 
-  const btnBase = 'rounded-lg px-3 py-2 text-sm font-semibold disabled:opacity-50'
+  const btnBase = 'rounded-lg px-3 min-h-11 text-sm font-semibold disabled:opacity-50'
   const primary = `${btnBase} bg-brand hover:bg-brand-deep text-white`
   const secondary = `${btnBase} bg-white border border-slate-300 text-slate-700`
 
@@ -217,7 +217,7 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
             >
               {compressing ? 'Adding…' : '+ Add Another Photo'}
             </button>
-            <button type="button" onClick={() => setImages([])} disabled={disabled} className="text-sm text-slate-500">
+            <button type="button" onClick={() => setImages([])} disabled={disabled} className="text-sm text-slate-500 min-h-11 px-2">
               Clear
             </button>
           </div>

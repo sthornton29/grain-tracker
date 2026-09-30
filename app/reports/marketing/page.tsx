@@ -28,7 +28,10 @@ import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/
 import { useViewerAssumptions } from '@/lib/use-viewer-assumptions'
 import { resolveCropAssumptions, OVERRIDABLE_CROP_FIELDS, type OverridableCropField } from '@/lib/viewer-assumptions'
 import { ScenarioChip, SupersededNotice } from '@/components/viewer-scenario'
-import { StackedBar } from '@/components/reports/report-kit'
+import { StackedBar, InfoTip, ReportHeader, ReportFilterBar, FilterField, selectCls, fmtUsd, fmtNum, toneText, signedTone, filterSummaryOf, cropYearLabel } from '@/components/reports/report-kit'
+import { AppModal, ConfirmDialog } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
+import { useReportCropYear } from '@/lib/report-filters'
 import ExportBar from '@/components/export-bar'
 import { type ExportPayload } from '@/lib/exports'
 import type { Contract, Crop, CropAssumption, Entity, FuturesPosition, OptionPosition, GinReceipt, CottonBale } from '@/lib/types'
@@ -63,8 +66,6 @@ type PlantingRow = {
 const bu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
 // Cotton price display: ¢/lb-stored, shown as $/lb (72.65 → $0.7265).
 const cents2 = (n: number | null | undefined) => formatCottonPrice(n)
-const usd = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`)
-const usd0 = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}`)
 const round2 = (n: number) => Math.round(n * 100) / 100
 // Per-bushel price, always to 2 decimals on this dashboard (vs the app-wide
 // fmtPrice which keeps quarter-cent / 4-decimal precision for hedging).
@@ -156,9 +157,12 @@ function scenarioFor(row: MarketingRow, wfFut: number | null, wfBasis: number, a
 export default function MarketingPage() {
   const supabase = useMemo(() => createClient(), [])
   const [yearOptions, setYearOptions] = useState<number[]>([])
-  // Crop year persists, so returning to the dashboard doesn't ask again — it
-  // reopens on the last year the user picked.
-  const [year, setYear] = usePersistentState<number | null>('marketing:cropYear', null)
+  // Crop year: the current year by default, persisted so returning to the
+  // dashboard reopens on the last year the user picked — never blank
+  // (lib/report-filters). The option list always contains the current year.
+  const [yearValue, setYearValue] = useReportCropYear('marketing:cropYear')
+  const year: number | null = typeof yearValue === 'number' ? yearValue : null
+  const setYear = useCallback((v: number | null) => { if (v != null) setYearValue(v) }, [setYearValue])
   const [loading, setLoading] = useState(false)
 
   const [crops, setCrops] = useState<Crop[]>([])
@@ -449,9 +453,11 @@ export default function MarketingPage() {
   const canEditYields = roleCanEditYields(viewer.role)
   const [countingId, setCountingId] = useState<string | null>(null)
   const [countErr, setCountErr] = useState<string | null>(null)
-  async function countAnyway(p: PlantingRow, fieldName: string) {
+  // The "count anyway" confirmation (an app dialog, not window.confirm).
+  const [countAsk, setCountAsk] = useState<{ p: PlantingRow; fieldName: string } | null>(null)
+  async function countAnyway(p: PlantingRow) {
     if (year == null) return
-    if (!confirm(`Count ${fieldName} as finished? Its current bushels will be treated as the field's final yield. You can undo this from the field's detail on the Yields page.`)) return
+    setCountAsk(null)
     setCountErr(null)
     setCountingId(p.id)
     const { error } = await supabase
@@ -460,8 +466,9 @@ export default function MarketingPage() {
       .eq('id', p.id)
     if (!error) await load(year)
     setCountingId(null)
-    if (error) setCountErr(error.message)
+    if (error) setCountErr(reportError(error, { action: 'count this field as finished' }))
   }
+  const closeAssumptions = useCallback(() => setAssumptionsOpen(false), [])
 
   // Cotton actual production: lbs of lint from the entity's gin receipts —
   // per-bale net weights when the bales are on file, else the receipt total.
@@ -660,9 +667,11 @@ export default function MarketingPage() {
       updated_at: new Date().toISOString(),
     }
     const { error } = await supabase.from('crop_assumptions').upsert(row, { onConflict: 'crop_id,crop_year' })
-    if (error) { setBanner(`Could not save assumptions: ${error.message}`); return }
+    if (error) { setBanner(reportError(error, { action: 'save the assumptions' })); return }
     load(year)
   }
+
+  const filterSummary = filterSummaryOf(year != null ? cropYearLabel(year) : null, entityName ?? 'All Entities')
 
   function toggleRow(id: string) {
     setExpanded((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))
@@ -670,58 +679,56 @@ export default function MarketingPage() {
 
   return (
     <div className="space-y-4">
-      {/* Slim top bar: title + the two combined metrics + crop-year filter +
-          Assumptions. Everything else is per crop, in the sections below. */}
-      <div className="flex items-end gap-3 flex-wrap">
-        <div className="flex-1 flex items-baseline gap-x-6 gap-y-1 flex-wrap">
-          <h1 className="text-2xl font-bold">
-            Marketing
-            {entityName && <span className="ml-2 text-base font-semibold text-slate-500">— {entityName}</span>}
-          </h1>
-          {year != null && !loading && rows.length > 0 && (
-            <div className="flex items-baseline gap-x-6 gap-y-1 text-sm flex-wrap">
-              <div>
-                <span className="text-slate-500">Total acres</span>{' '}
-                <span className="font-bold tabular-nums">{bu(combined.acres)}</span>
-              </div>
-              <div>
-                <span className="text-slate-500">Total projected profit</span>{' '}
-                <span className={`font-bold tabular-nums ${combined.profit == null ? 'text-slate-400' : combined.profit >= 0 ? 'text-green-700' : 'text-red-700'}`}>
-                  {combined.profit != null ? usd0(combined.profit) : 'Set costs'}
+      {/* Header: title + plain-English filter line; actions on the right.
+          Everything else is per crop, in the sections below. */}
+      <ReportHeader
+        title="Marketing Dashboard"
+        filterSummary={filterSummary}
+        actions={year != null && !loading ? (
+          <div className="flex flex-wrap gap-2 items-center">
+            <button
+              type="button"
+              onClick={() => setAssumptionsOpen(true)}
+              className={`relative inline-flex items-center gap-1.5 rounded-lg px-3 min-h-10 text-sm font-semibold text-white shadow-sm ${incompleteCount > 0 ? 'bg-amber-500 hover:bg-amber-600' : 'bg-slate-700 hover:bg-slate-800'}`}
+            >
+              <span aria-hidden>⚙</span> Edit Assumptions
+              {incompleteCount > 0 && (
+                <span className="rounded-full bg-white/25 text-white text-xs px-1.5 py-0.5 leading-none">
+                  {incompleteCount} missing
                 </span>
-              </div>
-            </div>
-          )}
-        </div>
-        <label className="text-sm text-slate-700">
-          Crop year
+              )}
+            </button>
+            {rows.length > 0 && <ExportBar buildPayload={buildPayload} />}
+          </div>
+        ) : undefined}
+      />
+      <ReportFilterBar activeCount={entityId ? 1 : 0}>
+        <FilterField label="Crop year">
           <select
             value={year ?? ''}
             onChange={(e) => setYear(e.target.value === '' ? null : Number(e.target.value))}
-            className="mt-1 block rounded-lg border border-slate-300 px-3 py-2 bg-white"
+            className={selectCls}
           >
-            <option value="">— pick a crop year —</option>
+            {year != null && !yearOptions.includes(year) && <option value={year}>{year}</option>}
             {yearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
-        </label>
-        <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} className="no-print" />
-        {year != null && !loading && (
-          <button
-            type="button"
-            onClick={() => setAssumptionsOpen(true)}
-            className={`relative inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold mb-px text-white shadow-sm ${incompleteCount > 0 ? 'bg-amber-500 hover:bg-amber-600' : 'bg-sky-700 hover:bg-sky-800'}`}
-            title="Edit yield and cost assumptions for each crop"
-          >
-            <span aria-hidden>⚙</span> Edit Assumptions
-            {incompleteCount > 0 && (
-              <span className="rounded-full bg-white/25 text-white text-xs px-1.5 py-0.5 leading-none">
-                {incompleteCount} missing
-              </span>
-            )}
-          </button>
-        )}
-        {year != null && !loading && rows.length > 0 && <ExportBar buildPayload={buildPayload} className="mb-px" />}
-      </div>
+        </FilterField>
+        <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} />
+      </ReportFilterBar>
+      {year != null && !loading && rows.length > 0 && (
+        <div className="flex items-baseline gap-x-6 gap-y-1 text-sm flex-wrap">
+          <div>
+            <span className="text-slate-500">Total acres</span>{' '}
+            <span className="font-bold tabular-nums">{fmtNum(combined.acres, 1)}</span>
+          </div>
+          <div>
+            <span className="text-slate-500">Total projected profit</span>{' '}
+            <span className={`font-bold tabular-nums ${toneText(signedTone(combined.profit))}`}>
+              {combined.profit != null ? fmtUsd(combined.profit) : 'Set costs'}
+            </span>
+          </div>
+        </div>
+      )}
 
       {banner && <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">{banner}</div>}
       <SupersededNotice show={viewerA.superseded} onDismiss={viewerA.dismissSuperseded} />
@@ -748,9 +755,9 @@ export default function MarketingPage() {
                         <button
                           type="button"
                           disabled={countingId === p.id}
-                          onClick={() => countAnyway(p, fieldName)}
-                          className="ml-1.5 text-brand-deep underline disabled:opacity-50"
-                        >Count anyway</button>
+                          onClick={() => setCountAsk({ p, fieldName })}
+                          className="ml-1.5 inline-flex items-center min-h-10 px-2 rounded-lg border border-amber-300 bg-white text-brand-deep text-xs font-semibold disabled:opacity-50"
+                        >{countingId === p.id ? 'Saving…' : 'Count anyway'}</button>
                       )}
                     </span>
                   )
@@ -761,10 +768,17 @@ export default function MarketingPage() {
         </div>
       )}
 
+      <ConfirmDialog
+        open={countAsk != null}
+        title={`Count ${countAsk?.fieldName ?? 'this field'} as finished?`}
+        body={<p>Its current bushels will be treated as the field&rsquo;s final yield. You can undo this from the field&rsquo;s detail on the Yields page.</p>}
+        confirmLabel="Count it"
+        onConfirm={() => { if (countAsk) countAnyway(countAsk.p) }}
+        onCancel={() => setCountAsk(null)}
+      />
+
       {year == null ? (
-        <div className="bg-white rounded-xl shadow p-8 text-center text-slate-500">
-          Pick a crop year to load the marketing dashboard.
-        </div>
+        <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">Loading…</div>
       ) : loading || viewer.loading || !viewerA.ready ? (
         <div className="bg-white rounded-xl shadow p-6 text-center text-slate-400">Loading…</div>
       ) : rows.length === 0 ? (
@@ -846,12 +860,12 @@ export default function MarketingPage() {
         </div>
       )}
 
-      {/* Assumptions slide-over */}
+      {/* Assumptions dialog */}
       {assumptionsOpen && year != null && (
         <AssumptionsPanel
           crops={panelCrops} year={year} assumptions={effAssumptions}
           segByCrop={segByCrop} plantedCropIds={plantedCropIdsAll} actualByCrop={actualByCrop}
-          onSave={saveAssumption} onClose={() => setAssumptionsOpen(false)}
+          onSave={saveAssumption} onClose={closeAssumptions}
           viewerMode={viewer.isViewer}
           scenarioCrops={new Set(
             Array.from(assumptionRes.appliedKeys)
@@ -902,7 +916,7 @@ function CropSection({
   wfScenario?: { onReset: () => void }
 }) {
   const prod = row.totalProduction
-  const profitTone = row.totalProfit == null ? 'text-slate-400' : row.totalProfit >= 0 ? 'text-green-700' : 'text-red-700'
+  const profitTone = toneText(row.totalProfit == null ? 'muted' : row.totalProfit >= 0 ? 'favorable' : 'unfavorable')
   const be = breakevenOf(row)
 
   // --- What-if pricing. Both the futures price and the basis are STANDING
@@ -933,7 +947,7 @@ function CropSection({
   const headlineRevenueAc = scenario ? scenario.revenuePerAcre : row.revenuePerAcre
   const headlineProfitAc = scenario ? scenario.profitPerAcre : row.profitPerAcre
   const headlineTotalProfit = scenario ? scenario.totalProfit : row.totalProfit
-  const headlineProfitTone = headlineTotalProfit == null ? 'text-slate-400' : headlineTotalProfit >= 0 ? 'text-green-700' : 'text-red-700'
+  const headlineProfitTone = toneText(headlineTotalProfit == null ? 'muted' : headlineTotalProfit >= 0 ? 'favorable' : 'unfavorable')
   // Breakeven yield = cost/acre ÷ the SAME large "Total avg price" shown in the
   // headline (the effective price over all production, reflecting any assumptions),
   // not the futures+basis buildup price — so cost ÷ that price stays consistent
@@ -965,29 +979,39 @@ function CropSection({
       })
       const json = await res.json().catch(() => null)
       const p = json?.prices?.[0]
-      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(refContract.symbol); setWfStale(!!p.stale); setWfQuote(quoteFromWire(p)); onSaveFutures(Number(p.price)) }
+      // Fills the input only — nothing is saved until the Save button.
+      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(refContract.symbol); setWfStale(!!p.stale); setWfQuote(quoteFromWire(p)) }
       else setWfNote('No price available — enter one below (it is saved for every screen) or type your own assumption.')
     } catch {
       setWfNote('Could not fetch — enter manually.')
     } finally { setFetching(false) }
   }
-  function commitBasis() {
-    const v = basisInput.trim() === '' ? 0 : Number(basisInput)
-    if (Number.isFinite(v) && v !== (row.assumedBasis ?? 0)) onSaveBasis(v)
-  }
-  // Persist the assumed futures on blur (empty clears it back to null).
-  function commitFutures() {
-    const t = wfFutures.trim()
-    if (t === '') { if (row.assumedFutures != null) onSaveFutures(null); return }
-    const v = Number(t)
-    if (Number.isFinite(v) && v !== (row.assumedFutures ?? null)) onSaveFutures(v)
+  // The typed values against what is saved: the Save button lights up only
+  // when something changed, and nothing persists on blur.
+  const savedFutures = row.assumedFutures != null ? String(row.assumedFutures) : ''
+  const savedBasis = row.assumedBasis ? String(row.assumedBasis) : ''
+  const futuresDirty = wfFutures.trim() !== savedFutures.trim() && !(wfFutures.trim() === '' && row.assumedFutures == null)
+  const basisDirty = basisInput.trim() !== savedBasis.trim() && !(basisInput.trim() === '' && !(row.assumedBasis ?? 0))
+  const dirty = futuresDirty || basisDirty
+  // Persist both assumptions (empty futures clears it back to null).
+  function saveAssumptionsNow() {
+    if (basisDirty) {
+      const v = basisInput.trim() === '' ? 0 : Number(basisInput)
+      if (Number.isFinite(v) && v !== (row.assumedBasis ?? 0)) onSaveBasis(v)
+    }
+    if (futuresDirty) {
+      const t = wfFutures.trim()
+      if (t === '') { if (row.assumedFutures != null) onSaveFutures(null); return }
+      const v = Number(t)
+      if (Number.isFinite(v) && v !== (row.assumedFutures ?? null)) onSaveFutures(v)
+    }
   }
   // Wipe both assumptions for this crop and reset the inputs to match.
   const hasAssumptions = row.assumedFutures != null || (row.assumedBasis ?? 0) !== 0
   function clearAssumptions() {
     setWfFutures(''); setWfSymbol(null); setWfStale(false); setWfNote(null)
     setBasisInput('')
-    onClearAssumptions()
+    if (hasAssumptions) onClearAssumptions()
   }
   // The pencil next to "Assumed basis" in the Basis Buildup block jumps to the
   // canonical assumed-basis input in the What-If block (same expanded grid).
@@ -1012,7 +1036,7 @@ function CropSection({
           </div>
           <div>
             <div className="text-[11px] text-slate-500 uppercase tracking-wide">Acres{row.acresSource === 'assumed' && <AssumedChip />}</div>
-            <div className="text-2xl font-bold tabular-nums leading-tight">{bu(row.acres)}</div>
+            <div className="text-2xl font-bold tabular-nums leading-tight">{fmtNum(row.acres, 1)}</div>
           </div>
           <div>
             <div className="text-[11px] text-slate-500 uppercase tracking-wide">Yield</div>
@@ -1035,12 +1059,12 @@ function CropSection({
             <div className="text-right">
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">Profit / acre</div>
               <div className={`text-2xl font-bold tabular-nums leading-tight ${headlineProfitTone}`}>
-                {headlineProfitAc != null ? usd0(headlineProfitAc) : headlineRevenueAc != null ? 'set cost' : '—'}{markSup}
+                {headlineProfitAc != null ? fmtUsd(headlineProfitAc) : headlineRevenueAc != null ? 'Set costs' : '—'}{markSup}
               </div>
             </div>
             <div className="text-right">
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">Total profit</div>
-              <div className={`text-2xl font-bold tabular-nums leading-tight ${headlineProfitTone}`}>{headlineTotalProfit != null ? usd0(headlineTotalProfit) : '—'}{markSup}</div>
+              <div className={`text-2xl font-bold tabular-nums leading-tight ${headlineProfitTone}`}>{headlineTotalProfit != null ? fmtUsd(headlineTotalProfit) : '—'}{markSup}</div>
             </div>
           </div>
         </div>
@@ -1067,7 +1091,7 @@ function CropSection({
               {row.seed && <SeedPositionBlock title="Sold / committed" prod={prod} soldBu={row.contractedBu} seed={row.seed} />}
               <PositionBlock title="Futures-priced" prod={prod} green={row.futuresPricedBu} greenLabel="Priced" grayLabel="Unpriced"
                 avg={row.avgFutures != null ? `avg ${price2(row.avgFutures)}` : undefined} />
-              <button type="button" onClick={onToggleBasis} className="text-xs text-brand-deep font-medium no-print">
+              <button type="button" onClick={onToggleBasis} className="inline-flex items-center min-h-10 px-1 text-xs text-brand-deep font-medium no-print">
                 {basisOpen ? '▾ Hide basis' : '▸ Show basis'}
               </button>
               {basisOpen && (
@@ -1090,12 +1114,9 @@ function CropSection({
                 {row.seed.premiumPerBu > 0 ? ` · premiums +${price2(row.seed.premiumPerBu)} assumed` : ''}
               </span>
               {row.seed.missingPremiums && (
-                <span
-                  className="inline-flex items-center rounded-full bg-amber-100 text-amber-800 font-medium px-2 py-0.5"
-                  title="A seed contract's expected outcome has no premium rows — its value here is base price only. Open the contract to add rows or apply the standard schedule."
-                >
-                  premiums missing — base only
-                </span>
+                <InfoTip label="premiums missing — base only" tone="warning">
+                  A seed contract&rsquo;s expected outcome has no premium rows, so its value here is base price only. Open the contract to add rows or apply the standard schedule.
+                </InfoTip>
               )}
             </div>
           )}
@@ -1131,17 +1152,17 @@ function CropSection({
                     {row.hedgeRealizedPnl !== 0 ? (
                       <>
                         <div className="border-t border-slate-200 pt-0.5">
-                          <Row label={`Weighted avg futures (${bu(row.futuresPricedBu)} bu)`} value={row.rawAvgFutures != null ? price2(row.rawAvgFutures) : 'N/A'} tone="text-slate-600" />
+                          <Row label={`Weighted avg futures (${bu(row.futuresPricedBu)} bu)`} value={row.rawAvgFutures != null ? price2(row.rawAvgFutures) : '—'} tone="text-slate-600" />
                         </div>
-                        <Row label="Realized hedge P&L" value={`${row.hedgeAdjPerBu >= 0 ? '+' : ''}${price2(row.hedgeAdjPerBu)}/bu`} tone={row.hedgeAdjPerBu > 0 ? 'text-green-700' : row.hedgeAdjPerBu < 0 ? 'text-red-700' : undefined} />
+                        <Row label="Realized hedge P&L" value={`${row.hedgeAdjPerBu >= 0 ? '+' : ''}${price2(row.hedgeAdjPerBu)}/bu`} tone={row.hedgeAdjPerBu !== 0 ? toneText(signedTone(row.hedgeAdjPerBu)) : undefined} />
                         <div className="text-[11px] text-slate-400 leading-snug">{fmtPnl(row.hedgeRealizedPnl)} spread across {bu(prod)} bu total production</div>
                         <div className="border-t border-slate-300 pt-1">
-                          <Row label="= Average futures price" value={row.avgFutures != null ? price2(row.avgFutures) : 'N/A'} tone="text-slate-900 font-bold" />
+                          <Row label="= Average futures price" value={row.avgFutures != null ? price2(row.avgFutures) : '—'} tone="text-slate-900 font-bold" />
                         </div>
                       </>
                     ) : (
                       <div className="border-t border-slate-300 pt-1">
-                        <Row label="= Average futures price" value={row.avgFutures != null ? price2(row.avgFutures) : 'N/A'} tone="text-slate-900 font-bold" />
+                        <Row label="= Average futures price" value={row.avgFutures != null ? price2(row.avgFutures) : '—'} tone="text-slate-900 font-bold" />
                       </div>
                     )}
                     {/* Assumed futures price on the unpriced bushels folds into the
@@ -1174,9 +1195,9 @@ function CropSection({
                 {row.basisLockedBu > 0 && <Row label="Locked basis" value={`${bu(row.basisLockedBu)} bu @ ${basis2(row.basisLockedAvg)}`} />}
                 {row.basisAssumedBu > 0 && (
                   <div className="flex justify-between gap-3">
-                    <dt className="text-slate-500">
+                    <dt className="text-slate-500 flex items-center">
                       Assumed basis
-                      <button type="button" onClick={focusBasisInput} className="no-print ml-1.5 text-brand-deep hover:text-sky-900" title="Edit the assumed basis (in What-If)" aria-label="Edit the assumed basis">✎</button>
+                      <button type="button" onClick={focusBasisInput} className="no-print ml-1 inline-flex items-center justify-center min-h-10 min-w-10 rounded-lg text-brand-deep hover:bg-slate-100" aria-label="Edit the assumed basis">✎</button>
                     </dt>
                     <dd className="tabular-nums text-amber-700">{bu(row.basisAssumedBu)} bu @ {basis2(row.assumedBasis)}</dd>
                   </div>
@@ -1193,33 +1214,40 @@ function CropSection({
 
             {/* Block 3 — Profitability. */}
             <DetailSection title="Profitability">
-              <Row label="Cost / acre" value={usd(row.costPerAcre)} />
+              <Row label="Cost / acre" value={fmtUsd(row.costPerAcre)} />
               <Row label="Cost / bu" value={row.costPerBu != null ? price2(row.costPerBu) : '—'} />
-              <Row label="Revenue / acre" value={usd(row.revenuePerAcre)} />
-              <Row label="Profit / acre" value={row.profitPerAcre != null ? usd(row.profitPerAcre) : row.revenuePerAcre != null ? 'set cost' : '—'} tone={profitTone} />
+              <Row label="Revenue / acre" value={fmtUsd(row.revenuePerAcre)} />
+              <Row label="Profit / acre" value={row.profitPerAcre != null ? fmtUsd(row.profitPerAcre) : row.revenuePerAcre != null ? 'Set costs' : '—'} tone={profitTone} />
               <div className="border-t border-slate-300 pt-1">
-                <Row label="= Total profit" value={row.totalProfit != null ? usd(row.totalProfit) : '—'} tone={`font-bold ${profitTone}`} />
+                <Row label="= Total profit" value={row.totalProfit != null ? fmtUsd(row.totalProfit) : '—'} tone={`font-bold ${profitTone}`} />
               </div>
               <Row label="Breakeven price" value={be.price != null ? `${price2(be.price)}/bu` : '—'} />
               <Row label="Breakeven yield" value={beYieldPerAcre != null ? `${beYieldPerAcre.toFixed(1)} bu/ac` : '—'} />
             </DetailSection>
           </div>
 
-          {/* What-If on Unpriced Bushels — full-width, horizontal. The assumed
-              futures price and assumed basis are STANDING assumptions: they persist
-              to crop_assumptions (survive leaving the page), save on blur, and feed
-              the headline + futures buildup above. "Clear assumptions" wipes both.
-              Each input keeps its explanation beside it. */}
-          <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 sm:p-4 no-print text-sm">
-            <div className="flex items-baseline gap-3 mb-3">
-              <div className="font-semibold text-sky-900">What-If on Unpriced Bushels</div>
+          {/* Assumed price for unpriced bushels — full-width, horizontal. The
+              assumed futures price and assumed basis are STANDING assumptions:
+              they persist to crop_assumptions (survive leaving the page) only
+              when the user presses Save, and feed the headline + futures buildup
+              above. Typing previews the headline here; nothing saves on blur.
+              "Clear" wipes both. Each input keeps its explanation beside it. */}
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 sm:p-4 no-print text-sm">
+            <div className="flex items-center gap-3 mb-1 flex-wrap">
+              <div className="font-semibold text-slate-900">Assumed price for unpriced bushels</div>
               {wfScenario && <ScenarioChip onReset={() => { setWfFutures(''); setBasisInput(''); wfScenario.onReset() }} />}
-              {hasAssumptions && (
-                <button type="button" onClick={clearAssumptions} className="ml-auto text-xs text-slate-500 hover:text-red-600 font-medium">
-                  Clear assumptions
+              <div className="ml-auto flex items-center gap-2">
+                {(hasAssumptions || wfFutures.trim() !== '' || basisInput.trim() !== '') && (
+                  <button type="button" onClick={clearAssumptions} className="inline-flex items-center min-h-10 px-3 rounded-lg border border-slate-300 bg-white text-sm text-slate-700 font-medium">
+                    Clear
+                  </button>
+                )}
+                <button type="button" onClick={saveAssumptionsNow} disabled={!dirty} className="inline-flex items-center min-h-10 px-4 rounded-lg bg-brand hover:bg-brand-deep text-white text-sm font-semibold disabled:opacity-50">
+                  Save
                 </button>
-              )}
+              </div>
             </div>
+            <p className="text-xs text-slate-500 mb-3">This assumption is used on Revenue Projections and Income Sensitivity too.</p>
             <div className="flex flex-col lg:flex-row lg:items-start gap-x-8 gap-y-4">
               {/* Assumed futures — input + the reference contract it prices
                   against (symbol + live quote, month selectable), kept together. */}
@@ -1227,9 +1255,10 @@ function CropSection({
                 <div className="text-xs text-slate-600">{advanced ? 'Unpriced futures bushels' : 'Unsold bushels'}: <span className="tabular-nums font-medium">{bu(scenarioUnpricedBu)}</span></div>
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <input type="number" step="0.01" inputMode="decimal" value={wfFutures} placeholder={advanced ? 'futures $/bu' : '$/bu'}
-                    onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }} onBlur={commitFutures}
-                    className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
-                  {refContract && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-brand-deep font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
+                    aria-label={advanced ? 'Assumed futures price, dollars per bushel' : 'Assumed price, dollars per bushel'}
+                    onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }}
+                    className="rounded-lg border border-slate-300 px-2 min-h-10 w-28 text-right" />
+                  {refContract && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="inline-flex items-center min-h-10 px-2 text-xs text-brand-deep font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
                   {!refContract && <span className="text-xs text-slate-400">{advanced ? 'No futures contract' : 'Enter a price'}</span>}
                 </div>
                 {refContract && (
@@ -1241,8 +1270,8 @@ function CropSection({
                         const def = monthOptions.find((o) => o.isDefault)
                         onSaveMonth(def && picked === def.contractMonth ? null : picked)
                       }}
-                      className="rounded border border-slate-300 px-1.5 py-0.5 bg-white text-slate-700"
-                      title="The futures contract unpriced bushels are valued against"
+                      className="rounded-lg border border-slate-300 px-1.5 min-h-10 bg-white text-slate-700"
+                      aria-label="Futures contract the unpriced bushels are valued against"
                     >
                       {/* An effective month outside the options list (edge: all listed
                           months expired) still renders itself so the select is honest. */}
@@ -1273,7 +1302,7 @@ function CropSection({
                       </span>
                     )}
                     {refContract.overridden && (
-                      <button type="button" onClick={() => onSaveMonth(null)} className="text-brand-deep font-medium">
+                      <button type="button" onClick={() => onSaveMonth(null)} className="inline-flex items-center min-h-10 px-2 text-brand-deep font-medium">
                         Reset to default
                       </button>
                     )}
@@ -1282,16 +1311,17 @@ function CropSection({
                 {wfSymbol && wfFut != null && <div className="text-xs text-slate-500 inline-flex items-center gap-1">{advanced ? `${wfSymbol} · ` : 'Today · '}{price2(wfFut)}{wfQuote?.source === 'live' && wfStale ? ' (not current)' : ''}{wfQuote?.source === 'manual' && <QuoteChip quote={wfQuote} />}</div>}
                 {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
                 {/* Explanation under the futures input. */}
-                <div className="text-xs text-slate-400">Assumed {advanced ? 'futures ' : ''}price — saves automatically; values the unpriced bushels until cleared.</div>
+                <div className="text-xs text-slate-400">Assumed {advanced ? 'futures ' : ''}price — once saved, values the unpriced bushels until cleared.</div>
               </div>
               {/* Assumed basis — input + its explanation, kept together. */}
               {advanced && (
                 <div className="space-y-1 lg:max-w-xs">
                   <div className="text-xs text-slate-600">Bushels at assumed basis: <span className="tabular-nums font-medium">{bu(row.basisAssumedBu)}</span></div>
                   <input id={basisInputId} type="number" step="0.01" inputMode="decimal" value={basisInput} placeholder="basis $/bu"
-                    onChange={(e) => setBasisInput(e.target.value)} onBlur={commitBasis}
-                    className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
-                  <div className="text-xs text-slate-400">Assumed basis — saves automatically; values every bushel without locked basis.</div>
+                    aria-label="Assumed basis, dollars per bushel"
+                    onChange={(e) => setBasisInput(e.target.value)}
+                    className="rounded-lg border border-slate-300 px-2 min-h-10 w-28 text-right" />
+                  <div className="text-xs text-slate-400">Assumed basis — once saved, values every bushel without locked basis.</div>
                 </div>
               )}
             </div>
@@ -1329,9 +1359,8 @@ function BaleWeightInput({ value, onSave }: { value: number | null; onSave?: (v:
         onChange={(e) => setText(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-        title="Assumed pounds of lint per bale — change it and the bale count follows. Blank = 500 lb."
-        aria-label="Assumed pounds per bale"
-        className="w-14 rounded border border-slate-300 px-1 py-0.5 text-sm text-right tabular-nums bg-white"
+        aria-label="Assumed pounds of lint per bale (blank = 500)"
+        className="w-16 rounded-lg border border-slate-300 px-1 min-h-10 text-sm text-right tabular-nums bg-white"
       />
       lb
     </span>
@@ -1379,7 +1408,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
   const headlineRevenueAc = scenario ? scenario.revenuePerAcre : row.revenuePerAcre
   const headlineProfitAc = scenario ? scenario.profitPerAcre : row.profitPerAcre
   const headlineTotalProfit = scenario ? scenario.totalProfit : row.totalProfit
-  const headlineProfitTone = headlineTotalProfit == null ? 'text-slate-400' : headlineTotalProfit >= 0 ? 'text-green-700' : 'text-red-700'
+  const headlineProfitTone = toneText(headlineTotalProfit == null ? 'muted' : headlineTotalProfit >= 0 ? 'favorable' : 'unfavorable')
   // Unhedged lbs are always valued at an assumed/market price — flag it.
   const includesAssumptions = row.unpricedBu > 0.5
   const markerTitle = `Includes assumed pricing on ${bu(row.unpricedBu)} unhedged lbs (valued at ${row.assumedFutures != null ? 'your assumed price' : 'the current futures estimate'}). Open hedges cover the remaining ${bu(Math.min(row.openHedgeBu, prod))} lbs.`
@@ -1394,13 +1423,16 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
       })
       const json = await res.json().catch(() => null)
       const p = json?.prices?.[0]
-      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(refContract.symbol); setWfStale(!!p.stale); setWfQuote(quoteFromWire(p)); onSaveFutures(Number(p.price)) }
+      // Fills the input only — nothing is saved until the Save button.
+      if (p && p.price != null) { setWfFutures(String(p.price)); setWfSymbol(refContract.symbol); setWfStale(!!p.stale); setWfQuote(quoteFromWire(p)) }
       else setWfNote('No price available — enter one below (it is saved for every screen) or type your own assumption.')
     } catch {
       setWfNote('Could not fetch — enter manually.')
     } finally { setFetching(false) }
   }
-  function commitFutures() {
+  // Save only on the button — typing previews the headline, nothing persists on blur.
+  const dirty = wfFutures.trim() === '' ? row.assumedFutures != null : wfFut != null && wfFut !== (row.assumedFutures ?? null)
+  function saveAssumptionsNow() {
     const t = wfFutures.trim()
     if (t === '') { if (row.assumedFutures != null) onSaveFutures(null); return }
     const v = parseCottonPriceInput(t) // stored ¢/lb; accepts 0.70 or 70.00
@@ -1408,7 +1440,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
   }
   function clearAssumptions() {
     setWfFutures(''); setWfSymbol(null); setWfStale(false); setWfNote(null)
-    onClearAssumptions()
+    if (row.assumedFutures != null) onClearAssumptions()
   }
 
   return (
@@ -1430,7 +1462,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
           </div>
           <div>
             <div className="text-[11px] text-slate-500 uppercase tracking-wide">Acres{row.acresSource === 'assumed' && <AssumedChip />}</div>
-            <div className="text-2xl font-bold tabular-nums leading-tight">{bu(row.acres)}</div>
+            <div className="text-2xl font-bold tabular-nums leading-tight">{fmtNum(row.acres, 1)}</div>
           </div>
           <div>
             <div className="text-[11px] text-slate-500 uppercase tracking-wide">Yield</div>
@@ -1452,12 +1484,12 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
             <div className="text-right">
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">Profit / acre</div>
               <div className={`text-2xl font-bold tabular-nums leading-tight ${headlineProfitTone}`}>
-                {headlineProfitAc != null ? usd0(headlineProfitAc) : headlineRevenueAc != null ? 'set cost' : '—'}{markSup}
+                {headlineProfitAc != null ? fmtUsd(headlineProfitAc) : headlineRevenueAc != null ? 'Set costs' : '—'}{markSup}
               </div>
             </div>
             <div className="text-right">
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">Total profit</div>
-              <div className={`text-2xl font-bold tabular-nums leading-tight ${headlineProfitTone}`}>{headlineTotalProfit != null ? usd0(headlineTotalProfit) : '—'}{markSup}</div>
+              <div className={`text-2xl font-bold tabular-nums leading-tight ${headlineProfitTone}`}>{headlineTotalProfit != null ? fmtUsd(headlineTotalProfit) : '—'}{markSup}</div>
             </div>
           </div>
         </div>
@@ -1537,19 +1569,19 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
                     ? s.soldSources.map((src, i) => <Row key={i} label={src.label} value={`${bu(src.lbs)} lbs @ ${cents2(src.cents)}`} />)
                     : <div className="text-slate-400">No priced physical sales yet.</div>}
                   {s.poolLbs > 0 && (
-                    <Row label={`Pool (${bu(s.poolLbs)} lbs)`} value={`${usd0(cp.poolValueDollars)}${cp.poolEstimated ? ' (pool est.)' : ' received'}`} />
+                    <Row label={`Pool (${bu(s.poolLbs)} lbs)`} value={`${fmtUsd(cp.poolValueDollars)}${cp.poolEstimated ? ' (pool est.)' : ' received'}`} />
                   )}
                   {s.inLoanLbs > 0 && (
                     <Row label={`In CCC loan (${bu(s.inLoanLbs)} lbs)`}
-                      value={`${usd0(cp.inLoanValueDollars)} ${cp.inLoanFloored ? '— at the banked loan floor' : '— at market above the floor'}`} />
+                      value={`${fmtUsd(cp.inLoanValueDollars)} ${cp.inLoanFloored ? '— at the banked loan floor' : '— at market above the floor'}`} />
                   )}
                   {s.awaitingCallLbs > 0 && (
                     <Row label="On-call awaiting futures" value={`${bu(s.awaitingCallLbs)} lbs excluded from priced`} tone="text-amber-700" />
                   )}
                 </DetailSection>
                 <DetailSection title="Program $ & Fees">
-                  <Row label={`Program dollars (${s.programLabel})`} value={usd0(s.programDollars)} tone={s.programDollars > 0 ? 'text-green-700' : undefined} />
-                  <Row label="Net fees" value={s.feeDollars !== 0 ? `(${usd0(s.feeDollars)})` : '—'} tone={s.feeDollars > 0 ? 'text-red-700' : undefined} />
+                  <Row label={`Program dollars (${s.programLabel})`} value={fmtUsd(s.programDollars)} tone={s.programDollars > 0 ? toneText('favorable') : undefined} />
+                  <Row label="Net fees" value={s.feeDollars !== 0 ? `(${fmtUsd(s.feeDollars)})` : '—'} tone={s.feeDollars > 0 ? toneText('unfavorable') : undefined} />
                   <div className="text-[11px] text-slate-400 leading-snug mt-1">
                     LDP and marketing-loan gains are sale-linked program dollars counted ONCE here in cotton revenue —
                     they are not in the Government Payments pool, so this page and Revenue Projections stay reconciled.
@@ -1568,7 +1600,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
                   ))}
                   {row.hedgeRealizedPnl !== 0 && (
                     <>
-                      <Row label="Realized hedge P&L" value={`${row.hedgeAdjPerBu >= 0 ? '+' : ''}${cents2(row.hedgeAdjPerBu)}/lb`} tone={row.hedgeAdjPerBu > 0 ? 'text-green-700' : row.hedgeAdjPerBu < 0 ? 'text-red-700' : undefined} />
+                      <Row label="Realized hedge P&L" value={`${row.hedgeAdjPerBu >= 0 ? '+' : ''}${cents2(row.hedgeAdjPerBu)}/lb`} tone={row.hedgeAdjPerBu !== 0 ? toneText(signedTone(row.hedgeAdjPerBu)) : undefined} />
                       <div className="text-[11px] text-slate-400 leading-snug">{fmtPnl(row.hedgeRealizedPnl)} spread across {bu(prod)} lbs total production</div>
                     </>
                   )}
@@ -1583,40 +1615,47 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
                 <Row label="= Effective avg price" value={headlineAvg != null ? cents2(headlineAvg) : '—'} tone="text-slate-900 font-bold" />
               </div>
               {row.hedgeRealizedPnl !== 0 && (
-                <Row label="Realized hedge P&L (in revenue)" value={fmtPnl(row.hedgeRealizedPnl)} tone={row.hedgeRealizedPnl > 0 ? 'text-green-700' : 'text-red-700'} />
+                <Row label="Realized hedge P&L (in revenue)" value={fmtPnl(row.hedgeRealizedPnl)} tone={toneText(signedTone(row.hedgeRealizedPnl))} />
               )}
             </DetailSection>
 
             <DetailSection title="Profitability">
-              <Row label="Cost / acre" value={usd(row.costPerAcre)} />
+              <Row label="Cost / acre" value={fmtUsd(row.costPerAcre)} />
               <Row label="Cost / lb" value={row.costPerBu != null ? cents2(row.costPerBu) : '—'} />
-              <Row label="Revenue / acre" value={usd(row.revenuePerAcre)} />
-              <Row label="Profit / acre" value={row.profitPerAcre != null ? usd(row.profitPerAcre) : row.revenuePerAcre != null ? 'set cost' : '—'} tone={headlineProfitTone} />
+              <Row label="Revenue / acre" value={fmtUsd(row.revenuePerAcre)} />
+              <Row label="Profit / acre" value={row.profitPerAcre != null ? fmtUsd(row.profitPerAcre) : row.revenuePerAcre != null ? 'Set costs' : '—'} tone={headlineProfitTone} />
               <div className="border-t border-slate-300 pt-1">
-                <Row label="= Total profit" value={row.totalProfit != null ? usd(row.totalProfit) : '—'} tone={`font-bold ${headlineProfitTone}`} />
+                <Row label="= Total profit" value={row.totalProfit != null ? fmtUsd(row.totalProfit) : '—'} tone={`font-bold ${headlineProfitTone}`} />
               </div>
               <Row label="Breakeven price" value={be.price != null ? `${cents2(be.price)}/lb` : '—'} />
               <Row label="Breakeven yield" value={be.yieldPerAcre != null ? `${bu(be.yieldPerAcre)} lbs/ac` : '—'} />
             </DetailSection>
           </div>
 
-          <div className="rounded-lg bg-sky-50 border border-sky-200 p-3 sm:p-4 no-print text-sm">
-            <div className="flex items-baseline gap-3 mb-3">
-              <div className="font-semibold text-sky-900">What-If on Unhedged Lbs</div>
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 sm:p-4 no-print text-sm">
+            <div className="flex items-center gap-3 mb-1 flex-wrap">
+              <div className="font-semibold text-slate-900">Assumed price for unhedged lbs</div>
               {wfScenario && <ScenarioChip onReset={() => { setWfFutures(''); wfScenario.onReset() }} />}
-              {row.assumedFutures != null && (
-                <button type="button" onClick={clearAssumptions} className="ml-auto text-xs text-slate-500 hover:text-red-600 font-medium">
-                  Clear assumptions
+              <div className="ml-auto flex items-center gap-2">
+                {(row.assumedFutures != null || wfFutures.trim() !== '') && (
+                  <button type="button" onClick={clearAssumptions} className="inline-flex items-center min-h-10 px-3 rounded-lg border border-slate-300 bg-white text-sm text-slate-700 font-medium">
+                    Clear
+                  </button>
+                )}
+                <button type="button" onClick={saveAssumptionsNow} disabled={!dirty} className="inline-flex items-center min-h-10 px-4 rounded-lg bg-brand hover:bg-brand-deep text-white text-sm font-semibold disabled:opacity-50">
+                  Save
                 </button>
-              )}
+              </div>
             </div>
+            <p className="text-xs text-slate-500 mb-3">This assumption is used on Revenue Projections and Income Sensitivity too.</p>
             <div className="space-y-1 lg:max-w-md">
               <div className="text-xs text-slate-600">Unhedged lbs: <span className="tabular-nums font-medium">{bu(row.unpricedBu)}</span></div>
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <input type="text" inputMode="decimal" value={wfFutures} placeholder="$/lb e.g. 0.7000"
-                  onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }} onBlur={commitFutures}
-                  className="rounded border border-slate-300 px-2 py-1 w-28 text-right" />
-                {refContract && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="text-xs text-brand-deep font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
+                  aria-label="Assumed price, dollars per pound"
+                  onChange={(e) => { setWfFutures(e.target.value); setWfSymbol(null); setWfNote(null) }}
+                  className="rounded-lg border border-slate-300 px-2 min-h-10 w-28 text-right" />
+                {refContract && <button type="button" onClick={useTodaysPrice} disabled={fetching} className="inline-flex items-center min-h-10 px-2 text-xs text-brand-deep font-medium disabled:opacity-50">{fetching ? 'Fetching…' : 'Use today’s price'}</button>}
                 {!refContract && <span className="text-xs text-slate-400">Enter a price</span>}
               </div>
               {refContract && (
@@ -1628,8 +1667,8 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
                       const def = monthOptions.find((o) => o.isDefault)
                       onSaveMonth(def && picked === def.contractMonth ? null : picked)
                     }}
-                    className="rounded border border-slate-300 px-1.5 py-0.5 bg-white text-slate-700"
-                    title="The futures contract unhedged lbs are valued against"
+                    className="rounded-lg border border-slate-300 px-1.5 min-h-10 bg-white text-slate-700"
+                    aria-label="Futures contract the unhedged pounds are valued against"
                   >
                     {!monthOptions.some((o) => o.contractMonth === refContract.contractMonth) && (
                       <option value={refContract.contractMonth}>{refContract.symbol}</option>
@@ -1658,7 +1697,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
                     </span>
                   )}
                   {refContract.overridden && (
-                    <button type="button" onClick={() => onSaveMonth(null)} className="text-brand-deep font-medium">
+                    <button type="button" onClick={() => onSaveMonth(null)} className="inline-flex items-center min-h-10 px-2 text-brand-deep font-medium">
                       Reset to default
                     </button>
                   )}
@@ -1666,7 +1705,7 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
               )}
               {wfSymbol && wfFut != null && <div className="text-xs text-slate-500 inline-flex items-center gap-1">{wfSymbol} · {cents2(wfFut)}{wfQuote?.source === 'live' && wfStale ? ' (not current)' : ''}{wfQuote?.source === 'manual' && <QuoteChip quote={wfQuote} />}</div>}
               {wfNote && <div className="text-xs text-amber-700">{wfNote}</div>}
-              <div className="text-xs text-slate-400">Assumed $/lb — saves automatically; values the unhedged lbs until cleared.</div>
+              <div className="text-xs text-slate-400">Assumed $/lb — once saved, values the unhedged lbs until cleared.</div>
             </div>
           </div>
         </div>
@@ -1709,39 +1748,49 @@ function BasisTag({ row }: { row: MarketingRow }) {
     )
   }
   const blended = row.basisState === 'blended'
+  if (blended) {
+    return (
+      <div className="text-xs text-slate-500 mt-0.5 flex items-center justify-end gap-1">
+        Basis: <span className="tabular-nums">{basis2(row.avgBasis)}</span>
+        <InfoTip label="blended" tone="muted" ariaLabel="How the blended basis is made up">{basisCompositionTitle(row)}</InfoTip>
+      </div>
+    )
+  }
   return (
-    <div className="text-xs text-slate-500 mt-0.5" title={blended ? basisCompositionTitle(row) : undefined}>
-      Basis: <span className={`tabular-nums${blended ? ' underline decoration-dotted decoration-slate-400 underline-offset-2 cursor-help' : ''}`}>{basis2(row.avgBasis)}</span>{blended ? '' : ` (${basisStateLabel(row)})`}
+    <div className="text-xs text-slate-500 mt-0.5">
+      Basis: <span className="tabular-nums">{basis2(row.avgBasis)}</span> ({basisStateLabel(row)})
     </div>
   )
 }
 
 // Headline assumption marker (amber). Flags that the numbers lean on assumed
 // pricing — the assumed futures and/or assumed basis on the unpriced bushels.
-// The full "X unpriced (Y futures, Z basis)" explanation lives in the tooltip.
+// The full "X unpriced (Y futures, Z basis)" explanation opens on tap.
 const ACRES_ASSUMED_TITLE = 'No fields are planted to this crop for the year yet, so its acres come from the assumed acres you entered under Edit Assumptions. The moment a planting is entered for it, the planted acres take over and the assumed figure is ignored.'
 
 /** Section badge for a crop shown on assumed acres (081). */
 function AcresAssumedBadge() {
   return (
-    <span title={ACRES_ASSUMED_TITLE} className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-800 text-[11px] font-medium px-2 py-0.5 cursor-help">
-      <span aria-hidden>▲</span>&nbsp;acres assumed — no plantings yet
-    </span>
+    <InfoTip label={<><span aria-hidden>▲</span>&nbsp;acres assumed — no plantings yet</>} tone="warning">
+      {ACRES_ASSUMED_TITLE}
+    </InfoTip>
   )
 }
 
 /** The small chip on the Acres stat itself. */
 function AssumedChip() {
   return (
-    <span title={ACRES_ASSUMED_TITLE} className="ml-1 normal-case tracking-normal rounded-full bg-amber-100 text-amber-800 px-1.5 py-0.5 font-medium cursor-help">assumed</span>
+    <InfoTip label="assumed" tone="warning" className="ml-1 normal-case tracking-normal">
+      {ACRES_ASSUMED_TITLE}
+    </InfoTip>
   )
 }
 
 function AssumptionBadge({ title }: { title: string }) {
   return (
-    <span title={title} className="inline-flex items-center gap-1 rounded-full bg-amber-100 text-amber-800 text-[11px] font-medium px-2 py-0.5 cursor-help">
-      <span aria-hidden>✷</span>&nbsp;includes assumptions
-    </span>
+    <InfoTip label={<><span aria-hidden>✷</span>&nbsp;includes assumptions</>} tone="warning" ariaLabel="What the assumptions cover">
+      {title}
+    </InfoTip>
   )
 }
 
@@ -1852,17 +1901,9 @@ function AssumptionsPanel({ crops, year, assumptions, segByCrop, plantedCropIds,
 }) {
   const [openCrop, setOpenCrop] = useState<string | null>(crops[0]?.id ?? null)
   return (
-    <div className="fixed inset-0 z-40 no-print">
-      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-      <div className="absolute right-0 top-0 h-full w-full max-w-xl bg-slate-50 shadow-xl overflow-y-auto">
-        <div className="sticky top-0 bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3">
-          <div className="flex-1">
-            <h2 className="font-bold">Assumptions — {year}</h2>
-            <p className="text-xs text-slate-500">Changes save and recalculate the dashboard live; this panel stays open.</p>
-          </div>
-          <button onClick={onClose} className="rounded-lg bg-slate-700 text-white px-3 py-1.5 text-sm font-semibold">Done</button>
-        </div>
-        <div className="p-4 space-y-2">
+    <AppModal open title={`Assumptions — ${year}`} onClose={onClose} size="lg" initialFocus="none">
+      <div className="space-y-2">
+          <p className="text-xs text-slate-500">Each crop&rsquo;s Save updates the dashboard right away; this window stays open until you press Done.</p>
           <p className="text-xs text-slate-500">
             Enter an overall yield and cost/acre, or break them out by irrigated/dryland (and full-season/double-crop) —
             a blank breakout cell falls back to the overall. On harvest complete, the actual average yield from loads
@@ -1883,7 +1924,7 @@ function AssumptionsPanel({ crops, year, assumptions, segByCrop, plantedCropIds,
                 <button
                   type="button"
                   onClick={() => setOpenCrop(isOpen ? null : c.id)}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-left"
+                  className="w-full flex items-center gap-2 px-3 min-h-10 py-2 text-left"
                 >
                   <span className="text-slate-400">{isOpen ? '▾' : '▸'}</span>
                   <span className="font-semibold flex-1">{c.name}</span>
@@ -1897,7 +1938,7 @@ function AssumptionsPanel({ crops, year, assumptions, segByCrop, plantedCropIds,
                   )}
                   {missing
                     ? <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">needs yield</span>
-                    : effYield != null && <span className="text-xs text-slate-500 tabular-nums">{effYield.toFixed(1)} {isCottonCrop(c.name) ? 'lbs lint/ac' : 'bu/ac'}{a?.cost_per_acre != null ? ` · ${usd0(a.cost_per_acre)}/ac` : ''}{a?.harvest_complete ? ' · harvested' : ''}</span>}
+                    : effYield != null && <span className="text-xs text-slate-500 tabular-nums">{effYield.toFixed(1)} {isCottonCrop(c.name) ? 'lbs lint/ac' : 'bu/ac'}{a?.cost_per_acre != null ? ` · ${fmtUsd(a.cost_per_acre)}/ac` : ''}{a?.harvest_complete ? ' · harvested' : ''}</span>}
                 </button>
                 {isOpen && (
                   <div className="px-3 pb-3 border-t border-slate-100">
@@ -1911,9 +1952,11 @@ function AssumptionsPanel({ crops, year, assumptions, segByCrop, plantedCropIds,
               </div>
             )
           })}
+        <div className="flex justify-end pt-1">
+          <button type="button" onClick={onClose} className="rounded-lg bg-slate-700 text-white px-4 min-h-11 text-sm font-semibold">Done</button>
         </div>
       </div>
-    </div>
+    </AppModal>
   )
 }
 
@@ -2119,7 +2162,7 @@ function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSa
             </td>
             <td className={`${cell} text-right`}>
               {wCost != null
-                ? <span className="font-mono">{effCost != null ? usd(effCost) : '—'}</span>
+                ? <span className="font-mono">{effCost != null ? fmtUsd(effCost, 2) : '—'}</span>
                 : <input type="number" step="0.01" value={oCost} onChange={(e) => setOCost(e.target.value)} className={ic} />}
             </td>
           </tr>
@@ -2148,7 +2191,7 @@ function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSa
             {a?.cost_includes_insurance ? ' Insurance included in the Turnrow Farm cost per acre.' : ''}
           </span>
           {!viewerMode && (
-            <label className="flex items-center gap-1.5 select-none" title="Keep the costs you type here; Turnrow Farm's next update leaves this crop year alone until you turn this off.">
+            <label className="flex items-center gap-1.5 select-none">
               <input type="checkbox" checked={costOverride} onChange={(e) => setCostOverride(e.target.checked)} className="h-4 w-4" />
               Use my own costs
             </label>
@@ -2161,7 +2204,7 @@ function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSa
         ) : (
           <span className="text-sm text-slate-600">Expected production: <span className="font-mono font-semibold">{bu(prod)}</span> {prodUnit}</span>
         )}
-        <button onClick={save} className="ml-auto rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1 text-sm font-semibold">Save</button>
+        <button type="button" onClick={save} className="ml-auto rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-10 text-sm font-semibold">Save</button>
       </div>
     </div>
   )

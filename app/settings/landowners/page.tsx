@@ -18,6 +18,8 @@ import { landownersImportConfig } from '@/lib/import-configs'
 import SettingsDocImport from '@/components/settings-doc-import'
 import { landownerDuplicateSearch, LANDOWNER_KINDS } from '@/lib/farm-link-landowners'
 import { fmtSyncTime, TURNROW_FARM_URL } from '@/components/farm-link-banner'
+import { reportError } from '@/lib/friendly-error'
+import { useDialogs, plural } from '@/components/use-dialogs'
 import type { Farm, Landowner } from '@/lib/types'
 
 type Draft = {
@@ -77,6 +79,7 @@ export default function LandownersPage() {
   const [err, setErr] = useState<string | null>(null)
   const [q, setQ] = useState('')
   const [showArchived, setShowArchived] = useState(false)
+  const { confirm, dialogs } = useDialogs()
 
   const refresh = useCallback(async () => {
     const [lo, fa] = await Promise.all([
@@ -143,7 +146,7 @@ export default function LandownersPage() {
       return
     }
     const { error } = await supabase.from('landowners').insert(draftToPayload(add))
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'add the landowner', noun: 'landowner', name: add.name.trim() })); return }
     setAdd(emptyDraft())
     setDupeDismissed(false)
     refresh()
@@ -170,8 +173,31 @@ export default function LandownersPage() {
     setErr(null)
     if (!edit.name.trim()) return
     const { error } = await supabase.from('landowners').update(draftToPayload(edit)).eq('id', id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'save the landowner', noun: 'landowner', name: edit.name.trim() })); return }
     setEditingId(null)
+    refresh()
+  }
+
+  async function archive(l: Landowner) {
+    setErr(null)
+    const linked = farmsByLandowner.get(l.id) ?? []
+    const ok = await confirm({
+      title: `Archive ${l.name}?`,
+      body: linked.length > 0
+        ? `${l.name} is the landowner on ${plural(linked.length, 'farm')} (${linked.map((f) => f.name).join(', ')}). Archiving hides them from pickers; the farms and every statement already made keep the name.`
+        : 'Archiving hides this landowner from pickers and lists. Nothing already recorded changes, and you can show archived landowners again with the checkbox below.',
+      confirmLabel: 'Archive',
+    })
+    if (!ok) return
+    const { error } = await supabase.from('landowners').update({ archived_at: new Date().toISOString() }).eq('id', l.id)
+    if (error) { setErr(reportError(error, { action: 'archive the landowner', noun: 'landowner', name: l.name })); return }
+    refresh()
+  }
+
+  async function unarchive(l: Landowner) {
+    setErr(null)
+    const { error } = await supabase.from('landowners').update({ archived_at: null }).eq('id', l.id)
+    if (error) { setErr(reportError(error, { action: 'restore the landowner', noun: 'landowner', name: l.name })); return }
     refresh()
   }
 
@@ -179,16 +205,24 @@ export default function LandownersPage() {
     setErr(null)
     const linked = farmsByLandowner.get(l.id) ?? []
     if (linked.length > 0) {
-      setErr(`${l.name} is linked to ${linked.length} farm${linked.length === 1 ? '' : 's'}. Unassign them first.`)
+      setErr(`${l.name} is the landowner on ${plural(linked.length, 'farm')} (${linked.map((f) => f.name).join(', ')}), so they can’t be deleted. Archive them instead, or change the landowner on those farms first.`)
       return
     }
-    if (!confirm(`Delete landowner "${l.name}"?`)) return
+    const ok = await confirm({
+      title: `Delete ${l.name}?`,
+      body: 'No farms point at this landowner, so the record can be removed. This can’t be undone — archive instead if you might need it again.',
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
     const { error } = await supabase.from('landowners').delete().eq('id', l.id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'delete the landowner', noun: 'landowner', name: l.name })); return }
     refresh()
   }
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
+  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2 min-h-11 w-full'
+  const labelCls = 'block text-sm text-slate-700'
+  const btnCls = 'min-h-11 px-3 rounded-lg text-sm font-semibold'
   const visible = landowners.filter((l) => {
     if (!showArchived && (l.archived_at || l.merged_into_id)) return false
     if (!q) return true
@@ -208,28 +242,62 @@ export default function LandownersPage() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Landowners</h1>
 
-      <SettingsDocImport primaryTarget="landowners" title="Upload a Lease or Landowner List (AI)" onSaved={refresh} />
+      <SettingsDocImport primaryTarget="landowners" title="Upload a lease or landowner list" onSaved={refresh} />
 
       <CsvImport config={landownersImportConfig()} onImported={refresh} />
 
-      <form onSubmit={onAdd} className="bg-white p-4 rounded-xl shadow space-y-2">
+      <form onSubmit={onAdd} className="bg-white p-4 rounded-xl shadow space-y-3">
+        <h2 className="font-semibold">Add a landowner</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <input value={add.name} onChange={(e) => setAdd((d) => ({ ...d, name: e.target.value }))} placeholder="Name (required)" className={inputCls} />
-          <select value={add.kind} onChange={(e) => setAdd((d) => ({ ...d, kind: e.target.value }))} className={inputCls}>
-            <option value="">Kind (optional)</option>
-            {LANDOWNER_KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
-          </select>
-          <input value={add.contact_name} onChange={(e) => setAdd((d) => ({ ...d, contact_name: e.target.value }))} placeholder="Contact person" className={inputCls} />
-          <input value={add.payee_name} onChange={(e) => setAdd((d) => ({ ...d, payee_name: e.target.value }))} placeholder="Make cheques payable to" className={inputCls} />
-          <input value={add.phone} onChange={(e) => setAdd((d) => ({ ...d, phone: e.target.value }))} placeholder="Phone" className={inputCls} />
-          <input value={add.email} onChange={(e) => setAdd((d) => ({ ...d, email: e.target.value }))} placeholder="Email" className={inputCls} />
-          <input value={add.address_street} onChange={(e) => setAdd((d) => ({ ...d, address_street: e.target.value }))} placeholder="Street" className={`${inputCls} sm:col-span-2`} />
-          <input value={add.address_city} onChange={(e) => setAdd((d) => ({ ...d, address_city: e.target.value }))} placeholder="City" className={inputCls} />
+          <label className={labelCls}>
+            Name
+            <input value={add.name} onChange={(e) => setAdd((d) => ({ ...d, name: e.target.value }))} placeholder="e.g. Jane Farmer" className={`${inputCls} mt-1`} />
+          </label>
+          <label className={labelCls}>
+            Kind <span className="text-slate-400">(optional)</span>
+            <select value={add.kind} onChange={(e) => setAdd((d) => ({ ...d, kind: e.target.value }))} className={`${inputCls} mt-1`}>
+              <option value="">—</option>
+              {LANDOWNER_KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
+            </select>
+          </label>
+          <label className={`${labelCls}`}>
+            Contact person
+            <input value={add.contact_name} onChange={(e) => setAdd((d) => ({ ...d, contact_name: e.target.value }))} className={`${inputCls} mt-1`} />
+          </label>
+          <label className={`${labelCls}`}>
+            Make checks payable to
+            <input value={add.payee_name} onChange={(e) => setAdd((d) => ({ ...d, payee_name: e.target.value }))} placeholder="if different from the name" className={`${inputCls} mt-1`} />
+          </label>
+          <label className={`${labelCls}`}>
+            Phone
+            <input value={add.phone} onChange={(e) => setAdd((d) => ({ ...d, phone: e.target.value }))} className={`${inputCls} mt-1`} />
+          </label>
+          <label className={`${labelCls}`}>
+            Email
+            <input value={add.email} onChange={(e) => setAdd((d) => ({ ...d, email: e.target.value }))} className={`${inputCls} mt-1`} />
+          </label>
+          <label className={`${labelCls} sm:col-span-2`}>
+            Street
+            <input value={add.address_street} onChange={(e) => setAdd((d) => ({ ...d, address_street: e.target.value }))} className={`${inputCls} mt-1`} />
+          </label>
+          <label className={`${labelCls}`}>
+            City
+            <input value={add.address_city} onChange={(e) => setAdd((d) => ({ ...d, address_city: e.target.value }))} className={`${inputCls} mt-1`} />
+          </label>
           <div className="grid grid-cols-2 gap-2">
-            <input value={add.address_state} onChange={(e) => setAdd((d) => ({ ...d, address_state: e.target.value }))} placeholder="State" maxLength={2} className={inputCls} />
-            <input value={add.address_zip} onChange={(e) => setAdd((d) => ({ ...d, address_zip: e.target.value }))} placeholder="ZIP" className={inputCls} />
+            <label className={`${labelCls}`}>
+              State
+              <input value={add.address_state} onChange={(e) => setAdd((d) => ({ ...d, address_state: e.target.value }))} placeholder="ST" maxLength={2} className={`${inputCls} mt-1`} />
+            </label>
+            <label className={`${labelCls}`}>
+              ZIP
+              <input value={add.address_zip} onChange={(e) => setAdd((d) => ({ ...d, address_zip: e.target.value }))} className={`${inputCls} mt-1`} />
+            </label>
           </div>
-          <input value={add.notes} onChange={(e) => setAdd((d) => ({ ...d, notes: e.target.value }))} placeholder="Notes" className={`${inputCls} sm:col-span-2`} />
+          <label className={`${labelCls} sm:col-span-2`}>
+            Notes
+            <input value={add.notes} onChange={(e) => setAdd((d) => ({ ...d, notes: e.target.value }))} className={`${inputCls} mt-1`} />
+          </label>
         </div>
 
         {(dupes.exact || dupes.near.length > 0) && (
@@ -254,7 +322,7 @@ export default function LandownersPage() {
           </div>
         )}
 
-        <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Landowner</button>
+        <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold">Add landowner</button>
       </form>
 
       {err && <p className="text-sm text-red-600">{err}</p>}
@@ -265,7 +333,8 @@ export default function LandownersPage() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search landowners…"
-          className="rounded-lg border border-slate-300 px-3 py-2 w-full max-w-md"
+          aria-label="Search landowners"
+          className="rounded-lg border border-slate-300 px-3 py-2 min-h-11 w-full max-w-md"
         />
         {archivedCount > 0 && (
           <label className="flex items-center gap-1.5 text-sm text-slate-600 select-none">
@@ -277,8 +346,8 @@ export default function LandownersPage() {
 
       <ul className="bg-white rounded-xl shadow divide-y">
         {visible.length === 0 && (
-          <li className="px-4 py-6 text-center text-slate-400">
-            {landowners.length === 0 ? 'No landowners yet.' : 'No landowners match.'}
+          <li className="px-4 py-6 text-center text-slate-500">
+            {landowners.length === 0 ? 'No landowners yet — add the first one above, or upload a lease.' : 'No landowners match that search.'}
           </li>
         )}
         {visible.map((l) => {
@@ -294,26 +363,59 @@ export default function LandownersPage() {
               {editingId === l.id ? (
                 <div className="space-y-2">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <input value={edit.name} onChange={(e) => setEdit((d) => ({ ...d, name: e.target.value }))} className={inputCls} placeholder="Name" />
-                    <select value={edit.kind} onChange={(e) => setEdit((d) => ({ ...d, kind: e.target.value }))} className={inputCls}>
-                      <option value="">Kind (optional)</option>
-                      {LANDOWNER_KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
-                    </select>
-                    <input value={edit.contact_name} onChange={(e) => setEdit((d) => ({ ...d, contact_name: e.target.value }))} className={inputCls} placeholder="Contact person" />
-                    <input value={edit.payee_name} onChange={(e) => setEdit((d) => ({ ...d, payee_name: e.target.value }))} className={inputCls} placeholder="Make cheques payable to" />
-                    <input value={edit.phone} onChange={(e) => setEdit((d) => ({ ...d, phone: e.target.value }))} className={inputCls} placeholder="Phone" />
-                    <input value={edit.email} onChange={(e) => setEdit((d) => ({ ...d, email: e.target.value }))} className={inputCls} placeholder="Email" />
-                    <input value={edit.address_street} onChange={(e) => setEdit((d) => ({ ...d, address_street: e.target.value }))} className={`${inputCls} sm:col-span-2`} placeholder="Street" />
-                    <input value={edit.address_city} onChange={(e) => setEdit((d) => ({ ...d, address_city: e.target.value }))} className={inputCls} placeholder="City" />
+                    <label className={labelCls}>
+                      Name
+                      <input value={edit.name} onChange={(e) => setEdit((d) => ({ ...d, name: e.target.value }))} className={`${inputCls} mt-1`} />
+                    </label>
+                    <label className={labelCls}>
+                      Kind <span className="text-slate-400">(optional)</span>
+                      <select value={edit.kind} onChange={(e) => setEdit((d) => ({ ...d, kind: e.target.value }))} className={`${inputCls} mt-1`}>
+                        <option value="">—</option>
+                        {LANDOWNER_KINDS.map((k) => <option key={k} value={k}>{KIND_LABEL[k]}</option>)}
+                      </select>
+                    </label>
+                    <label className={`${labelCls}`}>
+                      Contact person
+                      <input value={edit.contact_name} onChange={(e) => setEdit((d) => ({ ...d, contact_name: e.target.value }))} className={`${inputCls} mt-1`} />
+                    </label>
+                    <label className={`${labelCls}`}>
+                      Make checks payable to
+                      <input value={edit.payee_name} onChange={(e) => setEdit((d) => ({ ...d, payee_name: e.target.value }))} placeholder="if different from the name" className={`${inputCls} mt-1`} />
+                    </label>
+                    <label className={`${labelCls}`}>
+                      Phone
+                      <input value={edit.phone} onChange={(e) => setEdit((d) => ({ ...d, phone: e.target.value }))} className={`${inputCls} mt-1`} />
+                    </label>
+                    <label className={`${labelCls}`}>
+                      Email
+                      <input value={edit.email} onChange={(e) => setEdit((d) => ({ ...d, email: e.target.value }))} className={`${inputCls} mt-1`} />
+                    </label>
+                    <label className={`${labelCls} sm:col-span-2`}>
+                      Street
+                      <input value={edit.address_street} onChange={(e) => setEdit((d) => ({ ...d, address_street: e.target.value }))} className={`${inputCls} mt-1`} />
+                    </label>
+                    <label className={`${labelCls}`}>
+                      City
+                      <input value={edit.address_city} onChange={(e) => setEdit((d) => ({ ...d, address_city: e.target.value }))} className={`${inputCls} mt-1`} />
+                    </label>
                     <div className="grid grid-cols-2 gap-2">
-                      <input value={edit.address_state} onChange={(e) => setEdit((d) => ({ ...d, address_state: e.target.value }))} className={inputCls} placeholder="State" maxLength={2} />
-                      <input value={edit.address_zip} onChange={(e) => setEdit((d) => ({ ...d, address_zip: e.target.value }))} className={inputCls} placeholder="ZIP" />
+                      <label className={`${labelCls}`}>
+                        State
+                        <input value={edit.address_state} onChange={(e) => setEdit((d) => ({ ...d, address_state: e.target.value }))} placeholder="ST" maxLength={2} className={`${inputCls} mt-1`} />
+                      </label>
+                      <label className={`${labelCls}`}>
+                        ZIP
+                        <input value={edit.address_zip} onChange={(e) => setEdit((d) => ({ ...d, address_zip: e.target.value }))} className={`${inputCls} mt-1`} />
+                      </label>
                     </div>
-                    <input value={edit.notes} onChange={(e) => setEdit((d) => ({ ...d, notes: e.target.value }))} className={`${inputCls} sm:col-span-2`} placeholder="Notes" />
+                    <label className={`${labelCls} sm:col-span-2`}>
+                      Notes
+                      <input value={edit.notes} onChange={(e) => setEdit((d) => ({ ...d, notes: e.target.value }))} className={`${inputCls} mt-1`} />
+                    </label>
                   </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => save(l.id)} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold">Save</button>
-                    <button onClick={() => setEditingId(null)} className="text-slate-600 text-sm">Cancel</button>
+                  <div className="flex gap-2 justify-end">
+                    <button type="button" onClick={() => setEditingId(null)} className={`${btnCls} border border-slate-300 bg-white text-slate-700`}>Cancel</button>
+                    <button type="button" onClick={() => save(l.id)} className={`${btnCls} bg-brand hover:bg-brand-deep text-white px-4`}>Save</button>
                   </div>
                 </div>
               ) : (
@@ -354,18 +456,28 @@ export default function LandownersPage() {
                       <div className="text-xs text-slate-500 mt-1">
                         Shared with{' '}
                         <a href={TURNROW_FARM_URL} target="_blank" rel="noopener noreferrer" className="text-brand-deep underline">Turnrow Farm</a>
-                        {lastSyncAt ? `, last synced ${fmtSyncTime(lastSyncAt)}` : ''}. You can edit them here or there.
+                        {lastSyncAt ? `, last updated from there ${fmtSyncTime(lastSyncAt)}` : ''}. You can edit them here or there.
                       </div>
                     )}
                   </div>
-                  <button onClick={() => startEdit(l)} className="text-brand-deep text-sm">Edit</button>
-                  <button onClick={() => remove(l)} className="text-red-600 text-sm" disabled={linked.length > 0} title={linked.length > 0 ? 'Unassign farms first' : ''}>Delete</button>
+                  {!l.merged_into_id && (
+                    <>
+                      <button type="button" onClick={() => startEdit(l)} className={`${btnCls} text-brand-deep`}>Edit</button>
+                      {l.archived_at
+                        ? <button type="button" onClick={() => unarchive(l)} className={`${btnCls} text-slate-600`}>Restore</button>
+                        : <button type="button" onClick={() => archive(l)} className={`${btnCls} text-slate-600`}>Archive</button>}
+                      {!l.archived_at && linked.length === 0 && (
+                        <button type="button" onClick={() => remove(l)} className={`${btnCls} text-red-600`}>Delete</button>
+                      )}
+                    </>
+                  )}
                 </div>
               )}
             </li>
           )
         })}
       </ul>
+      {dialogs}
     </div>
   )
 }

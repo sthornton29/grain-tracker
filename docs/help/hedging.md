@@ -1,7 +1,7 @@
 ---
 page_route: /hedging
 title: Hedging
-updated: 2026-09-14
+updated: 2026-09-24
 keywords: hedging, futures, options, positions, open, closed, realized, unrealized, brokerage statement, commissions, P&L, market prices, manual quote, manual price, cotton price, no live price, enter price, stale quote, roll, rolled, roll forward, spread, effective price, history, audit trail, who changed, when, statement import, partial roll
 ---
 ## What this page is for
@@ -14,12 +14,13 @@ Hedging tracks your futures and options positions alongside the crops they prote
 - When you offset a trade at the brokerage, use **Close** on the position and enter the closing price, date, and commission. The result moves from unrealized to realized.
 - When you move a hedge out to a later month, use **Roll…** on the position: pick the new month, enter the price the old month closed at and the price the new month opened at, the date, and any fees. Turnrow closes the old leg, opens the new one, and links the two — the new month keeps the same crop year automatically.
 - Or skip the typing: **import a brokerage statement** (photo or PDF). Turnrow reads the open positions, closed trades, rolls, and cotton alongside the grains, shows everything on a review screen, and saves only what you confirm.
-- Filter between open, closed, and all; closed positions can be narrowed by date range.
+- Filter by crop year, commodity, entity, and open / closed / both; closed positions can be narrowed by date range. Filters apply as you change them and are remembered for next time.
+- On each open row, **Close** and **Roll…** are the two buttons; **Edit**, **History**, and **Delete** sit behind the **…** button, and Delete always asks first. **Update** on an option is where you type today's premium when there is no live price.
 - Switch the page between **Positions** and **History**. History is the running record of everything that ever happened to your hedges, newest first.
 
 ## What the controls do
 
-- **Open / Closed tables** — open positions show live gain or loss at current prices; closed positions show the locked-in result net of commissions.
+- **Open / Closed tables** — open positions show live gain or loss at current prices; closed positions show the locked-in result net of commissions. Losses print in parentheses, like ($1,250.00). The commodity column stays put when a wide table scrolls sideways on an iPad.
 - **Statement import** matches what it reads to positions you already have, so re-importing a statement doesn't duplicate anything. Closed trades come in lot by lot: each opening lot becomes its own closed position with its own result, and the lots are checked against the statement's total — a disagreement over a dollar is flagged on the review screen for you to look at.
 - The import also runs a second check: positions Turnrow shows open that don't appear on the statement are flagged as possibly closed. You choose — **Close this position** (which walks through the normal close, nothing closes automatically) or **Keep open**.
 - Cotton is handled in its own terms throughout: pounds instead of bushels, cents per pound instead of dollars per bushel.

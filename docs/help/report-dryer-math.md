@@ -1,7 +1,7 @@
 ---
 page_route: /reports/dryer-math
 title: Grain Dryer Math
-updated: 2026-09-08
+updated: 2026-09-24
 keywords: dryer, drying, propane, LP, natural gas, moisture, shrink, overdrying, cost per point, bushel point, calibrate, haul wet, discount schedule, assumptions, weight loss, depreciation, ownership cost, total drying cost, shrink factor, excess shrink, elevator, dock, MMBtu, per million BTU, fuel price unit, therm, dekatherm
 ---
 ## What this page is for

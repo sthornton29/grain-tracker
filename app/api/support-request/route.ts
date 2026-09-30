@@ -28,14 +28,14 @@ function rateLimited(userId: string): boolean {
 export async function POST(req: NextRequest) {
   const supabase = createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user?.email) return NextResponse.json({ error: 'Please sign in.' }, { status: 401 })
+  if (!user?.email) return NextResponse.json({ error: 'Please sign in again.' }, { status: 401 })
   if (rateLimited(user.id)) {
     return NextResponse.json({ error: 'A few messages are already on their way — give support a little time to reply.' }, { status: 429 })
   }
 
   const key = process.env.RESEND_API_KEY
   if (!key) {
-    return NextResponse.json({ error: 'Support email isn’t set up yet — email stuart@turnrow.farm directly.' }, { status: 503 })
+    return NextResponse.json({ error: `Messages can’t be sent from this form right now — email ${SUPPORT_TO} and we’ll pick it up there.` }, { status: 503 })
   }
 
   const body = (await req.json().catch(() => null)) as {
@@ -98,7 +98,7 @@ export async function POST(req: NextRequest) {
   if (!res.ok) {
     const detail = await res.text().catch(() => '')
     console.error(`support-request send failed (${res.status}): ${detail.slice(0, 500)}`)
-    return NextResponse.json({ error: 'Could not send right now — email stuart@turnrow.farm directly.' }, { status: 502 })
+    return NextResponse.json({ error: `Your message didn’t go through — try again in a minute, or email ${SUPPORT_TO}.` }, { status: 502 })
   }
   console.log(`support-request sent: ${user.email} (${orgName}) — "${email.subject}"${attachments.length ? ' +screenshot' : ''}${body?.transcript ? ' +transcript' : ''}`)
   return NextResponse.json({ ok: true })

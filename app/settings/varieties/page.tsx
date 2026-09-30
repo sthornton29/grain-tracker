@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { reportError } from '@/lib/friendly-error'
+import { useDialogs } from '@/components/use-dialogs'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import {
   buildVarietyMergePlan,
@@ -38,6 +40,7 @@ type VarietyListRow = { name: string; plantings: number; totalAcres: number }
 type CropVarieties = { crop: Crop; rowsByName: Map<string, VarietyRowRef[]>; list: VarietyListRow[] }
 
 export default function VarietiesPage() {
+  const { confirmText, dialogs } = useDialogs()
   const supabase = useMemo(() => createClient(), [])
   const [crops, setCrops] = useState<Crop[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
@@ -63,7 +66,7 @@ export default function VarietiesPage() {
       supabase.from('variety_match_dismissals').select('*'),
     ])
     const firstErr = cr.error ?? pl.error ?? vv.error
-    if (firstErr) { setErr(firstErr.message); return }
+    if (firstErr) { setErr(reportError(firstErr, { action: 'finish that' })); return }
     // A missing dismissals table (043 not applied yet) degrades to none —
     // decisions just won't persist until the migration runs.
     setCrops((cr.data as Crop[]) || [])
@@ -131,7 +134,7 @@ export default function VarietiesPage() {
         // like the dedupe tool so acres/bushels sum instead of duplicating.
         const rows = [...oldRows, ...(g.rowsByName.get(collision) ?? [])]
         const plan = buildVarietyMergePlan(rows, newName)
-        const ok = confirm(
+        const ok = await confirmText(
           `“${newName}” already exists for ${g.crop.name}. Merge “${oldName}” into it?\n\n` +
           `${plan.affectedPlantings} planting${plan.affectedPlantings === 1 ? '' : 's'} will be updated` +
           (plan.deletes.length > 0 ? `; ${plan.deletes.length} redundant row${plan.deletes.length === 1 ? '' : 's'} combined.` : '.'),
@@ -156,7 +159,7 @@ export default function VarietiesPage() {
       setEditing(null)
       await refresh()
     } catch (e: any) {
-      setErr(`Rename failed: ${e?.message ?? 'unknown error'}`)
+      setErr(reportError(e, { action: 'rename the variety', noun: 'variety' }))
     } finally {
       setBusyRow(null)
     }
@@ -168,7 +171,7 @@ export default function VarietiesPage() {
     if (row.plantings > 0) return
     const rows = g.rowsByName.get(row.name) ?? []
     if (rows.length === 0) return
-    if (!confirm(`Delete “${row.name}” (${g.crop.name})?`)) return
+    if (!(await confirmText(`Delete “${row.name}” (${g.crop.name})?`))) return
     const key = `${g.crop.id}|${row.name}`
     setBusyRow(key); setErr(null)
     try {
@@ -177,7 +180,7 @@ export default function VarietiesPage() {
       setBanner(`Deleted “${row.name}” (${g.crop.name}).`)
       await refresh()
     } catch (e: any) {
-      setErr(`Delete failed: ${e?.message ?? 'unknown error'}`)
+      setErr(reportError(e, { action: 'delete the variety', noun: 'variety' }))
     } finally {
       setBusyRow(null)
     }
@@ -218,7 +221,7 @@ export default function VarietiesPage() {
     const rows = [...(g.rowsByName.get(pair.a.name) ?? []), ...(g.rowsByName.get(pair.b.name) ?? [])]
     const plan = buildVarietyMergePlan(rows, canonical)
     if (plan.updates.length === 0 && plan.deletes.length === 0) return
-    const ok = confirm(
+    const ok = await confirmText(
       `Merge “${loser}” into “${canonical}” for ${g.crop.name}?\n\n` +
       `${plan.affectedPlantings} planting${plan.affectedPlantings === 1 ? '' : 's'} will be updated` +
       (plan.deletes.length > 0 ? `; ${plan.deletes.length} redundant variety row${plan.deletes.length === 1 ? '' : 's'} removed (acres/bushels combined).` : '.'),
@@ -240,7 +243,7 @@ export default function VarietiesPage() {
       setBanner(`Merged “${loser}” into “${canonical}” (${g.crop.name}).`)
       await refresh()
     } catch (e: any) {
-      setErr(`Merge failed: ${e?.message ?? 'unknown error'} — reload and check the rows before retrying.`)
+      setErr(`${reportError(e, { action: 'merge the varieties', noun: 'variety' })} Reload and check the rows before retrying.`)
       await refresh()
     } finally {
       setBusyPair(null)
@@ -259,7 +262,7 @@ export default function VarietiesPage() {
       setBanner(`Kept both “${pair.a.name}” and “${pair.b.name}” — this pair won’t be suggested again.`)
       await refresh()
     } catch (e: any) {
-      setErr(`Could not record the decision: ${e?.message ?? 'unknown error'}. If this keeps happening, contact support.`)
+      setErr(reportError(e, { action: 'save that decision' }))
     } finally {
       setBusyPair(null)
     }
@@ -437,6 +440,7 @@ export default function VarietiesPage() {
           ))}
         </section>
       )}
+      {dialogs}
     </div>
   )
 }

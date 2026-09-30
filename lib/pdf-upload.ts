@@ -583,6 +583,7 @@ export type CottonLoadExtraction = {
   gross_weight: number | null
   tare_weight: number | null
   net_weight: number | null
+  rolls: number | null
   crop_year: number | null
 }
 export type CottonLoadsExtraction = { loads: CottonLoadExtraction[] }

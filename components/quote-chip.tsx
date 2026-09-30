@@ -18,6 +18,8 @@
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { getOrgId } from '@/lib/org'
+import { reportError } from '@/lib/friendly-error'
+import { fmtDate } from '@/lib/format-date'
 import { commodityForSymbol, fmtQuote, parseManualQuoteInput, quoteProvenance, type Quote } from '@/lib/quotes'
 
 const toneCls: Record<'neutral' | 'amber' | 'red', string> = {
@@ -32,6 +34,7 @@ export function QuoteChip({ quote, className }: { quote: Pick<Quote, 'source' | 
   return (
     <span
       title={p.warning ? `${p.warning} ${p.title}` : p.title}
+      aria-label={p.warning ? `${p.warning} ${p.title}` : p.title}
       className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold leading-none cursor-help ${toneCls[p.tone]} ${className ?? ''}`}
     >
       {p.chip}{p.tone === 'red' ? ' · update' : p.warning ? ' · old' : ''}
@@ -55,10 +58,7 @@ export async function saveManualQuote(args: {
     .from('manual_market_quotes')
     .upsert({ org_id: orgId, contract_symbol: symbol, price: args.price, entered_at, note: args.note ?? null }, { onConflict: 'org_id,contract_symbol' })
   if (error) {
-    const msg = /relation .* does not exist|schema cache/i.test(error.message)
-      ? 'Saving a manual price needs a database update — contact support.'
-      : error.message
-    return { quote: null, error: msg }
+    return { quote: null, error: reportError(error, { action: 'save this price', noun: 'price' }) }
   }
   return { quote: { symbol, price: args.price, priceDate: entered_at.slice(0, 10), stale: false, source: 'manual', enteredAt: entered_at }, error: null }
 }
@@ -119,8 +119,8 @@ export default function ManualQuoteControl({
           type="button"
           disabled={disabled}
           onClick={() => { setRaw(isManual && quote ? String(commodity === 'Cotton' ? quote.price / 100 : quote.price) : ''); setOpen(true) }}
-          className="text-brand-deep underline decoration-dotted underline-offset-2 disabled:opacity-50"
-          title={isManual ? 'Change the manual price' : `No live price for ${symbol} — enter one; it is saved and used everywhere`}
+          className="text-brand-deep underline decoration-dotted underline-offset-2 disabled:opacity-50 min-h-8"
+          aria-label={isManual ? `Change the manual price for ${symbol}` : `Enter a price for ${symbol} — no live quote; it is saved and used everywhere`}
         >
           {isManual ? 'edit' : (label ?? 'enter price')}
         </button>
@@ -145,7 +145,7 @@ export default function ManualQuoteControl({
       </button>
       <button type="button" onClick={() => setOpen(false)} className="text-slate-500">Cancel</button>
       {err && <span className="text-red-600 basis-full">{err}</span>}
-      {!err && isManual && quote && <span className="text-slate-400 basis-full">Now {fmtQuote(commodity, quote.price)} · saved {quote.priceDate}</span>}
+      {!err && isManual && quote && <span className="text-slate-400 basis-full">Now {fmtQuote(commodity, quote.price)} · saved {fmtDate(quote.priceDate)}</span>}
     </span>
   )
 }

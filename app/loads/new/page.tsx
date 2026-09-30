@@ -7,15 +7,15 @@ export default function NewLoadPage() {
       <div className="flex justify-end gap-2">
         <Link
           href="/loads/combine"
-          className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm"
+          className="inline-flex items-center rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm"
         >
-          Yield from Combine
+          Yield from combine
         </Link>
         <Link
           href="/loads/scan"
-          className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm"
+          className="inline-flex items-center rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm"
         >
-          Scan Tickets (AI)
+          Scan tickets
         </Link>
       </div>
       <LoadForm mode="create" />

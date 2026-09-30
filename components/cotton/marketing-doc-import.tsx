@@ -20,6 +20,7 @@
 
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useDialogs } from '@/components/use-dialogs'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import { BuyerPicker } from '@/components/buyer-location-pickers'
 import EntitySelect from '@/components/entity-select'
@@ -436,6 +437,7 @@ function PartitionSummary({ p, targetLabel }: { p: BalePartition; targetLabel: s
 // CCC loan
 // ---------------------------------------------------------------------------
 function LoanReview({ supabase, extracted: x, loans, bales, gradeByBale, dispositionByBale, loanedBaleIds, ldpBaleIds, entities, cropYear, singleEntityId, onDone, onErr }: PanelProps & { extracted: CccLoanExtract }) {
+  const { confirmText, dialogs } = useDialogs()
   const [f, setF] = useState(() => ({
     loan_number: str(x.loan_number),
     entry_date: str(x.entry_date) || todayIso(),
@@ -475,7 +477,7 @@ function LoanReview({ supabase, extracted: x, loans, bales, gradeByBale, disposi
       (x.principal_total != null ? `\nDocument states principal ${usd(Number(x.principal_total))}` : '')
     try {
       if (existing) {
-        if (!confirm(`Add to EXISTING loan ${existing.loan_number}:\n\n${summaryLine}\n\nBlocked/unmatched numbers are skipped.`)) return
+        if (!(await confirmText(`Add to EXISTING loan ${existing.loan_number}:\n\n${summaryLine}\n\nBlocked/unmatched numbers are skipped.`))) return
         const { error } = await supabase.from('ccc_loan_bales').insert(partition.matched.map((m) => ({ loan_id: existing.id, bale_id: m.baleId })))
         if (error) throw new Error(error.message)
         await upsertDispositions(supabase, partition.matched.map((m) => m.baleId), 'ccc_loan', { loan_id: existing.id, disposition_date: f.entry_date })
@@ -494,7 +496,7 @@ function LoanReview({ supabase, extracted: x, loans, bales, gradeByBale, disposi
         if (e2) throw new Error(e2.message)
         await onDone(`${partition.matchedCount} bales added to loan ${existing.loan_number} — principal now ${usd(p.principalTotal)}.`)
       } else {
-        if (!confirm(`Enter NEW CCC loan ${f.loan_number || '(no number)'}:\n\n${summaryLine}\n\nBlocked/unmatched numbers are skipped.`)) return
+        if (!(await confirmText(`Enter NEW CCC loan ${f.loan_number || '(no number)'}:\n\n${summaryLine}\n\nBlocked/unmatched numbers are skipped.`))) return
         const { data, error } = await supabase.from('ccc_loans').insert({
           entity_id: f.entity_id || null, crop_year: x.crop_year ?? cropYear,
           loan_number: f.loan_number.trim() || null,
@@ -553,6 +555,7 @@ function LoanReview({ supabase, extracted: x, loans, bales, gradeByBale, disposi
       <button type="button" className={btnCls} disabled={partition.matchedCount === 0 || closedDuplicate != null} onClick={save}>
         {existing ? `Add ${partition.matchedCount} bales to loan ${existing.loan_number}` : `Enter loan (${partition.matchedCount} bales)`}
       </button>
+      {dialogs}
     </div>
   )
 }
@@ -561,6 +564,7 @@ function LoanReview({ supabase, extracted: x, loans, bales, gradeByBale, disposi
 // LDP notice
 // ---------------------------------------------------------------------------
 function LdpReview({ supabase, extracted: x, bales, dispositionByBale, loanedBaleIds, ldpBaleIds, latestAwpCents, cropYear, singleEntityId, onDone, onErr }: PanelProps & { extracted: LdpNoticeExtract }) {
+  const { confirmText, dialogs } = useDialogs()
   const [f, setF] = useState(() => ({
     ldp_date: str(x.ldp_date) || todayIso(),
     awp_cents: dollarsStr(x.awp_cents) || (latestAwpCents != null ? (latestAwpCents / 100).toFixed(4) : ''),
@@ -582,7 +586,7 @@ function LdpReview({ supabase, extracted: x, bales, dispositionByBale, loanedBal
     if (awpV == null || rate == null) { onErr('Enter the AWP ($/lb, e.g. 0.5143).'); return }
     if (rate <= 0) { onErr(`AWP ${cents(awpV)} is at/above the loan rate — no LDP is payable.`); return }
     const total = x.total_payment != null ? Number(x.total_payment) : computedTotal ?? 0
-    if (!confirm(`Record LDP:\n\n${partition.matchedCount} bales · ${lbs0(partition.matchedLbs)} lbs\nRate ${cents(rate)}/lb → ${usd(computedTotal ?? 0)} computed${x.total_payment != null ? `\nDocument states ${usd(Number(x.total_payment))} (saved)` : ''}\n\nThese bales become CCC-loan-INELIGIBLE.`)) return
+    if (!(await confirmText(`Record LDP:\n\n${partition.matchedCount} bales · ${lbs0(partition.matchedLbs)} lbs\nRate ${cents(rate)}/lb → ${usd(computedTotal ?? 0)} computed${x.total_payment != null ? `\nDocument states ${usd(Number(x.total_payment))} (saved)` : ''}\n\nThese bales become CCC-loan-INELIGIBLE.`))) return
     try {
       const { data, error } = await supabase.from('cotton_ldp_records').insert({
         entity_id: singleEntityId || null, crop_year: x.crop_year ?? cropYear,
@@ -614,6 +618,7 @@ function LdpReview({ supabase, extracted: x, bales, dispositionByBale, loanedBal
         <p className="text-sm tabular-nums">Rate <strong>{cents(rate)}/lb</strong> × {lbs0(partition.matchedLbs)} lbs → <strong>{usd(computedTotal ?? 0)}</strong>{x.total_payment != null ? ` · document states ${usd(Number(x.total_payment))}` : ''}</p>
       )}
       <button type="button" className={btnCls} disabled={partition.matchedCount === 0} onClick={save}>Record LDP ({partition.matchedCount} bales)</button>
+      {dialogs}
     </div>
   )
 }
@@ -622,6 +627,7 @@ function LdpReview({ supabase, extracted: x, bales, dispositionByBale, loanedBal
 // Equity sale confirmation
 // ---------------------------------------------------------------------------
 function EquityReview({ supabase, extracted: x, loans, buyers, loanLbsFor, onBuyerCreated, onDone, onErr }: PanelProps & { extracted: EquitySaleExtract }) {
+  const { confirmText, dialogs } = useDialogs()
   const openLoans = useMemo(() => loans.filter((l) => l.status === 'open'), [loans])
   const matchedLoan = useMemo(() => {
     const n = str(x.loan_number).trim().toLowerCase()
@@ -645,7 +651,7 @@ function EquityReview({ supabase, extracted: x, loans, buyers, loanLbsFor, onBuy
   async function save() {
     if (!loan || eq == null || eq < 0) { onErr('Pick the loan and enter the equity ($/lb, e.g. 0.0800).'); return }
     const o = equityOutcome({ principalTotal: Number(loan.principal_total), lbs: loanLbsFor(loan.id), equityCentsPerLb: eq })
-    if (!confirm(`Equity sale on ${loan.loan_number ?? 'loan'} at ${cents(eq)}/lb:\n\nEquity received: ${usd(o.equityTotal)}\nEffective sale price: ${cents(o.effectiveCentsPerLb)}/lb (loan + equity)\n\nBales are final — the merchant owns them.`)) return
+    if (!(await confirmText(`Equity sale on ${loan.loan_number ?? 'loan'} at ${cents(eq)}/lb:\n\nEquity received: ${usd(o.equityTotal)}\nEffective sale price: ${cents(o.effectiveCentsPerLb)}/lb (loan + equity)\n\nBales are final — the merchant owns them.`))) return
     try {
       const { error } = await supabase.from('ccc_loans').update({
         status: 'equity_sold', outcome_date: f.date || todayIso(), equity_cents_per_lb: eq,
@@ -685,6 +691,7 @@ function EquityReview({ supabase, extracted: x, loans, buyers, loanLbsFor, onBuy
         </p>
       )}
       <button type="button" className={btnCls} disabled={!loan || eq == null || eq < 0} onClick={save}>Confirm equity sale</button>
+      {dialogs}
     </div>
   )
 }

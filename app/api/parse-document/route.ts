@@ -668,10 +668,11 @@ For each load extract:
 - picked_date, delivered_date (YYYY-MM-DD; null when absent)
 - truck (truck/trailer identifier text)
 - gross_weight, tare_weight, net_weight (POUNDS of seed cotton, plain numbers, no commas)
+- rolls (the number of round modules / rolls on the load, when printed - e.g. "Rolls: 4" or a module count; null when absent)
 - crop_year (the crop year if printed, else null)
 
 Respond ONLY in JSON, no other text, no markdown fences:
-{"loads": [{"load_number": "...", "producer": "...", "farm_number": "... or null", "field": "... or null", "picked_date": "YYYY-MM-DD or null", "delivered_date": "YYYY-MM-DD or null", "truck": "... or null", "gross_weight": number or null, "tare_weight": number or null, "net_weight": number or null, "crop_year": number or null}]}`
+{"loads": [{"load_number": "...", "producer": "...", "farm_number": "... or null", "field": "... or null", "picked_date": "YYYY-MM-DD or null", "delivered_date": "YYYY-MM-DD or null", "truck": "... or null", "gross_weight": number or null, "tare_weight": number or null, "net_weight": number or null, "rolls": number or null, "crop_year": number or null}]}`
 
 const GIN_RECEIPT_PROMPT = `This is a STATEMENT OF GINNING from a cotton gin (a gin receipt). Extract the full statement:
 

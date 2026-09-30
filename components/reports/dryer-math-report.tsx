@@ -29,7 +29,7 @@
 // The schedule's factor lives on its moisture rule (assumed 1.4% and flagged
 // when the sheet is silent — editable on Settings → Buyers).
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { marketingReferenceContract } from '@/lib/reference-contract'
@@ -65,7 +65,9 @@ import {
 import { formatNumber, type ExportPayload } from '@/lib/exports'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import DiscountScheduleImport from '@/components/discount-schedule-import'
-import { EmptyState, fmtNum, numCell, textCell, theadCls } from '@/components/reports/report-kit'
+import { EmptyState, fmtNum, numCell, textCell, theadCls, ReportHeader, filterSummaryOf } from '@/components/reports/report-kit'
+import { AppModal, ConfirmDialog } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
 import type { Buyer, BuyerDiscountSchedule, BuyerDiscountScheduleRule, Crop } from '@/lib/types'
 
 type DryerModel = {
@@ -117,8 +119,11 @@ const fmtCents = (n: number | null | undefined, d = 1) =>
 
 export default function DryerMathReport({
   onPayloadChange,
+  headerActions,
 }: {
   onPayloadChange: (fn: () => ExportPayload) => void
+  /** Rendered in the report header's action slot (the page passes <ExportBar/>). */
+  headerActions?: ReactNode
 }) {
   const supabase = useMemo(() => createClient(), [])
   const [loading, setLoading] = useState(true)
@@ -144,6 +149,10 @@ export default function DryerMathReport({
 
   // ---- assumptions (slide-over) ----
   const [panelOpen, setPanelOpen] = useState(false)
+  // Stable close handler for the dialog (AppModal re-arms its listeners when
+  // onClose changes identity): the latest persistSettings rides in a ref.
+  const persistRef = useRef<() => void>(() => {})
+  const closePanel = useCallback(() => { setPanelOpen(false); persistRef.current() }, [])
   // 'auto' = the org's first saved dryer when one exists, else the quick
   // consumption input below.
   const [dryerPick, setDryerPick] = usePersistentState('dryer:pick2', 'auto')
@@ -381,7 +390,7 @@ export default function DryerMathReport({
       .from('org_dryers')
       .update({ fuel_per_bu_pt: calibration.fuelPerBuPt })
       .eq('id', pickedOrgDryer.id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'save this' })); return }
     setCalSaved(`Saved — ${pickedOrgDryer.name} now uses your ${calibration.fuelPerBuPt.toFixed(5)} ${pickedOrgDryer.fuel === 'lp' ? 'gal' : 'ccf'}/bu-pt.`)
     refetchDryers()
   }
@@ -396,15 +405,17 @@ export default function DryerMathReport({
       fuel_per_bu_pt: spec.fuelPerBuPt,
       fan_kwh_per_bu_pt: spec.fanKwhPerBuPt ?? null,
     })
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'save this' })); return }
     setSaveName('')
     await refetchDryers()
   }
 
+  // The delete confirmation (an app dialog, not window.confirm).
+  const [deleteAsk, setDeleteAsk] = useState<OrgDryer | null>(null)
   async function deleteDryer(d: OrgDryer) {
-    if (!confirm(`Delete dryer "${d.name}"?`)) return
+    setDeleteAsk(null)
     const { error } = await supabase.from('org_dryers').delete().eq('id', d.id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'delete the dryer', noun: 'dryer' })); return }
     if (effectivePick === d.id) setDryerPick('quick')
     refetchDryers()
   }
@@ -485,13 +496,19 @@ export default function DryerMathReport({
     return <EmptyState message="No crops set up yet." linkHref="/settings/crops" linkLabel="Set up crops" />
   }
 
-  const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm'
+  const inputCls = 'rounded-lg border border-slate-300 px-2 min-h-10 text-sm'
+  persistRef.current = persistSettings
   const fuelUnit = activeFuel === 'ng' ? 'ccf' : 'gal'
   const dryerLabel = pickedOrgDryer?.name ?? (pickedModel ? `${pickedModel.manufacturer} ${pickedModel.model}` : `${quickPerBuPt || '0.018'} gal-LP-eq/bu-pt`)
   const comparing = buyerRules.length > 0
 
   return (
     <div className="space-y-4">
+      <ReportHeader
+        title="Grain Dryer Math"
+        filterSummary={filterSummaryOf(crops.find((c) => c.id === cropId)?.name ?? null, activeFuel === 'ng' ? 'Natural gas' : 'Propane')}
+        actions={headerActions}
+      />
       {err && <p className="text-sm text-red-600">{err}</p>}
       {settingsMissing && (
         <p className="text-sm rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-amber-800">
@@ -556,12 +573,19 @@ export default function DryerMathReport({
         <button
           type="button"
           onClick={() => setPanelOpen(true)}
-          className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
-          title="Dryer & consumption, grain price, electric rate, depreciation, calibration"
+          className="rounded-lg border border-slate-300 px-3 min-h-10 text-sm text-slate-600 hover:bg-slate-50"
         >
           ⚙ Assumptions
         </button>
       </div>
+      <ConfirmDialog
+        open={deleteAsk != null}
+        title={`Delete dryer “${deleteAsk?.name ?? ''}”?`}
+        confirmLabel="Delete"
+        danger
+        onConfirm={() => { if (deleteAsk) void deleteDryer(deleteAsk) }}
+        onCancel={() => setDeleteAsk(null)}
+      />
       <p className="text-xs text-slate-500 no-print -mt-2">
         Using {dryerLabel} · depreciation {fmtNum(Math.max(0, deprCents), 1)}¢/bu dried · grain {grainPrice != null ? `$${fmtNum(grainPrice)}/bu` : '(no price — the overdrying rows and the buyer comparison need one)'}
         {quote && grainPriceStr === '' ? ` (${quote.symbol} ${quote.source === 'manual' ? `manual · ${quoteProvenance(quote).chip?.replace('manual · ', '') ?? ''}` : 'today'})` : ''} — adjust under ⚙ Assumptions.
@@ -738,15 +762,9 @@ export default function DryerMathReport({
         )}
       </div>
 
-      {/* ---- assumptions slide-over ---- */}
-      {panelOpen && (
-        <div className="fixed inset-0 z-40 no-print" role="dialog" aria-modal="true">
-          <div className="absolute inset-0 bg-slate-900/30" onClick={() => { setPanelOpen(false); persistSettings() }} />
-          <div className="absolute inset-y-0 right-0 w-full max-w-md bg-white shadow-2xl overflow-y-auto p-5 space-y-5">
-            <div className="flex items-center gap-2">
-              <h2 className="font-semibold text-lg flex-1">Assumptions</h2>
-              <button type="button" onClick={() => { setPanelOpen(false); persistSettings() }} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50">Done</button>
-            </div>
+      {/* ---- assumptions dialog (Escape closes; focus stays inside) ---- */}
+      <AppModal open={panelOpen} title="Assumptions" onClose={closePanel} size="md" initialFocus="none">
+          <div className="space-y-5">
 
             <div className="space-y-2">
               <div className="text-sm font-semibold">Dryer &amp; consumption</div>
@@ -768,7 +786,7 @@ export default function DryerMathReport({
               {pickedOrgDryer && (
                 <p className="text-xs text-slate-500">
                   {pickedOrgDryer.fuel === 'lp' ? 'LP' : 'NG'} · {fmtNum(N(pickedOrgDryer.fuel_per_bu_pt) ?? 0, 4)} {pickedOrgDryer.fuel === 'lp' ? 'gal' : 'ccf'}/bu-pt ·{' '}
-                  <button type="button" onClick={() => deleteDryer(pickedOrgDryer)} className="text-red-600">delete</button>
+                  <button type="button" onClick={() => setDeleteAsk(pickedOrgDryer)} className="inline-flex items-center min-h-10 px-2 rounded-lg text-red-700 hover:bg-red-50">Delete</button>
                 </p>
               )}
               {pickedModel && (
@@ -906,9 +924,11 @@ export default function DryerMathReport({
               )}
               {calSaved && <p className="text-sm rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-green-900">{calSaved}</p>}
             </div>
+            <div className="flex justify-end pt-1">
+              <button type="button" onClick={closePanel} className="rounded-lg bg-slate-700 text-white px-4 min-h-11 text-sm font-semibold">Done</button>
+            </div>
           </div>
-        </div>
-      )}
+      </AppModal>
     </div>
   )
 }

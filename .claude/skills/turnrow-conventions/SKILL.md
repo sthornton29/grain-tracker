@@ -132,6 +132,32 @@ Every new tenant table must, in its own migration:
 Recent migrations (058, 062, 067, 069) are the templates — copy their policy
 blocks.
 
+## Farmer-facing surfaces — the four seams (2026-09-24 UX pass)
+
+- **Errors**: never `setError(err.message)`. `reportError(err, { action:
+  'save this load', noun: 'truck', name })` from `lib/friendly-error.ts` logs
+  the raw failure and returns the farmer sentence (duplicate, in-use,
+  permission, connection-lost, not-set-up → "contact support").
+- **Dialogs**: never `window.confirm/alert/prompt`. `ConfirmDialog` (danger
+  for deletes, with dependent COUNTS in the body), `NoticeDialog`,
+  `PromptDialog`, `AppModal` from `components/app-dialog.tsx` — portaled,
+  role=dialog, Escape, focus trap. `components/use-dialogs.tsx` gives a
+  promise-style `confirm()`/`prompt()`. Pass STABLE `onClose` callbacks.
+- **Dates**: `fmtDate` / `fmtDateShort` from `lib/format-date.ts` on screen —
+  never raw ISO. Dollars: report-kit `fmtUsd` (parentheses negatives) — no
+  private `usd` helpers.
+- **Reports**: every report renders `ReportHeader` (title + plain filter line
+  + `<ExportBar/>`) and `ReportFilterBar` with `FilterField` labels; crop
+  year comes from `useReportCropYear(key, …)` in `lib/report-filters.ts`
+  (current year default, persisted per report, NEVER overwritten on load);
+  `EmptyState` takes `role` so viewers are never linked to pages they can't
+  open; `InfoTip` instead of `title=` (tooltips never show on iPad).
+- **Settings**: `app/settings/settings-nav.ts` is the one list (rail + hub +
+  breadcrumb); land tables offer Archive before Delete; deletes are blocked
+  with a friendly count when loads depend on the record.
+- **Touch**: every tappable control ≥ 44px (`min-h-11`), weight inputs
+  `min-h-12`, helper copy no smaller than `text-xs`.
+
 ## Session-end ritual
 
 When a session changes user-facing behavior: regenerate `PROJECT_SUMMARY.md`,

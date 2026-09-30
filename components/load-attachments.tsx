@@ -8,7 +8,9 @@ import {
   deleteStorageObject,
 } from '@/lib/pdf-upload'
 import type { LoadAttachment } from '@/lib/types'
+import { reportError } from '@/lib/friendly-error'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
+import { ConfirmDialog } from '@/components/app-dialog'
 
 type Props = {
   loadId: string
@@ -31,6 +33,8 @@ export default function LoadAttachments({ loadId }: Props) {
   const [items, setItems] = useState<LoadAttachment[] | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [removeAsk, setRemoveAsk] = useState<LoadAttachment | null>(null)
+  const [removing, setRemoving] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -42,7 +46,7 @@ export default function LoadAttachments({ loadId }: Props) {
         .order('created_at', { ascending: true })
       if (cancelled) return
       if (error) {
-        setErr(error.message)
+        setErr(reportError(error, { action: 'load the attachments', noun: 'attachment' }))
         setItems([])
         return
       }
@@ -90,31 +94,34 @@ export default function LoadAttachments({ loadId }: Props) {
           })
           .select('*')
           .single()
-        if (error) throw new Error(error.message)
+        if (error) throw error
         uploaded.push(data as LoadAttachment)
       }
       setItems((prev) => [...(prev ?? []), ...uploaded])
     } catch (e: any) {
-      setErr(e?.message ?? 'Could not upload attachment.')
+      setErr(reportError(e, { action: 'attach that file', noun: 'attachment' }))
     } finally {
       setBusy(false)
     }
   }
 
   async function onDelete(a: LoadAttachment) {
-    if (!window.confirm(`Remove "${a.file_name}"?`)) return
     setErr(null)
+    setRemoving(true)
     try {
       const { error } = await supabase
         .from('load_attachments')
         .delete()
         .eq('id', a.id)
-      if (error) throw new Error(error.message)
+      if (error) throw error
       // Best-effort storage cleanup.
       await deleteStorageObject(supabase, a.file_path)
       setItems((prev) => (prev ?? []).filter((x) => x.id !== a.id))
     } catch (e: any) {
-      setErr(e?.message ?? 'Could not remove attachment.')
+      setErr(reportError(e, { action: 'remove that attachment', noun: 'attachment' }))
+    } finally {
+      setRemoving(false)
+      setRemoveAsk(null)
     }
   }
 
@@ -135,7 +142,7 @@ export default function LoadAttachments({ loadId }: Props) {
           type="button"
           onClick={() => inputRef.current?.click()}
           disabled={busy}
-          className="text-sm rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 disabled:opacity-50"
+          className="text-sm rounded-lg bg-brand hover:bg-brand-deep text-white px-3 min-h-11 disabled:opacity-50"
         >
           {busy ? 'Uploading…' : '+ Attach PDF or photo'}
         </button>
@@ -200,8 +207,8 @@ export default function LoadAttachments({ loadId }: Props) {
                 <div className="text-xs text-slate-500">{formatSize(a.file_size)}</div>
                 <button
                   type="button"
-                  onClick={() => onDelete(a)}
-                  className="mt-1 text-xs text-red-600"
+                  onClick={() => setRemoveAsk(a)}
+                  className="mt-1 text-sm text-red-600 min-h-11 px-1"
                 >
                   Remove
                 </button>
@@ -210,6 +217,16 @@ export default function LoadAttachments({ loadId }: Props) {
           ))}
         </ul>
       )}
+      <ConfirmDialog
+        open={removeAsk != null}
+        title="Remove this attachment?"
+        body={removeAsk ? <>“{removeAsk.file_name}” will be taken off this load.</> : undefined}
+        confirmLabel="Remove"
+        danger
+        busy={removing}
+        onConfirm={() => { if (removeAsk) void onDelete(removeAsk) }}
+        onCancel={() => { if (!removing) setRemoveAsk(null) }}
+      />
     </Dropzone>
   )
 }

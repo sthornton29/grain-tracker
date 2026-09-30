@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
@@ -24,9 +24,17 @@ import EntityFilter from '@/components/entity-filter'
 import ExportBar from '@/components/export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
 import {
-  SummaryCards, EmptyState, type SummaryCardData,
-  numCell, textCell, theadCls,
+  SummaryCards, EmptyState, ReportHeader, ReportFilterBar, FilterField, MonthlyBars, type SummaryCardData,
+  numCell, textCell, theadCls, stickyColCls, stickyColHeadCls, selectCls,
+  fmtUsd, fmtInt, toneText, toneFill, signedTone, filterSummaryOf, cropYearLabel,
 } from '@/components/reports/report-kit'
+import { useReportCropYear } from '@/lib/report-filters'
+import { fmtDate } from '@/lib/format-date'
+import { AppModal } from '@/components/app-dialog'
+import {
+  CASH_KIND_EXPLAINER, CASH_KIND_LABEL, projectionMonths, selectCashDetails, sumCashDetails,
+  type CashDetail, type CashKind, type CashSelection,
+} from '@/lib/cash-flow-detail'
 import type {
   Buyer, Contract, Crop, Entity, FieldPlanting,
   CropAssumption, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate, ProgramYearConfig,
@@ -64,19 +72,11 @@ type LineRow = {
   settlement_id: string
 }
 
-type SettlementRow = { id: string; settlement_date: string }
-type FarmRow = { id: string; entity_id: string | null }
-
-const fmt = (n: number, d = 2) => n.toLocaleString(undefined, { maximumFractionDigits: d })
+type SettlementRow = { id: string; settlement_date: string; settlement_number: string | null; buyer_id: string | null }
+type FarmRow = { id: string; entity_id: string | null; name: string }
 
 function monthKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-}
-function startOfMonth(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth(), 1)
-}
-function addMonth(d: Date): Date {
-  return new Date(d.getFullYear(), d.getMonth() + 1, 1)
 }
 function monthLabel(key: string): string {
   const [y, m] = key.split('-').map(Number)
@@ -126,9 +126,12 @@ export default function CashFlowPage() {
   // Month (1-12) crop insurance proceeds are assumed to arrive; default December.
   const [insuranceMonth, setInsuranceMonth] = useState(12)
 
-  const [cropYear, setCropYear] = useState<number | ''>('')
-  const [cropId, setCropId] = useState('')
-  const [buyerId, setBuyerId] = useState('')
+  // Crop year: current year by default, persisted, never overwritten on load
+  // (lib/report-filters). "All crop years" stays available but is never the
+  // default. Crop and buyer persist too.
+  const [cropYear, setCropYear] = useReportCropYear('cash-flow:cropYear', { allowAll: true })
+  const [cropId, setCropId] = usePersistentState('cash-flow:cropId', '')
+  const [buyerId, setBuyerId] = usePersistentState('cash-flow:buyerId', '')
   // Entity filter — persisted per report, scoped through the SHARED helper
   // (lib/entity-scope.ts) so this page interprets "entity selected" exactly
   // like Marketing / Revenue Projections / Income Sensitivity.
@@ -216,11 +219,11 @@ export default function CashFlowPage() {
         fetchAllLoads(),
         fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels, practice').order('id').range(f, t)),
         fetchAllRows((f, t) => supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue, settlement_id').order('id').range(f, t)),
-        fetchAllRows((f, t) => supabase.from('settlements').select('id, settlement_date').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('settlements').select('id, settlement_date, settlement_number, buyer_id').order('id').range(f, t)),
         supabase.from('crops').select('*'),
         supabase.from('buyers').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
-        supabase.from('farms').select('id, entity_id'),
+        supabase.from('farms').select('id, entity_id, name'),
         supabase.from('fields').select('id, farm_id'),
         fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
       ])
@@ -375,14 +378,17 @@ export default function CashFlowPage() {
     contract: Contract
     delivered: number
     deliveredUnpaid: number
+    unpaidLoads: number
     revenueReceived: number
-    revenueByMonth: Map<string, number>  // from settlements
+    /** Received dollars by settlement (the drill-down's rows); the month
+     *  comes from the settlement's date. */
+    receivedBySettlement: Map<string, { amount: number; bushels: number; loads: number }>
   }
   const aggByContract = useMemo(() => {
     const map = new Map<string, Agg>()
     for (const c of contracts) map.set(c.id, {
-      contract: c, delivered: 0, deliveredUnpaid: 0, revenueReceived: 0,
-      revenueByMonth: new Map(),
+      contract: c, delivered: 0, deliveredUnpaid: 0, unpaidLoads: 0, revenueReceived: 0,
+      receivedBySettlement: new Map(),
     })
     for (const load of loads) {
       if (!load.contract_id) continue
@@ -394,17 +400,22 @@ export default function CashFlowPage() {
       if (line) {
         const rev = Number(line.net_revenue ?? 0)
         agg.revenueReceived += rev
-        const settlement = settlementById.get(line.settlement_id)
-        if (settlement) {
-          const key = monthKey(new Date(settlement.settlement_date + 'T00:00:00'))
-          agg.revenueByMonth.set(key, (agg.revenueByMonth.get(key) ?? 0) + rev)
+        if (settlementById.has(line.settlement_id)) {
+          const cur = agg.receivedBySettlement.get(line.settlement_id) ?? { amount: 0, bushels: 0, loads: 0 }
+          cur.amount += rev
+          cur.bushels += Number(line.net_bushels ?? 0)
+          cur.loads += 1
+          agg.receivedBySettlement.set(line.settlement_id, cur)
         }
       } else {
         agg.deliveredUnpaid += bu
+        agg.unpaidLoads += 1
       }
     }
     return map
   }, [contracts, loads, cropById, lineByLoadId, lineByTicket, settlementById])
+
+  const contractLabel = (c: Contract) => `Contract #${c.contract_number}${c.buyer_id ? ` · ${buyerById.get(c.buyer_id)?.name ?? ''}` : ''}${c.crop_id ? ` · ${cropById.get(c.crop_id)?.name ?? ''}` : ''}`
 
   // Entity scoping via the shared attribution: a contract keyed to an entity
   // belongs wholly to it; an operation-level (null-entity) contract carries
@@ -424,10 +435,12 @@ export default function CashFlowPage() {
     return true
   })
 
-  // Compute monthly cash flow buckets
+  // Compute monthly cash flow buckets — and, beside each total, the rows it
+  // is made of (lib/cash-flow-detail) so any number on screen can open them.
   type Bucket = { received: number; outstanding: number; projected: number }
-  const monthly = useMemo(() => {
+  const contractFlow = useMemo(() => {
     const buckets = new Map<string, Bucket>()
+    const details: CashDetail[] = []
     const ensure = (k: string) => {
       let b = buckets.get(k)
       if (!b) { b = { received: 0, outstanding: 0, projected: 0 }; buckets.set(k, b) }
@@ -443,15 +456,34 @@ export default function CashFlowPage() {
       const price = Number(c.price_per_bushel ?? 0)
       // Entity share of this contract (1 unfiltered / entity-keyed).
       const s = shareFor(c)
+      const shareNote = s < 1 ? ` · ${Math.round(s * 100)}% entity share` : ''
+      const href = `/contracts/${c.id}`
 
       // received — by settlement month
-      for (const [m, amount] of agg.revenueByMonth) {
-        ensure(m).received += amount * s
+      for (const [settlementId, r] of agg.receivedBySettlement) {
+        const settlement = settlementById.get(settlementId)
+        if (!settlement) continue
+        const m = monthKey(new Date(settlement.settlement_date + 'T00:00:00'))
+        ensure(m).received += r.amount * s
+        details.push({
+          kind: 'received', month: m, amount: r.amount * s, status: 'received',
+          label: `Settlement ${settlement.settlement_number ? `#${settlement.settlement_number}` : fmtDate(settlement.settlement_date)}${settlement.buyer_id ? ` · ${buyerById.get(settlement.buyer_id)?.name ?? ''}` : ''}`,
+          sub: `${contractLabel(c)} · ${fmtInt(r.loads)} load${r.loads === 1 ? '' : 's'} · ${fmtInt(r.bushels)} bu · dated ${fmtDate(settlement.settlement_date)}${shareNote}`,
+          href: `/settlements/${settlementId}`,
+        })
       }
 
       // outstanding (delivered but unpaid) — receivable this month, valued at contract price
       const outstandingAmt = agg.deliveredUnpaid * price * s
-      if (outstandingAmt > 0) ensure(thisMonth).outstanding += outstandingAmt
+      if (outstandingAmt > 0) {
+        ensure(thisMonth).outstanding += outstandingAmt
+        details.push({
+          kind: 'outstanding', month: thisMonth, amount: outstandingAmt, status: 'outstanding',
+          label: contractLabel(c),
+          sub: `${fmtInt(agg.unpaidLoads)} load${agg.unpaidLoads === 1 ? '' : 's'} delivered, not yet on a settlement · ${fmtInt(agg.deliveredUnpaid * s)} bu × ${fmtUsd(price, 2)}${shareNote}`,
+          href,
+        })
+      }
 
       // projected (not yet delivered) — spread across remaining months in delivery
       // window. Completed contracts project nothing, even with bushels remaining.
@@ -459,32 +491,37 @@ export default function CashFlowPage() {
       const complete = isContractComplete(c.completed_at, Number(c.contracted_bushels), agg.delivered)
       if (!complete && remainingBu > 0 && price > 0) {
         const totalProjected = remainingBu * price
-        const months: string[] = []
-        let cursor = startOfMonth(today)
-        if (c.delivery_start_date) {
-          const s = startOfMonth(new Date(c.delivery_start_date + 'T00:00:00'))
-          if (s > cursor) cursor = s
-        }
-        const end = c.delivery_end_date ? new Date(c.delivery_end_date + 'T00:00:00') : null
-        if (end && end >= cursor) {
-          const endKey = monthKey(end)
-          while (monthKey(cursor) <= endKey) {
-            months.push(monthKey(cursor))
-            cursor = addMonth(cursor)
-          }
-        }
+        const months = projectionMonths({ todayKey: thisMonth, start: c.delivery_start_date, end: c.delivery_end_date })
+        const windowNote = (c.delivery_start_date || c.delivery_end_date)
+          ? `window ${c.delivery_start_date ? fmtDate(c.delivery_start_date) : 'open'} → ${c.delivery_end_date ? fmtDate(c.delivery_end_date) : 'open'}`
+          : 'no delivery window'
         if (months.length === 0) {
           // No window (or end has passed) — put everything in current month
           ensure(thisMonth).projected += totalProjected
+          details.push({
+            kind: 'projected', month: thisMonth, amount: totalProjected, status: 'projected',
+            label: contractLabel(c),
+            sub: `${fmtInt(remainingBu)} bu still to deliver × ${fmtUsd(price, 2)} · ${windowNote}, so all of it is shown this month${shareNote}`,
+            href,
+          })
         } else {
           const per = totalProjected / months.length
-          for (const m of months) ensure(m).projected += per
+          for (const m of months) {
+            ensure(m).projected += per
+            details.push({
+              kind: 'projected', month: m, amount: per, status: 'projected',
+              label: contractLabel(c),
+              sub: `${fmtInt(remainingBu)} bu still to deliver × ${fmtUsd(price, 2)} = ${fmtUsd(totalProjected)}, spread over ${months.length} month${months.length === 1 ? '' : 's'} (${windowNote})${shareNote}`,
+              href,
+            })
+          }
         }
       }
     }
-    return buckets
+    return { buckets, details }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleContracts, aggByContract])
+  }, [visibleContracts, aggByContract, settlementById, buyerById, cropById])
+  const monthly = contractFlow.buckets
 
   // Safety net (crop insurance + government payments) bucketed by month, with the
   // program-specific timing: ARC/PLC in October of crop_year + 1, crop insurance
@@ -492,13 +529,15 @@ export default function CashFlowPage() {
   // payment date (else December of the crop year). Respects the crop-year, crop,
   // and entity filters where each program is scoped to those dimensions.
   type SafetyBucket = { arcPlc: number; insurance: number; other: number }
-  const safetyNet = useMemo(() => {
+  const safetyFlow = useMemo(() => {
     const buckets = new Map<string, SafetyBucket>()
+    const details: CashDetail[] = []
     const ensure = (k: string) => {
       let b = buckets.get(k)
       if (!b) { b = { arcPlc: 0, insurance: 0, other: 0 }; buckets.set(k, b) }
       return b
     }
+    const farmName = (id: string | null) => (id ? farms.find((f) => f.id === id)?.name ?? 'Farm' : 'No farm')
 
     // ARC/PLC — net projections per PROGRAM year, placed in October of program
     // year + 1 (the revenue crop year). Filtering to crop year Y therefore
@@ -509,12 +548,21 @@ export default function CashFlowPage() {
     for (const yr of programYears) {
       if (!cropId) {
         const projected = projectPayments({ cropYear: yr, baseAcres, commodities, elections, priceData: arcPriceData, payments: arcPayments })
+        const m = monthKey(new Date(expectedArcPlcDate(yr) + 'T00:00:00'))
         let net = 0
         for (const p of projected) {
           if (!scope.farmInEntity(p.farmId)) continue
           net += p.result.net
+          if (p.result.net !== 0) {
+            details.push({
+              kind: 'arcPlc', month: m, amount: p.result.net, status: 'projected',
+              label: `${farmName(p.farmId)} · ${commodities.find((c) => c.id === p.commodityId)?.name ?? 'Commodity'}`,
+              sub: `${p.election} · ${fmtInt(p.baseAcres)} base acres · ${yr} program year, paid Oct ${yr + 1}`,
+              href: '/reports/government-payments',
+            })
+          }
         }
-        if (net !== 0) ensure(monthKey(new Date(expectedArcPlcDate(yr) + 'T00:00:00'))).arcPlc += net
+        if (net !== 0) ensure(m).arcPlc += net
       }
     }
 
@@ -550,7 +598,18 @@ export default function CashFlowPage() {
         scoTrigger: resolveProgramYearConfig(yr, programConfigs).scoTrigger,
       })
       const total = projected.reduce((s, r) => s + r.comp.totalIndemnity, 0)
-      if (total > 0) ensure(`${yr}-${String(insuranceMonth).padStart(2, '0')}`).insurance += total
+      const m = `${yr}-${String(insuranceMonth).padStart(2, '0')}`
+      if (total > 0) ensure(m).insurance += total
+      for (const r of projected) {
+        if (r.comp.totalIndemnity <= 0) continue
+        const p = r.policy
+        details.push({
+          kind: 'insurance', month: m, amount: r.comp.totalIndemnity, status: 'projected',
+          label: `${cropById.get(p.crop_id)?.name ?? 'Crop'} · ${p.practice === 'irrigated' ? 'irrigated' : 'dryland'} · ${p.plan_type} ${fmtInt(Number(p.coverage_level) <= 1 ? Number(p.coverage_level) * 100 : Number(p.coverage_level))}%`,
+          sub: `${yr} policy${p.entity_id ? ` · ${entities.find((e) => e.id === p.entity_id)?.name ?? ''}` : ''} · projected indemnity at today's harvest price`,
+          href: '/reports/crop-insurance-claims',
+        })
+      }
     }
 
     // Other USDA payments — on payment_date, else December of the crop year.
@@ -561,10 +620,17 @@ export default function CashFlowPage() {
       if (cropId && o.crop_id !== cropId) continue
       const key = o.payment_date ? monthKey(new Date(o.payment_date + 'T00:00:00')) : `${o.crop_year}-12`
       ensure(key).other += Number(o.amount)
+      details.push({
+        kind: 'other', month: key, amount: Number(o.amount), status: o.payment_status === 'received' ? 'received' : 'projected',
+        label: o.program_name,
+        sub: [o.farm_id ? farmName(o.farm_id) : null, o.crop_id ? cropById.get(o.crop_id)?.name : null, o.payment_date ? `paid ${fmtDate(o.payment_date)}` : `no date — December ${o.crop_year}`, o.payment_status].filter(Boolean).join(' · '),
+        href: '/settings/government-payments',
+      })
     }
 
-    return buckets
-  }, [cropYear, cropId, scope, elections, baseAcres, commodities, arcPriceData, arcPayments, scopedPolicies, scos, ecos, harvestEstimates, effAssumptions, plantings, loads, splits, combineEntries, cropById, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments])
+    return { buckets, details }
+  }, [cropYear, cropId, scope, elections, baseAcres, commodities, arcPriceData, arcPayments, scopedPolicies, scos, ecos, harvestEstimates, effAssumptions, plantings, loads, splits, combineEntries, cropById, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments, farms, entities])
+  const safetyNet = safetyFlow.buckets
 
   // Seed production contracts (077): the staged-payment events — 80% base at
   // each election, final 20% + premiums at the estimated settlement, storage
@@ -600,7 +666,7 @@ export default function CashFlowPage() {
       buyerNameById: new Map(buyers.map((b) => [b.id, b.name])),
       shareForContract: (c) => attribution.shareForContract(c),
     })
-    const out: Array<SeedCashFlowEvent & { cropId: string | null; buyerId: string | null }> = []
+    const out: Array<SeedCashFlowEvent & { cropId: string | null; buyerId: string | null; contractId: string }> = []
     for (const b of seedRaw.bundles) {
       const commitment = (b.contract.crop_id ? commitments.get(b.contract.crop_id) ?? [] : [])
         .find((c) => c.contractId === b.contract.id)
@@ -612,7 +678,7 @@ export default function CashFlowPage() {
         committed: commitment.committed, referencePlusBasis: ref, cropYear,
         contractLabel: `Seed ${b.contract.contract_number}`,
       })) {
-        out.push({ ...e, cropId: b.contract.crop_id, buyerId: b.contract.buyer_id })
+        out.push({ ...e, cropId: b.contract.crop_id, buyerId: b.contract.buyer_id, contractId: b.contract.id })
       }
     }
     return out.sort((x, y) => x.month.localeCompare(y.month))
@@ -639,6 +705,34 @@ export default function CashFlowPage() {
     for (const e of visibleCottonEvents) m.set(monthKey(new Date(e.date + 'T00:00:00')), (m.get(monthKey(new Date(e.date + 'T00:00:00'))) ?? 0) + e.amount)
     return m
   }, [visibleCottonEvents])
+
+  // Every row behind every number on the page, in one list (lib/cash-flow-detail).
+  const allDetails = useMemo<CashDetail[]>(() => [
+    ...contractFlow.details,
+    ...safetyFlow.details,
+    ...visibleCottonEvents.map((e): CashDetail => ({
+      kind: 'cotton', month: monthKey(new Date(e.date + 'T00:00:00')), amount: e.amount, status: e.status,
+      label: e.label, sub: `${fmtDate(e.date)} · ${e.status}`, href: '/cotton/marketing',
+    })),
+    ...visibleSeedEvents.map((e): CashDetail => ({
+      kind: 'seed', month: e.month, amount: e.amount, status: e.status,
+      label: e.label, sub: e.status, href: `/contracts/${e.contractId}`,
+    })),
+  ], [contractFlow.details, safetyFlow.details, visibleCottonEvents, visibleSeedEvents])
+
+  // The drill-down: which number was tapped. `rows` is resolved at open time
+  // so a summary card and a table cell share one modal.
+  const [drill, setDrill] = useState<{ title: string; explainer: string; rows: CashDetail[] } | null>(null)
+  const closeDrill = useCallback(() => setDrill(null), [])
+  function openDrill(sel: CashSelection) {
+    const rows = selectCashDetails(allDetails, sel)
+    const kindLabel = sel.kind === 'all' ? 'Month total' : CASH_KIND_LABEL[sel.kind]
+    setDrill({
+      title: `${kindLabel} · ${sel.month ? monthLabel(sel.month) : filterSummary}`,
+      explainer: sel.kind === 'all' ? 'Every line that lands in this month, by kind.' : CASH_KIND_EXPLAINER[sel.kind],
+      rows,
+    })
+  }
 
   const monthlyRows = useMemo(() => {
     const keys = [...new Set([...monthly.keys(), ...safetyNet.keys(), ...cottonMonthly.keys(), ...seedMonthly.keys()])].sort()
@@ -678,13 +772,34 @@ export default function CashFlowPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleContracts, aggByContract])
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
+  const filterSummary = filterSummaryOf(
+    cropYearLabel(cropYear),
+    entityName ?? 'All Entities',
+    cropId ? cropById.get(cropId)?.name ?? 'Crop' : 'All Crops',
+    buyerId ? buyerById.get(buyerId)?.name ?? 'Buyer' : 'All Buyers',
+  )
+
+  // "Contract value" is not a month bucket: its rows are each contract's
+  // bushels × price, resolved here for the card.
+  function openContractValue() {
+    const rows: CashDetail[] = visibleContracts.map((c) => {
+      const s = shareFor(c)
+      const price = Number(c.price_per_bushel ?? 0)
+      return {
+        kind: 'projected' as const, month: '', amount: Number(c.contracted_bushels) * price * s,
+        label: contractLabel(c),
+        sub: `${fmtInt(Number(c.contracted_bushels) * s)} bu × ${fmtUsd(price, 2)}${s < 1 ? ` · ${Math.round(s * 100)}% entity share` : ''}${price === 0 ? ' · no price set yet' : ''}`,
+        href: `/contracts/${c.id}`,
+      }
+    }).sort((a, b) => b.amount - a.amount)
+    setDrill({ title: `Contract value · ${filterSummary}`, explainer: 'Each contract\'s bushels at its contract price. Unpriced contracts count as zero until a price is set.', rows })
+  }
 
   const summaryCards: SummaryCardData[] = [
-    { label: 'Contract value', value: `$${fmt(summary.value)}` },
-    { label: 'Received', value: `$${fmt(summary.received)}`, tone: 'favorable' },
-    { label: 'Outstanding', value: `$${fmt(summary.outstanding)}`, tone: 'warning' },
-    { label: 'Remaining', value: `$${fmt(summary.remaining)}` },
+    { label: 'Contract value', value: fmtUsd(summary.value), onClick: openContractValue },
+    { label: 'Received', value: fmtUsd(summary.received), tone: 'favorable', onClick: () => openDrill({ kind: 'received', month: null }) },
+    { label: 'Outstanding', value: fmtUsd(summary.outstanding), tone: 'warning', sub: 'Delivered, not yet paid', onClick: () => openDrill({ kind: 'outstanding', month: null }) },
+    { label: 'Projected', value: fmtUsd(summary.remaining), sub: 'Contracted, not yet delivered', onClick: () => openDrill({ kind: 'projected', month: null }) },
   ]
 
   const cottonNet = useMemo(() => visibleCottonEvents.reduce((s, e) => s + e.amount, 0), [visibleCottonEvents])
@@ -693,18 +808,36 @@ export default function CashFlowPage() {
   const safetyCards: SummaryCardData[] = [
     {
       label: cropYear !== '' ? `ARC/PLC (${programYearFor(cropYear)} program year — paid Oct ${cropYear})` : 'ARC/PLC',
-      value: `$${fmt(safetyTotals.arcPlc)}`,
+      value: fmtUsd(safetyTotals.arcPlc),
+      onClick: () => openDrill({ kind: 'arcPlc', month: null }),
     },
-    { label: 'Crop Insurance', value: `$${fmt(safetyTotals.insurance)}` },
-    { label: 'Other Govt', value: `$${fmt(safetyTotals.other)}` },
-    { label: 'Total Safety Net', value: `$${fmt(safetyTotals.total)}`, tone: 'favorable' },
+    { label: 'Crop Insurance', value: fmtUsd(safetyTotals.insurance), onClick: () => openDrill({ kind: 'insurance', month: null }) },
+    { label: 'Other USDA', value: fmtUsd(safetyTotals.other), onClick: () => openDrill({ kind: 'other', month: null }) },
+    {
+      label: 'Total Safety Net', value: fmtUsd(safetyTotals.total), tone: 'favorable',
+      onClick: () => setDrill({ title: `Total safety net · ${filterSummary}`, explainer: 'ARC/PLC, crop insurance, and other USDA payments together.', rows: selectCashDetails(allDetails.filter((d) => d.kind === 'arcPlc' || d.kind === 'insurance' || d.kind === 'other'), { kind: 'all', month: null }) }),
+    },
     ...(visibleCottonEvents.length > 0
-      ? [{ label: 'Cotton cash (net — loans, sales, LDP, fees)', value: `$${fmt(cottonNet)}`, tone: 'favorable' as const }]
+      ? [{ label: 'Cotton cash (net — loans, sales, LDP, fees)', value: fmtUsd(cottonNet), tone: signedTone(cottonNet), onClick: () => openDrill({ kind: 'cotton', month: null }) }]
       : []),
     ...(visibleSeedEvents.length > 0
-      ? [{ label: 'Seed contracts (net — base, premiums, storage, fees)', value: `$${fmt(seedNet)}`, tone: 'favorable' as const }]
+      ? [{ label: 'Seed contracts (net — base, premiums, storage, fees)', value: fmtUsd(seedNet), tone: signedTone(seedNet), onClick: () => openDrill({ kind: 'seed', month: null }) }]
       : []),
   ]
+  const activeFilters = (cropYear !== '' ? 1 : 0) + (cropId ? 1 : 0) + (buyerId ? 1 : 0) + (entityId ? 1 : 0)
+
+  // The chart above the table: money in by month, stacked by kind.
+  const barSeries = [
+    { key: 'received', label: 'Received', className: toneFill('favorable') },
+    { key: 'outstanding', label: 'Outstanding', className: toneFill('warning') },
+    { key: 'projected', label: 'Projected', className: toneFill('neutral') },
+    { key: 'safety', label: 'Safety net', className: toneFill('muted') },
+  ]
+  const barRows = monthlyRows.map((r) => ({
+    key: r.key,
+    label: r.label.replace(/ \d{4}$/, (m) => ` ’${m.slice(-2)}`),
+    values: { received: r.received, outstanding: r.outstanding, projected: r.projected, safety: r.arcPlc + r.insurance + r.other },
+  }))
 
   // Export mirrors the on-screen monthly forecast + contract detail tables.
   function buildPayload(): ExportPayload {
@@ -757,7 +890,7 @@ export default function CashFlowPage() {
         { label: 'Price/bu', align: 'right', format: 'price' }, { label: 'Contracted', align: 'right', format: 'bu' },
         { label: 'Delivered', align: 'right', format: 'bu' }, { label: 'Remaining', align: 'right', format: 'bu' },
         { label: 'Value', align: 'right', format: 'usd0' }, { label: 'Received', align: 'right', format: 'usd0' },
-        { label: 'Outstanding', align: 'right', format: 'usd0' }, { label: 'Unearned', align: 'right', format: 'usd0' },
+        { label: 'Outstanding', align: 'right', format: 'usd0' }, { label: 'Projected', align: 'right', format: 'usd0' },
       ],
       rows: visibleContracts.map((c) => {
         const agg = aggByContract.get(c.id)!
@@ -784,7 +917,7 @@ export default function CashFlowPage() {
         { label: 'Contract value', value: formatNumber(summary.value, 'usd0') },
         { label: 'Received', value: formatNumber(summary.received, 'usd0'), tone: 'favorable' },
         { label: 'Outstanding', value: formatNumber(summary.outstanding, 'usd0'), tone: 'warning' },
-        { label: 'Remaining', value: formatNumber(summary.remaining, 'usd0') },
+        { label: 'Projected', value: formatNumber(summary.remaining, 'usd0') },
         { label: 'Total Safety Net', value: formatNumber(safetyTotals.total, 'usd0'), tone: 'favorable' },
       ],
       sections: [monthly, ...(cottonDetail ? [cottonDetail] : []), ...(seedDetail ? [seedDetail] : []), detail],
@@ -793,37 +926,37 @@ export default function CashFlowPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold flex-1">
-          Cash Flow Forecast
-          {entityName && (
-            <span className="ml-2 text-base font-semibold text-slate-500">
-              — {entityName}
-            </span>
-          )}
-        </h1>
-        {!loading && !viewerPending && (monthlyRows.length > 0 || visibleContracts.length > 0) && <ExportBar buildPayload={buildPayload} />}
-      </div>
+      <ReportHeader
+        title="Cash Flow Forecast"
+        filterSummary={filterSummary}
+        actions={!loading && !viewerPending && (monthlyRows.length > 0 || visibleContracts.length > 0) ? <ExportBar buildPayload={buildPayload} /> : undefined}
+      />
+
+      <ReportFilterBar activeCount={activeFilters}>
+        <FilterField label="Crop year">
+          <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={selectCls}>
+            <option value="">All crop years</option>
+            {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Crop">
+          <select value={cropId} onChange={(e) => setCropId(e.target.value)} className={selectCls}>
+            <option value="">All crops</option>
+            {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Buyer">
+          <select value={buyerId} onChange={(e) => setBuyerId(e.target.value)} className={selectCls}>
+            <option value="">All buyers</option>
+            {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+        </FilterField>
+        <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} />
+      </ReportFilterBar>
 
       <SupersededNotice show={viewerA.superseded} onDismiss={viewerA.dismissSuperseded} />
 
       <SummaryCards cards={summaryCards} />
-
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-        <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
-          <option value="">All crop years</option>
-          {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
-        </select>
-        <select value={cropId} onChange={(e) => setCropId(e.target.value)} className={inputCls}>
-          <option value="">All crops</option>
-          {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        <select value={buyerId} onChange={(e) => setBuyerId(e.target.value)} className={inputCls}>
-          <option value="">All buyers</option>
-          {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-        </select>
-        <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} className="justify-end" />
-      </div>
 
       {loading || viewerPending ? <p className="text-slate-500">Loading…</p> : (
         <>
@@ -831,9 +964,9 @@ export default function CashFlowPage() {
           <div className="bg-white rounded-xl shadow p-4 space-y-3">
             <div className="flex items-center gap-3 flex-wrap">
               <h2 className="font-semibold flex-1">Total Safety Net (projected)</h2>
-              <label className="text-xs text-slate-500 flex items-center gap-2">
+              <label className="text-xs text-slate-500 flex items-center gap-2 no-print">
                 Insurance proceeds month
-                <select value={insuranceMonth} onChange={(e) => setInsuranceMonth(Number(e.target.value))} className="rounded-lg border border-slate-300 px-2 py-1 text-sm">
+                <select value={insuranceMonth} onChange={(e) => setInsuranceMonth(Number(e.target.value))} className={selectCls}>
                   {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
                     <option key={m} value={m}>{new Date(2000, m - 1, 1).toLocaleDateString(undefined, { month: 'short' })}</option>
                   ))}
@@ -853,9 +986,9 @@ export default function CashFlowPage() {
           <div className="bg-white rounded-xl shadow overflow-hidden">
             <div className="px-4 py-2 border-b border-slate-100 font-semibold">Monthly forecast</div>
             <p className="px-4 py-2 text-xs text-slate-500 leading-relaxed border-b border-slate-100">
-              <span className="font-semibold text-green-700">Received</span> — cash already collected on settled loads, in the settlement&rsquo;s month.{' '}
-              <span className="font-semibold text-amber-700">Outstanding</span> — grain you&rsquo;ve <em>delivered but not yet been paid for</em>, valued at the contract price and shown in the current month as money still owed to you.{' '}
-              <span className="font-semibold text-brand-deep">Projected</span> — contracted bushels <em>not yet delivered</em>, valued at the contract price and spread across the remaining delivery window (future income you still expect). Completed contracts add nothing to Projected.
+              <span className={`font-semibold ${toneText('favorable')}`}>Received</span> — cash already collected on settled loads, in the settlement&rsquo;s month.{' '}
+              <span className={`font-semibold ${toneText('warning')}`}>Outstanding</span> — grain you&rsquo;ve <em>delivered but not yet been paid for</em>, valued at the contract price and shown in the current month as money still owed to you.{' '}
+              <span className={`font-semibold ${toneText('neutral')}`}>Projected</span> — contracted bushels <em>not yet delivered</em>, valued at the contract price and spread across the remaining delivery window (future income you still expect). Completed contracts add nothing to Projected.
             </p>
             {monthlyRows.length === 0 ? (
               <EmptyState
@@ -863,37 +996,120 @@ export default function CashFlowPage() {
                 hint="Cash flow projects from priced contracts and the safety-net programs above."
                 linkHref="/contracts"
                 linkLabel="Add contracts"
+                role={viewer.role}
               />
             ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm border-collapse">
-                  <thead className={theadCls}>
-                    <tr>
-                      {['Month', 'Received', 'Outstanding', 'Projected', 'ARC/PLC', 'Crop Insurance', 'Other Govt', 'Cotton (net)', 'Seed (net)', 'Month total', 'Cumulative']
-                        .map((h, i) => <th key={h} className={`${i === 0 ? 'text-left' : 'text-right'} px-3 py-2 whitespace-nowrap font-semibold`}>{h}</th>)}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {monthlyRows.map((r) => (
-                      <tr key={r.key} className="border-t border-slate-100">
-                        <td className={`${textCell} font-semibold`}>{r.label}</td>
-                        <td className={`${numCell} text-green-700`}>${fmt(r.received)}</td>
-                        <td className={`${numCell} text-amber-700`}>${fmt(r.outstanding)}</td>
-                        <td className={`${numCell} text-brand-deep`}>${fmt(r.projected)}</td>
-                        <td className={`${numCell} text-indigo-700`}>${fmt(r.arcPlc)}</td>
-                        <td className={`${numCell} text-purple-700`}>${fmt(r.insurance)}</td>
-                        <td className={`${numCell} text-teal-700`}>${fmt(r.other)}</td>
-                        <td className={`${numCell} ${r.cotton < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{r.cotton !== 0 ? `$${fmt(r.cotton)}` : '—'}</td>
-                        <td className={`${numCell} ${r.seed < 0 ? 'text-red-700' : 'text-emerald-700'}`}>{r.seed !== 0 ? `$${fmt(r.seed)}` : '—'}</td>
-                        <td className={numCell}>${fmt(r.total)}</td>
-                        <td className={`${numCell} font-semibold`}>${fmt(r.cumulative)}</td>
+              <>
+                <div className="px-4 pt-3 pb-2 border-b border-slate-100">
+                  <MonthlyBars series={barSeries} rows={barRows} />
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm border-collapse">
+                    <thead className={theadCls}>
+                      <tr>
+                        {['Month', 'Received', 'Outstanding', 'Projected', 'ARC/PLC', 'Crop Insurance', 'Other USDA', 'Cotton (net)', 'Seed (net)', 'Month total', 'Cumulative']
+                          .map((h, i) => <th key={h} className={`${i === 0 ? `text-left ${stickyColHeadCls}` : 'text-right'} px-3 py-2 whitespace-nowrap font-semibold`}>{h}</th>)}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {monthlyRows.map((r) => {
+                        // Every non-zero number is a button into its rows.
+                        const cell = (kind: CashKind, amount: number, cls: string, dash = false) => (
+                          <td className={`${numCell} ${cls}`}>
+                            {amount === 0
+                              ? (dash ? '—' : fmtUsd(0))
+                              : (
+                                <button
+                                  type="button"
+                                  onClick={() => openDrill({ kind, month: r.key })}
+                                  className="underline decoration-dotted underline-offset-4 hover:decoration-solid min-h-8 px-1 rounded focus-visible:ring-2 focus-visible:ring-brand"
+                                  aria-label={`${CASH_KIND_LABEL[kind]} in ${r.label}: ${fmtUsd(amount)}. Show where it comes from.`}
+                                >
+                                  {fmtUsd(amount)}
+                                </button>
+                              )}
+                          </td>
+                        )
+                        return (
+                          <tr key={r.key} className="border-t border-slate-100">
+                            <td className={`${textCell} ${stickyColCls} font-semibold whitespace-nowrap`}>{r.label}</td>
+                            {cell('received', r.received, toneText('favorable'))}
+                            {cell('outstanding', r.outstanding, toneText('warning'))}
+                            {cell('projected', r.projected, toneText('neutral'))}
+                            {cell('arcPlc', r.arcPlc, '')}
+                            {cell('insurance', r.insurance, '')}
+                            {cell('other', r.other, '')}
+                            {cell('cotton', r.cotton, toneText(signedTone(r.cotton)), true)}
+                            {cell('seed', r.seed, toneText(signedTone(r.seed)), true)}
+                            <td className={numCell}>
+                              {r.total === 0 ? fmtUsd(0) : (
+                                <button
+                                  type="button"
+                                  onClick={() => openDrill({ kind: 'all', month: r.key })}
+                                  className="underline decoration-dotted underline-offset-4 hover:decoration-solid min-h-8 px-1 rounded focus-visible:ring-2 focus-visible:ring-brand"
+                                  aria-label={`Month total for ${r.label}: ${fmtUsd(r.total)}. Show every line.`}
+                                >
+                                  {fmtUsd(r.total)}
+                                </button>
+                              )}
+                            </td>
+                            <td className={`${numCell} font-semibold`}>{fmtUsd(r.cumulative)}</td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="px-4 py-2 text-xs text-slate-500 no-print">Tap any amount to see the settlements, contracts, policies, or payments behind it.</p>
+              </>
             )}
           </div>
+
+          <AppModal open={drill != null} title={drill?.title ?? ''} onClose={closeDrill} size="lg" initialFocus="none">
+            {drill && (
+              <div className="space-y-3">
+                <p className="text-sm text-slate-600">{drill.explainer}</p>
+                {drill.rows.length === 0 ? (
+                  <p className="text-sm text-slate-500">Nothing lands here under the current filters.</p>
+                ) : (
+                  <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
+                    <table className="min-w-full text-sm">
+                      <thead className={theadCls}>
+                        <tr>
+                          <th className="text-left px-2 py-1 font-semibold">What</th>
+                          <th className="text-left px-2 py-1 font-semibold">Month</th>
+                          <th className="text-right px-2 py-1 font-semibold">Amount</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {drill.rows.map((d, i) => (
+                          <tr key={i} className="border-t border-slate-100 align-top">
+                            <td className={textCell}>
+                              {d.href
+                                ? <a href={d.href} className="text-brand-deep underline font-semibold">{d.label}</a>
+                                : <span className="font-semibold">{d.label}</span>}
+                              {d.sub && <div className="text-xs text-slate-500">{d.sub}</div>}
+                            </td>
+                            <td className={`${textCell} whitespace-nowrap text-xs`}>
+                              {d.month ? monthLabel(d.month) : ''}
+                              {d.status && (
+                                <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[10px] ${d.status === 'received' ? 'bg-green-100 text-green-800' : d.status === 'outstanding' ? 'bg-amber-100 text-amber-800' : 'bg-sky-100 text-sky-800'}`}>{d.status}</span>
+                              )}
+                            </td>
+                            <td className={`${numCell} ${toneText(signedTone(d.amount))}`}>{fmtUsd(d.amount)}</td>
+                          </tr>
+                        ))}
+                        <tr className="bg-slate-100 font-bold border-t-2 border-slate-400">
+                          <td className={textCell} colSpan={2}>{drill.rows.length} line{drill.rows.length === 1 ? '' : 's'}</td>
+                          <td className={numCell}>{fmtUsd(sumCashDetails(drill.rows))}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+          </AppModal>
 
           {visibleCottonEvents.length > 0 && (
             <div className="bg-white rounded-xl shadow overflow-hidden">
@@ -915,9 +1131,9 @@ export default function CashFlowPage() {
                   <tbody>
                     {visibleCottonEvents.map((e, i) => (
                       <tr key={i} className="border-t border-slate-100">
-                        <td className={`${textCell} whitespace-nowrap`}>{e.date}</td>
+                        <td className={`${textCell} whitespace-nowrap`}>{fmtDate(e.date)}</td>
                         <td className={textCell}>{e.label}</td>
-                        <td className={`${numCell} ${e.amount < 0 ? 'text-red-700' : 'text-green-700'}`}>${fmt(e.amount)}</td>
+                        <td className={`${numCell} ${toneText(signedTone(e.amount))}`}>{fmtUsd(e.amount)}</td>
                         <td className={textCell}>
                           <span className={`text-xs rounded-full px-2 py-0.5 ${e.status === 'received' ? 'bg-green-100 text-green-800' : 'bg-sky-100 text-sky-800'}`}>{e.status}</span>
                         </td>
@@ -952,7 +1168,7 @@ export default function CashFlowPage() {
                       <tr key={i} className="border-t border-slate-100">
                         <td className={`${textCell} whitespace-nowrap`}>{monthLabel(e.month)}</td>
                         <td className={textCell}>{e.label}</td>
-                        <td className={`${numCell} ${e.amount < 0 ? 'text-red-700' : 'text-green-700'}`}>${fmt(e.amount)}</td>
+                        <td className={`${numCell} ${toneText(signedTone(e.amount))}`}>{fmtUsd(e.amount)}</td>
                         <td className={textCell}>
                           <span className={`text-xs rounded-full px-2 py-0.5 ${e.status === 'received' ? 'bg-green-100 text-green-800' : 'bg-sky-100 text-sky-800'}`}>{e.status}</span>
                         </td>
@@ -972,14 +1188,15 @@ export default function CashFlowPage() {
                 hint="Try widening the crop year, crop, buyer, or entity filters."
                 linkHref="/contracts"
                 linkLabel="Add contracts"
+                role={viewer.role}
               />
             ) : (
               <div className="overflow-x-auto">
                 <table className="min-w-full text-sm border-collapse">
                   <thead className={theadCls}>
                     <tr>
-                      {['Contract #', 'Buyer', 'Crop', 'Year', 'Window', 'Price/bu', 'Contracted', 'Delivered', 'Remaining', 'Value', 'Received', 'Outstanding', 'Unearned']
-                        .map((h, i) => <th key={h} className={`${i >= 5 ? 'text-right' : 'text-left'} px-3 py-2 whitespace-nowrap font-semibold`}>{h}</th>)}
+                      {['Contract #', 'Buyer', 'Crop', 'Year', 'Window', 'Price/bu', 'Contracted', 'Delivered', 'Remaining', 'Value', 'Received', 'Outstanding', 'Projected']
+                        .map((h, i) => <th key={h} className={`${i >= 5 ? 'text-right' : 'text-left'} ${i === 0 ? stickyColHeadCls : ''} px-3 py-2 whitespace-nowrap font-semibold`}>{h}</th>)}
                     </tr>
                   </thead>
                   <tbody>
@@ -1000,27 +1217,27 @@ export default function CashFlowPage() {
                       const outstanding = agg.deliveredUnpaid * price * s
                       return (
                         <tr key={c.id} className="border-t border-slate-100">
-                          <td className={`${textCell} font-semibold whitespace-nowrap`}>
+                          <td className={`${textCell} ${stickyColCls} font-semibold whitespace-nowrap`}>
                             {c.contract_number}
                             {complete && <span className="ml-1.5 rounded-full bg-slate-100 text-slate-500 text-[10px] font-medium px-1.5 py-0.5 align-middle">complete</span>}
-                            {s < 1 && <span className="ml-1.5 rounded-full bg-sky-100 text-sky-700 text-[10px] font-medium px-1.5 py-0.5 align-middle" title="Operation-level contract — showing this entity's pro-rata share by planted acres">{Math.round(s * 100)}% share</span>}
+                            {s < 1 && <span className="ml-1.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-medium px-1.5 py-0.5 align-middle">{Math.round(s * 100)}% share</span>}
                           </td>
                           <td className={textCell}>{buyerById.get(c.buyer_id ?? '')?.name ?? ''}</td>
                           <td className={textCell}>{cropById.get(c.crop_id ?? '')?.name ?? ''}</td>
                           <td className={textCell}>{c.crop_year ?? ''}</td>
                           <td className={`${textCell} text-xs whitespace-nowrap`}>
                             {(c.delivery_start_date || c.delivery_end_date)
-                              ? <>{c.delivery_start_date ?? '?'} → {c.delivery_end_date ?? '?'}</>
+                              ? <>{fmtDate(c.delivery_start_date) || '?'} → {fmtDate(c.delivery_end_date) || '?'}</>
                               : <span className="text-slate-400">—</span>}
                           </td>
-                          <td className={numCell}>{price ? price.toFixed(4) : ''}</td>
-                          <td className={numCell}>{fmt(contractedBu)}</td>
-                          <td className={numCell}>{fmt(delivered)}</td>
-                          <td className={numCell}>{fmt(remainingBu)}</td>
-                          <td className={numCell}>${fmt(value)}</td>
-                          <td className={`${numCell} text-green-700`}>${fmt(agg.revenueReceived * s)}</td>
-                          <td className={`${numCell} text-amber-700`}>${fmt(outstanding)}</td>
-                          <td className={`${numCell} text-brand-deep`}>${fmt(unearned)}</td>
+                          <td className={numCell}>{price ? fmtUsd(price, 2) : ''}</td>
+                          <td className={numCell}>{fmtInt(contractedBu)}</td>
+                          <td className={numCell}>{fmtInt(delivered)}</td>
+                          <td className={numCell}>{fmtInt(remainingBu)}</td>
+                          <td className={numCell}>{fmtUsd(value)}</td>
+                          <td className={`${numCell} ${toneText('favorable')}`}>{fmtUsd(agg.revenueReceived * s)}</td>
+                          <td className={`${numCell} ${toneText('warning')}`}>{fmtUsd(outstanding)}</td>
+                          <td className={numCell}>{fmtUsd(unearned)}</td>
                         </tr>
                       )
                     })}

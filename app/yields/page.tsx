@@ -13,6 +13,12 @@ import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import ExportBar from '@/components/export-bar'
 import {
+  ReportHeader, ReportFilterBar, FilterField, ViewTabs, Disclosure, InfoTip,
+  theadCls, selectCls, fmtNum, fmtInt, filterSummaryOf, cropYearLabel,
+} from '@/components/reports/report-kit'
+import { ConfirmDialog } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
+import {
   YieldRowDetail, VarietyRowDetail, useCottonDetailData, buildDetailForPlantings, cottonDetailsByYear,
   grainDetailExportSection, cottonDetailExportSection, varietyDetailExportSections,
 } from '@/components/yields-detail'
@@ -50,9 +56,14 @@ type PracticeFilter = 'all' | 'irrigated' | 'dryland'
 
 const currentYear = () => new Date().getFullYear()
 
-function fmtNum(n: number, d = 2) {
-  return n.toLocaleString(undefined, { maximumFractionDigits: d })
-}
+const VIEW_MODES: ViewMode[] = ['field', 'farm', 'entity', 'variety', 'landowner']
+const VIEW_TABS: Array<{ key: ViewMode; label: string }> = [
+  { key: 'field', label: 'By field' },
+  { key: 'farm', label: 'By farm' },
+  { key: 'entity', label: 'By entity' },
+  { key: 'variety', label: 'By variety' },
+  { key: 'landowner', label: 'By landowner' },
+]
 
 export default function YieldsPage() {
   const supabase = useMemo(() => createClient(), [])
@@ -81,7 +92,13 @@ export default function YieldsPage() {
   const [bins, setBins] = useState<Array<{ id: string; name_or_number: string }>>([])
   const [buyers, setBuyers] = useState<Array<{ id: string; name: string }>>([])
   const [combineEntries, setCombineEntries] = useState<CombineYieldEntry[]>([])
+  // Cotton module flag: when on, cotton plantings live in the Cotton (lint)
+  // section below instead of the grain tables (their yield is lbs, not bu).
+  const [cottonOn, setCottonOn] = useState(false)
   const [loading, setLoading] = useState(true)
+  // One confirmation dialog for the page's "are you sure" moments (replaces
+  // window.confirm, which iPad renders as a bare system box).
+  const [ask, setAsk] = useState<{ title: string; body?: string; confirmLabel?: string; danger?: boolean; onConfirm: () => void } | null>(null)
 
   // Filters persist in localStorage so the user returns to the same view and
   // filter set they last used (see usePersistentState).
@@ -133,7 +150,7 @@ export default function YieldsPage() {
 
   async function refresh() {
     setLoading(true)
-    const [en, fa, fi, cr, pl, lo, co, sp, vv, ca, tr, bi, bu, ce] = await Promise.all([
+    const [en, fa, fi, cr, pl, lo, co, sp, vv, ca, tr, bi, bu, ce, st] = await Promise.all([
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
@@ -152,7 +169,10 @@ export default function YieldsPage() {
       // Combine yield entries (062) — tolerate the table not existing yet
       // (migration pending): error → no entries, the page still works.
       fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('*').order('id').range(f, t)),
+      // The org's Cotton module flag (one row via RLS).
+      supabase.from('app_settings').select('cotton_module_enabled').limit(1).maybeSingle(),
     ])
+    setCottonOn(Boolean((st.data as { cotton_module_enabled?: boolean } | null)?.cotton_module_enabled))
     setEntities((en.data as Entity[]) || [])
     setFarms((fa.data as Farm[]) || [])
     setFields((fi.data as Field[]) || [])
@@ -175,13 +195,25 @@ export default function YieldsPage() {
   // view with the irrigated/dryland breakdown on, so the user can enter the
   // breakouts. Strip the param afterward so the toggle doesn't stick on refresh
   // or persist to later visits.
+  // ?view=farm|field|variety|landowner|entity (the Reports catalog links)
+  // picks the tab for this visit; without it the persisted tab stands.
   useEffect(() => {
     if (typeof window === 'undefined') return
     const params = new URLSearchParams(window.location.search)
-    if (params.get('breakout') !== '1') return
-    setView('field')
-    setYieldView('breakdown')
-    params.delete('breakout')
+    const wanted = params.get('view')
+    let changed = false
+    if (wanted && (VIEW_MODES as string[]).includes(wanted)) {
+      setView(wanted as ViewMode)
+      params.delete('view')
+      changed = true
+    }
+    if (params.get('breakout') === '1') {
+      setView('field')
+      setYieldView('breakdown')
+      params.delete('breakout')
+      changed = true
+    }
+    if (!changed) return
     const qs = params.toString()
     window.history.replaceState(null, '', `${window.location.pathname}${qs ? `?${qs}` : ''}`)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -268,9 +300,13 @@ export default function YieldsPage() {
   // render. Null for owners (no restriction).
   const viewerGranted = viewer.isViewer ? new Set(viewer.grantedIds ?? []) : null
 
+  // Cotton plantings skipped from the grain tables (Cotton module on): their
+  // yield is lbs of lint in the Cotton section below, never a 0.0 bu/ac row.
+  let cottonSkipped = 0
   const visible = plantings.filter((p) => {
     if (year !== '' && p.season_year !== year) return false
     if (cropId && p.crop_id !== cropId) return false
+    if (cottonOn && isCottonCrop(cropById.get(p.crop_id)?.name ?? '')) { cottonSkipped += 1; return false }
     const fld = fieldById.get(p.field_id)
     if (!fld) return false
     if (farmId && fld.farm_id !== farmId) return false
@@ -318,7 +354,7 @@ export default function YieldsPage() {
       }),
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plantings, assumptions, aggByKey, fieldById, farmById, year, cropId, farmId, entityId, countyId, view, practiceFilter, viewer.isViewer, viewer.grantedIds])
+  }, [plantings, assumptions, aggByKey, fieldById, farmById, cropById, cottonOn, year, cropId, farmId, entityId, countyId, view, practiceFilter, viewer.isViewer, viewer.grantedIds])
   const excludedFields = yieldAnalysis.excluded
   const includedPlantings = visible.filter((p) => !excludedFields.has(p.id))
 
@@ -392,7 +428,7 @@ export default function YieldsPage() {
   // toggle: total only, or irrigated + dryland + total side by side.
   const farmShowBreakdown = yieldView === 'breakdown'
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
+  const inputCls = selectCls
 
   function rowFor(p: FieldPlanting) {
     const fld = fieldById.get(p.field_id)
@@ -762,7 +798,7 @@ export default function YieldsPage() {
   // strip that drives both tables.
   function fieldFiltersLabel(): string {
     const parts: string[] = []
-    parts.push(`Season: ${year === '' ? 'all' : year}`)
+    parts.push(cropYearLabel(year))
     if (cropId) parts.push(`Crop: ${cropById.get(cropId)?.name ?? '?'}`)
     if (farmId) parts.push(`Farm: ${farmById.get(farmId)?.name ?? '?'}`)
     if (entityId) parts.push(`Entity: ${entityById.get(entityId)?.name ?? '?'}`)
@@ -983,14 +1019,14 @@ export default function YieldsPage() {
       })
       .eq('id', p.id)
     setBreakoutSaving(false)
-    if (error) { setBreakoutErr(error.message); return }
+    if (error) { setBreakoutErr(reportError(error, { action: 'save the breakout' })); return }
     setBreakoutId(null)
     refresh()
   }
 
   async function clearBreakout(p: FieldPlanting) {
     if (!canEdit) return
-    if (!confirm('Clear the irrigated/dryland breakout for this planting?')) return
+    setAsk(null)
     setBreakoutSaving(true)
     const { error } = await supabase
       .from('field_plantings')
@@ -1001,7 +1037,7 @@ export default function YieldsPage() {
       })
       .eq('id', p.id)
     setBreakoutSaving(false)
-    if (error) { setBreakoutErr(error.message); return }
+    if (error) { setBreakoutErr(reportError(error, { action: 'save the breakout' })); return }
     setBreakoutId(null)
     refresh()
   }
@@ -1012,10 +1048,7 @@ export default function YieldsPage() {
   // the automatic behavior.
   async function setInclusionOverride(p: FieldPlanting, value: boolean | null) {
     if (!canEdit) return
-    if (value === true) {
-      const name = fieldById.get(p.field_id)?.name_or_number ?? 'this field'
-      if (!confirm(`Count ${name} as finished? Its current bushels will be treated as the field's final yield and included in the averages. You can undo this from the field's detail.`)) return
-    }
+    setAsk(null)
     setOverrideErr(null)
     setOverrideSavingId(p.id)
     const { error } = await supabase
@@ -1023,7 +1056,7 @@ export default function YieldsPage() {
       .update({ yield_include_override: value })
       .eq('id', p.id)
     setOverrideSavingId(null)
-    if (error) { setOverrideErr(error.message); return }
+    if (error) { setOverrideErr(reportError(error, { action: 'update this field' })); return }
     refresh()
   }
 
@@ -1059,14 +1092,14 @@ export default function YieldsPage() {
     const results = await Promise.all(updates)
     setVarAllocSaving(false)
     const firstErr = results.find((r) => r.error)?.error
-    if (firstErr) { setVarAllocErr(firstErr.message); return }
+    if (firstErr) { setVarAllocErr(reportError(firstErr, { action: 'save the variety allocation' })); return }
     setVarAllocId(null)
     refresh()
   }
 
   async function clearVarAlloc(p: FieldPlanting) {
     if (!canEdit) return
-    if (!confirm('Clear the variety bushel allocation for this planting?')) return
+    setAsk(null)
     const vs = varietiesByPlanting.get(p.id) ?? []
     setVarAllocSaving(true)
     const updates = vs.map((v) =>
@@ -1078,7 +1111,7 @@ export default function YieldsPage() {
     const results = await Promise.all(updates)
     setVarAllocSaving(false)
     const firstErr = results.find((r) => r.error)?.error
-    if (firstErr) { setVarAllocErr(firstErr.message); return }
+    if (firstErr) { setVarAllocErr(reportError(firstErr, { action: 'save the variety allocation' })); return }
     setVarAllocId(null)
     refresh()
   }
@@ -1109,42 +1142,149 @@ export default function YieldsPage() {
   // Variety rollup: expander + Crop/Variety/Plantings/Acres/Yield/Dry bu = 7 (+Year).
   const varietyColCount = 7 + (showVarietyYear ? 1 : 0)
 
+  // The "count anyway" / clear confirmations, routed through the one dialog.
+  const askCountAnyway = (p: FieldPlanting) => {
+    const name = fieldById.get(p.field_id)?.name_or_number ?? 'this field'
+    setAsk({
+      title: `Count ${name} as finished?`,
+      body: 'Its current bushels will be treated as the field’s final yield and included in the averages. You can undo this from the field’s detail.',
+      confirmLabel: 'Count it',
+      onConfirm: () => setInclusionOverride(p, true),
+    })
+  }
+  const askClearBreakout = (p: FieldPlanting) => setAsk({
+    title: 'Clear the irrigated/dryland breakout for this planting?',
+    confirmLabel: 'Clear',
+    danger: true,
+    onConfirm: () => clearBreakout(p),
+  })
+  const askClearVarAlloc = (p: FieldPlanting) => setAsk({
+    title: 'Clear the variety bushel allocation for this planting?',
+    confirmLabel: 'Clear',
+    danger: true,
+    onConfirm: () => clearVarAlloc(p),
+  })
+
+  const viewTitle = VIEW_TABS.find((t) => t.key === view)?.label.replace('By ', 'by ') ?? ''
+  const filterSummary = filterSummaryOf(
+    cropYearLabel(year),
+    entityId ? (entityById.get(entityId)?.name ?? 'Entity') : (viewerAllEntitiesLabel(viewer, entities) ?? 'All Entities'),
+    cropId ? (cropById.get(cropId)?.name ?? 'Crop') : 'All Crops',
+    farmId ? (farmById.get(farmId)?.name ?? 'Farm') : null,
+    countyId ? (counties.find((c) => c.id === countyId)?.name ?? 'County') : null,
+  )
+  const activeFilterCount = (cropId ? 1 : 0) + (farmId ? 1 : 0) + (entityId ? 1 : 0) + (countyId ? 1 : 0)
+    + (view === 'field' && practiceFilter !== 'all' ? 1 : 0)
+
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-3">
-        <h1 className="text-2xl font-bold flex-1">
-          Yields {
-            view === 'field'   ? 'by Field' :
-            view === 'farm'    ? 'by Farm' :
-            view === 'entity'  ? 'by Entity' :
-            view === 'variety' ? 'by Variety' :
-            'by Landowner'
-          }
-        </h1>
-        <label className="text-sm flex items-center gap-2 no-print">
-          View
-          <select value={view} onChange={(e) => setView(e.target.value as ViewMode)} className={inputCls}>
-            <option value="field">By field</option>
-            <option value="farm">By farm</option>
-            <option value="entity">By entity</option>
-            <option value="variety">By variety</option>
-            <option value="landowner">By landowner</option>
+      <ReportHeader
+        title={`Yields ${viewTitle}`}
+        filterSummary={filterSummary}
+        actions={
+          <ExportBar
+            buildPayload={() =>
+              view === 'landowner'
+                ? landownerBuild()
+                : view === 'farm'
+                  ? buildFarmPayload()
+                  : view === 'entity'
+                    ? buildEntityPayload()
+                    : view === 'variety'
+                      ? buildVarietyPayload()
+                      : buildFieldPayload()
+            }
+          />
+        }
+      />
+      <ViewTabs tabs={VIEW_TABS} value={view} onChange={setView} ariaLabel="Yield view" />
+
+      {/* ONE filter strip for every view. The landowner view reads the same
+          crop year / crop / entity from here (plus its own landowner pick). */}
+      <ReportFilterBar activeCount={activeFilterCount}>
+        <FilterField label="Crop year">
+          <select value={year} onChange={(e) => setYear(e.target.value === '' ? '' : Number(e.target.value))} className={selectCls}>
+            <option value="">All crop years</option>
+            {distinctYears.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
-        </label>
-        <ExportBar
-          buildPayload={() =>
-            view === 'landowner'
-              ? landownerBuild()
-              : view === 'farm'
-                ? buildFarmPayload()
-                : view === 'entity'
-                  ? buildEntityPayload()
-                  : view === 'variety'
-                    ? buildVarietyPayload()
-                    : buildFieldPayload()
-          }
-        />
-      </div>
+        </FilterField>
+        <FilterField label="Crop">
+          <select value={cropId} onChange={(e) => setCropId(e.target.value)} className={selectCls}>
+            <option value="">All crops</option>
+            {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </FilterField>
+        {view !== 'landowner' && (
+          <FilterField label="Farm">
+            <select value={farmId} onChange={(e) => setFarmId(e.target.value)} className={selectCls}>
+              <option value="">All farms</option>
+              {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            </select>
+          </FilterField>
+        )}
+        {(!viewer.isViewer || entityOptionsFor(viewer, entities).length > 1) && (
+          <FilterField label="Entity">
+            <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={selectCls}>
+              <option value="">All entities</option>
+              {entityOptionsFor(viewer, entities).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+          </FilterField>
+        )}
+        {view !== 'landowner' && (
+          <FilterField label="County">
+            <select value={countyId} onChange={(e) => setCountyId(e.target.value)} className={selectCls}>
+              <option value="">All counties</option>
+              {countyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
+            </select>
+          </FilterField>
+        )}
+        {view === 'field' && (
+          <FilterField label="Practice">
+            <select
+              value={practiceFilter}
+              onChange={(e) => setPracticeFilter(e.target.value as PracticeFilter)}
+              className={selectCls}
+            >
+              <option value="all">All</option>
+              <option value="irrigated">Irrigated only</option>
+              <option value="dryland">Dryland only</option>
+            </select>
+          </FilterField>
+        )}
+        {view !== 'landowner' && view !== 'variety' && showYieldToggle && (
+          <FilterField label="Columns">
+            <span className="inline-flex rounded-lg border border-slate-300 overflow-hidden text-sm">
+              <button
+                type="button"
+                onClick={() => setYieldView('total')}
+                aria-pressed={yieldView === 'total'}
+                className={`px-3 min-h-10 ${yieldView === 'total' ? 'bg-slate-800 text-white' : 'bg-white text-slate-700'}`}
+              >
+                Total yield only
+              </button>
+              <button
+                type="button"
+                onClick={() => setYieldView('breakdown')}
+                aria-pressed={yieldView === 'breakdown'}
+                className={`px-3 min-h-10 border-l border-slate-300 ${yieldView === 'breakdown' ? 'bg-slate-800 text-white' : 'bg-white text-slate-700'}`}
+              >
+                Irrigated / Dryland breakdown
+              </button>
+            </span>
+          </FilterField>
+        )}
+      </ReportFilterBar>
+
+      <ConfirmDialog
+        open={ask != null}
+        title={ask?.title ?? ''}
+        body={ask?.body ? <p>{ask.body}</p> : undefined}
+        confirmLabel={ask?.confirmLabel ?? 'OK'}
+        danger={ask?.danger}
+        onConfirm={() => ask?.onConfirm()}
+        onCancel={() => setAsk(null)}
+      />
+
       {view !== 'landowner' && (
         <p className="text-sm text-slate-500">
           {view === 'field'
@@ -1167,91 +1307,33 @@ export default function YieldsPage() {
       )}
 
       {overrideErr && <p className="text-sm text-red-600 no-print">{overrideErr}</p>}
-
-      {/* The outer filter strip drives the field- and farm-view tables. The
-          landowner view has its own filter set inside <YieldsByLandowner /> so
-          this row is hidden when that tab is active (otherwise the user would
-          see two filter rows and only the inner one would actually apply). */}
-      {view !== 'landowner' && (
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2 no-print">
-        <select value={year} onChange={(e) => setYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
-          <option value="">All seasons</option>
-          {distinctYears.map((y) => <option key={y} value={y}>{y}</option>)}
-        </select>
-        <select value={cropId} onChange={(e) => setCropId(e.target.value)} className={inputCls}>
-          <option value="">All crops</option>
-          {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        <select value={farmId} onChange={(e) => setFarmId(e.target.value)} className={inputCls}>
-          <option value="">All farms</option>
-          {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-        </select>
-        {(!viewer.isViewer || entityOptionsFor(viewer, entities).length > 1) && (
-        <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
-          <option value="">All entities</option>
-          {entityOptionsFor(viewer, entities).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-        </select>
-        )}
-        <select value={countyId} onChange={(e) => setCountyId(e.target.value)} className={inputCls}>
-          <option value="">All counties</option>
-          {countyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
-        </select>
-      </div>
-      )}
-
-      {view !== 'landowner' && view !== 'variety' && (view === 'field' || showYieldToggle) && (
-        <div className="flex flex-wrap gap-3 items-center no-print">
-          {view === 'field' && (
-            <label className="text-sm flex items-center gap-2">
-              Practice
-              <select
-                value={practiceFilter}
-                onChange={(e) => setPracticeFilter(e.target.value as PracticeFilter)}
-                className={inputCls}
-              >
-                <option value="all">All</option>
-                <option value="irrigated">Irrigated only</option>
-                <option value="dryland">Dryland only</option>
-              </select>
-            </label>
-          )}
-          {showYieldToggle && (
-            <div className="inline-flex rounded-lg border border-slate-300 overflow-hidden text-sm">
-              <button
-                type="button"
-                onClick={() => setYieldView('total')}
-                className={`px-3 py-2 ${yieldView === 'total' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700'}`}
-              >
-                Total yield only
-              </button>
-              <button
-                type="button"
-                onClick={() => setYieldView('breakdown')}
-                className={`px-3 py-2 ${yieldView === 'breakdown' ? 'bg-slate-900 text-white' : 'bg-white text-slate-700'}`}
-              >
-                Irrigated / Dryland breakdown
-              </button>
-            </div>
-          )}
-        </div>
+      {cottonOn && cottonSkipped > 0 && view !== 'landowner' && (
+        <p className="text-xs text-slate-500 no-print">
+          {cottonSkipped} cotton planting{cottonSkipped === 1 ? '' : 's'} not shown here — cotton yields are pounds of lint, in the Cotton section below.
+        </p>
       )}
 
       {view === 'landowner' ? (
-        <YieldsByLandowner onPayloadChange={handleLandownerPayload} />
+        <YieldsByLandowner
+          onPayloadChange={handleLandownerPayload}
+          controlled={{ cropYear: year, cropId, entityId }}
+        />
       ) : view === 'variety' ? (
         <div className="space-y-4">
           {multiVarietyPlantings.length > 0 && (
+            <Disclosure
+              title={unallocatedCount > 0 ? 'Needs attention' : 'Multi-variety plantings'}
+              count={unallocatedCount > 0 ? unallocatedCount : multiVarietyPlantings.length}
+              tone={unallocatedCount > 0 ? 'warning' : 'neutral'}
+            >
+              <p className="text-xs text-slate-600">
+                {unallocatedCount > 0
+                  ? 'These finished fields grew more than one variety. Enter how many bushels came from each so the variety table stops estimating by acre share.'
+                  : 'Every multi-variety field here has its bushels allocated. Open one to adjust it.'}
+              </p>
             <div className="overflow-x-auto bg-white border border-slate-200 rounded-xl shadow">
-              <div className="px-3 py-2 text-sm border-b border-slate-200 flex flex-wrap items-center gap-2">
-                <span className="font-semibold">Multi-variety plantings ({multiVarietyPlantings.length})</span>
-                {unallocatedCount > 0 && (
-                  <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">
-                    {unallocatedCount} need allocation
-                  </span>
-                )}
-              </div>
               <table className="min-w-full text-sm">
-                <thead className="bg-slate-50 text-slate-700">
+                <thead className={theadCls}>
                   <tr>
                     <th className="text-left px-3 py-2 whitespace-nowrap">Field</th>
                     <th className="text-left px-3 py-2 whitespace-nowrap">Farm</th>
@@ -1275,14 +1357,14 @@ export default function YieldsPage() {
                           <td className="px-3 py-2">{r.farm?.name ?? ''}</td>
                           <td className="px-3 py-2">{r.crop?.name ?? '—'}</td>
                           {showMultiVarYear && <td className="px-3 py-2">{p.season_year}</td>}
-                          <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
+                          <td className="px-3 py-2 text-right">{fmtInt(r.dryBu)}</td>
                           <td className="px-3 py-2 text-slate-600">
                             {vs.map((v) => {
                               const acres = Number(v.acres)
                               const bu = v.bushels != null ? Number(v.bushels) : null
                               const parts: string[] = []
                               if (acres > 0) parts.push(`${acres} ac`)
-                              if (bu != null) parts.push(`${fmtNum(bu)} bu`)
+                              if (bu != null) parts.push(`${fmtInt(bu)} bu`)
                               const tail = parts.length > 0 ? ` (${parts.join(', ')})` : ''
                               return `${v.variety}${tail}`
                             }).join(', ')}
@@ -1300,7 +1382,7 @@ export default function YieldsPage() {
                               <button
                                 type="button"
                                 onClick={() => openVarAlloc(p)}
-                                className="text-brand-deep text-sm whitespace-nowrap"
+                                className="inline-flex items-center min-h-10 px-2 rounded-lg border border-slate-300 bg-white text-brand-deep text-sm font-semibold whitespace-nowrap"
                               >{allocated ? 'Edit allocation' : 'Allocate bushels'}</button>
                             )}
                           </td>
@@ -1310,7 +1392,7 @@ export default function YieldsPage() {
                             <td colSpan={multiVarColCount} className="px-3 py-3">
                               <div className="space-y-2">
                                 <div className="text-sm text-slate-600">
-                                  Total dry bushels: <span className="font-semibold">{fmtNum(r.dryBu)}</span> · enter how many of those came from each variety
+                                  Total dry bushels: <span className="font-semibold">{fmtInt(r.dryBu)}</span> · enter how many of those came from each variety
                                 </div>
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                   {vs.map((v) => (
@@ -1330,30 +1412,30 @@ export default function YieldsPage() {
                                 </div>
                                 <div className="flex flex-wrap items-center gap-3">
                                   <div className="text-sm text-slate-600">
-                                    Sum: <span className="font-semibold">{fmtNum(varAllocSum(vs))}</span> / {fmtNum(r.dryBu)}
+                                    Sum: <span className="font-semibold">{fmtInt(varAllocSum(vs))}</span> / {fmtInt(r.dryBu)}
                                   </div>
                                   <button
                                     type="button"
                                     disabled={varAllocSaving || !varAllocValid(vs, r.dryBu)}
                                     onClick={() => saveVarAlloc(p, r.dryBu)}
-                                    className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                                    className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 min-h-10 text-sm font-semibold disabled:opacity-50"
                                   >Save</button>
                                   <button
                                     type="button"
                                     onClick={() => { setVarAllocId(null); setVarAllocErr(null) }}
-                                    className="text-slate-500 text-sm"
+                                    className="inline-flex items-center min-h-10 px-3 rounded-lg border border-slate-300 bg-white text-slate-600 text-sm"
                                   >Cancel</button>
                                   {vs.some((v) => v.bushels != null) && (
                                     <button
                                       type="button"
-                                      onClick={() => clearVarAlloc(p)}
-                                      className="text-red-600 text-sm ml-auto"
+                                      onClick={() => askClearVarAlloc(p)}
+                                      className="inline-flex items-center min-h-10 px-3 rounded-lg text-red-700 text-sm ml-auto hover:bg-red-50"
                                     >Clear allocation</button>
                                   )}
                                 </div>
                                 {!varAllocValid(vs, r.dryBu) && (
                                   <p className="text-sm text-red-600">
-                                    Variety bushels must each be filled in and sum to {fmtNum(r.dryBu)}
+                                    Variety bushels must each be filled in and sum to {fmtInt(r.dryBu)}
                                   </p>
                                 )}
                                 {varAllocErr && <p className="text-sm text-red-600">{varAllocErr}</p>}
@@ -1367,13 +1449,14 @@ export default function YieldsPage() {
                 </tbody>
               </table>
             </div>
+            </Disclosure>
           )}
 
           <div className="overflow-x-auto bg-white rounded-xl shadow">
             <table className="min-w-full text-sm">
-              <thead className="bg-slate-100 text-slate-700">
+              <thead className={theadCls}>
                 <tr>
-                  <th className="w-6 px-2 py-2"></th>
+                  <th className="w-10 px-1 py-2"></th>
                   <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
                   <th className="text-left px-3 py-2 whitespace-nowrap">Variety</th>
                   {showVarietyYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
@@ -1400,20 +1483,21 @@ export default function YieldsPage() {
                         className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
                         onClick={(e) => { if (rowClickIsOnControl(e)) return; toggleDetail('variety', rowKey, r.cropName) }}
                       >
-                        <td className="px-2 py-2 text-slate-400">{detailOpen ? '▾' : '▸'}</td>
+                        <td className="px-1 py-1">
+                          <button type="button" aria-expanded={detailOpen} aria-label={`${detailOpen ? 'Hide' : 'Show'} detail for ${r.variety}`} onClick={() => toggleDetail('variety', rowKey, r.cropName)} className="inline-flex items-center justify-center min-h-10 min-w-10 rounded-lg text-slate-400 hover:bg-slate-100">{detailOpen ? '▾' : '▸'}</button>
+                        </td>
                         <td className="px-3 py-2">{r.cropName}</td>
                         <td className="px-3 py-2 font-semibold">{r.variety}</td>
                         {showVarietyYear && <td className="px-3 py-2">{r.seasonYear}</td>}
                         <td className="px-3 py-2 text-right">{r.plantings}</td>
-                        <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
-                        <td className="px-3 py-2 text-right font-semibold">{yld != null ? yld.toFixed(1) : '—'}</td>
+                        <td className="px-3 py-2 text-right">{fmtNum(r.acres, 1)}</td>
+                        <td className="px-3 py-2 text-right font-semibold">{yld != null ? fmtNum(yld, 1) : '—'}</td>
                         <td className="px-3 py-2 text-right">
-                          {fmtNum(r.dryBu)}
+                          {fmtInt(r.dryBu)}
                           {r.anyAcreShare && (
-                            <span
-                              className="ml-1.5 text-xs rounded px-1.5 py-0.5 bg-amber-100 text-amber-800 whitespace-nowrap"
-                              title="Includes bushels estimated by each variety's share of the acres on a multi-variety field — allocate bushels on the planting to replace the estimate"
-                            >acre-share est.</span>
+                            <InfoTip label="acre-share estimate" tone="warning" className="ml-1.5">
+                              Includes bushels estimated by each variety&rsquo;s share of the acres on a multi-variety field. Allocate bushels on the planting to replace the estimate.
+                            </InfoTip>
                           )}
                         </td>
                       </tr>
@@ -1444,9 +1528,9 @@ export default function YieldsPage() {
       ) : view === 'field' ? (
         <div className="overflow-x-auto bg-white rounded-xl shadow">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-100 text-slate-700">
+            <thead className={theadCls}>
               <tr>
-                <th className="w-6 px-2 py-2"></th>
+                <th className="w-10 px-1 py-2"></th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Field</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
                 {showFieldYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
@@ -1483,7 +1567,9 @@ export default function YieldsPage() {
                       className={`border-t border-slate-100 hover:bg-slate-50 cursor-pointer ${exclusion ? 'text-slate-400' : ''}`}
                       onClick={(e) => { if (rowClickIsOnControl(e)) return; toggleDetail('field', p.id, rowCropName) }}
                     >
-                      <td className="px-2 py-2 text-slate-400">{detailOpen ? '▾' : '▸'}</td>
+                      <td className="px-1 py-1">
+                        <button type="button" aria-expanded={detailOpen} aria-label={`${detailOpen ? 'Hide' : 'Show'} detail for ${r.fld?.name_or_number ?? 'this field'}`} onClick={() => toggleDetail('field', p.id, rowCropName)} className="inline-flex items-center justify-center min-h-10 min-w-10 rounded-lg text-slate-400 hover:bg-slate-100">{detailOpen ? '▾' : '▸'}</button>
+                      </td>
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span>{r.fld?.name_or_number ?? '—'}</span>
@@ -1492,49 +1578,54 @@ export default function YieldsPage() {
                               in progress
                             </span>
                           )}
+                          {exclusion === 'unharvested' && (
+                            <span className="text-xs rounded px-2 py-0.5 bg-slate-100 text-slate-500">
+                              not harvested
+                            </span>
+                          )}
                           {exclusion === 'in_progress' && canEdit && (
                             <button
                               type="button"
                               disabled={savingOverride}
-                              onClick={() => setInclusionOverride(p, true)}
-                              className="text-brand-deep text-xs underline disabled:opacity-50 no-print"
+                              onClick={() => askCountAnyway(p)}
+                              className="inline-flex items-center min-h-10 px-2 rounded-lg border border-slate-300 bg-white text-brand-deep text-xs font-semibold disabled:opacity-50 no-print"
                             >Count anyway</button>
                           )}
                         </div>
                       </td>
                       <td className="px-3 py-2">{r.crop?.name ?? '—'}</td>
                       {showFieldYear && <td className="px-3 py-2">{p.season_year}</td>}
-                      <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
+                      <td className="px-3 py-2 text-right">{fmtNum(r.acres, 1)}</td>
                       {showIrrigatedCol && (
-                        <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>
+                        <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc, 1) : '—'}</td>
                       )}
                       {showDrylandCol && (
-                        <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>
+                        <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc, 1) : '—'}</td>
                       )}
                       {showIrrigatedCol && (
-                        <td className="px-3 py-2 text-right font-semibold">
-                          {r.irrigatedYield != null
-                            ? r.irrigatedYield.toFixed(1)
+                        <td className="px-3 py-2 text-right font-semibold tabular-nums">
+                          {exclusion === 'unharvested' ? '—' : r.irrigatedYield != null
+                            ? fmtNum(r.irrigatedYield, 1)
                             : practiceFilter === 'irrigated' && r.totalYield != null
-                              ? r.totalYield.toFixed(1)
+                              ? fmtNum(r.totalYield, 1)
                               : '—'}
                         </td>
                       )}
                       {showDrylandCol && (
-                        <td className="px-3 py-2 text-right font-semibold">
-                          {r.drylandYield != null
-                            ? r.drylandYield.toFixed(1)
+                        <td className="px-3 py-2 text-right font-semibold tabular-nums">
+                          {exclusion === 'unharvested' ? '—' : r.drylandYield != null
+                            ? fmtNum(r.drylandYield, 1)
                             : practiceFilter === 'dryland' && r.totalYield != null
-                              ? r.totalYield.toFixed(1)
+                              ? fmtNum(r.totalYield, 1)
                               : '—'}
                         </td>
                       )}
                       {showTotalCol && (
-                        <td className="px-3 py-2 text-right font-semibold">
-                          {r.totalYield != null ? r.totalYield.toFixed(1) : '—'}
+                        <td className="px-3 py-2 text-right font-semibold tabular-nums">
+                          {exclusion === 'unharvested' ? '—' : r.totalYield != null ? fmtNum(r.totalYield, 1) : '—'}
                         </td>
                       )}
-                      <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{exclusion === 'unharvested' ? '—' : fmtInt(r.dryBu)}</td>
                       {yieldView === 'breakdown' && (
                         <td className="px-3 py-2 whitespace-nowrap">
                           {showAllocateButton && !isBreakoutOpen && canEdit && (() => {
@@ -1547,8 +1638,8 @@ export default function YieldsPage() {
                                 <button
                                   type="button"
                                   onClick={() => openBreakout(p)}
-                                  title="Every load on this field carries an irrigated/dryland tag — the split comes straight from the loads. Open to replace it with a manual split."
-                                  className="text-slate-500 text-sm whitespace-nowrap no-print"
+                                  aria-label="Split comes from the load tags. Open to replace it with a manual split."
+                                  className="inline-flex items-center min-h-10 px-2 rounded-lg text-slate-500 text-sm whitespace-nowrap no-print hover:bg-slate-100"
                                 >
                                   From load tags ✓
                                 </button>
@@ -1561,16 +1652,13 @@ export default function YieldsPage() {
                               <button
                                 type="button"
                                 onClick={() => openBreakout(p)}
-                                className="text-brand-deep text-sm whitespace-nowrap no-print"
+                                className="inline-flex items-center min-h-10 px-2 rounded-lg border border-slate-300 bg-white text-brand-deep text-sm font-semibold whitespace-nowrap no-print"
                               >
                                 {p.yield_breakout_entered ? 'Edit breakout' : 'Allocate irr/dry'}
                               </button>
                             ) : (
-                              <span
-                                title="Available after harvest is complete"
-                                className="text-slate-400 text-sm whitespace-nowrap no-print cursor-help"
-                              >
-                                Allocate irr/dry
+                              <span className="text-slate-400 text-xs whitespace-nowrap no-print">
+                                Allocate after harvest
                               </span>
                             )
                           })()}
@@ -1598,7 +1686,7 @@ export default function YieldsPage() {
                                       type="button"
                                       disabled={savingOverride}
                                       onClick={() => setInclusionOverride(p, null)}
-                                      className="text-brand-deep underline disabled:opacity-50 no-print"
+                                      className="inline-flex items-center min-h-10 px-2 rounded-lg border border-slate-300 bg-white text-brand-deep text-xs font-semibold disabled:opacity-50 no-print"
                                     >Undo</button>
                                   )}
                                 </span>
@@ -1611,8 +1699,8 @@ export default function YieldsPage() {
                                     <button
                                       type="button"
                                       disabled={savingOverride}
-                                      onClick={() => setInclusionOverride(p, true)}
-                                      className="text-brand-deep text-xs underline disabled:opacity-50 no-print"
+                                      onClick={() => askCountAnyway(p)}
+                                      className="inline-flex items-center min-h-10 px-2 rounded-lg border border-slate-300 bg-white text-brand-deep text-xs font-semibold disabled:opacity-50 no-print"
                                     >Count anyway</button>
                                   )}
                                 </span>
@@ -1663,7 +1751,7 @@ export default function YieldsPage() {
                           })()}
                           <div className="flex flex-wrap items-end gap-3">
                             <div className="text-sm text-slate-600">
-                              Total dry bushels: <span className="font-semibold">{fmtNum(r.dryBu)}</span>
+                              Total dry bushels: <span className="font-semibold">{fmtInt(r.dryBu)}</span>
                             </div>
                             <label className="text-xs text-slate-500 flex flex-col gap-1">
                               Irrigated bushels
@@ -1691,24 +1779,24 @@ export default function YieldsPage() {
                               type="button"
                               disabled={breakoutSaving || !breakoutSumValid(r.dryBu)}
                               onClick={() => saveBreakout(p, r.dryBu)}
-                              className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+                              className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 min-h-10 text-sm font-semibold disabled:opacity-50"
                             >Save</button>
                             <button
                               type="button"
                               onClick={() => { setBreakoutId(null); setBreakoutErr(null) }}
-                              className="text-slate-500 text-sm"
+                              className="inline-flex items-center min-h-10 px-3 rounded-lg border border-slate-300 bg-white text-slate-600 text-sm"
                             >Cancel</button>
                             {p.yield_breakout_entered && (
                               <button
                                 type="button"
-                                onClick={() => clearBreakout(p)}
-                                className="text-red-600 text-sm ml-auto"
+                                onClick={() => askClearBreakout(p)}
+                                className="inline-flex items-center min-h-10 px-3 rounded-lg text-red-700 text-sm ml-auto hover:bg-red-50"
                               >Clear breakout</button>
                             )}
                           </div>
                           {!breakoutSumValid(r.dryBu) && (breakoutIrr !== '' || breakoutDry !== '') && (
                             <p className="text-sm text-red-600 mt-2">
-                              Irrigated + Dryland bushels must equal total bushels ({fmtNum(r.dryBu)})
+                              Irrigated + Dryland bushels must equal total bushels ({fmtInt(r.dryBu)})
                             </p>
                           )}
                           {breakoutErr && <p className="text-sm text-red-600 mt-2">{breakoutErr}</p>}
@@ -1736,9 +1824,9 @@ export default function YieldsPage() {
                 </header>
                 <div className="overflow-x-auto">
                   <table className="min-w-full text-sm">
-                    <thead className="bg-slate-50 text-slate-700">
+                    <thead className={theadCls}>
                       <tr>
-                        <th className="w-6 px-2 py-2"></th>
+                        <th className="w-10 px-1 py-2"></th>
                         <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
                         {showEntityYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
                         <th className="text-right px-3 py-2 whitespace-nowrap">Acres</th>
@@ -1760,16 +1848,18 @@ export default function YieldsPage() {
                               className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
                               onClick={(e) => { if (rowClickIsOnControl(e)) return; toggleDetail('entity', rowKey, r.cropName) }}
                             >
-                              <td className="px-2 py-2 text-slate-400">{detailOpen ? '▾' : '▸'}</td>
+                              <td className="px-1 py-1">
+                                <button type="button" aria-expanded={detailOpen} aria-label={`${detailOpen ? 'Hide' : 'Show'} detail for ${r.cropName}`} onClick={() => toggleDetail('entity', rowKey, r.cropName)} className="inline-flex items-center justify-center min-h-10 min-w-10 rounded-lg text-slate-400 hover:bg-slate-100">{detailOpen ? '▾' : '▸'}</button>
+                              </td>
                               <td className="px-3 py-2 font-medium">{r.cropName}</td>
                               {showEntityYear && <td className="px-3 py-2">{r.seasonYear}</td>}
-                              <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
-                              {entityShowBreakdown && <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>}
-                              {entityShowBreakdown && <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>}
-                              {entityShowBreakdown && <td className="px-3 py-2 text-right font-semibold">{r.irrigatedYield != null ? r.irrigatedYield.toFixed(1) : '—'}</td>}
-                              {entityShowBreakdown && <td className="px-3 py-2 text-right font-semibold">{r.drylandYield != null ? r.drylandYield.toFixed(1) : '—'}</td>}
-                              <td className="px-3 py-2 text-right font-semibold">{r.yield != null ? r.yield.toFixed(1) : '—'}</td>
-                              <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
+                              <td className="px-3 py-2 text-right">{fmtNum(r.acres, 1)}</td>
+                              {entityShowBreakdown && <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc, 1) : '—'}</td>}
+                              {entityShowBreakdown && <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc, 1) : '—'}</td>}
+                              {entityShowBreakdown && <td className="px-3 py-2 text-right font-semibold">{r.irrigatedYield != null ? fmtNum(r.irrigatedYield, 1) : '—'}</td>}
+                              {entityShowBreakdown && <td className="px-3 py-2 text-right font-semibold">{r.drylandYield != null ? fmtNum(r.drylandYield, 1) : '—'}</td>}
+                              <td className="px-3 py-2 text-right font-semibold">{r.yield != null ? fmtNum(r.yield, 1) : '—'}</td>
+                              <td className="px-3 py-2 text-right">{fmtInt(r.dryBu)}</td>
                             </tr>
                             {detailOpen && (
                               <tr className="bg-slate-50">
@@ -1798,13 +1888,13 @@ export default function YieldsPage() {
                           <td></td>
                           <td className="px-3 py-2">{g.groupName} total</td>
                           {showEntityYear && <td></td>}
-                          <td className="px-3 py-2 text-right">{fmtNum(g.acres)}</td>
+                          <td className="px-3 py-2 text-right">{fmtNum(g.acres, 1)}</td>
                           {entityShowBreakdown && <td></td>}
                           {entityShowBreakdown && <td></td>}
                           {entityShowBreakdown && <td></td>}
                           {entityShowBreakdown && <td></td>}
                           <td className="px-3 py-2 text-right text-slate-400">—</td>
-                          <td className="px-3 py-2 text-right">{fmtNum(g.dryBu)}</td>
+                          <td className="px-3 py-2 text-right">{fmtInt(g.dryBu)}</td>
                         </tr>
                       </tfoot>
                     )}
@@ -1817,11 +1907,11 @@ export default function YieldsPage() {
       ) : (
         <div className="overflow-x-auto bg-white rounded-xl shadow">
           <table className="min-w-full text-sm">
-            <thead className="bg-slate-100 text-slate-700">
+            <thead className={theadCls}>
               <tr>
-                <th className="w-6 px-2 py-2"></th>
+                <th className="w-10 px-1 py-2"></th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Farm</th>
-                <th className="text-left px-3 py-2 whitespace-nowrap">FSA#</th>
+                <th className="text-left px-3 py-2 whitespace-nowrap">FSA #</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Entity</th>
                 <th className="text-left px-3 py-2 whitespace-nowrap">Crop</th>
                 {showFarmYear && <th className="text-left px-3 py-2 whitespace-nowrap">Year</th>}
@@ -1849,25 +1939,27 @@ export default function YieldsPage() {
                       className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
                       onClick={(e) => { if (rowClickIsOnControl(e)) return; toggleDetail('farm', rowKey, r.cropName) }}
                     >
-                      <td className="px-2 py-2 text-slate-400">{detailOpen ? '▾' : '▸'}</td>
+                      <td className="px-1 py-1">
+                        <button type="button" aria-expanded={detailOpen} aria-label={`${detailOpen ? 'Hide' : 'Show'} detail for ${r.farmName}`} onClick={() => toggleDetail('farm', rowKey, r.cropName)} className="inline-flex items-center justify-center min-h-10 min-w-10 rounded-lg text-slate-400 hover:bg-slate-100">{detailOpen ? '▾' : '▸'}</button>
+                      </td>
                       <td className="px-3 py-2 font-semibold">{r.farmName}</td>
-                      <td className="px-3 py-2 font-mono text-xs">{r.fsaNumber ?? ''}</td>
+                      <td className="px-3 py-2 text-xs tabular-nums">{r.fsaNumber ?? ''}</td>
                       <td className="px-3 py-2">{r.entityName}</td>
                       <td className="px-3 py-2">{r.cropName}</td>
                       {showFarmYear && <td className="px-3 py-2">{r.seasonYear}</td>}
-                      <td className="px-3 py-2 text-right">{fmtNum(r.acres)}</td>
-                      {farmShowBreakdown && <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc) : '—'}</td>}
-                      {farmShowBreakdown && <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc) : '—'}</td>}
+                      <td className="px-3 py-2 text-right">{fmtNum(r.acres, 1)}</td>
+                      {farmShowBreakdown && <td className="px-3 py-2 text-right">{r.irrAc > 0 ? fmtNum(r.irrAc, 1) : '—'}</td>}
+                      {farmShowBreakdown && <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc, 1) : '—'}</td>}
                       {farmShowBreakdown && (
-                        <td className="px-3 py-2 text-right font-semibold">{y.irrigated != null ? y.irrigated.toFixed(1) : '—'}</td>
+                        <td className="px-3 py-2 text-right font-semibold">{y.irrigated != null ? fmtNum(y.irrigated, 1) : '—'}</td>
                       )}
                       {farmShowBreakdown && (
-                        <td className="px-3 py-2 text-right font-semibold">{y.dryland != null ? y.dryland.toFixed(1) : '—'}</td>
+                        <td className="px-3 py-2 text-right font-semibold">{y.dryland != null ? fmtNum(y.dryland, 1) : '—'}</td>
                       )}
                       <td className="px-3 py-2 text-right font-semibold">
-                        {y.total != null ? y.total.toFixed(1) : '—'}
+                        {y.total != null ? fmtNum(y.total, 1) : '—'}
                       </td>
-                      <td className="px-3 py-2 text-right">{fmtNum(r.dryBu)}</td>
+                      <td className="px-3 py-2 text-right">{fmtInt(r.dryBu)}</td>
                     </tr>
                     {detailOpen && (
                       <tr className="bg-slate-50">
@@ -1894,7 +1986,7 @@ export default function YieldsPage() {
         </div>
       )}
       {/* Cotton module (feature-flagged): lint lbs/acre from gin receipts. */}
-      <CottonYieldsSection year={year} />
+      <CottonYieldsSection year={year} entityId={entityId} />
     </div>
   )
 }

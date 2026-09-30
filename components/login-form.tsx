@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { reportError } from '@/lib/friendly-error'
 
 // The interactive sign-in form. The post-login destination (`next`) is passed
 // in from the server page's searchParams so this component doesn't need
@@ -12,6 +13,11 @@ import { createClient } from '@/lib/supabase/client'
 // resetPasswordForEmail with a redirect to /reset-password (where the emailed
 // recovery link lands and the new password is set). The response is always the
 // same neutral sentence — no account enumeration.
+//
+// Turnrow has no self-serve signup: the card says so and points at the
+// operation's owner (who invites from Settings → Users) and at support.
+const SUPPORT_EMAIL = 'stuart@turnrow.farm'
+
 export default function LoginForm({ next }: { next: string }) {
   const router = useRouter()
   const [mode, setMode] = useState<'signin' | 'forgot'>('signin')
@@ -42,7 +48,7 @@ export default function LoginForm({ next }: { next: string }) {
     const { error } = await supabase.auth.signInWithPassword({ email, password })
     setBusy(false)
     if (error) {
-      setError(error.message)
+      setError(reportError(error, { action: 'sign you in' }))
       return
     }
     router.push(next)
@@ -62,6 +68,13 @@ export default function LoginForm({ next }: { next: string }) {
     setBusy(false)
     setNotice('If an account exists for that email, a reset link has been sent.')
   }
+
+  const inviteNote = (
+    <p className="text-xs text-slate-500 text-center pt-1">
+      Turnrow is invitation-only — ask your operation&rsquo;s owner to invite you.{' '}
+      <a href={`mailto:${SUPPORT_EMAIL}?subject=Turnrow%20sign-in%20help`} className="text-brand-deep underline decoration-dotted">Need help? Contact support</a>
+    </p>
+  )
 
   if (mode === 'forgot') {
     return (
@@ -93,10 +106,11 @@ export default function LoginForm({ next }: { next: string }) {
         <button
           type="button"
           onClick={() => { setMode('signin'); setNotice(null); setError(null) }}
-          className="w-full text-sm text-brand-deep underline decoration-dotted"
+          className="w-full text-sm text-brand-deep underline decoration-dotted min-h-11"
         >
           Back to sign in
         </button>
+        {inviteNote}
       </form>
     )
   }
@@ -129,7 +143,7 @@ export default function LoginForm({ next }: { next: string }) {
         />
       </label>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="text-sm text-red-600" role="alert">{error}</p>}
 
       <button
         type="submit"
@@ -141,10 +155,11 @@ export default function LoginForm({ next }: { next: string }) {
       <button
         type="button"
         onClick={() => { setMode('forgot'); setError(null) }}
-        className="w-full text-sm text-brand-deep underline decoration-dotted"
+        className="w-full text-sm text-brand-deep underline decoration-dotted min-h-11"
       >
         Forgot password?
       </button>
+      {inviteNote}
     </form>
   )
 }

@@ -15,13 +15,9 @@ export type InventoryCsvRow = {
   beginningNotes: string
 }
 
-function csvCell(v: unknown): string {
-  if (v == null) return ''
-  const s = String(v)
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-}
-
-// Formatted PDF/Excel mirroring the on-screen inventory (real bushel numbers).
+// ONE payload for Excel / PDF / CSV / print, mirroring the on-screen
+// inventory (real bushel numbers, whole bushels). The CSV rides the same
+// lib/exports renderer as every other report — no bespoke file writer here.
 function buildPayload(rows: InventoryCsvRow[]): ExportPayload {
   const total = rows.reduce(
     (a, r) => ({
@@ -33,12 +29,13 @@ function buildPayload(rows: InventoryCsvRow[]): ExportPayload {
     { load: 0, xfer: 0, beg: 0, tot: 0 },
   )
   return {
-    title: 'Bin Inventory Summary',
+    title: 'Bin Inventory',
+    filename: `bin-inventory-${new Date().toISOString().slice(0, 10)}`,
     summary: [{ label: 'Total on hand', value: total.tot.toLocaleString(undefined, { maximumFractionDigits: 0 }) + ' bu' }],
     sections: [{
       columns: [
         { label: 'Bin' }, { label: 'Crop' },
-        { label: 'Load-backed bu', align: 'right', format: 'bu' },
+        { label: 'From loads bu', align: 'right', format: 'bu' },
         { label: 'Transfers net bu', align: 'right', format: 'bu' },
         { label: 'Beginning inventory bu', align: 'right', format: 'bu' },
         { label: 'Total bu', align: 'right', format: 'bu' },
@@ -59,46 +56,6 @@ function buildPayload(rows: InventoryCsvRow[]): ExportPayload {
 }
 
 export default function ExportInventoryCsv({ rows }: { rows: InventoryCsvRow[] }) {
-  function download() {
-    const header = [
-      'Bin', 'Crop',
-      'Load-backed bu', 'Transfers net bu', 'Beginning inventory bu',
-      'Total bu', 'Capacity bu', '% full', 'Beginning inventory notes',
-    ]
-    const body = rows.map((r) => [
-      r.binName,
-      r.cropName,
-      r.loadBackedBu.toFixed(2),
-      r.transferNetBu.toFixed(2),
-      r.beginningBu.toFixed(2),
-      r.totalBu.toFixed(2),
-      r.capacityBu != null ? r.capacityBu.toFixed(2) : '',
-      r.pctFull,
-      r.beginningNotes,
-    ])
-    const csv = [header, ...body].map((r) => r.map(csvCell).join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `bin-inventory-${new Date().toISOString().slice(0, 10)}.csv`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
-  }
-
-  return (
-    <div className="flex flex-wrap gap-2">
-      <button
-        type="button"
-        onClick={download}
-        disabled={rows.length === 0}
-        className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold disabled:opacity-50"
-      >
-        Export CSV
-      </button>
-      {rows.length > 0 && <ExportBar buildPayload={() => buildPayload(rows)} />}
-    </div>
-  )
+  if (rows.length === 0) return null
+  return <ExportBar buildPayload={() => buildPayload(rows)} formats={['xlsx', 'pdf', 'csv', 'print']} />
 }

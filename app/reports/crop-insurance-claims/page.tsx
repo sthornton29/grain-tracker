@@ -13,18 +13,12 @@ export default function CropInsuranceClaimsPage() {
   const handlePayload = useCallback((fn: () => ExportPayload) => setBuildPayload(() => fn), [])
   return (
     <div className="space-y-4">
-      <div className="flex items-end gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold flex-1">Crop Insurance Claims Monitor</h1>
-        <ExportBar buildPayload={() => buildPayload()} />
-      </div>
+      <CropInsuranceClaimsReport onPayloadChange={handlePayload} headerActions={<ExportBar buildPayload={() => buildPayload()} />} />
       <p className="text-sm text-slate-600 no-print max-w-3xl">
-        Estimated indemnity for each RP / RP-HPE / YP policy (with SCO and ECO endorsements) at your current
-        per-practice yields and the running harvest-price estimate, netted against premium paid. For price and yield
-        scenarios, use the{' '}
-        <Link href="/reports/income-sensitivity" className="text-brand-deep underline">Income Sensitivity Report →</Link>{' '}
-        <Link href="/settings/crop-insurance" className="text-brand-deep underline">Manage policies →</Link>
+        What each policy would pay at your current yields and the running harvest-price estimate, after the premium
+        you paid. For price and yield what-ifs, use the{' '}
+        <Link href="/reports/income-sensitivity" className="text-brand-deep underline">Income Sensitivity report →</Link>
       </p>
-      <CropInsuranceClaimsReport onPayloadChange={handlePayload} />
     </div>
   )
 }

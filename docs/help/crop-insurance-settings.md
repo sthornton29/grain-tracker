@@ -1,7 +1,7 @@
 ---
 page_route: /settings/crop-insurance
-title: Crop Insurance Settings
-updated: 2026-09-08
+title: Crop Insurance
+updated: 2026-09-24
 keywords: crop insurance, policy, MPCI, RP, YP, ARP, AYP, SCO, ECO, STAX, MCO, APH, projected price, coverage check, practice, county yield, attestation
 ---
 ## What this page is for

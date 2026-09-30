@@ -1,15 +1,16 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { fieldCropAggregates, type CombineEntryLike } from '@/lib/yields'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { useReportCropYear } from '@/lib/report-filters'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import {
-  EmptyState, SummaryCards, numCell, textCell, theadCls,
-  subtotalRowCls, grandTotalRowCls, toneText,
+  EmptyState, SummaryCards, ReportHeader, ReportFilterBar, FilterField, numCell, textCell, theadCls,
+  subtotalRowCls, grandTotalRowCls, toneText, selectCls, fmtNum, fmtInt, filterSummaryOf, cropYearLabel,
   type SummaryCardData,
 } from '@/components/reports/report-kit'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
@@ -60,11 +61,13 @@ type LandownerShareGroup = {
 
 type Props = {
   onPayloadChange?: (build: () => ExportPayload) => void
+  /** Rendered in the report header's action slot (the page passes <ExportBar/>). */
+  headerActions?: ReactNode
 }
 
 const NO_LANDOWNER_KEY = '__none__'
 
-export default function ShareRentReport({ onPayloadChange }: Props) {
+export default function ShareRentReport({ onPayloadChange, headerActions }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [crops, setCrops] = useState<Crop[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
@@ -77,8 +80,12 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
   const [landowners, setLandowners] = useState<Landowner[]>([])
   const [loading, setLoading] = useState(true)
 
-  // Filters persist across visits (see usePersistentState).
-  const [cropYear, setCropYear] = usePersistentState<number | ''>('share-rent:cropYear', '')
+  // Filters persist across visits. The crop year follows the one report rule
+  // (lib/report-filters): current year by default, a saved pick is never
+  // overwritten on load; only an untouched default falls back to the newest
+  // year with plantings.
+  const plantingYears = useMemo(() => Array.from(new Set(plantings.map((p) => p.season_year))), [plantings])
+  const [cropYear, setCropYear] = useReportCropYear('share-rent:cropYear', { options: plantingYears, loaded: !loading })
   const [cropId, setCropId] = usePersistentState('share-rent:cropId', '')
   const [entityId, setEntityId] = usePersistentState('share-rent:entityId', '')
   const [landownerId, setLandownerId] = usePersistentState('share-rent:landownerId', '')
@@ -106,10 +113,6 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
       setSplits((sp.data as LoadSplit[]) || [])
       setLandowners((lan.data as Landowner[]) || [])
       setCombineEntries((ce.data as CombineEntryLike[]) || [])
-      // Default to the latest year that has plantings.
-      const years = (pl.data as FieldPlanting[] | null)?.map((p) => p.season_year) ?? []
-      if (years.length > 0) setCropYear(Math.max(...years))
-      else setCropYear(new Date().getFullYear())
       setLoading(false)
     })()
   }, [supabase])
@@ -247,16 +250,17 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
   }, [farms, fields, plantings, fieldById, cropById, landownerById, dryBuByKey, cropYear, cropId, entityId, landownerId])
 
   function filtersLabel(): string {
-    const parts: string[] = [`Crop year: ${cropYear === '' ? '(none)' : cropYear}`]
-    if (cropId) parts.push(`Crop: ${cropById.get(cropId)?.name ?? '?'}`)
     // For a viewer, "no entity selected" means their granted entities — name
     // them. Null for owners (keep existing wording).
     const entityName = entityId
       ? entities.find((e) => e.id === entityId)?.name ?? '?'
       : viewerAllEntitiesLabel(viewer, entities)
-    if (entityName) parts.push(`Entity: ${entityName}`)
-    if (landownerId) parts.push(`Landowner: ${landownerById.get(landownerId)?.name ?? '?'}`)
-    return parts.join(' · ')
+    return filterSummaryOf(
+      cropYearLabel(cropYear),
+      entityName ?? 'All Entities',
+      cropId ? (cropById.get(cropId)?.name ?? 'Crop') : 'All Crops',
+      landownerId ? (landownerById.get(landownerId)?.name ?? 'Landowner') : 'All Landowners',
+    )
   }
 
   function buildExportPayload(): ExportPayload {
@@ -333,51 +337,59 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groups, summaryByCrop, cropYear, cropId, entityId, landownerId, viewer, onPayloadChange])
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
-  const fmt = (n: number, d = 2) => n.toLocaleString(undefined, { maximumFractionDigits: d })
-
   if (loading) return <p className="text-slate-500">Loading…</p>
+
+  // A landowner signed in as a viewer gets their handout: the operation's own
+  // "Owned / No Landowner" ground is the operator's business, not theirs.
+  const shownGroups = viewer.isViewer ? groups.filter((g) => g.key !== NO_LANDOWNER_KEY) : groups
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 no-print">
-        <select
-          value={cropYear}
-          onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))}
-          className={inputCls}
-        >
-          <option value="">— pick a crop year —</option>
-          {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
-        </select>
-        <select value={cropId} onChange={(e) => setCropId(e.target.value)} className={inputCls}>
-          <option value="">All crops</option>
-          {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        {!(viewer.isViewer && entityOptions.length <= 1) && (
-          <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
-            <option value="">All entities</option>
-            {entityOptions.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+      <ReportHeader title="Share Rent Report" filterSummary={filtersLabel()} actions={headerActions} />
+      <ReportFilterBar activeCount={(cropId ? 1 : 0) + (entityId ? 1 : 0) + (landownerId ? 1 : 0)}>
+        <FilterField label="Crop year">
+          <select
+            value={cropYear}
+            onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))}
+            className={selectCls}
+          >
+            {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
+        </FilterField>
+        <FilterField label="Crop">
+          <select value={cropId} onChange={(e) => setCropId(e.target.value)} className={selectCls}>
+            <option value="">All crops</option>
+            {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </FilterField>
+        {!(viewer.isViewer && entityOptions.length <= 1) && (
+          <FilterField label="Entity">
+            <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={selectCls}>
+              <option value="">All entities</option>
+              {entityOptions.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+          </FilterField>
         )}
-        <select value={landownerId} onChange={(e) => setLandownerId(e.target.value)} className={inputCls}>
-          <option value="">All landowners</option>
-          {landowners.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
-        </select>
-      </div>
+        <FilterField label="Landowner">
+          <select value={landownerId} onChange={(e) => setLandownerId(e.target.value)} className={selectCls}>
+            <option value="">All landowners</option>
+            {landowners.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+          </select>
+        </FilterField>
+      </ReportFilterBar>
 
       {cropYear === '' ? (
         <EmptyState
           message="Pick a crop year to run the share rent report."
           hint="Choose a crop year above to see bushels owed by landowner."
-          linkHref="/settings/farms"
-          linkLabel="Set up share-rent farms"
         />
-      ) : groups.length === 0 ? (
+      ) : shownGroups.length === 0 ? (
         <EmptyState
           message={`No share-rent farms have production in ${cropYear}.`}
           hint="Mark farms as share-rent with a landlord share percentage, or widen the filters above."
           linkHref="/settings/farms"
           linkLabel="Set up share-rent farms"
+          role={viewer.role}
         />
       ) : (
         <div className="space-y-6">
@@ -386,7 +398,7 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
             <SummaryCards
               cards={summaryByCrop.map((s): SummaryCardData => ({
                 label: `${s.cropName} owed`,
-                value: `${fmt(s.landlordBu)} bu`,
+                value: `${fmtInt(s.landlordBu)} bu`,
                 sub: `${cropYear} · all landowners`,
               }))}
             />
@@ -407,7 +419,7 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
                   {summaryByCrop.map((s) => (
                     <tr key={s.cropName} className="border-t border-slate-100">
                       <td className={`${textCell} font-semibold`}>{s.cropName}</td>
-                      <td className={`${numCell} tabular-nums`}>{fmt(s.landlordBu)}</td>
+                      <td className={`${numCell} tabular-nums`}>{fmtInt(s.landlordBu)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -416,7 +428,7 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
           )}
 
           {/* Per-landowner sections */}
-          {groups.map((g) => (
+          {shownGroups.map((g) => (
             <section key={g.key} className="bg-white rounded-xl shadow overflow-hidden avoid-break">
               <header className="bg-slate-100 px-4 py-2 flex items-baseline gap-2 flex-wrap">
                 <h2 className="font-bold text-lg">{g.landownerName}</h2>
@@ -449,18 +461,18 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
                           {c.fields.map((r, ri) => (
                             <tr key={ri} className="border-t border-slate-100">
                               <td className={textCell}>{r.fieldName}</td>
-                              <td className={`${numCell} tabular-nums`}>{fmt(r.acres)}</td>
-                              <td className={`${numCell} tabular-nums`}>{fmt(r.dryBu)}</td>
-                              <td className={`${numCell} tabular-nums`}>{r.yieldBuPerAc != null ? r.yieldBuPerAc.toFixed(1) : '—'}</td>
-                              <td className={`${numCell} tabular-nums`}>{fmt(r.landlordBu)}</td>
+                              <td className={`${numCell} tabular-nums`}>{fmtNum(r.acres, 1)}</td>
+                              <td className={`${numCell} tabular-nums`}>{fmtInt(r.dryBu)}</td>
+                              <td className={`${numCell} tabular-nums`}>{r.yieldBuPerAc != null ? fmtNum(r.yieldBuPerAc, 1) : '—'}</td>
+                              <td className={`${numCell} tabular-nums`}>{fmtInt(r.landlordBu)}</td>
                             </tr>
                           ))}
                           <tr className={`border-t border-slate-200 ${subtotalRowCls}`}>
                             <td className={`${textCell} italic`}>{c.cropName} subtotal</td>
-                            <td className={`${numCell} tabular-nums`}>{fmt(c.totals.acres)}</td>
-                            <td className={`${numCell} tabular-nums`}>{fmt(c.totals.dryBu)}</td>
-                            <td className={`${numCell} tabular-nums`}>{c.totals.acres > 0 ? (c.totals.dryBu / c.totals.acres).toFixed(1) : '—'}</td>
-                            <td className={`${numCell} tabular-nums`}>{fmt(c.totals.landlordBu)}</td>
+                            <td className={`${numCell} tabular-nums`}>{fmtNum(c.totals.acres, 1)}</td>
+                            <td className={`${numCell} tabular-nums`}>{fmtInt(c.totals.dryBu)}</td>
+                            <td className={`${numCell} tabular-nums`}>{c.totals.acres > 0 ? fmtNum(c.totals.dryBu / c.totals.acres, 1) : '—'}</td>
+                            <td className={`${numCell} tabular-nums`}>{fmtInt(c.totals.landlordBu)}</td>
                           </tr>
                         </tbody>
                       </table>
@@ -477,9 +489,9 @@ export default function ShareRentReport({ onPayloadChange }: Props) {
                       {[...g.byCrop.values()].map((t) => (
                         <tr key={t.cropName}>
                           <td className="pr-4 py-1 font-semibold">{t.cropName}</td>
-                          <td className="pr-4 py-1 text-right tabular-nums">{fmt(t.acres)} ac</td>
-                          <td className="pr-4 py-1 text-right tabular-nums">{fmt(t.dryBu)} bu produced</td>
-                          <td className={`pr-4 py-1 text-right tabular-nums font-bold ${toneText('warning')}`}>{fmt(t.landlordBu)} bu owed</td>
+                          <td className="pr-4 py-1 text-right tabular-nums">{fmtNum(t.acres, 1)} ac</td>
+                          <td className="pr-4 py-1 text-right tabular-nums">{fmtInt(t.dryBu)} bu produced</td>
+                          <td className={`pr-4 py-1 text-right tabular-nums font-bold ${toneText('warning')}`}>{fmtInt(t.landlordBu)} bu owed</td>
                         </tr>
                       ))}
                     </tbody>

@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { reportGroupsFor } from './reports-nav'
+import { reportGroupsFor, reportHref } from './reports-nav'
 import { createClient } from '@/lib/supabase/server'
 import { coerceAppRole } from '@/lib/app-role'
 
@@ -19,9 +19,8 @@ export default async function ReportsLanding() {
       <div>
         <h1 className="text-2xl font-bold">Reports</h1>
         <p className="text-slate-600 max-w-2xl mt-1">
-          Pick a report below or from the sidebar. Reports that open inside this page have Excel,
-          PDF, and Print buttons. Reports marked with <span className="text-slate-400">↗</span>{' '}
-          open on their standalone pages.
+          Pick a report by the question you are asking. Every report has Excel, PDF, and Print buttons.
+          Reports marked with <span className="text-slate-400">↗</span> open on their own page.
         </p>
       </div>
 
@@ -32,7 +31,7 @@ export default async function ReportsLanding() {
             {group.reports.map((r) => (
               <Link
                 key={r.href + r.label}
-                href={r.href}
+                href={reportHref(r)}
                 className="block bg-white rounded-xl shadow p-4 hover:bg-slate-50"
                 {...(r.external ? { title: 'Opens the standalone page' } : {})}
               >

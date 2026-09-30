@@ -9,7 +9,8 @@ Turnrow tracks grain and cotton from the field through storage, contracts, settl
 - **No weather.**
 - **No bank or brokerage connections.** Brokerage statements and buyer settlements come in as uploads you review — nothing links to an account automatically.
 - **No payroll, HR, or equipment maintenance tracking.**
-- **No app-store app.** Turnrow runs in the browser and can be added to a phone or iPad home screen from the browser's share/menu button.
+- **No app-store app.** Turnrow runs in the browser and can be added to a phone or iPad home screen from the browser's share/menu button (Safari shows a one-time hint on the sign-in and home pages).
 - **No automatic price alerts or texts.** Market prices appear on-screen when pages load.
+- **No offline use.** Turnrow needs a connection to load pages; with no signal it shows an offline page and asks you to reconnect. Nothing typed on a page is kept across a reload.
 - **US grain and cotton, US dollars, US programs only.**
-- **No self-serve signup.** New farms and new users join by invitation.
+- **No self-serve signup.** New farms and new users join by invitation — an owner adds people under Settings → Users.

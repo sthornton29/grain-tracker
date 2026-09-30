@@ -14,16 +14,12 @@ export default function DryerMathPage() {
   }, [])
   return (
     <div className="space-y-4">
-      <div className="flex items-end gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold flex-1">Grain Dryer Math</h1>
-        <ExportBar buildPayload={() => buildPayload()} />
-      </div>
+      <DryerMathReport onPayloadChange={handlePayload} headerActions={<ExportBar buildPayload={() => buildPayload()} />} />
       <p className="text-sm text-slate-600 no-print max-w-3xl">
-        Crop, fuel, fuel price — two columns answer what drying to base costs per bushel at every incoming moisture
-        (fuel, fan, and dryer depreciation) and what taking out one point too many gives away. Everything else lives
-        behind the ⚙ Assumptions panel.
+        Crop, fuel, fuel price — the table answers what drying to base costs per bushel at every incoming moisture
+        (fuel, fan, and dryer wear) and what taking out one point too many gives away. Everything else lives behind
+        the ⚙ Assumptions button.
       </p>
-      <DryerMathReport onPayloadChange={handlePayload} />
     </div>
   )
 }

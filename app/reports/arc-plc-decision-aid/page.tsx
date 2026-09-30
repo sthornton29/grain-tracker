@@ -13,16 +13,12 @@ export default function ArcPlcDecisionAidPage() {
   const handlePayload = useCallback((fn: () => ExportPayload) => setBuildPayload(() => fn), [])
   return (
     <div className="space-y-4">
-      <div className="flex items-end gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold flex-1">ARC/PLC Decision Aid</h1>
-        <ExportBar buildPayload={() => buildPayload()} />
-      </div>
+      <ArcPlcDecisionAid onPayloadChange={handlePayload} headerActions={<ExportBar buildPayload={() => buildPayload()} />} />
       <p className="text-sm text-slate-600 no-print max-w-3xl">
-        Compare projected PLC vs ARC-CO payments per farm and commodity before electing. Slide the MYA assumption to
-        see how PLC moves, then set your election.{' '}
+        Compare what PLC and ARC-CO would pay per farm and commodity before you elect. Slide the marketing-year price
+        assumption to see how PLC moves, then set your election.{' '}
         <Link href="/settings/government-payments" className="text-brand-deep underline">Manage base acres &amp; prices →</Link>
       </p>
-      <ArcPlcDecisionAid onPayloadChange={handlePayload} />
     </div>
   )
 }

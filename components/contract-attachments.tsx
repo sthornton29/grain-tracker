@@ -5,6 +5,8 @@ import { createClient } from '@/lib/supabase/client'
 import { MAX_PDF_BYTES, uploadFileToStorage, deleteStorageObject } from '@/lib/pdf-upload'
 import type { ContractAttachment } from '@/lib/types'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
+import { ConfirmDialog } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
 
 function isImage(mime: string | null | undefined) {
   return !!mime && mime.startsWith('image/')
@@ -22,6 +24,7 @@ export default function ContractAttachments({ contractId }: { contractId: string
   const [items, setItems] = useState<ContractAttachment[] | null>(null)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [removing, setRemoving] = useState<ContractAttachment | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -32,7 +35,7 @@ export default function ContractAttachments({ contractId }: { contractId: string
         .eq('contract_id', contractId)
         .order('created_at', { ascending: true })
       if (cancelled) return
-      if (error) { setErr(error.message); setItems([]); return }
+      if (error) { setErr(reportError(error, { action: 'load the attachments', noun: 'attachment' })); setItems([]); return }
       setItems((data as ContractAttachment[]) ?? [])
     })()
     return () => { cancelled = true }
@@ -66,27 +69,30 @@ export default function ContractAttachments({ contractId }: { contractId: string
           })
           .select('*')
           .single()
-        if (error) throw new Error(error.message)
+        if (error) throw error
         uploaded.push(data as ContractAttachment)
       }
       setItems((prev) => [...(prev ?? []), ...uploaded])
     } catch (e: any) {
-      setErr(e?.message ?? 'Could not upload attachment.')
+      setErr(reportError(e, { action: 'attach this file', noun: 'attachment' }))
     } finally {
       setBusy(false)
     }
   }
 
-  async function onDelete(a: ContractAttachment) {
-    if (!window.confirm(`Remove "${a.file_name}"?`)) return
+  async function doDelete(a: ContractAttachment) {
     setErr(null)
+    setBusy(true)
     try {
       const { error } = await supabase.from('contract_attachments').delete().eq('id', a.id)
-      if (error) throw new Error(error.message)
+      if (error) throw error
       await deleteStorageObject(supabase, a.file_path)
       setItems((prev) => (prev ?? []).filter((x) => x.id !== a.id))
     } catch (e: any) {
-      setErr(e?.message ?? 'Could not remove attachment.')
+      setErr(reportError(e, { action: 'remove this attachment', noun: 'attachment' }))
+    } finally {
+      setBusy(false)
+      setRemoving(null)
     }
   }
 
@@ -136,12 +142,22 @@ export default function ContractAttachments({ contractId }: { contractId: string
               <div className="flex-1 min-w-0">
                 <a href={a.file_url} target="_blank" rel="noreferrer" className="block text-sm text-brand-deep truncate" title={a.file_name}>{a.file_name}</a>
                 <div className="text-xs text-slate-500">{formatSize(a.file_size)}</div>
-                <button type="button" onClick={() => onDelete(a)} className="mt-1 text-xs text-red-600">Remove</button>
+                <button type="button" onClick={() => setRemoving(a)} className="mt-1 text-xs text-red-600 min-h-8">Remove</button>
               </div>
             </li>
           ))}
         </ul>
       )}
+      <ConfirmDialog
+        open={removing != null}
+        title={`Remove “${removing?.file_name ?? ''}”?`}
+        body={<p>The file is deleted from this contract. This can&rsquo;t be undone.</p>}
+        confirmLabel="Remove"
+        danger
+        busy={busy}
+        onConfirm={() => { if (removing) void doDelete(removing) }}
+        onCancel={() => setRemoving(null)}
+      />
     </Dropzone>
   )
 }

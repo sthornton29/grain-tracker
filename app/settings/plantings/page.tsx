@@ -2,6 +2,8 @@
 
 import { useEffect, useId, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { reportError } from '@/lib/friendly-error'
+import { useDialogs } from '@/components/use-dialogs'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import CsvImport from '@/components/csv-import'
 import SettingsDocImport from '@/components/settings-doc-import'
@@ -364,6 +366,7 @@ function formInvalid(f: Form): boolean {
 }
 
 export default function PlantingsPage() {
+  const { confirmText, dialogs } = useDialogs()
   const supabase = useMemo(() => createClient(), [])
   const [farms, setFarms] = useState<Farm[]>([])
   const [fields, setFields] = useState<Field[]>([])
@@ -529,11 +532,11 @@ export default function PlantingsPage() {
       .insert(payload(form))
       .select('id')
       .single()
-    if (error || !data) { setErr(error?.message ?? 'Insert failed'); return }
+    if (error || !data) { setErr(reportError(error, { action: 'add the planting', noun: 'planting' })); return }
     const inserts = varietyInserts(data.id, form.varieties)
     if (inserts.length > 0) {
       const { error: vErr } = await supabase.from('field_planting_varieties').insert(inserts)
-      if (vErr) { setErr(`Planting saved but variety save failed: ${vErr.message}`); refresh(); return }
+      if (vErr) { setErr(`The planting was saved, but its varieties weren’t. ${reportError(vErr, { action: 'save the varieties', noun: 'variety' })}`); refresh(); return }
     }
     setForm(empty(year))
     setErr(null)
@@ -550,7 +553,7 @@ export default function PlantingsPage() {
       return
     }
     const { error } = await supabase.from('field_plantings').update(payload(editForm)).eq('id', id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     // Replace varieties for this planting. Done in two steps because the JS
     // client has no diff/upsert flow for child rows; the brief window with no
     // variety rows is acceptable for a single-user farm app.
@@ -558,11 +561,11 @@ export default function PlantingsPage() {
       .from('field_planting_varieties')
       .delete()
       .eq('planting_id', id)
-    if (delErr) { setErr(delErr.message); return }
+    if (delErr) { setErr(reportError(delErr, { action: 'finish that' })); return }
     const inserts = varietyInserts(id, editForm.varieties)
     if (inserts.length > 0) {
       const { error: vErr } = await supabase.from('field_planting_varieties').insert(inserts)
-      if (vErr) { setErr(vErr.message); refresh(); return }
+      if (vErr) { setErr(reportError(vErr, { action: 'finish that' })); refresh(); return }
     }
     setEditingId(null)
     refresh()
@@ -574,9 +577,9 @@ export default function PlantingsPage() {
     const msg = p.paired_planting_id
       ? 'Delete this planting? Its double-crop pair will be unlinked but kept.'
       : 'Delete this planting?'
-    if (!confirm(msg)) return
+    if (!(await confirmText(msg))) return
     const { error } = await supabase.from('field_plantings').delete().eq('id', id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     refresh()
   }
 
@@ -598,7 +601,7 @@ export default function PlantingsPage() {
       <FarmLinkBanner status={farmLink} noun="Plantings" />
       {managed && (
         <div className="bg-white p-4 rounded-xl shadow text-sm text-slate-600">
-          {LAND_MANAGED_MESSAGE} New plantings are added in Turnrow Farm and sync here. Plantings marked &ldquo;not linked&rdquo; were created here and can still be edited until you match them in Turnrow Farm.
+          {LAND_MANAGED_MESSAGE} New plantings are added in Turnrow Farm and come across from there. Plantings marked &ldquo;not linked&rdquo; were created here and can still be edited until you match them in Turnrow Farm.
         </div>
       )}
 
@@ -615,7 +618,7 @@ export default function PlantingsPage() {
         onImported={refresh}
       />
 
-      <SettingsDocImport primaryTarget="plantings" title="Upload an Acreage / Planting Report (AI)" onSaved={refresh} />
+      <SettingsDocImport primaryTarget="plantings" title="Upload an acreage or planting report" onSaved={refresh} />
 
       <form onSubmit={add} className="bg-white rounded-xl shadow p-4 space-y-3">
         <h2 className="font-semibold">Add planting</h2>
@@ -800,6 +803,7 @@ export default function PlantingsPage() {
           </tbody>
         </table>
       </div>
+      {dialogs}
     </div>
   )
 }

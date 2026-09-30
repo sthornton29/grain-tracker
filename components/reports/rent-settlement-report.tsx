@@ -40,6 +40,9 @@ import {
   type SettlementStatement,
 } from '@/lib/rent-settlement'
 import type { Crop, Farm, Field, FieldPlanting, Landowner, LeaseTerm, RentSettlement } from '@/lib/types'
+import { SourceChip, fmtUsd, fmtInt } from '@/components/reports/report-kit'
+import { ConfirmDialog } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
 
 const INPUT = 'rounded-lg border border-slate-300 px-3 py-2 text-sm'
 const BTN = 'rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 text-sm font-semibold disabled:opacity-50'
@@ -237,7 +240,7 @@ export default function RentSettlementReport() {
       setDraft(null); setSourceFile(null); setExtractNote(null); setEditingLeaseId(null)
       await refresh()
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Could not save the lease.')
+      setErr(reportError(e instanceof Error ? e : null, { action: 'save the lease' }))
     } finally {
       setSavingLease(false)
     }
@@ -395,7 +398,7 @@ export default function RentSettlementReport() {
       total_due: preview.totalDue,
     })
     setSavingSettlement(false)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'save the settlement' })); return }
     await refresh()
   }
 
@@ -410,8 +413,10 @@ export default function RentSettlementReport() {
     else await exportToExcel(payload)
   }
 
+  // The delete confirmation (an app dialog, not window.confirm).
+  const [deleteAsk, setDeleteAsk] = useState<string | null>(null)
   async function deleteSettlement(id: string) {
-    if (!confirm('Delete this saved settlement? The lease and production data are untouched.')) return
+    setDeleteAsk(null)
     await supabase.from('rent_settlements').delete().eq('id', id)
     await refresh()
   }
@@ -428,7 +433,6 @@ export default function RentSettlementReport() {
     return `${name} — ${type}${farmNames.length ? ` · ${farmNames.join(', ')}` : ''}`
   }
 
-  const fmtUsd = (v: number) => `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
   return (
     <div className="space-y-5">
@@ -686,7 +690,7 @@ export default function RentSettlementReport() {
           <div className="rounded-xl border border-slate-200 p-3 space-y-2">
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-semibold flex-1">
-                {preview.landownerName} — {preview.cropYear} · {preview.bushelsOnly ? 'balance' : 'total due'} {fmtUsd(preview.totalDue)}
+                {preview.landownerName} — {preview.cropYear} · {preview.bushelsOnly ? 'balance' : 'total due'} {fmtUsd(preview.totalDue, 2)}
               </h3>
               <button type="button" className={BTN_GRAY} onClick={() => void exportStatement(preview, 'pdf')}>Download PDF</button>
               <button type="button" className={BTN_GRAY} onClick={() => void exportStatement(preview, 'excel')}>Excel</button>
@@ -700,12 +704,12 @@ export default function RentSettlementReport() {
                 <ul className="ml-3">
                   {sec.lines.map((l, i) => (
                     <li key={i} className="flex justify-between gap-3 py-0.5">
-                      <span>{l.label} <span className="text-[10px] text-slate-400">[{l.source}]</span></span>
-                      <span className="tabular-nums">{l.amount != null ? fmtUsd(l.amount) : l.quantityBu != null ? `${l.quantityBu.toLocaleString()} bu` : ''}</span>
+                      <span>{l.label} <SourceChip className="ml-1">{l.source}</SourceChip></span>
+                      <span className="tabular-nums">{l.amount != null ? fmtUsd(l.amount, 2) : l.quantityBu != null ? `${fmtInt(l.quantityBu)} bu` : ''}</span>
                     </li>
                   ))}
                   <li className="flex justify-between gap-3 border-t border-slate-100 font-semibold py-0.5">
-                    <span>Subtotal</span><span className="tabular-nums">{fmtUsd(sec.subtotal)}</span>
+                    <span>Subtotal</span><span className="tabular-nums">{fmtUsd(sec.subtotal, 2)}</span>
                   </li>
                 </ul>
               </div>
@@ -728,15 +732,24 @@ export default function RentSettlementReport() {
                 {landownerById.get(s.landowner_id)?.name ?? '?'} — {s.crop_year}
                 <span className="text-slate-400"> · generated {s.generated_at.slice(0, 10)}</span>
               </span>
-              <span className="tabular-nums font-semibold">{s.total_due != null ? fmtUsd(Number(s.total_due)) : ''}</span>
+              <span className="tabular-nums font-semibold">{s.total_due != null ? fmtUsd(Number(s.total_due), 2) : ''}</span>
               <button type="button" className={BTN_GRAY} onClick={() => void exportStatement(s.statement as SettlementStatement, 'pdf')}>PDF</button>
-              <button type="button" className="text-red-600 text-sm" onClick={() => void deleteSettlement(s.id)}>Delete</button>
+              <button type="button" className="inline-flex items-center min-h-10 px-2 rounded-lg text-red-700 text-sm hover:bg-red-50" onClick={() => setDeleteAsk(s.id)}>Delete</button>
             </li>
           ))}
         </ul>
       </section>
 
       {err && <p className="text-sm text-red-600">{err}</p>}
+      <ConfirmDialog
+        open={deleteAsk != null}
+        title="Delete this saved settlement?"
+        body={<p>The lease and production data are untouched.</p>}
+        confirmLabel="Delete"
+        danger
+        onConfirm={() => { if (deleteAsk) void deleteSettlement(deleteAsk) }}
+        onCancel={() => setDeleteAsk(null)}
+      />
     </div>
   )
 }

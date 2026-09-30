@@ -58,7 +58,8 @@ export type DetailLookups = {
   buyerNameById: Map<string, string>
 }
 
-function fmtNum(n: number, d = 2) {
+// Bushels read as whole numbers on screen; acres pass d = 1 explicitly.
+function fmtNum(n: number, d = 0) {
   return n.toLocaleString(undefined, { maximumFractionDigits: d })
 }
 
@@ -448,7 +449,7 @@ function PerFieldBreakdown({
                   <td className="px-2 py-2 text-slate-400">{isOpen ? '▾' : '▸'}</td>
                   <td className="px-3 py-2 font-medium">{r.fieldName}</td>
                   {showYear && <td className="px-3 py-2">{r.seasonYear}</td>}
-                  <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.acres)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.acres, 1)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">
                     {fmtNum(s.fieldProductionDryBu)}
                     {r.detail.combineRows.length > 0 && (

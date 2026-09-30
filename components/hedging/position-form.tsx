@@ -1,9 +1,12 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { createClient } from '@/lib/supabase/client'
 import EntitySelect from '@/components/entity-select'
 import { defaultEntityId } from '@/lib/entity-default'
+import { ConfirmDialog } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
 import {
   COMMODITIES,
   type Commodity,
@@ -54,6 +57,7 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
   const [notes, setNotes] = useState(initial?.notes ?? '')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   const monthOptions = useMemo(() => contractMonthOptions(commodity), [commodity])
   // Single-entity operation → the entity is auto-assigned by EntitySelect
@@ -85,10 +89,12 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
     if (parsedPrice == null || parsedPrice <= 0) return setErr('Enter a valid trade price (e.g. 4.9325 or 4.93 1/4).')
     if (!tradeDate) return setErr('Pick a trade date.')
 
-    const sideLabel = side === 'short' ? 'Short' : 'Long'
-    const confirmMsg = `${sideLabel} ${n} ${contractMonth} ${commodity} (${symbol}) at ${fmtCommodityPrice(commodity, parsedPrice)} — Crop Year ${cropYear}. Exposure: ${bushels.toLocaleString()} ${contractUnit(commodity)}.`
-    if (!editing && !window.confirm(confirmMsg)) return
+    // A new position gets a read-back before it is recorded.
+    if (!editing) { setConfirmOpen(true); return }
+    await doSave()
+  }
 
+  async function doSave() {
     setBusy(true)
     const payload = {
       entity_id: entityId || null,
@@ -109,18 +115,34 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
       ? await supabase.from('futures_positions').update(payload).eq('id', initial!.id)
       : await supabase.from('futures_positions').insert(payload)
     setBusy(false)
+    setConfirmOpen(false)
     if (res.error) {
-      setErr(res.error.message)
+      setErr(reportError(res.error, { action: editing ? 'save this position' : 'record this position', noun: 'position' }))
       return
     }
     onSaved()
   }
 
-  const inputCls = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-base bg-white'
+  const inputCls = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-base bg-white min-h-11'
   const labelCls = 'block text-sm text-slate-700'
+  const sideLabel = side === 'short' ? 'Short (sold)' : 'Long (bought)'
 
   return (
-    <Modal onClose={onClose} title={editing ? 'Edit Position' : 'New Position'}>
+    <Modal onClose={onClose} title={editing ? 'Edit position' : 'New position'}>
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Record this position?"
+        body={
+          <p>
+            <b>{sideLabel} {n} {contractMonth} {commodity}</b> ({symbol}) at <b>{fmtCommodityPrice(commodity, parsedPrice)}</b> — crop year {cropYear}.
+            Covers {bushels.toLocaleString()} {contractUnit(commodity)}.
+          </p>
+        }
+        confirmLabel="Record position"
+        busy={busy}
+        onConfirm={() => void doSave()}
+        onCancel={() => setConfirmOpen(false)}
+      />
       <form onSubmit={onSubmit} className="space-y-4">
         <label className={entityHidden ? 'hidden' : labelCls}>
           Entity
@@ -154,7 +176,7 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
         </div>
 
         <label className={labelCls}>
-          Contract Month
+          Contract month
           <select value={contractMonth} onChange={(e) => setContractMonth(e.target.value)} className={inputCls}>
             <option value="">— select —</option>
             {/* Keep the original month available when editing even if it has rolled off the 2-year window. */}
@@ -166,7 +188,7 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
         </label>
 
         <label className={labelCls}>
-          Crop Year
+          Crop year
           <select value={cropYear} onChange={(e) => setCropYear(e.target.value)} className={inputCls}>
             <option value="">— select —</option>
             {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
@@ -176,7 +198,7 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
 
         <div className="grid grid-cols-2 gap-3">
           <label className={labelCls}>
-            Number of Contracts
+            Number of contracts
             <input
               type="number"
               min="1"
@@ -188,7 +210,7 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
             />
           </label>
           <label className={labelCls}>
-            Trade Price ({contractUnit(commodity) === 'lbs' ? '$/lb — e.g. 0.7265 (legacy 72.65 also works)' : '$/bu'})
+            Trade price ({contractUnit(commodity) === 'lbs' ? '$/lb — e.g. 0.7265 (72.65 also works)' : '$/bu'})
             <input
               type="text"
               inputMode="decimal"
@@ -207,11 +229,11 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
 
         <div className="grid grid-cols-2 gap-3">
           <label className={labelCls}>
-            Trade Date
+            Trade date
             <input type="date" value={tradeDate} onChange={(e) => setTradeDate(e.target.value)} className={inputCls} />
           </label>
           <label className={labelCls}>
-            Commission &amp; Fees <span className="text-xs text-slate-400">optional</span>
+            Commission &amp; fees <span className="text-xs text-slate-400">optional</span>
             <input
               type="number"
               step="0.01"
@@ -247,7 +269,7 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
             disabled={busy}
             className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-3 disabled:opacity-60"
           >
-            {busy ? 'Saving…' : editing ? 'Update Position' : 'Save Position'}
+            {busy ? 'Saving…' : editing ? 'Save changes' : 'Save position'}
           </button>
           <button type="button" onClick={onClose} className="rounded-xl bg-white border border-slate-300 px-4 py-3">
             Cancel
@@ -257,6 +279,13 @@ export default function PositionForm({ entities, initial, onClose, onSaved }: Pr
     </Modal>
   )
 }
+
+// The hedging dialogs' shell — the same contract as components/app-dialog's
+// AppModal (portaled to document.body, role="dialog", aria-modal, Escape
+// closes, Tab stays inside, focus restored on close) with its own widths:
+// `wide` gives the statement-import review room for its tables. Sits BELOW
+// the app dialogs' z-40 so a ConfirmDialog opened from inside it shows on top.
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 export function Modal({
   title,
@@ -269,18 +298,55 @@ export function Modal({
   children: React.ReactNode
   wide?: boolean
 }) {
-  return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-y-auto p-4" onClick={onClose}>
+  const [mounted, setMounted] = useState(false)
+  const panel = useRef<HTMLDivElement>(null)
+  const restore = useRef<HTMLElement | null>(null)
+  useEffect(() => setMounted(true), [])
+
+  useEffect(() => {
+    restore.current = (document.activeElement as HTMLElement | null) ?? null
+    function onKey(e: KeyboardEvent) {
+      // Only the topmost dialog answers the keyboard — a ConfirmDialog opened
+      // from inside this one takes Escape/Tab for itself.
+      const dialogs = document.querySelectorAll('[role="dialog"]')
+      if (dialogs.length > 0 && dialogs[dialogs.length - 1] !== panel.current) return
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); return }
+      if (e.key !== 'Tab' || !panel.current) return
+      const items = [...panel.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.offsetParent !== null)
+      if (items.length === 0) return
+      const first = items[0]
+      const last = items[items.length - 1]
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+    }
+    document.addEventListener('keydown', onKey)
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prevOverflow
+      restore.current?.focus?.()
+    }
+  }, [onClose])
+
+  if (!mounted) return null
+  return createPortal(
+    <div className="fixed inset-0 z-30 bg-black/40 flex items-start justify-center overflow-y-auto p-4 no-print" onMouseDown={onClose}>
       <div
+        ref={panel}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="hedging-dialog-title"
         className={`bg-white rounded-xl shadow-xl w-full ${wide ? 'max-w-5xl' : 'max-w-lg'} my-8`}
-        onClick={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-100 sticky top-0 bg-white rounded-t-xl">
-          <h2 className="font-bold text-lg flex-1">{title}</h2>
-          <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-700 text-xl leading-none">×</button>
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-100 sticky top-0 bg-white rounded-t-xl z-10">
+          <h2 id="hedging-dialog-title" className="font-bold text-lg flex-1">{title}</h2>
+          <button type="button" onClick={onClose} aria-label="Close" className="text-slate-400 hover:text-slate-700 text-2xl leading-none min-h-10 min-w-10">×</button>
         </div>
         <div className="p-4">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

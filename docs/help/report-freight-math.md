@@ -1,7 +1,7 @@
 ---
 page_route: /reports/freight-math
 title: Freight Math
-updated: 2026-09-02
+updated: 2026-09-24
 keywords: freight, hauling, trucking, miles, diesel, fuel, labor, wear, delivered, picked up, pickup, breakeven, cents per bushel, distance, custom rate, payload, buyer, bin site, wait time, unload, elevator line, destination
 ---
 ## What this page is for

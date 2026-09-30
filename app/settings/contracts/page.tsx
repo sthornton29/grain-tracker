@@ -21,6 +21,9 @@ import { mergeContracts } from '@/lib/parse-merge'
 import { imagesToPdf } from '@/lib/image-capture'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import { findBestMatch } from '@/lib/fuzzy'
+import Link from 'next/link'
+import { reportError } from '@/lib/friendly-error'
+import { useDialogs, plural } from '@/components/use-dialogs'
 import type { Buyer, Contract, Crop, DeliveryLocation, Entity, FieldPlanting } from '@/lib/types'
 
 // Map an AI contract extraction onto the editable form. Buyer/crop are fuzzy-
@@ -74,6 +77,7 @@ export default function ContractsSettingsPage() {
   const [source, setSource] = useState<DocumentSource | null>(null)
   const [aiStage, setAiStage] = useState<string | null>(null)
   const [aiBanner, setAiBanner] = useState<string | null>(null)
+  const { confirm, dialogs } = useDialogs()
 
   async function refresh() {
     const [b, c, k, l, en, pl] = await Promise.all([
@@ -125,10 +129,10 @@ export default function ContractsSettingsPage() {
       setForm(contractExtractionToForm(x, buyers, crops, form.entity_id))
       setSource(src)
       if (warning) setErr(warning)
-      setAiBanner('AI filled in the contract from the document. Review and edit anything below, then Add Contract — the document attaches automatically.')
+      setAiBanner('From the document: the contract details below were filled in for you. Review and edit anything, then Add Contract — the document attaches automatically.')
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) setErr(e.message)
-      else setErr(e?.message ? `Couldn't read this contract: ${e.message}.` : "Couldn't read this contract.")
+      else setErr(reportError(e, { action: 'read this contract' }))
     } finally {
       setAiStage(null)
     }
@@ -139,7 +143,7 @@ export default function ContractsSettingsPage() {
     const v = validateContractForm(form)
     if (v) { setErr(v); return }
     const { data, error } = await supabase.from('contracts').insert(contractFormToPayload(form)).select('id').single()
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'add the contract', noun: 'contract', name: form.contract_number || undefined })); return }
     // Auto-attach the AI-uploaded PDF to the new contract (best-effort).
     if (source && data?.id) {
       try {
@@ -159,14 +163,22 @@ export default function ContractsSettingsPage() {
     const v = validateContractForm(editForm)
     if (v) { setErr(v); return }
     const { error } = await supabase.from('contracts').update(contractFormToPayload(editForm)).eq('id', id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'save the contract', noun: 'contract', name: editForm.contract_number || undefined })); return }
     setEditingId(null); setErr(null); refresh()
   }
 
-  async function remove(id: string) {
-    if (!confirm('Delete this contract?')) return
-    const { error } = await supabase.from('contracts').delete().eq('id', id)
-    if (error) { setErr(error.message); return }
+  async function remove(c: Contract) {
+    setErr(null)
+    const { count } = await supabase.from('loads').select('id', { count: 'exact', head: true }).eq('contract_id', c.id)
+    const loads = count ?? 0
+    if (loads > 0) {
+      setErr(`Contract #${c.contract_number} has ${plural(loads, 'load')} delivered against it, so it can’t be deleted. Move those loads to another contract first.`)
+      return
+    }
+    const ok = await confirm({ title: `Delete contract #${c.contract_number}?`, body: 'No loads are delivered against it. This can’t be undone.', confirmLabel: 'Delete', danger: true })
+    if (!ok) return
+    const { error } = await supabase.from('contracts').delete().eq('id', c.id)
+    if (error) { setErr(reportError(error, { action: 'delete the contract', noun: 'contract', name: c.contract_number })); return }
     refresh()
   }
 
@@ -177,7 +189,13 @@ export default function ContractsSettingsPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">Contracts</h1>
+      <div>
+        <h1 className="text-2xl font-bold">Contract list (bulk edit)</h1>
+        <p className="text-sm text-slate-500 mt-1">
+          Every grain contract in one editable list — for cleanup, imports, and fixing several at once. For day-to-day work
+          (deliveries, pricing, what&rsquo;s left), use the <Link href="/contracts" className="text-brand-deep underline">Contracts tab</Link>.
+        </p>
+      </div>
 
       <CsvImport config={contractsImportConfig(entities)} onImported={refresh} />
 
@@ -187,7 +205,7 @@ export default function ContractsSettingsPage() {
             onSource={onSource}
             busy={aiStage != null}
             stageLabel={aiStage}
-            pdfLabel="Upload Contract PDF or Photo (AI)"
+            pdfLabel="Upload contract PDF or photo"
           />
           {source && (
             <span className="text-xs text-slate-600">
@@ -215,7 +233,7 @@ export default function ContractsSettingsPage() {
       }); return (
       <>
       <div className="flex items-center gap-2 flex-wrap">
-        <input type="search" placeholder="Search contract #, buyer, crop, year, notes…" value={q} onChange={(e) => setQ(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 flex-1 min-w-[12rem]" />
+        <input type="search" aria-label="Search contracts" placeholder="Search contract #, buyer, crop, year, notes…" value={q} onChange={(e) => setQ(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 min-h-11 flex-1 min-w-[12rem]" />
         {visible.length > 0 && (
           <label className="text-sm flex items-center gap-2">
             <input type="checkbox" checked={visible.every((c) => selected.has(c.id))}
@@ -236,26 +254,27 @@ export default function ContractsSettingsPage() {
           <span className="font-semibold">{selected.size} selected</span>
           <button
             onClick={async () => {
-              if (!confirm(`Delete ${selected.size} contract${selected.size === 1 ? '' : 's'}? This cannot be undone.`)) return
+              const ok = await confirm({ title: `Delete ${plural(selected.size, 'contract')}?`, body: 'Loads delivered against them keep their records but lose the contract link. This can’t be undone.', confirmLabel: 'Delete', danger: true })
+              if (!ok) return
               const ids = [...selected]
               const CHUNK = 50
               for (let i = 0; i < ids.length; i += CHUNK) {
                 const batch = ids.slice(i, i + CHUNK)
                 const { error } = await supabase.from('contracts').delete().in('id', batch)
-                if (error) { setErr(`Failed after ${i} of ${ids.length}: ${error.message}`); refresh(); return }
+                if (error) { setErr(`${i} of ${ids.length} were deleted before it stopped. ${reportError(error, { action: 'delete the rest', noun: 'contract' })}`); refresh(); return }
               }
               setSelected(new Set()); refresh()
             }}
-            className="rounded-lg bg-red-600 text-white px-3 py-1.5 text-sm font-semibold"
+            className="rounded-lg bg-red-600 text-white px-3 min-h-11 text-sm font-semibold"
           >
             Delete selected
           </button>
-          <button onClick={() => setSelected(new Set())} className="text-slate-600">Clear</button>
+          <button type="button" onClick={() => setSelected(new Set())} className="text-slate-600 min-h-11 px-2">Clear</button>
         </div>
       )}
 
       <ul className="bg-white rounded-xl shadow divide-y">
-        {visible.length === 0 && <li className="px-4 py-6 text-center text-slate-400">{rows.length === 0 ? 'No contracts yet.' : 'No contracts match.'}</li>}
+        {visible.length === 0 && <li className="px-4 py-6 text-center text-slate-500">{rows.length === 0 ? 'No contracts yet — add one above, upload the contract, or bring in a spreadsheet.' : 'No contracts match that search.'}</li>}
         {visible.map((c) => (
           <li key={c.id} className={`px-4 py-3 space-y-2 ${selected.has(c.id) ? 'bg-sky-50' : ''}`}>
             {editingId === c.id ? (
@@ -263,14 +282,14 @@ export default function ContractsSettingsPage() {
                 <ContractFields value={editForm} onChange={setEditForm} buyers={buyers} crops={crops} locations={locations} entities={entities} cropYearOptions={cropYearOptions}
           onBuyerCreated={(b) => setBuyers((xs) => [...xs, b].sort((a, z) => a.name.localeCompare(z.name)))}
           onLocationCreated={(l) => setLocations((xs) => [...xs, l].sort((a, z) => a.name.localeCompare(z.name)))} />
-                <div className="flex gap-2">
-                  <button onClick={() => save(c.id)} className="text-green-700 font-semibold">Save</button>
-                  <button onClick={() => setEditingId(null)} className="text-slate-500">Cancel</button>
+                <div className="flex gap-2 justify-end">
+                  <button type="button" onClick={() => setEditingId(null)} className="min-h-11 px-3 rounded-lg text-sm border border-slate-300 bg-white text-slate-700">Cancel</button>
+                  <button type="button" onClick={() => save(c.id)} className="min-h-11 px-4 rounded-lg text-sm font-semibold bg-brand hover:bg-brand-deep text-white">Save</button>
                 </div>
               </>
             ) : (
               <div className="flex items-center gap-2 flex-wrap">
-                <input type="checkbox" checked={selected.has(c.id)} onChange={() => setSelected((s) => { const n = new Set(s); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n })} />
+                <input type="checkbox" aria-label={`Select contract ${c.contract_number}`} className="h-5 w-5" checked={selected.has(c.id)} onChange={() => setSelected((s) => { const n = new Set(s); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n })} />
                 <div className="flex-1 min-w-0">
                   <div className="font-semibold flex items-center gap-2">
                     #{c.contract_number}
@@ -294,8 +313,8 @@ export default function ContractsSettingsPage() {
                   </div>
                   {c.notes && <div className="text-xs text-slate-400">{c.notes}</div>}
                 </div>
-                <button onClick={() => { setEditingId(c.id); setEditForm(contractToForm(c)) }} className="text-brand-deep">Edit</button>
-                <button onClick={() => remove(c.id)} className="text-red-600">Delete</button>
+                <button type="button" onClick={() => { setEditingId(c.id); setEditForm(contractToForm(c)) }} className="min-h-11 px-3 rounded-lg text-sm font-semibold text-brand-deep">Edit</button>
+                <button type="button" onClick={() => remove(c)} className="min-h-11 px-3 rounded-lg text-sm font-semibold text-red-600">Delete</button>
               </div>
             )}
           </li>
@@ -303,6 +322,7 @@ export default function ContractsSettingsPage() {
       </ul>
       </>
       ) })()}
+      {dialogs}
     </div>
   )
 }

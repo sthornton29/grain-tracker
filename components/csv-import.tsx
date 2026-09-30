@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { reportError } from '@/lib/friendly-error'
 import { createClient } from '@/lib/supabase/client'
 import { isExcelFile } from '@/lib/excel-to-pdf'
 import {
@@ -132,7 +133,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
         setResolution({ scopes, rowScope })
         setDecisions({})
       } catch (e: any) {
-        if (!cancelled) setErr(e?.message ?? 'Could not resolve existing names')
+        if (!cancelled) setErr(reportError(e, { action: 'check what already exists' }))
       } finally {
         if (!cancelled) setResolutionBusy(false)
       }
@@ -235,7 +236,7 @@ export default function CsvImport({ config, onImported, defaultOpen, recommended
 
   // Live resolution preview for scoped FK columns (the farms county + state
   // pairing): the preview's county cells show which record the value will
-  // land on ("Lawrence → Lawrence, AL") or the specific problem, before the
+  // land on ("Prairie → Prairie, ST") or the specific problem, before the
   // user commits the import.
   const [fkPreview, setFkPreview] = useState<Map<string, { text: string; ok: boolean }> | null>(null)
   useEffect(() => {

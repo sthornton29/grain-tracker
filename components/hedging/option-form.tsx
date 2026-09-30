@@ -5,6 +5,8 @@ import { createClient } from '@/lib/supabase/client'
 import { Modal } from './position-form'
 import EntitySelect from '@/components/entity-select'
 import { defaultEntityId } from '@/lib/entity-default'
+import { ConfirmDialog } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
 import {
   COMMODITIES,
   type Commodity,
@@ -64,6 +66,7 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
   const [notes, setNotes] = useState(initial?.notes ?? '')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   const monthOptions = useMemo(() => contractMonthOptions(commodity), [commodity])
   // Single-entity operation → the entity is auto-assigned by EntitySelect
@@ -97,11 +100,12 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
     if (!cropYear) return setErr('Pick the crop year this hedge protects.')
     if (!tradeDate) return setErr('Pick a trade date.')
 
-    const sideCap = side === 'buy' ? 'Buy' : 'Sell'
-    const typeCap = optionType === 'put' ? 'Put' : 'Call'
-    const confirmMsg = `${sideCap} ${n} ${month} ${commodity} ${fmtPrice(strike)} ${typeCap}s at ${fmtCents(premiumCents)}/bu — Total premium: ${fmtUsd(total ?? 0)} — Crop Year ${cropYear}`
-    if (!editing && !window.confirm(confirmMsg)) return
+    // A new option gets a read-back before it is recorded.
+    if (!editing) { setConfirmOpen(true); return }
+    await doSave()
+  }
 
+  async function doSave() {
     setBusy(true)
     const payload = {
       entity_id: entityId || null,
@@ -124,15 +128,30 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
       ? await supabase.from('options_positions').update(payload).eq('id', initial!.id)
       : await supabase.from('options_positions').insert(payload)
     setBusy(false)
-    if (res.error) { setErr(res.error.message); return }
+    setConfirmOpen(false)
+    if (res.error) { setErr(reportError(res.error, { action: editing ? 'save this option' : 'record this option', noun: 'option' })); return }
     onSaved()
   }
 
-  const inputCls = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-base bg-white'
+  const inputCls = 'mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-base bg-white min-h-11'
   const labelCls = 'block text-sm text-slate-700'
 
   return (
-    <Modal onClose={onClose} title={editing ? 'Edit Option Position' : 'New Option Position'}>
+    <Modal onClose={onClose} title={editing ? 'Edit option' : 'New option'}>
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Record this option?"
+        body={
+          <p>
+            <b>{side === 'buy' ? 'Buy' : 'Sell'} {n} {month} {commodity} {strike != null ? fmtPrice(strike) : ''} {optionType === 'put' ? 'put' : 'call'}{n === 1 ? '' : 's'}</b> at {fmtCents(premiumCents)}/bu —
+            total premium <b>{fmtUsd(total ?? 0)}</b> — crop year {cropYear}.
+          </p>
+        }
+        confirmLabel="Record option"
+        busy={busy}
+        onConfirm={() => void doSave()}
+        onCancel={() => setConfirmOpen(false)}
+      />
       <form onSubmit={onSubmit} className="space-y-4">
         <label className={entityHidden ? 'hidden' : labelCls}>
           Entity
@@ -148,7 +167,7 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
 
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <span className={labelCls}>Option Type</span>
+            <span className={labelCls}>Option type</span>
             <div className="mt-1 flex gap-2">
               {(['put', 'call'] as const).map((t) => (
                 <button key={t} type="button" onClick={() => onTypeChange(t)}
@@ -172,7 +191,7 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
         </div>
 
         <label className={labelCls}>
-          Underlying Contract Month
+          Underlying contract month
           <select value={month} onChange={(e) => setMonth(e.target.value)} className={inputCls}>
             <option value="">— select —</option>
             {initial?.underlying_contract_month && !monthOptions.some((m) => m.label === initial.underlying_contract_month) && (
@@ -184,12 +203,12 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
 
         <div className="grid grid-cols-2 gap-3">
           <label className={labelCls}>
-            Strike Price ($/bu)
+            Strike price ($/bu)
             <input type="text" inputMode="decimal" placeholder="4.80 or 4.80 1/2" value={strikeInput} onChange={(e) => setStrikeInput(e.target.value)} className={inputCls} />
             {strikeInput && <span className={`text-xs ${strike == null ? 'text-red-600' : 'text-slate-500'}`}>{strike == null ? 'Unrecognized' : `= ${fmtPrice(strike)}`}</span>}
           </label>
           <label className={labelCls}>
-            Number of Contracts
+            Number of contracts
             <input type="number" min="1" step="1" inputMode="numeric" value={numContracts} onChange={(e) => setNumContracts(e.target.value)} className={inputCls} />
           </label>
         </div>
@@ -208,7 +227,7 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
 
         <div className="grid grid-cols-2 gap-3">
           <label className={labelCls}>
-            Trade Date
+            Trade date
             <input type="date" value={tradeDate} onChange={(e) => setTradeDate(e.target.value)} className={inputCls} />
           </label>
           <label className={labelCls}>
@@ -218,7 +237,7 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
         </div>
 
         <label className={labelCls}>
-          Crop Year
+          Crop year
           <select value={cropYear} onChange={(e) => setCropYear(e.target.value)} className={inputCls}>
             <option value="">— select —</option>
             {cropYearOptions().map((y) => <option key={y} value={y}>{y}</option>)}
@@ -228,7 +247,7 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
 
         <div className="grid grid-cols-2 gap-3">
           <label className={labelCls}>
-            Commission &amp; Fees <span className="text-xs text-slate-400">optional</span>
+            Commission &amp; fees <span className="text-xs text-slate-400">optional</span>
             <input type="number" step="0.01" inputMode="decimal" value={commission} onChange={(e) => setCommission(e.target.value)} className={inputCls} />
           </label>
           <label className={labelCls}>
@@ -246,7 +265,7 @@ export default function OptionForm({ entities, initial, onClose, onSaved }: Prop
 
         <div className="flex gap-2">
           <button type="submit" disabled={busy} className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-3 disabled:opacity-60">
-            {busy ? 'Saving…' : editing ? 'Update Option' : 'Save Option'}
+            {busy ? 'Saving…' : editing ? 'Save changes' : 'Save option'}
           </button>
           <button type="button" onClick={onClose} className="rounded-xl bg-white border border-slate-300 px-4 py-3">Cancel</button>
         </div>

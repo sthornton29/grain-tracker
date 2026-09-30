@@ -63,3 +63,10 @@ h1, h2, h3 {
   /* Flatten shadows that just waste ink. */
   .shadow, .shadow-sm, .shadow-md, .shadow-lg { box-shadow: none !important; }
 }
+
+/* Keyboard focus: a brand ring on every control (default outlines are
+   invisible against slate-300 borders). Pointer clicks don't show it. */
+:focus-visible {
+  outline: 2px solid #36B449;
+  outline-offset: 2px;
+}

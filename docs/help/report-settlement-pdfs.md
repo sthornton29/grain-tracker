@@ -1,7 +1,7 @@
 ---
 page_route: /reports/settlement-pdfs
 title: Bundled Settlement Statements
-updated: 2026-08-05
+updated: 2026-09-24
 keywords: settlement, production audit, crop insurance audit, PDF, zip, buyer statements, proof of production
 ---
 ## What this page is for

@@ -1,7 +1,7 @@
 ---
 page_route: /yields
 title: Yields
-updated: 2026-09-02
+updated: 2026-09-24
 keywords: yields, bushels per acre, field, farm, entity, variety, landowner, irrigated, dryland, harvest, allocation, load tags, practice, season, export, detail, loads, tickets, moisture, test weight, split load, drill down, combine, yield monitor, no scales
 ---
 ## What this page is for
@@ -10,15 +10,19 @@ Yields turns your load log into bushels per acre. The same production can be vie
 
 ## How to use it
 
-- Pick a view from the dropdown: **By field**, **By farm**, **By entity**, **By variety**, or **By landowner**.
-- Narrow with the season, crop, farm, entity, and county filters. In the by-field view you can also filter to irrigated or dryland ground. Your filter choices are remembered, so the page comes back the way you left it.
-- Toggle between **Total** and **Irrigated / Dryland breakdown** to split the yield columns by practice.
-- **Tap any row to open its detail.** A field row shows the loads behind its yield; a farm, entity, landowner, or variety row shows its totals plus a field-by-field breakdown, and each field there opens further into its loads — two taps from a landowner (or a variety) to a scale ticket.
+- Pick a view from the tabs under the title: **By field**, **By farm**, **By entity**, **By variety**, or **By landowner**. The Reports page's "Yields by Field" and "Yields by Farm" cards open straight onto the matching tab.
+- One filter row serves every tab: crop year, crop, farm, entity, and county. In the by-field view you can also filter to irrigated or dryland ground; the landowner tab adds a landowner pick. Your filter choices are remembered, so the page comes back the way you left it.
+- Toggle between **Total yield only** and **Irrigated / Dryland breakdown** to split the yield columns by practice.
+- **Tap any row (or its ▸ button) to open its detail.** A field row shows the loads behind its yield; a farm, entity, landowner, or variety row shows its totals plus a field-by-field breakdown, and each field there opens further into its loads — two taps from a landowner (or a variety) to a scale ticket.
+- Bushels show as whole numbers and acres to one decimal, the same as every report.
 - Export any view to a spreadsheet or a formatted report — the export carries exactly the columns you're showing on screen, and when a row's detail is open the export adds a Load Detail sheet for it.
 
 ## Reading the table
 
 - Each view lists **Yield (bu/ac)** right after the acres, with **Dry bu** last — so the number you're usually after is visible without scrolling sideways on a phone or iPad.
+- A field with no loads yet carries a **not harvested** badge and shows a dash for its yield and bushels rather than a zero. A field partway through carries an **in progress** badge.
+- When the Cotton module is on, cotton fields are not listed in the grain tables at all — their yield is pounds of lint, shown in the **Cotton** section at the bottom of the page. A short note above the table says how many were set aside.
+- On the variety tab, multi-variety fields that still need their bushels split are tucked into a **Needs attention** panel above the table; tap it to open the list.
 
 ## What the controls do
 
@@ -54,7 +58,7 @@ Yields turns your load log into bushels per acre. The same production can be vie
 
 ## If something looks wrong
 
-- Check the season and filters first — last visit's filters are remembered and are the usual culprit.
+- Check the crop year and filters first — last visit's filters are remembered and are the usual culprit.
 - Compare the field's loads (Loads page, filtered to the field and year) against the bushels shown.
 - Verify planted acres and varieties on the planting.
 - If the views won't foot after that, contact support.

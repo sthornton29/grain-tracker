@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { reportError } from '@/lib/friendly-error'
+import { useDialogs } from '@/components/use-dialogs'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { openHelp } from '@/lib/help-bus'
 import { fetchAllCounties } from '@/lib/counties'
@@ -37,6 +39,7 @@ const usd = (n: number | null | undefined, d = 0) =>
   n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`
 
 export default function GovernmentPaymentsSettingsPage() {
+  const { confirmText, dialogs } = useDialogs()
   const supabase = useMemo(() => createClient(), [])
   const [farms, setFarms] = useState<Farm[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
@@ -138,11 +141,11 @@ export default function GovernmentPaymentsSettingsPage() {
       { farm_id, commodity_id, base_acres, plc_yield, source: 'manual', updated_at: new Date().toISOString() },
       { onConflict: 'farm_id,commodity_id' },
     )
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     setErr(null); refresh()
   }
   async function deleteBaseAcre(id: string) {
-    if (!confirm('Delete this base-acre record?')) return
+    if (!(await confirmText('Delete this base-acre record?'))) return
     await supabase.from('farm_base_acres').delete().eq('id', id); refresh()
   }
   // Convert unassigned/generic base into eligible base for a commodity: add (or
@@ -158,7 +161,7 @@ export default function GovernmentPaymentsSettingsPage() {
       { farm_id: row.farm_id, commodity_id, base_acres: newAcres, plc_yield: newYield, is_unassigned: false, source: 'manual', updated_at: new Date().toISOString() },
       { onConflict: 'farm_id,commodity_id' },
     )
-    if (up.error) { setErr(up.error.message); return }
+    if (up.error) { setErr(reportError(up.error, { action: 'finish that' })); return }
     const remaining = Number(row.base_acres) - acres
     if (remaining <= 0.0001) {
       await supabase.from('farm_base_acres').delete().eq('id', row.id)
@@ -171,7 +174,7 @@ export default function GovernmentPaymentsSettingsPage() {
     const { error } = await supabase.from('arc_plc_elections').upsert(
       { farm_id, commodity_id, crop_year: cropYear, election }, { onConflict: 'farm_id,commodity_id,crop_year' },
     )
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     refresh()
   }
   async function savePrice(commodity_id: string, patch: Partial<ArcPlcPriceData>) {
@@ -189,7 +192,7 @@ export default function GovernmentPaymentsSettingsPage() {
       },
       { onConflict: 'commodity_id,crop_year' },
     )
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     refresh()
   }
   async function refreshMya() {
@@ -223,7 +226,7 @@ export default function GovernmentPaymentsSettingsPage() {
       },
       { onConflict: 'farm_id,commodity_id,crop_year' },
     )
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     refresh()
   }
   async function saveBenchmark(patch: {
@@ -252,11 +255,11 @@ export default function GovernmentPaymentsSettingsPage() {
     const { error } = patch.id
       ? await supabase.from('arc_benchmark_data').update(payload).eq('id', patch.id)
       : await supabase.from('arc_benchmark_data').insert(payload)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     setErr(null); refresh()
   }
   async function deleteBenchmark(id: string) {
-    if (!confirm('Delete this benchmark row?')) return
+    if (!(await confirmText('Delete this benchmark row?'))) return
     await supabase.from('arc_benchmark_data').delete().eq('id', id); refresh()
   }
   async function saveProgramConfig(year: number, patch: {
@@ -268,7 +271,7 @@ export default function GovernmentPaymentsSettingsPage() {
       { crop_year: year, ...patch, updated_at: new Date().toISOString() },
       { onConflict: 'crop_year' },
     )
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     setErr(null); refresh()
   }
 
@@ -578,7 +581,7 @@ export default function GovernmentPaymentsSettingsPage() {
                   <td className="px-3 py-2 text-right font-mono">{usd(p.amount, 2)}</td>
                   <td className="px-3 py-2">{p.payment_date ?? '—'}</td>
                   <td className="px-3 py-2 capitalize">{p.payment_status}</td>
-                  <td className="px-3 py-2"><button onClick={async () => { await supabase.from('other_government_payments').delete().eq('id', p.id); refresh() }} className="text-red-600">Delete</button></td>
+                  <td className="px-3 py-2"><button type="button" onClick={async () => { if (!(await confirmText('Delete this payment?'))) return; const { error } = await supabase.from('other_government_payments').delete().eq('id', p.id); if (error) { setErr(reportError(error, { action: 'delete the payment', noun: 'payment' })); return } refresh() }} className="text-red-600 min-h-11 px-2">Delete</button></td>
                 </tr>
               ))}
             </tbody>
@@ -586,6 +589,7 @@ export default function GovernmentPaymentsSettingsPage() {
         </div>
         ) })()}
       </Section>
+      {dialogs}
     </div>
   )
 }
@@ -1263,7 +1267,7 @@ function AddOtherPaymentForm({ entities, allEntities, crops, farms, cropYear, se
       crop_id: cropId || null, farm_id: farmId || null, amount: num(amount) ?? 0,
       payment_date: date || null, payment_status: status,
     })
-    if (error) { onErr(error.message); return }
+    if (error) { onErr(reportError(error, { action: 'add the payment', noun: 'payment' })); return }
     setProgram(''); setCustomProgram(''); setEntityId(seedEntityId); setCropId(''); setFarmId(''); setAmount(''); setDate(''); setStatus('projected')
     onSaved()
   }

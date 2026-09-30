@@ -199,7 +199,7 @@ describe('mergeCropInsurance / mergeFsaBaseAcres', () => {
 
 describe('mergeCottonLoads', () => {
   it('a load number on pages 3 and 9 resolves once', () => {
-    const load = { load_number: 'M-77', producer: null, farm_number: null, field: null, picked_date: null, delivered_date: null, truck: null, gross_weight: null, tare_weight: null, net_weight: 42000, crop_year: 2026 }
+    const load = { load_number: 'M-77', producer: null, farm_number: null, field: null, picked_date: null, delivered_date: null, truck: null, gross_weight: null, tare_weight: null, rolls: null, net_weight: 42000, crop_year: 2026 }
     const merged = mergeCottonLoads([
       { loads: [load] },
       { loads: [{ ...load }, { ...load, load_number: 'M-78' }] },

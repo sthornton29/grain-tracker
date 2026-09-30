@@ -50,6 +50,7 @@ import {
 import { detectRolls, type RollCandidate } from '@/lib/roll-detection'
 import { executeRoll, type RollClosedLegInput } from '@/lib/hedge-roll'
 import { fmtMd } from '@/lib/hedge-events'
+import { reportError } from '@/lib/friendly-error'
 import type { Entity, FuturesPosition, OptionPosition } from '@/lib/types'
 
 function cropYearOptions(): number[] {
@@ -469,7 +470,7 @@ export default function StatementImport({ entities, existingPositions, existingO
       setTab(open.length > 0 ? 'open' : closed.length > 0 ? 'closed' : openOpts.length + closedOpts.length > 0 ? 'options' : 'summary')
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) setErr(e.message)
-      else setErr(e?.message ? `Couldn't read this statement: ${e.message}.` : "Couldn't read this statement.")
+      else setErr(reportError(e, { action: 'read this statement', noun: 'statement' }) + ' Try a clearer scan or a PDF from the brokerage.')
       setSource(null)
     } finally {
       setStage(null)
@@ -807,7 +808,7 @@ export default function StatementImport({ entities, existingPositions, existingO
 
     if (inserts.length > 0) {
       const { error } = await supabase.from('futures_positions').insert(inserts)
-      if (error) { setSaving(false); setErr(`Insert failed: ${error.message}`); return }
+      if (error) { setSaving(false); setErr(reportError(error, { action: 'save the imported positions', noun: 'position' })); return }
     }
 
     const optionInserts = [
@@ -851,7 +852,7 @@ export default function StatementImport({ entities, existingPositions, existingO
     ]
     if (optionInserts.length > 0) {
       const { error } = await supabase.from('options_positions').insert(optionInserts)
-      if (error) { setSaving(false); setErr(`Option insert failed: ${error.message}`); return }
+      if (error) { setSaving(false); setErr(reportError(error, { action: 'save the imported options', noun: 'option' }) + ' The futures positions above were saved.'); return }
     }
 
     let closedCount = 0
@@ -882,12 +883,12 @@ export default function StatementImport({ entities, existingPositions, existingO
           import_statement_date: statementDate,
           import_statement_ref: statementRef,
         })
-        if (ins.error) { setSaving(false); setErr(`Closing part of a matched position failed: ${ins.error.message}`); return }
+        if (ins.error) { setSaving(false); setErr(reportError(ins.error, { action: 'close part of a matched position', noun: 'position' }) + ' Everything before it was saved.'); return }
         const upd = await supabase
           .from('futures_positions')
           .update({ num_contracts: held.num_contracts - r.num_contracts, commission: Math.round(((held.commission ?? 0) - prorated) * 100) / 100 })
           .eq('id', held.id)
-        if (upd.error) { setSaving(false); setErr(`Closed portion saved, but updating the remainder failed: ${upd.error.message}`); return }
+        if (upd.error) { setSaving(false); setErr('The closed portion was saved, but the contracts still open could not be updated — check that position and contact support if it looks wrong. ' + reportError(upd.error, { action: 'update the open remainder', noun: 'position' })); return }
         closedCount++
         continue
       }
@@ -902,7 +903,7 @@ export default function StatementImport({ entities, existingPositions, existingO
           import_statement_ref: statementRef,
         })
         .eq('id', r.matchedOpenId!)
-      if (error) { setSaving(false); setErr(`Closing matched position failed: ${error.message}`); return }
+      if (error) { setSaving(false); setErr(reportError(error, { action: 'close a matched position', noun: 'position' }) + ' Everything before it was saved.'); return }
       closedCount++
     }
 

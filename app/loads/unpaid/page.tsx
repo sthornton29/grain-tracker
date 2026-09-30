@@ -4,6 +4,7 @@ import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import StaticExportBar from '@/components/static-export-bar'
+import { fmtDate } from '@/lib/format-date'
 import type { ExportPayload } from '@/lib/exports'
 
 export const dynamic = 'force-dynamic'
@@ -80,7 +81,8 @@ export default async function UnpaidLoadsPage({
     return sum + (dryBushels ?? 0)
   }, 0)
 
-  const fmt = (n: number | null) => n != null ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : ''
+  // Bushels on screen are whole numbers (lib/exports 'bu').
+  const fmt = (n: number | null) => n != null ? n.toLocaleString(undefined, { maximumFractionDigits: 0 }) : ''
 
   const dryBuOf = (r: Row): number => computeBushels({
     netWeightLb: r.net_weight, moisturePct: r.moisture,
@@ -101,7 +103,7 @@ export default async function UnpaidLoadsPage({
         { label: 'Buyer' }, { label: 'Contract' }, { label: 'Dry bu', align: 'right', format: 'bu' },
       ],
       rows: [
-        ...unpaid.map((r) => [r.date, r.ticket_number ?? '', r.crop?.name ?? '', r.crop_year ?? '', r.buyer?.name ?? '', r.contract?.contract_number ? `#${r.contract.contract_number}` : '', dryBuOf(r)]),
+        ...unpaid.map((r) => [fmtDate(r.date), r.ticket_number ?? '', r.crop?.name ?? '', r.crop_year ?? '', r.buyer?.name ?? '', r.contract?.contract_number ? `#${r.contract.contract_number}` : '', dryBuOf(r)]),
         ['Total', '', '', '', '', '', totalDryBu],
       ],
       rowMeta: [...unpaid.map(() => 'data' as const), 'total'],
@@ -112,14 +114,14 @@ export default async function UnpaidLoadsPage({
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
         <h1 className="text-2xl font-bold flex-1">Unpaid Loads</h1>
-        <Link href="/loads" className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">All loads</Link>
+        <Link href="/loads" className="inline-flex items-center rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm">All loads</Link>
         {unpaid.length > 0 && <StaticExportBar payload={exportPayload} />}
         <form className="flex items-center gap-2">
-          <select name="crop_year" defaultValue={cropYear ?? ''} className="rounded-lg border border-slate-300 px-3 py-2">
+          <select name="crop_year" aria-label="Crop year" defaultValue={cropYear ?? ''} className="rounded-lg border border-slate-300 px-3 min-h-11">
             <option value="">All crop years</option>
             {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
           </select>
-          <button className="rounded-lg bg-slate-700 text-white px-3 py-2 text-sm">Apply</button>
+          <button className="rounded-lg bg-slate-700 text-white px-3 min-h-11 text-sm">Apply</button>
         </form>
       </div>
       <p className="text-sm text-slate-500">
@@ -149,13 +151,13 @@ export default async function UnpaidLoadsPage({
               })
               return (
                 <tr key={r.id} className="border-t border-slate-100">
-                  <td className="px-3 py-2 whitespace-nowrap">{r.date}</td>
+                  <td className="px-3 py-2 whitespace-nowrap tabular-nums">{fmtDate(r.date)}</td>
                   <td className="px-3 py-2">{r.ticket_number ?? <span className="text-amber-700">no ticket</span>}</td>
                   <td className="px-3 py-2">{r.crop?.name}</td>
                   <td className="px-3 py-2">{r.crop_year ?? ''}</td>
                   <td className="px-3 py-2">{r.buyer?.name ?? ''}</td>
                   <td className="px-3 py-2">{r.contract?.contract_number ? `#${r.contract.contract_number}` : ''}</td>
-                  <td className="px-3 py-2 text-right font-mono">{fmt(dryBushels)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{fmt(dryBushels)}</td>
                 </tr>
               )
             })}

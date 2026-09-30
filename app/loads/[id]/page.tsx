@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { computeBushels } from '@/lib/shrink'
 import { CONTRACT_TYPE_LABEL } from '@/lib/contracts'
 import { truckDisplay, truckExportLabel } from '@/lib/trucks'
+import { fmtDate } from '@/lib/format-date'
 import LoadAttachments from '@/components/load-attachments'
 import LoadPdfBar from './load-pdf-bar'
 import DeleteLoadButton from './delete-load-button'
@@ -82,7 +83,8 @@ const LINE_SELECT = `
   settlement:settlements(id, settlement_number, settlement_date, buyer:buyers(name))
 `
 
-const fmt = (n: number | null | undefined, d = 2) =>
+// Bushels and pounds on screen are whole numbers; pass d for prices.
+const fmt = (n: number | null | undefined, d = 0) =>
   n == null || !Number.isFinite(Number(n)) ? '—' : Number(n).toLocaleString(undefined, { maximumFractionDigits: d })
 const usd = (n: number | null | undefined, d = 2) =>
   n == null || !Number.isFinite(Number(n)) ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`
@@ -170,7 +172,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
     : load.to_type === 'buyer'
       ? `${load.to_buyer?.name ?? '—'}${load.contract?.delivery_location?.name ? ` · ${load.contract.delivery_location.name}` : ''}`
       : '—'
-  const dateTime = `${load.date}${load.time ? ` · ${load.time.slice(0, 5)}` : ''}`
+  const dateTime = `${fmtDate(load.date)}${load.time ? ` · ${load.time.slice(0, 5)}` : ''}`
 
   // ---- Export payload (jsPDF / Excel), mirroring the on-screen document ----
   const KV: ExportSection['columns'] = [{ label: 'Field' }, { label: 'Value', align: 'right' }]
@@ -237,7 +239,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
             : [
                 ['Status', 'Paid'],
                 ['Settlement #', paymentLine?.settlement?.settlement_number ?? '—'],
-                ['Settlement date', paymentLine?.settlement?.settlement_date ?? '—'],
+                ['Settlement date', paymentLine?.settlement?.settlement_date ? fmtDate(paymentLine.settlement.settlement_date) : '—'],
                 ['Buyer', paymentLine?.settlement?.buyer?.name ?? '—'],
                 ['Their net bu', fmt(paymentLine?.net_bushels)],
                 ['Our dry bu', fmt(ourBu)],
@@ -255,7 +257,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
   })
 
   const payload: ExportPayload = {
-    title: ticket ? `Load — Ticket #${ticket}` : `Load — ${load.date}`,
+    title: ticket ? `Load — Ticket #${ticket}` : `Load — ${fmtDate(load.date)}`,
     filters: [load.crop?.name, dateTime, load.crop_year != null ? `${load.crop_year} crop` : null].filter(Boolean).join(' · '),
     filename: `load-${ticket ?? load.date}`,
     singleSheet: true,
@@ -267,14 +269,14 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
       {/* Header + actions. Buttons are no-print; the document below prints clean. */}
       <div className="flex items-end gap-3 flex-wrap">
         <div className="flex-1 min-w-0">
-          <h1 className="text-2xl font-bold">{ticket ? `Load · Ticket #${ticket}` : `Load · ${load.date}`}</h1>
+          <h1 className="text-2xl font-bold">{ticket ? `Load · Ticket #${ticket}` : `Load · ${fmtDate(load.date)}`}</h1>
           <p className="text-sm text-slate-500">
             {[load.crop?.name, dateTime, load.crop_year != null ? `${load.crop_year} crop` : null].filter(Boolean).join(' · ')}
           </p>
         </div>
         <div className="flex gap-2 flex-wrap no-print">
-          <Link href="/loads" className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Back</Link>
-          <Link href={`/loads/${load.id}/edit`} className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm font-semibold text-brand-deep">Edit</Link>
+          <Link href="/loads" className="inline-flex items-center rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm">Back</Link>
+          <Link href={`/loads/${load.id}/edit`} className="inline-flex items-center rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm font-semibold text-brand-deep">Edit</Link>
           <DeleteLoadButton loadId={load.id} />
           <LoadPdfBar payload={payload} />
         </div>
@@ -317,10 +319,10 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
             {splits.map((s) => (
               <tr key={s.id} className="border-t border-slate-100">
                 <td className="px-3 py-2">{s.field?.name_or_number ?? '—'}</td>
-                <td className="px-3 py-2 text-right font-mono">{s.net_weight.toLocaleString()}</td>
-                <td className="px-3 py-2 text-right font-mono">{s.percentage.toFixed(1)}%</td>
-                <td className="px-3 py-2 text-right font-mono">{fmt(s.wet_bushels)}</td>
-                <td className="px-3 py-2 text-right font-mono">{fmt(s.dry_bushels)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{fmt(s.net_weight)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{s.percentage.toFixed(1)}%</td>
+                <td className="px-3 py-2 text-right tabular-nums">{fmt(s.wet_bushels)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{fmt(s.dry_bushels)}</td>
               </tr>
             ))}
           </Table>
@@ -365,7 +367,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
           <div className="px-4 py-3 space-y-3">
             <dl className="grid grid-cols-2 sm:grid-cols-4 gap-x-8 gap-y-2">
               <Def label="Settlement #" value={paymentLine?.settlement?.settlement_number ?? '—'} />
-              <Def label="Settlement date" value={paymentLine?.settlement?.settlement_date ?? '—'} />
+              <Def label="Settlement date" value={paymentLine?.settlement?.settlement_date ? fmtDate(paymentLine.settlement.settlement_date) : '—'} />
               <Def label="Buyer" value={paymentLine?.settlement?.buyer?.name ?? '—'} />
               <Def label="$ / bu" value={fmt(paymentLine?.price_per_bushel, 4)} />
               <Def label="Their net bu" value={fmt(paymentLine?.net_bushels)} />

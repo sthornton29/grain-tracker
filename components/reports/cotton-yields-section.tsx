@@ -12,7 +12,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cottonFieldYields, type CottonFieldYield } from '@/lib/cotton'
-import { theadCls, grandTotalRowCls } from '@/components/reports/report-kit'
+import { theadCls, grandTotalRowCls, InfoTip, fmtNum } from '@/components/reports/report-kit'
 import type { CottonLoad, GinReceipt, CottonBale, Farm, Field, FieldPlanting, Crop } from '@/lib/types'
 
 const lbs = (n: number | null | undefined) => (n == null ? '—' : Math.round(Number(n)).toLocaleString())
@@ -115,26 +115,26 @@ export default function CottonYieldsSection({ year, entityId = '' }: { year: num
               <tr key={r.fieldId} className="border-t border-slate-100">
                 <td className="px-2 py-1.5">{r.farmName}</td>
                 <td className="px-2 py-1.5 font-semibold">{r.fieldName}</td>
-                <td className="px-2 py-1.5 text-right">{r.plantedAcres.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
-                <td className="px-2 py-1.5 text-right">{r.bales}</td>
-                <td className="px-2 py-1.5 text-right font-mono">{lbs(r.lintLbs)}</td>
-                <td className="px-2 py-1.5 text-right font-mono font-semibold">{r.lintPerAcre != null ? r.lintPerAcre.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—'}</td>
-                <td className="px-2 py-1.5 text-right font-mono">{r.seedPerAcre != null ? r.seedPerAcre.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '—'}</td>
-                <td className="px-2 py-1.5 text-right">{r.turnoutPct != null ? `${r.turnoutPct}%` : '—'}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums">{fmtNum(r.plantedAcres, 1)}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums">{r.bales}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums">{lbs(r.lintLbs)}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums font-semibold">{r.lintPerAcre != null ? fmtNum(r.lintPerAcre, 1) : '—'}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums">{r.seedPerAcre != null ? fmtNum(r.seedPerAcre, 1) : '—'}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums">{r.turnoutPct != null ? `${r.turnoutPct}%` : '—'}</td>
                 <td className="px-2 py-1.5">
                   {r.status === 'complete'
                     ? <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">complete</span>
-                    : <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5" title="Seed cotton delivered but not yet on a gin receipt — lint yield is partial until ginned.">on yard awaiting gin: {lbs(r.yardSeedLbs)} lbs</span>}
+                    : <InfoTip label={`on yard awaiting gin: ${lbs(r.yardSeedLbs)} lbs`} tone="warning">Seed cotton has been delivered but is not on a gin receipt yet, so the lint yield is partial until it is ginned.</InfoTip>}
                 </td>
               </tr>
             ))}
             <tr className={grandTotalRowCls}>
               <td className="px-2 py-1.5" colSpan={2}>Total</td>
-              <td className="px-2 py-1.5 text-right">{totals.acres.toLocaleString(undefined, { maximumFractionDigits: 1 })}</td>
-              <td className="px-2 py-1.5 text-right">{totals.bales}</td>
-              <td className="px-2 py-1.5 text-right font-mono">{lbs(totals.lint)}</td>
-              <td className="px-2 py-1.5 text-right font-mono">{totals.acres > 0 && totals.lint > 0 ? Math.round((totals.lint / totals.acres) * 10) / 10 : '—'}</td>
-              <td className="px-2 py-1.5 text-right font-mono">{totals.acres > 0 && totals.seed > 0 ? Math.round((totals.seed / totals.acres) * 10) / 10 : '—'}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{fmtNum(totals.acres, 1)}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{totals.bales}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{lbs(totals.lint)}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{totals.acres > 0 && totals.lint > 0 ? fmtNum(totals.lint / totals.acres, 1) : '—'}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{totals.acres > 0 && totals.seed > 0 ? fmtNum(totals.seed / totals.acres, 1) : '—'}</td>
               <td className="px-2 py-1.5 text-right">{totals.seed > 0 ? `${Math.round((totals.lint / totals.seed) * 10000) / 100}%` : '—'}</td>
               <td className="px-2 py-1.5">{totals.yard > 0 ? <span className="text-xs text-amber-700">{lbs(totals.yard)} lbs on yard</span> : null}</td>
             </tr>

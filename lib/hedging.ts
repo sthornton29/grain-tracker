@@ -496,10 +496,11 @@ export function fmtPrice(n: number | null | undefined): string {
   return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
 }
 
-// Format a P&L dollar amount with sign and thousands separators.
+// Format a P&L dollar amount with thousands separators; negatives in
+// parentheses, the financial convention every report and export follows.
 export function fmtPnl(n: number | null | undefined): string {
   if (n == null) return '—'
   const v = Number(n)
-  const sign = v < 0 ? '-' : ''
-  return `${sign}$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const body = `$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  return v < 0 ? `(${body})` : body
 }

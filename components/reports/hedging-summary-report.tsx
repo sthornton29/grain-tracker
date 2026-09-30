@@ -1,14 +1,18 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { usePersistentState } from '@/lib/use-persistent-state'
+import { useReportCropYear } from '@/lib/report-filters'
+import { fmtDate } from '@/lib/format-date'
 import {
   COMMODITIES,
   type Commodity,
   contractMonthSortKey,
+  parseContractMonth,
   optionUnrealizedPnl,
-  bushelsFor,
+
   quantityFor,
   contractUnit,
   fmtCommodityPrice,
@@ -27,18 +31,38 @@ import type { Crop, Entity, FuturesPosition, HedgePositionEvent, OptionPosition 
 import {
   SummaryCards,
   EmptyState,
+  ReportHeader,
+  ReportFilterBar,
+  FilterField,
   signedTone,
   toneText,
   theadCls,
   grandTotalRowCls,
+  stickyColCls,
+  stickyColHeadCls,
+  selectCls,
+  inputCls,
+  filterSummaryOf,
+  cropYearLabel,
   type SummaryCardData,
 } from '@/components/reports/report-kit'
 
 type Props = {
   onPayloadChange?: (build: () => ExportPayload) => void
+  /** Rendered in the report header's action slot (the page passes <ExportBar/>). */
+  headerActions?: ReactNode
 }
 
-export default function HedgingSummaryReport({ onPayloadChange }: Props) {
+// 'DEC 26' + 'Corn' → 'Dec 26 Corn': the readable name shown beside a raw
+// futures symbol like ZCZ26.
+function contractLabel(commodity: string, contractMonth: string | null | undefined): string {
+  const p = parseContractMonth(contractMonth)
+  if (!p) return commodity
+  const mon = p.abbr.charAt(0) + p.abbr.slice(1).toLowerCase()
+  return `${mon} ${String(p.year2).padStart(2, '0')} ${commodity}`
+}
+
+export default function HedgingSummaryReport({ onPayloadChange, headerActions }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [positions, setPositions] = useState<FuturesPosition[]>([])
   const [options, setOptions] = useState<OptionPosition[]>([])
@@ -51,11 +75,19 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
   // owner-only because it carries whole-book snapshots).
   const [events, setEvents] = useState<HedgePositionEvent[] | null>(null)
 
-  const [cropYear, setCropYear] = useState('All')
-  const [commodity, setCommodity] = useState<'All' | Commodity>('All')
-  const [entityId, setEntityId] = useState('All')
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState('')
+  // Filters persist per report. The crop year follows the one report rule
+  // (current year by default, never overwritten on load; "All" stays on offer).
+  const cropYears = useMemo(
+    () => Array.from(new Set([...positions.map((p) => p.crop_year), ...options.map((o) => o.crop_year)])).sort((a, b) => b - a),
+    [positions, options],
+  )
+  const [cropYearValue, setCropYearValue] = useReportCropYear('hedging-summary:cropYear', { allowAll: true, options: cropYears, loaded: !loading })
+  const cropYear = cropYearValue === '' ? 'All' : String(cropYearValue)
+  const setCropYear = (v: string) => setCropYearValue(v === 'All' || v === '' ? '' : Number(v))
+  const [commodity, setCommodity] = usePersistentState<'All' | Commodity>('hedging-summary:commodity', 'All')
+  const [entityId, setEntityId] = usePersistentState('hedging-summary:entity', 'All')
+  const [from, setFrom] = usePersistentState('hedging-summary:from', '')
+  const [to, setTo] = usePersistentState('hedging-summary:to', '')
 
   useEffect(() => {
     ;(async () => {
@@ -150,11 +182,6 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
   // bushels to the nearest whole. Money already goes through fmtPnl (2 dp).
   const fmtContracts = (n: number) => Number(n.toFixed(2)).toLocaleString()
   const fmtQty = (n: number) => Math.round(n).toLocaleString()
-
-  const cropYears = useMemo(
-    () => Array.from(new Set([...positions.map((p) => p.crop_year), ...options.map((o) => o.crop_year)])).sort((a, b) => b - a),
-    [positions, options],
-  )
 
   // A position's reference date for the date-range filter: close date if closed,
   // otherwise the trade date.
@@ -270,16 +297,15 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
   }, [filtered, quoteBySymbol])
 
   function filtersLabel() {
-    const parts = [`Crop year: ${cropYear}`, `Commodity: ${commodity}`]
-    if (entityId !== 'All') parts.push(`Entity: ${entityName(entityId) || entityId}`)
-    else {
-      const granted = viewerAllEntitiesLabel(viewer, entities)
-      if (granted) parts.push(`Entity: ${granted}`)
-    }
-    if (from) parts.push(`From: ${from}`)
-    if (to) parts.push(`To: ${to}`)
-    return parts.join(' · ')
+    const granted = viewerAllEntitiesLabel(viewer, entities)
+    return filterSummaryOf(
+      cropYearLabel(cropYearValue),
+      entityId !== 'All' ? (entityName(entityId) || entityId) : (granted ?? 'All Entities'),
+      commodity === 'All' ? 'All Commodities' : commodity,
+      from && to ? `${fmtDate(from)} – ${fmtDate(to)}` : from ? `From ${fmtDate(from)}` : to ? `Through ${fmtDate(to)}` : null,
+    )
   }
+  const activeFilterCount = (cropYearValue !== '' ? 1 : 0) + (commodity !== 'All' ? 1 : 0) + (entityId !== 'All' ? 1 : 0) + (from ? 1 : 0) + (to ? 1 : 0)
 
   function buildExportPayload(): ExportPayload {
     const sections: ExportPayload['sections'] = []
@@ -376,8 +402,6 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filtered, filteredOptions, filteredEvents, summary, cropYear, commodity, entityId, from, to, onPayloadChange])
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
-
   if (loading) return <p className="text-slate-500">Loading…</p>
 
   const grandUnrealized = summary.reduce((s, r) => s + r.unrealized, 0)
@@ -395,31 +419,44 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
 
   return (
     <div className="space-y-4 print-area">
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-2 no-print">
-        <select value={cropYear} onChange={(e) => setCropYear(e.target.value)} className={inputCls}>
-          <option value="All">All crop years</option>
-          {cropYears.map((y) => <option key={y} value={y}>{y}</option>)}
-        </select>
-        <select value={commodity} onChange={(e) => setCommodity(e.target.value as 'All' | Commodity)} className={inputCls}>
-          <option value="All">All commodities</option>
-          {COMMODITIES.map((c) => <option key={c} value={c}>{c}</option>)}
-        </select>
+      <ReportHeader title="Hedging Summary" filterSummary={filtersLabel()} actions={headerActions} />
+      <ReportFilterBar activeCount={activeFilterCount}>
+        <FilterField label="Crop year">
+          <select value={cropYear} onChange={(e) => setCropYear(e.target.value)} className={selectCls}>
+            <option value="All">All crop years</option>
+            {cropYearValue !== '' && !cropYears.includes(cropYearValue) && <option value={cropYearValue}>{cropYearValue}</option>}
+            {cropYears.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Commodity">
+          <select value={commodity} onChange={(e) => setCommodity(e.target.value as 'All' | Commodity)} className={selectCls}>
+            <option value="All">All commodities</option>
+            {COMMODITIES.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </FilterField>
         {(!viewer.isViewer || entityOptionsFor(viewer, entities).length > 1) && (
-        <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
-          <option value="All">All entities</option>
-          {entityOptionsFor(viewer, entities).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-        </select>
+          <FilterField label="Entity">
+            <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={selectCls}>
+              <option value="All">All entities</option>
+              {entityOptionsFor(viewer, entities).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+          </FilterField>
         )}
-        <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={inputCls} title="From date" />
-        <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={inputCls} title="To date" />
-      </div>
+        <FilterField label="From date">
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={inputCls} />
+        </FilterField>
+        <FilterField label="To date">
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={inputCls} />
+        </FilterField>
+      </ReportFilterBar>
 
       {filtered.length === 0 && filteredOptions.length === 0 ? (
         <EmptyState
           message="No positions match these filters."
           hint="Try widening the crop year, commodity, entity, or date filters — or record hedging positions."
           linkHref="/hedging"
-          linkLabel="Go to Hedging"
+          linkLabel="Add hedging positions"
+          role={viewer.role}
         />
       ) : (
         <div className="space-y-6">
@@ -430,7 +467,7 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead className={theadCls}>
-                  <tr>{['Crop Year', 'Commodity', 'Futures', 'Qty', 'Avg Price', 'Fut Unrealized', 'Fut Realized', 'Options P&L', 'Combined P&L'].map((h) => <th key={h} className="text-left pr-4 font-medium whitespace-nowrap">{h}</th>)}</tr>
+                  <tr>{['Crop Year', 'Commodity', 'Contracts', 'Quantity', 'Avg hedge price', 'Futures unrealized', 'Futures realized (net)', 'Options gain/loss', 'Combined gain/loss'].map((h, i) => <th key={h} className={`${i >= 2 ? 'text-right' : 'text-left'} pr-4 py-1 font-medium whitespace-nowrap`}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
                   {summary.map((s) => {
@@ -468,7 +505,10 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead className={theadCls}>
-                  <tr>{['Crop Yr', 'Commodity', 'Month', 'Symbol', 'Side', '#', 'Bushels', 'Trade Date', 'Trade $', 'Status', 'Close Date', 'Close $', 'Realized', 'Comm.', 'Net', 'Unrealized'].map((h) => <th key={h} className="text-left pr-3 font-medium whitespace-nowrap">{h}</th>)}</tr>
+                  <tr>{['Contract', 'Crop year', 'Commodity', 'Symbol', 'Side', 'Contracts', 'Quantity', 'Trade date', 'Trade price', 'Status', 'Close date', 'Close price', 'Realized', 'Commission', 'Net', 'Unrealized'].map((h, i) => {
+                    const right = [5, 6, 8, 11, 12, 13, 14, 15].includes(i)
+                    return <th key={h} className={`${right ? 'text-right' : 'text-left'} ${i === 0 ? `${stickyColHeadCls} pl-2` : ''} pr-3 py-1 font-medium whitespace-nowrap`}>{h}</th>
+                  })}</tr>
                 </thead>
                 <tbody>
                   {filtered.map((p) => {
@@ -476,17 +516,17 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
                     const net = netRealizedOf(p)
                     return (
                       <tr key={p.id} className="border-t border-slate-100">
+                        <td className={`${stickyColCls} pl-2 pr-3 py-1 whitespace-nowrap font-semibold`}>{contractLabel(p.commodity, p.contract_month)}</td>
                         <td className="pr-3 py-1">{p.crop_year}</td>
                         <td className="pr-3 py-1">{p.commodity}</td>
-                        <td className="pr-3 py-1 whitespace-nowrap">{p.contract_month}</td>
-                        <td className="pr-3 py-1 font-mono">{p.contract_symbol}</td>
+                        <td className="pr-3 py-1 text-xs text-slate-500 tabular-nums">{p.contract_symbol}</td>
                         <td className="pr-3 py-1 capitalize">{p.side}</td>
                         <td className="pr-3 py-1 text-right tabular-nums">{fmtContracts(p.num_contracts)}</td>
-                        <td className="pr-3 py-1 text-right tabular-nums">{fmtQty(bushelsFor(p.num_contracts))}</td>
-                        <td className="pr-3 py-1 whitespace-nowrap">{p.trade_date}</td>
+                        <td className="pr-3 py-1 text-right tabular-nums whitespace-nowrap">{fmtQty(quantityFor(p.commodity, p.num_contracts))} {contractUnit(p.commodity)}</td>
+                        <td className="pr-3 py-1 whitespace-nowrap">{fmtDate(p.trade_date)}</td>
                         <td className="pr-3 py-1 text-right tabular-nums">{fmtPrice(p.trade_price)}</td>
                         <td className="pr-3 py-1 capitalize">{p.status}</td>
-                        <td className="pr-3 py-1 whitespace-nowrap">{p.close_date ?? ''}</td>
+                        <td className="pr-3 py-1 whitespace-nowrap">{fmtDate(p.close_date)}</td>
                         <td className="pr-3 py-1 text-right tabular-nums">{p.close_price != null ? fmtPrice(p.close_price) : ''}</td>
                         <td className={`pr-3 py-1 text-right tabular-nums ${toneText(signedTone(p.realized_pnl))}`}>{p.realized_pnl != null ? fmtPnl(p.realized_pnl) : ''}</td>
                         <td className="pr-3 py-1 text-right tabular-nums">{p.commission ? fmtPnl(p.commission) : ''}</td>
@@ -505,29 +545,32 @@ export default function HedgingSummaryReport({ onPayloadChange }: Props) {
               <h2 className="font-bold text-lg mb-2">Options</h2>
               <div className="overflow-x-auto">
                 <table className="min-w-full text-sm">
-                  <thead className="text-slate-500">
-                    <tr>{['Crop Yr', 'Commodity', 'Type', 'Side', 'Month', 'Strike', '#', 'Trade Date', 'Premium ¢', 'Premium $', 'Status', 'Close Date', 'Close ¢', 'Realized', 'Unrealized'].map((h) => <th key={h} className="text-left pr-3 font-medium whitespace-nowrap">{h}</th>)}</tr>
+                  <thead className={theadCls}>
+                    <tr>{['Contract', 'Crop year', 'Commodity', 'Type', 'Side', 'Strike', 'Contracts', 'Trade date', 'Premium ¢', 'Premium $', 'Status', 'Close date', 'Close ¢', 'Realized', 'Unrealized'].map((h, i) => {
+                      const right = [5, 6, 8, 9, 12, 13, 14].includes(i)
+                      return <th key={h} className={`${right ? 'text-right' : 'text-left'} ${i === 0 ? `${stickyColHeadCls} pl-2` : ''} pr-3 py-1 font-medium whitespace-nowrap`}>{h}</th>
+                    })}</tr>
                   </thead>
                   <tbody>
                     {filteredOptions.map((o) => {
                       const u = optUnrealizedOf(o)
                       return (
                         <tr key={o.id} className="border-t border-slate-100">
+                          <td className={`${stickyColCls} pl-2 pr-3 py-1 whitespace-nowrap font-semibold`}>{contractLabel(o.commodity, o.underlying_contract_month)}</td>
                           <td className="pr-3 py-1">{o.crop_year}</td>
                           <td className="pr-3 py-1">{o.commodity}</td>
                           <td className="pr-3 py-1 capitalize">{o.option_type}</td>
                           <td className="pr-3 py-1 capitalize">{o.side}</td>
-                          <td className="pr-3 py-1 whitespace-nowrap">{o.underlying_contract_month}</td>
-                          <td className="pr-3 py-1 text-right font-mono">{fmtPrice(o.strike_price)}</td>
-                          <td className="pr-3 py-1 text-right">{fmtContracts(o.num_contracts)}</td>
-                          <td className="pr-3 py-1 whitespace-nowrap">{o.trade_date}</td>
-                          <td className="pr-3 py-1 text-right font-mono">{fmtCents(o.premium_cents)}</td>
-                          <td className="pr-3 py-1 text-right font-mono">{fmtPnl(o.premium_total)}</td>
-                          <td className="pr-3 py-1 whitespace-nowrap">{o.status}</td>
-                          <td className="pr-3 py-1 whitespace-nowrap">{o.close_date ?? ''}</td>
-                          <td className="pr-3 py-1 text-right font-mono">{o.close_price_cents != null ? fmtCents(o.close_price_cents) : ''}</td>
-                          <td className={`pr-3 py-1 text-right font-mono ${(o.realized_pnl ?? 0) >= 0 ? 'text-green-700' : 'text-red-700'}`}>{o.realized_pnl != null ? fmtPnl(o.realized_pnl) : ''}</td>
-                          <td className={`pr-3 py-1 text-right font-mono ${u == null ? '' : u >= 0 ? 'text-green-700' : 'text-red-700'}`}>{u != null ? fmtPnl(u) : ''}</td>
+                          <td className="pr-3 py-1 text-right tabular-nums">{fmtPrice(o.strike_price)}</td>
+                          <td className="pr-3 py-1 text-right tabular-nums">{fmtContracts(o.num_contracts)}</td>
+                          <td className="pr-3 py-1 whitespace-nowrap">{fmtDate(o.trade_date)}</td>
+                          <td className="pr-3 py-1 text-right tabular-nums">{fmtCents(o.premium_cents)}</td>
+                          <td className="pr-3 py-1 text-right tabular-nums">{fmtPnl(o.premium_total)}</td>
+                          <td className="pr-3 py-1 whitespace-nowrap capitalize">{o.status}</td>
+                          <td className="pr-3 py-1 whitespace-nowrap">{fmtDate(o.close_date)}</td>
+                          <td className="pr-3 py-1 text-right tabular-nums">{o.close_price_cents != null ? fmtCents(o.close_price_cents) : ''}</td>
+                          <td className={`pr-3 py-1 text-right tabular-nums ${toneText(signedTone(o.realized_pnl))}`}>{o.realized_pnl != null ? fmtPnl(o.realized_pnl) : ''}</td>
+                          <td className={`pr-3 py-1 text-right tabular-nums ${u == null ? '' : toneText(signedTone(u))}`}>{u != null ? fmtPnl(u) : ''}</td>
                         </tr>
                       )
                     })}

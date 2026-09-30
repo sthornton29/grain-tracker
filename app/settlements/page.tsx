@@ -9,7 +9,20 @@ import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import ExportBar from '@/components/export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
 import { checkoffByCrop } from '@/lib/checkoff'
+import { fmtDate } from '@/lib/format-date'
+import { FilterField, ReportFilterBar, EmptyState, selectCls, inputCls, theadCls, fmtInt, fmtUsd, fmtNum } from '@/components/reports/report-kit'
 import type { Entity, Farm, Field, FieldPlanting, LoadSplit, Buyer } from '@/lib/types'
+
+// Filters are remembered per page (the contracts tracker does the same), so
+// coming back tomorrow shows the same view.
+const FILTER_KEY = 'settlements:filters'
+type SavedFilters = { q?: string; from?: string; to?: string; buyerId?: string; entityId?: string; cropYear?: number | ''; contractId?: string }
+function readSavedFilters(): SavedFilters {
+  try {
+    const raw = localStorage.getItem(FILTER_KEY)
+    return raw ? (JSON.parse(raw) as SavedFilters) : {}
+  } catch { return {} }
+}
 
 type Row = {
   id: string
@@ -74,6 +87,32 @@ export default function SettlementsListPage() {
   const [entityId, setEntityId] = useState('')
   const [cropYear, setCropYear] = useState<number | ''>('')
   const [contractId, setContractId] = useState('')
+  const [filtersReady, setFiltersReady] = useState(false)
+
+  // Restore the last filters once, then keep them saved as they change.
+  useEffect(() => {
+    const s = readSavedFilters()
+    if (s.q) setQ(s.q)
+    if (s.from) setFrom(s.from)
+    if (s.to) setTo(s.to)
+    if (s.buyerId) setBuyerId(s.buyerId)
+    if (s.entityId) setEntityId(s.entityId)
+    if (s.cropYear != null && s.cropYear !== '') setCropYear(Number(s.cropYear))
+    if (s.contractId) setContractId(s.contractId)
+    setFiltersReady(true)
+  }, [])
+  useEffect(() => {
+    if (!filtersReady) return
+    try {
+      const s: SavedFilters = { q, from, to, buyerId, entityId, cropYear, contractId }
+      if (Object.values(s).every((v) => v === '' || v == null)) localStorage.removeItem(FILTER_KEY)
+      else localStorage.setItem(FILTER_KEY, JSON.stringify(s))
+    } catch { /* storage unavailable */ }
+  }, [filtersReady, q, from, to, buyerId, entityId, cropYear, contractId])
+
+  function clearFilters() {
+    setQ(''); setFrom(''); setTo(''); setBuyerId(''); setEntityId(''); setCropYear(''); setContractId('')
+  }
 
   async function refresh() {
     setLoading(true)
@@ -118,7 +157,7 @@ export default function SettlementsListPage() {
     setSplitsByLoad(splitMap)
     setLoading(false)
   }
-  useEffect(() => { refresh() /* eslint-disable-line */ }, [from, to])
+  useEffect(() => { if (filtersReady) refresh() /* eslint-disable-line */ }, [filtersReady, from, to])
 
   // Checkoff paid (086): the settlements' itemized 'checkoff' lines, keyed to
   // the crop / crop year their matched loads carry. Loaded once alongside the
@@ -283,12 +322,10 @@ export default function SettlementsListPage() {
     return { count: lines.length, unmatched, netBu, netRev }
   }
 
-  const fmt = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 2 })
-
   // Plain-English summary of the active filters, shown at the top of the export.
   function filterSummary(): string {
     const parts: string[] = []
-    if (from || to) parts.push(`${from || '…'} to ${to || '…'}`)
+    if (from || to) parts.push(`${from ? fmtDate(from) : '…'} to ${to ? fmtDate(to) : '…'}`)
     parts.push(buyerId ? buyers.find((b) => b.id === buyerId)?.name ?? 'Buyer' : 'All buyers')
     parts.push(entityId ? entities.find((e) => e.id === entityId)?.name ?? 'Entity' : 'All entities')
     parts.push(cropYear !== '' ? `${cropYear} crop` : 'All crop years')
@@ -325,7 +362,7 @@ export default function SettlementsListPage() {
         ],
         rows: [
           ...filtered.map((r, i) => [
-            r.settlement_date, r.settlement_number ?? '—', r.buyer?.name ?? '',
+            fmtDate(r.settlement_date), r.settlement_number ?? '—', r.buyer?.name ?? '',
             stats[i].count, stats[i].unmatched, stats[i].netBu, stats[i].netRev,
           ]),
           ['Total', '', '', totals.count, totals.unmatched, totals.netBu, totals.netRev],
@@ -340,71 +377,66 @@ export default function SettlementsListPage() {
       <div className="flex items-end gap-3 flex-wrap">
         <h1 className="text-2xl font-bold flex-1">Settlements</h1>
         {filtered.length > 0 && <ExportBar buildPayload={buildPayload} />}
-        <Link href="/settlements/new" className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">+ New Settlement</Link>
+        <Link href="/settlements/new" className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-10 inline-flex items-center font-semibold">+ New Settlement</Link>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-        <input
-          type="search"
-          placeholder="Search settlement #, buyer, ticket, notes…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          className="rounded-lg border border-slate-300 px-3 py-2"
-        />
-        <label className="text-sm text-slate-600 flex items-center gap-2">
-          From <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 flex-1" />
-        </label>
-        <label className="text-sm text-slate-600 flex items-center gap-2">
-          To <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 flex-1" />
-        </label>
-        <select
-          value={buyerId}
-          onChange={(e) => setBuyerId(e.target.value)}
-          className="rounded-lg border border-slate-300 px-3 py-2"
-          title="Filter to settlements from this buyer"
-        >
-          <option value="">All buyers</option>
-          {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-        </select>
-        <select
-          value={entityId}
-          onChange={(e) => setEntityId(e.target.value)}
-          className="rounded-lg border border-slate-300 px-3 py-2"
-          title="Filter to settlements with a matched load belonging to this entity"
-        >
-          <option value="">All entities</option>
-          {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-        </select>
-        <select
-          value={cropYear}
-          onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))}
-          className="rounded-lg border border-slate-300 px-3 py-2"
-          title="Filter to settlements with a matched load from this crop year"
-        >
-          <option value="">All crop years</option>
-          {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
-        </select>
-        <select
-          value={contractId}
-          onChange={(e) => setContractId(e.target.value)}
-          className="rounded-lg border border-slate-300 px-3 py-2"
-          title="Filter to settlements with a matched load on this contract"
-        >
-          <option value="">All contracts</option>
-          {contractOptions.map((c) => {
-            const parts = [
-              `#${c.contract_number}`,
-              c.buyer?.name,
-              c.crop?.name,
-              c.crop_year != null ? `${c.crop_year} crop` : null,
-            ].filter(Boolean)
-            return <option key={c.id} value={c.id}>{parts.join(' · ')}</option>
-          })}
-        </select>
-      </div>
+      <ReportFilterBar activeCount={[q, from, to, buyerId, entityId, cropYear === '' ? '' : 'y', contractId].filter(Boolean).length}>
+        <FilterField label="Search">
+          <input
+            type="search"
+            placeholder="Settlement #, buyer, ticket, notes"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            className={`${inputCls} w-56`}
+          />
+        </FilterField>
+        <FilterField label="From">
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={inputCls} />
+        </FilterField>
+        <FilterField label="To">
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={inputCls} />
+        </FilterField>
+        <FilterField label="Buyer">
+          <select value={buyerId} onChange={(e) => setBuyerId(e.target.value)} className={selectCls}>
+            <option value="">All buyers</option>
+            {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Entity">
+          <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={selectCls}>
+            <option value="">All entities</option>
+            {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Crop year">
+          <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={selectCls}>
+            <option value="">All crop years</option>
+            {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
+          </select>
+        </FilterField>
+        <FilterField label="Contract">
+          <select value={contractId} onChange={(e) => setContractId(e.target.value)} className={selectCls}>
+            <option value="">All contracts</option>
+            {contractOptions.map((c) => {
+              const parts = [
+                `#${c.contract_number}`,
+                c.buyer?.name,
+                c.crop?.name,
+                c.crop_year != null ? `${c.crop_year} crop` : null,
+              ].filter(Boolean)
+              return <option key={c.id} value={c.id}>{parts.join(' · ')}</option>
+            })}
+          </select>
+        </FilterField>
+        {(q || from || to || buyerId || entityId || cropYear !== '' || contractId) && (
+          <button type="button" onClick={clearFilters} className="rounded-lg border border-slate-300 px-3 min-h-10 text-sm text-slate-600 hover:bg-slate-50">
+            Clear filters
+          </button>
+        )}
+      </ReportFilterBar>
 
       <p className="text-xs text-slate-500">
-        Tap a settlement to open it — the reconciliation, itemized discounts, and edit/delete live on its page.
+        Entity, crop year, and contract filters go by the loads each settlement paid. Tap a settlement to open it — the reconciliation, itemized discounts, and edit/delete live on its page.
       </p>
 
       {/* Checkoff paid (086) — by crop × crop year over the settlements shown.
@@ -425,9 +457,9 @@ export default function SettlementsListPage() {
                   <tr key={`${r.cropId}|${r.cropYear}`} className="border-t border-slate-100">
                     <td className="pr-6 py-1">{cropName(r.cropId)}</td>
                     <td className="pr-6 py-1">{r.cropYear ?? '—'}</td>
-                    <td className="pr-6 py-1 text-right tabular-nums font-semibold">${r.dollars.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                    <td className="pr-6 py-1 text-right tabular-nums">{r.centsPerBu != null ? `${r.centsPerBu.toFixed(2)}¢` : '—'}</td>
-                    <td className="pr-6 py-1 text-right tabular-nums">{Math.round(r.settledBu).toLocaleString()}</td>
+                    <td className="pr-6 py-1 text-right tabular-nums font-semibold">{fmtUsd(r.dollars, 2)}</td>
+                    <td className="pr-6 py-1 text-right tabular-nums">{r.centsPerBu != null ? `${fmtNum(r.centsPerBu, 2)}¢` : '—'}</td>
+                    <td className="pr-6 py-1 text-right tabular-nums">{fmtInt(r.settledBu)}</td>
                     <td className="pr-6 py-1 text-right tabular-nums">{r.settlements}</td>
                   </tr>
                 ))}
@@ -437,47 +469,55 @@ export default function SettlementsListPage() {
         </div>
       )}
 
+      {!loading && filtered.length === 0 ? (
+        <EmptyState
+          message={rows.length === 0 ? 'No settlements yet.' : 'No settlements match these filters.'}
+          hint={rows.length === 0 ? 'Enter a buyer settlement to mark its loads paid.' : 'Try clearing a filter.'}
+          linkHref={rows.length === 0 ? '/settlements/new' : undefined}
+          linkLabel={rows.length === 0 ? 'New settlement' : undefined}
+        />
+      ) : (
       <div className="overflow-x-auto bg-white rounded-xl shadow">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-100 text-slate-700">
+        <table className="min-w-full text-sm border-collapse">
+          <thead className={theadCls}>
             <tr>
-              {['Date', 'Settlement #', 'Buyer', 'Lines', 'Unmatched', 'Net bu', 'Net revenue', 'PDF']
-                .map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
+              {['Date', 'Settlement #', 'Buyer'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}
+              {['Lines', 'Need matching', 'Net bu', 'Net revenue'].map((h) => <th key={h} className="text-right px-3 py-2 whitespace-nowrap">{h}</th>)}
+              <th className="text-left px-3 py-2 whitespace-nowrap">Document</th>
             </tr>
           </thead>
           <tbody>
             {loading && (
               <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>
             )}
-            {!loading && filtered.length === 0 && (
-              <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">No settlements found.</td></tr>
-            )}
             {!loading && filtered.map((r) => {
               const { count, unmatched, netBu, netRev } = rowStats(r)
               return (
                 <tr
                   key={r.id}
-                  onClick={() => router.push(`/settlements/${r.id}`)}
+                  onClick={(e) => { if ((e.target as HTMLElement).closest('a')) return; router.push(`/settlements/${r.id}`) }}
                   className="border-t border-slate-100 cursor-pointer hover:bg-slate-50"
                 >
-                  <td className="px-3 py-2">{r.settlement_date}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <Link href={`/settlements/${r.id}`} className="text-brand-deep font-semibold hover:underline">{fmtDate(r.settlement_date)}</Link>
+                  </td>
                   <td className="px-3 py-2 font-semibold">{r.settlement_number ?? '—'}</td>
                   <td className="px-3 py-2">{r.buyer?.name ?? ''}</td>
-                  <td className="px-3 py-2 text-right">{count}</td>
-                  <td className="px-3 py-2 text-right">
+                  <td className="px-3 py-2 text-right tabular-nums">{count}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">
                     {unmatched > 0
                       ? <span className="text-amber-700 font-semibold">{unmatched}</span>
                       : <span className="text-slate-400">0</span>}
                   </td>
-                  <td className="px-3 py-2 text-right">{fmt(netBu)}</td>
-                  <td className="px-3 py-2 text-right">${fmt(netRev)}</td>
-                  <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                  <td className="px-3 py-2 text-right tabular-nums">{fmtInt(netBu)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{fmtUsd(netRev)}</td>
+                  <td className="px-3 py-2">
                     {r.source_pdf_url ? (
                       <a
                         href={r.source_pdf_url}
                         target="_blank"
                         rel="noreferrer"
-                        className="text-brand-deep"
+                        className="text-brand-deep inline-flex items-center min-h-10"
                       >
                         View ↗
                       </a>
@@ -491,6 +531,7 @@ export default function SettlementsListPage() {
           </tbody>
         </table>
       </div>
+      )}
     </div>
   )
 }

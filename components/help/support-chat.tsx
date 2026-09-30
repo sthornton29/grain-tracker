@@ -1,6 +1,6 @@
 'use client'
 
-// "Ask the assistant" — the support chatbot thread inside the help drawer.
+// Ask Turnrow → "How Turnrow works": the how-to thread inside the help drawer.
 // Session-only (nothing persists), streams the reply, and always offers the
 // escalation path into the Contact Support form with the conversation
 // carried along.
@@ -41,7 +41,7 @@ export default function SupportChat({ route, onEscalate }: {
       })
       if (!res.ok || !res.body) {
         const json = await res.json().catch(() => null)
-        throw new Error(json?.error ?? 'The assistant is unavailable right now.')
+        throw new Error(json?.error ?? 'Ask Turnrow isn’t available right now — try again in a minute.')
       }
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
@@ -54,10 +54,10 @@ export default function SupportChat({ route, onEscalate }: {
         setMessages([...next, { role: 'assistant', content: current }])
         scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
       }
-      if (!acc.trim()) throw new Error('The assistant didn’t answer — try again, or contact support.')
+      if (!acc.trim()) throw new Error('Ask Turnrow didn’t answer — try again, or contact support.')
     } catch (error) {
       setMessages(next) // drop the empty assistant bubble
-      setErr(error instanceof Error ? error.message : 'The assistant is unavailable right now.')
+      setErr(error instanceof Error ? error.message : 'Ask Turnrow isn’t available right now — try again in a minute.')
     } finally {
       setBusy(false)
     }
@@ -66,8 +66,8 @@ export default function SupportChat({ route, onEscalate }: {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <p className="text-xs text-slate-500 border-b border-slate-100 pb-2">
-        Answers come from Turnrow&rsquo;s documentation — for questions about your own numbers,
-        use the <b>Ask Turnrow</b> tab.
+        Answers here come from Turnrow&rsquo;s help guides. For questions about your own numbers,
+        switch to <b>My numbers</b> above.
       </p>
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto py-3 space-y-3">
         {messages.length === 0 && (
@@ -94,10 +94,11 @@ export default function SupportChat({ route, onEscalate }: {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           placeholder="Type a question…"
-          className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400"
+          aria-label="Your question"
+          className="flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 min-h-11 text-sm text-slate-900 placeholder:text-slate-400"
         />
         <button type="submit" disabled={busy || !input.trim()}
-          className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 text-sm font-semibold disabled:opacity-50">
+          className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 text-sm font-semibold disabled:opacity-50">
           Send
         </button>
       </form>

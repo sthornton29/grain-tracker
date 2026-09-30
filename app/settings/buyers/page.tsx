@@ -3,6 +3,8 @@
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { reportError } from '@/lib/friendly-error'
+import { useDialogs } from '@/components/use-dialogs'
 import CsvImport from '@/components/csv-import'
 import { buyersImportConfig } from '@/lib/import-configs'
 import SettingsDocImport from '@/components/settings-doc-import'
@@ -27,6 +29,7 @@ const emptyLoc: LocForm = { name: '', address: '' }
 type FinderRow = { hit: BuyerFinderHit; name: string; checked: boolean }
 
 export default function BuyersPage() {
+  const { confirmText, dialogs } = useDialogs()
   const supabase = useMemo(() => createClient(), [])
   const [buyers, setBuyers] = useState<Buyer[]>([])
   const [locs, setLocs] = useState<DeliveryLocation[]>([])
@@ -98,7 +101,7 @@ export default function BuyersPage() {
       .update({ shrink_factor_pct_per_point: n })
       .eq('schedule_id', s.id)
       .in('factor', ['drying', 'moisture_shrink'])
-    if (error) { setErr(error.message); clear(); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); clear(); return }
     if (n != null) {
       await supabase
         .from('buyer_discount_schedule_rules')
@@ -127,9 +130,9 @@ export default function BuyersPage() {
   }, [schedules])
 
   async function removeSchedule(s: BuyerDiscountSchedule) {
-    if (!confirm('Delete this discount schedule? Its rules are deleted too, and the reports stop auditing against it.')) return
+    if (!(await confirmText('Delete this discount schedule? Its rules are deleted too, and the reports stop auditing against it.'))) return
     const { error } = await supabase.from('buyer_discount_schedules').delete().eq('id', s.id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     refresh()
   }
 
@@ -147,7 +150,7 @@ export default function BuyersPage() {
     e.preventDefault()
     if (!newBuyerName.trim()) return
     const { error } = await supabase.from('buyers').insert({ name: newBuyerName.trim() })
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     setNewBuyerName('')
     setErr(null)
     refresh()
@@ -156,7 +159,7 @@ export default function BuyersPage() {
   async function saveBuyer(id: string) {
     if (!editBuyerName.trim()) return
     const { error } = await supabase.from('buyers').update({ name: editBuyerName.trim() }).eq('id', id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     setEditingBuyerId(null)
     setErr(null)
     refresh()
@@ -167,9 +170,9 @@ export default function BuyersPage() {
     const msg = list.length > 0
       ? `Delete this buyer? ${list.length} delivery location${list.length === 1 ? '' : 's'} will also be deleted.`
       : 'Delete this buyer?'
-    if (!confirm(msg)) return
+    if (!(await confirmText(msg))) return
     const { error } = await supabase.from('buyers').delete().eq('id', id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     refresh()
   }
 
@@ -189,7 +192,7 @@ export default function BuyersPage() {
       name: f.name.trim(),
       address: f.address.trim() || null,
     })
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     setNewLoc(buyerId, emptyLoc)
     setErr(null)
     refresh()
@@ -201,16 +204,16 @@ export default function BuyersPage() {
       name: editLocForm.name.trim(),
       address: editLocForm.address.trim() || null,
     }).eq('id', id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     setEditingLocId(null)
     setErr(null)
     refresh()
   }
 
   async function removeLoc(id: string) {
-    if (!confirm('Delete this delivery location? Contracts using it will have their location cleared.')) return
+    if (!(await confirmText('Delete this delivery location? Contracts using it will have their location cleared.'))) return
     const { error } = await supabase.from('delivery_locations').delete().eq('id', id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     refresh()
   }
 
@@ -267,7 +270,7 @@ export default function BuyersPage() {
         .insert({ name })
         .select('*')
         .single()
-      if (error) { setFinderErr(error.message); break }
+      if (error) { setFinderErr(reportError(error, { action: 'add that buyer', noun: 'buyer' })); break }
       created++
       const buyerId = (inserted as Buyer).id
       const locName = row.hit.location ?? name
@@ -277,7 +280,7 @@ export default function BuyersPage() {
           name: locName,
           address: row.hit.address,
         })
-        if (locErr) { setFinderErr(`Added ${name} but couldn’t save its location: ${locErr.message}`); break }
+        if (locErr) { setFinderErr(`Added ${name}, but its delivery location didn’t save. ${reportError(locErr, { action: 'save the location', noun: 'delivery location' })}`); break }
       }
     }
     setImportBusy(false)
@@ -299,7 +302,7 @@ export default function BuyersPage() {
         Each buyer can have one or more delivery locations (e.g., separate elevators). Expand a buyer to manage its locations.
       </p>
 
-      <SettingsDocImport primaryTarget="buyers" title="Upload a Buyer List (AI)" onSaved={refresh} />
+      <SettingsDocImport primaryTarget="buyers" title="Upload a buyer list" onSaved={refresh} />
 
       <CsvImport config={buyersImportConfig()} onImported={refresh} />
 
@@ -566,7 +569,7 @@ export default function BuyersPage() {
                         onClick={() => setUploadOpenBuyerId(uploadOpenBuyerId === b.id ? null : b.id)}
                         className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-1.5"
                       >
-                        {uploadOpenBuyerId === b.id ? 'Hide upload' : 'Upload discount schedule (AI)'}
+                        {uploadOpenBuyerId === b.id ? 'Hide upload' : 'Upload discount schedule'}
                       </button>
                     </div>
                     {(schedulesByBuyer.get(b.id) ?? []).length > 0 && (
@@ -650,6 +653,7 @@ export default function BuyersPage() {
           )
         })}
       </ul>
+      {dialogs}
     </div>
   )
 }

@@ -123,7 +123,7 @@ export default function AssistantChat({ role, autoFocus }: { role: AppRole; auto
       if (!acc.trim()) throw new Error('The assistant didn’t answer — try again.')
     } catch (error) {
       setMessages(next) // drop the empty assistant bubble
-      setErr(error instanceof Error ? error.message : 'The assistant is unavailable right now.')
+      setErr(error instanceof Error ? error.message : 'Ask Turnrow isn’t available right now — try again in a minute.')
     } finally {
       setBusy(false)
       setStatus(null)

@@ -1,7 +1,7 @@
 ---
 page_route: /contracts/seed
 title: Seed production contracts
-updated: 2026-09-08
+updated: 2026-09-24
 keywords: seed, seed contract, seed production, seed beans, grower agreement, elections, pricing election, premium, premium cap, irrigated premium, usage fee, storage pay, selection date, acceptance, released, rejected, Bayer
 ---
 ## What a seed contract is
@@ -19,9 +19,9 @@ The important pieces:
 - **Contract acres and forecast yield** — together they set the estimated quantity, but the real committed production comes from the **fields you link** on the form. Until harvest, those fields count at their expected yield; after harvest, at their actual bushels.
 - **Local market for pricing** — the elevator whose posted price your elections use (for example, a river terminal named in the agreement).
 - **Price everything by** — the agreement's deadline (Selection Date). All the bushels need a price by then.
-- **Premium schedule** — what the company pays on top of your elected price, per outcome: one stack if the seed is *accepted*, another if it's *released* back to you, and so on. Some premiums (like an irrigation premium) pay only on irrigated bushels, and the total is capped per bushel. The form starts from the standard schedule (all four outcomes filled in) — edit every row to match your agreement, and you can also add, edit, or remove rows any time on the contract's own page, or tap **Apply standard schedule** to reset it to the standard one.
+- **Premium schedule** — what the company pays on top of your elected price, per outcome: one stack if the seed is *accepted*, another if it's *released* back to you, and so on. Some premiums (like an irrigation premium) pay only on irrigated bushels, and the total is capped per bushel. The form starts from the standard soybean seed schedule (all four outcomes filled in) — edit every row to match your agreement, and you can also add, edit, or remove rows any time on the contract's own page, or tap **Apply standard schedule** to reset it to the standard one (it asks before replacing what's there).
 - **If the upload can't read the premium pages** — when the agreement's premium terms are missing or only partly readable, Turnrow never quietly saves a partial schedule. It asks: apply the standard schedule (shown for your review), keep just the rows it could read, or leave the schedule empty. An empty or incomplete schedule is always flagged — never a silent zero.
-- **Usage fee** — the per-bushel fee the company nets out of your settlement.
+- **Usage fee** — the per-bushel fee the company nets out of your settlement. Enter it as a plain number; Turnrow knows it comes out, not in.
 
 ## Pricing elections
 
@@ -33,7 +33,7 @@ The premium stack only pays in full if the company accepts the crop as seed — 
 
 ## Payments
 
-Seed contracts pay in stages: typically 80% of the base price after delivery and pricing, the final 20% plus premiums at final settlement (often the following spring), storage pay monthly if you hold the crop, and the usage fee netted out. Record each payment on the contract's page as it arrives. The **Cash Flow report** projects the stages until the real payments replace them, and the contract shows **complete** once the final base payment is received.
+Seed contracts pay in stages: typically 80% of the base price after delivery and pricing, the final 20% plus premiums at final settlement (often the following spring), storage pay monthly if you hold the crop, and the usage fee netted out. Record each payment on the contract's page as it arrives — type the amount as a plain number and pick the type; a usage fee is recorded as money taken out automatically. A seed contract's **Edit** button opens the seed form, never the grain one. The **Cash Flow report** projects the stages until the real payments replace them, and the contract shows **complete** once the final base payment is received.
 
 ## Where it shows up in reports
 

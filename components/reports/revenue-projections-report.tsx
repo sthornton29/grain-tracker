@@ -7,7 +7,7 @@
 // cost, profit, and breakeven. Updates live as loads, contracts, insurance
 // assumptions, government payments, or futures prices change.
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, assumedAcresTotal, type Planting } from '@/lib/marketing'
@@ -36,9 +36,10 @@ import { formatCottonPrice } from '@/lib/hedging'
 import { projectPayments, applyMyaResolution, programYearFor, otherPaymentsInRevenueYear } from '@/lib/government-payments'
 import { computeRevenueProjections, cropsWithInsuranceInCost, type InsuranceProceeds, type GovtProceeds } from '@/lib/revenue-projections'
 import {
-  SummaryCards, EmptyState, fmtUsd, signedTone, toneText,
-  theadCls, grandTotalRowCls, type SummaryCardData,
+  SummaryCards, EmptyState, ReportHeader, ReportFilterBar, FilterField, InfoTip, fmtUsd, fmtNum, signedTone, toneText,
+  theadCls, grandTotalRowCls, stickyColCls, stickyColHeadCls, selectCls, filterSummaryOf, cropYearLabel, type SummaryCardData,
 } from '@/components/reports/report-kit'
+import { useReportCropYear } from '@/lib/report-filters'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
 import type {
   Crop, Contract, CropAssumption, Entity, FieldPlanting, FuturesPosition, OptionPosition,
@@ -65,17 +66,19 @@ type GinReceiptLite = {
 }
 type CottonBaleLite = { gin_receipt_id: string; crop_year: number; net_weight_lbs: number }
 
-type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
+type Props = {
+  onPayloadChange?: (build: () => ExportPayload) => void
+  /** Rendered in the report header's action slot (the page passes <ExportBar/>). */
+  headerActions?: ReactNode
+}
 
-const usd = (n: number | null | undefined, d = 0) =>
-  n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`
 const bu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
 // $/bu prices on this page show exactly two decimals (not the app-wide fmtPrice's
 // up-to-four), so all price columns read consistently.
 const price2 = (n: number | null | undefined) =>
   n == null ? '—' : `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
-export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
+export default function RevenueProjectionsReport({ onPayloadChange, headerActions }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [loading, setLoading] = useState(true)
   const [crops, setCrops] = useState<Crop[]>([])
@@ -106,7 +109,9 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
   const [ginReceipts, setGinReceipts] = useState<GinReceiptLite[]>([])
   const [cottonBales, setCottonBales] = useState<CottonBaleLite[]>([])
 
-  const [cropYear, setCropYear] = usePersistentState<number | ''>('rev-proj:cropYear', '')
+  // Crop year: current year by default, persisted, never overwritten on load
+  // (lib/report-filters). The marketing option list always carries this year.
+  const [cropYear, setCropYear] = useReportCropYear('rev-proj:cropYear')
   // Entity filter (shared scoping — see lib/entity-scope.ts). The operation-wide
   // assumptions flow down unchanged; only acres/production/policies/payments narrow.
   const [entityId, setEntityId] = usePersistentState('rev-proj:entity', '')
@@ -167,10 +172,6 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
       setArcPriceData((apd.data as ArcPlcPriceData[]) || [])
       setArcPayments((apay.data as ArcPlcPayment[]) || [])
       setOtherPayments((ogp.data as OtherGovernmentPayment[]) || [])
-      const yrs = (pl.data as FieldPlanting[] | null)?.map((p) => p.season_year) ?? []
-      const pyrs = (po.data as CropInsurancePolicy[] | null)?.map((p) => p.crop_year) ?? []
-      const all = [...yrs, ...pyrs]
-      if (all.length > 0) setCropYear((cy) => (cy === '' ? Math.max(...all) : cy))
       setLoading(false)
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -675,27 +676,25 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, totals, cropYear, entityName, onPayloadChange])
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   // Hold the report until the viewer scope/overrides resolve too, so a viewer
   // never sees a flash of unscoped numbers. Inert timing for owners.
   if (loading || viewer.loading || !viewerA.ready) return <p className="text-slate-500">Loading…</p>
 
+  const filterSummary = filterSummaryOf(cropYear === '' ? null : cropYearLabel(cropYear), entityName ?? 'All Entities')
+
   return (
     <div className="space-y-4 print-area">
-      <div className="flex flex-wrap gap-3 items-end no-print">
-        <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Crop year *</span>
-          <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
-            <option value="">— pick a crop year —</option>
-            {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
+      <ReportHeader title="Revenue Projections" filterSummary={filterSummary} actions={headerActions} />
+      <ReportFilterBar activeCount={entityId ? 1 : 0}>
+        <FilterField label="Crop year">
+          <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={selectCls}>
+            {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
-        </label>
+        </FilterField>
         <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} />
-      </div>
+      </ReportFilterBar>
 
       <SupersededNotice show={viewerA.superseded} onDismiss={viewerA.dismissSuperseded} />
-
-      {cropYear === '' && <p className="text-amber-700 text-sm">Pick a crop year to run the projection.</p>}
 
       {cropYear !== '' && rows.length === 0 && (
         <EmptyState
@@ -703,6 +702,7 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
           hint="Add plantings for this crop year, or set marketing assumptions to project revenue."
           linkHref="/reports/marketing"
           linkLabel="Set marketing assumptions"
+          role={viewer.role}
         />
       )}
 
@@ -755,45 +755,52 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
 
           {/* Revenue summary */}
           <section className="bg-white rounded-xl shadow p-4 avoid-break overflow-x-auto">
-            <h2 className="font-bold text-lg mb-2">
-              Revenue by Crop — {cropYear}
-              {entityName && <span className="ml-2 text-sm font-normal text-slate-500">Entity: {entityName}</span>}
-            </h2>
+            <h2 className="font-bold text-lg mb-2">Revenue by Crop — {cropYear}</h2>
             <table className="min-w-full text-sm border-collapse">
               <thead className={theadCls}>
                 <tr>
-                  {['Crop', 'Acres', 'Yield', 'Total Production', 'Crop Sales Revenue', 'Insurance Proceeds', 'Govt Payments', 'Total Revenue', 'Revenue/Acre'].map((h) => (
-                    <th key={h} className="text-left px-2 py-1 whitespace-nowrap">{h}</th>
+                  {['Crop', 'Acres', 'Yield', 'Total Production', 'Crop Sales Revenue', 'Insurance Proceeds', 'Government Payments', 'Total Revenue', 'Revenue/Acre'].map((h, i) => (
+                    <th key={h} className={`${i === 0 ? `text-left ${stickyColHeadCls}` : 'text-right'} px-2 py-1 whitespace-nowrap`}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.cropId} className="border-t border-slate-100">
-                    <td className="px-2 py-1 font-semibold">{r.cropName}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{bu(r.acres)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{r.yield != null ? `${r.yield.toFixed(1)}` : '—'} <span className="text-xs text-slate-400">{r.yield != null ? `${r.unit === 'lbs' ? 'lbs/ac ' : ''}${r.yieldLabel}` : ''}</span></td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{bu(r.totalProduction)}{r.unit === 'lbs' && <span className="text-xs text-slate-400"> lbs</span>}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums" title={r.avgSalesPrice != null ? `Effective ${r.unit === 'lbs' ? formatCottonPrice(r.avgSalesPrice, { perLb: true }) : `${price2(r.avgSalesPrice)}/bu`} over ${bu(r.totalProduction)} ${r.unit}` : 'No production'}>{usd(r.cropSalesRevenue)}</td>
-                    <td className={`px-2 py-1 text-right font-mono tabular-nums ${toneText(signedTone(r.insuranceProceeds))}`}>{usd(r.insuranceProceeds)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums" title={`ARC/PLC: ${usd(r.govtArcPlc)} | Conservation/Other (allocated): ${usd(r.govtAllocatedOther)} | Crop-specific other: ${usd(r.govtCropSpecificOther)}`}>{usd(r.govtPayments)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold">{usd(r.totalRevenue)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.revenuePerAcre)}</td>
+                    <td className={`px-2 py-1 font-semibold ${stickyColCls}`}>{r.cropName}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">{fmtNum(r.acres, 1)}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">{r.yield != null ? `${r.yield.toFixed(1)}` : '—'} <span className="text-xs text-slate-400">{r.yield != null ? `${r.unit === 'lbs' ? 'lbs/ac ' : ''}${r.yieldLabel}` : ''}</span></td>
+                    <td className="px-2 py-1 text-right tabular-nums">{bu(r.totalProduction)}{r.unit === 'lbs' && <span className="text-xs text-slate-400"> lbs</span>}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">
+                      {fmtUsd(r.cropSalesRevenue)}
+                      {r.avgSalesPrice != null && <span className="block text-[10px] text-slate-400">{r.unit === 'lbs' ? formatCottonPrice(r.avgSalesPrice, { perLb: true }) : `${price2(r.avgSalesPrice)}/bu`} avg</span>}
+                    </td>
+                    <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(r.insuranceProceeds))}`}>{fmtUsd(r.insuranceProceeds)}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">
+                      {fmtUsd(r.govtPayments)}
+                      {r.govtPayments !== 0 && (
+                        <InfoTip label="detail" tone="muted" className="ml-1" ariaLabel="Government payment breakdown">
+                          ARC/PLC {fmtUsd(r.govtArcPlc)} · Conservation and other (allocated by acres) {fmtUsd(r.govtAllocatedOther)} · Crop-specific other {fmtUsd(r.govtCropSpecificOther)}
+                        </InfoTip>
+                      )}
+                    </td>
+                    <td className="px-2 py-1 text-right tabular-nums font-semibold">{fmtUsd(r.totalRevenue)}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(r.revenuePerAcre)}</td>
                   </tr>
                 ))}
                 <tr className={`border-t-2 ${grandTotalRowCls}`}>
-                  <td className="px-2 py-1">Total</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{bu(totals.acres)}</td>
+                  <td className={`px-2 py-1 ${stickyColCls} bg-slate-100`}>Total</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{fmtNum(totals.acres, 1)}</td>
                   <td />
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">
+                  <td className="px-2 py-1 text-right tabular-nums">
                     {bu(totals.totalProduction)}
                     {totals.totalProductionLbs > 0 && <span className="text-xs text-slate-400"> bu + {bu(totals.totalProductionLbs)} lbs</span>}
                   </td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.cropSalesRevenue)}</td>
-                  <td className={`px-2 py-1 text-right font-mono tabular-nums ${toneText(signedTone(totals.insuranceProceeds))}`}>{usd(totals.insuranceProceeds)}</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.govtPayments)}</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.totalRevenue)}</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.revenuePerAcre)}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(totals.cropSalesRevenue)}</td>
+                  <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(totals.insuranceProceeds))}`}>{fmtUsd(totals.insuranceProceeds)}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(totals.govtPayments)}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(totals.totalRevenue)}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(totals.revenuePerAcre)}</td>
                 </tr>
               </tbody>
             </table>
@@ -805,35 +812,35 @@ export default function RevenueProjectionsReport({ onPayloadChange }: Props) {
             <table className="min-w-full text-sm border-collapse">
               <thead className={theadCls}>
                 <tr>
-                  {['Crop', 'Cost/Acre', 'Total Cost', 'Total Revenue', 'Profit', 'Profit/Acre', 'Total Avg Price', 'Breakeven Price', 'Breakeven Yield'].map((h) => (
-                    <th key={h} className="text-left px-2 py-1 whitespace-nowrap">{h}</th>
+                  {['Crop', 'Cost/Acre', 'Total Cost', 'Total Revenue', 'Profit', 'Profit/Acre', 'Total Avg Price', 'Breakeven Price', 'Breakeven Yield'].map((h, i) => (
+                    <th key={h} className={`${i === 0 ? `text-left ${stickyColHeadCls}` : 'text-right'} px-2 py-1 whitespace-nowrap`}>{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.cropId} className="border-t border-slate-100">
-                    <td className="px-2 py-1 font-semibold">{r.cropName}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums" title={r.insurancePremiumInCost ? 'Insurance included in the Turnrow Farm cost per acre' : undefined}>
-                      {usd(r.costPerAcre)}
+                    <td className={`px-2 py-1 font-semibold ${stickyColCls}`}>{r.cropName}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">
+                      {fmtUsd(r.costPerAcre)}
                       {r.insurancePremiumInCost && <span className="ml-1 font-sans text-xs text-slate-500">+ins</span>}
                     </td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.totalCost)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(r.totalRevenue)}</td>
-                    <td className={`px-2 py-1 text-right font-mono tabular-nums font-semibold ${r.profit == null ? toneText('muted') : toneText(signedTone(r.profit))}`}>{r.profit != null ? usd(r.profit) : 'no cost'}</td>
-                    <td className={`px-2 py-1 text-right font-mono tabular-nums ${r.profitPerAcre == null ? toneText('muted') : toneText(signedTone(r.profitPerAcre))}`}>{usd(r.profitPerAcre)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums font-semibold" title="The Marketing dashboard's Total Avg Price — breakeven yield = cost/acre ÷ this">{r.unit === 'lbs' ? (r.totalAvgPrice != null ? formatCottonPrice(r.totalAvgPrice) : '—') : price2(r.totalAvgPrice)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{r.unit === 'lbs' ? (r.breakevenPrice != null ? formatCottonPrice(r.breakevenPrice) : '—') : price2(r.breakevenPrice)}</td>
-                    <td className="px-2 py-1 text-right font-mono tabular-nums">{r.breakevenYield != null ? `${r.breakevenYield.toFixed(1)} ${r.unit === 'lbs' ? 'lbs/ac' : 'bu/ac'}` : '—'}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(r.totalCost)}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(r.totalRevenue)}</td>
+                    <td className={`px-2 py-1 text-right tabular-nums font-semibold ${r.profit == null ? toneText('muted') : toneText(signedTone(r.profit))}`}>{r.profit != null ? fmtUsd(r.profit) : 'Set costs'}</td>
+                    <td className={`px-2 py-1 text-right tabular-nums ${r.profitPerAcre == null ? toneText('muted') : toneText(signedTone(r.profitPerAcre))}`}>{fmtUsd(r.profitPerAcre)}</td>
+                    <td className="px-2 py-1 text-right tabular-nums font-semibold">{r.unit === 'lbs' ? (r.totalAvgPrice != null ? formatCottonPrice(r.totalAvgPrice) : '—') : price2(r.totalAvgPrice)}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">{r.unit === 'lbs' ? (r.breakevenPrice != null ? formatCottonPrice(r.breakevenPrice) : '—') : price2(r.breakevenPrice)}</td>
+                    <td className="px-2 py-1 text-right tabular-nums">{r.breakevenYield != null ? `${r.breakevenYield.toFixed(1)} ${r.unit === 'lbs' ? 'lbs/ac' : 'bu/ac'}` : '—'}</td>
                   </tr>
                 ))}
                 <tr className={`border-t-2 ${grandTotalRowCls}`}>
-                  <td className="px-2 py-1">Total</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.costPerAcre)}</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.totalCost)}</td>
-                  <td className="px-2 py-1 text-right font-mono tabular-nums">{usd(totals.totalRevenue)}</td>
-                  <td className={`px-2 py-1 text-right font-mono tabular-nums ${toneText(signedTone(totals.profit))}`}>{usd(totals.profit)}</td>
-                  <td className={`px-2 py-1 text-right font-mono tabular-nums ${toneText(signedTone(totals.profitPerAcre))}`}>{usd(totals.profitPerAcre)}</td>
+                  <td className={`px-2 py-1 ${stickyColCls} bg-slate-100`}>Total</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(totals.costPerAcre)}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(totals.totalCost)}</td>
+                  <td className="px-2 py-1 text-right tabular-nums">{fmtUsd(totals.totalRevenue)}</td>
+                  <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(totals.profit))}`}>{fmtUsd(totals.profit)}</td>
+                  <td className={`px-2 py-1 text-right tabular-nums ${toneText(signedTone(totals.profitPerAcre))}`}>{fmtUsd(totals.profitPerAcre)}</td>
                   <td /><td /><td />
                 </tr>
               </tbody>

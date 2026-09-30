@@ -49,7 +49,7 @@ export default function SupportForm({ route, transcript }: { route: string; tran
     })
     const json = await res.json().catch(() => null)
     setBusy(false)
-    if (!res.ok) { setErr(json?.error ?? 'Could not send — try again in a minute.'); return }
+    if (!res.ok) { setErr(json?.error ?? 'Your message didn’t go through — try again in a minute.'); return }
     setSent(true)
   }
 
@@ -71,14 +71,17 @@ export default function SupportForm({ route, transcript }: { route: string; tran
       </p>
       {transcript && (
         <p className="text-xs rounded-lg bg-sky-50 border border-sky-200 px-2.5 py-1.5 text-sky-900">
-          Your conversation with the assistant will be included.
+          Your Ask Turnrow conversation will be included.
         </p>
       )}
-      <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Subject"
-        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400" />
-      <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={5}
-        placeholder="What do you need help with?"
-        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400" />
+      <label className="block text-xs text-slate-500">Subject
+        <input value={subject} onChange={(e) => setSubject(e.target.value)}
+          className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 min-h-11 text-sm text-slate-900" />
+      </label>
+      <label className="block text-xs text-slate-500">What do you need help with?
+        <textarea value={message} onChange={(e) => setMessage(e.target.value)} rows={5}
+          className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900" />
+      </label>
       {/* No accept on the dropzone: pickShot already checks the type and says
           "Screenshots must be an image file." — a drop reuses that message. */}
       <Dropzone onFiles={(files) => void pickShot(files[0])} hint="Drop the screenshot here" variant="compact" accepts="PNG or JPG up to 3 MB">
@@ -91,7 +94,7 @@ export default function SupportForm({ route, transcript }: { route: string; tran
       {shot && <p className="text-xs text-slate-600">Attached: {shot.name}</p>}
       {err && <p className="text-sm text-red-600">{err}</p>}
       <button type="submit" disabled={busy}
-        className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 text-sm font-semibold disabled:opacity-50">
+        className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 text-sm font-semibold disabled:opacity-50">
         {busy ? 'Sending…' : 'Send to support'}
       </button>
     </form>

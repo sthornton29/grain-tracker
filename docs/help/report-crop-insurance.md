@@ -1,7 +1,7 @@
 ---
 page_route: /reports/crop-insurance
 title: Crop Insurance Production Report
-updated: 2026-08-24
+updated: 2026-09-24
 keywords: crop insurance, production report, insurance agent, county, practice, irrigated, dryland, certified acres, yield, breakout, APH
 ---
 ## What this page is for
@@ -10,10 +10,10 @@ This report lays out your production the way your crop insurance agent needs it:
 
 ## How to use it
 
-- Pick a **crop year** first — nothing shows until you do.
+- The report opens on the current crop year (or the newest year with plantings the first time). Pick another **crop year** at any time — your pick is remembered.
 - Narrow by **entity** if different entities carry different policies.
 - Use the **crop chips** to include only certain crops. Leaving them all off means every crop shows. The chips only offer crops you actually planted in the selected year and entity.
-- Export with the **Excel**, **PDF**, or **Print** buttons. The export mirrors exactly what's on screen, including the three metric groups: Certified Acres, Production, and Yield/Acre.
+- Export with the **Excel**, **PDF**, or **Print** buttons at the top right. They appear once the report can be generated — a year picked, no fields waiting on a breakout, and at least one sheet. The export mirrors what's on screen in the three metric groups — Certified Acres, Production, and Yield/Acre — using the wording your agent's form expects ("Bu. Or Lbs."); on screen each crop's column simply says **bu** or **lbs**.
 
 ## What the controls do
 

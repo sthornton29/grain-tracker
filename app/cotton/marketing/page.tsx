@@ -9,6 +9,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { reportError } from '@/lib/friendly-error'
+import { useDialogs } from '@/components/use-dialogs'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { BuyerPicker } from '@/components/buyer-location-pickers'
@@ -54,6 +56,7 @@ function addMonthsIso(dateIso: string, months: number): string {
 }
 
 export default function CottonMarketingPage() {
+  const { confirmText, promptText, dialogs } = useDialogs()
   const supabase = useMemo(() => createClient(), [])
   const [cropYear, setCropYear] = usePersistentState<number>('cotton:cropYear', new Date().getFullYear())
   const [entities, setEntities] = useState<Entity[]>([])
@@ -98,7 +101,7 @@ export default function CottonMarketingPage() {
       supabase.from('awp_weekly').select('*').order('week_effective', { ascending: false }).limit(30),
     ])
     if (ct.error?.message.includes('does not exist') || ct.error?.code === '42P01') {
-      setErr('This part of Turnrow isn’t set up yet — contact support.')
+      setErr('This part of Turnrow isn’t available for your account yet — contact support.')
     }
     setEntities((en.data as Entity[]) || [])
     setBuyers((by.data as Buyer[]) || [])
@@ -160,7 +163,7 @@ export default function CottonMarketingPage() {
     }
   }
 
-  const fail = (e: unknown) => setErr(e instanceof Error ? e.message : 'Unexpected error')
+  const fail = (e: unknown) => setErr(reportError(e as Error, { action: 'finish that' }))
   const done = async (msg: string) => { setBanner(msg); setErr(null); await refresh() }
 
   // ---------------- Sales contracts ----------------
@@ -213,7 +216,7 @@ export default function CottonMarketingPage() {
   }
 
   async function fixFutures(c: CottonSalesContract) {
-    const s = prompt(`Fix the futures leg for ${c.contract_number ?? 'this on-call contract'} (${c.futures_month ?? '—'}).\nEnter the fixed futures price in $/lb (e.g. 0.7450 — legacy 74.50 also works):`)
+    const s = await promptText(`Fix the futures leg for ${c.contract_number ?? 'this on-call contract'} (${c.futures_month ?? '—'}).\nEnter the fixed futures price in $/lb (e.g. 0.7450 — legacy 74.50 also works):`)
     if (s == null) return
     const v = parseCottonPriceInput(s)
     if (v == null || v <= 0) { setErr('Enter the fixed futures price in $/lb, e.g. 0.7450'); return }
@@ -227,7 +230,7 @@ export default function CottonMarketingPage() {
 
   async function deleteContract(c: CottonSalesContract) {
     const assigned = dispositions.filter((d) => d.contract_id === c.id)
-    if (!confirm(`Delete contract ${c.contract_number ?? ''}? ${assigned.length > 0 ? `${assigned.length} assigned bales return to Held.` : ''}`)) return
+    if (!(await confirmText(`Delete contract ${c.contract_number ?? ''}? ${assigned.length > 0 ? `${assigned.length} assigned bales return to Held.` : ''}`))) return
     try {
       if (assigned.length > 0) await setBaleDispositions(assigned.map((d) => d.bale_id), { disposition: 'held' })
       const { error } = await supabase.from('cotton_sales_contracts').delete().eq('id', c.id)
@@ -238,12 +241,12 @@ export default function CottonMarketingPage() {
 
   // Pool payment entry (per pool contract).
   async function addPoolPayment(contractId: string) {
-    const amount = num(prompt('Payment amount ($):') ?? '')
+    const amount = num(await promptText('Payment amount ($):') ?? '')
     if (amount == null) return
-    const type = (prompt("Type: 'initial_advance' | 'progress' | 'final_settlement'", 'progress') ?? '').trim()
+    const type = (await promptText("Type: 'initial_advance' | 'progress' | 'final_settlement'", 'progress') ?? '').trim()
     if (!['initial_advance', 'progress', 'final_settlement'].includes(type)) { setErr('Unknown pool payment type.'); return }
-    const date = (prompt('Payment date (YYYY-MM-DD):', todayIso()) ?? '').trim()
-    const perLb = parseCottonPriceInput(prompt('$/lb equivalent (optional — running total per lb, e.g. 0.6500):') ?? '')
+    const date = (await promptText('Payment date (YYYY-MM-DD):', todayIso()) ?? '').trim()
+    const perLb = parseCottonPriceInput(await promptText('$/lb equivalent (optional — running total per lb, e.g. 0.6500):') ?? '')
     try {
       const { error } = await supabase.from('cotton_pool_payments').insert({
         contract_id: contractId, payment_type: type, amount, payment_date: date || null,
@@ -329,13 +332,13 @@ export default function CottonMarketingPage() {
   }
 
   async function redeemLoan(loan: CccLoan) {
-    const awpS = prompt(`Redeem ${loan.loan_number ?? 'loan'} — enter the AWP ($/lb) at redemption:`, latestAwp ? (Number(latestAwp.awp_cents) / 100).toFixed(4) : '')
+    const awpS = await promptText(`Redeem ${loan.loan_number ?? 'loan'} — enter the AWP ($/lb) at redemption:`, latestAwp ? (Number(latestAwp.awp_cents) / 100).toFixed(4) : '')
     if (awpS == null) return
     const awpV = parseCottonPriceInput(awpS)
     if (awpV == null || awpV <= 0) { setErr('Enter the AWP in $/lb, e.g. 0.5143.'); return }
     const lbsV = loanLbs(loan.id)
     const o = redemptionOutcome({ principalTotal: Number(loan.principal_total), lbs: lbsV, loanRateBaseCents: Number(loan.loan_rate_base_cents), awpCents: awpV })
-    if (!confirm(`Redeem at AWP ${cents(awpV)}:\n\nPayoff: ${usd(o.payoffTotal)}\nMarketing loan gain: ${usd(o.mlgTotal)} (${cents(o.mlgRateCents)}/lb${o.mlgTotal > 0 ? ', interest waived' : ''})\n\nBales return to Held.`)) return
+    if (!(await confirmText(`Redeem at AWP ${cents(awpV)}:\n\nPayoff: ${usd(o.payoffTotal)}\nMarketing loan gain: ${usd(o.mlgTotal)} (${cents(o.mlgRateCents)}/lb${o.mlgTotal > 0 ? ', interest waived' : ''})\n\nBales return to Held.`))) return
     try {
       const { error } = await supabase.from('ccc_loans').update({
         status: 'redeemed', outcome_date: todayIso(), awp_at_outcome_cents: awpV,
@@ -359,7 +362,7 @@ export default function CottonMarketingPage() {
     if (eq == null || eq < 0) { setErr('Enter the equity in $/lb, e.g. 0.0800.'); return }
     const lbsV = loanLbs(loan.id)
     const o = equityOutcome({ principalTotal: Number(loan.principal_total), lbs: lbsV, equityCentsPerLb: eq })
-    if (!confirm(`Equity sale at ${cents(eq)}/lb on ${lbs0(lbsV)} lbs:\n\nEquity received: ${usd(o.equityTotal)}\nEffective sale price: ${cents(o.effectiveCentsPerLb)}/lb (loan + equity)\n\nBales are final — the merchant owns them.`)) return
+    if (!(await confirmText(`Equity sale at ${cents(eq)}/lb on ${lbs0(lbsV)} lbs:\n\nEquity received: ${usd(o.equityTotal)}\nEffective sale price: ${cents(o.effectiveCentsPerLb)}/lb (loan + equity)\n\nBales are final — the merchant owns them.`))) return
     try {
       const { error } = await supabase.from('ccc_loans').update({
         status: 'equity_sold', outcome_date: todayIso(), equity_cents_per_lb: eq,
@@ -372,7 +375,7 @@ export default function CottonMarketingPage() {
   }
 
   async function forfeitLoan(loan: CccLoan) {
-    if (!confirm(`Forfeit ${loan.loan_number ?? 'loan'}? The CCC keeps the cotton; you keep the ${usd(Number(loan.principal_total))} principal.`)) return
+    if (!(await confirmText(`Forfeit ${loan.loan_number ?? 'loan'}? The CCC keeps the cotton; you keep the ${usd(Number(loan.principal_total))} principal.`))) return
     try {
       const { error } = await supabase.from('ccc_loans').update({ status: 'forfeited', outcome_date: todayIso() }).eq('id', loan.id)
       if (error) throw new Error(error.message)
@@ -384,7 +387,7 @@ export default function CottonMarketingPage() {
   async function saveLdp() {
     if (picked.size === 0) return
     const rate = ldpRateCents(DEFAULT_LOAN_RATE, Number(latestAwp?.awp_cents ?? DEFAULT_LOAN_RATE))
-    const awpS = prompt(`LDP on ${picked.size} bales (${lbs0(pickedLbs)} lbs).\nAWP ($/lb):`, latestAwp ? (Number(latestAwp.awp_cents) / 100).toFixed(4) : '')
+    const awpS = await promptText(`LDP on ${picked.size} bales (${lbs0(pickedLbs)} lbs).\nAWP ($/lb):`, latestAwp ? (Number(latestAwp.awp_cents) / 100).toFixed(4) : '')
     if (awpS == null) return
     const awpV = parseCottonPriceInput(awpS)
     if (awpV == null || awpV <= 0) { setErr('Enter the AWP in $/lb, e.g. 0.5143.'); return }
@@ -392,7 +395,7 @@ export default function CottonMarketingPage() {
     void rate
     const total = Math.round(((r * pickedLbs) / 100) * 100) / 100
     if (r <= 0) { setErr(`AWP ${cents(awpV)} is at/above the ${cents(DEFAULT_LOAN_RATE)} loan rate — no LDP is payable.`); return }
-    if (!confirm(`LDP rate = ${cents(DEFAULT_LOAN_RATE)} loan rate − ${cents(awpV)} AWP = ${cents(r)}/lb\nTotal payment: ${usd(total)}\n\nThese bales become CCC-loan-INELIGIBLE.`)) return
+    if (!(await confirmText(`LDP rate = ${cents(DEFAULT_LOAN_RATE)} loan rate − ${cents(awpV)} AWP = ${cents(r)}/lb\nTotal payment: ${usd(total)}\n\nThese bales become CCC-loan-INELIGIBLE.`))) return
     try {
       const { data, error } = await supabase.from('cotton_ldp_records').insert({
         entity_id: defaultEntityId(entities), crop_year: cropYear,
@@ -468,7 +471,7 @@ export default function CottonMarketingPage() {
 
   async function postProjectedFees() {
     if (projections.length === 0) return
-    if (!confirm(`Post ${projections.length} projected fee rows (total ${usd(projections.reduce((s, p) => s + p.amount, 0))})? Actual fees entered later replace them.`)) return
+    if (!(await confirmText(`Post ${projections.length} projected fee rows (total ${usd(projections.reduce((s, p) => s + p.amount, 0))})? Actual fees entered later replace them.`))) return
     try {
       // Replace prior projections wholesale so re-posting never duplicates.
       await supabase.from('cotton_fees').delete().eq('crop_year', cropYear).eq('status', 'projected')
@@ -483,11 +486,11 @@ export default function CottonMarketingPage() {
   }
 
   async function addActualFee() {
-    const type = (prompt("Fee type: warehouse_receiving | storage_monthly | classing | checkoff | loan_interest | loan_servicing | pool_deduction | merchant_fee | other") ?? '').trim()
+    const type = (await promptText("Fee type: warehouse_receiving | storage_monthly | classing | checkoff | loan_interest | loan_servicing | pool_deduction | merchant_fee | other") ?? '').trim()
     if (!type) return
-    const amount = num(prompt('Amount ($):') ?? '')
+    const amount = num(await promptText('Amount ($):') ?? '')
     if (amount == null) return
-    const date = (prompt('Date (YYYY-MM-DD):', todayIso()) ?? '').trim()
+    const date = (await promptText('Date (YYYY-MM-DD):', todayIso()) ?? '').trim()
     try {
       const { error } = await supabase.from('cotton_fees').insert({
         entity_id: defaultEntityId(entities), crop_year: cropYear,
@@ -1049,11 +1052,12 @@ export default function CottonMarketingPage() {
         </div>
         {awp.length > 0 && (
           <div className="flex flex-wrap gap-2 text-xs text-slate-500">
-            {awp.slice(0, 8).map((a) => <span key={a.id} className="rounded bg-slate-100 px-2 py-0.5 tabular-nums">{a.week_effective}: {cents(Number(a.awp_cents))}{a.source === 'ai' ? ' (ai)' : ''}</span>)}
+            {awp.slice(0, 8).map((a) => <span key={a.id} className="rounded bg-slate-100 px-2 py-0.5 tabular-nums">{a.week_effective}: {cents(Number(a.awp_cents))}{a.source === 'ai' ? ' (looked up)' : ''}</span>)}
           </div>
         )}
         <p className="text-[11px] text-slate-400">Redemption and LDP prompts default to the latest week on file.</p>
       </div>
+      {dialogs}
     </div>
   )
 }

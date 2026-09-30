@@ -1,8 +1,8 @@
 ---
 page_route: /settlements
 title: Settlements
-updated: 2026-09-14
-keywords: settlements, settlement statement, buyer, paid, unpaid, reconcile, ticket, PDF, upload, revenue, discounts, itemized, drying, test weight, shrink, price per bushel, edit, delete
+updated: 2026-09-30
+keywords: settlements, settlement statement, buyer, paid, unpaid, reconcile, ticket, PDF, upload, revenue, discounts, itemized, drying, test weight, shrink, price per bushel, edit, delete, duplicate, already paid, uploaded twice
 ---
 ## What this page is for
 
@@ -10,18 +10,19 @@ Settlements is where buyer settlement statements live — the paperwork that say
 
 ## How to use it
 
-- The list shows each settlement with its buyer, date, line count, how many lines are still unmatched to loads, net bushels, and net revenue — plus a link to the original document. Tap any row to open the settlement's own page.
+- The list shows each settlement with its buyer, date, line count, how many lines still need matching to loads, net bushels, and net revenue — plus a link to the original document. Tap any row to open the settlement's own page. The filters (search, dates, buyer, entity, crop year, contract) apply as you change them and are remembered for next time.
 - To enter one, tap New Settlement. Three ways to get the lines in:
 - **Upload the statement** — a PDF or a photo. Turnrow reads the settlement number, date, buyer, and every line (ticket number, net bushels, gross revenue, discounts) into editable rows for you to review before saving. It also itemizes each deduction the statement shows — drying, test weight, dockage, and the rest — into its own discount lines, however the buyer formats them (named charges, footnote codes, or a combined "less discounts" total, which stays labeled as written rather than being guessed into a category). A deduction taken as **weight** instead of dollars — pay bushels quietly reduced below gross — is captured as a weight line; Turnrow values it from your own load reconciliation so it's never counted twice. A warning shows if the itemized dollar lines don't add up to the statement's discount total.
 - **Upload a spreadsheet** — columns for ticket number, net bushels, gross revenue, and discounts (a template is downloadable).
-- **Type the rows** by hand.
-- As you review, each line shows whether its ticket number matches one of your loads. Save, and the settlement is recorded with its lines tied to loads.
+- **Type the rows** by hand. Need a buyer that isn't on the list yet? Pick **+ Add new…** in the Buyer box and it's created right there.
+- As you review, each line shows whether its ticket number matches one of your loads. A line with no match offers **Pick the load…** — the buyer's recent loads — so a ticket the buyer renumbered can still be tied by hand. Save, and the settlement is recorded with its lines tied to loads. Save is always available; if something is missing (no buyer, no date, no lines) the form points at it instead of greying the button out. Should part of the detail fail to save after the settlement itself is recorded, you land on the settlement's page with a note saying what to add there.
+- **Already entered? Turnrow says so before you save.** As the lines fill in, each one is checked against every settlement already saved. A line whose load is already on a saved settlement — or whose ticket number is already on one of this buyer's settlements — turns red and says **Already paid**, naming the settlement (tap to open it) with a **Leave it out** link. A red notice above the table sums it up: either *This settlement is already in Turnrow* (same buyer and settlement, check, or payment number as one you saved, or every load already paid) or *N of M loads on this statement are already paid*. Save still works, but it asks you to confirm first, because saving again would count that money twice on the Cash Flow and Contracts pages. This catches the same PDF uploaded twice, a statement re-sent by the buyer, and a check stub that repeats an earlier settlement.
 - **Totals and check stubs are not loads.** Settlement packets often end with a check stub that restates the whole settlement ("58,118.929 bu … REF 16936 … 289,432.26"), and many sheets print a TOTAL row under the tickets. Turnrow tells the reader to skip those, and checks its work: a line whose bushels or dollars equal all the other lines added together, whose "ticket number" is really the settlement's own reference or check number, or whose bushels dwarf every other load is shown in amber as **Left out: looks like the settlement total — not a load**, unchecked and not counted. If the guard is ever wrong, tick **Include it** and the line comes back. The settlement's own grand total is read separately and shown under the table next to the sum of the ticket lines, so you can see at a glance whether they match.
 - Open a settlement anytime to see its reconciliation page.
 
 ## The settlement detail page
 
-Open a settlement and everything about it is on one page: the header (editable with **Edit**; **Delete** removes the settlement and its lines after a confirmation, sending its loads back to Unpaid), the original document, gross/discounts/net totals, and the sections below.
+Open a settlement and everything about it is on one page: the header (editable with **Edit**; **Delete** removes the settlement and its lines after a confirmation, sending its loads back to Unpaid), the original document (a PDF or photos — photos are stored as one PDF), net revenue up front with gross, discounts, and the matching counts beside it, and the sections below.
 
 **The Discounts block** shows every deduction as its own line — the type, the statement's own wording, the dollars, and what it works out to in cents per settled bushel — then walks the price: gross $/bu, less quality discounts ¢/bu, less checkoff, less fees, equals net $/bu.
 
@@ -29,9 +30,9 @@ Open a settlement and everything about it is on one page: the header (editable w
 
 Three sections do the reconciling:
 
-- **Matched loads** — lines tied to a load, showing your dry bushels beside the buyer's net bushels. A difference over 1% is flagged so you can see where their scale or grading disagrees with yours.
+- **Matched loads** — lines tied to a load, showing your dry bushels beside the buyer's net bushels. The difference is green when they paid on more than you weighed and red when less; anything over 1% either way is bolded so you can see where their scale or grading disagrees with yours. The load date opens the load.
 - **Unmatched lines** — settlement lines Turnrow couldn't tie to a load. Two kinds: **Ambiguous** (the ticket number matches more than one of your loads, so it needs you to pick) and no match at all (you may never have entered that load). Each unmatched line has a dropdown to match it to the right load by hand.
-- **Missing loads** — loads you delivered to this buyer in the contract's delivery window that appear on no settlement yet. These are the loads you haven't been paid for.
+- **Missing loads** — loads you delivered to this buyer in the contract's delivery window that appear on no settlement yet. These are the loads you haven't been paid for. Each row links to the load and its contract, and **+ Add line** puts the load on this settlement already tied and filled with your dry bushels, so you only type the dollars from the statement.
 
 Matches are remembered: once a line is tied to a load — automatically by ticket or by your manual pick — that load shows Paid everywhere in Turnrow.
 
@@ -45,6 +46,7 @@ Matches are remembered: once a line is tied to a load — automatically by ticke
 
 ## Common questions
 
+- **It says the settlement is already in Turnrow, but this is a different check.** Some buyers reuse settlement numbers across crop years, or pay one statement in two checks. If the loads on the lines are not marked Already paid, save anyway — the warning is about the header numbers only. If the loads are marked paid, open the named settlement first and compare.
 - **The upload read my statement wrong.** Fix any cell in the review rows before saving — nothing is recorded until you save. The original document stays attached either way.
 - **Why is a line Ambiguous?** Two or more of your loads share that ticket number. Pick the right load from the line's dropdown; consider correcting the duplicate ticket on the loads themselves.
 - **A load shows Unpaid but I have the check.** The settlement covering it hasn't been entered, or its line didn't match — check the ticket numbers on both sides, or match it by hand on the settlement page.

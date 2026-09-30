@@ -10,10 +10,20 @@ export default function Page() {
   const [nonce, setNonce] = useState(0)
   return (
     <div className="space-y-4">
-      <SettingsDocImport primaryTarget="trucks" title="Upload a Truck List (AI)" onSaved={() => setNonce((n) => n + 1)} />
+      <h1 className="text-2xl font-bold">Trucks</h1>
+      <SettingsDocImport primaryTarget="trucks" title="Upload a truck list" onSaved={() => setNonce((n) => n + 1)} />
       <CsvImport config={trucksImportConfig()} onImported={() => setNonce((n) => n + 1)} />
       <div className="space-y-1">
-        <SimpleCrud key={nonce} title="Trucks" table="trucks" labelColumn="name_or_number" placeholder="Truck name or number" />
+        <SimpleCrud
+          key={nonce}
+          heading="h2"
+          title="Your trucks"
+          noun="truck"
+          table="trucks"
+          labelColumn="name_or_number"
+          placeholder="Truck name or number"
+          usedBy={{ table: 'loads', column: 'truck_id', noun: 'load' }}
+        />
         {/* 071 snapshot rule — same promise the load form's edit modal makes. */}
         <p className="text-xs text-slate-500">
           Renaming a truck won&rsquo;t change past loads — they keep the truck name as it was entered. New loads use the new name.
@@ -22,7 +32,15 @@ export default function Page() {
       {/* Hauler trucks (067): OTHER PEOPLE'S trucks saved from pickup-contract
           loads — kept strictly separate from the operation's own trucks. */}
       <div className="space-y-1">
-        <SimpleCrud title="Hauler Trucks" table="external_trucks" labelColumn="name" placeholder="Hauler truck name or number" />
+        <SimpleCrud
+          heading="h2"
+          title="Hauler trucks"
+          noun="hauler truck"
+          table="external_trucks"
+          labelColumn="name"
+          placeholder="Hauler truck name or number"
+          emptyHint="they’re saved automatically from pickup-contract loads, or add one above"
+        />
         <p className="text-xs text-slate-500">
           Trucks that belong to buyers or hired haulers, saved from pickup-contract loads. They show up in the load form&rsquo;s
           &ldquo;Hauler trucks&rdquo; list, never in your own truck list. Renaming or deleting one here doesn&rsquo;t change loads already entered.

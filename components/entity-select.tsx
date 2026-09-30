@@ -18,9 +18,13 @@ import { defaultEntityId } from '@/lib/entity-default'
  * The auto answer is derived from the `entities` prop on every render —
  * nothing is cached, so the moment a second entity exists the dropdown
  * reappears on the next render with fresh data.
+ *
+ * `label` renders a visible <label> around the select — and ONLY when the
+ * select itself renders, so a single-entity form never shows an orphaned
+ * "Entity" caption over nothing.
  */
 export default function EntitySelect({
-  entities, value, onChange, className, placeholder = '— entity —', showWhenSingle = false,
+  entities, value, onChange, className, placeholder = '— entity —', showWhenSingle = false, label,
 }: {
   entities: ReadonlyArray<{ id: string; name: string }>
   value: string
@@ -29,6 +33,8 @@ export default function EntitySelect({
   placeholder?: string
   /** Render a disabled, pre-filled select instead of hiding the field. */
   showWhenSingle?: boolean
+  /** Visible label text above the select. */
+  label?: string
 }) {
   const auto = defaultEntityId(entities)
 
@@ -38,20 +44,23 @@ export default function EntitySelect({
     if (auto && !value) onChange(auto)
   }, [auto, value, onChange])
 
+  const wrap = (node: React.ReactNode) =>
+    label ? <label className="block text-sm text-slate-700">{label}<span className="block mt-1">{node}</span></label> : node
+
   if (auto && (!value || value === auto)) {
     if (!showWhenSingle) return null
     const name = entities[0]?.name ?? ''
-    return (
+    return wrap(
       <select value={auto} disabled className={className} title="Your operation has one entity, so it's filled in for you">
         <option value={auto}>{name}</option>
-      </select>
+      </select>,
     )
   }
 
-  return (
-    <select value={value} onChange={(e) => onChange(e.target.value)} className={className}>
+  return wrap(
+    <select value={value} onChange={(e) => onChange(e.target.value)} className={className} aria-label={label ? undefined : 'Entity'}>
       <option value="">{placeholder}</option>
       {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-    </select>
+    </select>,
   )
 }

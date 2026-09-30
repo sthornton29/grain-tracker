@@ -22,8 +22,8 @@ export default function HelpCenterPage() {
       <div>
         <h1 className="text-2xl font-bold font-display">Help Center</h1>
         <p className="text-sm text-slate-500 mt-1">
-          How every part of Turnrow works. For anything about your own numbers, use Contact Support in
-          the <span className="font-semibold">?</span> menu — it reaches a person.
+          How every part of Turnrow works. For questions about your own numbers, open <b>Ask Turnrow</b> from the{' '}
+          <span className="font-semibold">?</span> button; <b>Support</b> there reaches a person.
         </p>
       </div>
 
@@ -63,7 +63,7 @@ export default function HelpCenterPage() {
           ))}
           {results.length === 0 && (
             <p className="text-sm text-slate-400 text-center py-8">
-              Nothing matched — try different words, or ask the assistant from the <b>?</b> menu.
+              Nothing matched — try different words, or open Ask Turnrow from the <b>?</b> button.
             </p>
           )}
         </>

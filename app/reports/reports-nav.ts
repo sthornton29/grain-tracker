@@ -1,7 +1,12 @@
 // Single source of truth for the Reports navigation: group order, item order,
 // display names, routes, and the ↗ "opens the standalone page" flag. Both the
 // sidebar (layout.tsx) and the landing-page cards (page.tsx) render from this,
-// so they never drift apart. Routes are unchanged — only names and ordering.
+// so they never drift apart. Groups are organized by the question a farmer is
+// asking, and every description is one plain sentence.
+//
+// Routes are unchanged (the help-coverage test reads `href:` from this file).
+// A `query` carries the ?view=… that picks a Yields tab; use `reportHref()`
+// to build the link.
 
 import type { AppRole } from '@/lib/types'
 import { roleAllowsPath } from '@/lib/route-guard'
@@ -9,12 +14,19 @@ import { roleAllowsPath } from '@/lib/route-guard'
 export type ReportNavItem = {
   label: string
   href: string
+  // Query string (without the "?") appended to href when linking.
+  query?: string
   // true = links out to an existing standalone page (marked ↗), not embedded.
   external?: boolean
   description: string
 }
 
 export type ReportNavGroup = { title: string; reports: ReportNavItem[] }
+
+/** The full link for a catalog item. */
+export function reportHref(r: ReportNavItem): string {
+  return r.query ? `${r.href}?${r.query}` : r.href
+}
 
 // Reports that exist only when the Cotton module is on for the org.
 const COTTON_REPORT_ROUTES = ['/reports/bale-quality']
@@ -38,52 +50,62 @@ export function reportGroupsFor(role: AppRole, cottonEnabled = true, groups: Rep
 
 export const REPORT_GROUPS: ReportNavGroup[] = [
   {
-    title: 'Main Reports',
+    title: 'How is harvest going',
     reports: [
-      { label: 'Season Summary', href: '/reports/season', description: 'Acres and yield by crop for a season, with the same views and exports as before.' },
-      { label: 'Marketing Dashboard', href: '/reports/marketing', description: 'Per-crop marketing position for a crop year — production, contracted vs. remaining bushels, average futures/basis/cash price, cost, and projected profit, with assumptions and supporting detail.' },
-      { label: 'Revenue Projections', href: '/reports/revenue-projections', description: 'Every revenue source for a crop year — crop sales, insurance proceeds, and government payments — with cost, profit, and breakeven. A one-page financial summary.' },
-      { label: 'Income Sensitivity', href: '/reports/income-sensitivity', description: 'A futures-price × yield data table per crop: revenue or net profit per acre in every scenario, with locked contract prices held, crop-insurance indemnities net of premium, and an optional flat government-payment layer.' },
-      { label: 'Crop Budget Planner', href: '/reports/crop-budget', description: 'Pre-season budgeting, one budget per crop year: per-crop breakout grid (Overall + irrigated/dryland + double-crop rows, acres × yield × price × cost → profit) seeded from your APH, budget-year new-crop futures, and this year\'s costs — with a simple price × yield matrix per crop. A sandbox, isolated from actuals.' },
-      { label: 'Cash Flow Forecast', href: '/reports/cash-flow', description: 'Monthly projected revenue from contracts and delivered grain, plus the projected ARC/PLC, crop-insurance, and other USDA safety net.' },
-      { label: 'Hedging Summary', href: '/reports/hedging-summary', description: 'All futures positions (open and closed) with realized and unrealized P&L, summarized by crop year. Suitable for a lender or business partner.' },
+      { label: 'Season Summary', href: '/reports/season', description: 'Acres, dry bushels, and yield by crop for the crop year, with how much is harvested.' },
+      { label: 'Yields by Field', href: '/yields', query: 'view=field', external: true, description: 'Dry bushels and yield for every field, with the loads behind each number.' },
+      { label: 'Yields by Farm', href: '/yields', query: 'view=farm', external: true, description: 'Yields rolled up by farm, so you can compare farms side by side.' },
+      { label: 'Yields by Landowner', href: '/reports/yields-by-landowner', description: 'Each landowner’s production by farm and field, ready to print as a handout.' },
+      { label: 'Bale Quality Summary', href: '/reports/bale-quality', description: 'Cotton bales, lint pounds, loan value, and grade breakdown by field for buyers.' },
     ],
   },
   {
-    title: 'Crop Insurance',
+    title: 'Where do I stand on selling',
     reports: [
-      { label: 'Crop Insurance Production Report', href: '/reports/crop-insurance', description: 'County × practice (irrigated / dryland) production report formatted for crop insurance agents. Summary plus a detail sheet per county/practice, with Excel, PDF, and print exports.' },
-      { label: 'Crop Insurance Claims Monitor', href: '/reports/crop-insurance-claims', description: 'Estimated indemnity for each RP / RP-HPE / YP policy (with SCO & ECO) at your current yields and the running harvest-price estimate, netted against premium. For scenarios, see the Income Sensitivity Report.' },
-      { label: 'Bundled Settlement Statements (Production Audit)', href: '/reports/settlement-pdfs', description: 'Bundles every attached buyer settlement PDF for a crop & crop year into a single zip — what an auditor needs to confirm sales match self-reported production.' },
+      { label: 'Marketing Dashboard', href: '/reports/marketing', description: 'Per crop: what you have, what is sold or hedged, what is still unpriced, and projected profit.' },
+      { label: 'Hedging Summary', href: '/reports/hedging-summary', description: 'Every futures and option position with realized and unrealized gains, by crop year.' },
     ],
   },
   {
-    title: 'Production Reports',
+    title: 'What will I make',
     reports: [
-      { label: 'Yields by Field', href: '/yields', external: true, description: 'Per-field dry-bushel yields for a season. Opens the standalone Yields page.' },
-      { label: 'Yields by Farm', href: '/yields', external: true, description: 'Yields rolled up by farm. Opens the standalone Yields page.' },
-      { label: 'Yields by Landowner', href: '/reports/yields-by-landowner', description: 'Per-landowner production grouped by farm and field. Splits-aware. Export to Excel, PDF, or print as a handout.' },
-      { label: 'Share Rent Report', href: '/reports/share-rent', description: 'For each share-rent farm: production by crop and field, plus the landlord’s share of bushels at the configured percentage. Ready to hand to a landowner.' },
-      { label: 'Rent Settlement', href: '/reports/rent-settlement', description: 'Upload a lease (or enter it by hand) and generate the landowner’s dollar settlement from your production and sales — itemized line by line, under your farm’s own branding, ready to mail.' },
-      { label: 'Bale Quality Summary', href: '/reports/bale-quality', description: 'Cotton module: per-field bales, lint pounds, weighted avg loan ¢/lb, and HVI grade distributions (color, staple, mic, strength) — the quality package for buyers.' },
+      { label: 'Revenue Projections', href: '/reports/revenue-projections', description: 'Crop sales, insurance, and government payments against costs — profit and breakeven on one page.' },
+      { label: 'Income Sensitivity', href: '/reports/income-sensitivity', description: 'What income looks like at different prices and yields, with contracts and insurance held in.' },
+      { label: 'Cash Flow Forecast', href: '/reports/cash-flow', description: 'Month by month: money received, money owed to you, and what contracts and programs should pay.' },
+      { label: 'Crop Budget Planner', href: '/reports/crop-budget', description: 'Plan next year: acres, yield, price, and cost per crop, kept separate from actual numbers.' },
     ],
   },
   {
-    title: 'Government Payments',
+    title: 'Landowners',
     reports: [
-      { label: 'ARC/PLC Decision Aid', href: '/reports/arc-plc-decision-aid', description: 'Compare projected PLC vs ARC-CO payments per farm and commodity, test MYA price assumptions, set your election, and export the decision for the FSA office.' },
-      { label: 'Government Payment Tracker', href: '/reports/government-payments', description: 'Projected ARC/PLC payments per farm and commodity plus other USDA payments, with per-entity payment-limit tracking and a per-farm calculation breakdown.' },
+      { label: 'Share Rent Report', href: '/reports/share-rent', description: 'Each share-rent farm’s production and the landowner’s share of bushels, ready to hand over.' },
+      { label: 'Rent Settlement', href: '/reports/rent-settlement', description: 'Build a landowner’s dollar settlement from the lease, your production, and your sales.' },
     ],
   },
   {
-    title: 'Operational Reports',
+    title: 'Insurance & USDA',
     reports: [
-      { label: 'Grain Dryer Math', href: '/reports/dryer-math', description: 'Crop, fuel, fuel price — and the table answers what drying costs per bushel at every incoming moisture, what overdrying past base gives away, and (optionally) whether drying beats hauling it wet.' },
-      { label: 'Freight Math', href: '/reports/freight-math', description: 'What a haul really costs: fuel, labor, and wear per load and per bushel for any distance — and how much more a delivered contract must pay than a picked-up one to cover the trip.' },
-      { label: 'Load Log', href: '/loads', external: true, description: 'The full load log — search, filter, and export. Opens the standalone Loads page.' },
-      { label: 'Contract Tracker', href: '/contracts', external: true, description: 'Delivered vs. contracted with pricing and payment status. Opens the standalone Contracts page.' },
-      { label: 'Unpaid Loads', href: '/loads/unpaid', external: true, description: 'Buyer-delivered loads with no matching settlement line. Opens the standalone page.' },
-      { label: 'Bin Inventory Summary', href: '/inventory', external: true, description: 'Live bushels on hand per bin, grouped by site. Opens the standalone Inventory page.' },
+      { label: 'Crop Insurance Production Report', href: '/reports/crop-insurance', description: 'Production by county and practice in the layout your crop insurance agent expects.' },
+      { label: 'Crop Insurance Claims Monitor', href: '/reports/crop-insurance-claims', description: 'What each policy would pay at today’s yields and prices, after premium.' },
+      { label: 'Bundled Settlement Statements', href: '/reports/settlement-pdfs', description: 'Every buyer settlement for a crop and year in one file, for a production audit.' },
+      { label: 'ARC/PLC Decision Aid', href: '/reports/arc-plc-decision-aid', description: 'Compare what ARC and PLC would pay per farm and pick your election.' },
+      { label: 'Government Payment Tracker', href: '/reports/government-payments', description: 'Expected ARC/PLC and other USDA payments by farm, with payment limits per entity.' },
+    ],
+  },
+  {
+    title: 'Calculators',
+    reports: [
+      { label: 'Freight Math', href: '/reports/freight-math', description: 'What a haul costs per load and per bushel, and what a delivered contract must pay extra.' },
+      { label: 'Grain Dryer Math', href: '/reports/dryer-math', description: 'Drying cost per bushel at every moisture, and whether drying beats hauling wet.' },
+    ],
+  },
+  {
+    title: 'Records',
+    reports: [
+      { label: 'Load Log', href: '/loads', external: true, description: 'The full load log — search, filter, and export.' },
+      { label: 'Contract Tracker', href: '/contracts', external: true, description: 'Delivered against contracted, with pricing and payment status.' },
+      { label: 'Unpaid Loads', href: '/loads/unpaid', external: true, description: 'Loads delivered to a buyer with no settlement yet.' },
+      { label: 'Bin Inventory Summary', href: '/inventory', external: true, description: 'Bushels on hand in every bin, grouped by site.' },
     ],
   },
 ]

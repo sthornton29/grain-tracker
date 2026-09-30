@@ -1,16 +1,20 @@
 'use client'
 
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
+import { useReportCropYear } from '@/lib/report-filters'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { roleAllowsPath } from '@/lib/route-guard'
 import { fieldCropAggregates, analyzeYields, expectedYieldForPlanting, type CombineEntryLike, type ExpectedYieldAssumption } from '@/lib/yields'
 import { isCottonCrop } from '@/lib/marketing'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
-import { EmptyState, theadCls, subtotalRowCls } from '@/components/reports/report-kit'
+import {
+  EmptyState, ReportHeader, ReportFilterBar, FilterField, theadCls, subtotalRowCls, selectCls,
+  fmtNum, fmtInt, filterSummaryOf, cropYearLabel,
+} from '@/components/reports/report-kit'
 import {
   YieldRowDetail, useCottonDetailData, buildDetailForPlantings, cottonDetailsByYear,
   grainDetailExportSection, cottonDetailExportSection,
@@ -71,9 +75,15 @@ type Props = {
   /** When provided, callback is invoked any time the export payload changes,
    *  giving the parent a fresh builder it can pass to <ExportBar />. */
   onPayloadChange?: (build: () => ExportPayload) => void
+  /** Rendered in the report header's action slot (the page passes <ExportBar/>). */
+  headerActions?: ReactNode
+  /** Embedded on the Yields page: the crop year / crop / entity come from the
+   *  page's ONE filter strip; this component then shows only its landowner
+   *  pick and no header of its own. */
+  controlled?: { cropYear: number | ''; cropId: string; entityId: string }
 }
 
-export default function YieldsByLandowner({ onPayloadChange }: Props) {
+export default function YieldsByLandowner({ onPayloadChange, headerActions, controlled }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [crops, setCrops] = useState<Crop[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
@@ -91,11 +101,16 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
   const [buyers, setBuyers] = useState<Array<{ id: string; name: string }>>([])
   const [loading, setLoading] = useState(true)
 
-  // Filters persist across visits; default the crop year to the current year.
-  const [cropYear, setCropYear] = usePersistentState<number | ''>('yields-by-landowner:cropYear', new Date().getFullYear())
-  const [cropId, setCropId] = usePersistentState('yields-by-landowner:cropId', '')
-  const [entityId, setEntityId] = usePersistentState('yields-by-landowner:entityId', '')
+  // Filters persist across visits; the crop year follows the one report rule
+  // (current year by default, never overwritten on load; "All" stays on
+  // offer). Embedded on the Yields page, the page's filters take over.
+  const [ownCropYear, setOwnCropYear] = useReportCropYear('yields-by-landowner:cropYear', { allowAll: true })
+  const [ownCropId, setOwnCropId] = usePersistentState('yields-by-landowner:cropId', '')
+  const [ownEntityId, setOwnEntityId] = usePersistentState('yields-by-landowner:entityId', '')
   const [landownerId, setLandownerId] = usePersistentState('yields-by-landowner:landownerId', '')
+  const cropYear = controlled ? controlled.cropYear : ownCropYear
+  const cropId = controlled ? controlled.cropId : ownCropId
+  const entityId = controlled ? controlled.entityId : ownEntityId
 
   useEffect(() => {
     ;(async () => {
@@ -290,18 +305,25 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filteredPlantings, yieldAnalysis, fieldById, farmById, landownerById, cropById, aggByKey, landownerId])
 
+  // A landowner signed in as a viewer gets their handout: the operation's own
+  // "Owned / No Landowner" ground is the operator's business, not theirs.
+  const shownGroups = useMemo(
+    () => (viewer.isViewer ? groups.filter((g) => g.key !== NO_LANDOWNER_KEY) : groups),
+    [groups, viewer.isViewer],
+  )
+
   function filtersLabel(): string {
-    const parts: string[] = []
-    parts.push(`Crop year: ${cropYear === '' ? 'all' : cropYear}`)
-    if (cropId) parts.push(`Crop: ${cropById.get(cropId)?.name ?? '?'}`)
     // For a viewer, "no entity selected" means their granted entities — name
     // them. Null for owners (keep existing wording).
     const entityName = entityId
       ? entities.find((e) => e.id === entityId)?.name ?? '?'
       : viewerAllEntitiesLabel(viewer, entities)
-    if (entityName) parts.push(`Entity: ${entityName}`)
-    if (landownerId) parts.push(`Landowner: ${landownerById.get(landownerId)?.name ?? '?'}`)
-    return parts.join(' · ')
+    return filterSummaryOf(
+      cropYearLabel(cropYear),
+      entityName ?? 'All Entities',
+      cropId ? (cropById.get(cropId)?.name ?? 'Crop') : 'All Crops',
+      landownerId ? (landownerById.get(landownerId)?.name ?? 'Landowner') : 'All Landowners',
+    )
   }
 
   // Export payload mirrors the on-screen layout: one section per landowner,
@@ -318,7 +340,7 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
     // Real number (formatted to 1 dec by the column), or '—' when there are no acres.
     const yld = (acres: number, dryBu: number): number | string => (acres > 0 ? dryBu / acres : '—')
 
-    const sections: ExportSection[] = groups.map((g) => {
+    const sections: ExportSection[] = shownGroups.map((g) => {
       const rows: Array<Array<string | number | null>> = []
       const rowMeta: NonNullable<ExportPayload['sections'][number]['rowMeta']> = []
 
@@ -383,33 +405,49 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
     if (!onPayloadChange) return
     onPayloadChange(() => buildExportPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groups, cropYear, cropId, entityId, landownerId, viewer, onPayloadChange, openDetail, cottonDetail.data])
+  }, [shownGroups, cropYear, cropId, entityId, landownerId, viewer, onPayloadChange, openDetail, cottonDetail.data])
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
-  const fmt = (n: number, d = 2) => n.toLocaleString(undefined, { maximumFractionDigits: d })
+  const landownerSelect = (
+    <FilterField label="Landowner">
+      <select value={landownerId} onChange={(e) => setLandownerId(e.target.value)} className={selectCls}>
+        <option value="">All landowners</option>
+        {landowners.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+      </select>
+    </FilterField>
+  )
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 no-print">
-        <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
-          <option value="">All crop years</option>
-          {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
-        </select>
-        <select value={cropId} onChange={(e) => setCropId(e.target.value)} className={inputCls}>
-          <option value="">All crops</option>
-          {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        {!(viewer.isViewer && entityOptions.length <= 1) && (
-          <select value={entityId} onChange={(e) => setEntityId(e.target.value)} className={inputCls}>
-            <option value="">All entities</option>
-            {entityOptions.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-          </select>
-        )}
-        <select value={landownerId} onChange={(e) => setLandownerId(e.target.value)} className={inputCls}>
-          <option value="">All landowners</option>
-          {landowners.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
-        </select>
-      </div>
+      {controlled ? (
+        <div className="no-print">{landownerSelect}</div>
+      ) : (
+        <>
+          <ReportHeader title="Yields by Landowner" filterSummary={filtersLabel()} actions={headerActions} />
+          <ReportFilterBar activeCount={(cropId ? 1 : 0) + (entityId ? 1 : 0) + (landownerId ? 1 : 0)}>
+            <FilterField label="Crop year">
+              <select value={cropYear} onChange={(e) => setOwnCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={selectCls}>
+                <option value="">All crop years</option>
+                {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </FilterField>
+            <FilterField label="Crop">
+              <select value={cropId} onChange={(e) => setOwnCropId(e.target.value)} className={selectCls}>
+                <option value="">All crops</option>
+                {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </FilterField>
+            {!(viewer.isViewer && entityOptions.length <= 1) && (
+              <FilterField label="Entity">
+                <select value={entityId} onChange={(e) => setOwnEntityId(e.target.value)} className={selectCls}>
+                  <option value="">All entities</option>
+                  {entityOptions.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                </select>
+              </FilterField>
+            )}
+            {landownerSelect}
+          </ReportFilterBar>
+        </>
+      )}
 
       {!loading && (
         <AvgYieldHeader averages={yieldAnalysis.averages} cropName={(id) => cropById.get(id)?.name ?? '—'} />
@@ -417,17 +455,18 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
 
       {loading ? (
         <p className="text-slate-500">Loading…</p>
-      ) : groups.length === 0 ? (
+      ) : shownGroups.length === 0 ? (
         <EmptyState
           message="No plantings match these filters."
           hint="Try widening the crop year, crop, entity, or landowner filters — or record yields for these fields."
-          linkHref="/yields"
-          linkLabel="Go to Yields"
+          linkHref="/loads"
+          linkLabel="Enter loads"
+          role={viewer.role}
         />
       ) : (
         <div className="space-y-6">
-          {groups.map((g) => (
-            <section key={g.key} className="bg-white rounded-xl shadow overflow-hidden avoid-break">
+          {shownGroups.map((g) => (
+            <section key={g.key} className={`bg-white rounded-xl shadow overflow-hidden avoid-break ${g.key === NO_LANDOWNER_KEY ? 'print:hidden' : ''}`}>
               <header className="bg-slate-100 px-4 py-2 flex items-baseline gap-2 flex-wrap">
                 <h2 className="font-bold text-lg">{g.landownerName}</h2>
                 <span className="text-xs text-slate-500">{g.farms.length} farm{g.farms.length === 1 ? '' : 's'}</span>
@@ -442,11 +481,11 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
                   <table className="min-w-full text-sm">
                     <thead className={theadCls}>
                       <tr>
-                        <th className="w-5"></th>
-                        <th className="text-left pr-4 font-medium">Crop</th>
-                        <th className="text-right pr-4 font-medium">Acres</th>
-                        <th className="text-right pr-4 font-medium">Dry bu</th>
-                        <th className="text-right pr-4 font-medium">Yield (bu/ac)</th>
+                        <th className="w-10"></th>
+                        <th className="text-left pr-4 py-1 font-medium">Crop</th>
+                        <th className="text-right pr-4 py-1 font-medium">Acres</th>
+                        <th className="text-right pr-4 py-1 font-medium">Dry bu</th>
+                        <th className="text-right pr-4 py-1 font-medium">Yield (bu/ac)</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -463,11 +502,13 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
                                 toggleDetail(g.key, f.farmName, t)
                               }}
                             >
-                              <td className="pr-2 py-1 text-slate-400">{detailOpen ? '▾' : '▸'}</td>
+                              <td className="px-1 py-1">
+                                <button type="button" aria-expanded={detailOpen} aria-label={`${detailOpen ? 'Hide' : 'Show'} detail for ${t.cropName}`} onClick={() => toggleDetail(g.key, f.farmName, t)} className="inline-flex items-center justify-center min-h-10 min-w-10 rounded-lg text-slate-400 hover:bg-slate-100 no-print">{detailOpen ? '▾' : '▸'}</button>
+                              </td>
                               <td className="pr-4 py-1 font-medium">{t.cropName}</td>
-                              <td className="pr-4 py-1 text-right font-mono tabular-nums">{fmt(t.acres)}</td>
-                              <td className="pr-4 py-1 text-right font-mono tabular-nums">{fmt(t.dryBu)}</td>
-                              <td className="pr-4 py-1 text-right font-mono tabular-nums">{t.acres > 0 ? (t.dryBu / t.acres).toFixed(1) : '—'}</td>
+                              <td className="pr-4 py-1 text-right tabular-nums">{fmtNum(t.acres, 1)}</td>
+                              <td className="pr-4 py-1 text-right tabular-nums">{fmtInt(t.dryBu)}</td>
+                              <td className="pr-4 py-1 text-right tabular-nums">{t.acres > 0 ? fmtNum(t.dryBu / t.acres, 1) : '—'}</td>
                             </tr>
                             {detailOpen && (
                               <tr className="bg-slate-50">
@@ -502,9 +543,9 @@ export default function YieldsByLandowner({ onPayloadChange }: Props) {
                       {[...g.byCrop.values()].map((t) => (
                         <tr key={`grand-${t.cropName}`}>
                           <td className="pr-4 py-1 font-semibold">{t.cropName}</td>
-                          <td className="pr-4 py-1 text-right font-mono tabular-nums">{fmt(t.acres)} ac</td>
-                          <td className="pr-4 py-1 text-right font-mono tabular-nums">{fmt(t.dryBu)} bu</td>
-                          <td className="pr-4 py-1 text-right font-mono tabular-nums font-semibold">{t.acres > 0 ? (t.dryBu / t.acres).toFixed(1) : '—'} bu/ac</td>
+                          <td className="pr-4 py-1 text-right tabular-nums">{fmtNum(t.acres, 1)} ac</td>
+                          <td className="pr-4 py-1 text-right tabular-nums">{fmtInt(t.dryBu)} bu</td>
+                          <td className="pr-4 py-1 text-right tabular-nums font-semibold">{t.acres > 0 ? fmtNum(t.dryBu / t.acres, 1) : '—'} bu/ac</td>
                         </tr>
                       ))}
                     </tbody>

@@ -67,7 +67,7 @@ export default function HedgingHistory({ lines, report, emptyText, renderAction 
                     <span className={`text-[11px] rounded-full px-2 py-0.5 ${KIND_CHIP[l.kind] ?? 'bg-slate-200 text-slate-700'}`}>{KIND_LABEL[l.kind] ?? l.kind}</span>
                   </td>
                   <td className="px-3 py-2">
-                    <button type="button" onClick={() => toggle(l.id)} className="text-left hover:text-brand-deep" title={expanded ? 'Hide detail' : 'Show detail'}>
+                    <button type="button" onClick={() => toggle(l.id)} className="text-left hover:text-brand-deep min-h-8" aria-expanded={expanded}>
                       <span className="mr-1 inline-block w-3 text-slate-400 no-print">{expanded ? '▾' : '▸'}</span>
                       {l.headline}
                     </button>

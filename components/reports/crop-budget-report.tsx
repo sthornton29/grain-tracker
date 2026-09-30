@@ -30,7 +30,7 @@
 // APH); cost = the current year's per-practice cost/acre. Derivation chips
 // show until a cell is edited. Cotton prices are stored ¢/lb, shown $/lb.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
@@ -46,18 +46,20 @@ import {
   type CropBudgetGrid, type EffectiveBudgetRow, type GridCellField,
 } from '@/lib/crop-budget'
 import { axisValues, closestIndex, defaultPriceStep, defaultYieldStep } from '@/lib/income-sensitivity'
-import { theadCls, toneText, signedTone } from '@/components/reports/report-kit'
+import { theadCls, toneText, signedTone, fmtUsd, ReportHeader, ReportFilterBar, FilterField, selectCls, filterSummaryOf, cropYearLabel } from '@/components/reports/report-kit'
+import { ConfirmDialog } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
 import { formatNumber, type ExportPayload, type ExportCell } from '@/lib/exports'
 import type { BudgetLine, BudgetScenario, Crop, CropAssumption, CropInsurancePolicy, FieldPlanting } from '@/lib/types'
 
-type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
+type Props = {
+  onPayloadChange?: (build: () => ExportPayload) => void
+  /** Rendered in the report header's action slot (the page passes <ExportBar/>). */
+  headerActions?: ReactNode
+}
 
-const btnCls = 'rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-1.5 text-sm font-semibold disabled:opacity-50'
+const btnCls = 'rounded-lg bg-brand hover:bg-brand-deep text-white px-3 min-h-10 text-sm font-semibold disabled:opacity-50'
 const acres0 = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
-const usd0 = (n: number | null | undefined) =>
-  n == null ? '—' : `${n < 0 ? '(' : ''}$${Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 0 })}${n < 0 ? ')' : ''}`
-const usd2 = (n: number | null | undefined) =>
-  n == null ? '—' : `${n < 0 ? '(' : ''}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${n < 0 ? ')' : ''}`
 
 type LivePrice = { price: number; priceDate: string | null; stale: boolean; source: 'live' | 'manual'; enteredAt: string | null }
 
@@ -193,7 +195,7 @@ type DisplayRow = {
   priceNote: string | null
 }
 
-export default function CropBudgetReport({ onPayloadChange }: Props) {
+export default function CropBudgetReport({ onPayloadChange, headerActions }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [loading, setLoading] = useState(true)
   const [scenarios, setScenarios] = useState<BudgetScenario[]>([])
@@ -488,7 +490,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
 
   // ---------- writes (sandbox-only) ----------
 
-  const fail = (e: unknown) => setErr(e instanceof Error ? e.message : 'Unexpected error')
+  const fail = (e: unknown) => setErr(reportError(e as Parameters<typeof reportError>[0], { action: 'save the budget' }))
 
   async function insertLine(cropId: string, values: Partial<BudgetLine>) {
     if (!scenario) return
@@ -569,13 +571,15 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
     await insertLine(cropId, { yield_per_acre: seeds.yield, cost_per_acre: seeds.cost })
   }
 
+  // The remove-crop confirmation (an app dialog, not window.confirm).
+  const [removeAsk, setRemoveAsk] = useState<CropCard | null>(null)
   async function removeCrop(card: CropCard) {
     if (!scenario) return
-    if (!confirm(`Remove ${cropName(card.cropId)} from the ${scenario.budget_crop_year} budget? Its typed-in acres/yield/cost are deleted.`)) return
+    setRemoveAsk(null)
     try {
       const { error } = await supabase.from('budget_lines').delete()
         .eq('scenario_id', scenario.id).eq('crop_id', card.cropId)
-      if (error) throw new Error(error.message)
+      if (error) throw error
       await refresh()
     } catch (e) { fail(e) }
   }
@@ -675,8 +679,8 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
       ].join(' · '),
       summary: [
         { label: 'Total acres', value: acres0(totals.totalAcres) },
-        { label: 'Weighted profit/acre', value: usd2(totals.weightedProfitPerAcre), tone: totals.weightedProfitPerAcre != null ? signedTone(totals.weightedProfitPerAcre) : undefined },
-        { label: 'Total projected profit', value: usd0(totals.totalProfit), tone: signedTone(totals.totalProfit) },
+        { label: 'Weighted profit/acre', value: fmtUsd(totals.weightedProfitPerAcre, 2), tone: totals.weightedProfitPerAcre != null ? signedTone(totals.weightedProfitPerAcre) : undefined },
+        { label: 'Total projected profit', value: fmtUsd(totals.totalProfit), tone: signedTone(totals.totalProfit) },
       ],
       sections,
       orientation: 'landscape',
@@ -699,32 +703,47 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
     <div className="space-y-4 print-area">
       {err && <p className="text-sm text-red-600">{err}</p>}
 
-      {/* Header: just the budget year + Assumptions */}
-      <div className="flex flex-wrap items-end gap-3 no-print">
-        <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Budget crop year</span>
+      <ReportHeader
+        title="Crop Budget Planner"
+        filterSummary={filterSummaryOf(budgetYear === '' ? null : `${budgetYear} Budget`, matrixView === 'profit' ? 'Profit per acre' : 'Revenue per acre')}
+        actions={
+          <div className="flex flex-wrap gap-2 items-center">
+            <button
+              type="button"
+              onClick={() => openAssumptions()}
+              className={`relative inline-flex items-center gap-1.5 rounded-lg px-3 min-h-10 text-sm font-semibold text-white shadow-sm ${missingInputs > 0 ? 'bg-amber-500 hover:bg-amber-600' : 'bg-slate-700 hover:bg-slate-800'}`}
+            >
+              <span aria-hidden>⚙</span> Assumptions
+              {missingInputs > 0 && (
+                <span className="rounded-full bg-white/25 text-white text-xs px-1.5 py-0.5 leading-none">
+                  {missingInputs} missing
+                </span>
+              )}
+            </button>
+            {headerActions}
+          </div>
+        }
+      />
+      <ReportFilterBar>
+        <FilterField label="Budget crop year">
           <select
             value={budgetYear === '' ? '' : String(budgetYear)}
             onChange={(e) => setBudgetYear(Number(e.target.value))}
-            className="rounded-lg border border-slate-300 px-3 py-2 bg-white"
+            className={selectCls}
           >
-            {yearOptions.map((y) => <option key={y} value={y}>{y} budget</option>)}
+            {yearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
-        </label>
-        <button
-          type="button"
-          onClick={() => openAssumptions()}
-          className={`relative inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-semibold text-white shadow-sm ml-auto ${missingInputs > 0 ? 'bg-amber-500 hover:bg-amber-600' : 'bg-sky-700 hover:bg-sky-800'}`}
-          title="Acres, yield, cost per breakout row, and the price/basis per crop"
-        >
-          <span aria-hidden>⚙</span> Assumptions
-          {missingInputs > 0 && (
-            <span className="rounded-full bg-white/25 text-white text-xs px-1.5 py-0.5 leading-none">
-              {missingInputs} missing
-            </span>
-          )}
-        </button>
-      </div>
+        </FilterField>
+      </ReportFilterBar>
+      <ConfirmDialog
+        open={removeAsk != null}
+        title={`Remove ${removeAsk ? cropName(removeAsk.cropId) : 'this crop'} from the ${scenario?.budget_crop_year ?? ''} budget?`}
+        body={<p>Its typed-in acres, yield, and cost are deleted.</p>}
+        confirmLabel="Remove"
+        danger
+        onConfirm={() => { if (removeAsk) removeCrop(removeAsk) }}
+        onCancel={() => setRemoveAsk(null)}
+      />
 
       {priceNote && <p className="text-xs text-amber-700 no-print">{priceNote}</p>}
 
@@ -744,7 +763,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
                   const on = e.target.checked
                   setScenarios((prev) => prev.map((s) => (s.id === scenario.id ? { ...s, follow_farm_costs: on } : s)))
                   const { error } = await supabase.from('budget_scenarios').update({ follow_farm_costs: on }).eq('id', scenario.id)
-                  if (error) { setErr(error.message.includes('follow_farm_costs') ? 'Following Turnrow Farm costs needs a database update — contact support.' : error.message); refresh() }
+                  if (error) { setErr(error.message.includes('follow_farm_costs') ? 'Following Turnrow Farm costs needs a database update — contact support.' : reportError(error, { action: 'save the budget setting' })); refresh() }
                 }}
                 className="h-4 w-4"
               />
@@ -756,13 +775,13 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
             </div>
             <div className="text-sm">
               <span className="text-slate-500">Weighted profit/acre</span>{' '}
-              <span className={`font-bold tabular-nums ${totals.weightedProfitPerAcre != null ? toneText(signedTone(totals.weightedProfitPerAcre)) : 'text-slate-400'}`}>
-                {usd2(totals.weightedProfitPerAcre)}
+              <span className={`font-bold tabular-nums ${totals.weightedProfitPerAcre != null ? toneText(signedTone(totals.weightedProfitPerAcre)) : toneText('muted')}`}>
+                {fmtUsd(totals.weightedProfitPerAcre, 2)}
               </span>
             </div>
             <div className="text-sm">
               <span className="text-slate-500">Total projected profit</span>{' '}
-              <span className={`font-bold tabular-nums ${toneText(signedTone(totals.totalProfit))}`}>{usd0(totals.totalProfit)}</span>
+              <span className={`font-bold tabular-nums ${toneText(signedTone(totals.totalProfit))}`}>{fmtUsd(totals.totalProfit)}</span>
             </div>
             <span className="text-xs text-slate-500 tabular-nums">
               {referenceAcres > 0 && <>{acres0(totals.totalAcres)} of ~{acres0(referenceAcres)} reference acres (your fields&apos; total — context only; double-crop legitimately overlaps)</>}
@@ -868,7 +887,7 @@ export default function CropBudgetReport({ onPayloadChange }: Props) {
           onUseLive={useLivePrice}
           onRefreshQuote={(sym) => void fetchQuotes([sym], true)}
           onAddCrop={addCrop}
-          onRemoveCrop={removeCrop}
+          onRemoveCrop={(card) => setRemoveAsk(card)}
           onClose={() => { setPanelOpen(false); setPanelFocusCropId(null) }}
         />
       )}
@@ -928,9 +947,9 @@ function BudgetSection({ d, mode, grid, onAxis, onOpenAssumptions }: {
               </div>
               {d.quoteDate && d.priceChip.live && <div className="text-[10px] text-slate-400">as of {d.quoteDate}</div>}
             </div>
-            {stat('Cost/ac', d.costPerAcre != null ? usd2(Math.round(d.costPerAcre * 100) / 100) : '—')}
-            {stat('Profit/ac', usd2(d.math.profitPerAcre), d.math.profitPerAcre != null ? toneText(signedTone(d.math.profitPerAcre)) : 'text-slate-400')}
-            {stat('Total profit', usd0(d.math.totalProfit), d.math.totalProfit != null ? `font-bold ${toneText(signedTone(d.math.totalProfit))}` : 'text-slate-400')}
+            {stat('Cost/ac', d.costPerAcre != null ? fmtUsd(Math.round(d.costPerAcre * 100) / 100, 2) : '—')}
+            {stat('Profit/ac', fmtUsd(d.math.profitPerAcre, 2), d.math.profitPerAcre != null ? toneText(signedTone(d.math.profitPerAcre)) : toneText('muted'))}
+            {stat('Total profit', fmtUsd(d.math.totalProfit), d.math.totalProfit != null ? `font-bold ${toneText(signedTone(d.math.totalProfit))}` : toneText('muted'))}
           </button>
           <span className="text-xs text-slate-500 tabular-nums ml-auto">
             breakeven price <strong className="text-slate-700">{fmtPriceFor(d.isCotton, d.math.breakevenPrice)}</strong> at {d.yieldPerAcre != null ? Math.round(d.yieldPerAcre * 10) / 10 : '—'} {d.isCotton ? 'lbs' : 'bu'}/ac
@@ -1008,7 +1027,7 @@ function BudgetSection({ d, mode, grid, onAxis, onOpenAssumptions }: {
                         <td key={ci}
                           className={`px-2 py-1 text-right tabular-nums whitespace-nowrap ${mode === 'profit' && val != null ? toneText(signedTone(val)) : ''} ${here ? 'ring-2 ring-inset ring-sky-500 rounded font-bold' : ci === grid.hereCol ? 'bg-sky-50/60' : ''}`}
                           title={`${fmtPriceFor(d.isCotton, cell.price)} × ${cell.yield.toLocaleString(undefined, { maximumFractionDigits: 1 })} ${yUnit}`}>
-                          {usd2(val)}
+                          {fmtUsd(val, 2)}
                         </td>
                       )
                     })}
@@ -1188,7 +1207,7 @@ function CropAssumptionCard({
           ? <span className="text-xs text-slate-500 tabular-nums">
               {totalAcres > 0 ? `${acres0(totalAcres)} ac · ` : ''}
               {summaryYield != null ? `${(Math.round(summaryYield * 10) / 10).toLocaleString(undefined, { maximumFractionDigits: 1 })} ${yUnit}` : '—'}
-              {summaryCost != null ? ` · ${usd0(Math.round(summaryCost))}/ac` : ''}
+              {summaryCost != null ? ` · ${fmtUsd(Math.round(summaryCost))}/ac` : ''}
             </span>
           : <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">not budgeted</span>}
       </button>
@@ -1328,7 +1347,7 @@ function CropAssumptionCard({
               Rows with acres drive the budget; without any breakout acres the Overall row is the budget line.
             </span>
             {card.hasLines && (
-              <button type="button" className="ml-auto text-xs text-red-600 hover:underline" onClick={() => onRemoveCrop(card)}>
+              <button type="button" className="ml-auto inline-flex items-center min-h-10 px-2 rounded-lg text-xs text-red-700 hover:bg-red-50" onClick={() => onRemoveCrop(card)}>
                 Remove from budget
               </button>
             )}

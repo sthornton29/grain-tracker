@@ -2,11 +2,13 @@
 
 // Edit / Delete for a settlement, on its detail page. Edit covers the header
 // fields (date, settlement #, notes) inline; Delete removes the settlement
-// and its lines/discount items (DB cascade) after the standard confirmation.
+// and its lines/discount items after the app's confirmation dialog.
 
 import { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { ConfirmDialog } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
 
 export default function SettlementHeaderActions({
   settlementId, settlementDate, settlementNumber, notes,
@@ -24,6 +26,7 @@ export default function SettlementHeaderActions({
   const [noteText, setNoteText] = useState(notes ?? '')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [askDelete, setAskDelete] = useState(false)
 
   async function save() {
     if (!date) { setErr('Pick a settlement date.'); return }
@@ -38,39 +41,53 @@ export default function SettlementHeaderActions({
       })
       .eq('id', settlementId)
     setBusy(false)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'save this settlement', noun: 'settlement' })); return }
     setEditing(false)
     router.refresh()
   }
 
   async function remove() {
-    if (!confirm('Delete this settlement? Its lines and discount detail are deleted too, and matched loads go back to Unpaid.')) return
     setBusy(true)
     setErr(null)
     const { error } = await supabase.from('settlements').delete().eq('id', settlementId)
     setBusy(false)
-    if (error) { setErr(error.message); return }
+    setAskDelete(false)
+    if (error) { setErr(reportError(error, { action: 'delete this settlement', noun: 'settlement' })); return }
     router.push('/settlements')
     router.refresh()
   }
 
-  const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm'
+  const inputCls = 'rounded-lg border border-slate-300 px-2 min-h-10 text-sm'
+
+  const dialog = (
+    <ConfirmDialog
+      open={askDelete}
+      title="Delete this settlement?"
+      body={<p>Its lines and discount detail are deleted too, and the loads it paid go back to Unpaid. This can&rsquo;t be undone.</p>}
+      confirmLabel="Delete settlement"
+      danger
+      busy={busy}
+      onConfirm={() => void remove()}
+      onCancel={() => setAskDelete(false)}
+    />
+  )
 
   if (!editing) {
     return (
       <div className="flex items-center gap-2">
-        {err && <span className="text-sm text-red-600">{err}</span>}
+        {err && <span className="text-sm text-red-700">{err}</span>}
         <button
           type="button"
           onClick={() => setEditing(true)}
-          className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm"
+          className="rounded-lg bg-white border border-slate-300 px-3 min-h-10 text-sm"
         >Edit</button>
         <button
           type="button"
-          onClick={remove}
+          onClick={() => setAskDelete(true)}
           disabled={busy}
-          className="rounded-lg bg-white border border-red-200 text-red-600 px-3 py-2 text-sm disabled:opacity-50"
+          className="rounded-lg bg-white border border-red-200 text-red-700 px-3 min-h-10 text-sm disabled:opacity-50"
         >Delete</button>
+        {dialog}
       </div>
     )
   }
@@ -93,14 +110,15 @@ export default function SettlementHeaderActions({
         type="button"
         onClick={save}
         disabled={busy}
-        className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 py-2 text-sm font-semibold disabled:opacity-50"
+        className="rounded-lg bg-brand hover:bg-brand-deep text-white px-3 min-h-10 text-sm font-semibold disabled:opacity-50"
       >{busy ? 'Saving…' : 'Save'}</button>
       <button
         type="button"
         onClick={() => { setEditing(false); setErr(null) }}
-        className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm"
+        className="rounded-lg bg-white border border-slate-300 px-3 min-h-10 text-sm"
       >Cancel</button>
-      {err && <span className="text-sm text-red-600">{err}</span>}
+      {err && <span className="text-sm text-red-700">{err}</span>}
+      {dialog}
     </div>
   )
 }

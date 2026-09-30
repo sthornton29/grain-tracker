@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
+import { reportError } from '@/lib/friendly-error'
+import { ConfirmDialog } from '@/components/app-dialog'
 
 type Props = { binId: string; binName: string }
 
@@ -28,18 +30,27 @@ type AdjRow = {
   as_of_date: string
 }
 
+type Pending = {
+  rows: Array<{ bin_id: string; crop_id: string; adjustment_type: 'empty_bin'; bushels: number; as_of_date: string; notes: string }>
+  lines: Array<{ crop: string; bushels: number }>
+}
+
 function todayISO() {
   const d = new Date()
   const tz = d.getTimezoneOffset() * 60000
   return new Date(d.getTime() - tz).toISOString().slice(0, 10)
 }
 
+const fmtBu = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 0 })
+
 export default function EmptyBinButton({ binId, binName }: Props) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  // What the cleanout would record, waiting on the user's confirmation.
+  const [pending, setPending] = useState<Pending | null>(null)
 
-  async function emptyIt() {
+  async function prepare() {
     setErr(null)
     const supabase = createClient()
     setBusy(true)
@@ -93,47 +104,69 @@ export default function EmptyBinButton({ binId, binName }: Props) {
       const nonZero = [...onHand.entries()].filter(([, v]) => v > 0.001)
       if (nonZero.length === 0) {
         setErr('This bin is already empty.')
-        setBusy(false)
         return
       }
-      const summary = nonZero
-        .map(([cid, v]) => `${v.toFixed(2)} bu (${cropById.get(cid)?.name ?? 'unknown crop'})`)
-        .join(', ')
-      if (!confirm(`Empty bin ${binName}? This will record a cleanout adjustment for: ${summary}.`)) {
-        setBusy(false)
-        return
-      }
-
-      const rows = nonZero.map(([cid, v]) => ({
-        bin_id: binId,
-        crop_id: cid,
-        adjustment_type: 'empty_bin' as const,
-        bushels: Number(v.toFixed(2)),
-        as_of_date: today,
-        notes: 'Cleanout adjustment',
-      }))
-      const { error } = await supabase.from('bin_inventory_adjustments').insert(rows)
-      setBusy(false)
-      if (error) { setErr(error.message); return }
-      router.refresh()
+      setPending({
+        rows: nonZero.map(([cid, v]) => ({
+          bin_id: binId,
+          crop_id: cid,
+          adjustment_type: 'empty_bin' as const,
+          bushels: Number(v.toFixed(2)),
+          as_of_date: today,
+          notes: 'Cleanout adjustment',
+        })),
+        lines: nonZero.map(([cid, v]) => ({ crop: cropById.get(cid)?.name ?? 'unknown crop', bushels: v })),
+      })
     } catch (e: any) {
+      setErr(reportError(e, { action: 'work out what’s in this bin', noun: 'bin' }))
+    } finally {
       setBusy(false)
-      setErr(e?.message ?? 'Failed to empty bin')
     }
   }
 
+  async function emptyIt() {
+    if (!pending) return
+    setBusy(true)
+    const supabase = createClient()
+    const { error } = await supabase.from('bin_inventory_adjustments').insert(pending.rows)
+    setBusy(false)
+    setPending(null)
+    if (error) { setErr(reportError(error, { action: 'record the cleanout', noun: 'bin' })); return }
+    router.refresh()
+  }
+
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2 flex-wrap">
       <button
         type="button"
-        onClick={emptyIt}
+        onClick={prepare}
         disabled={busy}
-        className="text-xs rounded-lg bg-white border border-slate-300 px-2 py-1 hover:bg-slate-50 disabled:opacity-50"
-        title="Record a cleanout adjustment zeroing out this bin"
+        className="text-sm rounded-lg bg-white border border-slate-300 px-3 min-h-11 hover:bg-slate-50 disabled:opacity-50"
+        title="Record a cleanout that zeroes this bin"
       >
-        {busy ? 'Emptying…' : 'Empty bin'}
+        {busy && !pending ? 'Checking…' : 'Empty bin'}
       </button>
       {err && <span className="text-xs text-red-600">{err}</span>}
+      <ConfirmDialog
+        open={pending != null}
+        title={`Empty bin ${binName}?`}
+        body={pending ? (
+          <>
+            <p>This records a cleanout dated today for:</p>
+            <ul className="list-disc pl-5">
+              {pending.lines.map((l) => (
+                <li key={l.crop} className="tabular-nums"><span className="font-semibold">{fmtBu(l.bushels)} bu</span> {l.crop}</li>
+              ))}
+            </ul>
+            <p>The bin will show empty. Your loads aren’t changed.</p>
+          </>
+        ) : undefined}
+        confirmLabel="Empty bin"
+        danger
+        busy={busy}
+        onConfirm={() => void emptyIt()}
+        onCancel={() => { if (!busy) setPending(null) }}
+      />
     </div>
   )
 }

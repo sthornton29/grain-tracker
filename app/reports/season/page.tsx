@@ -19,12 +19,23 @@ import { formatNumber, type ExportPayload } from '@/lib/exports'
 import {
   SummaryCards,
   EmptyState,
+  ReportHeader,
+  ReportFilterBar,
+  FilterField,
   numCell,
   textCell,
   theadCls,
   grandTotalRowCls,
+  selectCls,
+  fmtNum,
+  fmtInt,
+  fmtUsd,
+  fmtPct,
+  filterSummaryOf,
+  cropYearLabel,
   type SummaryCardData,
 } from '@/components/reports/report-kit'
+import { useReportCropYear } from '@/lib/report-filters'
 import type { Crop, Entity, FieldPlanting, LoadSplit } from '@/lib/types'
 
 type LoadRow = {
@@ -62,8 +73,10 @@ export default function SeasonSummaryPage() {
   const [farms, setFarms] = useState<Array<{ id: string; entity_id: string | null }>>([])
   const [fields, setFields] = useState<Array<{ id: string; farm_id: string | null }>>([])
   const [loading, setLoading] = useState(true)
-  // Filters persist across visits (see usePersistentState).
-  const [year, setYear] = usePersistentState<number>('season:year', currentYear())
+  // Filters persist across visits. The crop year follows the one report rule
+  // (lib/report-filters): current year by default, never overwritten on load.
+  const [yearValue, setYear] = useReportCropYear('season:year')
+  const year = typeof yearValue === 'number' ? yearValue : currentYear()
   const [entityId, setEntityId] = usePersistentState('season:entity', '')
 
   async function refresh() {
@@ -267,17 +280,20 @@ export default function SeasonSummaryPage() {
     { acres: 0, dryBu: 0, fullSeason: 0, doubleCrop: 0, irrigated: 0, dryland: 0 }
   )
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
-  const fmt = (n: number, d = 1) => n.toLocaleString(undefined, { maximumFractionDigits: d })
-
   // Headline tiles from the values already computed above (same numbers as the
-  // table totals / crop count — no new calculations).
+  // table totals — no new calculations). Weighted yield is grain bushels over
+  // the harvested grain acres; % harvested counts every crop's harvested acres.
+  const grainHarvestedAcres = byCrop.reduce((s, r) => s + (r.isCotton ? 0 : r.harvestedAcres), 0)
+  const harvestedAcres = byCrop.reduce((s, r) => s + r.harvestedAcres, 0)
+  const weightedYield = grainHarvestedAcres > 0 ? totals.dryBu / grainHarvestedAcres : null
+  const pctHarvested = totals.acres > 0 ? (harvestedAcres / totals.acres) * 100 : null
   const summaryCards: SummaryCardData[] = [
-    { label: 'Crops planted', value: String(byCrop.length) },
-    { label: 'Total acres', value: fmt(totals.acres, 2) },
-    { label: 'Irrigated acres', value: fmt(totals.irrigated, 2) },
-    { label: 'Dryland acres', value: fmt(totals.dryland, 2) },
+    { label: 'Total acres', value: fmtNum(totals.acres, 1), sub: `${fmtNum(totals.irrigated, 1)} irrigated · ${fmtNum(totals.dryland, 1)} dryland` },
+    { label: 'Dry bushels', value: fmtInt(totals.dryBu), sub: 'Harvested fields only' },
+    { label: 'Weighted yield', value: weightedYield != null ? `${fmtNum(weightedYield, 1)} bu/ac` : '—' },
+    { label: '% harvested', value: pctHarvested != null ? fmtPct(pctHarvested, 0) : '—', sub: `${fmtNum(harvestedAcres, 1)} of ${fmtNum(totals.acres, 1)} acres`, tone: pctHarvested != null && pctHarvested >= 100 ? 'favorable' : 'neutral' },
   ]
+  const filterSummary = filterSummaryOf(cropYearLabel(year), entityName ?? 'All Entities')
 
   // Export mirrors the on-screen table (real numbers + shared formatting).
   function buildPayload(): ExportPayload {
@@ -292,12 +308,12 @@ export default function SeasonSummaryPage() {
     rows.push(['Total', totals.fullSeason, totals.doubleCrop, totals.acres, totals.irrigated, totals.dryland, totals.dryBu, ''])
     return {
       title: 'Season Summary',
-      filters: `Season: ${year}${entityName ? ` · Entity: ${entityName}` : ''}`,
+      filters: filterSummary,
       summary: [
-        { label: 'Crops planted', value: formatNumber(byCrop.length, 'int') },
         { label: 'Total acres', value: formatNumber(totals.acres, 'acres') },
-        { label: 'Irrigated acres', value: formatNumber(totals.irrigated, 'acres') },
-        { label: 'Dryland acres', value: formatNumber(totals.dryland, 'acres') },
+        { label: 'Dry bushels', value: formatNumber(totals.dryBu, 'bu') },
+        { label: 'Weighted yield', value: weightedYield != null ? formatNumber(weightedYield, 'yield') : '—' },
+        { label: '% harvested', value: pctHarvested != null ? formatNumber(pctHarvested, 'pct0') : '—' },
       ],
       sections: [{
         columns: [
@@ -325,21 +341,20 @@ export default function SeasonSummaryPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-end gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold flex-1">
-          Season Summary
-          {entityName && <span className="ml-2 text-base font-semibold text-slate-500">— {entityName}</span>}
-        </h1>
-        <label className="text-sm flex items-center gap-2">
-          Season
-          <select value={year} onChange={(e) => setYear(Number(e.target.value))} className={inputCls}>
+      <ReportHeader
+        title="Season Summary"
+        filterSummary={filterSummary}
+        actions={!loading && !viewer.loading && byCrop.length > 0 ? <ExportBar buildPayload={buildPayload} /> : undefined}
+      />
+      <ReportFilterBar activeCount={entityId ? 1 : 0}>
+        <FilterField label="Crop year">
+          <select value={year} onChange={(e) => setYear(Number(e.target.value))} className={selectCls}>
             {distinctYears.map((y) => <option key={y} value={y}>{y}</option>)}
             {!distinctYears.includes(year) && <option value={year}>{year}</option>}
           </select>
-        </label>
-        <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} className="no-print" />
-        {!loading && !viewer.loading && byCrop.length > 0 && <ExportBar buildPayload={buildPayload} />}
-      </div>
+        </FilterField>
+        <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} />
+      </ReportFilterBar>
 
       {loading || viewer.loading ? (
         <p className="text-slate-500">Loading…</p>
@@ -355,6 +370,7 @@ export default function SeasonSummaryPage() {
               hint="Record plantings and enter loads to build the season summary."
               linkHref="/loads"
               linkLabel="Enter loads"
+              role={viewer.role}
             />
           ) : (
             <div className="overflow-x-auto bg-white rounded-xl shadow">
@@ -371,17 +387,17 @@ export default function SeasonSummaryPage() {
                     return (
                       <tr key={r.cropName} className="border-t border-slate-100">
                         <td className={`${textCell} font-semibold`}>{r.cropName}</td>
-                        <td className={numCell}>{fmt(r.fullSeasonAcres, 2)}</td>
-                        <td className={numCell}>{fmt(r.doubleCropAcres, 2)}</td>
-                        <td className={numCell}>{fmt(r.totalAcres, 2)}</td>
-                        <td className={numCell}>{r.irrigatedAcres > 0 ? fmt(r.irrigatedAcres, 2) : '—'}</td>
-                        <td className={numCell}>{r.drylandAcres > 0 ? fmt(r.drylandAcres, 2) : '—'}</td>
+                        <td className={numCell}>{fmtNum(r.fullSeasonAcres, 1)}</td>
+                        <td className={numCell}>{fmtNum(r.doubleCropAcres, 1)}</td>
+                        <td className={numCell}>{fmtNum(r.totalAcres, 1)}</td>
+                        <td className={numCell}>{r.irrigatedAcres > 0 ? fmtNum(r.irrigatedAcres, 1) : '—'}</td>
+                        <td className={numCell}>{r.drylandAcres > 0 ? fmtNum(r.drylandAcres, 1) : '—'}</td>
                         {r.isCotton ? (
                           <td colSpan={2} className={`${numCell} text-xs text-slate-400 font-normal`}>lbs of lint — see Cotton Yields below</td>
                         ) : (
                           <>
-                            <td className={numCell}>{fmt(r.dryBu, 2)}</td>
-                            <td className={`${numCell} font-semibold`}>{yld != null ? yld.toFixed(1) : '—'}</td>
+                            <td className={numCell}>{fmtInt(r.dryBu)}</td>
+                            <td className={`${numCell} font-semibold`}>{yld != null ? fmtNum(yld, 1) : '—'}</td>
                           </>
                         )}
                       </tr>
@@ -389,12 +405,12 @@ export default function SeasonSummaryPage() {
                   })}
                   <tr className={grandTotalRowCls}>
                     <td className={textCell}>Total</td>
-                    <td className={numCell}>{fmt(totals.fullSeason, 2)}</td>
-                    <td className={numCell}>{fmt(totals.doubleCrop, 2)}</td>
-                    <td className={numCell}>{fmt(totals.acres, 2)}</td>
-                    <td className={numCell}>{fmt(totals.irrigated, 2)}</td>
-                    <td className={numCell}>{fmt(totals.dryland, 2)}</td>
-                    <td className={numCell}>{fmt(totals.dryBu, 2)}</td>
+                    <td className={numCell}>{fmtNum(totals.fullSeason, 1)}</td>
+                    <td className={numCell}>{fmtNum(totals.doubleCrop, 1)}</td>
+                    <td className={numCell}>{fmtNum(totals.acres, 1)}</td>
+                    <td className={numCell}>{fmtNum(totals.irrigated, 1)}</td>
+                    <td className={numCell}>{fmtNum(totals.dryland, 1)}</td>
+                    <td className={numCell}>{fmtInt(totals.dryBu)}</td>
                     <td className={numCell}></td>
                   </tr>
                 </tbody>
@@ -419,9 +435,9 @@ export default function SeasonSummaryPage() {
                   <tr key={`${r.cropId}|${r.cropYear}`} className="border-t border-slate-100">
                     <td className="pr-4 py-1">{cropById.get(r.cropId ?? '')?.name ?? 'Unassigned crop'}</td>
                     <td className="pr-4 py-1">{r.cropYear ?? '—'}</td>
-                    <td className="pr-4 py-1 text-right tabular-nums font-semibold">${r.dollars.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                    <td className="pr-4 py-1 text-right tabular-nums">{r.centsPerBu != null ? `${r.centsPerBu.toFixed(2)}¢` : '—'}</td>
-                    <td className="pr-4 py-1 text-right tabular-nums">{Math.round(r.settledBu).toLocaleString()}</td>
+                    <td className="pr-4 py-1 text-right tabular-nums font-semibold">{fmtUsd(r.dollars, 2)}</td>
+                    <td className="pr-4 py-1 text-right tabular-nums">{r.centsPerBu != null ? `${fmtNum(r.centsPerBu, 2)}¢` : '—'}</td>
+                    <td className="pr-4 py-1 text-right tabular-nums">{fmtInt(r.settledBu)}</td>
                     <td className="pr-4 py-1 text-right tabular-nums">{r.settlements}</td>
                   </tr>
                 ))}

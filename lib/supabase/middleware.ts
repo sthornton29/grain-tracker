@@ -7,7 +7,7 @@ import { coerceAppRole } from '../app-role'
 // Supabase session, so it must skip the login redirect. Its routes 401 on
 // their own; nothing under it is reachable without the token. /api/farm-link
 // (087, the Turnrow Farm link) is the same shape: bearer flt_ tokens.
-const PUBLIC_PATHS = ['/login', '/auth/callback', '/reset-password', '/api/partner', '/api/farm-link']
+const PUBLIC_PATHS = ['/login', '/auth/callback', '/reset-password', '/offline', '/api/partner', '/api/farm-link']
 
 export async function updateSession(request: NextRequest) {
   let response = NextResponse.next({ request })

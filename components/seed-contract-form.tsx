@@ -20,6 +20,7 @@ import { mergeSeedContracts } from '@/lib/parse-merge'
 import { uploadFileToStorage } from '@/lib/pdf-upload'
 import type { SeedContractExtraction } from '@/lib/pdf-upload'
 import { findBestMatch } from '@/lib/fuzzy'
+import { reportError } from '@/lib/friendly-error'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { varietyKey } from '@/lib/variety-resolution'
 import {
@@ -36,7 +37,7 @@ type PremiumRow = {
   applies_to: 'all' | 'irrigated_only'
 }
 
-// The standard Bayer Southern schedule (lib/seed-contracts SEED_PREMIUM_TEMPLATE)
+// The standard soybean seed schedule (lib/seed-contracts SEED_PREMIUM_TEMPLATE)
 // as editable string rows — ALL FOUR outcomes with the full component stack.
 const PREMIUM_TEMPLATE: PremiumRow[] = SEED_PREMIUM_TEMPLATE.map((p) => ({
   outcome: p.outcome,
@@ -275,7 +276,7 @@ export default function SeedContractForm({ editContractId }: { editContractId?: 
         `The document was read${warning ? ` (${warning})` : ''}. Review and edit everything below, then save — the document attaches automatically.`,
       )
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'The document could not be read.')
+      setErr(reportError(e as Error, { action: 'read this document', noun: 'document' }) + ' Try a clearer scan, or type the terms in below.')
     } finally {
       setAiStage('')
     }
@@ -384,7 +385,7 @@ export default function SeedContractForm({ editContractId }: { editContractId?: 
 
       router.push(`/contracts/${contractId}`)
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Could not save the contract.')
+      setErr(reportError(e as Error, { action: 'save this seed contract', noun: 'contract', name: contractNumber.trim() }))
     } finally {
       setBusy(false)
     }
@@ -439,13 +440,13 @@ export default function SeedContractForm({ editContractId }: { editContractId?: 
             <EntitySelect entities={entities} value={entityId} onChange={setEntityId} className={inputCls} showWhenSingle />
           </label>
           <label className={labelCls}><span className={capCls}>Production site</span>
-            <input value={productionSite} onChange={(e) => setProductionSite(e.target.value)} placeholder="Hurt Seed Company, Halls TN" className={inputCls} />
+            <input value={productionSite} onChange={(e) => setProductionSite(e.target.value)} placeholder="Prairie Seed Co., Riverbend" className={inputCls} />
           </label>
           <label className={labelCls}><span className={capCls}>Brand</span>
-            <input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Asgrow" className={inputCls} />
+            <input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Seed brand" className={inputCls} />
           </label>
           <label className={labelCls}><span className={capCls}>Variety</span>
-            <input value={variety} onChange={(e) => setVariety(e.target.value)} placeholder="AG55XF5" list="seed-variety-options" className={inputCls} />
+            <input value={variety} onChange={(e) => setVariety(e.target.value)} placeholder="Variety name" list="seed-variety-options" className={inputCls} />
             <datalist id="seed-variety-options">
               {varietiesForCrop.map((v) => <option key={v} value={v} />)}
             </datalist>
@@ -460,7 +461,7 @@ export default function SeedContractForm({ editContractId }: { editContractId?: 
             Estimated quantity: <span className="font-semibold">{estimated > 0 ? estimated.toLocaleString(undefined, { maximumFractionDigits: 0 }) : '—'} bu</span>
           </div>
           <label className={labelCls}><span className={capCls}>Local market for pricing</span>
-            <input value={elevator} onChange={(e) => setElevator(e.target.value)} placeholder="Bunge Decatur AL" className={inputCls} />
+            <input value={elevator} onChange={(e) => setElevator(e.target.value)} placeholder="Riverbend Elevator" className={inputCls} />
           </label>
           <label className={labelCls}><span className={capCls}>Price everything by (Selection Date)</span>
             <input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} className={inputCls} />
@@ -468,8 +469,8 @@ export default function SeedContractForm({ editContractId }: { editContractId?: 
           <label className={labelCls}><span className={capCls}>Premium cap $/bu</span>
             <input inputMode="decimal" value={capPerBu} onChange={(e) => setCapPerBu(e.target.value)} className={inputCls} />
           </label>
-          <label className={labelCls}><span className={capCls}>Usage fee $/bu</span>
-            <input inputMode="decimal" value={usageFee} onChange={(e) => setUsageFee(e.target.value)} className={inputCls} />
+          <label className={labelCls}><span className={capCls}>Usage fee $/bu <span className="text-slate-400">(taken out of the settlement — enter as a plain number)</span></span>
+            <input inputMode="decimal" value={usageFee} onChange={(e) => setUsageFee(e.target.value.replace(/^-/, ''))} className={inputCls} />
           </label>
           <label className={labelCls}><span className={capCls}>Storage pay $/bu/month</span>
             <input inputMode="decimal" value={storagePay} onChange={(e) => setStoragePay(e.target.value)} className={inputCls} />
@@ -504,7 +505,7 @@ export default function SeedContractForm({ editContractId }: { editContractId?: 
               {premiumIssue.kind === 'none'
                 ? 'Exhibit C premium terms weren’t found in the document, so no schedule was filled in.'
                 : `Only part of the premium schedule could be read (${premiumIssue.extracted.length} row${premiumIssue.extracted.length === 1 ? '' : 's'}) — a partial schedule won’t be saved without your say-so.`}
-              {' '}Apply the standard Bayer Southern schedule (shown below for review), or leave it empty for now.
+              {' '}Apply the standard soybean seed schedule (shown below for review), or leave it empty for now.
             </p>
             <div className="flex gap-2 flex-wrap">
               <button
@@ -584,7 +585,7 @@ export default function SeedContractForm({ editContractId }: { editContractId?: 
                   <option value="irrigated_only">Irrigated only</option>
                 </select>
               </label>
-              <button onClick={() => setPremiums((rows) => rows.filter((_, j) => j !== i))} className="text-red-700 text-sm pb-2 hover:underline">✕</button>
+              <button type="button" onClick={() => setPremiums((rows) => rows.filter((_, j) => j !== i))} aria-label="Remove this premium row" className="text-red-700 text-sm min-h-10 px-2 hover:underline">✕</button>
             </div>
           ))}
         </div>

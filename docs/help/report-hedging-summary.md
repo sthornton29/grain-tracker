@@ -1,7 +1,7 @@
 ---
 page_route: /reports/hedging-summary
 title: Hedging Summary
-updated: 2026-09-14
+updated: 2026-09-24
 keywords: hedging, futures, options, positions, realized, unrealized, profit and loss, crop year, commodity, lender, hedging activity, history, audit, export events, rolls
 ---
 ## What this page is for
@@ -10,14 +10,14 @@ The Hedging Summary gathers every futures and options position — open and clos
 
 ## How to use it
 
-Pick a crop year and, if you want, a commodity. The summary table shows each crop year × commodity combination with total contracts, bushels (or pounds for cotton), average hedge price, unrealized P&L on open futures, realized P&L net of commission on closed ones, options P&L, and the combined net. The detail table below lists every position — month, symbol, side, quantity, prices, and its own P&L. Date filters let you cut the report to a statement period.
+The report opens on the current crop year (or the year you last picked); narrow to a commodity if you want. The summary table shows each crop year × commodity combination with total contracts, quantity (bushels, or pounds for cotton), average hedge price, unrealized gain or loss on open futures, realized gain or loss net of commission on closed ones, options gain or loss, and the combined figure. The positions table below lists every position, named in plain words — "Dec 26 Corn" — with the exchange symbol beside it, plus side, quantity, prices, and its own result. Date filters let you cut the report to a statement period. Every filter is remembered between visits.
 
 ## What the controls do
 
-- **Crop year** — which marketing year's positions to show; each position is tagged to the crop year it hedges.
+- **Crop year** — which marketing year's positions to show; each position is tagged to the crop year it hedges. "All crop years" is available for the whole book.
 - **Commodity** — narrow to corn, soybeans, wheat, cotton, and so on.
-- **Entity filter** — positions in an entity's own name count wholly toward it; positions held by your marketing agent or entered without an entity are hedging for the whole operation.
-- **Date range** — filters positions by trade date, or close date for closed positions. The activity section uses each event's trade date.
+- **Entity** — positions in an entity's own name count wholly toward it; positions held by your marketing agent or entered without an entity are hedging for the whole operation.
+- **From date / To date** — filter positions by trade date, or close date for closed positions. The activity section uses each event's trade date.
 - **Export Excel / PDF / Print** — the summary and full position detail with your filters named, plus the activity sheet.
 
 ## Hedging activity

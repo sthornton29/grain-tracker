@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Modal } from './position-form'
+import { reportError } from '@/lib/friendly-error'
 import { contractUnit, fmtCommodityPrice, pnlSizeFor,
   parsePrice,
   parseCottonPriceInput,
@@ -93,7 +94,7 @@ export default function ClosePositionDialog({ position, onClose, onSaved }: Prop
           commission: round2((position.commission ?? 0) + closeComm),
         })
         .eq('id', position.id)
-      if (error) { setBusy(false); setErr(error.message); return }
+      if (error) { setBusy(false); setErr(reportError(error, { action: 'close this position', noun: 'position' })); return }
     } else {
       // Partial close — spin off a new closed row for the closed quantity and
       // leave the remainder open, splitting the open commission proportionally.
@@ -116,12 +117,12 @@ export default function ClosePositionDialog({ position, onClose, onSaved }: Prop
         notes: position.notes,
         source: position.source,
       })
-      if (insertRes.error) { setBusy(false); setErr(insertRes.error.message); return }
+      if (insertRes.error) { setBusy(false); setErr(reportError(insertRes.error, { action: 'close part of this position', noun: 'position' })); return }
       const updRes = await supabase
         .from('futures_positions')
         .update({ num_contracts: position.num_contracts - qtyNum, commission: remainingComm })
         .eq('id', position.id)
-      if (updRes.error) { setBusy(false); setErr(`Closed portion saved, but updating the remainder failed: ${updRes.error.message}`); return }
+      if (updRes.error) { setBusy(false); setErr('The closed portion was saved, but the contracts still open could not be updated — check this position and contact support if it looks wrong. ' + reportError(updRes.error, { action: 'update the open remainder', noun: 'position' })); return }
     }
     setBusy(false)
     onSaved()
@@ -142,7 +143,7 @@ export default function ClosePositionDialog({ position, onClose, onSaved }: Prop
 
         <div className="grid grid-cols-2 gap-3">
           <label className={labelCls}>
-            Contracts to Close
+            Contracts to close
             <input
               type="number"
               min="1"
@@ -158,7 +159,7 @@ export default function ClosePositionDialog({ position, onClose, onSaved }: Prop
             </span>
           </label>
           <label className={labelCls}>
-            Close Price ({contractUnit(position.commodity) === 'lbs' ? '$/lb — e.g. 0.6800 (legacy 68.00 also works)' : '$/bu'})
+            Close price ({contractUnit(position.commodity) === 'lbs' ? '$/lb — e.g. 0.6800 (68.00 also works)' : '$/bu'})
             <input
               type="text"
               inputMode="decimal"
@@ -177,11 +178,11 @@ export default function ClosePositionDialog({ position, onClose, onSaved }: Prop
 
         <div className="grid grid-cols-2 gap-3">
           <label className={labelCls}>
-            Close Date
+            Close date
             <input type="date" value={closeDate} onChange={(e) => setCloseDate(e.target.value)} className={inputCls} />
           </label>
           <label className={labelCls}>
-            Commission &amp; Fees <span className="text-xs text-slate-400">optional</span>
+            Commission &amp; fees <span className="text-xs text-slate-400">optional</span>
             <input
               type="number"
               step="0.01"
@@ -218,7 +219,7 @@ export default function ClosePositionDialog({ position, onClose, onSaved }: Prop
 
         <div className="flex gap-2">
           <button type="submit" disabled={busy} className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-3 disabled:opacity-60">
-            {busy ? 'Saving…' : partial ? `Close ${qtyNum} Contract${qtyNum === 1 ? '' : 's'}` : 'Close Position'}
+            {busy ? 'Saving…' : partial ? `Close ${qtyNum} contract${qtyNum === 1 ? '' : 's'}` : 'Close position'}
           </button>
           <button type="button" onClick={onClose} className="rounded-xl bg-white border border-slate-300 px-4 py-3">
             Cancel

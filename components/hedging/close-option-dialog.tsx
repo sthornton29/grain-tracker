@@ -3,6 +3,8 @@
 import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Modal } from './position-form'
+import { ConfirmDialog } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
 import {
   parseFractional,
   optionOffsetPnl,
@@ -50,6 +52,7 @@ export default function CloseOptionDialog({ position, onClose, onSaved }: Props)
   const [exerciseDate, setExerciseDate] = useState(todayISO())
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [confirmExercise, setConfirmExercise] = useState(false)
 
   const qtyNum = Number(qty)
   const validQty = Number.isInteger(qtyNum) && qtyNum > 0 && qtyNum <= position.num_contracts
@@ -93,14 +96,14 @@ export default function CloseOptionDialog({ position, onClose, onSaved }: Props)
     if (scenario === 'expired' && !expirationDate) return setErr('Pick the expiration date.')
     if (scenario === 'exercise' && !exerciseDate) return setErr('Pick the exercise date.')
 
+    // Exercising creates a futures position — read it back first.
+    if (scenario === 'exercise') { setConfirmExercise(true); return }
+    await doClose()
+  }
+
+  async function doClose() {
+    setConfirmExercise(false)
     const realized = preview ?? 0
-
-    if (scenario === 'exercise') {
-      const verb = position.side === 'buy' ? 'cost' : 'income'
-      const msg = `Exercising this ${position.option_type} will create a ${futuresSide.toUpperCase()} futures position in ${position.underlying_contract_month} ${position.commodity} at ${fmtPrice(position.strike_price)} (the strike price). The premium of ${fmtCents(position.premium_cents)}/bu (${fmtUsd(premiumTotalForQty)}) will be recorded as a realized ${verb}. Continue?`
-      if (!window.confirm(msg)) return
-    }
-
     setBusy(true)
 
     // Exercise creates a futures position first so we can link it.
@@ -125,7 +128,7 @@ export default function CloseOptionDialog({ position, onClose, onSaved }: Props)
         })
         .select('id')
         .single()
-      if (error || !data) { setBusy(false); setErr(`Could not create futures position: ${error?.message ?? 'unknown error'}`); return }
+      if (error || !data) { setBusy(false); setErr(reportError(error, { action: 'create the futures position for this exercise', noun: 'position' })); return }
       exercisedPositionId = (data as { id: string }).id
     }
 
@@ -144,7 +147,7 @@ export default function CloseOptionDialog({ position, onClose, onSaved }: Props)
         update.commission = round2((position.commission ?? 0) + closeComm)
       }
       const { error } = await supabase.from('options_positions').update(update).eq('id', position.id)
-      if (error) { setBusy(false); setErr(error.message); return }
+      if (error) { setBusy(false); setErr(reportError(error, { action: 'close this option', noun: 'option' })); return }
     } else {
       // Spin off a new closed row for the closed quantity; reduce the remainder.
       const newComm = scenario === 'offset' ? round2(proratedOpenComm + closeComm) : proratedOpenComm
@@ -170,12 +173,12 @@ export default function CloseOptionDialog({ position, onClose, onSaved }: Props)
         notes: position.notes,
         source: position.source,
       })
-      if (insRes.error) { setBusy(false); setErr(insRes.error.message); return }
+      if (insRes.error) { setBusy(false); setErr(reportError(insRes.error, { action: 'close part of this option', noun: 'option' })); return }
       const { error: updErr } = await supabase
         .from('options_positions')
         .update({ num_contracts: position.num_contracts - qtyNum, commission: round2((position.commission ?? 0) - proratedOpenComm) })
         .eq('id', position.id)
-      if (updErr) { setBusy(false); setErr(`Closed portion saved, but updating the remainder failed: ${updErr.message}`); return }
+      if (updErr) { setBusy(false); setErr('The closed portion was saved, but the contracts still open could not be updated — check this option and contact support if it looks wrong. ' + reportError(updErr, { action: 'update the open remainder', noun: 'option' })); return }
     }
     setBusy(false)
     onSaved()
@@ -191,6 +194,20 @@ export default function CloseOptionDialog({ position, onClose, onSaved }: Props)
 
   return (
     <Modal onClose={onClose} title={`Close ${position.underlying_symbol} ${position.option_type.toUpperCase()} ${fmtPrice(position.strike_price)}`}>
+      <ConfirmDialog
+        open={confirmExercise}
+        title="Exercise this option?"
+        body={
+          <p>
+            A <b className="uppercase">{futuresSide}</b> futures position opens in {position.underlying_contract_month} {position.commodity} at {fmtPrice(position.strike_price)} (the strike).
+            The premium of {fmtCents(position.premium_cents)}/bu ({fmtUsd(premiumTotalForQty)}) is recorded as a realized {position.side === 'buy' ? 'cost' : 'credit'}.
+          </p>
+        }
+        confirmLabel="Exercise"
+        busy={busy}
+        onConfirm={() => void doClose()}
+        onCancel={() => setConfirmExercise(false)}
+      />
       <form onSubmit={onSubmit} className="space-y-4">
         <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-sm space-y-1">
           <div className="flex justify-between"><span className="text-slate-500">Position</span>
@@ -211,7 +228,7 @@ export default function CloseOptionDialog({ position, onClose, onSaved }: Props)
         </div>
 
         <label className={labelCls}>
-          Contracts to Close
+          Contracts to close
           <input type="number" min="1" step="1" max={position.num_contracts} inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value)} className={inputCls} />
           <span className="text-xs text-slate-500">of {position.num_contracts}{partial ? ' — partial close leaves the rest open' : ''}</span>
         </label>
@@ -219,29 +236,29 @@ export default function CloseOptionDialog({ position, onClose, onSaved }: Props)
         {scenario === 'offset' && (
           <div className="grid grid-cols-3 gap-3">
             <label className={labelCls}>
-              Close Premium (¢/bu)
+              Close premium (¢/bu)
               <input type="text" inputMode="decimal" placeholder="4.5 or 4 1/2" value={closeCentsInput} onChange={(e) => setCloseCentsInput(e.target.value)} className={inputCls} />
             </label>
             <label className={labelCls}>
-              Close Date
+              Close date
               <input type="date" value={closeDate} onChange={(e) => setCloseDate(e.target.value)} className={inputCls} />
             </label>
             <label className={labelCls}>
-              Commission <span className="text-xs text-slate-400">opt.</span>
+              Commission <span className="text-xs text-slate-400">optional</span>
               <input type="number" step="0.01" inputMode="decimal" value={commissionInput} onChange={(e) => setCommissionInput(e.target.value)} className={inputCls} />
             </label>
           </div>
         )}
         {scenario === 'expired' && (
           <label className={labelCls}>
-            Expiration Date
+            Expiration date
             <input type="date" value={expirationDate} onChange={(e) => setExpirationDate(e.target.value)} className={inputCls} />
           </label>
         )}
         {scenario === 'exercise' && (
           <div className="space-y-2">
             <label className={labelCls}>
-              Exercise Date
+              Exercise date
               <input type="date" value={exerciseDate} onChange={(e) => setExerciseDate(e.target.value)} className={inputCls} />
             </label>
             <div className="rounded-lg bg-sky-50 border border-sky-200 px-3 py-2 text-sm text-sky-900">
@@ -264,7 +281,7 @@ export default function CloseOptionDialog({ position, onClose, onSaved }: Props)
 
         <div className="flex gap-2">
           <button type="submit" disabled={busy} className="flex-1 rounded-xl bg-brand hover:bg-brand-deep text-white font-semibold py-3 disabled:opacity-60">
-            {busy ? 'Saving…' : scenario === 'exercise' ? 'Exercise Option' : partial ? `Close ${qtyNum} Contract${qtyNum === 1 ? '' : 's'}` : 'Close Option'}
+            {busy ? 'Saving…' : scenario === 'exercise' ? 'Exercise option' : partial ? `Close ${qtyNum} contract${qtyNum === 1 ? '' : 's'}` : 'Close option'}
           </button>
           <button type="button" onClick={onClose} className="rounded-xl bg-white border border-slate-300 px-4 py-3">Cancel</button>
         </div>

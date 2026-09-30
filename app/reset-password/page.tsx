@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { reportError } from '@/lib/friendly-error'
 
 // Landing page for the Supabase password-recovery email link. The browser
 // client exchanges the link's code for a recovery session automatically on
@@ -65,7 +66,7 @@ export default function ResetPasswordPage() {
     setBusy(true)
     const { error } = await supabase.auth.updateUser({ password })
     setBusy(false)
-    if (error) { setError(error.message); return }
+    if (error) { setError(reportError(error, { action: 'save the new password' })); return }
     setDone(true)
   }
 

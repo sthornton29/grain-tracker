@@ -1,7 +1,7 @@
 ---
 page_route: /reports/revenue-projections
 title: Revenue Projections
-updated: 2026-09-21
+updated: 2026-09-24
 keywords: revenue, profit, breakeven, crop sales, insurance proceeds, government payments, ARC, PLC, cost per acre, average price
 ---
 ## What this page is for
@@ -10,7 +10,7 @@ Revenue Projections is the one-page financial summary of a crop year: every reve
 
 ## How to use it
 
-Pick a crop year and, if you want, an entity. The summary tiles show total revenue, total cost, total profit, and profit per acre. Below them, the revenue table lists each crop's acres, yield, production, crop sales revenue, insurance proceeds, government payments, and revenue per acre; the profitability table adds cost, profit, the headline Total Avg Price, and both breakevens. The collapsible **How this is calculated** panel on the page walks through the same methodology described here.
+The report opens on the current crop year (or the year you last picked); narrow to an entity if you want. The summary tiles show total revenue, total cost, total profit, and profit per acre. Tap **detail** beside a government-payments figure to see its ARC/PLC and other-payment pieces. Below them, the revenue table lists each crop's acres, yield, production, crop sales revenue, insurance proceeds, government payments, and revenue per acre; the profitability table adds cost, profit, the headline Total Avg Price, and both breakevens. The collapsible **How this is calculated** panel on the page walks through the same methodology described here.
 
 ## What the controls do
 

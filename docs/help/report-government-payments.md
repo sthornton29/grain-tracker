@@ -1,7 +1,7 @@
 ---
 page_route: /reports/government-payments
 title: Government Payment Tracker
-updated: 2026-08-05
+updated: 2026-09-24
 keywords: government payments, ARC, PLC, payment year, program year, payment limit, MYA, base acres, USDA, seed cotton
 ---
 ## What this page is for
@@ -18,7 +18,8 @@ The Payment Tracker projects your ARC/PLC and other USDA payments, shows when th
 
 ## What the controls do
 
-- **Year framing toggle** — the default **"By payment year"** view answers "what cash arrives in year Y": ARC/PLC for program year Y−1 (which pays the following October) plus other payments received in Y. Switch to **"By program year"** to line up with FSA paperwork instead. Switching shifts the year selector so the same pool of payments stays on screen.
+- **Year basis toggle** — the default **"By payment year"** view answers "what cash arrives in year Y": ARC/PLC for program year Y−1 (which pays the following October) plus other payments received in Y. Switch to **"By program year"** to line up with FSA paperwork instead. The year you picked stays put when you switch; only the label and the framing change, and the line under the toggle says which framing you are looking at.
+- **Check your setup** — when something is off in your setup (benchmarks entered under another program year, older payment entries whose year needs a look, a missing program parameter), the notices fold into one **Check your setup (N)** panel under the filters. Tap it to read them.
 - **MYA Prices panel** — per commodity: an Auto/Manual toggle, inline manual entry, and a **Look up USDA prices** button that pulls real published monthly prices received by farmers. Fetched months appear beside anything you've already entered; nothing you typed is overwritten without your confirmation. A published final price locks the row. If the lookup finds nothing, an AI lookup is offered as a clearly labeled fallback.
 - **ARC-CO settings** button — jumps to Settings, Government Payments with the right program year already selected.
 
@@ -38,6 +39,6 @@ The Payment Tracker projects your ARC/PLC and other USDA payments, shows when th
 
 ## If something looks wrong
 
-- A benchmark-year notice means ARC-CO benchmarks exist only for other years — the notice links to Settings preset to the right year.
+- A benchmark-year notice in **Check your setup** means ARC-CO benchmarks exist only for other years — the notice links to Settings preset to the right year. A **flat estimate** chip on a farm's row means the same thing for that county; tap the chip for the explanation.
 - If an entity's limit looks wrong, check its eligible-persons count in Settings, Entities and the per-person limit in Program Parameters.
 - Anything else, contact support.

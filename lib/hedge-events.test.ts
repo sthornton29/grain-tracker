@@ -42,11 +42,11 @@ describe('hedging history timeline', () => {
     const [line] = buildHedgeTimeline([ROLL_CLOSE, ROLL_OPEN])
     expect(line.kind).toBe('roll')
     expect(line.date).toBe('2026-09-03')
-    expect(line.headline).toBe('Rolled 14 DEC 26 → MAR 27 corn · -$33,775.00 realized')
+    expect(line.headline).toBe('Rolled 14 DEC 26 → MAR 27 corn · ($33,775.00) realized')
     expect(line.sourceLabel).toBe('from StoneX statement 9/03')
     expect(line.realized).toBe(-33775)
     expect(line.positionIds.sort()).toEqual(['dec', 'mar'])
-    expect(line.detail[0]).toBe('Closed DEC 26 @ $5.435 → -$33,775.00 realized; opened MAR 27 @ $5.585 (spread order)')
+    expect(line.detail[0]).toBe('Closed DEC 26 @ $5.435 → ($33,775.00) realized; opened MAR 27 @ $5.585 (spread order)')
     expect(line.detail[1]).toBe('Crop year 2026 (inherited by the new leg)')
   })
 

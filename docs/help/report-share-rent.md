@@ -1,7 +1,7 @@
 ---
 page_route: /reports/share-rent
 title: Share Rent Report
-updated: 2026-08-05
+updated: 2026-09-24
 keywords: share rent, landlord share, landowner, bushels owed, crop share, percentage, FSA number
 ---
 ## What this page is for
@@ -10,7 +10,8 @@ If you rent ground on crop shares, this report figures the landlord's share of t
 
 ## How to use it
 
-- Pick a **crop year**. The report opens with a summary of bushels owed per crop, then a section per landowner showing each of their share-rent farms.
+- The report opens on the current crop year (or the newest year with plantings the first time); your pick is remembered. It shows a summary of bushels owed per crop, then a section per landowner showing each of their share-rent farms. Bushels are whole numbers, acres to one decimal.
+- A landowner signed in with read-only access sees only the ground with a landowner on it — the operation's own "Owned / No Landowner" group is left off their view.
 - Each farm section shows the landlord's share percentage, the farm's FSA number, and a field-by-field table: acres, total dry bushels, yield, and the landlord's bushels.
 - Narrow with the **crop**, **entity**, or **landowner** filters to prepare a statement for one owner.
 - Export to **Excel** or **PDF** to hand the landowner a clean statement.

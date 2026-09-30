@@ -11,7 +11,7 @@
 // user-entered flat $/acre estimate, clearly labeled. A What-If MYA slider
 // moves BOTH programs (ARC-CO actual county revenue uses the MYA too).
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
@@ -35,18 +35,23 @@ import type {
   ArcPlcPayment, ArcPlcElectionType, ArcBenchmarkData, MyaMonthlyPrice, ProgramYearConfig,
 } from '@/lib/types'
 import {
-  EmptyState, fmtUsd, numCell, textCell, theadCls, toneText,
+  EmptyState, ReportHeader, ReportFilterBar, FilterField, InfoTip, fmtUsd, fmtInt, numCell, textCell, theadCls, toneText, selectCls, filterSummaryOf,
 } from '@/components/reports/report-kit'
+import { ConfirmDialog, NoticeDialog } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
+import { useReportCropYear } from '@/lib/report-filters'
 
-type Props = { onPayloadChange?: (build: () => ExportPayload) => void }
-
-const usd = (n: number | null | undefined, d = 0) => fmtUsd(n, d)
+type Props = {
+  onPayloadChange?: (build: () => ExportPayload) => void
+  /** Rendered in the report header's action slot (the page passes <ExportBar/>). */
+  headerActions?: ReactNode
+}
 
 // A per-acre PLC-vs-ARC difference inside this band is a toss-up — too close
 // for the projection's precision to call.
 export const TOSS_UP_BAND_PER_ACRE = 2
 
-export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
+export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Props) {
   const supabase = useMemo(() => createClient(), [])
   const [loading, setLoading] = useState(true)
   const [farms, setFarms] = useState<Farm[]>([])
@@ -61,7 +66,9 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
   const [benchmarks, setBenchmarks] = useState<ArcBenchmarkData[]>([])
   const [monthlyPrices, setMonthlyPrices] = useState<MyaMonthlyPrice[]>([])
   const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
-  const [cropYear, setCropYear] = usePersistentState<number | ''>('arc-plc-aid:cropYear', '')
+  // Program year: the current year by default, persisted, never overwritten
+  // on load (lib/report-filters). The option list always carries this year.
+  const [cropYear, setCropYear] = useReportCropYear('arc-plc-aid:cropYear')
   const [entityId, setEntityId] = usePersistentState('arc-plc-aid:entity', '')
   const [myaPct, setMyaPct] = useState(0)
   const [detailRow, setDetailRow] = useState<string | null>(null)
@@ -294,18 +301,22 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
     const changing = cropRows.filter((r) => r.election !== election)
     if (changing.length === 0) return
     const staying = cropRows.length - changing.length
-    const ok = window.confirm(
-      `Elect ${ELECTION_LABEL[election]} for ${s.commodity.name} on all ${cropRows.length} farm${cropRows.length === 1 ? '' : 's'} (${cropYear} program year)?\n\n` +
-      `${changing.length} farm${changing.length === 1 ? '' : 's'} will change: ${changing.map((r) => r.farmName).join(', ')}` +
-      (staying > 0 ? `\n${staying} already ${ELECTION_LABEL[election]} — unchanged.` : '') +
-      `\n\nIndividual elections below stay editable afterward.`,
-    )
-    if (!ok) return
+    setElectAsk({ s, election, cropRows: cropRows.length, changing: changing.map((r) => r.farmName), staying })
+  }
+  // The elect-all confirmation (an app dialog, not window.confirm) and the
+  // save failure notice (not window.alert).
+  const [electAsk, setElectAsk] = useState<{ s: CropSummaryRow; election: ArcPlcElectionType; cropRows: number; changing: string[]; staying: number } | null>(null)
+  const [electErr, setElectErr] = useState<string | null>(null)
+  async function electAllConfirmed() {
+    if (!electAsk || cropYear === '') return
+    const { s, election } = electAsk
+    setElectAsk(null)
+    const cropRows = rows.filter((r) => r.base.commodity_id === s.commodity.id)
     const { error } = await supabase.from('arc_plc_elections').upsert(
       cropRows.map((r) => ({ farm_id: r.base.farm_id, commodity_id: s.commodity.id, crop_year: cropYear, election })),
       { onConflict: 'farm_id,commodity_id,crop_year' },
     )
-    if (error) { window.alert(`Could not save the elections: ${error.message}`); return }
+    if (error) { setElectErr(reportError(error, { action: 'save the elections' })); return }
     refresh()
   }
 
@@ -344,7 +355,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
           s.plcTotal != null ? Math.round(s.plcTotal) : '', s.arcTotal != null ? Math.round(s.arcTotal) : '',
           s.diffPerAcre != null ? s.diffPerAcre : '',
           {
-            v: s.verdict === 'PLC' ? 'Favors PLC' : s.verdict === 'ARC' ? 'Favors ARC-CO' : s.verdict === 'TOSS' ? 'Toss-up' : 'needs MYA',
+            v: s.verdict === 'PLC' ? 'Favors PLC' : s.verdict === 'ARC' ? 'Favors ARC-CO' : s.verdict === 'TOSS' ? 'Toss-up' : 'needs the marketing-year price',
             tone: (s.verdict === 'PLC' || s.verdict === 'ARC' ? 'favorable' : s.verdict === 'TOSS' ? 'neutral' : 'warning') as 'favorable' | 'neutral' | 'warning',
           },
           s.flatCount > 0 ? s.flatCount : '',
@@ -358,7 +369,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
         rows: rows.map((r) => [
           r.farmName, r.commodity.name, r.county ?? '', Math.round(r.base.base_acres), Number(r.base.plc_yield),
           r.plcNet != null ? Math.round(r.plcNet) : '', r.arcNet != null ? Math.round(r.arcNet) : '',
-          r.arc.arcMethod === 'engine' ? (r.arc.arcDetail?.capped ? 'County engine (capped)' : 'County engine') : r.arc.computable ? 'Flat $/acre estimate' : '',
+          r.arc.arcMethod === 'engine' ? (r.arc.arcDetail?.capped ? 'County figures (capped)' : 'County figures') : r.arc.computable ? 'Flat $/acre estimate' : '',
           r.favors === 'PLC' ? 'Favors PLC' : r.favors === 'ARC' ? 'Favors ARC-CO' : '—', ELECTION_LABEL[r.election],
         ]),
       }],
@@ -370,29 +381,47 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, cropSummary, cropYear, entityId, entityName, myaPct, onPayloadChange])
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
   if (loading) return <p className="text-slate-500">Loading…</p>
 
   return (
     <div className="space-y-4 print-area">
-      <div className="flex flex-wrap gap-3 items-end no-print">
-        <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Crop year *</span>
-          <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={inputCls}>
-            <option value="">— pick a crop year —</option>
+      <ReportHeader
+        title="ARC/PLC Decision Aid"
+        filterSummary={filterSummaryOf(cropYear === '' ? null : `${cropYear} Program Year`, entityName ?? 'All Entities')}
+        actions={headerActions}
+      />
+      <ReportFilterBar activeCount={entityId ? 1 : 0}>
+        <FilterField label="Program year">
+          <select value={cropYear} onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))} className={selectCls}>
             {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
-        </label>
+        </FilterField>
         <EntityFilter entities={entityOptionsFor(viewer, entities)} value={entityId} onChange={setEntityId} />
-      </div>
+      </ReportFilterBar>
 
-      {cropYear === '' && <p className="text-amber-700 text-sm">Pick a crop year.</p>}
+      <ConfirmDialog
+        open={electAsk != null}
+        title={electAsk ? `Elect ${ELECTION_LABEL[electAsk.election]} for ${electAsk.s.commodity.name} on all ${electAsk.cropRows} farm${electAsk.cropRows === 1 ? '' : 's'}?` : ''}
+        body={electAsk ? (
+          <>
+            <p>{cropYear} program year. {electAsk.changing.length} farm{electAsk.changing.length === 1 ? '' : 's'} will change: {electAsk.changing.join(', ')}.</p>
+            {electAsk.staying > 0 && <p>{electAsk.staying} already {ELECTION_LABEL[electAsk.election]} — unchanged.</p>}
+            <p className="text-slate-500">Individual elections stay editable afterward.</p>
+          </>
+        ) : undefined}
+        confirmLabel="Set elections"
+        onConfirm={electAllConfirmed}
+        onCancel={() => setElectAsk(null)}
+      />
+      <NoticeDialog open={electErr != null} title="Elections not saved" body={<p>{electErr}</p>} onClose={() => setElectErr(null)} />
+
       {cropYear !== '' && rows.length === 0 && (
         <EmptyState
           message="No base acres on file"
           hint="Add base acres to project ARC-CO and PLC payments."
           linkHref="/settings/government-payments"
           linkLabel="Set up base acres"
+          role={viewer.role}
         />
       )}
 
@@ -450,39 +479,41 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
                             {s.farms} farm{s.farms === 1 ? '' : 's'} · now {s.plcElected} PLC / {s.arcElected} ARC-CO
                           </div>
                         </td>
-                        <td className={numCell}>{Math.round(s.baseAcres).toLocaleString()}</td>
+                        <td className={numCell}>{fmtInt(s.baseAcres)}</td>
                         <td className={`${numCell} whitespace-nowrap`}>
-                          {s.myaPrice != null ? usd(s.myaPrice, 2) : '—'} {myaChip(s.myaState)}
+                          {s.myaPrice != null ? fmtUsd(s.myaPrice, 2) : '—'} {myaChip(s.myaState)}
                         </td>
-                        <td className={numCell}>{usd(s.effRef, 2)}</td>
-                        <td className={`${numCell} ${s.spread != null && s.spread > 0 ? toneText('favorable') : ''}`}>{s.spread != null ? usd(s.spread, 2) : '—'}</td>
-                        <td className={`${numCell} font-mono`}>{s.plcTotal != null ? usd(s.plcTotal) : <span className={toneText('warning')}>needs MYA</span>}</td>
-                        <td className={`${numCell} font-mono`}>{s.arcTotal != null ? usd(s.arcTotal) : <span className={toneText('warning')}>needs MYA</span>}</td>
-                        <td className={`${numCell} font-mono`}>{s.diffPerAcre != null ? `${s.diffPerAcre > 0 ? '+' : ''}${s.diffPerAcre.toFixed(2)}` : '—'}</td>
+                        <td className={numCell}>{fmtUsd(s.effRef, 2)}</td>
+                        <td className={`${numCell} ${s.spread != null && s.spread > 0 ? toneText('favorable') : ''}`}>{s.spread != null ? fmtUsd(s.spread, 2) : '—'}</td>
+                        <td className={`${numCell}`}>{s.plcTotal != null ? fmtUsd(s.plcTotal) : <span className={toneText('warning')}>needs the marketing-year price</span>}</td>
+                        <td className={`${numCell}`}>{s.arcTotal != null ? fmtUsd(s.arcTotal) : <span className={toneText('warning')}>needs the marketing-year price</span>}</td>
+                        <td className={`${numCell}`}>{s.diffPerAcre != null ? `${s.diffPerAcre > 0 ? '+' : ''}${s.diffPerAcre.toFixed(2)}` : '—'}</td>
                         <td className="px-2 py-1 whitespace-nowrap">
                           {s.verdict === 'PLC' && <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5 font-semibold">Favors PLC</span>}
                           {s.verdict === 'ARC' && <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5 font-semibold">Favors ARC-CO</span>}
-                          {s.verdict === 'TOSS' && <span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5 font-semibold" title={`Within $${TOSS_UP_BAND_PER_ACRE}/base acre — too close to call`}>Toss-up</span>}
+                          {s.verdict === 'TOSS' && <InfoTip label="Toss-up" tone="muted">Within ${TOSS_UP_BAND_PER_ACRE} per base acre — too close to call.</InfoTip>}
                           {s.verdict == null && <span className="text-xs text-slate-400">—</span>}
                           {s.flatCount > 0 && (
-                            <span className="ml-1 text-[10px] rounded-full bg-amber-100 text-amber-800 px-1.5 py-0.5 whitespace-nowrap" title="These farms have no county benchmark row — their ARC-CO side uses the flat $/acre estimate.">
-                              {s.flatCount} on flat est.
-                            </span>
+                            <InfoTip label={`${s.flatCount} on a flat estimate`} tone="warning" className="ml-1">
+                              These farms have no county benchmark row yet, so their ARC-CO side uses your flat dollars-per-acre estimate.
+                            </InfoTip>
                           )}
                         </td>
                         <td className="px-2 py-1 no-print whitespace-nowrap">
                           <span className="inline-flex rounded-lg border border-slate-300 overflow-hidden text-xs">
                             <button
+                              type="button"
                               onClick={() => electAllForCommodity(s, 'PLC')}
                               disabled={s.plcElected === s.farms}
-                              title={s.plcElected === s.farms ? 'Every farm is already PLC' : `Set PLC on all ${s.farms} farms`}
-                              className={`px-2 py-1 disabled:opacity-40 ${s.verdict === 'PLC' ? 'bg-sky-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                              aria-label={s.plcElected === s.farms ? 'Every farm is already PLC' : `Set PLC on all ${s.farms} farms`}
+                              className={`px-2 min-h-10 disabled:opacity-40 ${s.verdict === 'PLC' ? 'bg-slate-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
                             >All PLC</button>
                             <button
+                              type="button"
                               onClick={() => electAllForCommodity(s, 'ARC_CO')}
                               disabled={s.arcElected === s.farms}
-                              title={s.arcElected === s.farms ? 'Every farm is already ARC-CO' : `Set ARC-CO on all ${s.farms} farms`}
-                              className={`px-2 py-1 border-l border-slate-300 disabled:opacity-40 ${s.verdict === 'ARC' ? 'bg-brand hover:bg-brand-deep text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                              aria-label={s.arcElected === s.farms ? 'Every farm is already ARC-CO' : `Set ARC-CO on all ${s.farms} farms`}
+                              className={`px-2 min-h-10 border-l border-slate-300 disabled:opacity-40 ${s.verdict === 'ARC' ? 'bg-brand hover:bg-brand-deep text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
                             >All ARC-CO</button>
                           </span>
                         </td>
@@ -553,11 +584,11 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
                         {r.commodity.name}
                         {r.county && <span className="text-xs text-slate-400"> · {r.county}</span>}
                       </td>
-                      <td className={numCell}>{Number(r.base.base_acres).toLocaleString()}</td>
+                      <td className={numCell}>{fmtInt(r.base.base_acres)}</td>
                       <td className={numCell}>{Number(r.base.plc_yield)}</td>
-                      <td className={`${numCell} ${r.favors === 'PLC' ? `bg-green-50 font-semibold ${toneText('favorable')}` : ''}`}>{r.plcNet != null ? usd(r.plcNet) : <span className={toneText('warning')}>needs MYA</span>}</td>
+                      <td className={`${numCell} ${r.favors === 'PLC' ? `bg-green-50 font-semibold ${toneText('favorable')}` : ''}`}>{r.plcNet != null ? fmtUsd(r.plcNet) : <span className={toneText('warning')}>needs the marketing-year price</span>}</td>
                       <td className={`${numCell} ${r.favors === 'ARC' ? `bg-green-50 font-semibold ${toneText('favorable')}` : ''}`}>
-                        {r.arcNet != null ? usd(r.arcNet) : <span className={toneText('warning')}>{r.arc.arcMethod === 'flat' ? 'enter rate or benchmark' : 'needs MYA'}</span>}
+                        {r.arcNet != null ? fmtUsd(r.arcNet) : <span className={toneText('warning')}>{r.arc.arcMethod === 'flat' ? 'enter rate or benchmark' : 'needs the marketing-year price'}</span>}
                         {r.arc.arcMethod === 'engine' && r.arc.arcDetail?.capped && (
                           <span className="ml-1 text-[10px] rounded-full bg-violet-100 text-violet-800 px-1.5 py-0.5 whitespace-nowrap align-middle">capped at {Math.round((r.arc.arcDetail.capPct) * 100)}%</span>
                         )}
@@ -589,27 +620,27 @@ export default function ArcPlcDecisionAid({ onPayloadChange }: Props) {
                         <td colSpan={9} className="px-3 py-2 text-xs text-slate-600">
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1 max-w-3xl">
                             <div>
-                              <b>PLC:</b> rate = max(0, ERP {usd(r.plc.effectiveReferencePrice, 2)} − max(MYA{' '}
-                              {r.plc.myaPrice != null ? usd(r.plc.myaPrice, 2) : '—'}, loan {usd(Number(r.commodity.national_loan_rate), 2)})) ={' '}
-                              {usd(r.plc.paymentRatePerUnit, 4)}/unit × PLC yield {Number(r.base.plc_yield)} × {Number(r.base.base_acres).toLocaleString()} ac
-                              × {programCfg.paymentFactor} × (1 − {(programCfg.sequestrationPct * 100).toFixed(1)}% seq.) = <b>{r.plcNet != null ? usd(r.plcNet) : '—'}</b>
+                              <b>PLC:</b> rate = max(0, effective reference price {fmtUsd(r.plc.effectiveReferencePrice, 2)} − max(MYA{' '}
+                              {r.plc.myaPrice != null ? fmtUsd(r.plc.myaPrice, 2) : '—'}, loan {fmtUsd(Number(r.commodity.national_loan_rate), 2)})) ={' '}
+                              {fmtUsd(r.plc.paymentRatePerUnit, 4)}/unit × PLC yield {Number(r.base.plc_yield)} × {fmtInt(r.base.base_acres)} ac
+                              × {programCfg.paymentFactor} × (1 − {(programCfg.sequestrationPct * 100).toFixed(1)}% sequestration) = <b>{r.plcNet != null ? fmtUsd(r.plcNet) : '—'}</b>
                             </div>
                             <div>
                               {r.arc.arcMethod === 'engine' && r.arc.arcDetail ? (
                                 <>
-                                  <b>ARC-CO (county engine):</b> benchmark {usd(r.arc.arcDetail.benchmarkPrice, 2)} × {r.arc.arcDetail.benchmarkYield} ={' '}
-                                  {usd(r.arc.arcDetail.benchmarkRevenue, 2)}/ac; guarantee {Math.round(r.arc.arcDetail.guaranteePct * 100)}% = {usd(r.arc.arcDetail.guarantee, 2)};
+                                  <b>ARC-CO (county figures):</b> benchmark {fmtUsd(r.arc.arcDetail.benchmarkPrice, 2)} × {r.arc.arcDetail.benchmarkYield} ={' '}
+                                  {fmtUsd(r.arc.arcDetail.benchmarkRevenue, 2)}/ac; guarantee {Math.round(r.arc.arcDetail.guaranteePct * 100)}% = {fmtUsd(r.arc.arcDetail.guarantee, 2)};
                                   actual = {r.arc.arcDetail.actualCountyYield} ({r.arc.arcDetail.countyYieldVsBenchmarkPct > 0 ? '+' : ''}{r.arc.arcDetail.countyYieldVsBenchmarkPct}% vs benchmark)
-                                  × MYA = {usd(r.arc.arcDetail.actualRevenue, 2)}; rate = {usd(r.arc.paymentRatePerUnit, 2)}/ac
-                                  {r.arc.arcDetail.capped ? ` (capped at ${Math.round(r.arc.arcDetail.capPct * 100)}% = ${usd(r.arc.arcDetail.maxRatePerAcre, 2)})` : ''} ×{' '}
-                                  {Number(r.base.base_acres).toLocaleString()} ac × {programCfg.paymentFactor} × (1 − {(programCfg.sequestrationPct * 100).toFixed(1)}% seq.) = <b>{r.arcNet != null ? usd(r.arcNet) : '—'}</b>
+                                  × MYA = {fmtUsd(r.arc.arcDetail.actualRevenue, 2)}; rate = {fmtUsd(r.arc.paymentRatePerUnit, 2)}/ac
+                                  {r.arc.arcDetail.capped ? ` (capped at ${Math.round(r.arc.arcDetail.capPct * 100)}% = ${fmtUsd(r.arc.arcDetail.maxRatePerAcre, 2)})` : ''} ×{' '}
+                                  {fmtInt(r.base.base_acres)} ac × {programCfg.paymentFactor} × (1 − {(programCfg.sequestrationPct * 100).toFixed(1)}% sequestration) = <b>{r.arcNet != null ? fmtUsd(r.arcNet) : '—'}</b>
                                 </>
                               ) : (
                                 <>
                                   <b>ARC-CO (flat fallback):</b> no county benchmark data — user-entered rate{' '}
-                                  {r.arc.computable ? `${usd(r.arc.paymentRatePerUnit, 2)}/ac` : 'not entered'} × {Number(r.base.base_acres).toLocaleString()} ac
-                                  × {programCfg.paymentFactor} × (1 − {(programCfg.sequestrationPct * 100).toFixed(1)}% seq.)
-                                  {r.arcNet != null ? <> = <b>{usd(r.arcNet)}</b></> : null}. Add benchmark data in Settings for the real county-revenue calc.
+                                  {r.arc.computable ? `${fmtUsd(r.arc.paymentRatePerUnit, 2)}/ac` : 'not entered'} × {fmtInt(r.base.base_acres)} ac
+                                  × {programCfg.paymentFactor} × (1 − {(programCfg.sequestrationPct * 100).toFixed(1)}% sequestration)
+                                  {r.arcNet != null ? <> = <b>{fmtUsd(r.arcNet)}</b></> : null}. Add benchmark data in Settings for the real county-revenue calc.
                                 </>
                               )}
                             </div>

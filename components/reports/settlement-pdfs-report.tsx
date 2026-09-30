@@ -18,6 +18,9 @@ import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import ExportBar from '@/components/export-bar'
+import { ReportHeader, ReportFilterBar, FilterField, selectCls, filterSummaryOf, cropYearLabel } from '@/components/reports/report-kit'
+import { useReportCropYear } from '@/lib/report-filters'
+import { usePersistentState } from '@/lib/use-persistent-state'
 import type { ExportPayload } from '@/lib/exports'
 import type { Crop, FieldPlanting } from '@/lib/types'
 
@@ -69,8 +72,12 @@ export default function SettlementPdfsReport() {
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [settlements, setSettlements] = useState<SettlementRow[]>([])
 
-  const [cropId, setCropId] = useState('')
-  const [cropYear, setCropYear] = useState<number | ''>('')
+  // Filters persist per report; the crop year follows the one report rule
+  // (current year by default, an untouched default falls back to the newest
+  // year with plantings — lib/report-filters).
+  const [cropId, setCropId] = usePersistentState('settlement-pdfs:cropId', '')
+  const plantingYears = useMemo(() => Array.from(new Set(plantings.map((p) => p.season_year))), [plantings])
+  const [cropYear, setCropYear] = useReportCropYear('settlement-pdfs:cropYear', { options: plantingYears, loaded: !loading })
 
   const [busy, setBusy] = useState(false)
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
@@ -97,8 +104,8 @@ export default function SettlementPdfsReport() {
       setCrops((cr.data as Crop[]) || [])
       setPlantings(((pl.data as Pick<FieldPlanting, 'season_year'>[]) || []) as FieldPlanting[])
       setSettlements((st.data as unknown as SettlementRow[]) || [])
-      const yrs = (pl.data as Array<{ season_year: number }> | null)?.map((p) => p.season_year) ?? []
-      if (yrs.length > 0) setCropYear(Math.max(...yrs))
+      // The crop-year hook falls back to the newest planting year on its own
+      // when nothing is remembered — never overwrite a remembered pick here.
       setLoading(false)
     })()
   }, [supabase])
@@ -193,55 +200,56 @@ export default function SettlementPdfsReport() {
     }
   }
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
-
   if (loading) return <p className="text-slate-500">Loading…</p>
 
   return (
     <div className="space-y-4">
+      <ReportHeader
+        title="Bundled Settlement Statements"
+        filterSummary={filterSummaryOf(cropYear === '' ? null : cropYearLabel(cropYear), cropName || null)}
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            {eligible.length > 0 && <ExportBar buildPayload={buildPayload} />}
+            <button
+              type="button"
+              onClick={onDownload}
+              disabled={busy || withPdf.length === 0}
+              className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-10 text-sm font-semibold disabled:opacity-50"
+            >
+              {busy
+                ? progress
+                  ? `Bundling… (${progress.done}/${progress.total})`
+                  : 'Bundling…'
+                : withPdf.length > 0
+                ? `Download ZIP (${withPdf.length})`
+                : 'Download ZIP'}
+            </button>
+          </div>
+        }
+      />
       <p className="text-sm text-slate-600 max-w-3xl">
         Crop-insurance audits require the buyer&apos;s settlement statements to verify the
         production you self-reported. Pick a crop and crop year — every settlement with
         a matching load gets bundled into a single zip of PDFs you can hand to the agent.
       </p>
 
-      <div className="flex flex-wrap gap-3 items-end">
-        <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Crop *</span>
-          <select value={cropId} onChange={(e) => setCropId(e.target.value)} className={inputCls}>
+      <ReportFilterBar activeCount={(cropId ? 1 : 0) + (cropYear !== '' ? 1 : 0)}>
+        <FilterField label="Crop">
+          <select value={cropId} onChange={(e) => setCropId(e.target.value)} className={selectCls}>
             <option value="">— pick a crop —</option>
             {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
-        </label>
-        <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Crop year *</span>
+        </FilterField>
+        <FilterField label="Crop year">
           <select
             value={cropYear}
             onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))}
-            className={inputCls}
+            className={selectCls}
           >
-            <option value="">— pick a crop year —</option>
-            {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
+            {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
-        </label>
-        <div className="ml-auto flex items-center gap-2">
-          {eligible.length > 0 && <ExportBar buildPayload={buildPayload} />}
-          <button
-            type="button"
-            onClick={onDownload}
-            disabled={busy || withPdf.length === 0}
-            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 text-sm font-semibold disabled:opacity-50"
-          >
-            {busy
-              ? progress
-                ? `Bundling… (${progress.done}/${progress.total})`
-                : 'Bundling…'
-              : withPdf.length > 0
-              ? `Download ZIP (${withPdf.length})`
-              : 'Download ZIP'}
-          </button>
-        </div>
-      </div>
+        </FilterField>
+      </ReportFilterBar>
 
       {err && <p className="text-sm text-red-600">{err}</p>}
 

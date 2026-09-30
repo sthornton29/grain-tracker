@@ -18,11 +18,7 @@ export default function ShareRentReportPage() {
   }, [])
   return (
     <div className="space-y-4">
-      <div className="flex items-end gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold flex-1">Share Rent Report</h1>
-        <ExportBar buildPayload={() => buildPayload()} />
-      </div>
-      <ShareRentReport onPayloadChange={handlePayload} />
+      <ShareRentReport onPayloadChange={handlePayload} headerActions={<ExportBar buildPayload={() => buildPayload()} />} />
     </div>
   )
 }

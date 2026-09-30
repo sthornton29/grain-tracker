@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@/lib/supabase/client'
+import { reportError } from '@/lib/friendly-error'
+import { useDialogs } from '@/components/use-dialogs'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
@@ -24,6 +26,7 @@ import type {
 } from '@/lib/types'
 
 export default function CropInsuranceSettingsPage() {
+  const { confirmText, dialogs } = useDialogs()
   const supabase = useMemo(() => createClient(), [])
   const [crops, setCrops] = useState<Crop[]>([])
   const [counties, setCounties] = useState<County[]>([])
@@ -127,10 +130,10 @@ export default function CropInsuranceSettingsPage() {
     setErr(null)
     const { policy, sco, eco, stax, mco } = policyFormToPayloads(form, 'manual')
     const { data, error } = await supabase.from('crop_insurance_policies').insert(policy).select('id').single()
-    if (error || !data) { setErr(error?.message ?? 'Insert failed.'); return }
+    if (error || !data) { setErr(reportError(error, { action: 'add the policy', noun: 'policy' })); return }
     try {
       await syncEndorsements((data as { id: string }).id, sco, eco, stax, mco)
-    } catch (e2: any) { setErr(e2?.message ?? 'Saving endorsements failed.'); refresh(); return }
+    } catch (e2: any) { setErr(reportError(e2, { action: 'save the endorsements' })); refresh(); return }
     setForm({ ...emptyPolicyForm, crop_year: form.crop_year, entity_id: form.entity_id })
     setShowAdd(false)
     refresh()
@@ -142,18 +145,18 @@ export default function CropInsuranceSettingsPage() {
     setErr(null)
     const { policy, sco, eco, stax, mco } = policyFormToPayloads(editForm, 'manual')
     const { error } = await supabase.from('crop_insurance_policies').update(policy).eq('id', id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     try {
       await syncEndorsements(id, sco, eco, stax, mco)
-    } catch (e2: any) { setErr(e2?.message ?? 'Saving endorsements failed.'); refresh(); return }
+    } catch (e2: any) { setErr(reportError(e2, { action: 'finish that' })); refresh(); return }
     setEditingId(null)
     refresh()
   }
 
   async function remove(id: string) {
-    if (!confirm('Delete this policy and its SCO/ECO endorsements?')) return
+    if (!(await confirmText('Delete this policy and its SCO/ECO endorsements?'))) return
     const { error } = await supabase.from('crop_insurance_policies').delete().eq('id', id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     refresh()
   }
 
@@ -358,6 +361,7 @@ export default function CropInsuranceSettingsPage() {
       </div>
 
 
+      {dialogs}
     </div>
   )
 }

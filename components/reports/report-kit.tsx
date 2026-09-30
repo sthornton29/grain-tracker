@@ -12,7 +12,9 @@
 //   muted      = gray   (excluded / not applicable)
 //   neutral    = slate  (default)
 
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { roleAllowsPath } from '@/lib/route-guard'
+import type { AppRole } from '@/lib/types'
 
 // ---------- number formatting ----------
 
@@ -24,9 +26,14 @@ export function fmtNum(n: number | null | undefined, d = 2): string {
   if (n == null || !Number.isFinite(Number(n))) return ''
   return Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })
 }
+// Dollars: negatives in parentheses — the financial convention every export
+// already follows (lib/exports.ts). This is THE on-screen dollar formatter;
+// reports must not keep private `usd` helpers that print "$-1,234".
 export function fmtUsd(n: number | null | undefined, d = 0): string {
   if (n == null || !Number.isFinite(Number(n))) return '—'
-  return `$${Number(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`
+  const v = Number(n)
+  const body = `$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`
+  return v < 0 ? `(${body})` : body
 }
 export function fmtPct(n: number | null | undefined, d = 0): string {
   if (n == null || !Number.isFinite(Number(n))) return '—'
@@ -47,6 +54,17 @@ export function toneText(tone: Tone): string {
   }
 }
 
+// Fill color for a bar segment with the same semantics as toneText.
+export function toneFill(tone: Tone): string {
+  switch (tone) {
+    case 'favorable': return 'bg-green-600'
+    case 'unfavorable': return 'bg-red-600'
+    case 'warning': return 'bg-amber-500'
+    case 'muted': return 'bg-slate-300'
+    default: return 'bg-slate-600'
+  }
+}
+
 // Tone for a signed number: positive favorable, negative unfavorable, else muted.
 export function signedTone(n: number | null | undefined): Tone {
   if (n == null || !Number.isFinite(Number(n)) || Number(n) === 0) return 'muted'
@@ -61,6 +79,38 @@ export const textCell = 'px-2 py-1'
 export const theadCls = 'bg-slate-100 text-slate-700 sticky top-0 z-10'
 export const subtotalRowCls = 'bg-slate-50 font-semibold'
 export const grandTotalRowCls = 'bg-slate-100 font-bold border-t-2 border-slate-400'
+// Sticky first column for wide tables on iPad: put `stickyColCls` on the first
+// <th> and <td> of each row (the government-payments pattern). Header cells
+// need `${theadCls}` behind them so the sticky header keeps its background.
+export const stickyColCls = 'sticky left-0 z-[1] bg-white shadow-[inset_-1px_0_0_#e2e8f0]'
+export const stickyColHeadCls = 'sticky left-0 z-20 bg-slate-100 shadow-[inset_-1px_0_0_#e2e8f0]'
+// Every tappable control at least 40px tall (iPad-in-truck).
+export const touchTarget = 'min-h-10 min-w-10'
+// The one filter <select> look.
+export const selectCls = 'rounded-lg border border-slate-300 px-3 py-2 bg-white text-sm min-h-10'
+export const inputCls = 'rounded-lg border border-slate-300 px-3 py-2 bg-white text-sm min-h-10'
+
+// ---------- FilterField (a labeled select / input) ----------
+
+// Every filter control gets a visible label. Wraps a <select> or <input>.
+export function FilterField({ label, children, className }: { label: string; children: ReactNode; className?: string }) {
+  return (
+    <label className={`text-sm flex flex-col gap-1 ${className ?? ''}`}>
+      <span className="text-slate-500">{label}</span>
+      {children}
+    </label>
+  )
+}
+
+// Plain-English filter summary: joins the non-blank parts with " · ".
+export function filterSummaryOf(...parts: Array<string | null | undefined | false>): string {
+  return parts.filter((p): p is string => typeof p === 'string' && p.trim().length > 0).join(' · ')
+}
+
+// "2026 Crop Year" / "All crop years".
+export function cropYearLabel(y: number | '' | null | undefined): string {
+  return y === '' || y == null ? 'All crop years' : `${y} Crop Year`
+}
 
 // ---------- ReportHeader ----------
 
@@ -126,6 +176,9 @@ export type SummaryCardData = {
   value: string
   sub?: string
   tone?: Tone
+  /** Makes the card a button — for a drill-down into where the number
+   *  comes from. The whole card is the target (iPad-sized). */
+  onClick?: () => void
 }
 
 export function SummaryCards({ cards }: { cards: SummaryCardData[] }) {
@@ -137,36 +190,253 @@ export function SummaryCards({ cards }: { cards: SummaryCardData[] }) {
   )
 }
 
-export function SummaryCard({ label, value, sub, tone = 'neutral' }: SummaryCardData) {
-  return (
-    <div className="bg-white rounded-xl shadow p-4">
+export function SummaryCard({ label, value, sub, tone = 'neutral', onClick }: SummaryCardData) {
+  const body = (
+    <>
       <div className="text-xs text-slate-500 uppercase tracking-wide">{label}</div>
       <div className={`text-2xl font-bold mt-1 tabular-nums ${toneText(tone)}`}>{value}</div>
       {sub && <div className="text-xs text-slate-500 mt-0.5">{sub}</div>}
-    </div>
+    </>
   )
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className="bg-white rounded-xl shadow p-4 text-left w-full hover:shadow-md hover:bg-slate-50 focus-visible:ring-2 focus-visible:ring-brand min-h-11"
+        aria-label={`${label}: ${value}. Show where it comes from.`}
+      >
+        {body}
+        <div className="text-[11px] text-brand-deep mt-1 no-print">Tap for detail</div>
+      </button>
+    )
+  }
+  return <div className="bg-white rounded-xl shadow p-4">{body}</div>
 }
 
 // ---------- EmptyState ----------
 
-// Friendly empty state: what's missing + where to fix it.
+// Friendly empty state: what's missing + where to fix it. Pass the user's
+// `role` (or `canFix`) so a viewer / agronomist is never handed a link to a
+// page they cannot open — they get "Ask the operator to …" instead.
 export function EmptyState({
-  message, hint, linkHref, linkLabel,
+  message, hint, linkHref, linkLabel, role, canFix,
 }: {
   message: string
   hint?: string
   linkHref?: string
   linkLabel?: string
+  /** The current user's role; the link is shown only if the role may open it. */
+  role?: AppRole
+  /** Explicit override of the role check. */
+  canFix?: boolean
 }) {
+  const allowed = canFix ?? (role == null || !linkHref ? true : roleAllowsPath(role, linkHref))
+  const ask = linkLabel ? `Ask the operator to ${linkLabel.charAt(0).toLowerCase()}${linkLabel.slice(1)}.` : null
   return (
     <div className="bg-white rounded-xl shadow p-8 text-center">
       <p className="text-slate-600 font-medium">{message}</p>
       {hint && <p className="text-sm text-slate-400 mt-1">{hint}</p>}
-      {linkHref && linkLabel && (
-        <a href={linkHref} className="inline-block mt-3 text-brand-deep font-semibold hover:underline">
+      {linkHref && linkLabel && allowed && (
+        <a href={linkHref} className="inline-flex items-center mt-3 min-h-10 px-2 text-brand-deep font-semibold hover:underline">
           {linkLabel} →
         </a>
       )}
+      {linkHref && linkLabel && !allowed && ask && (
+        <p className="text-sm text-slate-500 mt-3">{ask}</p>
+      )}
+    </div>
+  )
+}
+
+// ---------- InfoTip (tap-to-reveal explanation) ----------
+
+// A badge or "?" that opens its explanation on tap/click/keyboard — never a
+// title= tooltip, which iPad cannot show. The explanation renders in a small
+// popover under the trigger; tap anywhere else or press Escape to close.
+export function InfoTip({
+  label, children, tone = 'neutral', className, ariaLabel,
+}: {
+  /** The visible trigger text (e.g. "includes assumptions" or "?"). */
+  label: ReactNode
+  /** The explanation. */
+  children: ReactNode
+  tone?: Tone
+  className?: string
+  ariaLabel?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const wrap = useRef<HTMLSpanElement>(null)
+  useEffect(() => {
+    if (!open) return
+    function onDoc(e: MouseEvent | TouchEvent) {
+      if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false)
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDoc)
+    document.addEventListener('touchstart', onDoc)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDoc)
+      document.removeEventListener('touchstart', onDoc)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+  const pill = tone === 'warning'
+    ? 'bg-amber-100 text-amber-800'
+    : tone === 'favorable'
+      ? 'bg-green-100 text-green-800'
+      : tone === 'unfavorable'
+        ? 'bg-red-100 text-red-800'
+        : tone === 'muted'
+          ? 'bg-slate-100 text-slate-500'
+          : 'bg-slate-100 text-slate-700'
+  return (
+    <span ref={wrap} className={`relative inline-block align-middle no-print ${className ?? ''}`}>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        onClick={() => setOpen((s) => !s)}
+        className={`inline-flex items-center rounded-full px-2 min-h-6 text-[11px] font-medium leading-none ${pill} hover:brightness-95`}
+      >
+        {label}
+      </button>
+      {open && (
+        <span
+          role="note"
+          className="absolute left-0 top-full mt-1 z-30 w-64 max-w-[80vw] rounded-lg border border-slate-200 bg-white p-2 text-xs text-left font-normal text-slate-700 shadow-lg whitespace-normal"
+        >
+          {children}
+        </span>
+      )}
+    </span>
+  )
+}
+
+// ---------- SourceChip (small muted tag, e.g. where a line came from) ----------
+
+export function SourceChip({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <span className={`inline-block rounded-full bg-slate-100 text-slate-500 text-[10px] font-medium px-1.5 py-0.5 align-middle whitespace-nowrap ${className ?? ''}`}>
+      {children}
+    </span>
+  )
+}
+
+// ---------- Disclosure (a collapsed "Needs attention (N)" panel) ----------
+
+export function Disclosure({
+  title, count, children, defaultOpen = false, tone = 'warning', className,
+}: {
+  title: string
+  count?: number
+  children: ReactNode
+  defaultOpen?: boolean
+  tone?: Tone
+  className?: string
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+  const border = tone === 'warning'
+    ? 'border-amber-200 bg-amber-50 text-amber-900'
+    : tone === 'unfavorable'
+      ? 'border-red-200 bg-red-50 text-red-900'
+      : 'border-slate-200 bg-slate-50 text-slate-800'
+  return (
+    <div className={`rounded-lg border ${border} no-print ${className ?? ''}`}>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((s) => !s)}
+        className="w-full flex items-center gap-2 px-3 min-h-10 text-sm font-semibold text-left"
+      >
+        <span aria-hidden className="text-xs">{open ? '▾' : '▸'}</span>
+        <span className="flex-1">
+          {title}{count != null && <span className="font-normal"> ({count})</span>}
+        </span>
+      </button>
+      {open && <div className="px-3 pb-3 text-sm space-y-2">{children}</div>}
+    </div>
+  )
+}
+
+// ---------- ViewTabs (a row of view switches sharing one filter strip) ----------
+
+export function ViewTabs<T extends string>({
+  tabs, value, onChange, ariaLabel = 'View',
+}: {
+  tabs: Array<{ key: T; label: string }>
+  value: T
+  onChange: (v: T) => void
+  ariaLabel?: string
+}) {
+  return (
+    <div role="tablist" aria-label={ariaLabel} className="flex flex-wrap gap-1 border-b border-slate-200 no-print">
+      {tabs.map((t) => {
+        const active = t.key === value
+        return (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(t.key)}
+            className={`min-h-10 px-3 text-sm font-medium -mb-px border-b-2 ${active ? 'border-brand text-brand-dark' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+          >
+            {t.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ---------- MonthlyBars (a stacked bar per period, no chart library) ----------
+
+export type MonthlyBarSeries = { key: string; label: string; className: string }
+export type MonthlyBarRow = { key: string; label: string; values: Record<string, number> }
+
+// One stacked bar per month, all bars on a shared scale, with a legend. Values
+// below zero are ignored (outflows are listed in the table underneath).
+export function MonthlyBars({
+  series, rows, format = (n) => fmtUsd(n, 0), height = 'h-32',
+}: {
+  series: MonthlyBarSeries[]
+  rows: MonthlyBarRow[]
+  format?: (n: number) => string
+  height?: string
+}) {
+  const totals = rows.map((r) => series.reduce((s, x) => s + Math.max(0, r.values[x.key] ?? 0), 0))
+  const max = Math.max(0, ...totals)
+  if (rows.length === 0 || max <= 0) return null
+  return (
+    <div className="space-y-2">
+      <div className={`flex items-end gap-1 ${height} overflow-x-auto px-1`}>
+        {rows.map((r, i) => (
+          <div key={r.key} className="flex-1 min-w-[1.25rem] h-full flex flex-col justify-end" title={`${r.label}: ${format(totals[i])}`}>
+            <div className="flex flex-col-reverse rounded-t overflow-hidden" style={{ height: `${(totals[i] / max) * 100}%` }}>
+              {series.map((s) => {
+                const v = Math.max(0, r.values[s.key] ?? 0)
+                if (v <= 0 || totals[i] <= 0) return null
+                return <div key={s.key} className={s.className} style={{ height: `${(v / totals[i]) * 100}%` }} aria-label={`${s.label} ${format(v)}`} />
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-1 px-1 text-[10px] text-slate-500">
+        {rows.map((r) => (
+          <div key={r.key} className="flex-1 min-w-[1.25rem] text-center truncate">{r.label}</div>
+        ))}
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-600">
+        {series.map((s) => (
+          <span key={s.key} className="inline-flex items-center gap-1">
+            <span className={`inline-block w-3 h-3 rounded-sm ${s.className}`} aria-hidden />
+            {s.label}
+          </span>
+        ))}
+      </div>
     </div>
   )
 }

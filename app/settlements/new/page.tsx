@@ -29,9 +29,18 @@ import {
 } from '@/lib/settlement-discounts'
 import type { Buyer } from '@/lib/types'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
+import { BuyerPicker } from '@/components/buyer-location-pickers'
 import { matchAllTickets, normalizeTicket, type TicketMatch, type TicketMatchResult } from '@/lib/ticket-matching'
 import { computeBushels } from '@/lib/shrink'
 import type { SettlementGradeReadings } from '@/lib/pdf-upload'
+import { reportError } from '@/lib/friendly-error'
+import { fmtDate } from '@/lib/format-date'
+import {
+  buildPaidIndex, duplicateVerdict, findDuplicateSettlement, paidRefFor, paidRefLabel,
+  type ExistingLine, type ExistingSettlement, type PaidRef,
+} from '@/lib/settlement-duplicates'
+import { useDialogs } from '@/components/use-dialogs'
+import { fmtUsd, fmtInt, fmtNum } from '@/components/reports/report-kit'
 
 type LoadMatch = {
   id: string
@@ -154,28 +163,61 @@ export default function NewSettlementPage() {
   const [discountRows, setDiscountRows] = useState<DiscountDraft[]>([])
   const [err, setErr] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // Field-level problems shown on tap of Save (the button stays enabled).
+  const [fieldErr, setFieldErr] = useState<{ buyer?: string; date?: string; lines?: string }>({})
 
   // AI-assisted extraction state. `source` is the PDF or captured photos.
   const [source, setSource] = useState<DocumentSource | null>(null)
   const [aiStage, setAiStage] = useState<string | null>(null)
   const [aiBanner, setAiBanner] = useState<string | null>(null)
+  // What's already saved, for the duplicate check (lib/settlement-duplicates):
+  // every settlement header and every line's load / ticket.
+  const [existingSettlements, setExistingSettlements] = useState<ExistingSettlement[]>([])
+  const [existingLines, setExistingLines] = useState<ExistingLine[]>([])
+  const { confirm, dialogs } = useDialogs()
 
   useEffect(() => {
     ;(async () => {
-      const [b, l, c] = await Promise.all([
+      const [b, l, c, s, sl] = await Promise.all([
         supabase.from('buyers').select('*').order('name'),
         fetchAllRows((f, t) => supabase.from('loads')
           .select('id, date, ticket_number, crop_id, crop:crops(name, base_moisture_pct, base_lb_per_bushel), contract_id, to_buyer_id, net_weight, gross_weight, tare_weight, moisture, test_weight, dry_bushels_override, truck_id, truck:trucks(license_plate)')
           .eq('to_type', 'buyer').order('id').range(f, t)),
         fetchAllRows((f, t) => supabase.from('contracts').select('id, contract_number, buyer_id, crop_id').order('contract_number').order('id').range(f, t)),
+        // The 086 payment columns first; without them (a fresh organization
+        // before that migration) the base header still drives the check.
+        fetchAllRows((f, t) => supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_number, check_number, payment_number').order('id').range(f, t))
+          .then((r) => r.error
+            ? fetchAllRows((f, t) => supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_number').order('id').range(f, t))
+            : r),
+        fetchAllRows((f, t) => supabase.from('settlement_lines').select('settlement_id, load_id, ticket_number').order('id').range(f, t)),
       ])
       setBuyers((b.data as Buyer[]) || [])
       setLoads(((l.data as unknown) as LoadMatch[]) ?? [])
       setContracts(((c.data as unknown) as Array<{ id: string; contract_number: string; buyer_id: string | null; crop_id: string | null }>) ?? [])
+      setExistingSettlements(((s.data as unknown) as ExistingSettlement[]) ?? [])
+      setExistingLines(((sl.data as unknown) as ExistingLine[]) ?? [])
     })()
   }, [supabase])
 
+  const paidIndex = useMemo(() => buildPaidIndex(existingLines, existingSettlements), [existingLines, existingSettlements])
+  // The saved statement this header repeats (same buyer + settlement /
+  // check / payment number), live as the header fields change.
+  const duplicateHeader = useMemo(
+    () => findDuplicateSettlement({ buyerId: buyerId || null, settlementNumber: settlementNumber, checkNumber: payment.check_number, paymentNumber: payment.payment_number }, existingSettlements),
+    [buyerId, settlementNumber, payment.check_number, payment.payment_number, existingSettlements],
+  )
+
   const loadById = useMemo(() => new Map(loads.map((l) => [l.id, l])), [loads])
+  // The buyer's recent loads, newest first — offered on a "No match" line so
+  // a ticket the buyer renumbered can still be tied to the load by hand.
+  const recentBuyerLoads = useMemo(() => {
+    if (!buyerId) return [] as LoadMatch[]
+    return loads
+      .filter((l) => l.to_buyer_id === buyerId)
+      .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+      .slice(0, 60)
+  }, [loads, buyerId])
   // The header contract (086): the buyer's contract whose number matches.
   const headerContract = useMemo(() => {
     const n = normalizeTicket(contractNumber)
@@ -233,6 +275,16 @@ export default function NewSettlementPage() {
     return { load: null, match: null, candidates: [], status: 'unmatched' }
   }
 
+  // Already paid? The matched load's saved settlement line, or this ticket
+  // on a saved line for the same buyer (lib/settlement-duplicates).
+  function paidFor(i: number): PaidRef | null {
+    const r = rows[i]
+    if (!r || r.excluded) return null
+    return paidRefFor({ loadId: matchFor(i).load?.id ?? null, ticketNumber: r.ticket_number, buyerId: buyerId || null }, paidIndex)
+  }
+  const dupVerdict = duplicateVerdict(rows.map((r, i) => ({ excluded: !!r.excluded, paid: paidFor(i) })))
+  const paidLabel = (ref: PaidRef) => paidRefLabel(ref, fmtDate)
+
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
@@ -252,7 +304,7 @@ export default function NewSettlementPage() {
         if (i >= 0) idx[h] = i
       }
       if (!('ticket_number' in idx)) {
-        setErr('CSV is missing a ticket_number column.')
+        setErr('That spreadsheet has no ticket_number column. Download the template to see the layout Turnrow expects.')
         return
       }
       const next: RowDraft[] = csvRows.map((r) => ({
@@ -264,7 +316,7 @@ export default function NewSettlementPage() {
       }))
       setRows((prev) => [...prev, ...next])
     } catch (e: any) {
-      setErr(e?.message ?? 'Failed to read file')
+      setErr(reportError(e, { action: 'read that spreadsheet', noun: 'file' }))
     }
   }
 
@@ -365,11 +417,7 @@ export default function NewSettlementPage() {
       if (e instanceof PdfTooLargeError) {
         setErr(e.message)
       } else {
-        setErr(
-          e?.message
-            ? `Couldn't read this PDF: ${e.message}. Try uploading a clearer scan or use the manual entry method.`
-            : "Couldn't read this PDF. Try uploading a clearer scan or use the manual entry method.",
-        )
+        setErr(reportError(e, { action: 'read this statement', noun: 'document' }) + ' Try a clearer scan, or add the rows by hand.')
       }
     } finally {
       setAiStage(null)
@@ -393,11 +441,40 @@ export default function NewSettlementPage() {
   }
 
   async function save() {
+    if (saving) return
     setErr(null)
-    if (!buyerId) { setErr('Pick a buyer.'); return }
-    if (!settlementDate) { setErr('Pick a settlement date.'); return }
+    const problems: typeof fieldErr = {}
+    if (!buyerId) problems.buyer = 'Pick a buyer to save.'
+    if (!settlementDate) problems.date = 'Pick the settlement date.'
     const includedRows = rows.filter((r) => !r.excluded)
-    if (includedRows.length === 0) { setErr('Add at least one line.'); return }
+    if (includedRows.length === 0) problems.lines = rows.length === 0 ? 'Add at least one line — upload the statement, a spreadsheet, or add a row by hand.' : 'Every line is left out. Tick one back in or add a row.'
+    setFieldErr(problems)
+    if (Object.keys(problems).length > 0) { setErr('A couple of things are needed before this can save — see below.'); return }
+    // Duplicate guard: a repeated statement, or loads already paid, must be
+    // an explicit choice — never a silent second settlement.
+    if (duplicateHeader || dupVerdict.paid > 0) {
+      const existing = duplicateHeader?.settlement
+      const ok = await confirm({
+        title: dupVerdict.wholeStatementRepeated || duplicateHeader ? 'This settlement looks like it was already saved' : 'Some of these loads are already paid',
+        body: (
+          <div className="space-y-2">
+            {existing && (
+              <p>A settlement for this buyer with the same {duplicateHeader.matchedOn} was saved on {fmtDate(existing.settlement_date)}{existing.settlement_number ? ` (#${existing.settlement_number})` : ''}.</p>
+            )}
+            {dupVerdict.paid > 0 && (
+              <p>
+                {dupVerdict.paid === dupVerdict.included ? 'Every' : `${dupVerdict.paid} of ${dupVerdict.included}`} load{dupVerdict.included === 1 ? '' : 's'} on these lines {dupVerdict.paid === 1 && dupVerdict.included === 1 ? 'is' : 'are'} already paid on settlement {dupVerdict.settlements.map(paidLabel).join(', ')}.
+              </p>
+            )}
+            <p>Saving again would count that money twice on the Cash Flow and Contracts pages. Cancel to go back and check, or save anyway if this really is a separate payment.</p>
+          </div>
+        ),
+        confirmLabel: 'Save anyway',
+        cancelLabel: 'Cancel',
+        danger: true,
+      })
+      if (!ok) return
+    }
     setSaving(true)
 
     let pdfUrl: string | null = null
@@ -409,7 +486,7 @@ export default function NewSettlementPage() {
         pdfUrl = await uploadPdfToStorage(supabase, fileToStore, 'settlements')
       } catch (e: any) {
         setSaving(false)
-        setErr(e?.message ?? 'Could not upload settlement PDF.')
+        setErr(e instanceof PdfTooLargeError ? e.message : reportError(e, { action: 'store the settlement document', noun: 'document' }) + ' Nothing was saved yet — try again.')
         return
       }
     }
@@ -432,7 +509,14 @@ export default function NewSettlementPage() {
     if (inserted.error) inserted = await supabase.from('settlements').insert(baseHeader).select('id').single()
     const settlement = inserted.data as { id: string } | null
     if (inserted.error || !settlement) {
-      setSaving(false); setErr(inserted.error?.message ?? 'Could not save settlement.'); return
+      setSaving(false); setErr(reportError(inserted.error, { action: 'save this settlement', noun: 'settlement' }) + ' Nothing was saved — what you entered is still here.'); return
+    }
+    // From here on the settlement exists: any later failure lands the user on
+    // its page with a plain note about what still needs adding, never back
+    // here with a raw error and a half-saved record they can't see.
+    const finish = (saved?: 'partial-lines' | 'partial-items' | 'partial-writeback') => {
+      setSaving(false)
+      router.push(saved ? `/settlements/${settlement.id}?saved=${saved}` : `/settlements/${settlement.id}`)
     }
 
     const matched = includedRows.map((r) => matchFor(rows.indexOf(r)))
@@ -452,14 +536,17 @@ export default function NewSettlementPage() {
       match_tier: matched[i].status === 'manual' ? 'manual' : matched[i].match?.tier ?? null,
       match_reason: matched[i].match?.reason ?? null,
     }))
+    // One insert carries every line (086 columns included); if the 086
+    // columns aren't there yet, the same rows go in without them.
     let lErr = (await supabase.from('settlement_lines').insert(lines086)).error
     if (lErr) lErr = (await supabase.from('settlement_lines').insert(baseLines)).error
-    if (lErr) { setSaving(false); setErr('Settlement saved but lines failed: ' + lErr.message); return }
+    if (lErr) { reportError(lErr, { action: 'save the settlement lines', noun: 'line' }); finish('partial-lines'); return }
 
     // Write-backs (086), best effort: (a) a load matched by attributes gets the
     // buyer's ticket when it had none — the next statement matches exactly;
     // (b) moisture / test weight from the grade block fill a matched load's
     // EMPTY fields (never overwrite what was weighed in).
+    let writebackFailed = false
     for (let i = 0; i < includedRows.length; i++) {
       const m = matched[i]
       const r = includedRows[i]
@@ -469,7 +556,10 @@ export default function NewSettlementPage() {
       const g = r.grade_readings
       if (g?.moisture != null && m.load.moisture == null) patch.moisture = g.moisture
       if (g?.test_weight != null && m.load.test_weight == null) patch.test_weight = g.test_weight
-      if (Object.keys(patch).length > 0) await supabase.from('loads').update(patch).eq('id', m.load.id)
+      if (Object.keys(patch).length > 0) {
+        const { error: wErr } = await supabase.from('loads').update(patch).eq('id', m.load.id)
+        if (wErr) { writebackFailed = true; reportError(wErr, { action: 'update a matched load', noun: 'load' }) }
+      }
     }
 
     const items = discountRows
@@ -485,10 +575,9 @@ export default function NewSettlementPage() {
       }))
     if (items.length > 0) {
       const { error: dErr } = await supabase.from('settlement_discount_items').insert(items)
-      if (dErr) { setSaving(false); setErr('Settlement saved but its discount detail failed: ' + dErr.message); return }
+      if (dErr) { reportError(dErr, { action: 'save the itemized discounts', noun: 'discount line' }); finish('partial-items'); return }
     }
-    setSaving(false)
-    router.push(`/settlements/${settlement.id}`)
+    finish(writebackFailed ? 'partial-writeback' : undefined)
   }
 
   const totals = rows.reduce(
@@ -506,28 +595,33 @@ export default function NewSettlementPage() {
     { matched: 0, unmatched: 0, blank: 0, netBu: 0, netRev: 0 }
   )
 
-  const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm w-full'
-  const fmt = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 2 })
-  const fmt4 = (n: number | null) => n == null ? '' : n.toLocaleString(undefined, { maximumFractionDigits: 4 })
+  const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm w-full min-h-10'
+  const fmt = (n: number) => fmtNum(n, 2)
+  const errInput = 'border-red-500 bg-red-50'
 
   return (
     <div className="space-y-4">
       <div className="flex items-end gap-3 flex-wrap">
         <h1 className="text-2xl font-bold flex-1">New Settlement</h1>
-        <Link href="/settlements" className="rounded-lg bg-white border border-slate-300 px-3 py-2 text-sm">Cancel</Link>
+        <Link href="/settlements" className="rounded-lg bg-white border border-slate-300 px-3 min-h-10 inline-flex items-center text-sm">Cancel</Link>
       </div>
 
       <div className="bg-white rounded-xl shadow p-4 grid grid-cols-1 sm:grid-cols-4 gap-3">
-        <label className="text-sm text-slate-700">
-          Buyer
-          <select value={buyerId} onChange={(e) => setBuyerId(e.target.value)} className={`w-full ${inputCls}`}>
-            <option value="">— select —</option>
-            {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
-        </label>
+        <div className="text-sm text-slate-700">
+          <span className="block">Buyer</span>
+          <BuyerPicker
+            value={buyerId}
+            onChange={(id) => { setBuyerId(id); if (fieldErr.buyer) setFieldErr((f) => ({ ...f, buyer: undefined })) }}
+            buyers={buyers}
+            onCreated={(b) => setBuyers((xs) => [...xs, b].sort((a, z) => a.name.localeCompare(z.name)))}
+            className={`w-full ${inputCls} ${fieldErr.buyer ? errInput : ''}`}
+          />
+          {fieldErr.buyer && <span className="block text-xs text-red-700 mt-0.5" role="alert">{fieldErr.buyer}</span>}
+        </div>
         <label className="text-sm text-slate-700">
           Settlement date
-          <input type="date" value={settlementDate} onChange={(e) => setSettlementDate(e.target.value)} className={`w-full ${inputCls}`} />
+          <input type="date" value={settlementDate} onChange={(e) => { setSettlementDate(e.target.value); if (fieldErr.date) setFieldErr((f) => ({ ...f, date: undefined })) }} className={`w-full ${inputCls} ${fieldErr.date ? errInput : ''}`} aria-invalid={!!fieldErr.date} />
+          {fieldErr.date && <span className="block text-xs text-red-700 mt-0.5" role="alert">{fieldErr.date}</span>}
         </label>
         <label className="text-sm text-slate-700">
           Settlement # <span className="text-xs text-slate-400">optional</span>
@@ -604,10 +698,37 @@ export default function NewSettlementPage() {
             )}
             {payment.payment_number && <span>Payment # <b>{payment.payment_number}</b></span>}
             {payment.check_number && <span>Check # <b>{payment.check_number}</b></span>}
-            {payment.payment_date && <span>Paid <b>{payment.payment_date}</b></span>}
+            {payment.payment_date && <span>Paid <b>{fmtDate(payment.payment_date)}</b></span>}
           </div>
         )}
-        {err && <p className="text-sm text-red-600">{err}</p>}
+        {/* Duplicate check (lib/settlement-duplicates): the same statement
+            saved before, or loads that a saved settlement already pays. */}
+        {(duplicateHeader || dupVerdict.paid > 0) && (
+          <div className="rounded-lg bg-red-50 border border-red-300 px-3 py-2 text-sm text-red-900 space-y-1" role="alert">
+            <p className="font-semibold">
+              {duplicateHeader || dupVerdict.wholeStatementRepeated
+                ? 'This settlement is already in Turnrow.'
+                : `${dupVerdict.paid} of ${dupVerdict.included} load${dupVerdict.included === 1 ? '' : 's'} on this statement ${dupVerdict.paid === 1 ? 'is' : 'are'} already paid.`}
+            </p>
+            {duplicateHeader && (
+              <p>
+                Same buyer and {duplicateHeader.matchedOn} as the settlement saved {fmtDate(duplicateHeader.settlement.settlement_date)}.{' '}
+                <Link href={`/settlements/${duplicateHeader.settlement.id}`} className="underline font-semibold">Open that settlement</Link>
+              </p>
+            )}
+            {dupVerdict.paid > 0 && (
+              <p>
+                {dupVerdict.paid === dupVerdict.included ? 'Every load here' : `${dupVerdict.paid} load${dupVerdict.paid === 1 ? '' : 's'}`} already paid on settlement{dupVerdict.settlements.length === 1 ? '' : 's'}{' '}
+                {dupVerdict.settlements.map((s, i) => (
+                  <span key={s.settlementId}>{i > 0 ? ', ' : ''}<Link href={`/settlements/${s.settlementId}`} className="underline font-semibold">{paidLabel(s)}</Link></span>
+                ))}
+                {' '}— the rows are marked below. Saving this again would count that money twice.
+              </p>
+            )}
+          </div>
+        )}
+        {err && <p className="text-sm text-red-700" role="alert">{err}</p>}
+        {fieldErr.lines && <p className="text-sm text-red-700" role="alert">{fieldErr.lines}</p>}
 
         <div className={source ? 'grid grid-cols-1 lg:grid-cols-2 gap-4' : ''}>
           <div className="overflow-x-auto">
@@ -625,6 +746,7 @@ export default function NewSettlementPage() {
                 {rows.map((r, i) => {
                   const { netRev, price } = computed(r)
                   const m = matchFor(i)
+                  const paid = paidFor(i)
                   const issues = rowIssues(r)
                   const flagCls = 'bg-amber-50'
                   let status: React.ReactNode
@@ -633,66 +755,85 @@ export default function NewSettlementPage() {
                       {t === 'exact' ? 'exact' : t === 'segment' ? 'ticket inside ours' : `date + weight${confidence === 'medium' ? ' · check' : ''}`}
                     </span>
                   )
-                  const pickList = (cands: TicketMatch[]) => (
+                  const pickSelect = (options: Array<{ id: string; label: string }>) => (
                     <select
                       value=""
                       onChange={(e) => { if (e.target.value) updateRow(i, { matchOverride: e.target.value }) }}
-                      className="rounded border border-slate-300 px-1 py-0.5 text-xs bg-white max-w-[220px]"
-                      title="Pick the load this line paid"
+                      className="rounded-lg border border-slate-300 px-1 min-h-9 text-xs bg-white max-w-[240px]"
+                      aria-label={`Pick the load ticket ${r.ticket_number || 'without a number'} paid`}
                     >
                       <option value="">Pick the load…</option>
-                      {cands.map((c) => { const ld = loadById.get(c.loadId); return ld ? <option key={c.loadId} value={c.loadId}>{ld.date} · {ld.ticket_number ?? 'no ticket'} · {ld.crop?.name ?? ''} · {c.reason}</option> : null })}
+                      {options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
                     </select>
+                  )
+                  const pickList = (cands: TicketMatch[]) => pickSelect(
+                    cands.flatMap((c) => { const ld = loadById.get(c.loadId); return ld ? [{ id: c.loadId, label: `${fmtDate(ld.date)} · ${ld.ticket_number ?? 'no ticket'} · ${ld.crop?.name ?? ''} · ${c.reason}` }] : [] }),
+                  )
+                  const pickRecent = () => pickSelect(
+                    recentBuyerLoads.map((ld) => ({ id: ld.id, label: `${fmtDate(ld.date)} · ${ld.ticket_number ?? 'no ticket'} · ${ld.crop?.name ?? ''}` })),
                   )
                   if (!r.ticket_number.trim() && m.status !== 'manual') {
                     status = <span className="text-slate-400 text-xs">—</span>
                   } else if (m.status === 'rejected') {
-                    status = <span className="text-xs text-slate-600">Import unmatched <button type="button" className="underline ml-1" onClick={() => updateRow(i, { matchOverride: undefined })}>undo</button></span>
+                    status = <span className="text-xs text-slate-600">Import unmatched <button type="button" className="underline ml-1 min-h-8" onClick={() => updateRow(i, { matchOverride: undefined })}>undo</button></span>
                   } else if (m.status === 'ambiguous') {
                     status = <span className="text-amber-700 text-xs flex flex-col gap-1"><span>Several loads fit — {m.candidates[0]?.reason}</span>{pickList(m.candidates)}</span>
                   } else if (m.load && m.match) {
                     status = (
                       <span className="text-xs flex flex-wrap items-center gap-1">
-                        <span className="text-green-700">Matched · {m.load.date} · {m.load.crop?.name ?? '—'}{m.load.ticket_number && normalizeTicket(m.load.ticket_number) !== normalizeTicket(r.ticket_number) ? ` · our #${m.load.ticket_number}` : ''}</span>
+                        <span className="text-green-700">Matched · {fmtDate(m.load.date)} · {m.load.crop?.name ?? '—'}{m.load.ticket_number && normalizeTicket(m.load.ticket_number) !== normalizeTicket(r.ticket_number) ? ` · our #${m.load.ticket_number}` : ''}</span>
                         {m.status === 'manual' ? <span className="rounded-full bg-slate-200 text-slate-700 px-1.5 py-0.5 text-[10px] font-semibold">picked by hand</span> : tierChip(m.match.tier, m.match.confidence)}
-                        <span className="text-slate-500" title={m.match.reason}>{m.match.reason}</span>
+                        <span className="text-slate-500">{m.match.reason}</span>
                         {(m.match.tier !== 'exact' || m.status === 'manual') && (
-                          <button type="button" onClick={() => updateRow(i, { matchOverride: m.status === 'manual' ? undefined : 'reject' })} className="underline text-slate-600" title="Not this load — import the line unmatched">not this load</button>
+                          <button type="button" onClick={() => updateRow(i, { matchOverride: m.status === 'manual' ? undefined : 'reject' })} className="underline text-slate-600 min-h-8">not this load</button>
                         )}
                       </span>
                     )
                   } else {
-                    status = <span className="text-amber-700 text-xs">No match</span>
+                    status = (
+                      <span className="text-amber-700 text-xs flex flex-col gap-1">
+                        <span>No load with this ticket</span>
+                        {buyerId ? (recentBuyerLoads.length > 0 ? pickRecent() : <span className="text-slate-500">No loads delivered to this buyer yet.</span>) : <span className="text-slate-500">Pick the buyer above to choose a load.</span>}
+                      </span>
+                    )
                   }
                   if (r.excluded) {
                     // The guard's verdict: shown, not counted. One click re-includes.
                     return (
                       <tr key={i} className="border-t border-amber-200 bg-amber-50 text-amber-900 align-top">
                         <td className="px-2 py-1">
-                          <input type="checkbox" checked={false} onChange={() => updateRow(i, { excluded: false })} aria-label="Include this line" title="Include this line after all" />
+                          <input type="checkbox" checked={false} onChange={() => updateRow(i, { excluded: false })} aria-label="Include this line after all" className="w-5 h-5" />
                         </td>
                         <td className="px-2 py-1 font-mono text-sm">{r.ticket_number || '—'}</td>
                         <td className="px-2 py-1 text-xs" colSpan={6}>
                           <span className="font-semibold">Left out:</span> {r.guard ?? 'looks like the settlement total — not a load'}.{' '}
-                          <span className="text-amber-700">{r.net_bushels ? `${fmt(num(r.net_bushels) ?? 0)} bu` : ''}{r.gross_revenue ? ` · $${fmt((num(r.gross_revenue) ?? 0) - (num(r.discounts) ?? 0))}` : ''}</span>{' '}
-                          <button type="button" onClick={() => updateRow(i, { excluded: false })} className="underline font-semibold">Include it</button>
+                          <span className="text-amber-700">{r.net_bushels ? `${fmtInt(num(r.net_bushels) ?? 0)} bu` : ''}{r.gross_revenue ? ` · ${fmtUsd((num(r.gross_revenue) ?? 0) - (num(r.discounts) ?? 0), 2)}` : ''}</span>{' '}
+                          <button type="button" onClick={() => updateRow(i, { excluded: false })} className="underline font-semibold min-h-8">Include it</button>
                         </td>
                         <td className="px-2 py-1" />
-                        <td className="px-2 py-1"><button type="button" onClick={() => deleteRow(i)} className="text-red-600 text-sm" title="Remove">✕</button></td>
+                        <td className="px-2 py-1"><button type="button" onClick={() => deleteRow(i)} className="text-red-600 text-sm min-h-8 px-1" aria-label={`Remove line ${r.ticket_number || i + 1}`}>✕</button></td>
                       </tr>
                     )
                   }
                   return (
-                    <tr key={i} className="border-t border-slate-100 align-top">
+                    <tr key={i} className={`border-t border-slate-100 align-top ${paid ? 'bg-red-50' : ''}`}>
                       <td className="px-2 py-1">
                         {r.guard
-                          ? <input type="checkbox" checked onChange={() => updateRow(i, { excluded: true })} aria-label="Included (was flagged as a total)" title={`Included — the guard had flagged it: ${r.guard}`} />
+                          ? <span className="flex flex-col items-start gap-0.5"><input type="checkbox" checked onChange={() => updateRow(i, { excluded: true })} aria-label="Included — untick to leave this line out" className="w-5 h-5" /><span className="text-[10px] text-amber-700 leading-tight">looked like a total</span></span>
                           : null}
                       </td>
                       <td className={`px-2 py-1 ${issues.ticket ? flagCls : ''}`} style={{ minWidth: 120 }}>
                         <input value={r.ticket_number} onChange={(e) => updateRow(i, { ticket_number: e.target.value })} className={inputCls} />
                       </td>
-                      <td className="px-2 py-1" style={{ minWidth: 180 }}>{status}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 180 }}>
+                        {paid && (
+                          <span className="block text-xs text-red-800 font-semibold mb-1">
+                            Already paid · <Link href={`/settlements/${paid.settlementId}`} className="underline">settlement {paidLabel(paid)}</Link>
+                            <button type="button" onClick={() => updateRow(i, { excluded: true, guard: 'already paid on a saved settlement' })} className="underline font-normal text-red-700 ml-2 min-h-8">Leave it out</button>
+                          </span>
+                        )}
+                        {status}
+                      </td>
                       <td className={`px-2 py-1 ${issues.net ? flagCls : ''}`} style={{ minWidth: 90 }}>
                         <input type="number" step="0.01" value={r.net_bushels} onChange={(e) => updateRow(i, { net_bushels: e.target.value })} className={inputCls} />
                       </td>
@@ -702,12 +843,12 @@ export default function NewSettlementPage() {
                       <td className={`px-2 py-1 ${issues.discounts ? flagCls : ''}`} style={{ minWidth: 100 }}>
                         <input type="number" step="0.01" value={r.discounts} onChange={(e) => updateRow(i, { discounts: e.target.value })} className={inputCls} />
                       </td>
-                      <td className="px-2 py-1 text-right font-mono">${fmt(netRev)}</td>
-                      <td className="px-2 py-1 text-right font-mono">{fmt4(price)}</td>
+                      <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">{fmtUsd(netRev, 2)}</td>
+                      <td className="px-2 py-1 text-right tabular-nums whitespace-nowrap">{price != null ? fmtUsd(price, 2) : ''}</td>
                       <td className="px-2 py-1" style={{ minWidth: 140 }}>
-                        <input value={r.notes} onChange={(e) => updateRow(i, { notes: e.target.value })} className={inputCls} />
+                        <input value={r.notes} onChange={(e) => updateRow(i, { notes: e.target.value })} className={inputCls} aria-label="Line notes" />
                       </td>
-                      <td className="px-2 py-1"><button type="button" onClick={() => deleteRow(i)} className="text-red-600 text-sm">✕</button></td>
+                      <td className="px-2 py-1"><button type="button" onClick={() => deleteRow(i)} className="text-red-600 text-sm min-h-8 px-1" aria-label={`Remove line ${r.ticket_number || i + 1}`}>✕</button></td>
                     </tr>
                   )
                 })}
@@ -719,13 +860,13 @@ export default function NewSettlementPage() {
               const rec = reconcileLines(rows.map((r) => ({ ...r, excluded: !!r.excluded })), reportedTotal)
               return (
                 <div className={`mt-2 flex flex-wrap items-center gap-2 text-xs rounded-lg border px-2 py-1.5 ${rec.mismatch === true ? 'bg-amber-50 border-amber-300 text-amber-900' : rec.mismatch === false ? 'bg-green-50 border-green-200 text-green-800' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
-                  <span>Ticket lines total <span className="font-mono font-semibold">${fmt(rec.linesTotal)}</span></span>
+                  <span>Ticket lines total <span className="tabular-nums font-semibold">{fmtUsd(rec.linesTotal, 2)}</span></span>
                   <label className="inline-flex items-center gap-1">
                     · settlement total
                     <span className="text-slate-400">$</span>
                     <input type="number" step="0.01" value={reportedTotal} onChange={(e) => setReportedTotal(e.target.value)} placeholder="from the statement" className="w-28 rounded border border-slate-300 px-1.5 py-0.5 text-xs text-right bg-white" />
                   </label>
-                  {rec.mismatch === true && <span className="font-semibold">— off by ${fmt(Math.abs(rec.delta ?? 0))}. Check for a missed or doubled line.</span>}
+                  {rec.mismatch === true && <span className="font-semibold">— off by {fmtUsd(Math.abs(rec.delta ?? 0), 2)}. Check for a missed or doubled line.</span>}
                   {rec.mismatch === false && <span className="font-semibold">— matches.</span>}
                   {rec.mismatch == null && <span>— enter the statement&rsquo;s total to check the lines add up.</span>}
                 </div>
@@ -766,7 +907,7 @@ export default function NewSettlementPage() {
             const check = sumCheck(discountRows.map((d) => ({ category: d.category, amount: num(d.amount) ?? 0, deduction_kind: d.deduction_kind })), lineDiscTotal)
             return check.mismatch ? (
               <p className="text-sm rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-amber-900">
-                The itemized lines add to ${fmt(check.itemizedTotal)}, but the line discounts total ${fmt(lineDiscTotal)}.
+                The itemized lines add to {fmtUsd(check.itemizedTotal, 2)}, but the line discounts total {fmtUsd(lineDiscTotal, 2)}.
                 Part of the statement may not be itemized — review before saving.
               </p>
             ) : null
@@ -781,7 +922,7 @@ export default function NewSettlementPage() {
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-100 text-slate-700">
                   <tr>
-                    {['Type', 'Kind', 'Statement wording', '$', '¢/bu', 'Rate', ''].map((h, i) => (
+                    {['Type', 'Taken as', 'Statement wording', '$', '¢/bu', 'Rate', ''].map((h, i) => (
                       <th key={h || i} className={`px-2 py-2 whitespace-nowrap ${h === '$' || h === '¢/bu' ? 'text-right' : 'text-left'}`}>{h}</th>
                     ))}
                   </tr>
@@ -806,10 +947,10 @@ export default function NewSettlementPage() {
                             value={d.deduction_kind}
                             onChange={(e) => setDiscountRows((ds) => ds.map((x, j) => (i === j ? { ...x, deduction_kind: e.target.value } : x)))}
                             className={inputCls}
-                            title="Price = dollars off the check. Weight = bushels/pounds taken instead — Turnrow values that from its own load reconciliation."
+                            aria-label="How the deduction was taken"
                           >
-                            <option value="price">Price $</option>
-                            <option value="weight">Weight</option>
+                            <option value="price">Dollars off the check</option>
+                            <option value="weight">Bushels or pounds taken</option>
                           </select>
                         </td>
                         <td className="px-2 py-1" style={{ minWidth: 160 }}>
@@ -841,7 +982,8 @@ export default function NewSettlementPage() {
                           <button
                             type="button"
                             onClick={() => setDiscountRows((ds) => ds.filter((_, j) => j !== i))}
-                            className="text-red-600 text-sm"
+                            className="text-red-600 text-sm min-h-8 px-1"
+                            aria-label={`Remove discount line ${d.description || i + 1}`}
                           >✕</button>
                         </td>
                       </tr>
@@ -853,33 +995,39 @@ export default function NewSettlementPage() {
           )}
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm bg-slate-50 rounded-lg p-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-sm bg-slate-50 rounded-lg p-3">
           <Stat label="Total rows" value={String(rows.length)} />
           <Stat label="Matched" value={String(totals.matched)} tone="green" />
           <Stat label="Unmatched" value={String(totals.unmatched)} tone={totals.unmatched > 0 ? 'amber' : 'slate'} />
-          <Stat label="Net revenue" value={`$${fmt(totals.netRev)}`} />
+          <Stat label="Already paid" value={String(dupVerdict.paid)} tone={dupVerdict.paid > 0 ? 'red' : 'slate'} />
+          <Stat label="Net revenue" value={fmtUsd(totals.netRev, 2)} />
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center flex-wrap">
           <button
             type="button"
             onClick={save}
-            disabled={saving || rows.length === 0 || !buyerId}
-            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50"
+            disabled={saving}
+            className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold disabled:opacity-50"
           >
             {saving ? 'Saving…' : 'Save Settlement'}
           </button>
-          <Link href="/settlements" className="rounded-lg bg-white border border-slate-300 px-4 py-2 text-sm">Cancel</Link>
+          <Link href="/settlements" className="rounded-lg bg-white border border-slate-300 px-4 min-h-11 inline-flex items-center text-sm">Cancel</Link>
+          {!buyerId && <span className="text-xs text-slate-500">Pick a buyer to save.</span>}
+          {buyerId && rows.length === 0 && <span className="text-xs text-slate-500">Add at least one line to save.</span>}
+          {buyerId && rows.length > 0 && (duplicateHeader || dupVerdict.paid > 0) && <span className="text-xs text-red-700">Saving asks you to confirm — this looks already paid.</span>}
         </div>
       </div>
+      {dialogs}
     </div>
   )
 }
 
-function Stat({ label, value, tone = 'slate' }: { label: string; value: string; tone?: 'slate' | 'green' | 'amber' }) {
+function Stat({ label, value, tone = 'slate' }: { label: string; value: string; tone?: 'slate' | 'green' | 'amber' | 'red' }) {
   const color =
     tone === 'green' ? 'text-green-700'
     : tone === 'amber' ? 'text-amber-700'
+    : tone === 'red' ? 'text-red-700'
     : 'text-slate-700'
   return (
     <div>

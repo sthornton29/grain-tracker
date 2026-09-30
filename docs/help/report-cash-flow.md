@@ -1,8 +1,8 @@
 ---
 page_route: /reports/cash-flow
 title: Cash Flow Forecast
-updated: 2026-09-01
-keywords: cash flow, monthly, received, outstanding, projected, delivery window, safety net, ARC, PLC, insurance, cotton, contracts
+updated: 2026-09-30
+keywords: cash flow, monthly, received, outstanding, projected, delivery window, safety net, ARC, PLC, insurance, cotton, contracts, where does this number come from, drill down, detail, tap a number
 ---
 ## What this page is for
 
@@ -10,12 +10,13 @@ The Cash Flow Forecast lays out, month by month, when money from the crop should
 
 ## How to use it
 
-Pick a crop year (and an entity if you want one entity's view). The summary tiles total each category; the monthly table shows every month with a running cumulative column, and the contract detail below shows each contract's value, what has been received, what is outstanding, and what remains unearned.
+The forecast opens on the current crop year; pick another year, a crop, a buyer, or an entity if you want a narrower view. The summary tiles total each category in whole dollars; a stacked bar per month shows received, outstanding, projected, and safety-net money at a glance; the monthly table underneath carries the same numbers with a running cumulative column; and the contract detail shows each contract's value, what has been received, what is outstanding, and what is still projected.
 
 ## What the controls do
 
-- **Crop year** — frames the whole forecast, including which program year's ARC/PLC belongs in it.
+- **Crop year** — frames the whole forecast, including which program year's ARC/PLC belongs in it. "All crop years" is available for a whole-book view but is never the default.
 - **Entity filter** — narrows fields, production, and policies to the entity. Contracts held by your marketing agent, or with no entity, count toward each entity by its share of the crop's planted acres.
+- **Tap any number to see where it comes from.** Every amount in the monthly table, the summary tiles, and the safety-net tiles opens a list of the lines behind it: the settlements (with buyer, contract, loads, and bushels) behind Received; the contracts with delivered-but-unsettled loads behind Outstanding; each contract's undelivered bushels, price, and how the delivery window spreads it across months behind Projected; the farm-and-commodity rows behind ARC/PLC; each policy behind Crop Insurance; each payment behind Other USDA; and the cotton and seed lines behind their columns. A month's total lists every kind together. Each line links to its record — the settlement, the contract, the report it came from — and the list totals to the number you tapped.
 - **Export Excel / PDF / Print** — the monthly matrix, safety net, and contract detail together.
 
 ## How the numbers work
@@ -36,6 +37,7 @@ When a **seed production contract** is in the year, a **Seed (net)** column and 
 
 - **Why is a month's projected revenue lower than I expected?** The contract's value is spread across every remaining month of its delivery window — one month carries only its share.
 - **Why does my ARC/PLC payment seem to be for last year?** That is how the program works: a program year's payment arrives the October after it. The forecast puts the cash in the month it actually lands.
+- **A number looks wrong — how do I check it?** Tap it. The list shows exactly which settlements, contracts, policies, or payments add up to it, with a link to each one.
 - **How firm are these numbers?** Received is fact. Outstanding is owed. Projected and the safety net are estimates — final program and insurance amounts are set by RMA and FSA after harvest.
 
 ## If something looks wrong

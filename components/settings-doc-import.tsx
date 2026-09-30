@@ -233,7 +233,7 @@ export default function SettingsDocImport({
   return (
     <div className="bg-white rounded-xl shadow p-4 space-y-3">
       <div className="flex items-center gap-3 flex-wrap">
-        <h2 className="font-semibold flex-1">{title ?? 'Upload a document (AI)'}</h2>
+        <h2 className="font-semibold flex-1">{title ?? 'Upload a document'}</h2>
         {(review || source) && (
           <button type="button" onClick={discard} className="text-sm rounded-lg bg-white border border-slate-300 px-3 py-2">
             Discard
@@ -248,7 +248,7 @@ export default function SettingsDocImport({
           {LAND_MANAGED_MESSAGE} Entities, farms, fields, and plantings found in a document are shown for reference but not saved here — make those changes in Turnrow Farm. Buyers, bins, gins, trucks, and crops still save.
         </p>
       )}
-      {!review && <DocumentCapture onSource={handleSource} busy={busy} stageLabel={stage} pdfLabel="Upload PDF, Photo, or Spreadsheet (AI)" />}
+      {!review && <DocumentCapture onSource={handleSource} busy={busy} stageLabel={stage} pdfLabel="Upload a PDF, photo, or spreadsheet" />}
       {banner && <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900">{banner}</div>}
       {err && <p className="text-sm text-red-600">{err}</p>}
 
@@ -312,7 +312,7 @@ export default function SettingsDocImport({
                               </div>
                             )}
                             {r.hints.map((h, i) => (
-                              <p key={i} className="text-xs text-amber-700">AI: {h}</p>
+                              <p key={i} className="text-xs text-amber-700">From the document: {h}</p>
                             ))}
                             {r.cls === 'possible' && r.candidate && (
                               <div className="text-sm flex flex-wrap gap-x-4 gap-y-1">

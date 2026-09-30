@@ -21,7 +21,7 @@
 // (destinationCostTable) prices every saved destination with its own miles
 // and wait; the picked destination highlights.
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import {
@@ -30,7 +30,9 @@ import {
   waitHoursValue, type DistanceEstimate, type FreightDistanceRow, type FreightSettings,
 } from '@/lib/freight-math'
 import ExportBar from '@/components/export-bar'
-import { EmptyState, fmtNum, numCell, textCell, theadCls } from '@/components/reports/report-kit'
+import { EmptyState, fmtNum, fmtUsd, numCell, textCell, theadCls, ReportHeader, filterSummaryOf } from '@/components/reports/report-kit'
+import { AppModal } from '@/components/app-dialog'
+import { reportError } from '@/lib/friendly-error'
 import type { ExportPayload } from '@/lib/exports'
 import type { Crop } from '@/lib/types'
 
@@ -61,7 +63,6 @@ const N = (v: number | string | null | undefined): number | null => {
   const n = typeof v === 'number' ? v : Number(v)
   return Number.isFinite(n) ? n : null
 }
-const usd2 = (n: number) => `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
 const QUICK_MILES = [10, 25, 50, 75, 100]
 
@@ -87,6 +88,10 @@ export default function FreightMathPage() {
 
   // ---- assumptions (slide-over) ----
   const [panelOpen, setPanelOpen] = useState(false)
+  // Stable close handler for the dialog (AppModal re-arms its listeners when
+  // onClose changes identity): the latest persist rides in a ref.
+  const persistRef = useRef<() => void>(() => {})
+  const closePanel = useCallback(() => { setPanelOpen(false); persistRef.current() }, [])
   const [mpgStr, setMpgStr] = useState(String(FREIGHT_DEFAULTS.truckMpg))
   const [speedStr, setSpeedStr] = useState(String(FREIGHT_DEFAULTS.avgSpeedMph))
   const [hoursStr, setHoursStr] = useState(String(FREIGHT_DEFAULTS.loadUnloadHours))
@@ -306,7 +311,7 @@ export default function FreightMathPage() {
         setEstimateReview(review)
       }
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Distance lookup failed.')
+      setErr(reportError(e instanceof Error ? e : null, { action: 'look up the distance' }))
     } finally {
       setEstimating(false)
     }
@@ -324,7 +329,7 @@ export default function FreightMathPage() {
       })),
       { onConflict: 'org_id,bin_site_id,delivery_location_id' },
     )
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'save this' })); return }
     setEstimateReview(null)
     setEstimateNote('Estimates saved and labeled as estimates. Type over any of them below and your number sticks.')
     refetchDistances()
@@ -344,7 +349,7 @@ export default function FreightMathPage() {
     const { error } = await supabase
       .from('freight_distances')
       .upsert(manual, { onConflict: 'org_id,bin_site_id,delivery_location_id' })
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'save this' })); return }
     // Optimistic: the cell reads back as "yours" immediately; the refetch
     // brings the real row id.
     setDistances((rows) =>
@@ -367,7 +372,7 @@ export default function FreightMathPage() {
     if (hours === current) { clearEdit(); return }
     setErr(null)
     const { error } = await supabase.from('delivery_locations').update({ wait_hours: hours }).eq('id', locationId)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'save this' })); return }
     setLocations((rows) => rows.map((l) => (l.id === locationId ? { ...l, wait_hours: hours } : l)))
     clearEdit()
     const key = `wait|${locationId}`
@@ -403,7 +408,7 @@ export default function FreightMathPage() {
         cost?.waitIsOverride ? `${fmtNum(cost.loadUnloadHours, 2)} hr at ${destination?.name ?? 'this destination'}` : '',
       ].filter(Boolean).join(' · '),
       summary: cost ? [
-        { label: 'Cost per load', value: usd2(cost.totalPerLoad) },
+        { label: 'Cost per load', value: fmtUsd(cost.totalPerLoad, 2) },
         { label: 'Cost per bushel', value: cost.centsPerBu != null ? `${fmtNum(cost.centsPerBu, 1)}¢` : '—' },
         { label: 'Delivered must pay at least', value: cost.breakevenCentsPerBu != null ? `+${fmtNum(cost.breakevenCentsPerBu, 1)}¢/bu` : '—' },
       ] : undefined,
@@ -444,14 +449,16 @@ export default function FreightMathPage() {
     return <EmptyState message="No crops set up yet." linkHref="/settings/crops" linkLabel="Set up crops" />
   }
 
-  const inputCls = 'rounded-lg border border-slate-300 px-2 py-1 text-sm'
+  const inputCls = 'rounded-lg border border-slate-300 px-2 min-h-10 text-sm'
+  persistRef.current = persist
 
   return (
     <div className="space-y-4">
-      <div className="flex items-end gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold flex-1">Freight Math</h1>
-        <ExportBar buildPayload={buildPayload} />
-      </div>
+      <ReportHeader
+        title="Freight Math"
+        filterSummary={filterSummaryOf(crop?.name ?? null, destination?.name ? `To ${destination.name}` : null)}
+        actions={<ExportBar buildPayload={buildPayload} />}
+      />
       <p className="text-sm text-slate-600 no-print max-w-3xl">
         What a haul really costs — and how much more a delivered contract must pay than a picked-up one to cover it.
         Operating costs only (fuel, labor, wear): the right basis for deciding <em>where</em> to haul.
@@ -520,8 +527,7 @@ export default function FreightMathPage() {
         <button
           type="button"
           onClick={() => setPanelOpen(true)}
-          className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50"
-          title="Payloads, mpg, speed, load time, wear, ownership, destination distances"
+          className="rounded-lg border border-slate-300 px-3 min-h-10 text-sm text-slate-600 hover:bg-slate-50"
         >
           ⚙ Assumptions
         </button>
@@ -535,10 +541,10 @@ export default function FreightMathPage() {
           <div className="bg-white rounded-xl shadow p-5 flex flex-wrap items-center gap-x-10 gap-y-4">
             <div>
               <div className="text-[11px] text-slate-500 uppercase tracking-wide">Cost per load ({fmtNum(cost.roundTripMiles, 0)} mi round trip)</div>
-              <div className="text-3xl font-bold tabular-nums">{usd2(cost.totalPerLoad)}</div>
+              <div className="text-3xl font-bold tabular-nums">{fmtUsd(cost.totalPerLoad, 2)}</div>
               <div className="text-xs text-slate-500 tabular-nums mt-0.5">
-                fuel {usd2(cost.fuel)} · labor {usd2(cost.labor)} · wear {usd2(cost.wear)}
-                {cost.ownership > 0 ? ` · ownership ${usd2(cost.ownership)}` : ''}
+                fuel {fmtUsd(cost.fuel, 2)} · labor {fmtUsd(cost.labor, 2)} · wear {fmtUsd(cost.wear, 2)}
+                {cost.ownership > 0 ? ` · ownership ${fmtUsd(cost.ownership, 2)}` : ''}
               </div>
               <div className="text-xs text-slate-500 tabular-nums">
                 {fmtNum(cost.loadUnloadHours, 2)} hr load/unload + wait
@@ -553,7 +559,7 @@ export default function FreightMathPage() {
             </div>
             {cost.customRatePerLoadedMile != null && (
               <div className="text-xs text-slate-500 self-end">
-                Custom-rate equivalent: <span className="font-semibold tabular-nums">{usd2(cost.customRatePerLoadedMile)}/loaded mile</span>
+                Custom-rate equivalent: <span className="font-semibold tabular-nums">{fmtUsd(cost.customRatePerLoadedMile, 2)}/loaded mile</span>
                 <span className="block">— sanity-check against hired-hauler quotes.</span>
               </div>
             )}
@@ -603,7 +609,7 @@ export default function FreightMathPage() {
                           <td className={`${numCell} ${r.waitIsOverride ? '' : 'text-slate-400 font-normal'}`} title={r.waitIsOverride ? "This location's own load/unload + wait time" : 'The default load/unload + wait time'}>
                             {fmtNum(r.waitHours, 2)}
                           </td>
-                          <td className={`${numCell} ${r.cost ? 'font-semibold' : ''}`}>{r.cost ? usd2(r.cost.totalPerLoad) : '—'}</td>
+                          <td className={`${numCell} ${r.cost ? 'font-semibold' : ''}`}>{r.cost ? fmtUsd(r.cost.totalPerLoad, 2) : '—'}</td>
                           <td className={`${numCell} ${r.cost ? 'font-semibold' : ''}`}>{r.cost?.centsPerBu != null ? `${fmtNum(r.cost.centsPerBu, 1)}¢` : '—'}</td>
                         </tr>
                       ))}
@@ -633,10 +639,10 @@ export default function FreightMathPage() {
                   return (
                     <tr key={mi} className={`border-t border-slate-100 ${isCurrent ? 'bg-green-50/50 font-medium' : ''}`}>
                       <td className={numCell}>{mi}</td>
-                      <td className={numCell}>{usd2(c.fuel)}</td>
-                      <td className={numCell}>{usd2(c.labor)}</td>
-                      <td className={numCell}>{usd2(c.wear)}</td>
-                      <td className={`${numCell} font-semibold`}>{usd2(c.totalPerLoad)}</td>
+                      <td className={numCell}>{fmtUsd(c.fuel, 2)}</td>
+                      <td className={numCell}>{fmtUsd(c.labor, 2)}</td>
+                      <td className={numCell}>{fmtUsd(c.wear, 2)}</td>
+                      <td className={`${numCell} font-semibold`}>{fmtUsd(c.totalPerLoad, 2)}</td>
                       <td className={`${numCell} font-semibold`}>{c.centsPerBu != null ? `${fmtNum(c.centsPerBu, 1)}¢` : '—'}</td>
                     </tr>
                   )
@@ -647,15 +653,9 @@ export default function FreightMathPage() {
         </>
       )}
 
-      {/* ---- assumptions slide-over ---- */}
-      {panelOpen && (
-        <div className="fixed inset-0 z-40 no-print" role="dialog" aria-modal="true">
-          <div className="absolute inset-0 bg-slate-900/30" onClick={() => { setPanelOpen(false); persist() }} />
-          <div className="absolute inset-y-0 right-0 w-full max-w-lg bg-white shadow-2xl overflow-y-auto p-5 space-y-5">
-            <div className="flex items-center gap-2">
-              <h2 className="font-semibold text-lg flex-1">Assumptions</h2>
-              <button type="button" onClick={() => { setPanelOpen(false); persist() }} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50">Done</button>
-            </div>
+      {/* ---- assumptions dialog (Escape closes; focus stays inside) ---- */}
+      <AppModal open={panelOpen} title="Assumptions" onClose={closePanel} size="lg" initialFocus="none">
+          <div className="space-y-5">
 
             <div className="grid grid-cols-2 gap-3">
               <label className="text-sm text-slate-700">
@@ -868,9 +868,11 @@ export default function FreightMathPage() {
                 </div>
               )}
             </div>
+            <div className="flex justify-end pt-1">
+              <button type="button" onClick={closePanel} className="rounded-lg bg-slate-700 text-white px-4 min-h-11 text-sm font-semibold">Done</button>
+            </div>
           </div>
-        </div>
-      )}
+      </AppModal>
     </div>
   )
 }

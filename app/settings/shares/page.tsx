@@ -13,6 +13,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { reportError } from '@/lib/friendly-error'
+import { useDialogs } from '@/components/use-dialogs'
 
 type Landowner = { id: string; name: string }
 type Share = {
@@ -149,6 +151,7 @@ function ScopeToggle({
 }
 
 export default function SharesPage() {
+  const { confirmText, dialogs } = useDialogs()
   const supabase = useMemo(() => createClient(), [])
   const [landowners, setLandowners] = useState<Landowner[]>([])
   const [shares, setShares] = useState<Share[]>([])
@@ -193,7 +196,7 @@ export default function SharesPage() {
       ...(shareSettlements ? { share_settlements: true } : {}),
       share_code_sha256: await sha256Hex(code),
     })
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     setFreshCode({ code, landowner: landownerName.get(landownerId) ?? '' })
     setCopied(false)
     setLabel('')
@@ -208,23 +211,23 @@ export default function SharesPage() {
     // Optimistic so the toggle and preview respond immediately.
     setShares((prev) => prev.map((x) => (x.id === s.id ? { ...x, ...patch } : x)))
     const { error } = await supabase.from('partner_shares').update(patch).eq('id', s.id)
-    if (error) { setErr(error.message); refresh() }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); refresh() }
   }
 
   async function revoke(s: Share) {
-    if (!confirm(`End the share with ${landownerName.get(s.landowner_id) ?? 'this landowner'}? Their landowner software loses access immediately.`)) return
+    if (!(await confirmText(`End the share with ${landownerName.get(s.landowner_id) ?? 'this landowner'}? Their landowner software loses access immediately.`))) return
     const { error } = await supabase
       .from('partner_shares')
       .update({ revoked_at: new Date().toISOString() })
       .eq('id', s.id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     refresh()
   }
 
   async function remove(s: Share) {
-    if (!confirm('Delete this share entry?')) return
+    if (!(await confirmText('Delete this share entry?'))) return
     const { error } = await supabase.from('partner_shares').delete().eq('id', s.id)
-    if (error) { setErr(error.message); return }
+    if (error) { setErr(reportError(error, { action: 'finish that' })); return }
     refresh()
   }
 
@@ -378,6 +381,7 @@ export default function SharesPage() {
           )
         })}
       </ul>
+      {dialogs}
     </div>
   )
 }

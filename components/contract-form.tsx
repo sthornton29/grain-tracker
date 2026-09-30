@@ -117,27 +117,56 @@ export function contractFormToPayload(f: ContractFormState) {
   }
 }
 
-export function validateContractForm(f: ContractFormState): string | null {
-  if (!f.contract_number.trim()) return 'Contract # is required.'
-  if (f.delivery_type === 'delivered' && !f.delivery_location_id) return 'Pick a delivery location for delivered contracts.'
-  if (f.contract_type === 'hta' && parsePrice(f.futures_price) == null) return 'HTA contracts need a futures price.'
-  if (f.contract_type === 'basis' && parsePrice(f.basis) == null) return 'Basis contracts need a basis.'
+/** Which form field a validation message belongs to, so the form can
+ *  highlight it. */
+export type ContractFieldKey =
+  | 'contract_number' | 'buyer_id' | 'crop_id' | 'crop_year' | 'contracted_bushels'
+  | 'delivery_location_id' | 'futures_price' | 'basis' | 'cash_price'
+export type ContractFieldErrors = Partial<Record<ContractFieldKey, string>>
+
+/** Every problem on the form, keyed by field — plain sentences a farmer can
+ *  act on. Empty object = ready to save. */
+export function validateContractFields(f: ContractFormState): ContractFieldErrors {
+  const errors: ContractFieldErrors = {}
+  if (!f.contract_number.trim()) errors.contract_number = 'Enter the contract number.'
+  if (!f.buyer_id) errors.buyer_id = 'Who is this contract with?'
+  if (!f.crop_id) errors.crop_id = 'Which crop is this contract for?'
+  if (!f.crop_year) errors.crop_year = 'Which crop year does this contract cover?'
+  const bu = f.contracted_bushels.trim() === '' ? null : Number(f.contracted_bushels)
+  if (bu == null || !Number.isFinite(bu) || bu <= 0) errors.contracted_bushels = 'How many bushels are contracted?'
+  if (f.delivery_type === 'delivered' && !f.delivery_location_id) errors.delivery_location_id = 'Pick where this contract delivers to.'
+  if (f.contract_type === 'hta' && parsePrice(f.futures_price) == null) errors.futures_price = 'An HTA needs its futures price.'
+  if (f.contract_type === 'basis' && parsePrice(f.basis) == null) errors.basis = 'A basis contract needs its basis.'
   // When all three pricing legs are entered they must reconcile.
   const F = parsePrice(f.futures_price)
   const B = parsePrice(f.basis)
   const C = parsePrice(f.cash_price)
   const fee = parsePrice(f.service_fee) ?? 0
   if (F != null && B != null && C != null && Math.abs(C - (F + B - fee)) > 0.005) {
-    return `Cash price must equal futures + basis${fee ? ' − service fee' : ''}. Check the basis sign or values.`
+    errors.cash_price = `Cash price should equal futures + basis${fee ? ' − service fee' : ''}. Check the basis sign or the numbers.`
   }
+  return errors
+}
+
+/** The first problem as one sentence (null when the form is ready to save). */
+export function validateContractForm(f: ContractFormState): string | null {
+  const errors = validateContractFields(f)
+  const order: ContractFieldKey[] = ['contract_number', 'buyer_id', 'crop_id', 'crop_year', 'contracted_bushels', 'delivery_location_id', 'futures_price', 'basis', 'cash_price']
+  for (const k of order) if (errors[k]) return errors[k]!
   return null
 }
 
-const INPUT_CLS = 'rounded-lg border border-slate-300 px-3 py-2'
+const INPUT_CLS = 'rounded-lg border border-slate-300 px-3 py-2 min-h-11'
+const INPUT_ERR = 'border-red-500 bg-red-50'
 const PENDING = 'rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-slate-400'
 
+function FieldError({ msg }: { msg?: string }) {
+  if (!msg) return null
+  return <span className="block text-xs text-red-700 mt-0.5" role="alert">{msg}</span>
+}
+
 export function ContractFields({
-  value, onChange, buyers, crops, locations, entities, cropYearOptions, onBuyerCreated, onLocationCreated,
+  value, onChange, buyers, crops, locations, entities, cropYearOptions, onBuyerCreated, onLocationCreated, errors = {},
 }: {
   value: ContractFormState
   onChange: (f: ContractFormState) => void
@@ -149,8 +178,12 @@ export function ContractFields({
   /** Inline "+ Add new…" creations — the parent appends the row to its list. */
   onBuyerCreated?: (b: Buyer) => void
   onLocationCreated?: (l: DeliveryLocation) => void
+  /** Field-level problems from validateContractFields — highlights the
+   *  field and prints the sentence under it. */
+  errors?: ContractFieldErrors
 }) {
   const f = value
+  const errCls = (k: ContractFieldKey) => (errors[k] ? ` ${INPUT_ERR}` : '')
   // Order of manually-edited price legs; the leg NOT among the last two is the
   // one auto-derived (forward contracts only).
   const [manualOrder, setManualOrder] = useState<Array<'futures' | 'basis' | 'cash'>>([])
@@ -255,13 +288,29 @@ export function ContractFields({
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <input placeholder="Contract #" value={f.contract_number} onChange={(e) => set('contract_number', e.target.value)} className={INPUT_CLS} />
-        <input type="number" step="0.01" placeholder="Contracted bushels" value={f.contracted_bushels} onChange={(e) => set('contracted_bushels', e.target.value)} className={INPUT_CLS} />
-        <BuyerPicker value={f.buyer_id} onChange={setBuyer} buyers={buyers} onCreated={onBuyerCreated} className={INPUT_CLS} />
-        <select value={f.crop_id} onChange={(e) => onChange({ ...f, crop_id: e.target.value, contract_month: '' })} className={INPUT_CLS}>
-          <option value="">— crop —</option>
-          {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+        <label className="text-sm text-slate-700">
+          Contract #
+          <input value={f.contract_number} onChange={(e) => set('contract_number', e.target.value)} className={`w-full ${INPUT_CLS}${errCls('contract_number')}`} aria-invalid={!!errors.contract_number} />
+          <FieldError msg={errors.contract_number} />
+        </label>
+        <label className="text-sm text-slate-700">
+          Contracted bushels
+          <input type="text" inputMode="decimal" placeholder="e.g. 10,000" value={f.contracted_bushels} onChange={(e) => set('contracted_bushels', e.target.value.replace(/,/g, ''))} className={`w-full ${INPUT_CLS}${errCls('contracted_bushels')}`} aria-invalid={!!errors.contracted_bushels} />
+          <FieldError msg={errors.contracted_bushels} />
+        </label>
+        <div className="text-sm text-slate-700">
+          <span className="block">Buyer</span>
+          <BuyerPicker value={f.buyer_id} onChange={setBuyer} buyers={buyers} onCreated={onBuyerCreated} className={`w-full ${INPUT_CLS}${errCls('buyer_id')}`} />
+          <FieldError msg={errors.buyer_id} />
+        </div>
+        <label className="text-sm text-slate-700">
+          Crop
+          <select value={f.crop_id} onChange={(e) => onChange({ ...f, crop_id: e.target.value, contract_month: '' })} className={`w-full ${INPUT_CLS}${errCls('crop_id')}`} aria-invalid={!!errors.crop_id}>
+            <option value="">— pick a crop —</option>
+            {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+          <FieldError msg={errors.crop_id} />
+        </label>
         <label className="text-sm text-slate-700">
           Contract month <span className="text-xs text-slate-400">optional</span>
           <select value={f.contract_month} onChange={(e) => set('contract_month', e.target.value)} className={`w-full ${INPUT_CLS}`}>
@@ -270,17 +319,24 @@ export function ContractFields({
             {monthOptions.map((m) => <option key={m.label} value={m.label}>{m.label}</option>)}
           </select>
         </label>
-        <select value={f.crop_year} onChange={(e) => set('crop_year', e.target.value)} className={INPUT_CLS}>
-          <option value="">— crop year —</option>
-          {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
-        </select>
-        <EntitySelect
-          entities={entities}
-          value={f.entity_id}
-          onChange={(id) => set('entity_id', id)}
-          className={INPUT_CLS}
-          showWhenSingle
-        />
+        <label className="text-sm text-slate-700">
+          Crop year
+          <select value={f.crop_year} onChange={(e) => set('crop_year', e.target.value)} className={`w-full ${INPUT_CLS}${errCls('crop_year')}`} aria-invalid={!!errors.crop_year}>
+            <option value="">— pick a crop year —</option>
+            {cropYearOptions.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <FieldError msg={errors.crop_year} />
+        </label>
+        <label className="text-sm text-slate-700">
+          Entity
+          <EntitySelect
+            entities={entities}
+            value={f.entity_id}
+            onChange={(id) => set('entity_id', id)}
+            className={`w-full ${INPUT_CLS}`}
+            showWhenSingle
+          />
+        </label>
       </div>
 
       {/* Pricing block */}
@@ -299,9 +355,11 @@ export function ContractFields({
               <input
                 type="text" inputMode="decimal" placeholder="4.80" value={f.futures_price}
                 onChange={(e) => (f.contract_type === 'forward' ? editForwardLeg('futures', e.target.value) : editDeferredLeg('futures_price', e.target.value))}
-                className={autoCls('futures')}
+                className={`${autoCls('futures')}${errCls('futures_price')}`}
+                aria-invalid={!!errors.futures_price}
               />
             )}
+            <FieldError msg={errors.futures_price} />
           </label>
           {/* Basis */}
           <label className="text-sm text-slate-700">
@@ -315,15 +373,20 @@ export function ContractFields({
               <input
                 type="text" inputMode="decimal" placeholder="-0.30" value={f.basis}
                 onChange={(e) => (f.contract_type === 'forward' ? editForwardLeg('basis', e.target.value) : editDeferredLeg('basis', e.target.value))}
-                className={autoCls('basis')}
+                className={`${autoCls('basis')}${errCls('basis')}`}
+                aria-invalid={!!errors.basis}
               />
             )}
+            <FieldError msg={errors.basis} />
           </label>
           {/* Cash */}
           <label className="text-sm text-slate-700">
             Cash price
             {f.contract_type === 'forward' ? (
-              <input type="text" inputMode="decimal" placeholder="4.50" value={f.cash_price} onChange={(e) => editForwardLeg('cash', e.target.value)} className={autoCls('cash')} />
+              <>
+                <input type="text" inputMode="decimal" placeholder="4.50" value={f.cash_price} onChange={(e) => editForwardLeg('cash', e.target.value)} className={`${autoCls('cash')}${errCls('cash_price')}`} aria-invalid={!!errors.cash_price} />
+                <FieldError msg={errors.cash_price} />
+              </>
             ) : (
               <div className={`mt-1 ${PENDING}`}>
                 {previewCash != null ? fmtPrice(previewCash) : f.contract_type === 'hta' ? 'Pending — awaiting basis' : 'Pending — awaiting futures'}
@@ -365,11 +428,14 @@ export function ContractFields({
           Date sold <span className="text-slate-400">(optional)</span>
           <input type="date" value={f.date_sold} onChange={(e) => set('date_sold', e.target.value)} className={`w-full ${INPUT_CLS}`} />
         </label>
-        <input placeholder="Notes" value={f.notes} onChange={(e) => set('notes', e.target.value)} className={`self-end ${INPUT_CLS}`} />
+        <label className="text-sm text-slate-700">
+          Notes <span className="text-slate-400">(optional)</span>
+          <input value={f.notes} onChange={(e) => set('notes', e.target.value)} className={`w-full ${INPUT_CLS}`} />
+        </label>
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
-        <span className="text-sm font-semibold text-slate-700">Location:</span>
+        <span className="text-sm font-semibold text-slate-700">Delivery:</span>
         <label className="text-sm flex items-center gap-1">
           <input type="radio" checked={f.delivery_type === 'pickup'} onChange={() => onChange({ ...f, delivery_type: 'pickup', delivery_location_id: '' })} />
           Pickup
@@ -379,15 +445,18 @@ export function ContractFields({
           Delivered
         </label>
         {f.delivery_type === 'delivered' && (
-          <DeliveryLocationPicker
-            value={f.delivery_location_id}
-            onChange={(id) => set('delivery_location_id', id)}
-            buyerId={f.buyer_id}
-            buyerName={buyers.find((b) => b.id === f.buyer_id)?.name ?? null}
-            locations={buyerLocations}
-            onCreated={onLocationCreated}
-            className={INPUT_CLS}
-          />
+          <div>
+            <DeliveryLocationPicker
+              value={f.delivery_location_id}
+              onChange={(id) => set('delivery_location_id', id)}
+              buyerId={f.buyer_id}
+              buyerName={buyers.find((b) => b.id === f.buyer_id)?.name ?? null}
+              locations={buyerLocations}
+              onCreated={onLocationCreated}
+              className={`${INPUT_CLS}${errCls('delivery_location_id')}`}
+            />
+            <FieldError msg={errors.delivery_location_id} />
+          </div>
         )}
       </div>
     </div>

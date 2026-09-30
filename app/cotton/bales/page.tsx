@@ -15,6 +15,7 @@ import { parseGradeCsv, type ParsedGradeRow } from '@/lib/cotton-grades'
 import { matchGradesToBales } from '@/lib/cotton'
 import type { CottonBale, CottonBaleGrade, GinReceipt, Farm, Field } from '@/lib/types'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
+import { reportError } from '@/lib/friendly-error'
 
 const fmt = (n: number | null | undefined, d = 1) => (n == null ? '—' : Number(n).toFixed(d))
 
@@ -79,7 +80,7 @@ export default function CottonBalesPage() {
       }))
       if (rows.length === 0) { setErr('No rows matched a bale — enter the gin receipt first, then re-import this file.'); return }
       const { error } = await supabase.from('cotton_bale_grades').upsert(rows, { onConflict: 'bale_id' })
-      if (error) { setErr(error.message); return }
+      if (error) { setErr(reportError(error, { action: 'save the classing data', noun: 'bale' })); return }
       setMsg(`Saved classing data for ${rows.length} bale${rows.length === 1 ? '' : 's'}${preview.unmatched.length ? ` — ${preview.unmatched.length} unmatched row${preview.unmatched.length === 1 ? '' : 's'} left for later (no matching bale yet)` : ''}.`)
       setPreview(null); refresh()
     } finally {
@@ -87,7 +88,11 @@ export default function CottonBalesPage() {
     }
   }
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
+  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2 min-h-11'
+  const years = useMemo(() => {
+    const ys = new Set<number>([cropYear, new Date().getFullYear(), ...bales.map((b) => b.crop_year)])
+    return [...ys].sort((a, b) => b - a)
+  }, [bales, cropYear])
   const gradedCount = yearBales.filter((b) => gradeByBale.has(b.id)).length
 
   return (
@@ -96,15 +101,17 @@ export default function CottonBalesPage() {
         <h1 className="text-2xl font-bold flex-1">Bales &amp; Grades</h1>
         <label className="text-sm flex flex-col gap-1">
           <span className="text-slate-500">Crop year</span>
-          <input type="number" value={cropYear} onChange={(e) => setCropYear(Number(e.target.value))} className={`${inputCls} w-24`} />
+          <select value={cropYear} onChange={(e) => setCropYear(Number(e.target.value))} className={inputCls}>
+            {years.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
         </label>
       </div>
 
       <section className="bg-white rounded-xl shadow p-4 space-y-3">
         <h2 className="font-semibold">Import Classing Data (CSV)</h2>
         <p className="text-sm text-slate-500">
-          The classing office&apos;s CSV parses directly (no AI): the preamble is skipped and columns map by header
-          name. Rows match bales by <b>Bale # (PBI)</b>; Farm/Field columns are corroboration only.
+          The classing office&apos;s CSV is read as-is: the preamble is skipped and columns are matched by their
+          headings. Rows match bales by <b>Bale # (PBI)</b>; Farm/Field columns are only used to double-check.
         </p>
         <Dropzone
           onFiles={(files) => void onCsv(files[0])}

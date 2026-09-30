@@ -7,12 +7,15 @@ import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
-import { HARVEST_ENTRY_PATH_KEY, type HarvestEntryPath } from '@/lib/harvest-entry-path'
 import { splitFieldLabel } from '@/lib/load-splits'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { truckDisplay, truckExportLabel } from '@/lib/trucks'
 import { buildTareStatsIndex, lowTareWarning, truckTareKey } from '@/lib/truck-tare'
+import { fmtDate } from '@/lib/format-date'
+import { reportError } from '@/lib/friendly-error'
 import ExportBar from '@/components/export-bar'
+import { ConfirmDialog, NoticeDialog } from '@/components/app-dialog'
+import { EmptyState, ReportFilterBar, fmtInt, fmtNum, theadCls } from '@/components/reports/report-kit'
 import type { ExportPayload, ExportCell } from '@/lib/exports'
 import type { Entity, Farm, Field, FieldPlanting, County, LoadSplit } from '@/lib/types'
 
@@ -99,17 +102,13 @@ function toLabel(r: Row) {
   return ''
 }
 
-function csvEscape(v: unknown) {
-  const s = v == null ? '' : String(v)
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-}
-
 export default function LoadsPage() {
   const supabase = useMemo(() => createClient(), [])
   const router = useRouter()
-  // Last-used harvest-entry path (062): swaps which header button is primary.
-  const [entryPath] = usePersistentState<HarvestEntryPath>(HARVEST_ENTRY_PATH_KEY, 'load')
   const [rows, setRows] = useState<Row[]>([])
+  // Does the operation have ANY loads (ignoring every filter)? Decides
+  // between the "nothing yet" and the "nothing matches" empty states.
+  const [hasAnyLoads, setHasAnyLoads] = useState<boolean | null>(null)
   const [entities, setEntities] = useState<Entity[]>([])
   const [farms, setFarms] = useState<Farm[]>([])
   const [fields, setFields] = useState<Field[]>([])
@@ -132,6 +131,9 @@ export default function LoadsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [splitsByLoad, setSplitsByLoad] = useState<Map<string, LoadSplit[]>>(new Map())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [deleteAsk, setDeleteAsk] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
   type SortKey = 'date' | 'ticket' | 'truck' | 'crop' | 'net' | 'dry' | 'moisture' | 'testwt'
   const [sortKey, setSortKey] = useState<SortKey>('date')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
@@ -152,8 +154,9 @@ export default function LoadsPage() {
       if (to) query = query.lte('date', to)
       return query.range(f, t)
     })
-    const [loadsRes, entitiesRes, farmsRes, fieldsRes, countiesRes, settlementLinesRes, plantingsRes, contractsRes, splitsRes, cropsRes] = await Promise.all([
+    const [loadsRes, anyRes, entitiesRes, farmsRes, fieldsRes, countiesRes, settlementLinesRes, plantingsRes, contractsRes, splitsRes, cropsRes] = await Promise.all([
       loadsQ,
+      supabase.from('loads').select('id', { count: 'exact', head: true }),
       supabase.from('entities').select('*').order('name'),
       supabase.from('farms').select('*'),
       supabase.from('fields').select('*'),
@@ -167,6 +170,7 @@ export default function LoadsPage() {
       supabase.from('crops').select('id, name').order('name'),
     ])
     setRows((loadsRes.data as unknown as Row[]) || [])
+    setHasAnyLoads((anyRes.count ?? 0) > 0)
     setCrops(((cropsRes.data as Array<{ id: string; name: string }>) ?? []))
     const splitMap = new Map<string, LoadSplit[]>()
     for (const s of ((splitsRes.data as LoadSplit[]) || [])) {
@@ -312,7 +316,7 @@ export default function LoadsPage() {
     if (!q) return true
     const hay = [
       r.ticket_number, truckDisplay(r).name, r.crop?.name,
-      fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number, r.date,
+      fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number, r.date, fmtDate(r.date),
     ].filter(Boolean).join(' ').toLowerCase()
     return hay.includes(q.toLowerCase())
   })
@@ -381,14 +385,23 @@ export default function LoadsPage() {
   }
   async function bulkDelete() {
     if (selected.size === 0) return
-    if (!confirm(`Delete ${selected.size} load${selected.size === 1 ? '' : 's'}? This cannot be undone.`)) return
+    setDeleting(true)
     const ids = [...selected]
     const CHUNK = 50
     for (let i = 0; i < ids.length; i += CHUNK) {
       const batch = ids.slice(i, i + CHUNK)
       const { error } = await supabase.from('loads').delete().in('id', batch)
-      if (error) { alert(`Failed after ${i} of ${ids.length}: ${error.message}`); refresh(); return }
+      if (error) {
+        setDeleting(false)
+        setDeleteAsk(false)
+        setNotice(`${i} of ${ids.length} loads were deleted before it stopped. ${reportError(error, { action: 'delete the rest', noun: 'load' })}`)
+        setSelected(new Set())
+        refresh()
+        return
+      }
     }
+    setDeleting(false)
+    setDeleteAsk(false)
     setSelected(new Set())
     refresh()
   }
@@ -404,80 +417,52 @@ export default function LoadsPage() {
     return paidTickets.has(t) ? 'paid' : 'unpaid'
   }
 
-  function downloadCsv(rowsToExport: Row[], filenameSuffix = '') {
-    const headers = [
-      'date','time','ticket','truck','crop','from','to','contract',
-      'gross_lb','tare_lb','net_lb','wet_bu','dry_bu','moisture','test_weight',
-      'is_split','split_details','paid_status',
-    ]
-    const lines = [headers.join(',')]
-    for (const r of rowsToExport) {
-      const { wetBushels, dryBushels } = bushelsFor(r)
-      const rSplits = splitsByLoad.get(r.id)
-      const isSplit = !!(rSplits && rSplits.length > 0)
-      const splitDetails = isSplit
-        ? [...rSplits!]
-            .sort((a, b) => b.net_weight - a.net_weight)
-            .map((s) => {
-              const name = fieldNameById.get(s.field_id) ?? '?'
-              const dry = s.dry_bushels != null ? s.dry_bushels.toFixed(2) : ''
-              return `${name}: ${dry} bu (${s.percentage.toFixed(1)}%)`
-            })
-            .join('; ')
-        : ''
-      lines.push([
-        r.date, r.time ?? '', r.ticket_number ?? '',
-        truckExportLabel(r), r.crop?.name ?? '',
-        fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number ?? '',
-        r.gross_weight ?? '', r.tare_weight ?? '', r.net_weight ?? '',
-        wetBushels != null ? wetBushels.toFixed(2) : '',
-        dryBushels != null ? dryBushels.toFixed(2) : '',
-        r.moisture ?? '', r.test_weight ?? '',
-        isSplit ? 'true' : 'false', splitDetails, paymentStatus(r) ?? '',
-      ].map(csvEscape).join(','))
-    }
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `loads${filenameSuffix}-${new Date().toISOString().slice(0,10)}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
-  function exportCsv() {
-    downloadCsv(filtered)
+  const activeFilterCount = [q, from, to, entityId, countyId, cropYear !== '' ? 'y' : '', cropId, contractId].filter(Boolean).length
+  function clearFilters() {
+    setQ(''); setFrom(''); setTo(''); setEntityId(''); setCountyId(''); setCropYear(''); setCropId(''); setContractId('')
   }
 
   // Plain-English summary of the active filters (export sub-title + on screen).
-  function filterSummary(): string {
+  function filterSummary(count = filtered.length): string {
     const parts: string[] = []
-    if (from || to) parts.push(`${from || '…'} to ${to || '…'}`)
+    if (from || to) parts.push(`${from ? fmtDate(from) : '…'} to ${to ? fmtDate(to) : '…'}`)
     if (entityId) parts.push(entities.find((e) => e.id === entityId)?.name ?? 'Entity')
     if (countyId) { const c = counties.find((x) => x.id === countyId); if (c) parts.push(`${c.name}, ${c.state_code}`) }
     if (cropYear !== '') parts.push(`${cropYear} crop`)
     if (cropId) parts.push(crops.find((c) => c.id === cropId)?.name ?? 'Crop')
     if (contractId) parts.push(`#${contracts.find((c) => c.id === contractId)?.contract_number ?? contractId}`)
     if (q) parts.push(`“${q}”`)
-    parts.push(`${filtered.length} load${filtered.length === 1 ? '' : 's'}`)
+    parts.push(`${count} load${count === 1 ? '' : 's'}`)
     return parts.join(' · ')
   }
 
-  // Formatted PDF/Excel of the filtered loads (mirrors the on-screen list).
-  function buildPayload(): ExportPayload {
+  // ONE export payload for the whole list, a selection, or any subset — Excel,
+  // PDF, CSV and print all come from it (lib/exports). Mirrors the on-screen
+  // list; Excel cells stay real numbers.
+  function buildPayload(rowsToExport: Row[] = sorted, suffix = ''): ExportPayload {
     return {
       title: 'Load Log',
-      filters: filterSummary(),
+      filters: filterSummary(rowsToExport.length),
+      filename: `loads${suffix}-${new Date().toISOString().slice(0, 10)}`,
       sections: [{
         columns: [
-          { label: 'Date' }, { label: 'Ticket' }, { label: 'Truck' }, { label: 'Crop' },
+          { label: 'Date' }, { label: 'Time' }, { label: 'Ticket' }, { label: 'Truck' }, { label: 'Crop' },
           { label: 'From' }, { label: 'To' }, { label: 'Contract' }, { label: 'Payment' },
           { label: 'Gross lb', align: 'right', format: 'int' }, { label: 'Tare lb', align: 'right', format: 'int' }, { label: 'Net lb', align: 'right', format: 'int' },
           { label: 'Wet bu', align: 'right', format: 'bu' }, { label: 'Dry bu', align: 'right', format: 'bu' },
-          { label: 'Moisture %', align: 'right', format: 'dec1' }, { label: 'Test wt', align: 'right', format: 'dec1' }, { label: 'Split' },
+          { label: 'Moisture %', align: 'right', format: 'dec1' }, { label: 'Test wt', align: 'right', format: 'dec1' },
+          { label: 'Split' }, { label: 'Split details' },
         ],
-        rows: filtered.map((r): ExportCell[] => {
+        rows: rowsToExport.map((r): ExportCell[] => {
           const { wetBushels, dryBushels } = bushelsFor(r)
           const rSplits = splitsByLoad.get(r.id)
+          const isSplit = !!(rSplits && rSplits.length > 0)
+          const splitDetails = isSplit
+            ? [...rSplits!]
+                .sort((a, b) => b.net_weight - a.net_weight)
+                .map((s) => `${fieldNameById.get(s.field_id) ?? '?'}: ${s.dry_bushels != null ? fmtInt(s.dry_bushels) : ''} bu (${s.percentage.toFixed(1)}%)`)
+                .join('; ')
+            : ''
           // Paid/unpaid mirrors the on-screen badge (blank for stored/non-buyer loads).
           const pay = paymentStatus(r)
           const payCell: ExportCell =
@@ -485,281 +470,346 @@ export default function LoadsPage() {
             : pay === 'unpaid' ? { v: 'Unpaid', tone: 'warning' as const }
             : ''
           return [
-            r.date, r.ticket_number ?? '', truckExportLabel(r), r.crop?.name ?? '',
+            fmtDate(r.date), r.time ? r.time.slice(0, 5) : '', r.ticket_number ?? '', truckExportLabel(r), r.crop?.name ?? '',
             fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number ?? '', payCell,
             r.gross_weight ?? '', r.tare_weight ?? '', r.net_weight ?? '',
             wetBushels ?? '', dryBushels ?? '', r.moisture ?? '', r.test_weight ?? '',
-            rSplits && rSplits.length > 0 ? 'Yes' : '',
+            isSplit ? 'Yes' : '', splitDetails,
           ]
         }),
       }],
     }
   }
-  function exportSelected() {
-    if (selected.size === 0) return
-    // Preserve current sort order in the export by filtering `sorted`, not `rows`.
-    const rowsToExport = sorted.filter((r) => selected.has(r.id))
-    downloadCsv(rowsToExport, '-selected')
-  }
+  const selectedRows = () => sorted.filter((r) => selected.has(r.id))
+
+  const filterSelect = 'rounded-lg border border-slate-300 px-3 min-h-11 bg-white text-base sm:text-sm'
+  const filterLabel = 'flex flex-col gap-1 text-xs text-slate-600 min-w-[9rem] flex-1 sm:flex-none'
+  const quietLink = 'inline-flex items-center rounded-lg bg-white border border-slate-300 px-4 min-h-11 text-sm'
+
+  const nothingYet = !loading && hasAnyLoads === false
+  const nothingMatches = !loading && hasAnyLoads !== false && sorted.length === 0
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap gap-3 items-end">
+      <div className="flex flex-wrap gap-2 items-center">
         <h1 className="text-2xl font-bold flex-1">Loads</h1>
-        <Link href="/loads/unpaid" className="rounded-lg bg-white border border-slate-300 px-4 py-2 text-sm">Unpaid</Link>
-        <Link href="/loads/import" className="rounded-lg bg-white border border-slate-300 px-4 py-2 text-sm">Import CSV</Link>
-        {/* The last-used harvest-entry path gets the primary button — pure
-            emphasis, both paths always visible (062). */}
-        <Link
-          href="/loads/combine"
-          className={entryPath === 'combine'
-            ? 'rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold'
-            : 'rounded-lg bg-white border border-slate-300 px-4 py-2 text-sm'}
-        >
-          Yield from Combine
-        </Link>
-        <Link
-          href="/loads/new"
-          className={entryPath === 'combine'
-            ? 'rounded-lg bg-white border border-slate-300 px-4 py-2 text-sm'
-            : 'rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold'}
-        >
+        <Link href="/loads/new" className="inline-flex items-center rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold">
           + New Load
         </Link>
-        <button onClick={exportCsv} className="rounded-lg bg-white border border-slate-300 px-4 py-2">Export CSV</button>
-        {filtered.length > 0 && <span className="text-xs text-slate-500 self-center" title="Active filters — named on every export">{filterSummary()}</span>}
-        {filtered.length > 0 && <ExportBar buildPayload={buildPayload} />}
+        <Link href="/loads/combine" className={quietLink}>Yield from combine</Link>
+        <Link href="/loads/scan" className={quietLink}>Scan tickets</Link>
+        <Link href="/loads/import" className={quietLink}>Import spreadsheet</Link>
+        <Link href="/loads/unpaid" className={quietLink}>Unpaid</Link>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-        <input
-          type="search"
-          placeholder="Search ticket, truck, crop, field, bin, buyer…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          className="rounded-lg border border-slate-300 px-3 py-2"
-        />
-        <label className="text-sm text-slate-600 flex items-center gap-2">
-          From <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 flex-1" />
+      <ReportFilterBar activeCount={activeFilterCount}>
+        <label className={`${filterLabel} sm:min-w-[16rem]`}>
+          Search
+          <input
+            type="search"
+            placeholder="Ticket, truck, crop, field, bin, buyer…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            className={filterSelect}
+          />
         </label>
-        <label className="text-sm text-slate-600 flex items-center gap-2">
-          To <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 flex-1" />
+        <label className={filterLabel}>
+          From date
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={filterSelect} />
         </label>
-        <select
-          value={entityId}
-          onChange={(e) => setEntityId(e.target.value)}
-          className="rounded-lg border border-slate-300 px-3 py-2"
-          title="Filter to loads sourced from a field belonging to this entity"
-        >
-          <option value="">All entities</option>
-          {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
-        </select>
-        <select
-          value={countyId}
-          onChange={(e) => setCountyId(e.target.value)}
-          className="rounded-lg border border-slate-300 px-3 py-2"
-          title="Filter to loads sourced from a field in this county"
-        >
-          <option value="">All counties</option>
-          {countyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
-        </select>
-        <select
-          value={cropYear}
-          onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))}
-          className="rounded-lg border border-slate-300 px-3 py-2"
-        >
-          <option value="">All crop years</option>
-          {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
-        </select>
-        <select
-          value={cropId}
-          onChange={(e) => setCropId(e.target.value)}
-          className="rounded-lg border border-slate-300 px-3 py-2"
-          title="Filter to loads of this crop (a split load matches any of its crops)"
-        >
-          <option value="">All crops</option>
-          {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
-        <select
-          value={contractId}
-          onChange={(e) => setContractId(e.target.value)}
-          className="rounded-lg border border-slate-300 px-3 py-2"
-          title="Filter to loads attached to this contract"
-        >
-          <option value="">All contracts</option>
-          {contractOptions.map((c) => {
-            const parts = [
-              `#${c.contract_number}`,
-              c.buyer?.name,
-              c.crop?.name,
-              c.crop_year != null ? `${c.crop_year} crop` : null,
-            ].filter(Boolean)
-            return <option key={c.id} value={c.id}>{parts.join(' · ')}</option>
-          })}
-        </select>
-      </div>
+        <label className={filterLabel}>
+          To date
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={filterSelect} />
+        </label>
+        <label className={filterLabel}>
+          Entity
+          <select
+            value={entityId}
+            onChange={(e) => setEntityId(e.target.value)}
+            className={filterSelect}
+            title="Loads from a field belonging to this entity"
+          >
+            <option value="">All entities</option>
+            {entities.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+          </select>
+        </label>
+        <label className={filterLabel}>
+          County
+          <select
+            value={countyId}
+            onChange={(e) => setCountyId(e.target.value)}
+            className={filterSelect}
+            title="Loads from a field in this county"
+          >
+            <option value="">All counties</option>
+            {countyOptions.map((c) => <option key={c.id} value={c.id}>{c.name}, {c.state_code}</option>)}
+          </select>
+        </label>
+        <label className={filterLabel}>
+          Crop year
+          <select
+            value={cropYear}
+            onChange={(e) => setCropYear(e.target.value === '' ? '' : Number(e.target.value))}
+            className={filterSelect}
+          >
+            <option value="">All crop years</option>
+            {cropYearOptions.map((y) => <option key={y} value={y}>{y} crop</option>)}
+          </select>
+        </label>
+        <label className={filterLabel}>
+          Crop
+          <select
+            value={cropId}
+            onChange={(e) => setCropId(e.target.value)}
+            className={filterSelect}
+            title="Loads of this crop (a split load matches any of its crops)"
+          >
+            <option value="">All crops</option>
+            {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </select>
+        </label>
+        <label className={`${filterLabel} sm:min-w-[14rem]`}>
+          Contract
+          <select
+            value={contractId}
+            onChange={(e) => setContractId(e.target.value)}
+            className={filterSelect}
+            title="Loads attached to this contract"
+          >
+            <option value="">All contracts</option>
+            {contractOptions.map((c) => {
+              const parts = [
+                `#${c.contract_number}`,
+                c.buyer?.name,
+                c.crop?.name,
+                c.crop_year != null ? `${c.crop_year} crop` : null,
+              ].filter(Boolean)
+              return <option key={c.id} value={c.id}>{parts.join(' · ')}</option>
+            })}
+          </select>
+        </label>
+        {activeFilterCount > 0 && (
+          <button type="button" onClick={clearFilters} className={`${quietLink} self-end`}>
+            Clear filters
+          </button>
+        )}
+      </ReportFilterBar>
 
-      {selected.size > 0 && (
-        <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm">
-          <span className="font-semibold">{selected.size} selected</span>
-          <button onClick={exportSelected} className="rounded-lg bg-white border border-slate-300 px-3 py-1.5 text-sm font-semibold">Export selected</button>
-          <button onClick={bulkDelete} className="rounded-lg bg-red-600 text-white px-3 py-1.5 text-sm font-semibold">Delete selected</button>
-          <button onClick={() => setSelected(new Set())} className="text-slate-600">Clear</button>
+      {/* One export bar for the page: the filtered list, every format. */}
+      {sorted.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-sm text-slate-500 flex-1" title="Active filters — named on every export">{filterSummary()}</span>
+          <ExportBar buildPayload={() => buildPayload()} formats={['xlsx', 'pdf', 'csv', 'print']} />
         </div>
       )}
 
-      <p className="text-sm text-slate-500">Click any load to view details, edit, or delete.</p>
+      {selected.size > 0 && (
+        <div className="flex flex-wrap items-center gap-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm">
+          <span className="font-semibold">{selected.size} selected</span>
+          <ExportBar buildPayload={() => buildPayload(selectedRows(), '-selected')} formats={['xlsx', 'csv']} size="sm" />
+          <button type="button" onClick={() => setDeleteAsk(true)} className="rounded-lg bg-red-600 hover:bg-red-700 text-white px-3 min-h-11 text-sm font-semibold">Delete selected</button>
+          <button type="button" onClick={() => setSelected(new Set())} className="text-slate-600 min-h-11 px-2">Clear selection</button>
+        </div>
+      )}
 
-      <div className="overflow-x-auto bg-white rounded-xl shadow">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-100 text-slate-700 cursor-default">
-            <tr>
-              <th className="px-3 py-2 w-8">
-                <input
-                  type="checkbox"
-                  checked={sorted.length > 0 && sorted.every((r) => selected.has(r.id))}
-                  onChange={toggleAllVisible}
-                />
-              </th>
-              <SortTh onClick={() => toggleSort('date')}     active={sortKey === 'date'}     dir={sortDir}>Date</SortTh>
-              <SortTh onClick={() => toggleSort('ticket')}   active={sortKey === 'ticket'}   dir={sortDir}>Ticket</SortTh>
-              <SortTh onClick={() => toggleSort('truck')}    active={sortKey === 'truck'}    dir={sortDir}>Truck</SortTh>
-              <SortTh onClick={() => toggleSort('crop')}     active={sortKey === 'crop'}     dir={sortDir}>Crop</SortTh>
-              <th className="text-left px-3 py-2 whitespace-nowrap">From</th>
-              <th className="text-left px-3 py-2 whitespace-nowrap">To</th>
-              <SortTh onClick={() => toggleSort('net')}      active={sortKey === 'net'}      dir={sortDir} align="right">Net (lb)</SortTh>
-              <th className="text-right px-3 py-2 whitespace-nowrap text-slate-500">Wet bu</th>
-              <SortTh onClick={() => toggleSort('dry')}      active={sortKey === 'dry'}      dir={sortDir} align="right">Dry bu</SortTh>
-              <SortTh onClick={() => toggleSort('moisture')} active={sortKey === 'moisture'} dir={sortDir} align="right">Moist</SortTh>
-              <SortTh onClick={() => toggleSort('testwt')}   active={sortKey === 'testwt'}   dir={sortDir} align="right">Test wt</SortTh>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
-            {!loading && sorted.length === 0 && (
-              <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">No loads found.</td></tr>
-            )}
-            {sorted.map((r) => {
-              const { wetBushels, dryBushels } = bushelsFor(r)
-              const fmt = (n: number | null) => n != null ? n.toLocaleString(undefined, { maximumFractionDigits: 2 }) : ''
-              const rSplits = splitsByLoad.get(r.id)
-              const isSplit = !!(rSplits && rSplits.length > 0)
-              const isExpanded = expanded.has(r.id)
-              return (
-                <Fragment key={r.id}>
-                <tr
-                  onClick={() => router.push(`/loads/${r.id}`)}
-                  className={`border-t border-slate-100 cursor-pointer hover:bg-slate-50 ${selected.has(r.id) ? 'bg-sky-50 hover:bg-sky-100' : ''}`}
-                >
-                  <td className="px-3 py-2" onClick={(e) => e.stopPropagation()}>
-                    <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggleRow(r.id)} />
-                  </td>
-                  <td className="px-3 py-2 whitespace-nowrap">{r.date}{r.time ? ` ${r.time.slice(0,5)}` : ''}</td>
-                  <td className="px-3 py-2">{r.ticket_number}</td>
-                  <td className="px-3 py-2">
-                    {(() => {
-                      const t = truckDisplay(r)
-                      return (
-                        <>
-                          {t.name}
-                          {t.hauler && <span className="ml-1.5 text-[10px] uppercase tracking-wide bg-slate-100 text-slate-500 rounded px-1.5 py-0.5">hauler</span>}
-                        </>
-                      )
-                    })()}
-                  </td>
-                  <td className="px-3 py-2">{r.crop?.name}</td>
-                  <td className="px-3 py-2">
-                    <span>{fromLabel(r, rSplits, fieldNameById)}</span>
-                    {isSplit && (
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); toggleExpanded(r.id) }}
-                        className="ml-2 inline-flex items-center gap-1 text-xs bg-sky-100 text-sky-800 rounded px-2 py-0.5 hover:bg-sky-200"
-                        title="Show split breakdown"
-                      >
-                        <span>{isExpanded ? '▾' : '▸'}</span>
-                        <span>Split · {rSplits!.length}</span>
-                      </button>
-                    )}
-                  </td>
-                  <td className="px-3 py-2">
-                    {toLabel(r)}{r.contract?.contract_number ? ` (#${r.contract.contract_number})` : ''}
-                    {(() => {
-                      const s = paymentStatus(r)
-                      if (s === 'paid') return <span className="ml-2 text-xs bg-green-100 text-green-800 rounded px-2 py-0.5">paid</span>
-                      if (s === 'unpaid') return <span className="ml-2 text-xs bg-amber-100 text-amber-800 rounded px-2 py-0.5">unpaid</span>
-                      return null
-                    })()}
-                  </td>
-                  <td className="px-3 py-2 text-right whitespace-nowrap">
-                    {r.net_weight?.toLocaleString() ?? ''}
-                    {(() => {
-                      const note = lowTareNote(r)
-                      return note ? (
-                        <span className="ml-2 text-[11px] bg-amber-50 text-amber-800 rounded px-1.5 py-0.5" title={note}>low tare?</span>
-                      ) : null
-                    })()}
-                  </td>
-                  <td className="px-3 py-2 text-right text-slate-500">{fmt(wetBushels)}</td>
-                  <td className="px-3 py-2 text-right font-semibold">{fmt(dryBushels)}</td>
-                  <td className="px-3 py-2 text-right">{r.moisture ?? ''}</td>
-                  <td className="px-3 py-2 text-right">{r.test_weight ?? ''}</td>
+      {nothingYet ? (
+        <EmptyState
+          message="No loads yet."
+          hint="Record one at New Load, scan a stack of tickets, or import a spreadsheet."
+          linkHref="/loads/new"
+          linkLabel="Record your first load"
+        />
+      ) : nothingMatches ? (
+        <div className="bg-white rounded-xl shadow p-8 text-center space-y-3">
+          <p className="text-slate-600 font-medium">No loads match these filters.</p>
+          <button type="button" onClick={clearFilters} className="inline-flex items-center rounded-lg bg-white border border-slate-300 px-4 min-h-11 text-sm font-semibold text-brand-deep">
+            Clear filters
+          </button>
+        </div>
+      ) : (
+        <>
+          <p className="text-sm text-slate-500">Tap any load to view details, edit, or delete.</p>
+
+          <div className="overflow-x-auto bg-white rounded-xl shadow">
+            <table className="min-w-full text-sm">
+              <thead className={theadCls}>
+                <tr>
+                  <th className="px-2 py-1 w-11">
+                    <label className="flex items-center justify-center min-h-11 min-w-11 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all loads shown"
+                        className="h-5 w-5"
+                        checked={sorted.length > 0 && sorted.every((r) => selected.has(r.id))}
+                        onChange={toggleAllVisible}
+                      />
+                    </label>
+                  </th>
+                  <SortTh onClick={() => toggleSort('date')}     active={sortKey === 'date'}     dir={sortDir}>Date</SortTh>
+                  <SortTh onClick={() => toggleSort('ticket')}   active={sortKey === 'ticket'}   dir={sortDir}>Ticket</SortTh>
+                  <SortTh onClick={() => toggleSort('truck')}    active={sortKey === 'truck'}    dir={sortDir}>Truck</SortTh>
+                  <SortTh onClick={() => toggleSort('crop')}     active={sortKey === 'crop'}     dir={sortDir}>Crop</SortTh>
+                  <th className="text-left px-3 py-2 whitespace-nowrap">From</th>
+                  <th className="text-left px-3 py-2 whitespace-nowrap">To</th>
+                  <SortTh onClick={() => toggleSort('net')}      active={sortKey === 'net'}      dir={sortDir} align="right">Net (lb)</SortTh>
+                  <th className="text-right px-3 py-2 whitespace-nowrap text-slate-500 hidden md:table-cell">Wet bu</th>
+                  <SortTh onClick={() => toggleSort('dry')}      active={sortKey === 'dry'}      dir={sortDir} align="right">Dry bu</SortTh>
+                  <SortTh onClick={() => toggleSort('moisture')} active={sortKey === 'moisture'} dir={sortDir} align="right" className="hidden md:table-cell">Moisture</SortTh>
+                  <SortTh onClick={() => toggleSort('testwt')}   active={sortKey === 'testwt'}   dir={sortDir} align="right" className="hidden md:table-cell">Test wt</SortTh>
                 </tr>
-                {isSplit && isExpanded && (
-                  <tr className="bg-slate-50 border-t border-slate-100">
-                    <td></td>
-                    <td colSpan={11} className="px-3 py-2">
-                      <table className="text-xs">
-                        <thead>
-                          <tr className="text-slate-500">
-                            <th className="text-left pr-6 font-medium">Field</th>
-                            <th className="text-right pr-6 font-medium">Net lb</th>
-                            <th className="text-right pr-6 font-medium">%</th>
-                            <th className="text-right pr-6 font-medium">Wet bu</th>
-                            <th className="text-right pr-6 font-medium">Dry bu</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {[...rSplits!].sort((a, b) => b.net_weight - a.net_weight).map((s) => (
-                            <tr key={s.id}>
-                              <td className="pr-6 py-0.5">{fieldNameById.get(s.field_id) ?? '—'}</td>
-                              <td className="pr-6 py-0.5 text-right font-mono">{s.net_weight.toLocaleString()}</td>
-                              <td className="pr-6 py-0.5 text-right font-mono">{s.percentage.toFixed(1)}%</td>
-                              <td className="pr-6 py-0.5 text-right font-mono">{fmt(s.wet_bushels)}</td>
-                              <td className="pr-6 py-0.5 text-right font-mono">{fmt(s.dry_bushels)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </td>
-                  </tr>
-                )}
-                </Fragment>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody>
+                {loading && <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
+                {sorted.map((r) => {
+                  const { wetBushels, dryBushels } = bushelsFor(r)
+                  const rSplits = splitsByLoad.get(r.id)
+                  const isSplit = !!(rSplits && rSplits.length > 0)
+                  const isExpanded = expanded.has(r.id)
+                  const ticketLabel = r.ticket_number ? `ticket ${r.ticket_number}` : `load on ${fmtDate(r.date)}`
+                  return (
+                    <Fragment key={r.id}>
+                    <tr
+                      onClick={() => router.push(`/loads/${r.id}`)}
+                      className={`border-t border-slate-100 cursor-pointer hover:bg-slate-50 ${selected.has(r.id) ? 'bg-sky-50 hover:bg-sky-100' : ''}`}
+                    >
+                      <td className="px-2 py-1" onClick={(e) => e.stopPropagation()}>
+                        <label className="flex items-center justify-center min-h-11 min-w-11 cursor-pointer">
+                          <input type="checkbox" aria-label={`Select ${ticketLabel}`} className="h-5 w-5" checked={selected.has(r.id)} onChange={() => toggleRow(r.id)} />
+                        </label>
+                      </td>
+                      <td className="px-3 py-2 whitespace-nowrap tabular-nums">{fmtDate(r.date)}{r.time ? <span className="text-slate-500"> {r.time.slice(0,5)}</span> : ''}</td>
+                      <td className="px-3 py-2">{r.ticket_number}</td>
+                      <td className="px-3 py-2">
+                        {(() => {
+                          const t = truckDisplay(r)
+                          return (
+                            <>
+                              {t.name}
+                              {t.hauler && <span className="ml-1.5 text-xs uppercase tracking-wide bg-slate-100 text-slate-500 rounded px-1.5 py-0.5">hauler</span>}
+                            </>
+                          )
+                        })()}
+                      </td>
+                      <td className="px-3 py-2">{r.crop?.name}</td>
+                      <td className="px-3 py-2">
+                        <span>{fromLabel(r, rSplits, fieldNameById)}</span>
+                        {isSplit && (
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); toggleExpanded(r.id) }}
+                            className="ml-2 inline-flex items-center gap-1 text-xs bg-sky-100 text-sky-800 rounded px-2 min-h-8 hover:bg-sky-200"
+                            title="Show how the load splits across fields"
+                            aria-expanded={isExpanded}
+                          >
+                            <span>{isExpanded ? '▾' : '▸'}</span>
+                            <span>Split · {rSplits!.length}</span>
+                          </button>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
+                        {toLabel(r)}{r.contract?.contract_number ? ` (#${r.contract.contract_number})` : ''}
+                        {(() => {
+                          const s = paymentStatus(r)
+                          if (s === 'paid') return <span className="ml-2 text-xs bg-green-100 text-green-800 rounded px-2 py-0.5">paid</span>
+                          if (s === 'unpaid') return <span className="ml-2 text-xs bg-amber-100 text-amber-800 rounded px-2 py-0.5">unpaid</span>
+                          return null
+                        })()}
+                      </td>
+                      <td className="px-3 py-2 text-right whitespace-nowrap tabular-nums">
+                        {fmtInt(r.net_weight)}
+                        {(() => {
+                          const note = lowTareNote(r)
+                          return note ? (
+                            <span className="ml-2 text-xs bg-amber-50 text-amber-800 rounded px-1.5 py-0.5" title={note}>low tare?</span>
+                          ) : null
+                        })()}
+                      </td>
+                      <td className="px-3 py-2 text-right text-slate-500 tabular-nums hidden md:table-cell">{fmtInt(wetBushels)}</td>
+                      <td className="px-3 py-2 text-right font-semibold tabular-nums">{fmtInt(dryBushels)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums hidden md:table-cell">{fmtNum(r.moisture, 1)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums hidden md:table-cell">{fmtNum(r.test_weight, 1)}</td>
+                    </tr>
+                    {isSplit && isExpanded && (
+                      <tr className="bg-slate-50 border-t border-slate-100">
+                        <td></td>
+                        <td colSpan={11} className="px-3 py-2">
+                          <table className="text-xs">
+                            <thead>
+                              <tr className="text-slate-500">
+                                <th className="text-left pr-6 font-medium">Field</th>
+                                <th className="text-right pr-6 font-medium">Net lb</th>
+                                <th className="text-right pr-6 font-medium">%</th>
+                                <th className="text-right pr-6 font-medium">Wet bu</th>
+                                <th className="text-right pr-6 font-medium">Dry bu</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {[...rSplits!].sort((a, b) => b.net_weight - a.net_weight).map((s) => (
+                                <tr key={s.id}>
+                                  <td className="pr-6 py-0.5">{fieldNameById.get(s.field_id) ?? '—'}</td>
+                                  <td className="pr-6 py-0.5 text-right tabular-nums">{fmtInt(s.net_weight)}</td>
+                                  <td className="pr-6 py-0.5 text-right tabular-nums">{s.percentage.toFixed(1)}%</td>
+                                  <td className="pr-6 py-0.5 text-right tabular-nums">{fmtInt(s.wet_bushels)}</td>
+                                  <td className="pr-6 py-0.5 text-right tabular-nums">{fmtInt(s.dry_bushels)}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      <ConfirmDialog
+        open={deleteAsk}
+        title={`Delete ${selected.size} load${selected.size === 1 ? '' : 's'}?`}
+        body="This can’t be undone. Bin inventory, contract deliveries, and yields will recalculate without them."
+        confirmLabel={`Delete ${selected.size}`}
+        danger
+        busy={deleting}
+        onConfirm={() => void bulkDelete()}
+        onCancel={() => { if (!deleting) setDeleteAsk(false) }}
+      />
+      <NoticeDialog
+        open={notice != null}
+        title="Some loads weren’t deleted"
+        body={notice}
+        onClose={() => setNotice(null)}
+      />
     </div>
   )
 }
 
 function SortTh({
-  children, onClick, active, dir, align = 'left',
+  children, onClick, active, dir, align = 'left', className = '',
 }: {
   children: React.ReactNode
   onClick: () => void
   active: boolean
   dir: 'asc' | 'desc'
   align?: 'left' | 'right'
+  className?: string
 }) {
   const arrow = active ? (dir === 'asc' ? ' ↑' : ' ↓') : ''
   return (
     <th
-      onClick={onClick}
-      className={`px-3 py-2 whitespace-nowrap cursor-pointer select-none hover:bg-slate-200 ${align === 'right' ? 'text-right' : 'text-left'} ${active ? 'text-slate-900' : ''}`}
+      aria-sort={active ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}
+      className={`px-1 py-0 whitespace-nowrap ${align === 'right' ? 'text-right' : 'text-left'} ${className}`}
     >
-      {children}{arrow}
+      <button
+        type="button"
+        onClick={onClick}
+        className={`w-full min-h-11 px-2 rounded hover:bg-slate-200 font-semibold ${align === 'right' ? 'text-right' : 'text-left'} ${active ? 'text-slate-900' : ''}`}
+      >
+        {children}{arrow}
+      </button>
     </th>
   )
 }

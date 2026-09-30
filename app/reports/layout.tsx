@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { reportGroupsFor } from './reports-nav'
+import { reportGroupsFor, reportHref } from './reports-nav'
 import PrintHeader from '@/components/reports/print-header'
 import { createClient } from '@/lib/supabase/server'
 import { coerceAppRole } from '@/lib/app-role'
@@ -26,8 +26,8 @@ export default async function ReportsLayout({ children }: { children: React.Reac
               {cat.reports.map((r) => (
                 <li key={`${cat.title}-${r.label}`}>
                   <Link
-                    href={r.href}
-                    className="block px-2 py-1.5 rounded text-sm hover:bg-slate-100"
+                    href={reportHref(r)}
+                    className="block px-2 py-2 rounded text-sm hover:bg-slate-100 min-h-10"
                     {...(r.external ? { title: 'Opens the standalone page' } : {})}
                   >
                     {r.label}{r.external && <span className="text-slate-400 text-xs ml-1">↗</span>}
