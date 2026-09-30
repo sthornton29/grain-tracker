@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-09-30 · version 0.1.0 · build 4bc8907. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-09-30 · version 0.1.0 · build 58df530. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
