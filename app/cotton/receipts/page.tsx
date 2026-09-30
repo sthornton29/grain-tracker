@@ -18,6 +18,7 @@ import { parseDocumentChunked } from '@/lib/parse-chunked'
 import { mergeGinReceipts } from '@/lib/parse-merge'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import { reconcileBaleCount, lintTurnoutPct } from '@/lib/cotton'
+import { rollsNum } from '@/lib/cotton-load-writes'
 import type { GinReceipt, Gin, Farm, Field, Entity, CottonLoad } from '@/lib/types'
 
 const lbs = (n: number | null | undefined) => (n == null ? '—' : Number(n).toLocaleString())
@@ -159,8 +160,8 @@ export default function GinReceiptsPage() {
         }
         // Rolls (090) from the statement's load table; before that migration
         // the same load is created without the column.
-        let ins = await supabase.from('cotton_loads').insert({ ...newLoad, rolls: line.rolls != null && Number.isFinite(Number(line.rolls)) ? Math.round(Number(line.rolls)) : null }).select('id').single()
-        if (ins.error) ins = await supabase.from('cotton_loads').insert(newLoad).select('id').single()
+        let ins = await supabase.from('cotton_loads').insert({ ...newLoad, rolls: rollsNum(line.rolls) }).select('id').single()
+        if (ins.error && /rolls/.test(ins.error.message) && /column|schema/i.test(ins.error.message)) ins = await supabase.from('cotton_loads').insert(newLoad).select('id').single()
         const { data: nl, error: nlErr } = ins
         if (nlErr || !nl) throw new Error(nlErr?.message ?? `Could not create load ${ln}.`)
         linkIds.push((nl as { id: string }).id)

@@ -2,7 +2,7 @@
 page_route: /cotton
 title: Cotton — Loads, Gin Receipts, Bales & Grades
 updated: 2026-09-30
-keywords: cotton, seed cotton, module, rolls, round modules, turn on cotton, gin, gin receipt, statement of ginning, bales, HVI, classing, PBI, turnout, yard inventory, gin operator
+keywords: cotton, seed cotton, module, rolls, round modules, pounds per roll, average per roll, load detail, ticket photo, module ticket, sort, select, delete loads, export loads, turn on cotton, gin, gin receipt, statement of ginning, bales, HVI, classing, PBI, turnout, yard inventory, gin operator
 ---
 ## What this page is for
 
@@ -10,7 +10,7 @@ The Cotton tab is where seed cotton gets tracked from the field to the classed b
 
 ## How to use it
 
-- **Seed Cotton Loads**: record each module or trailer load in pounds of seed cotton. Enter loads manually (the form remembers your crop year, and net weight fills in from gross minus tare), or use the **Upload a module list** card — a photo or PDF of the gin's module list becomes editable rows, one load per page, with the farm matched by FSA number first and producer name second. Review, correct anything, and save the batch. Each load also carries its **rolls** — the number of round modules on it — typed on the form, read from the module list when the ticket prints it (editable on the review rows), or tapped in later on the load list; the list totals rolls for the year and the Yard Inventory line shows how many rolls are still waiting. The **Yard Inventory** section shows pounds delivered that aren't on any gin receipt yet — your cotton sitting on the yard waiting to be ginned.
+- **Seed Cotton Loads**: record each module or trailer load in pounds of seed cotton. Enter loads manually (the form remembers your crop year, and net weight fills in from gross minus tare), or use the **Upload a module list** card — a photo or PDF of the gin's module list becomes editable rows, one load per page, with the farm matched by FSA number first and producer name second. Review, correct anything, and save the batch. Each load also carries its **rolls** — the number of round modules on it — typed on the form, read from the module list when the ticket prints it (editable on the review rows), or tapped in later on the load list. The cards at the top total the year's loads, pounds, rolls, and the **average pounds per roll** (total pounds on the loads that have a roll count, divided by their rolls), and the Yard Inventory card shows how many rolls are still waiting. Every load keeps its own **ticket**: the module-list upload stores each page with the load it came from (one load per page — if the page count doesn't match the loads read, every load gets the whole document), the hand-entry form takes a photo or PDF, and a ticket can be added or replaced on the load's page later. The **Yard Inventory** section shows pounds delivered that aren't on any gin receipt yet — your cotton sitting on the yard waiting to be ginned.
 - **Gin Receipts**: when the gin sends a Statement of Ginning, enter it here — several can apply to one field. Manual entry works, but the **Upload a Statement of Ginning** card reads the whole document: modules, seed cotton pounds, bales, lint pounds, cottonseed pounds, turnout, the load table, and the full bale list across every page. The review screen matches the receipt to your farm and field, matches its load lines to your recorded loads by load number (you can create a missing load right there), and flags any difference between the gin's stated bale count and the bales actually captured. Nothing saves until you confirm.
 - **Bales & Grades**: import your classing data as a CSV file. Rows are matched to bales by **PBI number** (leading zeros don't matter), net weights are cross-checked against the receipt, and rows that don't match a bale are held visibly so you can resolve them after later receipts arrive.
 
@@ -19,7 +19,9 @@ The Cotton tab is where seed cotton gets tracked from the field to the classed b
 - **Upload buttons** — every AI upload lands on a review table first; you always confirm before anything is saved.
 - **Create missing load** — on gin receipt review, adds a load line the gin has that you never recorded, carrying the rolls count from the statement's load table.
 - **Rolls** — tap the number in the Rolls column of the load list to change it; Enter saves, Escape cancels.
-- **Yard Inventory** — delivered pounds minus ginned pounds, by field.
+- **The load list** works like the grain Loads page: search (load number, truck, farm, field, gin), filters for farm, field, gin, status (on the yard / ginned), and delivered dates; tap a column heading to sort (load numbers sort naturally, blanks stay last); tick loads to export the selection or **Delete selected** — loads already on a gin receipt are never deleted, the confirmation says how many will be kept. **Export** (Excel, PDF, CSV, print) covers the filtered list with the rolls and pounds-per-roll totals.
+- **Tap a load** to open its own page: logistics, weights, rolls and pounds per roll, the gin receipt it landed on, notes, and the scanned ticket for that load (view, replace, remove). **Edit** changes any field in place; **Delete** removes it unless it is on a receipt; **Export / Print** makes a one-page record.
+- **Yard Inventory** — delivered pounds minus ginned pounds, by field, with the rolls still waiting.
 
 ## How the numbers work
 
@@ -30,6 +32,8 @@ The Cotton tab is where seed cotton gets tracked from the field to the classed b
 
 ## Common questions
 
+- **Why is the average per roll blank?** No load in that crop year has a roll count yet. Add rolls on the loads (tap the Rolls figure in the list) and the average appears; loads without a count are left out of the average, and the card says how many.
+- **A load shows the whole module list instead of its own page.** The upload read a different number of loads than the document has pages, so it couldn't tell which page was which. Open the load and use **Replace** on the ticket to attach the right page.
 - **Why can't the gin operator see Marketing?** The Marketing page is owner-only by design — gin logins get the three intake pages and nothing more.
 - **Why don't I see the Cotton tab at all?** Cotton is turned off for your operation. An owner can turn it on under Settings → Organization; the tab appears after the next page load.
 - **Why is there no entity box on the load form?** A gin login doesn't pick entities — the entity comes from the farm you choose. Owners see the entity box only when the operation has more than one entity.

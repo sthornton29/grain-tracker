@@ -5,9 +5,12 @@
 // grain load form patterns (session-persistent crop year, farm → field
 // cascade); AI upload parses Module List PDFs/photos (one load per page)
 // through the shared /api/parse-document infra with the standard
-// review-then-batch-save UX.
+// review-then-batch-save UX, and keeps each load's own page as its ticket.
+// The list works like the grain Loads page: filters, sortable columns,
+// select + bulk delete, exports, tap a row for the load's own page.
 
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
@@ -16,12 +19,21 @@ import { PdfTooLargeError, type CottonLoadsExtraction, type CottonLoadExtraction
 import { parseDocumentChunked } from '@/lib/parse-chunked'
 import { mergeCottonLoads } from '@/lib/parse-merge'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
+import ExportBar from '@/components/export-bar'
+import { ConfirmDialog, NoticeDialog } from '@/components/app-dialog'
+import { ReportFilterBar, SummaryCards, theadCls, fmtInt, fmtNum, type SummaryCardData } from '@/components/reports/report-kit'
 import { yardInventoryByField } from '@/lib/cotton'
+import {
+  EMPTY_COTTON_FILTERS, filterCottonLoads, lbsPerRoll, rollsSummary, sortCottonLoads,
+  type CottonLoadFilters, type CottonSortContext, type CottonSortKey,
+} from '@/lib/cotton-loads'
+import { documentsForLoads, fileToLoadDocument, insertCottonLoads, rollsNum, updateCottonLoad, uploadLoadDocument } from '@/lib/cotton-load-writes'
 import { reportError } from '@/lib/friendly-error'
-import { useDialogs } from '@/components/use-dialogs'
+import { fmtDate } from '@/lib/format-date'
+import type { ExportCell, ExportPayload } from '@/lib/exports'
 import type { CottonLoad, Gin, Farm, Field, Entity } from '@/lib/types'
 
-const lbs = (n: number | null | undefined) => (n == null ? '—' : Number(n).toLocaleString())
+const lbs = (n: number | null | undefined) => (n == null ? '—' : fmtInt(Number(n)))
 const num = (s: string): number | null => {
   if (s.trim() === '') return null
   const n = Number(s)
@@ -38,34 +50,21 @@ const emptyDraft: Draft = {
   truck: '', gross_weight: '', tare_weight: '', rolls: '', gin_id: '', notes: '',
 }
 
-// Rolls (090): a whole count of round modules, or null when not recorded.
-const rollsNum = (s: string | number | null | undefined): number | null => {
-  if (s == null || String(s).trim() === '') return null
-  const n = Math.round(Number(s))
-  return Number.isFinite(n) && n >= 0 ? n : null
-}
-
-// Insert cotton loads with the 090 `rolls` column; before that migration is
-// applied the same rows go in without it (the column is the only difference).
-async function insertCottonLoads(supabase: ReturnType<typeof createClient>, rows: Array<Record<string, unknown>>) {
-  const first = await supabase.from('cotton_loads').insert(rows)
-  if (!first.error) return first
-  const stripped = rows.map(({ rolls: _rolls, ...rest }) => rest)
-  return supabase.from('cotton_loads').insert(stripped)
-}
-
 type AiRow = CottonLoadExtraction & { farm_id: string; field_id: string; include: boolean }
 
 export default function CottonLoadsPage() {
   const supabase = useMemo(() => createClient(), [])
+  const router = useRouter()
   const [loads, setLoads] = useState<CottonLoad[]>([])
   const [gins, setGins] = useState<Gin[]>([])
   const [farms, setFarms] = useState<Farm[]>([])
   const [fields, setFields] = useState<Field[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
   const [ginnedIds, setGinnedIds] = useState<Set<string>>(new Set())
+  const [loading, setLoading] = useState(true)
   const [cropYear, setCropYear] = usePersistentState<number>('cotton:cropYear', new Date().getFullYear())
   const [draft, setDraft] = useState<Draft>(emptyDraft)
+  const [draftDoc, setDraftDoc] = useState<File | null>(null)
   const [newGin, setNewGin] = useState('')
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
@@ -77,7 +76,14 @@ export default function CottonLoadsPage() {
   // Gin operators enter loads for the farm in front of them — they can't know
   // the entity, so the entity comes from the farm (hidden for that role).
   const [isGin, setIsGin] = useState(false)
-  const { confirm, dialogs } = useDialogs()
+  // List state — filters, sort, selection (grain Loads page conventions).
+  const [filters, setFilters] = useState<CottonLoadFilters>(EMPTY_COTTON_FILTERS)
+  const [sortKey, setSortKey] = useState<CottonSortKey>('delivered')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [deleteAsk, setDeleteAsk] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [notice, setNotice] = useState<{ title: string; body: string } | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -105,20 +111,34 @@ export default function CottonLoadsPage() {
     setFields((fl.data as Field[]) || [])
     setEntities((en.data as Entity[]) || [])
     setGinnedIds(new Set(((jr.data as { cotton_load_id: string }[]) || []).map((r) => r.cotton_load_id)))
+    setLoading(false)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
+  const ginById = useMemo(() => new Map(gins.map((g) => [g.id, g])), [gins])
   const yearLoads = useMemo(() => loads.filter((l) => l.crop_year === cropYear), [loads, cropYear])
   const draftFields = fields.filter((f) => !draft.farm_id || f.farm_id === draft.farm_id)
+
+  const ctx: CottonSortContext = useMemo(() => ({
+    farmName: (id) => (id ? farmById.get(id)?.name ?? '' : ''),
+    fieldName: (id) => (id ? fieldById.get(id)?.name_or_number ?? '' : ''),
+    ginName: (id) => (id ? ginById.get(id)?.name ?? '' : ''),
+    ginned: (id) => ginnedIds.has(id),
+  }), [farmById, fieldById, ginById, ginnedIds])
+
+  const filtered = useMemo(() => filterCottonLoads(yearLoads, filters, ctx), [yearLoads, filters, ctx])
+  const sorted = useMemo(() => sortCottonLoads(filtered, sortKey, sortDir, ctx), [filtered, sortKey, sortDir, ctx])
+  const filterFields = fields.filter((f) => !filters.farmId || f.farm_id === filters.farmId)
 
   // Yard inventory: delivered but not on any gin receipt, by field.
   const yard = useMemo(() => yardInventoryByField(yearLoads, ginnedIds), [yearLoads, ginnedIds])
   const yardTotal = useMemo(() => Array.from(yard.values()).reduce((s, v) => s + v, 0), [yard])
-  // Rolls on the yard and for the year (090) — only loads that recorded them.
-  const yardRolls = useMemo(() => yearLoads.filter((l) => !ginnedIds.has(l.id)).reduce((s, l) => s + (l.rolls ?? 0), 0), [yearLoads, ginnedIds])
-  const yearRolls = useMemo(() => yearLoads.reduce((s, l) => s + (l.rolls ?? 0), 0), [yearLoads])
+  // Rolls (090): the year, what's on the yard, and what the filters show.
+  const yearRolls = useMemo(() => rollsSummary(yearLoads), [yearLoads])
+  const yardRolls = useMemo(() => rollsSummary(yearLoads.filter((l) => !ginnedIds.has(l.id))), [yearLoads, ginnedIds])
+  const shownRolls = useMemo(() => rollsSummary(sorted), [sorted])
 
   async function ensureGin(name: string): Promise<string | null> {
     const existing = gins.find((g) => g.name.trim().toLowerCase() === name.trim().toLowerCase())
@@ -132,11 +152,20 @@ export default function CottonLoadsPage() {
     e.preventDefault()
     setErr(null); setMsg(null)
     if (!draft.load_number.trim()) { setErr('Load # is required.'); return }
+    if (draft.rolls.trim() !== '' && rollsNum(draft.rolls) == null) { setErr('Rolls must be a whole number.'); return }
     let gin_id: string | null = draft.gin_id || null
     if (!gin_id && newGin.trim()) gin_id = await ensureGin(newGin)
     const gross = num(draft.gross_weight)
     const tare = num(draft.tare_weight)
-    if (draft.rolls.trim() !== '' && rollsNum(draft.rolls) == null) { setErr('Rolls must be a whole number.'); return }
+    let source_pdf_url: string | null = null
+    if (draftDoc) {
+      try {
+        source_pdf_url = await uploadLoadDocument(supabase, await fileToLoadDocument(draftDoc, `load-${draft.load_number.trim()}`))
+      } catch (e: any) {
+        setErr(e?.message && /20 MB|photo of the ticket/.test(e.message) ? e.message : reportError(e, { action: 'store the ticket', noun: 'document' }) + ' The load was not saved.')
+        return
+      }
+    }
     const { error } = await insertCottonLoads(supabase, [{
       load_number: draft.load_number.trim(), crop_year: cropYear,
       entity_id: draft.entity_id || (draft.farm_id ? farmById.get(draft.farm_id)?.entity_id ?? null : null), farm_id: draft.farm_id || null, field_id: draft.field_id || null,
@@ -144,11 +173,11 @@ export default function CottonLoadsPage() {
       truck: draft.truck.trim() || null, gross_weight: gross, tare_weight: tare,
       net_weight: gross != null && tare != null ? gross - tare : gross,
       rolls: rollsNum(draft.rolls),
-      gin_id, notes: draft.notes.trim() || null, source: 'manual',
+      gin_id, notes: draft.notes.trim() || null, source: 'manual', source_pdf_url,
     }])
     if (error) { setErr(reportError(error, { action: 'save the load', noun: 'load', name: `${draft.load_number.trim()} (${cropYear})` })); return }
     setDraft({ ...emptyDraft, entity_id: draft.entity_id, farm_id: draft.farm_id, field_id: draft.field_id, gin_id: draft.gin_id })
-    setNewGin(''); setMsg('Load saved.'); refresh()
+    setDraftDoc(null); setNewGin(''); setMsg('Load saved.'); refresh()
   }
 
   function extractionToRow(x: CottonLoadExtraction): AiRow {
@@ -187,10 +216,31 @@ export default function CottonLoadsPage() {
     setSaving(true); setErr(null)
     try {
       const existing = new Set(yearLoads.map((l) => l.load_number.trim()))
-      const rows = aiRows.filter((r) => r.include && r.load_number && !existing.has(r.load_number.trim()))
+      const picked = aiRows.map((r, i) => ({ r, i })).filter(({ r }) => r.include && r.load_number && !existing.has(r.load_number.trim()))
       const dupes = aiRows.filter((r) => r.include && r.load_number && existing.has(r.load_number.trim())).length
-      if (rows.length === 0) { setErr(dupes > 0 ? 'Every included load already exists for this crop year.' : 'Nothing to save.'); return }
-      const { error } = await insertCottonLoads(supabase, rows.map((r) => ({
+      if (picked.length === 0) { setErr(dupes > 0 ? 'Every included load already exists for this crop year.' : 'Nothing to save.'); return }
+      // Each load keeps its own ticket page (one load per page), else the
+      // whole document — stored first, so a load is never saved without it.
+      const docUrls = new Map<number, string>()
+      if (source) {
+        try {
+          const docs = await documentsForLoads(source, aiRows.length, setStage)
+          let n = 0
+          for (const { i } of picked) {
+            const f = docs[i]
+            if (!f) continue
+            n += 1
+            setStage(`Storing ticket ${n} of ${picked.length}…`)
+            docUrls.set(i, await uploadLoadDocument(supabase, f))
+          }
+        } catch (e: any) {
+          setErr(reportError(e, { action: 'store the tickets', noun: 'document' }) + ' Nothing was saved — try again.')
+          return
+        } finally {
+          setStage(null)
+        }
+      }
+      const { error } = await insertCottonLoads(supabase, picked.map(({ r, i }) => ({
         load_number: r.load_number!.trim(), crop_year: r.crop_year ?? cropYear,
         farm_id: r.farm_id || null, field_id: r.field_id || null,
         entity_id: r.farm_id ? farmById.get(r.farm_id)?.entity_id ?? null : null,
@@ -198,32 +248,122 @@ export default function CottonLoadsPage() {
         gross_weight: r.gross_weight, tare_weight: r.tare_weight,
         net_weight: r.net_weight ?? (r.gross_weight != null && r.tare_weight != null ? r.gross_weight - r.tare_weight : null),
         rolls: rollsNum(r.rolls),
-        source: 'document_import',
+        source: 'document_import', source_pdf_url: docUrls.get(i) ?? null,
       })))
       if (error) { setErr(reportError(error, { action: 'save the loads', noun: 'load' })); return }
-      setMsg(`Saved ${rows.length} load${rows.length === 1 ? '' : 's'}${dupes > 0 ? ` (${dupes} skipped — already entered)` : ''}.`)
+      setMsg(`Saved ${picked.length} load${picked.length === 1 ? '' : 's'}${dupes > 0 ? ` (${dupes} skipped — already entered)` : ''}.`)
       setAiRows([]); setSource(null); refresh()
     } finally {
       setSaving(false)
     }
   }
 
-  async function deleteLoad(l: CottonLoad) {
-    setErr(null)
-    if (ginnedIds.has(l.id)) { setErr(`Load ${l.load_number} is already on a gin receipt, so it can’t be deleted here.`); return }
-    const ok = await confirm({ title: `Delete load ${l.load_number}?`, body: 'This seed cotton load is removed from the yard. This can’t be undone.', confirmLabel: 'Delete', danger: true })
-    if (!ok) return
-    const { error } = await supabase.from('cotton_loads').delete().eq('id', l.id)
-    if (error) { setErr(reportError(error, { action: 'delete the load', noun: 'load', name: l.load_number })); return }
-    refresh()
+  // ---- list actions ----
+  function toggleSort(k: CottonSortKey) {
+    if (sortKey === k) setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
+    else { setSortKey(k); setSortDir(k === 'load' || k === 'farm' || k === 'field' || k === 'truck' || k === 'gin' ? 'asc' : 'desc') }
+  }
+  function toggleRow(id: string) {
+    setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
+  }
+  function toggleAllVisible() {
+    setSelected((s) => {
+      const ids = sorted.map((r) => r.id)
+      const allOn = ids.every((id) => s.has(id))
+      if (allOn) return new Set([...s].filter((id) => !ids.includes(id)))
+      const n = new Set(s); ids.forEach((id) => n.add(id)); return n
+    })
+  }
+  const selectedRows = () => sorted.filter((r) => selected.has(r.id))
+  const deletable = () => selectedRows().filter((r) => !ginnedIds.has(r.id))
+  const skippedGinned = () => selectedRows().length - deletable().length
+
+  async function bulkDelete() {
+    const ids = deletable().map((r) => r.id)
+    if (ids.length === 0) { setDeleteAsk(false); return }
+    setDeleting(true)
+    const CHUNK = 50
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const batch = ids.slice(i, i + CHUNK)
+      const { error } = await supabase.from('cotton_loads').delete().in('id', batch)
+      if (error) {
+        setDeleting(false); setDeleteAsk(false)
+        setNotice({ title: 'Some loads weren’t deleted', body: `${i} of ${ids.length} loads were deleted before it stopped. ${reportError(error, { action: 'delete the rest', noun: 'load' })}` })
+        setSelected(new Set()); refresh()
+        return
+      }
+    }
+    const skipped = skippedGinned()
+    setDeleting(false); setDeleteAsk(false); setSelected(new Set()); refresh()
+    if (skipped > 0) setNotice({ title: 'Ginned loads were kept', body: `${skipped} selected load${skipped === 1 ? ' is' : 's are'} already on a gin receipt, so ${skipped === 1 ? 'it was' : 'they were'} not deleted. Remove ${skipped === 1 ? 'it' : 'them'} from the receipt first.` })
+  }
+
+  const activeFilterCount = [filters.q, filters.farmId, filters.fieldId, filters.ginId, filters.status, filters.from, filters.to].filter(Boolean).length
+  function filterSummary(count = sorted.length): string {
+    const parts: string[] = [`${cropYear} crop`]
+    if (filters.farmId) parts.push(ctx.farmName(filters.farmId) || 'Farm')
+    if (filters.fieldId) parts.push(ctx.fieldName(filters.fieldId) || 'Field')
+    if (filters.ginId) parts.push(ctx.ginName(filters.ginId) || 'Gin')
+    if (filters.status) parts.push(filters.status === 'yard' ? 'on the yard' : 'ginned')
+    if (filters.from || filters.to) parts.push(`delivered ${filters.from ? fmtDate(filters.from) : '…'} to ${filters.to ? fmtDate(filters.to) : '…'}`)
+    if (filters.q) parts.push(`“${filters.q}”`)
+    parts.push(`${count} load${count === 1 ? '' : 's'}`)
+    return parts.join(' · ')
+  }
+
+  function buildPayload(rowsToExport: CottonLoad[] = sorted, suffix = ''): ExportPayload {
+    const s = rollsSummary(rowsToExport)
+    return {
+      title: 'Seed Cotton Loads',
+      filters: filterSummary(rowsToExport.length),
+      filename: `seed-cotton-loads${suffix}-${new Date().toISOString().slice(0, 10)}`,
+      summary: [
+        { label: 'Loads', value: fmtInt(s.loads) },
+        { label: 'Net lbs', value: `${fmtInt(s.netLbs)} lbs` },
+        { label: 'Rolls', value: fmtInt(s.rolls) },
+        { label: 'Avg lbs / roll', value: s.avgLbsPerRoll != null ? fmtInt(s.avgLbsPerRoll) : '—' },
+      ],
+      sections: [{
+        columns: [
+          { label: 'Load #' }, { label: 'Farm' }, { label: 'Field' }, { label: 'Gin' }, { label: 'Picked' }, { label: 'Delivered' }, { label: 'Truck' },
+          { label: 'Gross lbs', align: 'right', format: 'lbs' }, { label: 'Tare lbs', align: 'right', format: 'lbs' }, { label: 'Net lbs', align: 'right', format: 'lbs' },
+          { label: 'Rolls', align: 'right', format: 'int' }, { label: 'Lbs / roll', align: 'right', format: 'int' }, { label: 'Status' }, { label: 'Notes' },
+        ],
+        rows: [
+          ...rowsToExport.map((l): ExportCell[] => [
+            l.load_number, ctx.farmName(l.farm_id), ctx.fieldName(l.field_id), ctx.ginName(l.gin_id),
+            l.picked_date ? fmtDate(l.picked_date) : '', l.delivered_date ? fmtDate(l.delivered_date) : '', l.truck ?? '',
+            l.gross_weight ?? '', l.tare_weight ?? '', l.net_weight ?? '', l.rolls ?? '',
+            lbsPerRoll(l.net_weight, l.rolls) != null ? Math.round(lbsPerRoll(l.net_weight, l.rolls)!) : '',
+            ginnedIds.has(l.id) ? { v: 'Ginned', tone: 'favorable' as const } : { v: 'On yard', tone: 'warning' as const },
+            l.notes ?? '',
+          ]),
+          ['Totals', '', '', '', '', '', '', '', '', s.netLbs, s.rolls, s.avgLbsPerRoll != null ? Math.round(s.avgLbsPerRoll) : '', '', ''],
+        ],
+        rowMeta: [...rowsToExport.map(() => 'data' as const), 'total'],
+      }],
+    }
   }
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2 min-h-11 w-full'
   const labelCls = 'block text-sm text-slate-700'
+  const filterSelect = 'rounded-lg border border-slate-300 px-3 min-h-11 bg-white text-base sm:text-sm'
+  const filterLabel = 'flex flex-col gap-1 text-xs text-slate-600 min-w-[9rem] flex-1 sm:flex-none'
+  const quietBtn = 'inline-flex items-center rounded-lg bg-white border border-slate-300 px-4 min-h-11 text-sm'
   const years = useMemo(() => {
     const ys = new Set<number>([cropYear, new Date().getFullYear(), ...loads.map((l) => l.crop_year)])
     return [...ys].sort((a, b) => b - a)
   }, [loads, cropYear])
+
+  const summaryCards: SummaryCardData[] = [
+    { label: `${cropYear} loads`, value: fmtInt(yearRolls.loads), sub: `${fmtInt(yearRolls.netLbs)} lbs seed cotton` },
+    { label: 'Rolls', value: yearRolls.rolls > 0 ? fmtInt(yearRolls.rolls) : '—', sub: yearRolls.loadsWithRolls < yearRolls.loads && yearRolls.loads > 0 ? `${fmtInt(yearRolls.loads - yearRolls.loadsWithRolls)} load${yearRolls.loads - yearRolls.loadsWithRolls === 1 ? '' : 's'} without a roll count` : 'every load counted' },
+    { label: 'Avg lbs per roll', value: yearRolls.avgLbsPerRoll != null ? fmtInt(yearRolls.avgLbsPerRoll) : '—', sub: yearRolls.avgLbsPerRoll != null ? `${fmtInt(yearRolls.netLbsWithRolls)} lbs ÷ ${fmtInt(yearRolls.rolls)} rolls` : 'enter rolls on the loads to see this', tone: 'neutral' },
+    { label: 'On the yard', value: `${fmtInt(yardTotal)} lbs`, sub: yardRolls.rolls > 0 ? `${fmtInt(yardRolls.rolls)} rolls waiting${yardRolls.avgLbsPerRoll != null ? ` · ${fmtInt(yardRolls.avgLbsPerRoll)} lbs/roll` : ''}` : 'awaiting the gin', tone: yardTotal > 0 ? 'warning' : 'muted' },
+  ]
+
+  const nothingYet = !loading && yearLoads.length === 0
+  const nothingMatches = !loading && yearLoads.length > 0 && sorted.length === 0
 
   return (
     <div className="space-y-4">
@@ -231,11 +371,13 @@ export default function CottonLoadsPage() {
         <h1 className="text-2xl font-bold flex-1">Seed Cotton Loads</h1>
         <label className="text-sm flex flex-col gap-1">
           <span className="text-slate-500">Crop year</span>
-          <select value={cropYear} onChange={(e) => setCropYear(Number(e.target.value))} className={inputCls}>
+          <select value={cropYear} onChange={(e) => { setCropYear(Number(e.target.value)); setSelected(new Set()) }} className={inputCls}>
             {years.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </label>
       </div>
+
+      <SummaryCards cards={summaryCards} />
 
       {/* Yard inventory — delivered but not yet on a gin receipt. */}
       <section className="bg-white rounded-xl shadow p-4 space-y-2">
@@ -244,7 +386,7 @@ export default function CottonLoadsPage() {
           <p className="text-sm text-slate-400">Nothing on the yard — every {cropYear} load is on a gin receipt.</p>
         ) : (
           <div className="flex flex-wrap gap-3 text-sm">
-            <span className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-1.5 font-semibold">{lbs(yardTotal)} lbs total{yardRolls > 0 ? ` · ${lbs(yardRolls)} rolls` : ''}</span>
+            <span className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-1.5 font-semibold">{lbs(yardTotal)} lbs total{yardRolls.rolls > 0 ? ` · ${fmtInt(yardRolls.rolls)} rolls` : ''}</span>
             {Array.from(yard.entries()).filter(([, v]) => v > 0).map(([fieldId, v]) => {
               const f = fieldId ? fieldById.get(fieldId) : null
               const farm = f?.farm_id ? farmById.get(f.farm_id) : null
@@ -257,54 +399,55 @@ export default function CottonLoadsPage() {
       {/* AI intake */}
       <section className="bg-white rounded-xl shadow p-4 space-y-3">
         <h2 className="font-semibold">Upload a module list</h2>
-        <p className="text-sm text-slate-500">PDF or photos of the gin&apos;s module/load tickets — one load per page. Review before saving.</p>
+        <p className="text-sm text-slate-500">PDF or photos of the gin&apos;s module/load tickets — one load per page. Review before saving. Each load keeps its own page as its ticket.</p>
         <DocumentCapture onSource={onSource} busy={stage != null} stageLabel={stage} pdfLabel="Upload module list PDF or photo" />
         {aiRows.length > 0 && (
           <>
             <div className="overflow-x-auto">
               <table className="min-w-full text-xs">
-                <thead className="text-slate-500"><tr>{['', 'Load #', 'Farm', 'Field', 'Picked', 'Delivered', 'Truck', 'Rolls', 'Gross', 'Tare', 'Net'].map((h) => <th key={h} className="text-left px-1 py-1">{h}</th>)}</tr></thead>
+                <thead className="text-slate-500"><tr>{['', 'Load #', 'Farm', 'Field', 'Picked', 'Delivered', 'Truck', 'Rolls', 'Gross', 'Tare', 'Net', 'Lbs/roll'].map((h) => <th key={h} className="text-left px-1 py-1">{h}</th>)}</tr></thead>
                 <tbody>
                   {aiRows.map((r, i) => (
                     <tr key={i} className="border-t border-slate-100">
-                      <td className="px-1 py-1"><input type="checkbox" checked={r.include} onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, include: e.target.checked } : x))} /></td>
+                      <td className="px-1 py-1"><input type="checkbox" className="h-5 w-5" checked={r.include} onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, include: e.target.checked } : x))} aria-label={`Save load ${r.load_number ?? i + 1}`} /></td>
                       <td className="px-1 py-1 font-mono">{r.load_number ?? '—'}</td>
                       <td className="px-1 py-1">
-                        <select value={r.farm_id} onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, farm_id: e.target.value, field_id: '' } : x))} className="rounded border border-slate-300 px-1 py-0.5">
+                        <select value={r.farm_id} onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, farm_id: e.target.value, field_id: '' } : x))} className="rounded border border-slate-300 px-1 py-0.5 min-h-9">
                           <option value="">— farm —</option>
                           {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
                         </select>
                         {!r.farm_id && r.producer && <div className="text-amber-700">From the document: {r.producer}{r.farm_number ? ` #${r.farm_number}` : ''}</div>}
                       </td>
                       <td className="px-1 py-1">
-                        <select value={r.field_id} onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, field_id: e.target.value } : x))} className="rounded border border-slate-300 px-1 py-0.5">
+                        <select value={r.field_id} onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, field_id: e.target.value } : x))} className="rounded border border-slate-300 px-1 py-0.5 min-h-9">
                           <option value="">— field —</option>
                           {fields.filter((f) => !r.farm_id || f.farm_id === r.farm_id).map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
                         </select>
                         {!r.field_id && r.field && <div className="text-amber-700">From the document: {r.field}</div>}
                       </td>
-                      <td className="px-1 py-1">{r.picked_date ?? '—'}</td>
-                      <td className="px-1 py-1">{r.delivered_date ?? '—'}</td>
+                      <td className="px-1 py-1">{r.picked_date ? fmtDate(r.picked_date) : '—'}</td>
+                      <td className="px-1 py-1">{r.delivered_date ? fmtDate(r.delivered_date) : '—'}</td>
                       <td className="px-1 py-1">{r.truck ?? '—'}</td>
                       <td className="px-1 py-1">
                         <input
                           type="number" inputMode="numeric" step="1" min="0"
                           value={r.rolls ?? ''}
                           onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, rolls: rollsNum(e.target.value) } : x))}
-                          className="rounded border border-slate-300 px-1 py-0.5 w-16 text-right"
+                          className="rounded border border-slate-300 px-1 py-0.5 w-16 text-right min-h-9"
                           aria-label={`Rolls on load ${r.load_number ?? i + 1}`}
                         />
                       </td>
                       <td className="px-1 py-1 text-right">{lbs(r.gross_weight)}</td>
                       <td className="px-1 py-1 text-right">{lbs(r.tare_weight)}</td>
                       <td className="px-1 py-1 text-right font-semibold">{lbs(r.net_weight)}</td>
+                      <td className="px-1 py-1 text-right text-slate-500">{lbsPerRoll(r.net_weight, r.rolls) != null ? fmtInt(lbsPerRoll(r.net_weight, r.rolls)) : '—'}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <button onClick={saveAiRows} disabled={saving} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
-              {saving ? 'Saving…' : `Save ${aiRows.filter((r) => r.include).length} loads`}
+            <button onClick={saveAiRows} disabled={saving} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold disabled:opacity-50">
+              {saving ? (stage ?? 'Saving…') : `Save ${aiRows.filter((r) => r.include).length} loads`}
             </button>
           </>
         )}
@@ -380,57 +523,213 @@ export default function CottonLoadsPage() {
             Notes
             <input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} className={`${inputCls} mt-1`} />
           </label>
+          <label className={labelCls}>
+            Ticket photo or PDF <span className="text-slate-400">(optional)</span>
+            <input type="file" accept="application/pdf,.pdf,image/*" onChange={(e) => setDraftDoc(e.target.files?.[0] ?? null)} className={`${inputCls} mt-1 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1`} />
+          </label>
         </div>
-        {num(draft.gross_weight) != null && num(draft.tare_weight) != null && (
-          <p className="text-sm text-slate-500">Net: <b>{lbs(num(draft.gross_weight)! - num(draft.tare_weight)!)}</b> lbs seed cotton</p>
+        {(num(draft.gross_weight) != null && num(draft.tare_weight) != null) && (
+          <p className="text-sm text-slate-500">
+            Net: <b>{lbs(num(draft.gross_weight)! - num(draft.tare_weight)!)}</b> lbs seed cotton
+            {rollsNum(draft.rolls) != null && rollsNum(draft.rolls)! > 0 && <> · <b>{fmtInt((num(draft.gross_weight)! - num(draft.tare_weight)!) / rollsNum(draft.rolls)!)}</b> lbs per roll</>}
+          </p>
         )}
         <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold">Add load</button>
       </form>
 
-      {err && <p className="text-sm text-red-600">{err}</p>}
+      {err && <p className="text-sm text-red-600" role="alert">{err}</p>}
       {msg && <p className="text-sm text-green-700">{msg}</p>}
 
-      {/* Load list */}
-      <div className="bg-white rounded-xl shadow overflow-x-auto">
-        <table className="min-w-full text-sm">
-          <thead className="bg-slate-100 text-slate-700"><tr>{['Load #', 'Farm', 'Field', 'Delivered', 'Truck', 'Rolls', 'Net lbs', 'Status', ''].map((h) => <th key={h} className={`px-3 py-2 whitespace-nowrap ${h === 'Rolls' || h === 'Net lbs' ? 'text-right' : 'text-left'}`}>{h}</th>)}</tr></thead>
-          <tbody>
-            {yearLoads.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">No {cropYear} seed cotton loads yet.</td></tr>}
-            {yearLoads.map((l) => {
-              const f = l.field_id ? fieldById.get(l.field_id) : null
-              return (
-                <tr key={l.id} className="border-t border-slate-100">
-                  <td className="px-3 py-2 font-mono">{l.load_number}</td>
-                  <td className="px-3 py-2">{l.farm_id ? farmById.get(l.farm_id)?.name ?? '—' : '—'}</td>
-                  <td className="px-3 py-2">{f?.name_or_number ?? '—'}</td>
-                  <td className="px-3 py-2">{l.delivered_date ?? '—'}</td>
-                  <td className="px-3 py-2">{l.truck ?? '—'}</td>
-                  <td className="px-3 py-2 text-right font-mono">
-                    <RollsCell load={l} onSaved={refresh} onError={setErr} />
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono">{lbs(l.net_weight)}</td>
-                  <td className="px-3 py-2">
-                    {ginnedIds.has(l.id)
-                      ? <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">ginned</span>
-                      : <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">on yard</span>}
-                  </td>
-                  <td className="px-1 py-1">{!ginnedIds.has(l.id) && <button type="button" onClick={() => deleteLoad(l)} className="text-red-600 text-sm min-h-11 px-3 rounded-lg font-semibold">Delete</button>}</td>
+      {/* Load list — filters, sort, select, export, delete; tap a row to open it. */}
+      <ReportFilterBar activeCount={activeFilterCount}>
+        <label className={`${filterLabel} sm:min-w-[14rem]`}>
+          Search
+          <input type="search" placeholder="Load #, truck, farm, field, gin…" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} className={filterSelect} />
+        </label>
+        <label className={filterLabel}>
+          Farm
+          <select value={filters.farmId} onChange={(e) => setFilters({ ...filters, farmId: e.target.value, fieldId: '' })} className={filterSelect}>
+            <option value="">All farms</option>
+            {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+          </select>
+        </label>
+        <label className={filterLabel}>
+          Field
+          <select value={filters.fieldId} onChange={(e) => setFilters({ ...filters, fieldId: e.target.value })} className={filterSelect}>
+            <option value="">All fields</option>
+            {filterFields.map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
+          </select>
+        </label>
+        <label className={filterLabel}>
+          Gin
+          <select value={filters.ginId} onChange={(e) => setFilters({ ...filters, ginId: e.target.value })} className={filterSelect}>
+            <option value="">All gins</option>
+            {gins.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+        </label>
+        <label className={filterLabel}>
+          Status
+          <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value as CottonLoadFilters['status'] })} className={filterSelect}>
+            <option value="">On yard + ginned</option>
+            <option value="yard">On the yard</option>
+            <option value="ginned">Ginned</option>
+          </select>
+        </label>
+        <label className={filterLabel}>
+          Delivered from
+          <input type="date" value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })} className={filterSelect} />
+        </label>
+        <label className={filterLabel}>
+          Delivered to
+          <input type="date" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })} className={filterSelect} />
+        </label>
+        {activeFilterCount > 0 && (
+          <button type="button" onClick={() => setFilters(EMPTY_COTTON_FILTERS)} className={`${quietBtn} self-end`}>Clear filters</button>
+        )}
+      </ReportFilterBar>
+
+      {sorted.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-sm text-slate-500 flex-1">
+            {filterSummary()}{shownRolls.rolls > 0 ? ` · ${fmtInt(shownRolls.rolls)} rolls · ${fmtInt(shownRolls.avgLbsPerRoll ?? 0)} lbs/roll` : ''}
+          </span>
+          <ExportBar buildPayload={() => buildPayload()} formats={['xlsx', 'pdf', 'csv', 'print']} />
+        </div>
+      )}
+
+      {selected.size > 0 && (
+        <div className="flex flex-wrap items-center gap-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm">
+          <span className="font-semibold">{selected.size} selected</span>
+          <ExportBar buildPayload={() => buildPayload(selectedRows(), '-selected')} formats={['xlsx', 'csv']} size="sm" />
+          <button type="button" onClick={() => setDeleteAsk(true)} className="rounded-lg bg-red-600 hover:bg-red-700 text-white px-3 min-h-11 text-sm font-semibold">Delete selected</button>
+          <button type="button" onClick={() => setSelected(new Set())} className="text-slate-600 min-h-11 px-2">Clear selection</button>
+        </div>
+      )}
+
+      {nothingYet ? (
+        <div className="bg-white rounded-xl shadow p-8 text-center text-slate-500">No {cropYear} seed cotton loads yet. Upload a module list or add one by hand above.</div>
+      ) : nothingMatches ? (
+        <div className="bg-white rounded-xl shadow p-8 text-center space-y-3">
+          <p className="text-slate-600 font-medium">No loads match these filters.</p>
+          <button type="button" onClick={() => setFilters(EMPTY_COTTON_FILTERS)} className={`${quietBtn} font-semibold text-brand-deep`}>Clear filters</button>
+        </div>
+      ) : (
+        <>
+          <p className="text-sm text-slate-500">Tap any load to see its details and ticket. Tap a rolls figure to change it in place.</p>
+          <div className="overflow-x-auto bg-white rounded-xl shadow">
+            <table className="min-w-full text-sm">
+              <thead className={theadCls}>
+                <tr>
+                  <th className="px-2 py-1 w-11">
+                    <label className="flex items-center justify-center min-h-11 min-w-11 cursor-pointer">
+                      <input type="checkbox" aria-label="Select all loads shown" className="h-5 w-5" checked={sorted.length > 0 && sorted.every((r) => selected.has(r.id))} onChange={toggleAllVisible} />
+                    </label>
+                  </th>
+                  <SortTh onClick={() => toggleSort('load')} active={sortKey === 'load'} dir={sortDir}>Load #</SortTh>
+                  <SortTh onClick={() => toggleSort('farm')} active={sortKey === 'farm'} dir={sortDir}>Farm</SortTh>
+                  <SortTh onClick={() => toggleSort('field')} active={sortKey === 'field'} dir={sortDir}>Field</SortTh>
+                  <SortTh onClick={() => toggleSort('picked')} active={sortKey === 'picked'} dir={sortDir} className="hidden md:table-cell">Picked</SortTh>
+                  <SortTh onClick={() => toggleSort('delivered')} active={sortKey === 'delivered'} dir={sortDir}>Delivered</SortTh>
+                  <SortTh onClick={() => toggleSort('truck')} active={sortKey === 'truck'} dir={sortDir}>Truck</SortTh>
+                  <SortTh onClick={() => toggleSort('gin')} active={sortKey === 'gin'} dir={sortDir} className="hidden md:table-cell">Gin</SortTh>
+                  <SortTh onClick={() => toggleSort('rolls')} active={sortKey === 'rolls'} dir={sortDir} align="right">Rolls</SortTh>
+                  <SortTh onClick={() => toggleSort('net')} active={sortKey === 'net'} dir={sortDir} align="right">Net lbs</SortTh>
+                  <SortTh onClick={() => toggleSort('perRoll')} active={sortKey === 'perRoll'} dir={sortDir} align="right">Lbs/roll</SortTh>
+                  <SortTh onClick={() => toggleSort('status')} active={sortKey === 'status'} dir={sortDir}>Status</SortTh>
+                  <th className="px-2 py-1 text-left whitespace-nowrap">Ticket</th>
                 </tr>
-              )
-            })}
-            {yearLoads.length > 0 && yearRolls > 0 && (
-              <tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold">
-                <td className="px-3 py-2" colSpan={5}>{yearLoads.length} load{yearLoads.length === 1 ? '' : 's'}</td>
-                <td className="px-3 py-2 text-right font-mono">{lbs(yearRolls)}</td>
-                <td className="px-3 py-2 text-right font-mono">{lbs(yearLoads.reduce((s, l) => s + Number(l.net_weight ?? 0), 0))}</td>
-                <td colSpan={2} />
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-      {dialogs}
+              </thead>
+              <tbody>
+                {loading && <tr><td colSpan={13} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
+                {sorted.map((l) => {
+                  const perRoll = lbsPerRoll(l.net_weight, l.rolls)
+                  return (
+                    <Fragment key={l.id}>
+                      <tr
+                        onClick={() => router.push(`/cotton/loads/${l.id}`)}
+                        className={`border-t border-slate-100 cursor-pointer hover:bg-slate-50 ${selected.has(l.id) ? 'bg-sky-50 hover:bg-sky-100' : ''}`}
+                      >
+                        <td className="px-2 py-1" onClick={(e) => e.stopPropagation()}>
+                          <label className="flex items-center justify-center min-h-11 min-w-11 cursor-pointer">
+                            <input type="checkbox" aria-label={`Select load ${l.load_number}`} className="h-5 w-5" checked={selected.has(l.id)} onChange={() => toggleRow(l.id)} />
+                          </label>
+                        </td>
+                        <td className="px-3 py-2 font-mono font-semibold text-brand-deep">{l.load_number}</td>
+                        <td className="px-3 py-2">{ctx.farmName(l.farm_id) || '—'}</td>
+                        <td className="px-3 py-2">{ctx.fieldName(l.field_id) || '—'}</td>
+                        <td className="px-3 py-2 whitespace-nowrap hidden md:table-cell">{l.picked_date ? fmtDate(l.picked_date) : '—'}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{l.delivered_date ? fmtDate(l.delivered_date) : '—'}</td>
+                        <td className="px-3 py-2">{l.truck ?? '—'}</td>
+                        <td className="px-3 py-2 hidden md:table-cell">{ctx.ginName(l.gin_id) || '—'}</td>
+                        <td className="px-1 py-1 text-right tabular-nums" onClick={(e) => e.stopPropagation()}>
+                          <RollsCell load={l} onSaved={refresh} onError={setErr} />
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums font-semibold">{lbs(l.net_weight)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-600">{perRoll != null ? fmtInt(perRoll) : '—'}</td>
+                        <td className="px-3 py-2">
+                          {ginnedIds.has(l.id)
+                            ? <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">ginned</span>
+                            : <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">on yard</span>}
+                        </td>
+                        <td className="px-2 py-1 text-xs">
+                          {l.source_pdf_url
+                            ? <span className="text-slate-600">on file</span>
+                            : <span className="text-slate-400">none</span>}
+                        </td>
+                      </tr>
+                    </Fragment>
+                  )
+                })}
+                {sorted.length > 0 && (
+                  <tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold">
+                    <td className="px-3 py-2" colSpan={8}>{sorted.length} load{sorted.length === 1 ? '' : 's'}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{shownRolls.rolls > 0 ? fmtInt(shownRolls.rolls) : '—'}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{fmtInt(shownRolls.netLbs)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{shownRolls.avgLbsPerRoll != null ? fmtInt(shownRolls.avgLbsPerRoll) : '—'}</td>
+                    <td colSpan={2} />
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      <ConfirmDialog
+        open={deleteAsk}
+        title={`Delete ${deletable().length} load${deletable().length === 1 ? '' : 's'}?`}
+        body={
+          <div className="space-y-1">
+            <p>This can’t be undone. Yard inventory and cotton yields will recalculate without {deletable().length === 1 ? 'it' : 'them'}.</p>
+            {skippedGinned() > 0 && <p className="text-amber-800">{skippedGinned()} selected load{skippedGinned() === 1 ? ' is' : 's are'} already on a gin receipt and will be kept.</p>}
+          </div>
+        }
+        confirmLabel={`Delete ${deletable().length}`}
+        danger
+        busy={deleting}
+        onConfirm={() => void bulkDelete()}
+        onCancel={() => { if (!deleting) setDeleteAsk(false) }}
+      />
+      <NoticeDialog open={notice != null} title={notice?.title ?? ''} body={notice?.body} onClose={() => setNotice(null)} />
     </div>
+  )
+}
+
+function SortTh({ children, onClick, active, dir, align = 'left', className = '' }: {
+  children: React.ReactNode
+  onClick: () => void
+  active: boolean
+  dir: 'asc' | 'desc'
+  align?: 'left' | 'right'
+  className?: string
+}) {
+  const arrow = active ? (dir === 'asc' ? ' ↑' : ' ↓') : ''
+  return (
+    <th aria-sort={active ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'} className={`px-1 py-0 whitespace-nowrap ${align === 'right' ? 'text-right' : 'text-left'} ${className}`}>
+      <button type="button" onClick={onClick} className={`w-full min-h-11 px-2 rounded hover:bg-slate-200 font-semibold ${align === 'right' ? 'text-right' : 'text-left'} ${active ? 'text-slate-900' : ''}`}>
+        {children}{arrow}
+      </button>
+    </th>
   )
 }
 
@@ -447,7 +746,7 @@ function RollsCell({ load, onSaved, onError }: { load: CottonLoad; onSaved: () =
     const next = rollsNum(val)
     if (val.trim() !== '' && next == null) { onError('Rolls must be a whole number.'); setVal(load.rolls != null ? String(load.rolls) : ''); return }
     if (next === (load.rolls ?? null)) return
-    const { error } = await supabase.from('cotton_loads').update({ rolls: next }).eq('id', load.id)
+    const { error } = await updateCottonLoad(supabase, load.id, { rolls: next })
     if (error) { onError(reportError(error, { action: 'save the rolls', noun: 'load', name: load.load_number })); return }
     onError(null)
     onSaved()
@@ -456,7 +755,7 @@ function RollsCell({ load, onSaved, onError }: { load: CottonLoad; onSaved: () =
   if (!editing) {
     return (
       <button type="button" onClick={() => setEditing(true)} className="min-h-11 min-w-11 px-2 rounded-lg hover:bg-slate-100 text-right w-full" aria-label={`Rolls on load ${load.load_number}: ${load.rolls ?? 'not recorded'}. Tap to edit.`}>
-        {load.rolls != null ? lbs(load.rolls) : <span className="text-slate-400">—</span>}
+        {load.rolls != null ? fmtInt(load.rolls) : <span className="text-slate-400">—</span>}
       </button>
     )
   }

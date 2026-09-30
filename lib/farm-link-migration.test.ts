@@ -166,7 +166,9 @@ describe('087 farm link migration', () => {
     expect(vm).toMatch(/\( 87, '087_farm_link'/)
     expect(vm).toMatch(/\( 88, '088_farm_link_insurance'/)
     expect(vm).toMatch(/\( 89, '089_farm_link_landowners'/)
-    expect(vm).toContain('schema is at 089')
+    // The verdict names the latest migration; it must be 089 or later.
+    const at = vm.match(/schema is at (\d{3})/)
+    expect(Number(at?.[1] ?? 0)).toBeGreaterThanOrEqual(89)
   })
 })
 
