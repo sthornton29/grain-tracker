@@ -6,9 +6,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { compressImage, imagesToPdf } from '@/lib/image-capture'
 import { MAX_PDF_BYTES, uploadFileToStorage } from '@/lib/pdf-upload'
-import { splitPdfIntoBatches } from '@/lib/pdf-split'
+import { getPdfPageCount, pickPdfPages } from '@/lib/pdf-split'
 import { normalizePdfFile } from '@/lib/orientation'
-import { documentPagePlan } from '@/lib/cotton-loads'
 import type { DocumentSource } from '@/components/document-capture'
 
 export const COTTON_DOC_PREFIX = 'cotton-loads'
@@ -54,25 +53,29 @@ export async function uploadLoadDocument(supabase: SupabaseClient, file: File): 
   return publicUrl
 }
 
-/** The document each extracted load keeps: its own page of the module list
- *  when the list is one load per page (page i ↔ load i, in document order),
- *  otherwise the whole document on every load. Returns one File per load
- *  index, or null entries when there is nothing to store. */
-export async function documentsForLoads(source: DocumentSource, loadCount: number, onProgress?: (label: string) => void): Promise<Array<File | null>> {
-  let pages: File[]
+/** The document each review row keeps: its own page(s) of the module list
+ *  — the page it was read from, plus a duplicate scan's page — when every
+ *  row knows its pages and they exist in the document; otherwise the whole
+ *  document on every row. One File per row, in row order. */
+export async function documentsForLoads(source: DocumentSource, pagesPerRow: ReadonlyArray<ReadonlyArray<number>>, onProgress?: (label: string) => void): Promise<Array<File | null>> {
+  if (pagesPerRow.length === 0) return []
   let whole: File
+  let pageCount: number
   if (source.kind === 'pdf') {
     onProgress?.('Preparing ticket pages…')
     whole = (await normalizePdfFile(source.file)).file
-    pages = await splitPdfIntoBatches(whole, 1).catch(() => [whole])
+    pageCount = await getPdfPageCount(whole).catch(() => 0)
   } else {
     onProgress?.('Preparing ticket photos…')
     whole = await imagesToPdf(source.images, 'module-list')
-    pages = []
-    for (const img of source.images) pages.push(await imagesToPdf([img], 'module-ticket'))
+    pageCount = source.images.length
   }
-  const plan = documentPagePlan(loadCount, pages.length)
-  if (plan === 'none') return Array.from({ length: loadCount }, () => null)
-  if (plan === 'per-page') return pages
-  return Array.from({ length: loadCount }, () => whole)
+  const allKnown = pageCount > 0 && pagesPerRow.every((ps) => ps.length > 0 && ps.every((p) => p >= 1 && p <= pageCount))
+  if (!allKnown) return pagesPerRow.map(() => whole)
+  const out: Array<File | null> = []
+  for (const ps of pagesPerRow) {
+    if (source.kind === 'pdf') out.push(await pickPdfPages(whole, [...ps]))
+    else out.push(await imagesToPdf(ps.map((p) => source.images[p - 1]), 'module-ticket'))
+  }
+  return out
 }

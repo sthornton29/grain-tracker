@@ -33,6 +33,7 @@ import type { SeedContractDetails, SeedContractPayment, SeedContractPremium, See
 import type { CropAssumption } from '@/lib/types'
 import ContractFilters from './contract-filters'
 import LinkRow from './link-row'
+import { loadTicketKeys } from '@/lib/ticket-matching'
 
 export const dynamic = 'force-dynamic'
 
@@ -71,6 +72,7 @@ type LoadRow = {
   id: string
   contract_id: string | null
   ticket_number: string | null
+  buyer_ticket_number?: string | null
   net_weight: number | null
   moisture: number | null
   crop_id: string | null
@@ -138,7 +140,7 @@ async function fetchAllContractLoads(supabase: SupabaseClient): Promise<LoadRow[
   const { data, error } = await fetchAllRows<LoadRow>((f, t) =>
     supabase
       .from('loads')
-      .select('id, contract_id, ticket_number, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, to_type')
+      .select('id, contract_id, ticket_number, buyer_ticket_number, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, to_type')
       .order('id', { ascending: true })
       .range(f, t),
   )
@@ -227,8 +229,7 @@ export default async function ContractsPage({
 
   function lineForLoad(load: LoadRow): SettlementLineRow | null {
     if (loadIdToLine.has(load.id)) return loadIdToLine.get(load.id)!
-    const t = load.ticket_number?.trim().toLowerCase()
-    if (t && ticketToLine.has(t)) return ticketToLine.get(t)!
+    for (const k of loadTicketKeys(load)) if (ticketToLine.has(k)) return ticketToLine.get(k)!
     return null
   }
 

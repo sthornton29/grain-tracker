@@ -103,6 +103,8 @@ export type SettlementDiscountItemExtraction = {
 // The per-ticket grade block as structured readings (086). Percentages
 // except test_weight (lb/bu). Every field nullable — never invented.
 export type SettlementGradeReadings = {
+  /** The printed grade itself ("1 US #1", "2 YC"), as text. */
+  grade?: string | null
   moisture?: number | null
   foreign_material?: number | null
   splits?: number | null
@@ -125,7 +127,21 @@ export type SettlementLineExtraction = {
   vehicle_plate?: string | null
   gross_weight?: number | null
   tare_weight?: number | null
+  /** Net POUNDS paid on the line when printed (Woodall's LB column). */
+  net_weight?: number | null
+  /** Special-discount legend codes printed on the line ("2", "2,4"). */
+  special_discount_codes?: string | null
   grade_readings?: SettlementGradeReadings | null
+}
+
+// The statement's Contract / Ticket Summary (Woodall and others): the
+// buyer's own view of the contract this settlement draws on. Cross-checked
+// against the app's contract progress on the review screen.
+export type SettlementContractSummary = {
+  contract_number?: string | null
+  priced_bushels?: number | null
+  settled_bushels?: number | null
+  remaining_bushels?: number | null
 }
 
 export type SettlementExtraction = {
@@ -146,6 +162,10 @@ export type SettlementExtraction = {
   // Absent on older parses.
   statement_reported_total?: number | null
   statement_reported_bushels?: number | null
+  /** The buyer's contract summary block when printed. Absent on older parses. */
+  contract_summary?: SettlementContractSummary | null
+  /** The statement's gross before deductions, when printed separately. */
+  statement_reported_gross?: number | null
 }
 
 // A buyer's posted discount sheet (document_type 'discount_schedule', 074).
@@ -583,7 +603,18 @@ export type CottonLoadExtraction = {
   gross_weight: number | null
   tare_weight: number | null
   net_weight: number | null
+  /** The PRINTED roll / round-module count ("Number of Rounds: 6"). */
   rolls: number | null
+  /** A hand-written roll count ("3 Rolls") — kept apart; never picked silently. */
+  handwritten_rolls?: number | null
+  /** The handwriting itself ("Busted Roll, 3 Rolls on TRK #21"). */
+  handwritten_note?: string | null
+  /** A circled / hash-numbered corner figure (28, #41): the farm's module
+   *  sequence, NOT rolls. */
+  sequence_mark?: string | null
+  /** 1-based page of the document the load was read from (rebased to the
+   *  whole document by lib/parse-chunked). */
+  page?: number | null
   crop_year: number | null
 }
 export type CottonLoadsExtraction = { loads: CottonLoadExtraction[] }

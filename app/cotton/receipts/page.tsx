@@ -19,6 +19,7 @@ import { mergeGinReceipts } from '@/lib/parse-merge'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import { reconcileBaleCount, lintTurnoutPct } from '@/lib/cotton'
 import { rollsNum } from '@/lib/cotton-load-writes'
+import { pbiReview, receiptClassification } from '@/lib/cotton-load-review'
 import type { GinReceipt, Gin, Farm, Field, Entity, CottonLoad } from '@/lib/types'
 
 const lbs = (n: number | null | undefined) => (n == null ? '—' : Number(n).toLocaleString())
@@ -45,13 +46,19 @@ export default function GinReceiptsPage() {
   const [fieldId, setFieldId] = useState('')
   const [createMissing, setCreateMissing] = useState<Set<number>>(new Set())
   const [saving, setSaving] = useState(false)
+  // Every saved bale (PBI, crop year, receipt) for the duplicate check, the
+  // bale-list rows the user left out, and whether a re-scanned receipt
+  // updates the saved one.
+  const [existingBales, setExistingBales] = useState<Array<{ pbi_number: string; crop_year: number; gin_receipt_id: string }>>([])
+  const [excludedBales, setExcludedBales] = useState<Set<number>>(new Set())
+  const [updateReceipt, setUpdateReceipt] = useState(false)
   // manual form
   const [m, setM] = useState({ receipt_number: '', receipt_date: '', gin_id: '', farm_id: '', field_id: '', modules: '', seedwt: '', bales: '', balewt: '', seedlbs: '' })
 
   async function refresh() {
     const [r, b, g, f, fl, en, l] = await Promise.all([
       supabase.from('gin_receipts').select('*').order('receipt_date', { ascending: false }),
-      fetchAllRows((f, t) => supabase.from('cotton_bales').select('gin_receipt_id').order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('cotton_bales').select('gin_receipt_id, pbi_number, crop_year').order('id').range(f, t)),
       supabase.from('gins').select('*').order('name'),
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
@@ -60,8 +67,10 @@ export default function GinReceiptsPage() {
     ])
     setReceipts((r.data as GinReceipt[]) || [])
     const counts = new Map<string, number>()
-    for (const row of ((b.data as { gin_receipt_id: string }[]) || [])) counts.set(row.gin_receipt_id, (counts.get(row.gin_receipt_id) ?? 0) + 1)
+    const baleRows = ((b.data as { gin_receipt_id: string; pbi_number: string; crop_year: number }[]) || [])
+    for (const row of baleRows) counts.set(row.gin_receipt_id, (counts.get(row.gin_receipt_id) ?? 0) + 1)
     setBalesByReceipt(counts)
+    setExistingBales(baleRows)
     setGins((g.data as Gin[]) || [])
     setFarms((f.data as Farm[]) || [])
     setFields((fl.data as Field[]) || [])
@@ -78,6 +87,23 @@ export default function GinReceiptsPage() {
     () => new Map(loads.filter((l) => l.crop_year === cropYear).map((l) => [l.load_number.trim(), l])),
     [loads, cropYear],
   )
+  const receiptById = useMemo(() => new Map(receipts.map((r) => [r.id, r])), [receipts])
+
+  // The scanned bale list against itself and against every bale already on a
+  // receipt this crop year (lib/cotton-load-review). Flagged rows are left out
+  // by default; the user can tick one back in.
+  const scanYear = x?.crop_year ?? cropYear
+  const baleReview = useMemo(
+    () => x ? pbiReview(x.bales ?? [], existingBales.map((b) => ({ pbi_number: b.pbi_number, crop_year: b.crop_year, receipt_number: receiptById.get(b.gin_receipt_id)?.receipt_number ?? null })), scanYear) : [],
+    [x, existingBales, receiptById, scanYear],
+  )
+  useEffect(() => {
+    setExcludedBales(new Set(baleReview.map((r, i) => (r.flags.length > 0 ? i : -1)).filter((i) => i >= 0)))
+  }, [baleReview])
+  const flaggedBales = baleReview.map((r, i) => ({ ...r, i })).filter((r) => r.flags.length > 0)
+  // The receipt itself: new, already saved, or an update to a saved one.
+  const receiptClass = useMemo(() => x ? receiptClassification(x, receipts, scanYear) : { status: 'new' as const }, [x, receipts, scanYear])
+  useEffect(() => { setUpdateReceipt(receiptClass.status === 'update') }, [receiptClass])
 
   async function ensureGin(name: string | null): Promise<string | null> {
     if (!name?.trim()) return null
@@ -124,13 +150,23 @@ export default function GinReceiptsPage() {
   async function saveExtracted() {
     if (!x) return
     if (!x.receipt_number?.trim()) { setErr('The statement needs a receipt/gin #.'); return }
+    // A receipt number already saved this crop year is never saved twice:
+    // the user either opens it or ticks "update that receipt".
+    if (receiptClass.status !== 'new' && !updateReceipt) {
+      setErr(`Receipt #${x.receipt_number} is already saved for ${x.crop_year ?? cropYear}. Tick "Update that receipt" to change it, or discard this scan.`)
+      return
+    }
     setSaving(true); setErr(null)
     let receiptId: string | null = null
+    let insertedNew = false
     try {
       const gin_id = await ensureGin(x.gin_name)
       const year = x.crop_year ?? cropYear
-      const balesRows = (x.bales ?? []).filter((b) => b.pbi_number && b.net_weight_lbs != null)
-      const { data: rec, error: recErr } = await supabase.from('gin_receipts').insert({
+      // Bales the user left out (repeated in the list, already on a receipt)
+      // never save; neither does a PBI already saved anywhere this crop year.
+      const savedPbis = new Set(existingBales.filter((b) => b.crop_year === year).map((b) => b.pbi_number.replace(/\D/g, '').replace(/^0+/, '')))
+      const balesRows = (x.bales ?? []).filter((b, i) => b.pbi_number && b.net_weight_lbs != null && !excludedBales.has(i) && !savedPbis.has(String(b.pbi_number).replace(/\D/g, '').replace(/^0+/, '')))
+      const header = {
         gin_id, receipt_number: x.receipt_number.trim(), receipt_date: x.receipt_date, crop_year: year,
         entity_id: farmId ? farmById.get(farmId)?.entity_id ?? null : null,
         farm_id: farmId || null, field_id: fieldId || null,
@@ -138,9 +174,20 @@ export default function GinReceiptsPage() {
         bales_count: x.bales_count, total_bale_weight: x.total_bale_weight, avg_bale_weight: x.avg_bale_weight,
         seed_lbs: x.seed_lbs, lint_turnout_pct: x.lint_turnout_pct, lint_lbs_per_bale: x.lint_lbs_per_bale,
         source: 'document_import',
-      }).select('id').single()
-      if (recErr || !rec) { setErr(reportError(recErr, { action: 'save the receipt', noun: 'gin receipt' })); return }
-      receiptId = (rec as { id: string }).id
+      }
+      let alreadyLinked = new Set<string>()
+      if (receiptClass.status !== 'new') {
+        receiptId = receiptClass.existingId
+        const { error: upErr } = await supabase.from('gin_receipts').update(header).eq('id', receiptId)
+        if (upErr) { setErr(reportError(upErr, { action: 'update the receipt', noun: 'gin receipt' })); return }
+        const { data: links } = await supabase.from('gin_receipt_loads').select('cotton_load_id').eq('receipt_id', receiptId)
+        alreadyLinked = new Set(((links as { cotton_load_id: string }[]) ?? []).map((l) => l.cotton_load_id))
+      } else {
+        const { data: rec, error: recErr } = await supabase.from('gin_receipts').insert(header).select('id').single()
+        if (recErr || !rec) { setErr(reportError(recErr, { action: 'save the receipt', noun: 'gin receipt' })); return }
+        receiptId = (rec as { id: string }).id
+        insertedNew = true
+      }
 
       // Load lines: link existing by load_number; create the checked missing ones.
       const linkIds: string[] = []
@@ -166,8 +213,9 @@ export default function GinReceiptsPage() {
         if (nlErr || !nl) throw new Error(nlErr?.message ?? `Could not create load ${ln}.`)
         linkIds.push((nl as { id: string }).id)
       }
-      if (linkIds.length > 0) {
-        const { error } = await supabase.from('gin_receipt_loads').insert(linkIds.map((id) => ({ receipt_id: receiptId, cotton_load_id: id })))
+      const newLinks = linkIds.filter((id) => !alreadyLinked.has(id))
+      if (newLinks.length > 0) {
+        const { error } = await supabase.from('gin_receipt_loads').insert(newLinks.map((id) => ({ receipt_id: receiptId, cotton_load_id: id })))
         if (error) throw new Error(error.message)
       }
       if (balesRows.length > 0) {
@@ -176,12 +224,13 @@ export default function GinReceiptsPage() {
         })))
         if (error) throw new Error(error.message)
       }
-      setMsg(`Saved receipt ${x.receipt_number} with ${balesRows.length} bales and ${linkIds.length} linked loads.`)
+      const leftOut = (x.bales ?? []).length - balesRows.length
+      setMsg(`${insertedNew ? 'Saved' : 'Updated'} receipt ${x.receipt_number} with ${balesRows.length} bale${balesRows.length === 1 ? '' : 's'}${leftOut > 0 ? ` (${leftOut} left out — repeated or already saved)` : ''} and ${linkIds.length} linked load${linkIds.length === 1 ? '' : 's'}.`)
       setX(null); setSource(null); refresh()
     } catch (e: any) {
-      // Best-effort atomicity: a failure after the receipt insert removes the
+      // Best-effort atomicity: a failure after a NEW receipt insert removes the
       // receipt (bales/links cascade) so a partial statement never lingers.
-      if (receiptId) await supabase.from('gin_receipts').delete().eq('id', receiptId)
+      if (receiptId && insertedNew) await supabase.from('gin_receipts').delete().eq('id', receiptId)
       setErr(`${reportError(e, { action: 'save the statement', noun: 'gin receipt' })} Nothing was kept.`)
     } finally {
       setSaving(false)
@@ -255,6 +304,31 @@ export default function GinReceiptsPage() {
               <span className="rounded bg-slate-50 border border-slate-200 px-2 py-1">{(x.bales ?? []).length} bale rows extracted</span>
             </div>
             {baleCheck && !baleCheck.ok && <p className="text-amber-700 text-xs font-semibold">{baleCheck.message}</p>}
+            {/* The receipt number against what is saved: never a silent second receipt. */}
+            {receiptClass.status !== 'new' && (
+              <div className={`rounded-lg border px-3 py-2 text-sm ${updateReceipt ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-slate-50 border-slate-300 text-slate-700'}`} role="status">
+                <span className="font-semibold">{receiptClass.status === 'saved' ? 'Already saved' : 'Update available'}</span> — receipt #{x.receipt_number} is on file for {scanYear}.
+                {receiptClass.status === 'update' && <span className="block text-xs">Changes in this scan: {receiptClass.diffs.join(' · ')}</span>}
+                <label className="inline-flex items-center gap-2 min-h-8 ml-2">
+                  <input type="checkbox" className="h-5 w-5" checked={updateReceipt} onChange={(e) => setUpdateReceipt(e.target.checked)} />
+                  Update that receipt (header, new loads, and new bales; nothing is removed)
+                </label>
+              </div>
+            )}
+            {/* Bales repeated in the list or already on another receipt: left out by default. */}
+            {flaggedBales.length > 0 && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 space-y-1">
+                <div className="font-semibold">{flaggedBales.length} bale{flaggedBales.length === 1 ? '' : 's'} left out of the save — tick one to keep it:</div>
+                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                  {flaggedBales.map((b) => (
+                    <label key={b.i} className="inline-flex items-center gap-1 min-h-7">
+                      <input type="checkbox" className="h-4 w-4" checked={!excludedBales.has(b.i)} onChange={(e) => setExcludedBales((s) => { const n = new Set(s); if (e.target.checked) n.delete(b.i); else n.add(b.i); return n })} />
+                      <span className="font-mono">{b.bale.pbi_number}</span> <span>{b.flags.join(' · ')}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
             {(x.loads ?? []).length > 0 && (
               <div className="overflow-x-auto">
                 <table className="min-w-full text-xs">

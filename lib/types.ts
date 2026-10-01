@@ -387,6 +387,8 @@ export type SettlementLine = {
   id: string
   settlement_id: string
   ticket_number: string | null
+  /** 091 — the buyer's full ticket as printed on a matched settlement; ours is never overwritten. */
+  buyer_ticket_number?: string | null
   load_id: string | null
   net_bushels: number
   gross_revenue: number
@@ -398,7 +400,7 @@ export type SettlementLine = {
   // identifier (Load Order #), and how the line was matched to its load.
   grade_readings?: Record<string, number | null> | null
   buyer_ref?: string | null
-  match_tier?: 'exact' | 'segment' | 'attribute' | 'manual' | null
+  match_tier?: 'exact' | 'segment' | 'suffix' | 'attribute' | 'manual' | null
   match_reason?: string | null
 }
 

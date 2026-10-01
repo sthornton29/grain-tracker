@@ -42,6 +42,7 @@ type LoadShape = {
   id: string
   date: string
   ticket_number: string | null
+  buyer_ticket_number?: string | null
   net_weight: number | null
   moisture: number | null
   dry_bushels_override: number | null
@@ -126,7 +127,7 @@ export default async function SettlementDetailPage({ params, searchParams }: { p
   const { data: buyerLoads } = await fetchAllRows((f, t) => supabase
     .from('loads')
     .select(`
-      id, date, ticket_number, net_weight, moisture, dry_bushels_override, contract_id, to_buyer_id,
+      id, date, ticket_number, buyer_ticket_number, net_weight, moisture, dry_bushels_override, contract_id, to_buyer_id,
       crop:crops(name, base_moisture_pct, base_lb_per_bushel),
       contract:contracts(id, contract_number, delivery_start_date, delivery_end_date)
     `)

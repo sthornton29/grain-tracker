@@ -40,12 +40,14 @@ import type {
   CropAssumption, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate, ProgramYearConfig,
   CoveredCommodity, FarmBaseAcres, ArcPlcElection, ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment,
 } from '@/lib/types'
+import { loadTicketKeys } from '@/lib/ticket-matching'
 
 type LoadRow = {
   id: string
   date: string
   contract_id: string | null
   ticket_number: string | null
+  buyer_ticket_number?: string | null
   net_weight: number | null
   moisture: number | null
   crop_id: string | null
@@ -207,7 +209,7 @@ export default function CashFlowPage() {
         const { data, error } = await fetchAllRows<LoadRow>((f, t) =>
           supabase
             .from('loads')
-            .select('id, date, time, contract_id, ticket_number, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, practice')
+            .select('id, date, time, contract_id, ticket_number, buyer_ticket_number, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, practice')
             .order('id', { ascending: true })
             .range(f, t),
         )
@@ -345,8 +347,7 @@ export default function CashFlowPage() {
 
   function lineFor(load: LoadRow): LineRow | null {
     if (lineByLoadId.has(load.id)) return lineByLoadId.get(load.id)!
-    const t = load.ticket_number?.trim().toLowerCase()
-    if (t && lineByTicket.has(t)) return lineByTicket.get(t)!
+    for (const k of loadTicketKeys(load)) if (lineByTicket.has(k)) return lineByTicket.get(k)!
     return null
   }
 

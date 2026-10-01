@@ -6,6 +6,7 @@ import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import StaticExportBar from '@/components/static-export-bar'
 import { fmtDate } from '@/lib/format-date'
 import type { ExportPayload } from '@/lib/exports'
+import { loadTicketKeys } from '@/lib/ticket-matching'
 
 export const dynamic = 'force-dynamic'
 
@@ -13,6 +14,7 @@ type Row = {
   id: string
   date: string
   ticket_number: string | null
+  buyer_ticket_number?: string | null
   crop_year: number | null
   net_weight: number | null
   moisture: number | null
@@ -35,7 +37,7 @@ export default async function UnpaidLoadsPage({
     fetchAllRows((f, t) => supabase
       .from('loads')
       .select(`
-        id, date, ticket_number, crop_year, net_weight, moisture, dry_bushels_override, to_type,
+        id, date, ticket_number, buyer_ticket_number, crop_year, net_weight, moisture, dry_bushels_override, to_type,
         crop:crops(name, base_moisture_pct, base_lb_per_bushel),
         buyer:buyers!loads_to_buyer_id_fkey(name),
         contract:contracts(contract_number)
@@ -60,9 +62,7 @@ export default async function UnpaidLoadsPage({
     // A manual match on the Review screen links the line by load_id (not ticket),
     // so treat a load as paid if it's linked OR its ticket matches a line.
     if (paidLoadIds.has(r.id)) return false
-    const t = r.ticket_number?.trim().toLowerCase()
-    const isPaid = t ? paid.has(t) : false
-    if (isPaid) return false
+    if (loadTicketKeys(r).some((k) => paid.has(k))) return false
     if (cropYear != null && r.crop_year !== cropYear) return false
     return true
   })

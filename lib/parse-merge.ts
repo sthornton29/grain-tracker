@@ -130,6 +130,9 @@ export function mergeSettlements(parts: SettlementExtraction[]): SettlementExtra
     // The grand total prints once (last page / check stub): first non-null.
     statement_reported_total: firstValue(parts, (p) => p.statement_reported_total ?? null),
     statement_reported_bushels: firstValue(parts, (p) => p.statement_reported_bushels ?? null),
+    statement_reported_gross: firstValue(parts, (p) => p.statement_reported_gross ?? null),
+    // The contract summary block prints once (Woodall: the last page).
+    contract_summary: firstValue(parts, (p) => p.contract_summary ?? null),
   }
 }
 
@@ -195,10 +198,13 @@ export function mergeFsaBaseAcres(parts: FsaBaseAcresExtraction[]): FsaBaseAcres
 }
 
 export function mergeCottonLoads(parts: CottonLoadsExtraction[]): CottonLoadsExtraction {
+  // One load per page: a load number repeated on ANOTHER page is a second
+  // scan the review collapses (with its page numbers); only the same page
+  // seen twice across a chunk boundary is dropped here.
   return {
     loads: mergeList(
       parts.map((p) => p.loads ?? []),
-      (l) => (l.load_number ? norm(l.load_number) : null),
+      (l) => (l.load_number ? `${norm(l.load_number)}|${l.page ?? ''}` : null),
     ),
   }
 }

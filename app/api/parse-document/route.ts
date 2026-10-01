@@ -33,10 +33,12 @@ const SETTLEMENT_PROMPT = `This is a grain settlement sheet from a grain buyer. 
 - delivery_date (the date the load was delivered/weighed, format YYYY-MM-DD — null if not shown)
 - vehicle_plate (the truck's license plate or vehicle id when the statement prints one — null otherwise)
 - gross_weight and tare_weight (in POUNDS as printed — null if not shown)
+- net_weight (the NET POUNDS paid on the line when the statement prints an LB / Net Wt column — null if not shown)
 - net_bushels (the net bushels paid for on this line)
+- special_discount_codes (the code(s) printed in a "Special Disc" / "Spec Disc" column for this ticket, exactly as printed, e.g. "2" or "2,4" — null when the column is blank or absent; the legend at the bottom explains the codes)
 - gross_revenue (the gross dollar amount before any discounts or deductions for this line)
 - discounts (the total dollar amount of all discounts, deductions, checkoff, fees, or adjustments subtracted from gross revenue for this line — if there are multiple discount types, sum them into one number)
-- grade_readings: the ticket's grade / quality block as structured numbers. Many statements print TWO rows per ticket — the first with the weights and dollars, the second with the grade factors (Bunge and others print "MO 13.8  FM 1.2  SPLITS 8  TD 1.5  HD 0.2  TW 56.3  OC 0.5  OIL 18.9  PROT 34.1"). Map them to: moisture (%), foreign_material (%), splits (%), total_damage (%), heat_damage (%), test_weight (lb/bu), other_color (%), oil (%), protein (%). Use null for any factor not printed. Never invent a reading.
+- grade_readings: the ticket's grade / quality block as structured numbers. Many statements print TWO rows per ticket — the first with the weights and dollars, the second with the grade factors (Bunge and others print "MO 13.8  FM 1.2  SPLITS 8  TD 1.5  HD 0.2  TW 56.3  OC 0.5  OIL 18.9  PROT 34.1"; Woodall prints MST / FM / TW / DMG columns and a grade like "1 US #1"). Map them to: grade (the printed grade text, e.g. "1 US #1" — null when none), moisture (%), foreign_material (%), splits (%), total_damage (%), heat_damage (%), test_weight (lb/bu), other_color (%), oil (%), protein (%). MST = moisture, DMG = total_damage. Use null for any factor not printed. Never invent a reading.
 
 WHAT COUNTS AS A TICKET LINE — read this carefully, it is the most common extraction mistake:
 (a) Ticket lines come ONLY from the ticket table: rows that have a ticket/load number, a delivery date, and per-load weights or bushels. One row per truckload.
@@ -53,14 +55,17 @@ Also extract these document-level fields:
 - payment_number, check_number, payment_date (from the CHECK / REMITTANCE page: the payment or remittance number, the check number, and the check date YYYY-MM-DD — null when absent. These are PAYMENT facts, never tickets and never the settlement_number unless the statement uses one number for both.)
 - statement_reported_total (the settlement's grand total net dollars as printed — null if not shown)
 - statement_reported_bushels (the settlement's total net bushels as printed — null if not shown)
-- Rows labelled "Total From", "Contract Total", "Settlement Total", "Grand Total", "Subtotal" and the remittance restatement are NEVER line_items (rule (d)); they only feed statement_reported_total / statement_reported_bushels.
+- statement_reported_gross (the settlement's total GROSS dollars before deductions, when a Totals row or Deduction Summary prints it — null if not shown)
+- contract_summary: when the statement prints a CONTRACT / TICKET SUMMARY block (contract number with priced / contracted bushels, bushels settled or applied so far, and bushels remaining), extract it as { "contract_number", "priced_bushels", "settled_bushels", "remaining_bushels" } — numbers exactly as printed (e.g. 42,969.999 → 42969.999); null when there is no such block. It is a summary, never a ticket.
+- Rows labelled "Total From", "Contract Total", "Settlement Total", "Grand Total", "Subtotal", "Totals", a DEDUCTION SUMMARY block, and a REMIT / PAYMENT AMOUNT / remittance restatement are NEVER line_items (rule (d)); they only feed statement_reported_total / statement_reported_gross / statement_reported_bushels.
 
 ALSO itemize the statement's discounts into document-level discount_items. IMPORTANT: every buyer formats discounts differently — some print named line items, some use footnote codes explained at the bottom, some put discounts as columns on the grade line, some bury weight adjustments inside the bushel math (gross bushels quietly reduced to pay bushels), and some print only a combined "LESS DISCOUNTS" total. Read the WHOLE statement for all of these forms. For each deduction you can attribute:
 - category: exactly one of "moisture_shrink" | "drying" | "test_weight" | "damage" | "heat_damage" | "foreign_material" | "dockage" | "splits" | "sprout" | "musty_sour" | "checkoff" | "fee" | "other".
-  * "checkoff" = any promotion / research assessment, under EVERY label buyers use: "checkoff", "check-off", "National Check-Off", "promotion", "assessment", a soybean/corn/wheat/cotton BOARD, COMMISSION or COUNCIL name, Bunge's legend code I02. It is NOT a quality discount and NEVER "other".
+  * "checkoff" = any promotion / research assessment, under EVERY label buyers use: "checkoff", "check-off", "National Check-Off", "Checkoff\\SPARC" / "SPARC" (a state agriculture department's assessment — name the agency in description, e.g. "Checkoff\\SPARC — Alabama Dept of Agriculture"), "promotion", "assessment", a soybean/corn/wheat/cotton BOARD, COMMISSION or COUNCIL name, Bunge's legend code I02. It is NOT a quality discount and NEVER "other". A per-ticket checkoff column is summed into ONE checkoff item for the document.
   * "fee" = a non-quality service charge: "vehicle inspection", "grading fee", "unload fee", "administrative", "service charge", "handling", Bunge's legend code I11. NEVER "other".
   * NEVER force a QUALITY category — when a line doesn't clearly fit one and is not a checkoff or fee (codes you can't resolve, a combined "LESS DISCOUNTS"), use "other" and keep the statement's exact wording in description rather than guessing.
   * Legend codes: HD → heat_damage, MO → moisture_shrink, ZFM / FM → foreign_material, TW → test_weight, TD / DMG → damage, SPL → splits, I02 → checkoff, I11 → fee. Read the statement's own legend and map by its meaning.
+  * A SPECIAL DISCOUNTS legend (Woodall: 1 Aflatoxin, 2 Sour, 3 Infested/Weevily, 4 Heating, 5 DLQ, 6 Product) maps the codes in the per-ticket Special Disc column: Sour → musty_sour, Heating → heat_damage, DLQ → damage; Aflatoxin, Infested/Weevily and Product → "other" with the legend text verbatim in description (never force them into a quality category). Emit one discount_items entry per code actually applied, with its dollars; a legend code that no ticket carries produces no item. When no ticket carries a special discount and the only deduction is the checkoff, the quality discounts are zero — do not invent any.
 - QTY DISCOUNTS BY QUALITY FACTOR vs CASH DISCOUNTS: a statement may print two blocks — "QTY DISCOUNTS" (bushels/weight removed per factor, e.g. "ZFM 23.282 bu") and "CASH DISCOUNTS" (dollars per factor). Quantity-block lines are deduction_kind "weight" with the bushels/lbs in quantity_basis and amount 0 unless priced; cash-block lines are deduction_kind "price" with their dollars. Never merge the two blocks into one line.
 - description: the statement's OWN wording for the line, verbatim (e.g. "DRYING CHG", "TW DISC 53.4#", "LESS DISCOUNTS", a footnote code with its legend text)
 - deduction_kind: "price" when the line is DOLLARS subtracted from the check (charges, docks, fees, a combined less-discounts total); "weight" when the line reduces WEIGHT or BUSHELS instead (shrink lbs, FM weight removed, dockage weight). Detect volume-style discounting by comparing the stated gross weights/bushels against the pay weights/bushels: when pay bushels are below gross beyond the printed shrink math, emit a "weight" item describing it, with the implied lbs or bushels in quantity_basis.
@@ -80,7 +85,9 @@ Respond ONLY in JSON with no other text, no markdown backticks. Use this exact f
   "check_number": "string or null",
   "payment_date": "YYYY-MM-DD or null",
   "statement_reported_total": number or null,
+  "statement_reported_gross": number or null,
   "statement_reported_bushels": number or null,
+  "contract_summary": { "contract_number": "string or null", "priced_bushels": number or null, "settled_bushels": number or null, "remaining_bushels": number or null } or null,
   "line_items": [
     {
       "ticket_number": "string",
@@ -89,10 +96,12 @@ Respond ONLY in JSON with no other text, no markdown backticks. Use this exact f
       "vehicle_plate": "string or null",
       "gross_weight": number or null,
       "tare_weight": number or null,
+      "net_weight": number or null,
       "net_bushels": number,
       "gross_revenue": number,
       "discounts": number,
-      "grade_readings": { "moisture": number or null, "foreign_material": number or null, "splits": number or null, "total_damage": number or null, "heat_damage": number or null, "test_weight": number or null, "other_color": number or null, "oil": number or null, "protein": number or null }
+      "special_discount_codes": "string or null",
+      "grade_readings": { "grade": "string or null", "moisture": number or null, "foreign_material": number or null, "splits": number or null, "total_damage": number or null, "heat_damage": number or null, "test_weight": number or null, "other_color": number or null, "oil": number or null, "protein": number or null }
     }
   ],
   "discount_items": [
@@ -668,11 +677,17 @@ For each load extract:
 - picked_date, delivered_date (YYYY-MM-DD; null when absent)
 - truck (truck/trailer identifier text)
 - gross_weight, tare_weight, net_weight (POUNDS of seed cotton, plain numbers, no commas)
-- rolls (the number of round modules / rolls on the load, when printed - e.g. "Rolls: 4" or a module count; null when absent)
+- rolls: the PRINTED roll count, under ANY of its labels - "Number of Rounds", "Rounds", "Rolls", "Round Modules", "Modules" (e.g. "Number of Rounds: 6" -> 6). Printed only; null when the ticket prints none.
+- handwritten_rolls: a HAND-WRITTEN roll count on the page ("3 Rolls", "3 rolls on TRK #21") as a number, null when there is no handwriting about rolls. Keep it SEPARATE from the printed rolls - never replace one with the other.
+- handwritten_note: the handwriting on the page, verbatim (e.g. "Busted Roll, 3 Rolls on TRK #21"); null when none.
+- sequence_mark: a circled or hash-numbered figure in a corner or margin (28, 29, 37, #41) - the farm's own module sequence number. Capture it as text; it is NEVER the roll count and must not feed rolls or handwritten_rolls.
+- page: the 1-based page number WITHIN THIS DOCUMENT the load was read from (the first page you are given is 1). Every load has a page.
 - crop_year (the crop year if printed, else null)
 
+The same load number can appear on two pages (a page scanned twice, or a reprint). Report BOTH pages as separate entries with their own page numbers - the app collapses them.
+
 Respond ONLY in JSON, no other text, no markdown fences:
-{"loads": [{"load_number": "...", "producer": "...", "farm_number": "... or null", "field": "... or null", "picked_date": "YYYY-MM-DD or null", "delivered_date": "YYYY-MM-DD or null", "truck": "... or null", "gross_weight": number or null, "tare_weight": number or null, "net_weight": number or null, "rolls": number or null, "crop_year": number or null}]}`
+{"loads": [{"page": number, "load_number": "...", "producer": "...", "farm_number": "... or null", "field": "... or null", "picked_date": "YYYY-MM-DD or null", "delivered_date": "YYYY-MM-DD or null", "truck": "... or null", "gross_weight": number or null, "tare_weight": number or null, "net_weight": number or null, "rolls": number or null, "handwritten_rolls": number or null, "handwritten_note": "... or null", "sequence_mark": "... or null", "crop_year": number or null}]}`
 
 const GIN_RECEIPT_PROMPT = `This is a STATEMENT OF GINNING from a cotton gin (a gin receipt). Extract the full statement:
 

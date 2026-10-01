@@ -18,12 +18,14 @@ import { ConfirmDialog, NoticeDialog } from '@/components/app-dialog'
 import { EmptyState, ReportFilterBar, fmtInt, fmtNum, theadCls } from '@/components/reports/report-kit'
 import type { ExportPayload, ExportCell } from '@/lib/exports'
 import type { Entity, Farm, Field, FieldPlanting, County, LoadSplit } from '@/lib/types'
+import { loadTicketKeys } from '@/lib/ticket-matching'
 
 type Row = {
   id: string
   date: string
   time: string | null
   ticket_number: string | null
+  buyer_ticket_number?: string | null
   crop_year: number | null
   to_buyer_id: string | null
   contract_id: string | null
@@ -64,7 +66,7 @@ type ContractOption = {
 }
 
 const SELECT = `
-  id, date, time, ticket_number, crop_year,
+  id, date, time, ticket_number, buyer_ticket_number, crop_year,
   gross_weight, tare_weight, net_weight, moisture, test_weight,
   dry_bushels_override,
   from_type, to_type, from_field_id, to_buyer_id, contract_id, crop_id,
@@ -412,9 +414,8 @@ export default function LoadsPage() {
     // load_id) OR its ticket appears on a settlement line. Manual matches only
     // set load_id, so ticket-only checking misses them — see settlement Review.
     if (paidLoadIds.has(r.id)) return 'paid'
-    const t = r.ticket_number?.trim().toLowerCase()
-    if (!t) return 'unpaid'
-    return paidTickets.has(t) ? 'paid' : 'unpaid'
+    // Our ticket, or the buyer's ticket stored on the load after a match (091).
+    return loadTicketKeys(r).some((k) => paidTickets.has(k)) ? 'paid' : 'unpaid'
   }
 
   const activeFilterCount = [q, from, to, entityId, countyId, cropYear !== '' ? 'y' : '', cropId, contractId].filter(Boolean).length

@@ -32,7 +32,7 @@ import Dropzone, { rejectMessage } from '@/components/dropzone'
 import { BuyerPicker } from '@/components/buyer-location-pickers'
 import { matchAllTickets, normalizeTicket, type TicketMatch, type TicketMatchResult } from '@/lib/ticket-matching'
 import { computeBushels } from '@/lib/shrink'
-import type { SettlementGradeReadings } from '@/lib/pdf-upload'
+import type { SettlementContractSummary, SettlementGradeReadings } from '@/lib/pdf-upload'
 import { reportError } from '@/lib/friendly-error'
 import { fmtDate } from '@/lib/format-date'
 import {
@@ -57,7 +57,11 @@ type LoadMatch = {
   test_weight: number | null
   dry_bushels_override: number | null
   truck_id: string | null
-  truck: { license_plate: string | null } | null
+  truck: { license_plate: string | null; name_or_number: string | null } | null
+  /** 091 — the buyer's ticket stored after an earlier match. */
+  buyer_ticket_number?: string | null
+  hauler_truck?: string | null
+  truck_label?: string | null
 }
 
 type RowDraft = {
@@ -76,6 +80,8 @@ type RowDraft = {
   vehicle_plate?: string | null
   gross_weight?: number | null
   tare_weight?: number | null
+  /** Net pounds as printed (Woodall's LB column) — a strong suffix-match signal. */
+  net_weight?: number | null
   grade_readings?: SettlementGradeReadings | null
   /** The reviewer's say over the automatic match: 'reject' (import
    *  unmatched) or a load id picked by hand. */
@@ -149,7 +155,10 @@ export default function NewSettlementPage() {
   const router = useRouter()
   const [buyers, setBuyers] = useState<Buyer[]>([])
   const [loads, setLoads] = useState<LoadMatch[]>([])
-  const [contracts, setContracts] = useState<Array<{ id: string; contract_number: string; buyer_id: string | null; crop_id: string | null }>>([])
+  const [contracts, setContracts] = useState<Array<{ id: string; contract_number: string; buyer_id: string | null; crop_id: string | null; contracted_bushels: number | null }>>([])
+  // The buyer's own contract summary from the statement (priced / settled /
+  // remaining), cross-checked against the app's contract progress.
+  const [contractSummary, setContractSummary] = useState<SettlementContractSummary | null>(null)
   const [buyerId, setBuyerId] = useState('')
   const [settlementDate, setSettlementDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [settlementNumber, setSettlementNumber] = useState('')
@@ -181,9 +190,9 @@ export default function NewSettlementPage() {
       const [b, l, c, s, sl] = await Promise.all([
         supabase.from('buyers').select('*').order('name'),
         fetchAllRows((f, t) => supabase.from('loads')
-          .select('id, date, ticket_number, crop_id, crop:crops(name, base_moisture_pct, base_lb_per_bushel), contract_id, to_buyer_id, net_weight, gross_weight, tare_weight, moisture, test_weight, dry_bushels_override, truck_id, truck:trucks(license_plate)')
+          .select('id, date, ticket_number, buyer_ticket_number, crop_id, crop:crops(name, base_moisture_pct, base_lb_per_bushel), contract_id, to_buyer_id, net_weight, gross_weight, tare_weight, moisture, test_weight, dry_bushels_override, truck_id, hauler_truck, truck_label, truck:trucks(license_plate, name_or_number)')
           .eq('to_type', 'buyer').order('id').range(f, t)),
-        fetchAllRows((f, t) => supabase.from('contracts').select('id, contract_number, buyer_id, crop_id').order('contract_number').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('contracts').select('id, contract_number, buyer_id, crop_id, contracted_bushels').order('contract_number').order('id').range(f, t)),
         // The 086 payment columns first; without them (a fresh organization
         // before that migration) the base header still drives the check.
         fetchAllRows((f, t) => supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_number, check_number, payment_number').order('id').range(f, t))
@@ -194,7 +203,7 @@ export default function NewSettlementPage() {
       ])
       setBuyers((b.data as Buyer[]) || [])
       setLoads(((l.data as unknown) as LoadMatch[]) ?? [])
-      setContracts(((c.data as unknown) as Array<{ id: string; contract_number: string; buyer_id: string | null; crop_id: string | null }>) ?? [])
+      setContracts(((c.data as unknown) as Array<{ id: string; contract_number: string; buyer_id: string | null; crop_id: string | null; contracted_bushels: number | null }>) ?? [])
       setExistingSettlements(((s.data as unknown) as ExistingSettlement[]) ?? [])
       setExistingLines(((sl.data as unknown) as ExistingLine[]) ?? [])
     })()
@@ -246,18 +255,40 @@ export default function NewSettlementPage() {
       tare_weight: l.tare_weight,
       truck_id: l.truck_id,
       license_plate: l.truck?.license_plate ?? null,
+      // The truck as we call it, so a vehicle id like "Green/Tinus" can
+      // corroborate a suffix match (tier 2b).
+      truck_name: l.truck?.name_or_number ?? l.hauler_truck ?? l.truck_label ?? null,
+      buyer_ticket_number: l.buyer_ticket_number ?? null,
+      net_weight: l.net_weight,
     }))
-    const ctx = { buyer_id: buyerId || null, crop_id: headerContract?.crop_id ?? null }
+    // Every ticket on the statement: a suffix match needs its tail unique.
+    const ctx = { buyer_id: buyerId || null, crop_id: headerContract?.crop_id ?? null, settlement_tickets: rows.filter((r) => !r.excluded).map((r) => r.ticket_number) }
     // Excluded (total) rows never match; rejected rows never claim a load.
     const raw = matchAllTickets(
       rows.map((r) => r.excluded || r.matchOverride === 'reject'
         ? { ticket_number: null }
-        : { ticket_number: r.ticket_number, secondary_refs: [r.secondary_ref], net_bushels: num(r.net_bushels), gross_weight: r.gross_weight, tare_weight: r.tare_weight, delivery_date: r.delivery_date, vehicle_plate: r.vehicle_plate }),
+        : { ticket_number: r.ticket_number, secondary_refs: [r.secondary_ref], net_bushels: num(r.net_bushels), net_weight: r.net_weight, gross_weight: r.gross_weight, tare_weight: r.tare_weight, delivery_date: r.delivery_date, vehicle_plate: r.vehicle_plate }),
       pool,
       ctx,
     )
     return raw
   }, [rows, loads, buyerId, headerContract])
+
+  // The buyer's "remaining" on the contract vs ours (contracted − delivered
+  // dry bushels on loads attached to it): a gap over 1% means one side is
+  // missing a load or counting one twice.
+  const contractCheck = useMemo(() => {
+    if (!headerContract || contractSummary?.remaining_bushels == null || headerContract.contracted_bushels == null) return null
+    const delivered = loads.filter((l) => l.contract_id === headerContract.id).reduce((s, l) => s + (computeBushels({
+      netWeightLb: l.net_weight, moisturePct: l.moisture,
+      baseMoisturePct: l.crop?.base_moisture_pct ?? null, baseLbPerBushel: l.crop?.base_lb_per_bushel ?? null,
+      dryBushelsOverride: l.dry_bushels_override,
+    }).dryBushels ?? 0), 0)
+    const ours = Math.max(0, Number(headerContract.contracted_bushels) - delivered)
+    const theirs = Number(contractSummary.remaining_bushels)
+    const base = Math.max(ours, theirs, 1)
+    return { ours, theirs, delivered, priced: contractSummary.priced_bushels, settled: contractSummary.settled_bushels, disagree: Math.abs(ours - theirs) / base > 0.01 }
+  }, [headerContract, contractSummary, loads])
 
   type RowMatch = { load: LoadMatch | null; match: TicketMatch | null; candidates: TicketMatch[]; status: 'matched' | 'ambiguous' | 'unmatched' | 'rejected' | 'manual' }
   function matchFor(i: number): RowMatch {
@@ -359,7 +390,8 @@ export default function NewSettlementPage() {
       }
       if (data.settlement_number != null) setSettlementNumber(String(data.settlement_number))
       // 086 — the header contract number and the check page's payment facts.
-      setContractNumber(data.contract_number != null ? String(data.contract_number) : '')
+      setContractNumber(data.contract_number != null ? String(data.contract_number) : (data.contract_summary?.contract_number != null ? String(data.contract_summary.contract_number) : ''))
+      setContractSummary(data.contract_summary ?? null)
       setPayment({
         payment_number: data.payment_number != null ? String(data.payment_number) : '',
         check_number: data.check_number != null ? String(data.check_number) : '',
@@ -392,6 +424,7 @@ export default function NewSettlementPage() {
         vehicle_plate: li.vehicle_plate ?? null,
         gross_weight: li.gross_weight ?? null,
         tare_weight: li.tare_weight ?? null,
+        net_weight: li.net_weight ?? null,
         grade_readings: li.grade_readings ?? null,
       }))
       setRows(nextRows)
@@ -542,22 +575,32 @@ export default function NewSettlementPage() {
     if (lErr) lErr = (await supabase.from('settlement_lines').insert(baseLines)).error
     if (lErr) { reportError(lErr, { action: 'save the settlement lines', noun: 'line' }); finish('partial-lines'); return }
 
-    // Write-backs (086), best effort: (a) a load matched by attributes gets the
-    // buyer's ticket when it had none — the next statement matches exactly;
-    // (b) moisture / test weight from the grade block fill a matched load's
-    // EMPTY fields (never overwrite what was weighed in).
+    // Write-backs (086 / 091), best effort: (a) a load matched by attributes
+    // gets the buyer's ticket as its own when it had none; (b) any load
+    // matched other than exactly on our ticket stores the buyer's full ticket
+    // in buyer_ticket_number (ours is never overwritten) — the next statement
+    // and the paid badge then match exactly; (c) moisture / test weight from
+    // the grade block fill a matched load's EMPTY fields.
     let writebackFailed = false
     for (let i = 0; i < includedRows.length; i++) {
       const m = matched[i]
       const r = includedRows[i]
       if (!m.load) continue
       const patch: Record<string, unknown> = {}
-      if (m.match?.tier === 'attribute' && !normalizeTicket(m.load.ticket_number) && r.ticket_number.trim()) patch.ticket_number = r.ticket_number.trim()
+      const buyerTicket = r.ticket_number.trim()
+      if (m.match?.tier === 'attribute' && !normalizeTicket(m.load.ticket_number) && buyerTicket) patch.ticket_number = buyerTicket
+      const ourTicket = normalizeTicket(patch.ticket_number as string | undefined ?? m.load.ticket_number)
+      if (buyerTicket && normalizeTicket(buyerTicket) !== ourTicket && normalizeTicket(m.load.buyer_ticket_number) !== normalizeTicket(buyerTicket)) patch.buyer_ticket_number = buyerTicket
       const g = r.grade_readings
       if (g?.moisture != null && m.load.moisture == null) patch.moisture = g.moisture
       if (g?.test_weight != null && m.load.test_weight == null) patch.test_weight = g.test_weight
       if (Object.keys(patch).length > 0) {
-        const { error: wErr } = await supabase.from('loads').update(patch).eq('id', m.load.id)
+        let { error: wErr } = await supabase.from('loads').update(patch).eq('id', m.load.id)
+        // 091 not applied yet → store everything but the buyer ticket.
+        if (wErr && 'buyer_ticket_number' in patch) {
+          const { buyer_ticket_number: _b, ...rest } = patch
+          wErr = Object.keys(rest).length > 0 ? (await supabase.from('loads').update(rest).eq('id', m.load.id)).error : null
+        }
         if (wErr) { writebackFailed = true; reportError(wErr, { action: 'update a matched load', noun: 'load' }) }
       }
     }
@@ -701,6 +744,15 @@ export default function NewSettlementPage() {
             {payment.payment_date && <span>Paid <b>{fmtDate(payment.payment_date)}</b></span>}
           </div>
         )}
+        {/* The buyer's contract summary vs the app's contract progress. */}
+        {contractCheck && (
+          <div className={`rounded-lg border px-3 py-2 text-sm ${contractCheck.disagree ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-green-50 border-green-200 text-green-800'}`} role={contractCheck.disagree ? 'alert' : undefined}>
+            {contractCheck.disagree
+              ? <>The buyer shows <b>{fmtInt(contractCheck.theirs)} bu</b> remaining on contract #{headerContract?.contract_number}; Turnrow shows <b>{fmtInt(contractCheck.ours)} bu</b> ({fmtInt(contractCheck.delivered)} bu delivered of {fmtInt(Number(headerContract?.contracted_bushels))}). A load may be missing on one side, or counted twice. Check the contract after saving.</>
+              : <>The buyer&rsquo;s remaining <b>{fmtInt(contractCheck.theirs)} bu</b> on contract #{headerContract?.contract_number} agrees with Turnrow&rsquo;s {fmtInt(contractCheck.ours)} bu.</>}
+            {contractCheck.priced != null && contractCheck.settled != null && <span className="text-xs block text-slate-600">Statement summary: {fmtInt(contractCheck.priced)} bu priced · {fmtInt(contractCheck.settled)} bu settled so far.</span>}
+          </div>
+        )}
         {/* Duplicate check (lib/settlement-duplicates): the same statement
             saved before, or loads that a saved settlement already pays. */}
         {(duplicateHeader || dupVerdict.paid > 0) && (
@@ -751,8 +803,8 @@ export default function NewSettlementPage() {
                   const flagCls = 'bg-amber-50'
                   let status: React.ReactNode
                   const tierChip = (t: TicketMatch['tier'], confidence: TicketMatch['confidence']) => (
-                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${t === 'exact' ? 'bg-green-100 text-green-800' : t === 'segment' ? 'bg-sky-100 text-sky-800' : 'bg-amber-100 text-amber-800'}`}>
-                      {t === 'exact' ? 'exact' : t === 'segment' ? 'ticket inside ours' : `date + weight${confidence === 'medium' ? ' · check' : ''}`}
+                    <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${t === 'exact' ? 'bg-green-100 text-green-800' : t === 'segment' ? 'bg-sky-100 text-sky-800' : t === 'suffix' ? (confidence === 'high' ? 'bg-sky-100 text-sky-800' : 'bg-amber-100 text-amber-800') : 'bg-amber-100 text-amber-800'}`}>
+                      {t === 'exact' ? 'exact' : t === 'segment' ? 'ticket inside ours' : t === 'suffix' ? `short ticket${confidence === 'medium' ? ' · check' : ''}` : `date + weight${confidence === 'medium' ? ' · check' : ''}`}
                     </span>
                   )
                   const pickSelect = (options: Array<{ id: string; label: string }>) => (

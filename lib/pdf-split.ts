@@ -42,3 +42,26 @@ export async function splitPdfIntoBatches(file: File, pagesPerBatch = 4): Promis
   }
   return batches
 }
+
+// One PDF holding the given 1-based pages of `file`, in the order given — a
+// load's own ticket page (plus its duplicate scan). Falls back to the whole
+// file when a page is out of range or the PDF can't be parsed.
+export async function pickPdfPages(file: File, pageNumbers: number[]): Promise<File> {
+  try {
+    const { PDFDocument } = await import('pdf-lib')
+    const bytes = await file.arrayBuffer()
+    const src = await PDFDocument.load(bytes, { ignoreEncryption: true })
+    const total = src.getPageCount()
+    const indices = pageNumbers.map((p) => p - 1)
+    if (indices.length === 0 || indices.some((i) => i < 0 || i >= total)) return file
+    const out = await PDFDocument.create()
+    const pages = await out.copyPages(src, indices)
+    pages.forEach((p) => out.addPage(p))
+    const u8 = await out.save()
+    const buf = u8.slice().buffer
+    const baseName = file.name.replace(/\.pdf$/i, '')
+    return new File([buf], `${baseName}-p${pageNumbers.join('+')}.pdf`, { type: 'application/pdf' })
+  } catch {
+    return file
+  }
+}

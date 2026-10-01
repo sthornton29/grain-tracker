@@ -54,6 +54,9 @@ export async function parseDocumentChunked<T, M = T>(
     onProgress?: (label: string) => void
     category?: CottonMarketingCategory
     primaryTarget?: string
+    /** Rebase a chunk's result to the whole document before merging — e.g.
+     *  add the chunk's first page (1-based) to per-record page numbers. */
+    rebase?: (part: T, firstPage: number) => T
   },
 ): Promise<ChunkedParseResult<M>> {
   const pagesPerBatch = opts.pagesPerBatch ?? DEFAULT_PAGES_PER_BATCH
@@ -113,7 +116,7 @@ export async function parseDocumentChunked<T, M = T>(
         }
       }
     }
-    if (result != null) parts.push(result)
+    if (result != null) parts.push(opts.rebase ? opts.rebase(result, c.from) : result)
   }
 
   if (parts.length === 0) {

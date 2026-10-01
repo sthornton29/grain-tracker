@@ -14,6 +14,7 @@ import StaticExportBar from '@/components/static-export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
 import { fmtDate } from '@/lib/format-date'
 import { fmtInt, fmtUsd, fmtNum, theadCls } from '@/components/reports/report-format'
+import { loadTicketKeys } from '@/lib/ticket-matching'
 
 export const dynamic = 'force-dynamic'
 
@@ -52,6 +53,7 @@ type LoadRow = {
   id: string
   date: string
   ticket_number: string | null
+  buyer_ticket_number?: string | null
   net_weight: number | null
   moisture: number | null
   dry_bushels_override: number | null
@@ -81,7 +83,7 @@ async function fetchAllLoadsForContract(
     const { data, error } = await supabase
       .from('loads')
       .select(`
-        id, date, ticket_number, net_weight, moisture, dry_bushels_override, crop_id, from_type, hauler_truck, truck_label,
+        id, date, ticket_number, buyer_ticket_number, net_weight, moisture, dry_bushels_override, crop_id, from_type, hauler_truck, truck_label,
         truck:trucks(name_or_number),
         from_field:fields!loads_from_field_id_fkey(name_or_number),
         from_bin:bins!loads_from_bin_id_fkey(name_or_number)
@@ -160,8 +162,7 @@ export default async function ContractDetailPage({ params }: { params: { id: str
   }
   function lineFor(load: LoadRow): SettlementLineRow | null {
     if (lineByLoadId.has(load.id)) return lineByLoadId.get(load.id)!
-    const t = load.ticket_number?.trim().toLowerCase()
-    if (t && lineByTicket.has(t)) return lineByTicket.get(t)!
+    for (const k of loadTicketKeys(load)) if (lineByTicket.has(k)) return lineByTicket.get(k)!
     return null
   }
 

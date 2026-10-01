@@ -41,7 +41,9 @@ export const SUMMARY_LINE_REASON = 'looks like the settlement total — not a lo
 // (4) A "ticket" that is really a labelled total row ("Total From 0498074",
 // "Contract Total 2002960604-10", "Settlement Total", "Subtotal", "Grand
 // Total") — the Bunge shape prints several such rows, one after another.
-const TOTAL_LABEL = /\b(sub)?total\b|\bgrand\s+total\b|\btotal\s+from\b|\bcontract\s+total\b|\bsettlement\s+total\b/i
+// Woodall-shape rows join them: "Totals", "Deduction Summary", "Remit" /
+// "Payment Amount", a "Contract Summary" - summaries, never loads.
+const TOTAL_LABEL = /\b(sub)?totals?\b|\bgrand\s+total\b|\btotal\s+from\b|\bcontract\s+total\b|\bsettlement\s+total\b|\bsummary\b|\bremit(tance)?\b|\bpayment\s+amount\b|\bdeductions?\s+summary\b/i
 
 /** One guard verdict per line, in order. */
 export function flagSummaryLines(

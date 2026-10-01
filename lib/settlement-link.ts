@@ -37,10 +37,10 @@ export async function relinkSettlementLinesForLoad(
   const key = normalizeTicket(load.ticket_number)
   if (load.to_type !== 'buyer' || !load.to_buyer_id || !key) return
 
-  const { data: buyerLoads } = await fetchAllRows<{ id: string; ticket_number: string | null }>((f, t) =>
-    supabase.from('loads').select('id, ticket_number').eq('to_type', 'buyer').eq('to_buyer_id', load.to_buyer_id).order('id').range(f, t),
+  const { data: buyerLoads } = await fetchAllRows<{ id: string; ticket_number: string | null; buyer_ticket_number?: string | null }>((f, t) =>
+    supabase.from('loads').select('id, ticket_number, buyer_ticket_number').eq('to_type', 'buyer').eq('to_buyer_id', load.to_buyer_id).order('id').range(f, t),
   )
-  const pool = (buyerLoads ?? []).filter((l) => l.id === load.id || normalizeTicket(l.ticket_number))
+  const pool = (buyerLoads ?? []).filter((l) => l.id === load.id || normalizeTicket(l.ticket_number) || normalizeTicket(l.buyer_ticket_number))
 
   const { data: settlements } = await supabase
     .from('settlements')
@@ -90,10 +90,10 @@ export async function relinkSettlementLines(
   // Paginated (lib/fetch-all-rows): a buyer's loads exceed the ~1,000-row
   // request cap over the years, and a truncated read here would silently
   // leave settlement lines unlinked.
-  const { data: buyerLoads } = await fetchAllRows<{ id: string; ticket_number: string | null }>((f, t) =>
+  const { data: buyerLoads } = await fetchAllRows<{ id: string; ticket_number: string | null; buyer_ticket_number?: string | null }>((f, t) =>
     supabase
       .from('loads')
-      .select('id, ticket_number')
+      .select('id, ticket_number, buyer_ticket_number')
       .eq('to_type', 'buyer')
       .eq('to_buyer_id', buyerId)
       .order('id')

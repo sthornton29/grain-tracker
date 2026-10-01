@@ -16,6 +16,7 @@ import { matchGradesToBales } from '@/lib/cotton'
 import type { CottonBale, CottonBaleGrade, GinReceipt, Farm, Field } from '@/lib/types'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
 import { reportError } from '@/lib/friendly-error'
+import { normalizePbiKey } from '@/lib/cotton-load-review'
 
 const fmt = (n: number | null | undefined, d = 1) => (n == null ? '—' : Number(n).toFixed(d))
 
@@ -54,14 +55,28 @@ export default function CottonBalesPage() {
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
 
+  // PBIs the file repeats: kept once (the first row), named on screen — the
+  // same rule the gin-receipt review applies to its bale list.
+  const [repeatedInFile, setRepeatedInFile] = useState<string[]>([])
+
   async function onCsv(file: File) {
-    setErr(null); setMsg(null); setPreview(null)
+    setErr(null); setMsg(null); setPreview(null); setRepeatedInFile([])
     const text = await file.text()
     const parsed = parseGradeCsv(text)
     if (parsed.error) { setErr(parsed.error); return }
     if (parsed.rows.length === 0) { setErr('No bale rows found in the CSV.'); return }
-    setPreview(matchGradesToBales(parsed.rows, yearBales))
-    setMsg(`Parsed ${parsed.rows.length} grade rows (${parsed.preambleLines} preamble lines skipped${parsed.unknownHeaders.length ? `; unrecognized columns: ${parsed.unknownHeaders.join(', ')}` : ''}).`)
+    const seen = new Set<string>()
+    const repeats: string[] = []
+    const rows = parsed.rows.filter((r) => {
+      const k = normalizePbiKey(r.pbi_number)
+      if (!k) return true
+      if (seen.has(k)) { repeats.push(r.pbi_number); return false }
+      seen.add(k)
+      return true
+    })
+    setRepeatedInFile(repeats)
+    setPreview(matchGradesToBales(rows, yearBales))
+    setMsg(`Parsed ${parsed.rows.length} grade rows (${parsed.preambleLines} preamble lines skipped${parsed.unknownHeaders.length ? `; unrecognized columns: ${parsed.unknownHeaders.join(', ')}` : ''})${repeats.length ? ` — ${repeats.length} PBI${repeats.length === 1 ? '' : 's'} repeated in the file, kept once` : ''}.`)
   }
 
   async function saveGrades() {
@@ -132,6 +147,7 @@ export default function CottonBalesPage() {
             <div className="flex flex-wrap gap-2 text-xs">
               <span className="rounded-full bg-green-100 text-green-800 px-2 py-0.5 font-semibold">{preview.matched.length} matched</span>
               <span className={`rounded-full px-2 py-0.5 font-semibold ${preview.unmatched.length ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-500'}`}>{preview.unmatched.length} no matching bale</span>
+              {repeatedInFile.length > 0 && <span className="rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 font-semibold" title={repeatedInFile.join(', ')}>{repeatedInFile.length} repeated in the file, kept once: {repeatedInFile.slice(0, 5).join(', ')}{repeatedInFile.length > 5 ? '…' : ''}</span>}
               <span className={`rounded-full px-2 py-0.5 font-semibold ${preview.matched.some((m) => m.weightMismatch) ? 'bg-red-100 text-red-800' : 'bg-slate-100 text-slate-500'}`}>
                 {preview.matched.filter((m) => m.weightMismatch).length} weight mismatches (&gt;1%)
               </span>

@@ -1,19 +1,33 @@
-// Tolerant settlement-to-load ticket matching (086) — the shared seam the
-// settlement upload review, relinkSettlementLines and the assistant tools
-// all use. Pure.
+// Tolerant settlement-to-load ticket matching (086, suffix tier 2026-09-30)
+// — the shared seam the settlement upload review, relinkSettlementLines and
+// the assistant tools all use. Pure.
 //
 // Our internal ticket numbers embed the buyer's ticket plus our own
 // dash-delimited segments (buyer 498074 stored as "498074-02-A" or
-// "12-498074"); buyers print their own forms ("0498074"). So matching runs
-// in tiers, each with a confidence and a plain reason:
+// "12-498074"); buyers print their own forms ("0498074"); and when the
+// buyer's ticket is LONG (Woodall's 530092988) the truck driver writes only
+// the tail ("2988-12", "92988-A"). So matching runs in tiers, each with a
+// confidence and a plain reason:
 //
 //   Tier 1 EXACT     — equal after normalization (trim, case, strip leading
-//                      zeros). High confidence.
+//                      zeros) to our ticket OR to the buyer's ticket we
+//                      stored on the load after an earlier match
+//                      (loads.buyer_ticket_number, 091). High confidence.
 //   Tier 2 SEGMENT   — split both sides on dashes / slashes / spaces; the
 //                      settlement ticket equals a numeric-substantial (≥ 4
 //                      chars) segment of the load's ticket, or vice versa.
 //                      The settlement's secondary identifiers (Bunge's Load
 //                      Order #) are tried the same way. High confidence.
+//   Tier 2b SUFFIX   — a ≥ 4-digit segment of ours (or our whole numeric
+//                      core) equals the TRAILING digits of the buyer's
+//                      ticket. Only when that tail is unique among the
+//                      statement's tickets (else the user picks) AND at
+//                      least one attribute corroborates: delivery date ±1
+//                      day, net pounds / bushels within 1% (an exact LB
+//                      figure is strong), or the vehicle id naming our
+//                      truck or driver. Two attributes → high, one →
+//                      medium, none → on to tier 3. Tails under 4 digits
+//                      never suffix-match.
 //   Tier 3 ATTRIBUTE — no text match: same crop, same buyer, delivery date
 //                      within ±1 day, net bushels within 1% of our dry
 //                      bushels (or exact gross / tare) — corroborated by the
@@ -22,15 +36,18 @@
 //                      by date + weight"); several → the user picks; none →
 //                      unmatched.
 //
-// Once a Tier 2/3 match is confirmed, the load's ticket is written back so
-// the next statement matches on Tier 1.
+// Once a Tier 2 / 2b / 3 match is confirmed, the buyer's full ticket is
+// written to loads.buyer_ticket_number (ours is never overwritten) so the
+// next statement — and the paid / unpaid badge — matches on Tier 1.
 
-export type MatchTier = 'exact' | 'segment' | 'attribute'
+export type MatchTier = 'exact' | 'segment' | 'suffix' | 'attribute'
 export type MatchConfidence = 'high' | 'medium'
 
 export type TicketMatchLoad = {
   id: string
   ticket_number: string | null
+  /** The buyer's full ticket stored after an earlier match (091). */
+  buyer_ticket_number?: string | null
   crop_id?: string | null
   to_buyer_id?: string | null
   date?: string | null
@@ -42,6 +59,10 @@ export type TicketMatchLoad = {
   truck_id?: string | null
   /** The truck's license plate, when known (trucks.license_plate). */
   license_plate?: string | null
+  /** The truck's name as we call it ("Green", "Truck 21", a hauler's name). */
+  truck_name?: string | null
+  /** The driver's name when the load records one. */
+  driver?: string | null
 }
 
 export type TicketMatchLine = {
@@ -49,15 +70,21 @@ export type TicketMatchLine = {
   /** Secondary identifiers printed for the ticket (Load Order #, BOL…). */
   secondary_refs?: ReadonlyArray<string | null | undefined>
   net_bushels?: number | null
+  /** Net POUNDS when the statement prints them (Woodall's LB column). */
+  net_weight?: number | null
   gross_weight?: number | null
   tare_weight?: number | null
   delivery_date?: string | null
+  /** The license plate OR vehicle id as printed ("Green/Tinus"). */
   vehicle_plate?: string | null
 }
 
 export type TicketMatchContext = {
   crop_id?: string | null
   buyer_id?: string | null
+  /** Every ticket on the statement — a suffix match needs its tail to be
+   *  unique among them. Omitted = the line's own ticket only. */
+  settlement_tickets?: ReadonlyArray<string | null | undefined>
 }
 
 export type TicketMatch = {
@@ -79,6 +106,17 @@ export function normalizeTicket(s: string | null | undefined): string {
   const t = (s ?? '').trim().toUpperCase().replace(/\s+/g, ' ')
   if (!t) return ''
   return /^\d+$/.test(t) ? t.replace(/^0+(?=\d)/, '') : t
+}
+
+/** The lowercase keys a load answers to when settlement lines are looked up
+ *  by ticket: our ticket and the buyer's stored ticket (091). */
+export function loadTicketKeys(load: { ticket_number: string | null; buyer_ticket_number?: string | null }): string[] {
+  const out: string[] = []
+  for (const t of [load.ticket_number, load.buyer_ticket_number]) {
+    const k = (t ?? '').trim().toLowerCase()
+    if (k && !out.includes(k)) out.push(k)
+  }
+  return out
 }
 
 const SEGMENT_MIN = 4
@@ -107,6 +145,41 @@ function segmentHit(a: string | null | undefined, b: string | null | undefined):
   return false
 }
 
+const digitsOf = (s: string | null | undefined) => (s ?? '').replace(/\D/g, '').replace(/^0+(?=\d)/, '')
+
+/** The ≥ 4-digit tails our ticket offers for a suffix match: each purely
+ *  numeric segment, plus the whole numeric core. */
+export function ticketTails(ours: string | null | undefined): string[] {
+  const t = (ours ?? '').trim().toUpperCase()
+  if (!t) return []
+  const tails = new Set<string>()
+  const numericSegs = t.split(/[-/\s]+/).filter((seg) => /^\d+$/.test(seg))
+  for (const seg of numericSegs) {
+    const d = seg.replace(/^0+(?=\d)/, '')
+    if (d.length >= SEGMENT_MIN) tails.add(d)
+  }
+  // The whole numeric core counts only when the ticket has ONE run of digits
+  // ("92988A", "#92988") — gluing "988" and "1" from "988-1" into "9881"
+  // would manufacture a tail the driver never wrote.
+  const runs = t.match(/\d+/g) ?? []
+  if (runs.length === 1) {
+    const core = runs[0].replace(/^0+(?=\d)/, '')
+    if (core.length >= SEGMENT_MIN) tails.add(core)
+  }
+  return [...tails]
+}
+
+/** The tail of ours that the buyer's ticket ends with, or null. The tail must
+ *  be shorter than the buyer's ticket (equal is tier 1 / 2 territory). */
+export function suffixTail(buyerTicket: string | null | undefined, ours: string | null | undefined): string | null {
+  const buyer = digitsOf(buyerTicket)
+  if (buyer.length <= SEGMENT_MIN) return null
+  for (const tail of ticketTails(ours).sort((a, b) => b.length - a.length)) {
+    if (tail.length < buyer.length && buyer.endsWith(tail)) return tail
+  }
+  return null
+}
+
 function dayDiff(a: string | null | undefined, b: string | null | undefined): number | null {
   if (!a || !b) return null
   const da = Date.parse(String(a).slice(0, 10))
@@ -116,6 +189,39 @@ function dayDiff(a: string | null | undefined, b: string | null | undefined): nu
 }
 
 const normPlate = (p: string | null | undefined) => (p ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '')
+
+/** Words in a vehicle id ("Green/Tinus", "Trk 21 - J. Smith") that can name
+ *  a truck or a driver: 3+ letters, or a number of 1-4 digits. */
+function vehicleTokens(s: string | null | undefined): string[] {
+  return (s ?? '').toUpperCase().split(/[^A-Z0-9]+/).filter((w) => w.length >= 3 || /^\d{1,4}$/.test(w))
+}
+
+/** How the vehicle id corroborates a load: the truck's name or plate, or the
+ *  driver. Returns the matched words, empty when nothing agrees. */
+export function vehicleCorroboration(vehicleId: string | null | undefined, load: Pick<TicketMatchLoad, 'license_plate' | 'truck_name' | 'driver'>): string[] {
+  const words = vehicleTokens(vehicleId)
+  if (words.length === 0) return []
+  const hits: string[] = []
+  const plate = normPlate(load.license_plate)
+  if (plate && normPlate(vehicleId) === plate) hits.push('plate')
+  const truckWords = vehicleTokens(load.truck_name)
+  if (truckWords.length > 0 && words.some((w) => truckWords.includes(w))) hits.push('truck')
+  const driverWords = vehicleTokens(load.driver)
+  if (driverWords.length > 0 && words.some((w) => driverWords.includes(w))) hits.push('driver')
+  return hits
+}
+
+/** Weight agreement between a line and a load: exact or within 1% on net
+ *  pounds, or within 1% on bushels, or exact gross + tare. */
+function weightAgreement(line: TicketMatchLine, l: TicketMatchLoad): 'pounds' | 'bushels' | 'weights' | null {
+  if (line.net_weight != null && l.net_weight != null && Number(l.net_weight) > 0
+    && Math.abs(Number(line.net_weight) - Number(l.net_weight)) <= Number(l.net_weight) * 0.01) return 'pounds'
+  if (line.net_bushels != null && l.dry_bushels != null && l.dry_bushels > 0
+    && Math.abs(line.net_bushels - l.dry_bushels) <= l.dry_bushels * 0.01) return 'bushels'
+  if (line.gross_weight != null && line.tare_weight != null && l.gross_weight != null && l.tare_weight != null
+    && Number(line.gross_weight) === Number(l.gross_weight) && Number(line.tare_weight) === Number(l.tare_weight)) return 'weights'
+  return null
+}
 
 /** Match one settlement line against the loads (already narrowed to the
  *  settlement's buyer / crop where possible; `alreadyUsed` = load ids
@@ -135,11 +241,12 @@ export function matchTicket(
     && !(ctx.crop_id && l.crop_id && l.crop_id !== ctx.crop_id))
   const lineNorm = normalizeTicket(line.ticket_number)
 
-  // Tier 1 — exact after normalization.
+  // Tier 1 — exact after normalization, on our ticket or the stored buyer ticket.
   if (lineNorm) {
-    const exact = pool.filter((l) => normalizeTicket(l.ticket_number) === lineNorm)
+    const exact = pool.filter((l) => normalizeTicket(l.ticket_number) === lineNorm || normalizeTicket(l.buyer_ticket_number) === lineNorm)
     if (exact.length === 1) {
-      const m: TicketMatch = { tier: 'exact', confidence: 'high', loadId: exact[0].id, reason: `ticket ${lineNorm} matches exactly` }
+      const viaBuyer = normalizeTicket(exact[0].ticket_number) !== lineNorm
+      const m: TicketMatch = { tier: 'exact', confidence: 'high', loadId: exact[0].id, reason: viaBuyer ? `ticket ${lineNorm} is the buyer's ticket stored on our ${normalizeTicket(exact[0].ticket_number) || 'load'}` : `ticket ${lineNorm} matches exactly` }
       return { status: 'matched', match: m, candidates: [m] }
     }
     if (exact.length > 1) {
@@ -165,6 +272,43 @@ export function matchTicket(
     }
   }
 
+  // Tier 2b — suffix: our short tail is the end of the buyer's long ticket,
+  // the tail is unique on the statement, and something else agrees.
+  if (lineNorm && digitsOf(lineNorm).length > SEGMENT_MIN) {
+    const buyerDigits = digitsOf(lineNorm)
+    const statementTickets = (ctx.settlement_tickets ?? [line.ticket_number]).map(digitsOf).filter(Boolean)
+    type Suffix = { load: TicketMatchLoad; tail: string; attrs: string[] }
+    const suffixHits: Suffix[] = []
+    for (const l of pool) {
+      const tail = suffixTail(lineNorm, l.ticket_number)
+      if (!tail) continue
+      const attrs: string[] = []
+      const dd = dayDiff(line.delivery_date, l.date)
+      if (dd != null && dd <= 1) attrs.push('date')
+      const w = weightAgreement(line, l)
+      if (w) attrs.push(w)
+      const v = vehicleCorroboration(line.vehicle_plate, l)
+      if (v.length > 0) attrs.push(v.includes('driver') ? 'driver' : v.includes('truck') ? 'truck' : 'plate')
+      suffixHits.push({ load: l, tail, attrs })
+    }
+    const corroborated = suffixHits.filter((h) => h.attrs.length > 0)
+    if (corroborated.length > 0) {
+      const describe = (h: Suffix): TicketMatch => ({
+        tier: 'suffix',
+        confidence: h.attrs.length >= 2 ? 'high' : 'medium',
+        loadId: h.load.id,
+        reason: `our ${normalizeTicket(h.load.ticket_number)} ends the buyer's ${buyerDigits} (…${h.tail}) · ${h.attrs.join(' + ')} agree${h.attrs.length === 1 ? 's' : ''}`,
+      })
+      // Two buyer tickets on this statement sharing the tail → the user picks.
+      const tailShared = corroborated.some((h) => statementTickets.filter((t) => t.endsWith(h.tail)).length > 1)
+      if (corroborated.length === 1 && !tailShared) {
+        const m = describe(corroborated[0])
+        return { status: 'matched', match: m, candidates: [m] }
+      }
+      return { status: 'ambiguous', candidates: corroborated.map(describe) }
+    }
+  }
+
   // Tier 3 — attributes: crop + buyer + date ±1 + bushels within 1% (or
   // exact gross / tare), plate corroborating.
   const attrAll = pool.filter((l) => {
@@ -173,19 +317,22 @@ export function matchTicket(
     const buOk = line.net_bushels != null && l.dry_bushels != null && l.dry_bushels > 0 && Math.abs(line.net_bushels - l.dry_bushels) <= l.dry_bushels * 0.01
     const wtOk = line.gross_weight != null && line.tare_weight != null && l.gross_weight != null && l.tare_weight != null
       && Number(line.gross_weight) === Number(l.gross_weight) && Number(line.tare_weight) === Number(l.tare_weight)
-    return buOk || wtOk
+    const lbOk = line.net_weight != null && l.net_weight != null && Number(l.net_weight) > 0 && Math.abs(Number(line.net_weight) - Number(l.net_weight)) <= Number(l.net_weight) * 0.01
+    return buOk || wtOk || lbOk
   })
   // A load that already carries a ticket which did NOT text-match is most
   // likely a different load; prefer the ticket-less candidates when any exist.
   const ticketless = attrAll.filter((l) => !normalizeTicket(l.ticket_number))
   const attr = ticketless.length > 0 ? ticketless : attrAll
   const plate = normPlate(line.vehicle_plate)
-  const corroborated = plate ? attr.filter((l) => normPlate(l.license_plate) === plate) : []
+  const corroborated = plate ? attr.filter((l) => normPlate(l.license_plate) === plate || vehicleCorroboration(line.vehicle_plate, l).length > 0) : []
   const finalists = corroborated.length > 0 ? corroborated : attr
   const describe = (l: TicketMatchLoad): TicketMatch => {
     const bits = ['date']
-    if (line.net_bushels != null && l.dry_bushels != null) bits.push('bushels'); else bits.push('weights')
-    if (plate && normPlate(l.license_plate) === plate) bits.push('plate')
+    const w = weightAgreement(line, l)
+    bits.push(w === 'pounds' ? 'pounds' : w === 'bushels' ? 'bushels' : 'weights')
+    const v = vehicleCorroboration(line.vehicle_plate, l)
+    if (v.length > 0) bits.push(v.includes('plate') ? 'plate' : v.includes('driver') ? 'driver' : 'truck')
     return { tier: 'attribute', confidence: 'medium', loadId: l.id, reason: `matched by ${bits.join(' + ')}` }
   }
   if (finalists.length === 1) {
@@ -196,15 +343,18 @@ export function matchTicket(
   return { status: 'unmatched', candidates: [] }
 }
 
-/** Match every line in order, each confirmed match claiming its load. */
+/** Match every line in order, each confirmed match claiming its load. The
+ *  statement's full ticket list is derived from `lines` for the suffix tier
+ *  unless the context names it. */
 export function matchAllTickets(
   lines: ReadonlyArray<TicketMatchLine>,
   loads: ReadonlyArray<TicketMatchLoad>,
   ctx: TicketMatchContext = {},
 ): TicketMatchResult[] {
   const used = new Set<string>()
+  const fullCtx: TicketMatchContext = { ...ctx, settlement_tickets: ctx.settlement_tickets ?? lines.map((l) => l.ticket_number) }
   return lines.map((line) => {
-    const r = matchTicket(line, loads, ctx, used)
+    const r = matchTicket(line, loads, fullCtx, used)
     if (r.status === 'matched') used.add(r.match.loadId)
     return r
   })

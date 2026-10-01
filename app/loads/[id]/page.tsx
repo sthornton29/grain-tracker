@@ -23,6 +23,7 @@ type LoadShape = {
   date: string
   time: string | null
   ticket_number: string | null
+  buyer_ticket_number?: string | null
   crop_year: number | null
   gross_weight: number | null
   tare_weight: number | null
@@ -95,7 +96,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
   const { data, error } = await supabase
     .from('loads')
     .select(`
-      id, date, time, ticket_number, crop_year,
+      id, date, time, ticket_number, buyer_ticket_number, crop_year,
       gross_weight, tare_weight, net_weight, moisture, test_weight, dry_bushels_override,
       from_type, to_type, hauler_truck, truck_label,
       truck:trucks(name_or_number),
@@ -112,6 +113,9 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
   const load = data as unknown as LoadShape
 
   const ticket = load.ticket_number?.trim() || null
+  // The buyer's ticket stored on the load after an earlier match (091) is an
+  // exact key too: a re-issued statement prints that number.
+  const buyerTicket = load.buyer_ticket_number?.trim() || null
 
   // Splits, the matching settlement line(s), and the attachment count — fetched
   // in parallel. Payment matches by the persisted load_id FK first (authoritative
@@ -119,7 +123,9 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
   const [splitsRes, fkLinesRes, ticketLinesRes, ticketLoadCountRes, attachmentRes] = await Promise.all([
     supabase.from('load_splits').select('id, field_id, net_weight, percentage, wet_bushels, dry_bushels, field:fields(name_or_number)').eq('load_id', params.id),
     supabase.from('settlement_lines').select(LINE_SELECT).eq('load_id', params.id),
-    ticket ? supabase.from('settlement_lines').select(LINE_SELECT).ilike('ticket_number', ticket) : Promise.resolve({ data: [] }),
+    ticket || buyerTicket
+      ? supabase.from('settlement_lines').select(LINE_SELECT).or([ticket ? `ticket_number.ilike.${ticket}` : null, buyerTicket ? `ticket_number.ilike.${buyerTicket}` : null].filter(Boolean).join(','))
+      : Promise.resolve({ data: [] }),
     ticket ? supabase.from('loads').select('id', { count: 'exact', head: true }).ilike('ticket_number', ticket) : Promise.resolve({ count: 1 }),
     supabase.from('load_attachments').select('id', { count: 'exact', head: true }).eq('load_id', params.id),
   ])
@@ -183,6 +189,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
     rows: [
       ['Date / time', dateTime],
       ['Ticket #', ticket ?? '—'],
+      ...(buyerTicket && buyerTicket !== ticket ? [["Buyer's ticket #", buyerTicket] as (string | number)[]] : []),
       ['Truck', truckExportLabel(load) || '—'],
       ['Crop', load.crop?.name ?? '—'],
       ['Crop year', load.crop_year != null ? String(load.crop_year) : '—'],
@@ -293,7 +300,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
       <Section title="Load & Logistics">
         <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2 px-4 py-3">
           <Def label="Date / time" value={dateTime} />
-          <Def label="Ticket #" value={ticket ?? '—'} />
+          <Def label="Ticket #" value={ticket ?? '—'} sub={buyerTicket && buyerTicket !== ticket ? `buyer's ticket ${buyerTicket}` : undefined} />
           <Def label="Truck" value={truckDisplay(load).name || '—'} sub={truckDisplay(load).hauler ? 'hauler' : undefined} />
           <Def label="Crop" value={`${load.crop?.name ?? '—'}${load.crop_year != null ? ` · ${load.crop_year} crop` : ''}`} />
           <Def label="From" value={fromText} />

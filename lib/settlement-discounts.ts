@@ -78,9 +78,34 @@ export function coerceDiscountCategory(s: string | null | undefined): DiscountCa
 // boards and commissions that collect it, Bunge's I02 legend code) and for
 // non-quality service charges (Bunge's I11). A quality word anywhere keeps a
 // line OUT of these buckets — "moisture assessment" is a moisture discount.
-const CHECKOFF_WORDS = /(check[- ]?off|promotion|assessment|research (and|&) promotion|(soybean|corn|wheat|cotton|sorghum|grain|canola|sesame) (board|commission|council|promotion)|\bboard\b|\bcommission\b|\bcouncil\b|\bI02\b)/i
+const CHECKOFF_WORDS = /(check[- ]?off|\bsparc\b|promotion|assessment|research (and|&) promotion|(soybean|corn|wheat|cotton|sorghum|grain|canola|sesame) (board|commission|council|promotion)|\bboard\b|\bcommission\b|\bcouncil\b|\bI02\b)/i
 const FEE_WORDS = /(vehicle inspection|inspection fee|grading fee|grade fee|unload(ing)? fee|administrative|admin(istration)? fee|service (charge|fee)|handling (charge|fee)|processing fee|scale fee|probe fee|\bI11\b)/i
 const QUALITY_WORDS = /(moisture|test ?weight|\btw\b|damage|foreign|\bfm\b|dockage|shrink|dry(ing)?|splits|sprout|musty|sour|heat|protein|oil|color)/i
+
+/** The Special Discounts legend some buyers print (Woodall: 1 Aflatoxin,
+ *  2 Sour, 3 Infested/Weevily, 4 Heating, 5 DLQ, 6 Product). Sour, Heating
+ *  and DLQ have a quality category; the rest stay 'other' with the legend
+ *  text — never forced into a category that would misstate the dock. */
+export const SPECIAL_DISCOUNT_LEGEND: ReadonlyArray<{ code: string; label: string; category: DiscountCategory }> = [
+  { code: '1', label: 'Aflatoxin', category: 'other' },
+  { code: '2', label: 'Sour', category: 'musty_sour' },
+  { code: '3', label: 'Infested/Weevily', category: 'other' },
+  { code: '4', label: 'Heating', category: 'heat_damage' },
+  { code: '5', label: 'DLQ', category: 'damage' },
+  { code: '6', label: 'Product', category: 'other' },
+]
+
+/** The category a special-discount line's wording implies, by legend word
+ *  ("Special Disc 2 Sour", "Heating") — null when the wording names none. */
+export function specialDiscountCategory(description: string | null | undefined): DiscountCategory | null {
+  const d = (description ?? '').toLowerCase()
+  if (!d) return null
+  if (/\bsour\b/.test(d)) return 'musty_sour'
+  if (/\bheating\b/.test(d)) return 'heat_damage'
+  if (/\bdlq\b/.test(d)) return 'damage'
+  if (/aflatoxin|infested|weevil|\bproduct\b/.test(d)) return 'other'
+  return null
+}
 
 /** Classify a deduction by its printed wording: 'checkoff', 'fee', or null
  *  (a quality discount / unknown — leave the extracted category alone). */
@@ -169,7 +194,9 @@ export function normalizeExtractedDiscountItems(
     // whose description says checkoff is checkoff; never the reverse.
     const extracted = coerceDiscountCategory(i.category)
     const byWording = classifyDeductionDescription(i.description)
-    const category = byWording ?? extracted
+    // A special-discount legend word settles an 'other' the model left open.
+    const bySpecial = extracted === 'other' ? specialDiscountCategory(i.description) : null
+    const category = byWording ?? bySpecial ?? extracted
     return {
       category,
       description: (i.description ?? '').trim() || null,

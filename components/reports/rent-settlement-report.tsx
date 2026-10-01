@@ -43,6 +43,7 @@ import type { Crop, Farm, Field, FieldPlanting, Landowner, LeaseTerm, RentSettle
 import { SourceChip, fmtUsd, fmtInt } from '@/components/reports/report-kit'
 import { ConfirmDialog } from '@/components/app-dialog'
 import { reportError } from '@/lib/friendly-error'
+import { loadTicketKeys } from '@/lib/ticket-matching'
 
 const INPUT = 'rounded-lg border border-slate-300 px-3 py-2 text-sm'
 const BTN = 'rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 text-sm font-semibold disabled:opacity-50'
@@ -127,7 +128,7 @@ export default function RentSettlementReport() {
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('crops').select('*').order('name'),
       supabase.from('field_plantings').select('*'),
-      fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, ticket_number').order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, ticket_number, buyer_ticket_number').order('id').range(f, t)),
       fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels').order('id').range(f, t)),
       supabase.from('combine_yield_entries').select('*'),
       fetchAllRows((f, t) => supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue').order('id').range(f, t)),
@@ -321,7 +322,7 @@ export default function RentSettlementReport() {
     for (const l of loads) {
       if (l.crop_year !== year || l.from_type !== 'field' || !l.from_field_id || !l.crop_id) continue
       if (!coveredFieldIds.has(l.from_field_id)) continue
-      const line = byLoadId.get(l.id) ?? (l.ticket_number ? byTicket.get(l.ticket_number.trim().toLowerCase()) : undefined)
+      const line = byLoadId.get(l.id) ?? loadTicketKeys(l as { ticket_number: string | null; buyer_ticket_number?: string | null }).map((k) => byTicket.get(k)).find(Boolean)
       if (!line || !line.net_bushels || line.net_revenue == null) continue
       const cur = rev.get(l.crop_id) ?? { bu: 0, usd: 0 }
       cur.bu += Number(line.net_bushels); cur.usd += Number(line.net_revenue)

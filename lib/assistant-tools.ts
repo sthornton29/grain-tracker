@@ -96,6 +96,7 @@ import {
   MODULE_TOOLS, MODULE_STATUS_LABELS,
 } from '@/lib/assistant-tools-modules'
 import { cumulativePricedPct, blendedElectedPrice, effectivePriceWalk, seedTrackerProgress, SEED_OUTCOME_LABEL, SEED_PAYMENT_TYPE_LABEL } from '@/lib/seed-contracts'
+import { loadTicketKeys } from '@/lib/ticket-matching'
 
 function resolveEntityId(bits: ScopeBits, entityName: string | undefined): { entityId: string; note: string | null } {
   if (!entityName?.trim()) return { entityId: '', note: null }
@@ -521,7 +522,7 @@ async function getContracts(supabase: SupabaseClient, _ctx: AssistantContext, in
     return q.range(f, t)
   })
   const loads = await allPaged<{ id: string; contract_id: string | null; ticket_number: string | null; net_weight: number | null; moisture: number | null; crop_id: string | null; dry_bushels_override: number | null }>(
-    supabase, 'loads', 'id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override')
+    supabase, 'loads', 'id, contract_id, ticket_number, buyer_ticket_number, net_weight, moisture, crop_id, dry_bushels_override')
   const lines = await allPaged<{ load_id: string | null; ticket_number: string | null; net_bushels: number | null; net_revenue: number | null }>(
     supabase, 'settlement_lines', 'load_id, ticket_number, net_bushels, net_revenue')
   const linesByLoad = new Map(lines.filter((l) => l.load_id).map((l) => [l.load_id as string, l]))
@@ -541,7 +542,7 @@ async function getContracts(supabase: SupabaseClient, _ctx: AssistantContext, in
         })
         if (!dryBushels) continue
         delivered += dryBushels
-        const line = linesByLoad.get(l.id) ?? (l.ticket_number ? linesByTicket.get(l.ticket_number.trim().toLowerCase()) : undefined)
+        const line = linesByLoad.get(l.id) ?? loadTicketKeys(l as { ticket_number: string | null; buyer_ticket_number?: string | null }).map((k) => linesByTicket.get(k)).find(Boolean)
         if (line) { paidBushels += num(line.net_bushels); revenue += num(line.net_revenue) }
       }
       const contracted = num(c.contracted_bushels)
@@ -728,7 +729,7 @@ async function getCashFlow(supabase: SupabaseClient, ctx: AssistantContext, inpu
   const [contracts, loads, lines, settlements, crops, otherPayments] = await Promise.all([
     allRows<Contract>((f, t) => supabase.from('contracts').select('*').order('id').range(f, t)),
     allPaged<{ id: string; contract_id: string | null; ticket_number: string | null; net_weight: number | null; moisture: number | null; crop_id: string | null; dry_bushels_override: number | null }>(
-      supabase, 'loads', 'id, contract_id, ticket_number, net_weight, moisture, crop_id, dry_bushels_override'),
+      supabase, 'loads', 'id, contract_id, ticket_number, buyer_ticket_number, net_weight, moisture, crop_id, dry_bushels_override'),
     allPaged<{ load_id: string | null; ticket_number: string | null; net_bushels: number | null; net_revenue: number | null; settlement_id: string }>(
       supabase, 'settlement_lines', 'load_id, ticket_number, net_bushels, net_revenue, settlement_id'),
     allRows<{ id: string; settlement_date: string | null }>((f, t) => supabase.from('settlements').select('id, settlement_date').order('id').range(f, t)),
@@ -754,7 +755,7 @@ async function getCashFlow(supabase: SupabaseClient, ctx: AssistantContext, inpu
       const { dryBushels } = computeBushels({ netWeightLb: l.net_weight, moisturePct: l.moisture, baseMoisturePct: crop?.base_moisture_pct ?? null, baseLbPerBushel: crop?.base_lb_per_bushel ?? null, dryBushelsOverride: l.dry_bushels_override })
       if (!dryBushels) continue
       delivered += dryBushels
-      const line = linesByLoad.get(l.id) ?? (l.ticket_number ? linesByTicket.get(l.ticket_number.trim().toLowerCase()) : undefined)
+      const line = linesByLoad.get(l.id) ?? loadTicketKeys(l as { ticket_number: string | null; buyer_ticket_number?: string | null }).map((k) => linesByTicket.get(k)).find(Boolean)
       if (line) {
         const sd = settlementDate.get(line.settlement_id)
         bucket((sd ?? '').slice(0, 7) || nowKey).received += num(line.net_revenue)
