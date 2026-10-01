@@ -55,6 +55,12 @@ bespoke markup:
   render a blank table.
 - `StackedBar` — proportional position bars (e.g. sold / hedged / unpriced).
 - On-screen formatters: `fmtInt`, `fmtNum`, `fmtUsd`, `fmtPct`.
+- **Server components import the pure helpers (formatters, tones, class
+  tokens) from `components/reports/report-format.ts`, never from
+  `report-kit.tsx`** — the kit is `'use client'`, so on the server its
+  exports are client references and calling one throws at request time
+  (build and tsc both pass). The kit re-exports report-format for client
+  code. `lib/server-client-imports.test.ts` is the CI gate.
 
 iPad-in-truck matters: touch targets and narrow-viewport behavior are not
 optional polish.

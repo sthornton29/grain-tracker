@@ -744,6 +744,8 @@ Projections marks those crops **+ins** beside Cost/Acre with the same sentence u
 
 ## 6. Known issues & partially-built features
 
+- **Resolved 2026-09-30 — production `/contracts` 500 ("Application error: a server-side exception", digest 3442562847):** `TypeError: (0, k.TU) is not a function` — the server pages `app/contracts/page.tsx`, `app/contracts/[id]/page.tsx`, `app/settlements/[id]/page.tsx` (UX pass) called `fmtInt`/`fmtUsd`/… imported from the `'use client'` `report-kit.tsx`; on the server those exports are client references. tsc and `next build` pass on this mistake; found via `vercel logs https://turnrowgrain.com --json` (the CLI is logged in as the owner). Fix: the pure helpers moved to `components/reports/report-format.ts` (plain module; the kit re-exports it), server pages import from there, and `lib/server-client-imports.test.ts` now fails any lowercase named import from a client module into a server file under `app/`.
+
 - **Options pricing is "future-ready," not finished** — `/api/options-prices` always degrades to manual entry today (see §5). Functional fallback, but the live path is unproven.
 - **Stale comment** in `lib/revenue-projections.ts:5` calls government payments "a placeholder until that section is built." That section **is** built and wired in (`projectPayments` → `revenue-projections-report.tsx`). Comment only; not a missing feature.
 - **Excel styling** — the shared exporter now uses **exceljs** (real number formats, bold/frozen headers, fills), so the old SheetJS no-styling limitation is gone. The legacy `lib/crop-insurance-export.ts` was removed; the Production Report goes through the shared `lib/exports.ts` layer.

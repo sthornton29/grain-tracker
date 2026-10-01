@@ -13,7 +13,7 @@ import type { SeedContractDetails, SeedContractPayment, SeedContractPremium, See
 import StaticExportBar from '@/components/static-export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
 import { fmtDate } from '@/lib/format-date'
-import { fmtInt, fmtUsd, fmtNum, theadCls } from '@/components/reports/report-kit'
+import { fmtInt, fmtUsd, fmtNum, theadCls } from '@/components/reports/report-format'
 
 export const dynamic = 'force-dynamic'
 

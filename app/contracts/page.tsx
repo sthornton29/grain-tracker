@@ -18,11 +18,13 @@ import { contractPosition } from '@/lib/contract-position'
 import { fmtDate } from '@/lib/format-date'
 import ContractFlagIcon, { CONTRACT_FLAG_LABEL, type ContractFlag } from '@/components/contract-flag'
 import StaticExportBar from '@/components/static-export-bar'
+import { SummaryCards, StackedBar, EmptyState } from '@/components/reports/report-kit'
+// Pure helpers come from the plain module — this is a SERVER component, and a
+// function imported from the 'use client' kit is a client reference here.
 import {
-  SummaryCards, StackedBar, EmptyState,
   theadCls, stickyColCls, stickyColHeadCls, grandTotalRowCls,
   fmtInt, fmtUsd, fmtPct, fmtNum,
-} from '@/components/reports/report-kit'
+} from '@/components/reports/report-format'
 import type { ExportPayload } from '@/lib/exports'
 import { CONTRACT_TYPE_LABEL, effectiveContractType, type ContractType, type PricingStatus } from '@/lib/contracts'
 import { parseContractMonth } from '@/lib/hedging'
