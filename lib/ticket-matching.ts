@@ -18,16 +18,20 @@
 //                      chars) segment of the load's ticket, or vice versa.
 //                      The settlement's secondary identifiers (Bunge's Load
 //                      Order #) are tried the same way. High confidence.
-//   Tier 2b SUFFIX   — a ≥ 4-digit segment of ours (or our whole numeric
-//                      core) equals the TRAILING digits of the buyer's
-//                      ticket. Only when that tail is unique among the
-//                      statement's tickets (else the user picks) AND at
-//                      least one attribute corroborates: delivery date ±1
-//                      day, net pounds / bushels within 1% (an exact LB
-//                      figure is strong), or the vehicle id naming our
-//                      truck or driver. Two attributes → high, one →
-//                      medium, none → on to tier 3. Tails under 4 digits
-//                      never suffix-match.
+//   Tier 2b SUFFIX   — the TRAILING digits of the buyer's ticket agree with
+//                      the trailing digits of a numeric run in ours (a
+//                      dash-delimited segment, or the end of our number
+//                      itself). A tail of 5+ digits is specific enough on
+//                      its own: it matches as long as it is unique among
+//                      the statement's tickets and among our loads (else
+//                      the user picks). A 4-digit tail needs one attribute
+//                      to corroborate: delivery date ±1 day, net pounds /
+//                      bushels within 1% (an exact LB figure is strong), or
+//                      the vehicle id naming our truck or driver. Any
+//                      agreeing attribute lifts the confidence: two (or a
+//                      5+ tail plus one) → high, otherwise medium with a
+//                      "check" chip. Tails under 4 digits never
+//                      suffix-match.
 //   Tier 3 ATTRIBUTE — no text match: same crop, same buyer, delivery date
 //                      within ±1 day, net bushels within 1% of our dry
 //                      bushels (or exact gross / tare) — corroborated by the
@@ -174,11 +178,26 @@ export function ticketTails(ours: string | null | undefined): string[] {
 export function suffixTail(buyerTicket: string | null | undefined, ours: string | null | undefined): string | null {
   const buyer = digitsOf(buyerTicket)
   if (buyer.length <= SEGMENT_MIN) return null
-  for (const tail of ticketTails(ours).sort((a, b) => b.length - a.length)) {
-    if (tail.length < buyer.length && buyer.endsWith(tail)) return tail
+  let best: string | null = null
+  const consider = (tail: string) => {
+    if (tail.length >= SEGMENT_MIN && tail.length < buyer.length && buyer.endsWith(tail) && (best == null || tail.length > best.length)) best = tail
   }
-  return null
+  // Whole segments / the single-run core first …
+  for (const tail of ticketTails(ours)) consider(tail)
+  // … then the trailing digits every numeric run of ours shares with the
+  // buyer's ticket ("1292988" ↔ 530092988 agree on the last five).
+  const runs = ((ours ?? '').toUpperCase().match(/\d+/g) ?? []).map((r) => r.replace(/^0+(?=\d)/, ''))
+  for (const run of runs) {
+    let n = 0
+    while (n < run.length && n < buyer.length && run[run.length - 1 - n] === buyer[buyer.length - 1 - n]) n++
+    if (n >= SEGMENT_MIN) consider(buyer.slice(buyer.length - n))
+  }
+  return best
 }
+
+/** Five trailing digits in common is a match on its own; four needs a
+ *  corroborating attribute. */
+export const SUFFIX_ALONE_MIN = 5
 
 function dayDiff(a: string | null | undefined, b: string | null | undefined): number | null {
   if (!a || !b) return null
@@ -272,8 +291,9 @@ export function matchTicket(
     }
   }
 
-  // Tier 2b — suffix: our short tail is the end of the buyer's long ticket,
-  // the tail is unique on the statement, and something else agrees.
+  // Tier 2b — suffix: our short tail is the end of the buyer's long ticket.
+  // Five or more agreeing digits stand alone; four need something else to
+  // agree. The tail must be unique on the statement and among our loads.
   if (lineNorm && digitsOf(lineNorm).length > SEGMENT_MIN) {
     const buyerDigits = digitsOf(lineNorm)
     const statementTickets = (ctx.settlement_tickets ?? [line.ticket_number]).map(digitsOf).filter(Boolean)
@@ -291,21 +311,27 @@ export function matchTicket(
       if (v.length > 0) attrs.push(v.includes('driver') ? 'driver' : v.includes('truck') ? 'truck' : 'plate')
       suffixHits.push({ load: l, tail, attrs })
     }
-    const corroborated = suffixHits.filter((h) => h.attrs.length > 0)
-    if (corroborated.length > 0) {
-      const describe = (h: Suffix): TicketMatch => ({
-        tier: 'suffix',
-        confidence: h.attrs.length >= 2 ? 'high' : 'medium',
-        loadId: h.load.id,
-        reason: `our ${normalizeTicket(h.load.ticket_number)} ends the buyer's ${buyerDigits} (…${h.tail}) · ${h.attrs.join(' + ')} agree${h.attrs.length === 1 ? 's' : ''}`,
-      })
-      // Two buyer tickets on this statement sharing the tail → the user picks.
-      const tailShared = corroborated.some((h) => statementTickets.filter((t) => t.endsWith(h.tail)).length > 1)
-      if (corroborated.length === 1 && !tailShared) {
-        const m = describe(corroborated[0])
+    const eligible = suffixHits.filter((h) => h.attrs.length > 0 || h.tail.length >= SUFFIX_ALONE_MIN)
+    if (eligible.length > 0) {
+      const describe = (h: Suffix): TicketMatch => {
+        const strong = h.tail.length >= SUFFIX_ALONE_MIN
+        const score = h.attrs.length + (strong ? 1 : 0)
+        return {
+          tier: 'suffix',
+          confidence: score >= 2 ? 'high' : 'medium',
+          loadId: h.load.id,
+          reason: `our ${normalizeTicket(h.load.ticket_number)} ends the buyer's ${buyerDigits} (last ${h.tail.length} digits …${h.tail})`
+            + (h.attrs.length > 0 ? ` · ${h.attrs.join(' + ')} agree${h.attrs.length === 1 ? 's' : ''}` : ' · check the date and weight'),
+        }
+      }
+      // Two buyer tickets on this statement sharing the tail, or two of our
+      // loads ending the same way → the user picks.
+      const tailShared = eligible.some((h) => statementTickets.filter((t) => t.endsWith(h.tail)).length > 1)
+      if (eligible.length === 1 && !tailShared) {
+        const m = describe(eligible[0])
         return { status: 'matched', match: m, candidates: [m] }
       }
-      return { status: 'ambiguous', candidates: corroborated.map(describe) }
+      return { status: 'ambiguous', candidates: eligible.map(describe) }
     }
   }
 

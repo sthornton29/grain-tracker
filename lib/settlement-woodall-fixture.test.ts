@@ -152,6 +152,8 @@ describe('Woodall 76838 — suffix matching (tier 2b): long buyer tickets stored
     expect(suffixTail('530092988', '92988-A')).toBe('92988')
     expect(suffixTail('530092988', '12-2988')).toBe('2988')
     expect(suffixTail('530092988', '988')).toBeNull()
+    expect(suffixTail('530092988', '1292988')).toBe('92988') // the last five digits agree inside our longer number
+    expect(suffixTail('530092988', 'TKT 7092988')).toBe('092988') // six trailing digits agree here
     expect(suffixTail('530092988', '530092988')).toBeNull() // equal is tier 1, not a suffix
   })
 
@@ -166,25 +168,42 @@ describe('Woodall 76838 — suffix matching (tier 2b): long buyer tickets stored
       expect(r.match.tier).toBe('suffix')
       expect(r.match.confidence).toBe('high')
       expect(r.match.loadId).toBe('ours')
-      expect(r.match.reason).toMatch(/our 2988-12 ends the buyer's 530092988 \(…2988\)/)
+      expect(r.match.reason).toMatch(/our 2988-12 ends the buyer's 530092988 \(last 4 digits …2988\)/)
       expect(r.match.reason).toMatch(/date \+ pounds \+ truck agree/)
     }
   })
 
-  it('one corroborating attribute → medium confidence with the reason chip; none → not a suffix match', () => {
+  it('a five-digit tail matches on its own (medium, "check"); with the date agreeing it is high', () => {
     const base: TicketMatchLoad = { id: 'ours', ticket_number: '92988-A', crop_id: 'corn', to_buyer_id: 'woodall' }
     const line = { ticket_number: '530092988', net_weight: 58_847, delivery_date: '2026-08-29', vehicle_plate: 'Green/Tinus' }
-    const dateOnly = matchTicket(line, [{ ...base, date: '2026-08-30' }], { settlement_tickets: ['530092988'] })
-    expect(dateOnly.status === 'matched' && dateOnly.match.tier === 'suffix' && dateOnly.match.confidence).toBe('medium')
-    const nothing = matchTicket(line, [{ ...base, date: '2026-07-01', net_weight: 40_000 }], { settlement_tickets: ['530092988'] })
-    expect(nothing.status).toBe('unmatched')
+    const alone = matchTicket(line, [{ ...base, date: '2026-07-01', net_weight: 40_000 }], { settlement_tickets: ['530092988'] })
+    expect(alone.status).toBe('matched')
+    if (alone.status === 'matched') {
+      expect(alone.match).toMatchObject({ tier: 'suffix', confidence: 'medium', loadId: 'ours' })
+      expect(alone.match.reason).toMatch(/last 5 digits …92988\) · check the date and weight/)
+    }
+    const dated = matchTicket(line, [{ ...base, date: '2026-08-30' }], { settlement_tickets: ['530092988'] })
+    expect(dated.status === 'matched' && dated.match.tier === 'suffix' && dated.match.confidence).toBe('high')
+    // Five agreeing digits at the END of our longer number count the same way.
+    const inside = matchTicket(line, [{ id: 'ours', ticket_number: '1292988', date: '2026-07-01' }], { settlement_tickets: ['530092988'] })
+    expect(inside.status === 'matched' && inside.match.loadId).toBe('ours')
   })
 
-  it('two buyer tickets on the statement sharing the tail → the user picks', () => {
+  it('a four-digit tail needs one attribute: alone it is not a suffix match', () => {
+    const base: TicketMatchLoad = { id: 'ours', ticket_number: '2988-12', crop_id: 'corn', to_buyer_id: 'woodall' }
+    const line = { ticket_number: '530092988', net_weight: 58_847, delivery_date: '2026-08-29' }
+    expect(matchTicket(line, [{ ...base, date: '2026-07-01', net_weight: 40_000 }], { settlement_tickets: ['530092988'] }).status).toBe('unmatched')
+    const dateOnly = matchTicket(line, [{ ...base, date: '2026-08-30' }], { settlement_tickets: ['530092988'] })
+    expect(dateOnly.status === 'matched' && dateOnly.match.confidence).toBe('medium')
+  })
+
+  it('two buyer tickets on the statement sharing the tail, or two of our loads ending the same way → the user picks', () => {
     const loads: TicketMatchLoad[] = [{ id: 'ours', ticket_number: '2988-12', date: '2026-08-29', net_weight: 58_847 }]
     const r = matchTicket({ ticket_number: '530092988', net_weight: 58_847, delivery_date: '2026-08-29' }, loads, { settlement_tickets: ['530092988', '530082988'] })
     expect(r.status).toBe('ambiguous')
     if (r.status === 'ambiguous') expect(r.candidates[0].tier).toBe('suffix')
+    const twoOfOurs = matchTicket({ ticket_number: '530092988' }, [{ id: 'a', ticket_number: '92988-1' }, { id: 'b', ticket_number: '92988-2' }], { settlement_tickets: ['530092988'] })
+    expect(twoOfOurs.status).toBe('ambiguous')
   })
 
   it('a 3-digit tail is refused — it falls to the attribute tier only', () => {
