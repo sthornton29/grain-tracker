@@ -352,6 +352,10 @@ export type CropAssumption = {
   // Cotton only (085): assumed lbs of lint per bale for the bales read-out
   // (production lbs ÷ this). null = the 500 lb default (DEFAULT_BALE_LBS).
   bale_weight_lbs?: number | null
+  // Cotton only (092): manual lint turnout % for the picked-but-unginned
+  // estimate (lib/cotton.ts resolveTurnout). null = derive from ginned cotton
+  // (this crop year, then last), else the 40% default.
+  assumed_turnout_pct?: number | null
   // 087: cost provenance — 'turnrow_farm' when the Turnrow Farm link wrote the
   // cost columns (with the timestamp); cost_manual_override = the owner typed
   // over it and the next push leaves this row's costs alone.

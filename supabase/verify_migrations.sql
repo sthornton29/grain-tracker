@@ -131,13 +131,14 @@ checks(seq, migration, evidence, applied) as (values
   ( 88, '088_farm_link_insurance',           'table crop_insurance_deletions + crop_insurance_policies.updated_at + crop_assumptions.cost_includes_insurance', exists (select 1 from tbls where t = 'crop_insurance_deletions') and exists (select 1 from cols where t = 'crop_insurance_policies' and c = 'updated_at') and exists (select 1 from cols where t = 'crop_assumptions' and c = 'cost_includes_insurance')),
   ( 89, '089_farm_link_landowners',          'table landowner_field_changes + landowners.merged_into_id + lease_terms.farm_lease_uid + fn farm_link_landowner_apply', exists (select 1 from tbls where t = 'landowner_field_changes') and exists (select 1 from cols where t = 'landowners' and c = 'merged_into_id') and exists (select 1 from cols where t = 'lease_terms' and c = 'farm_lease_uid') and exists (select 1 from fns where f = 'farm_link_landowner_apply')),
   ( 90, '090_cotton_load_rolls',             'cotton_loads.rolls',                             exists (select 1 from cols where t = 'cotton_loads' and c = 'rolls')),
-  ( 91, '091_buyer_ticket_number',           'loads.buyer_ticket_number',                      exists (select 1 from cols where t = 'loads' and c = 'buyer_ticket_number'))
+  ( 91, '091_buyer_ticket_number',           'loads.buyer_ticket_number',                      exists (select 1 from cols where t = 'loads' and c = 'buyer_ticket_number')),
+  ( 92, '092_assumed_turnout',               'crop_assumptions.assumed_turnout_pct',           exists (select 1 from cols where t = 'crop_assumptions' and c = 'assumed_turnout_pct'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 091'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 092'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

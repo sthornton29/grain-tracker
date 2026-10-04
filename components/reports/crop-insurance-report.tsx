@@ -18,7 +18,8 @@ import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
-import { analyzeYields, expectedYieldForPlanting, fieldCropAggregates, harvestStatusOf, withLoadBreakouts, type CombineEntryLike, type HarvestStatus } from '@/lib/yields'
+import { analyzeYields, buildYieldInputs, fieldCropAggregates, harvestStatusOf, withLoadBreakouts, type CombineEntryLike, type HarvestStatus } from '@/lib/yields'
+import { useCottonYields } from '@/lib/use-cotton-yields'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
@@ -202,6 +203,11 @@ export default function CropInsuranceReport() {
   const assumptionRes = useMemo(() => resolveCropAssumptions(assumptions, viewerA.overrides), [assumptions, viewerA.overrides])
   const effAssumptions = assumptionRes.rows
   useEffect(() => { if (assumptionRes.staleIds.length > 0) viewerA.cleanupStale(assumptionRes.staleIds) }, [assumptionRes, viewerA])
+  // Cotton module (092): cotton plantings classify off their seed cotton loads
+  // and report lint lbs (receipts + the turnout estimate on unginned seed
+  // cotton) as their production. Inert when the module is off.
+  const cottonYields = useCottonYields(supabase, { crops, assumptions: effAssumptions })
+  const cottonModel = cottonYields.model
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
@@ -272,27 +278,13 @@ export default function CropInsuranceReport() {
   // uses (analyzeYields + the crop-level harvest-complete override). Only
   // complete fields can need (or block on) a production breakout.
   const harvestStatusById = useMemo(() => {
-    const assumptionByKey = new Map(effAssumptions.map((a) => [`${a.crop_id}|${a.crop_year}`, a]))
     const analysis = analyzeYields(
-      yearPlantings.map((p) => {
-        const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
-        return {
-          id: p.id,
-          cropId: p.crop_id,
-          acres: Number(p.planted_acres),
-          dryBu: agg?.dryBu ?? 0,
-          lastLoadDate: agg?.lastLoadDate ?? null,
-          lastLoadTime: agg?.lastLoadTime ?? null,
-          override: p.yield_include_override,
-          combineComplete: agg?.combine?.harvestComplete,
-          expectedYield: expectedYieldForPlanting(assumptionByKey.get(`${p.crop_id}|${p.season_year}`), p),
-        }
-      }),
+      buildYieldInputs({ plantings: yearPlantings, aggByKey, assumptions: effAssumptions, cotton: cottonModel.adapter }),
     )
     const m = new Map<string, HarvestStatus>()
     for (const p of yearPlantings) m.set(p.id, harvestStatusOf(p, analysis.excluded, cropCompleteKeys))
     return m
-  }, [yearPlantings, aggByKey, cropCompleteKeys, effAssumptions])
+  }, [yearPlantings, aggByKey, cropCompleteKeys, effAssumptions, cottonModel])
 
   const isMixedNoBreakout = (p: FieldPlanting) =>
     (Number(p.irrigated_acres) || 0) > 0 && (Number(p.dryland_acres) || 0) > 0 && !p.yield_breakout_entered
@@ -326,7 +318,11 @@ export default function CropInsuranceReport() {
       const dry = Number(p.dryland_acres) || 0
       const isMixed = irr > 0 && dry > 0
       const hasBreakout = p.yield_breakout_entered === true
-      const totalBu = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)?.dryBu ?? 0
+      // Cotton (module on): lint lbs — receipts + the turnout estimate on
+      // unginned seed cotton; grain: dry bushels from the shared aggregates.
+      const totalBu = cottonModel.cottonCropIds.has(p.crop_id) && cottonModel.on
+        ? (cottonModel.yieldFor(p)?.lintLbs ?? 0)
+        : (aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)?.dryBu ?? 0)
       let irrBu = 0
       let dryBu = 0
       if (isMixed && hasBreakout) {
@@ -358,7 +354,7 @@ export default function CropInsuranceReport() {
         fieldDisplayName: fld?.name_or_number ?? '—',
       }
     })
-  }, [yearPlantings, fieldById, farmById, countyById, aggByKey, cropYear, isBlocked])
+  }, [yearPlantings, fieldById, farmById, countyById, aggByKey, cropYear, isBlocked, cottonModel])
 
   // Crops that actually appear in the selected year — these drive the
   // dynamic column set. Sorted by name for stable display.

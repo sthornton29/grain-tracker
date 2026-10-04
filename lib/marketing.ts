@@ -5,6 +5,7 @@
 import { cropToHedgeCommodity, CONTRACT_TYPE_LABEL, effectiveContractType } from '@/lib/contracts'
 import { CONTRACT_SIZE_BU, quantityFor } from '@/lib/hedging'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
+import type { LintBasis, TurnoutResolution } from '@/lib/cotton'
 import { seedCommittedBushels, seedMarketingPosition } from '@/lib/seed-contracts'
 import type { SeedCropCommitment, SeedMarketingPosition } from '@/lib/seed-contracts'
 import type { Contract, Crop, CropAssumption, FuturesPosition, OptionPosition } from '@/lib/types'
@@ -49,6 +50,19 @@ export type MarketingRow = {
     inLoanFloored: boolean // banked loan value > market: the floor is binding
     unpricedLbs: number // held/unallocated production valued at market/assumed
     hedgedUnsoldLbs: number // open CT shorts covering unpriced lbs
+  }
+  // Cotton (092): once harvest is complete and production is ACTUAL, where
+  // the lint came from — gin receipts, the turnout estimate on seed cotton
+  // still on the yard, or both — with the turnout used. Null for grains, for
+  // estimate rows, and when the Cotton module is off (receipts only).
+  cottonLint?: null | {
+    basis: LintBasis
+    actualLbs: number
+    estimatedLbs: number
+    turnoutPct: number | null
+    /** "41.5% from your ginned cotton" / "40% assumed" */
+    turnoutLabel: string | null
+    turnoutAssumed: boolean
   }
   // Seed production commitment (077, the cotton-pool pattern adapted for
   // grain): the linked plantings' bushels are committed to the seed buyer —
@@ -315,7 +329,7 @@ export function computeMarketing(args: {
   harvestCompleteCropIds?: Set<string>
   // Cotton actuals per crop id: lbs of lint (from gin receipts/bales) + bale
   // count. Cotton production never comes from the grain loads map.
-  cottonProductionByCrop?: Map<string, { lintLbs: number; bales: number }>
+  cottonProductionByCrop?: Map<string, CottonProductionLike>
   // Physical cotton marketing (sales contracts, CCC loans, LDP, fees) per crop
   // id — lib/cotton-sales.ts buildCottonPhysicalSummary output. Absent = no
   // physical marketing data (the row behaves as production + hedges only).
@@ -616,6 +630,19 @@ export function computeMarketing(args: {
 }
 
 // ---------------------------------------------------------------------------
+/** What computeMarketing needs of a crop's cotton production: lint lbs
+ *  (actual + any turnout estimate — lib/cotton.ts cottonProductionTotals) and
+ *  the actual ginned bale count; the provenance fields are optional so the
+ *  receipts-only callers keep compiling. */
+export type CottonProductionLike = {
+  lintLbs: number
+  bales: number
+  actualLintLbs?: number
+  estimatedLintLbs?: number
+  lintBasis?: LintBasis | null
+  turnout?: TurnoutResolution | null
+}
+
 // Cotton: lbs-native (¢/lb). With no physical-marketing data the row is
 // production + CT hedges only. With a CottonPhysicalSummary (lib/cotton-sales)
 // the buckets become: Sold (fixed/spot + on-call-with-futures-fixed at their
@@ -640,7 +667,7 @@ function computeCottonRow(args: {
   expectedProductionByCrop?: Map<string, number>
   currentFuturesByCrop?: Map<string, number>
   harvestCompleteCropIds?: Set<string>
-  cottonProductionByCrop?: Map<string, { lintLbs: number; bales: number }>
+  cottonProductionByCrop?: Map<string, CottonProductionLike>
   physical?: CottonPhysicalSummary | null
 }): MarketingRow {
   const { crop, acres, acresSource, cropYear, futures, options, assumptions, expectedProductionByCrop, currentFuturesByCrop, harvestCompleteCropIds, cottonProductionByCrop, physical } = args
@@ -655,10 +682,24 @@ function computeCottonRow(args: {
   let yieldVal: number | null
   let yieldLabel: 'Est.' | 'Actual'
   let totalProduction: number
+  let cottonLint: MarketingRow['cottonLint'] = null
   if (harvestComplete && actual.lintLbs > 0) {
     totalProduction = actual.lintLbs
     yieldVal = acres > 0 ? round(actual.lintLbs / acres, 1) : null
     yieldLabel = 'Actual'
+    // 092: the lint's provenance — receipts, the turnout estimate on unginned
+    // seed cotton, or both. Receipts-only callers leave the fields undefined.
+    const basis = actual.lintBasis ?? (actual.lintLbs > 0 ? 'actual' : null)
+    if (basis) {
+      cottonLint = {
+        basis,
+        actualLbs: actual.actualLintLbs ?? actual.lintLbs,
+        estimatedLbs: actual.estimatedLintLbs ?? 0,
+        turnoutPct: actual.turnout?.pct ?? null,
+        turnoutLabel: actual.turnout?.label ?? null,
+        turnoutAssumed: actual.turnout?.assumed ?? false,
+      }
+    }
   } else {
     const broken = expectedProductionByCrop?.get(crop.id)
     if (broken != null) {
@@ -776,6 +817,7 @@ function computeCottonRow(args: {
     cottonPhysical: physical
       ? { summary: physical, poolValueDollars, poolEstimated, inLoanValueDollars, inLoanFloored, unpricedLbs: uncoveredLbs, hedgedUnsoldLbs: hedgeCovered }
       : null,
+    cottonLint,
     acres, acresSource, yield: yieldVal, yieldLabel, totalProduction,
     // Sold physical lbs behave like contracted grain: locked, price-insensitive.
     contractedBu: soldLbs, remaining: Math.max(0, totalProduction - soldLbs - poolLbs),

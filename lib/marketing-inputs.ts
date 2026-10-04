@@ -17,17 +17,19 @@ import {
   expectedProductionFromBreakout,
   isCottonCrop,
   segmentAcresByCrop,
+  type CottonProductionLike,
   type MarketingRow,
 } from '@/lib/marketing'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import {
   analyzeYields,
+  buildYieldInputs,
   cropsWithCompleteHarvest,
-  expectedYieldForPlanting,
   fieldCropAggregates,
   type ExclusionReason,
   type FieldCropAgg,
 } from '@/lib/yields'
+import { buildCottonYieldModel, fetchCottonYieldSources, type CottonYieldModel } from '@/lib/cotton-yield-sources'
 import {
   fallForwardOnMissingQuote,
   marketingReferenceContract,
@@ -79,7 +81,9 @@ export type ProductionInputs = {
   // Crop-level rollups the marketing stage reuses:
   productionByCrop: Map<string, number>
   harvestCompleteCropIds: Set<string>
-  cottonProductionByCrop: Map<string, { lintLbs: number; bales: number }>
+  cottonProductionByCrop: Map<string, CottonProductionLike>
+  /** The cotton yield model (092) — inert when the Cotton module is off. */
+  cotton: CottonYieldModel
 }
 
 type LoadRow = {
@@ -165,6 +169,11 @@ export async function loadProductionInputs(
       .range(f, t))
   if (!combineResult.error) combineEntries = combineResult.data
 
+  // Cotton module (092): the org's flag gates every cotton read; off → an
+  // inert model and receipts-only cotton, exactly as before.
+  const cottonSources = await fetchCottonYieldSources(supabase, { orgId: org }).catch(() => null)
+  const cotton = buildCottonYieldModel({ sources: cottonSources, crops, assumptions })
+
   const cropById = new Map(crops.map((c) => [c.id, c]))
   const doubleCropIds = buildDoubleCropSet(plantings, cropById)
   const aggByKey = fieldCropAggregates(loads, splits, cropById, { cropYear, combineEntries })
@@ -178,64 +187,36 @@ export async function loadProductionInputs(
   const cropCompleteKeys = new Set<string>()
   for (const a of assumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
 
-  const assumptionByCrop = new Map(assumptions.map((a) => [a.crop_id, a]))
-  const analysis = analyzeYields(
-    plantings.map((p) => {
-      const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
-      return {
-        id: p.id,
-        cropId: p.crop_id,
-        acres: Number(p.planted_acres ?? 0),
-        dryBu: agg?.dryBu ?? 0,
-        lastLoadDate: agg?.lastLoadDate ?? null,
-        lastLoadTime: agg?.lastLoadTime ?? null,
-        override: p.yield_include_override ?? null,
-        combineComplete: agg?.combine?.harvestComplete,
-        expectedYield: expectedYieldForPlanting(assumptionByCrop.get(p.crop_id), p),
-      }
-    }),
-  )
-  const harvestCompleteCropIds = cropsWithCompleteHarvest({ plantings, aggByKey, cropYear, cropCompleteKeys, assumptions })
+  // The SHARED mapping — the cotton adapter routes cotton plantings to their
+  // seed cotton loads when the module is on.
+  const analysis = analyzeYields(buildYieldInputs({ plantings, aggByKey, assumptions, cotton: cotton.adapter }))
+  const harvestCompleteCropIds = cropsWithCompleteHarvest({ plantings, aggByKey, cropYear, cropCompleteKeys, assumptions, cotton: cotton.adapter })
 
-  // Cotton: lint lbs per field (receipt totals, the /production convention) and
-  // the crop-level total with the per-bale-weights-first fallback the
-  // dashboard uses.
+  // Cotton: lint lbs per field and the crop-level total — receipts (per-bale
+  // weights first, the dashboard rule) plus, module on, the turnout estimate
+  // on seed cotton still on the yard. ONE seam: lib/cotton.ts via the model.
   const cottonLbsByField = new Map<string, number>()
-  for (const rct of ginReceipts) {
-    if (rct.field_id) cottonLbsByField.set(rct.field_id, (cottonLbsByField.get(rct.field_id) ?? 0) + num(rct.total_bale_weight))
+  if (cotton.on) {
+    for (const p of plantings) {
+      const y = cotton.yieldFor(p)
+      if (y) cottonLbsByField.set(p.field_id, (cottonLbsByField.get(p.field_id) ?? 0) + y.lintLbs)
+    }
+  } else {
+    for (const rct of ginReceipts) {
+      if (rct.field_id) cottonLbsByField.set(rct.field_id, (cottonLbsByField.get(rct.field_id) ?? 0) + num(rct.total_bale_weight))
+    }
   }
-  const cottonTotal = cottonTotals(ginReceipts, cottonBales)
-  const cottonProductionByCrop = new Map<string, { lintLbs: number; bales: number }>()
-  for (const c of crops) if (isCottonCrop(c.name)) cottonProductionByCrop.set(c.id, cottonTotal)
+  const cottonProductionByCrop = new Map<string, CottonProductionLike>()
+  for (const c of crops) {
+    if (!isCottonCrop(c.name)) continue
+    cottonProductionByCrop.set(c.id, cotton.productionFor({ cropId: c.id, cropYear, receipts: ginReceipts, bales: cottonBales }))
+  }
 
   return {
     crops, fields, farms, entities, ginReceipts, cottonBales, plantings, assumptions, doubleCropIds, aggByKey,
     excluded: analysis.excluded, cropCompleteKeys, cottonLbsByField,
-    productionByCrop, harvestCompleteCropIds, cottonProductionByCrop,
+    productionByCrop, harvestCompleteCropIds, cottonProductionByCrop, cotton,
   }
-}
-
-/** Cotton lint lbs + bale count from a set of gin receipts — per-bale net
- *  weights first, the receipt total as the fallback (the dashboard rule). */
-function cottonTotals(
-  receipts: readonly GinReceiptRow[],
-  bales: readonly CottonBaleRow[],
-): { lintLbs: number; bales: number } {
-  const balesByReceipt = new Map<string, { lbs: number; count: number }>()
-  for (const b of bales) {
-    const g = balesByReceipt.get(b.gin_receipt_id) ?? { lbs: 0, count: 0 }
-    g.lbs += num(b.net_weight_lbs)
-    g.count += 1
-    balesByReceipt.set(b.gin_receipt_id, g)
-  }
-  let lintLbs = 0
-  let baleCount = 0
-  for (const rct of receipts) {
-    const fromBales = balesByReceipt.get(rct.id)
-    lintLbs += fromBales && fromBales.lbs > 0 ? fromBales.lbs : num(rct.total_bale_weight)
-    baleCount += fromBales && fromBales.count > 0 ? fromBales.count : num(rct.bales_count)
-  }
-  return { lintLbs, bales: baleCount }
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +382,7 @@ export async function loadMarketingInputs(
       aggByKey: production.aggByKey,
       ginReceipts: production.ginReceipts,
       cottonBales: production.cottonBales,
+      cotton: production.cotton,
       cottonPhysicalInputs,
       currentFuturesByCrop,
       seedBundles,

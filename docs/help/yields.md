@@ -1,8 +1,8 @@
 ---
 page_route: /yields
 title: Yields
-updated: 2026-09-24
-keywords: yields, bushels per acre, field, farm, entity, variety, landowner, irrigated, dryland, harvest, allocation, load tags, practice, season, export, detail, loads, tickets, moisture, test weight, split load, drill down, combine, yield monitor, no scales
+updated: 2026-10-03
+keywords: yields, bushels per acre, cotton, seed cotton, lint, turnout, estimated lint, picked, ginned, on yard, ginning status, field, farm, entity, variety, landowner, irrigated, dryland, harvest, allocation, load tags, practice, season, export, detail, loads, tickets, moisture, test weight, split load, drill down, combine, yield monitor, no scales
 ---
 ## What this page is for
 
@@ -21,8 +21,17 @@ Yields turns your load log into bushels per acre. The same production can be vie
 
 - Each view lists **Yield (bu/ac)** right after the acres, with **Dry bu** last — so the number you're usually after is visible without scrolling sideways on a phone or iPad.
 - A field with no loads yet carries a **not harvested** badge and shows a dash for its yield and bushels rather than a zero. A field partway through carries an **in progress** badge.
-- When the Cotton module is on, cotton fields are not listed in the grain tables at all — their yield is pounds of lint, shown in the **Cotton** section at the bottom of the page. A short note above the table says how many were set aside.
+- When the Cotton module is on, cotton fields are not listed in the grain tables — their yield is pounds of lint, so they get their own **Cotton** table. With no crop filter it sits under the grain table and a short note above the grain table says how many cotton fields are down there; pick a cotton crop in the Crop filter and the cotton table becomes the whole page. It lists every cotton field for the year, including the ones not picked yet, and the farm, entity, county and practice filters apply to it the same way. The By farm, By entity, By variety and By landowner tabs roll cotton up alongside grain, with the column heading saying which unit a row is in (pounds of lint for cotton, dry bushels for grain).
 - On the variety tab, multi-variety fields that still need their bushels split are tucked into a **Needs attention** panel above the table; tap it to open the list.
+
+## Cotton fields
+
+- **Two statuses, not one.** A cotton field has a **harvest** status (not picked / in progress / complete) that comes from its seed cotton loads — the same rules as grain, with seed cotton pounds standing in for bushels — and a separate **ginning** status (on yard / partly ginned / ginned) that comes from which of those loads have landed on a gin receipt. A field can be picked out and complete while every module is still sitting on the yard.
+- **Harvest status works like grain.** The field you are picking right now stays in progress until a later-picked load lands on another cotton field or about ten days pass with no cotton loads anywhere. A field well below the expected yield stays in progress for the same reasons grain does, and **Count anyway** finishes it when you know it is done. The yield bar for cotton is your expected lint pounds per acre (from Marketing → Edit Assumptions) converted to seed cotton at the turnout below.
+- **Lint before the gin receipt.** Seed cotton pounds are a weighed fact the moment the load is recorded. Until the gin receipt arrives, Turnrow estimates the lint from those pounds at a **turnout** percentage and marks the figure **est.** A field with some loads ginned and some on the yard shows gin-receipt lint for the ginned part plus the estimate for the rest, marked **part est.**; once every load is on a receipt the lint is actual and the turnout column shows the field's own figure.
+- **Where the turnout comes from.** The line at the top of the cotton table says: a figure you typed for the crop year ("set by you"); otherwise lint ÷ seed cotton across every gin receipt this crop year ("from your ginned cotton"); otherwise last crop year's gin receipts; otherwise 40%, marked **assumed** in amber. Type a percentage in that box to set your own for the year, or clear it to go back to the automatic figure. The same box is in Marketing → Edit Assumptions under the cotton crop. A viewer can type their own private figure without changing yours.
+- **Tap a cotton row** for its seed cotton loads (picked and delivered dates, truck, gin, pounds, rolls, and whether each is on a receipt yet) and its gin receipts (seed cotton pounds, bales, lint, turnout). The totals under each list equal the row, and a line underneath shows the arithmetic when part of the lint is estimated.
+- The Marketing dashboard, Revenue Projections and Income Sensitivity use the same lint figure once a cotton crop's harvest is complete, and say so with the **includes assumptions** marker naming the turnout.
 
 ## What the controls do
 

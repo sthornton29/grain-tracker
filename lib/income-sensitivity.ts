@@ -30,7 +30,7 @@ import {
   type PolicyInputs, type Practice, type CountyAssumptionLike,
 } from '@/lib/crop-insurance'
 import { cropToHedgeCommodity } from '@/lib/contracts'
-import { analyzeYields, expectedYieldForPlanting, harvestStatusOf, IN_PROGRESS_THRESHOLD, type ExpectedYieldAssumption, type FieldCropAgg, type HarvestStatus } from '@/lib/yields'
+import { analyzeYields, buildYieldInputs, harvestStatusOf, IN_PROGRESS_THRESHOLD, type CottonYieldAdapter, type ExpectedYieldAssumption, type FieldCropAgg, type HarvestStatus } from '@/lib/yields'
 import type {
   Contract, Crop, CropAssumption, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco,
   CropInsuranceStax, CropInsuranceMco,
@@ -127,6 +127,11 @@ export function splitHarvestByCrop(args: {
   cropCompleteKeys: ReadonlySet<string>
   /** crop_assumptions rows — the thin-peers expected-yield comparison tier. */
   assumptions?: readonly ExpectedYieldAssumption[] | null
+  /** Cotton module on (092): cotton plantings classify off their seed cotton
+   *  loads (adapter) and a complete field's FIXED production is its lint
+   *  (actual receipts + the turnout estimate on unginned seed cotton), not a
+   *  grain aggregate. Omit → cotton behaves exactly as before. */
+  cotton?: { adapter: CottonYieldAdapter; lintFor: (p: SplitPlanting) => number } | null
   now?: Date
 }): { byCrop: Map<string, HarvestSplit>; statusByPlanting: Map<string, HarvestStatus> } {
   const aggByFieldCrop = new Map<string, FieldCropAgg>()
@@ -148,27 +153,15 @@ export function splitHarvestByCrop(args: {
     }
   }
   const yearPlantings = args.plantings.filter((p) => p.season_year === args.cropYear)
-  const assumptionByCrop = new Map<string, ExpectedYieldAssumption>()
-  for (const a of args.assumptions ?? []) {
-    if (a.crop_year === args.cropYear) assumptionByCrop.set(a.crop_id, a)
-  }
+  // The collapsed aggregates re-keyed on the season year, so the SHARED
+  // mapping (buildYieldInputs) reads them like every other consumer.
+  const seasonAgg = new Map<string, FieldCropAgg>()
+  for (const [ck, v] of aggByFieldCrop) seasonAgg.set(`${ck}|${args.cropYear}`, v)
   const analysis = analyzeYields(
-    yearPlantings.map((p) => {
-      const agg = aggByFieldCrop.get(`${p.field_id}|${p.crop_id}`)
-      return {
-        id: p.id, cropId: p.crop_id, acres: Number(p.planted_acres ?? 0),
-        dryBu: agg?.dryBu ?? 0, lastLoadDate: agg?.lastLoadDate ?? null,
-        lastLoadTime: agg?.lastLoadTime ?? null,
-        override: p.yield_include_override ?? null,
-        combineComplete: agg?.combine?.harvestComplete,
-        expectedYield: expectedYieldForPlanting(assumptionByCrop.get(p.crop_id), {
-          irrigated_acres: p.irrigated_acres ?? null,
-          dryland_acres: p.dryland_acres ?? null,
-        }),
-      }
-    }),
+    buildYieldInputs({ plantings: yearPlantings, aggByKey: seasonAgg, assumptions: args.assumptions, cotton: args.cotton?.adapter ?? null }),
     IN_PROGRESS_THRESHOLD, args.now ?? new Date(),
   )
+  const isCotton = (p: SplitPlanting) => args.cotton != null && args.cotton.adapter.isCottonCrop(p.crop_id)
   const byCrop = new Map<string, HarvestSplit>()
   const statusByPlanting = new Map<string, HarvestStatus>()
   for (const p of yearPlantings) {
@@ -177,7 +170,9 @@ export function splitHarvestByCrop(args: {
     const cur = byCrop.get(p.crop_id) ?? { fixedBu: 0, completedAcres: 0, remainingAcres: 0, state: 'pre' as const }
     const acres = Number(p.planted_acres ?? 0)
     if (status === 'complete') {
-      cur.fixedBu += aggByFieldCrop.get(`${p.field_id}|${p.crop_id}`)?.dryBu ?? 0
+      // Harvested seed cotton is a fact; the turnout is the assumption — the
+      // fixed lint carries both (lib/cotton.ts cottonPlantingYield).
+      cur.fixedBu += isCotton(p) ? args.cotton!.lintFor(p) : aggByFieldCrop.get(`${p.field_id}|${p.crop_id}`)?.dryBu ?? 0
       cur.completedAcres += acres
     } else {
       cur.remainingAcres += acres

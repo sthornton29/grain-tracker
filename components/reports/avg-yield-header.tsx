@@ -9,13 +9,15 @@ type Props = {
   /** When provided, each crop card also shows a harvest-completion tracker and
    *  every crop with planted acres is listed (even 0%-harvested ones). */
   progress?: Map<string, HarvestProgress>
+  /** Unit per crop (cotton = lbs of lint per acre); bu/ac when absent. */
+  unitOf?: (cropId: string) => 'bu' | 'lbs'
 }
 
 // A row of per-crop cards shown at the top of the yield views: average yield,
 // and (when `progress` is given) a harvest-completion tracker. Yield reflects
 // only harvested, non-in-progress fields. Renders nothing when there's nothing
 // to summarize.
-export default function AvgYieldHeader({ averages, cropName, label = 'Average yield by crop', progress }: Props) {
+export default function AvgYieldHeader({ averages, cropName, label = 'Average yield by crop', progress, unitOf }: Props) {
   const cropIds = progress ? [...progress.keys()] : [...averages.keys()]
   const items = cropIds
     .map((id) => ({
@@ -39,7 +41,7 @@ export default function AvgYieldHeader({ averages, cropName, label = 'Average yi
             <div className="text-sm font-semibold text-slate-700">{a.name}</div>
             <div className="text-2xl font-bold tabular-nums leading-tight">
               {a.avg ? a.avg.yield.toFixed(1) : '—'}
-              <span className="text-sm font-medium text-slate-500"> bu/ac</span>
+              <span className="text-sm font-medium text-slate-500"> {unitOf?.(a.id) === 'lbs' ? 'lbs lint/ac' : 'bu/ac'}</span>
             </div>
             {a.prog ? (
               <div className="mt-1.5">

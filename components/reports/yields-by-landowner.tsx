@@ -8,7 +8,8 @@ import { usePersistentState } from '@/lib/use-persistent-state'
 import { useReportCropYear } from '@/lib/report-filters'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { roleAllowsPath } from '@/lib/route-guard'
-import { fieldCropAggregates, analyzeYields, expectedYieldForPlanting, type CombineEntryLike, type ExpectedYieldAssumption } from '@/lib/yields'
+import { fieldCropAggregates, analyzeYields, buildYieldInputs, type CombineEntryLike } from '@/lib/yields'
+import { useCottonYields } from '@/lib/use-cotton-yields'
 import { isCottonCrop } from '@/lib/marketing'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import {
@@ -21,7 +22,7 @@ import {
 } from '@/components/yields-detail'
 import type { ExportPayload, ExportSection } from '@/lib/exports'
 import type {
-  Crop, Entity, Farm, Field, FieldPlanting, Landowner, LoadSplit,
+  Crop, CropAssumption, Entity, Farm, Field, FieldPlanting, Landowner, LoadSplit,
 } from '@/lib/types'
 
 // Carries everything the drill-down needs (lib/yield-detail's DetailLoadLike)
@@ -94,7 +95,7 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
   const [splits, setSplits] = useState<LoadSplit[]>([])
   const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [landowners, setLandowners] = useState<Landowner[]>([])
-  const [assumptions, setAssumptions] = useState<ExpectedYieldAssumption[]>([])
+  const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
   // Light name lookups (id + name only) for the drill-down's load list.
   const [trucks, setTrucks] = useState<Array<{ id: string; name_or_number: string }>>([])
   const [bins, setBins] = useState<Array<{ id: string; name_or_number: string }>>([])
@@ -128,8 +129,8 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
         supabase.from('buyers').select('id, name').order('name'),
         // May not exist yet (migration 062): an error leaves data null → [].
         fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date').order('id').range(f, t)),
-        // Expected yields — the thin-peers comparison tier in analyzeYields.
-        supabase.from('crop_assumptions').select('crop_id, crop_year, expected_yield, expected_yield_irr, expected_yield_dry'),
+        // Expected yields (the thin-peers comparison tier) + the cotton turnout (092).
+        supabase.from('crop_assumptions').select('*'),
       ])
       setCrops((cr.data as Crop[]) || [])
       setEntities((en.data as Entity[]) || [])
@@ -143,7 +144,7 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
       setBins((bi.data as Array<{ id: string; name_or_number: string }>) || [])
       setBuyers((bu.data as Array<{ id: string; name: string }>) || [])
       setCombineEntries((ce.data as CombineEntryLike[]) || [])
-      setAssumptions((ca.data as ExpectedYieldAssumption[]) || [])
+      setAssumptions((ca.data as CropAssumption[]) || [])
       setLoading(false)
     })()
   }, [supabase])
@@ -160,6 +161,14 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const landownerById = useMemo(() => new Map(landowners.map((l) => [l.id, l])), [landowners])
+  // Cotton module (092): cotton plantings classify off their seed cotton loads
+  // and roll up in LINT lbs (receipts + the turnout estimate on unginned seed
+  // cotton); grain stays in dry bushels. Inert when the module is off.
+  const cottonYields = useCottonYields(supabase, { crops, assumptions })
+  const cottonModel = cottonYields.model
+  const cottonOn = cottonYields.on === true
+  const isCottonId = (id: string) => cottonOn && cottonModel.cottonCropIds.has(id)
+  const unitOf = (id: string): 'bu' | 'lbs' => (isCottonId(id) ? 'lbs' : 'bu')
 
   // Dry bushels + most-recent load date per field+crop+year (shared rules).
   const aggByKey = useMemo(
@@ -168,6 +177,9 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
   )
   const dryBuFor = (fieldId: string, cropId2: string, year: number) =>
     aggByKey.get(`${fieldId}|${cropId2}|${year}`)?.dryBu ?? 0
+  // A planting's production in its crop's unit: lint lbs for cotton (module
+  // on), dry bushels otherwise.
+  const prodFor = (p: FieldPlanting) => (isCottonId(p.crop_id) ? (cottonModel.yieldFor(p)?.lintLbs ?? 0) : dryBuFor(p.field_id, p.crop_id, p.season_year))
 
   // ---- Drill-down detail --------------------------------------------------
   // One open detail at a time (a farm × crop row inside a landowner group);
@@ -218,24 +230,8 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
   // Drop unharvested / in-progress fields from the rolled-up numbers and the
   // average-yield header (per crop, over the filtered plantings).
   const yieldAnalysis = useMemo(() => {
-    const assumptionByKey = new Map(assumptions.map((a) => [`${a.crop_id}|${a.crop_year}`, a]))
-    return analyzeYields(
-      filteredPlantings.map((p) => {
-        const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
-        return {
-          id: p.id,
-          cropId: p.crop_id,
-          acres: Number(p.planted_acres),
-          dryBu: agg?.dryBu ?? 0,
-          lastLoadDate: agg?.lastLoadDate ?? null,
-          lastLoadTime: agg?.lastLoadTime ?? null,
-          override: p.yield_include_override,
-          combineComplete: agg?.combine?.harvestComplete,
-          expectedYield: expectedYieldForPlanting(assumptionByKey.get(`${p.crop_id}|${p.season_year}`), p),
-        }
-      }),
-    )
-  }, [filteredPlantings, aggByKey, assumptions])
+    return analyzeYields(buildYieldInputs({ plantings: filteredPlantings, aggByKey, assumptions, cotton: cottonModel.adapter }))
+  }, [filteredPlantings, aggByKey, assumptions, cottonModel])
 
   // Build per-landowner aggregation.
   const groups = useMemo<LandownerGroup[]>(() => {
@@ -272,7 +268,7 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
       const group = byOwner.get(ownerKey)!
 
       const acres = Number(p.planted_acres)
-      const dryBu = dryBuFor(p.field_id, p.crop_id, p.season_year)
+      const dryBu = prodFor(p)
       const cropName = cropById.get(p.crop_id)?.name ?? '—'
 
       let farmAgg = group.farms.find((f) => f.farmName === (farm?.name ?? '— no farm —'))
@@ -303,7 +299,7 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
       return a.landownerName.localeCompare(b.landownerName)
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filteredPlantings, yieldAnalysis, fieldById, farmById, landownerById, cropById, aggByKey, landownerId])
+  }, [filteredPlantings, yieldAnalysis, fieldById, farmById, landownerById, cropById, aggByKey, landownerId, cottonModel])
 
   // A landowner signed in as a viewer gets their handout: the operation's own
   // "Owned / No Landowner" ground is the operator's business, not theirs.
@@ -331,12 +327,23 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
   // totals block. Per-field detail is intentionally omitted — the report rolls
   // up to the farm level for readability.
   function buildExportPayload(): ExportPayload {
-    const columns: ExportPayload['sections'][number]['columns'] = [
-      { label: 'Crop' },
-      { label: 'Acres', align: 'right', format: 'acres' },
-      { label: 'Dry bu', align: 'right', format: 'bu' },
-      { label: 'Yield (bu/ac)', align: 'right', format: 'yield' },
-    ]
+    const anyCotton = cottonOn && shownGroups.some((g) => [...g.byCrop.keys()].some(isCottonId))
+    const columns: ExportPayload['sections'][number]['columns'] = anyCotton
+      ? [
+          { label: 'Crop' },
+          { label: 'Acres', align: 'right', format: 'acres' },
+          { label: 'Production', align: 'right', format: 'int' },
+          { label: 'Unit' },
+          { label: 'Yield per acre', align: 'right', format: 'yield' },
+        ]
+      : [
+          { label: 'Crop' },
+          { label: 'Acres', align: 'right', format: 'acres' },
+          { label: 'Dry bu', align: 'right', format: 'bu' },
+          { label: 'Yield (bu/ac)', align: 'right', format: 'yield' },
+        ]
+    const cells = (cropId: string, cropName: string, acres: number, prod: number): Array<string | number | null> =>
+      anyCotton ? [cropName, acres, prod, unitOf(cropId), yld(acres, prod)] : [cropName, acres, prod, yld(acres, prod)]
     // Real number (formatted to 1 dec by the column), or '—' when there are no acres.
     const yld = (acres: number, dryBu: number): number | string => (acres > 0 ? dryBu / acres : '—')
 
@@ -348,7 +355,7 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
         rows.push([f.fsaNumber ? `${f.farmName}  ·  FSA #${f.fsaNumber}` : f.farmName])
         rowMeta.push('subhead')
         for (const t of f.byCrop.values()) {
-          rows.push([t.cropName, t.acres, t.dryBu, yld(t.acres, t.dryBu)])
+          rows.push(cells(t.cropId, t.cropName, t.acres, t.dryBu))
           rowMeta.push('data')
         }
       }
@@ -356,8 +363,8 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
       if (g.byCrop.size > 0) {
         rows.push([`${g.landownerName} totals`])
         rowMeta.push('subhead')
-        for (const t of g.byCrop.values()) {
-          rows.push([t.cropName, t.acres, t.dryBu, yld(t.acres, t.dryBu)])
+        for (const [cropId2, t] of g.byCrop) {
+          rows.push(cells(cropId2, t.cropName, t.acres, t.dryBu))
           rowMeta.push('total')
         }
       }
@@ -484,8 +491,8 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
                         <th className="w-10"></th>
                         <th className="text-left pr-4 py-1 font-medium">Crop</th>
                         <th className="text-right pr-4 py-1 font-medium">Acres</th>
-                        <th className="text-right pr-4 py-1 font-medium">Dry bu</th>
-                        <th className="text-right pr-4 py-1 font-medium">Yield (bu/ac)</th>
+                        <th className="text-right pr-4 py-1 font-medium">{cottonOn && [...f.byCrop.keys()].some(isCottonId) ? 'Production' : 'Dry bu'}</th>
+                        <th className="text-right pr-4 py-1 font-medium">{cottonOn && [...f.byCrop.keys()].some(isCottonId) ? 'Yield per acre' : 'Yield (bu/ac)'}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -507,8 +514,8 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
                               </td>
                               <td className="pr-4 py-1 font-medium">{t.cropName}</td>
                               <td className="pr-4 py-1 text-right tabular-nums">{fmtNum(t.acres, 1)}</td>
-                              <td className="pr-4 py-1 text-right tabular-nums">{fmtInt(t.dryBu)}</td>
-                              <td className="pr-4 py-1 text-right tabular-nums">{t.acres > 0 ? fmtNum(t.dryBu / t.acres, 1) : '—'}</td>
+                              <td className="pr-4 py-1 text-right tabular-nums">{fmtInt(t.dryBu)}{isCottonId(t.cropId) ? ' lbs' : ''}</td>
+                              <td className="pr-4 py-1 text-right tabular-nums">{t.acres > 0 ? fmtNum(t.dryBu / t.acres, 1) : '—'}{isCottonId(t.cropId) ? ' lbs/ac' : ''}</td>
                             </tr>
                             {detailOpen && (
                               <tr className="bg-slate-50">
@@ -540,12 +547,12 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
                   <div className="text-xs uppercase tracking-wide text-slate-500 mb-1">{g.landownerName} totals</div>
                   <table className="min-w-full text-sm">
                     <tbody>
-                      {[...g.byCrop.values()].map((t) => (
+                      {[...g.byCrop.entries()].map(([cropId2, t]) => (
                         <tr key={`grand-${t.cropName}`}>
                           <td className="pr-4 py-1 font-semibold">{t.cropName}</td>
                           <td className="pr-4 py-1 text-right tabular-nums">{fmtNum(t.acres, 1)} ac</td>
-                          <td className="pr-4 py-1 text-right tabular-nums">{fmtInt(t.dryBu)} bu</td>
-                          <td className="pr-4 py-1 text-right tabular-nums font-semibold">{t.acres > 0 ? fmtNum(t.dryBu / t.acres, 1) : '—'} bu/ac</td>
+                          <td className="pr-4 py-1 text-right tabular-nums">{fmtInt(t.dryBu)} {unitOf(cropId2)}</td>
+                          <td className="pr-4 py-1 text-right tabular-nums font-semibold">{t.acres > 0 ? fmtNum(t.dryBu / t.acres, 1) : '—'} {unitOf(cropId2)}/ac</td>
                         </tr>
                       ))}
                     </tbody>

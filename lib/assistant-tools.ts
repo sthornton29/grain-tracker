@@ -54,6 +54,8 @@ import { truckExportLabel } from '@/lib/trucks'
 import { validateAssistantSql } from '@/lib/assistant-sql'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
+import { buildCottonYieldModel, fetchCottonYieldSources } from '@/lib/cotton-yield-sources'
+import type { CottonProductionLike } from '@/lib/marketing'
 import { fetchSeedContracts } from '@/lib/seed-contracts-fetch'
 import { buildSeedCommitments, type SeedCropCommitment } from '@/lib/seed-contracts'
 import {
@@ -163,22 +165,19 @@ async function loadMarketingBundle(
   }
   const cropCompleteKeys = new Set<string>()
   for (const a of assumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
-  const harvestCompleteIds = cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions })
-  // Cotton actuals + physical marketing, exactly as the dashboard derives them.
-  const balesByReceipt = new Map<string, { lbs: number; count: number }>()
-  for (const b of cottonBales) {
-    const g = balesByReceipt.get(b.gin_receipt_id) ?? { lbs: 0, count: 0 }
-    g.lbs += num(b.net_weight_lbs); g.count += 1
-    balesByReceipt.set(b.gin_receipt_id, g)
-  }
-  let lintLbs = 0, baleCount = 0
-  for (const rct of scope.ginReceipts(ginReceipts)) {
-    const fromBales = balesByReceipt.get(rct.id)
-    lintLbs += fromBales && fromBales.lbs > 0 ? fromBales.lbs : num(rct.total_bale_weight)
-    baleCount += fromBales && fromBales.count > 0 ? fromBales.count : num(rct.bales_count)
-  }
-  const cottonProd = new Map<string, { lintLbs: number; bales: number }>()
-  for (const c of crops) if (isCottonCrop(c.name)) cottonProd.set(c.id, { lintLbs, bales: baleCount })
+  // Cotton module (092): cotton fields classify off seed cotton loads and the
+  // cotton row's actual production is receipts + the turnout estimate on seed
+  // cotton still on the yard — exactly as the dashboard derives them. Off →
+  // inert model, receipts only.
+  const cottonModel = buildCottonYieldModel({
+    sources: await fetchCottonYieldSources(supabase).catch(() => null),
+    crops, assumptions,
+  })
+  const harvestCompleteIds = cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions, cotton: cottonModel.adapter })
+  const scopedReceipts = scope.ginReceipts(ginReceipts)
+  const scopedCottonLoads = cottonModel.sources ? scope.ginReceipts(cottonModel.sources.loads) : null
+  const cottonProd = new Map<string, CottonProductionLike>()
+  for (const c of crops) if (isCottonCrop(c.name)) cottonProd.set(c.id, cottonModel.productionFor({ cropId: c.id, cropYear, receipts: scopedReceipts, bales: cottonBales, loads: scopedCottonLoads }))
   let cottonPhysical = new Map<string, import('@/lib/cotton-sales').CottonPhysicalSummary>()
   try {
     const raw = await fetchCottonPhysical(supabase, cropYear)

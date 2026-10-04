@@ -24,6 +24,7 @@ import { resolveCropAssumptions } from '@/lib/viewer-assumptions'
 import { marketingReferenceContract, referenceMonthOptions, fallForwardOnMissingQuote, type ReferenceContract } from '@/lib/reference-contract'
 import { SupersededNotice } from '@/components/viewer-scenario'
 import { fieldCropAggregates, cropsWithCompleteHarvest, type CombineEntryLike } from '@/lib/yields'
+import { useCottonYields } from '@/lib/use-cotton-yields'
 import { cropToCommodity } from '@/lib/contracts'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { quoteMapFromWire, type Quote } from '@/lib/quotes'
@@ -186,6 +187,10 @@ export default function RevenueProjectionsReport({ onPayloadChange, headerAction
   const assumptionRes = useMemo(() => resolveCropAssumptions(assumptions, viewerA.overrides), [assumptions, viewerA.overrides])
   const effAssumptions = assumptionRes.rows
   useEffect(() => { if (assumptionRes.staleIds.length > 0) viewerA.cleanupStale(assumptionRes.staleIds) }, [assumptionRes, viewerA])
+  // Cotton module (092): the seed-cotton classifier adapter + the turnout
+  // estimate on unginned cotton, the same model the dashboard uses. Inert off.
+  const cottonYields = useCottonYields(supabase, { crops, assumptions: effAssumptions })
+  const cottonModel = cottonYields.model
 
   // Shared entity scoping — the SAME layer the Marketing dashboard applies, so
   // the reconciliation identity (RevProj profit − Marketing profit = insurance
@@ -314,8 +319,8 @@ export default function RevenueProjectionsReport({ onPayloadChange, headerAction
     if (cropYear === '') return new Set<string>()
     const cropCompleteKeys = new Set<string>()
     for (const a of effAssumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
-    return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions: effAssumptions })
-  }, [scopedPlantings, aggByKey, cropYear, effAssumptions])
+    return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions: effAssumptions, cotton: cottonModel.adapter })
+  }, [scopedPlantings, aggByKey, cropYear, effAssumptions, cottonModel])
 
   // Current futures per crop to value unpriced bushels in blended revenue — the
   // live harvest-month estimate, the EXACT source the Marketing dashboard uses
@@ -333,27 +338,17 @@ export default function RevenueProjectionsReport({ onPayloadChange, headerAction
 
   // Cotton lbs of lint per cotton crop id (per-bale weights, falling back to the
   // receipt's total bale weight) — identical derivation to the dashboard's.
+  // (092) Plus seed cotton still on the yard at the resolved turnout when the
+  // Cotton module is on — lib/cotton.ts cottonProductionTotals via the model.
   const cottonProductionByCrop = useMemo(() => {
-    const m = new Map<string, { lintLbs: number; bales: number }>()
+    const m = new Map<string, ReturnType<typeof cottonModel.productionFor>>()
     if (cropYear === '') return m
-    const balesByReceipt = new Map<string, { lbs: number; count: number }>()
-    for (const b of cottonBales) {
-      if (b.crop_year !== cropYear) continue
-      const g = balesByReceipt.get(b.gin_receipt_id) ?? { lbs: 0, count: 0 }
-      g.lbs += Number(b.net_weight_lbs) || 0
-      g.count += 1
-      balesByReceipt.set(b.gin_receipt_id, g)
-    }
-    let lintLbs = 0, baleCount = 0
-    for (const r of scope.ginReceipts(ginReceipts)) {
-      if (r.crop_year !== cropYear) continue
-      const fromBales = balesByReceipt.get(r.id)
-      lintLbs += fromBales && fromBales.lbs > 0 ? fromBales.lbs : Number(r.total_bale_weight) || 0
-      baleCount += fromBales && fromBales.count > 0 ? fromBales.count : Number(r.bales_count) || 0
-    }
-    for (const c of crops) if (isCottonCrop(c.name)) m.set(c.id, { lintLbs, bales: baleCount })
+    const receipts = scope.ginReceipts(ginReceipts).filter((r) => r.crop_year === cropYear)
+    const bales = cottonBales.filter((b) => b.crop_year === cropYear)
+    const loads = cottonModel.sources ? scope.ginReceipts(cottonModel.sources.loads) : null
+    for (const c of crops) if (isCottonCrop(c.name)) m.set(c.id, cottonModel.productionFor({ cropId: c.id, cropYear, receipts, bales, loads }))
     return m
-  }, [cropYear, ginReceipts, cottonBales, crops, scope])
+  }, [cropYear, ginReceipts, cottonBales, crops, scope, cottonModel])
 
   // Physical cotton marketing (044) — same input the dashboard passes, so
   // blended revenue stays structurally identical across the two pages. Raw

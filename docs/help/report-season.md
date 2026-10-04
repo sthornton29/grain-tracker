@@ -1,7 +1,7 @@
 ---
 page_route: /reports/season
 title: Season Summary
-updated: 2026-09-24
+updated: 2026-10-03
 keywords: season, acres, yield, bushels, irrigated, dryland, double crop, harvest, cotton, lint
 ---
 ## What this page is for
@@ -26,12 +26,12 @@ When harvest is running, check back as loads come in: the production and yield c
 - **Dry bushels** come from your recorded loads, adjusted to each crop's base moisture — the same dry-bushel rules used everywhere else in Turnrow.
 - **Yield per acre** divides production by the acres of fields that are actually finished. Fields that are unharvested or still in progress are left out of both production and yield, so a half-picked field never drags the average down. Their acres still show in the acreage columns. The **% harvested** tile is finished acres over all planted acres; the **weighted yield** tile is grain bushels over finished grain acres.
 - **Average yields** for recent seasons appear in the header strip, computed the same way.
-- **Cotton** rows keep their acres in this table, but production and yield for cotton are measured in pounds of lint, not bushels — the row points you to the Cotton Yields section below, which shows lint pounds per acre, seed cotton pounds per acre, turnout percentage, and any loads still on the yard awaiting ginning, field by field.
+- **Cotton** rows keep their acres in this table, but production and yield for cotton are measured in pounds of lint, not bushels — the row points you to the Cotton section below, which lists every cotton field for the year: seed cotton pounds and pounds per acre, lint pounds and pounds per acre (marked **est.** while the cotton is picked but not ginned, at the turnout shown in the section header), turnout, bales, and the field’s harvest status (from its seed cotton loads, the same rules as grain) beside its ginning status (on yard / partly ginned / ginned). Tap a row for its loads and gin receipts.
 
 ## Common questions
 
 - **Why is my yield higher than I expected mid-harvest?** Only finished fields count toward yield. If your best ground came off first, the early average reflects that and will settle as the rest is harvested.
-- **Why does a crop show acres but no bushels?** Either no loads are recorded for it yet, or its fields are still marked in progress. Cotton crops intentionally show no bushels — see the Cotton Yields section instead.
+- **Why does a crop show acres but no bushels?** Either no loads are recorded for it yet, or its fields are still marked in progress. Cotton crops intentionally show no bushels — see the Cotton section instead, where a picked field shows its seed cotton right away and its lint as an estimate until the gin receipt comes in.
 - **Why don't the irrigated and dryland columns add up to total acres?** Those columns only fill in where you have recorded the irrigated/dryland breakout on the field or planting. A dash means no breakout was entered.
 - **Does the entity filter change yields?** It changes which fields are included. Yields are then computed from that entity's fields alone, so they can differ from the whole-operation figure.
 

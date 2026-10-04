@@ -25,6 +25,8 @@ import { headlineAvgPrice, type MarketingRow } from '@/lib/marketing'
 import { buildEntityScope } from '@/lib/entity-scope'
 import { buildLoadDetail, weightedAverage, type DetailLoadLike } from '@/lib/yield-detail'
 import { fieldCropAggregates, withLoadBreakouts, type CombineEntryLike } from '@/lib/yields'
+import { buildCottonYieldModel, fetchCottonYieldSources } from '@/lib/cotton-yield-sources'
+import type { LintBasis } from '@/lib/cotton'
 import { computeBushels } from '@/lib/shrink'
 import { actualYieldByCropFromLoads, projectInsuranceIndemnities, type ProjectedPolicy } from '@/lib/crop-insurance'
 import { applyMyaResolution, otherPaymentsInRevenueYear, programYearFor, projectPayments, type ProjectedPayment } from '@/lib/government-payments'
@@ -48,7 +50,8 @@ const maxIso = (...vals: Array<string | null | undefined>): string | null =>
 // Production
 // ---------------------------------------------------------------------------
 
-export type ProductionSource = 'combine_yield_entries' | 'loads' | 'gin_receipts' | null
+/** 'cotton_loads' (092): lint estimated from seed cotton loads at the resolved turnout, nothing ginned yet. */
+export type ProductionSource = 'combine_yield_entries' | 'loads' | 'gin_receipts' | 'cotton_loads' | null
 
 export type FarmLinkProductionRecord = {
   /** The planting id when one exists, else `${field_id}|${crop}|${year}`. */
@@ -76,6 +79,9 @@ export type FarmLinkProductionRecord = {
   moisture: number | null
   /** Grain's production precedence: combine entry > weighed loads; cotton from gin receipts. */
   source: ProductionSource
+  /** Cotton, module on (092): 'actual' | 'estimated_turnout' | 'mixed'; the turnout % behind an estimate. */
+  lint_basis?: LintBasis | null
+  turnout_pct?: number | null
   updated_at: string | null
 }
 
@@ -103,7 +109,7 @@ export function shapeProductionRecords(args: {
     const planting = key ? plantingByKey.get(key) ?? null : null
     const y = actualYield.get(`${p.field_id}|${p.crop ?? ''}`)
     const source: ProductionSource = p.unit === 'lbs'
-      ? (p.production_units > 0 ? 'gin_receipts' : null)
+      ? (p.lint_basis === 'estimated_turnout' ? 'cotton_loads' : p.production_units > 0 ? 'gin_receipts' : null)
       : key && args.combineKeys.has(key) ? 'combine_yield_entries'
         : key && args.loadKeys.has(key) ? 'loads' : null
     return {
@@ -127,6 +133,7 @@ export function shapeProductionRecords(args: {
       yield_unit: p.unit === 'lbs' ? 'lbs_per_ac' : 'bu_per_ac',
       moisture: p.unit === 'lbs' ? null : (key ? args.moistureByKey.get(key) ?? null : null),
       source,
+      ...(p.lint_basis !== undefined ? { lint_basis: p.lint_basis, turnout_pct: p.turnout_pct ?? null } : {}),
       updated_at: maxIso(p.updated_at, planting?.updated_at),
     }
   })
@@ -164,8 +171,14 @@ export async function loadProductionPayload(supabase: SupabaseClient, org: strin
   const assumptionsRes = await supabase.from('crop_assumptions').select('*').eq('org_id', org).eq('crop_year', year)
   const assumptions = (assumptionsRes.error ? [] : (assumptionsRes.data ?? [])) as Array<CropAssumptionStatusRow & import('@/lib/types').CropAssumption>
 
+  // Cotton module (092): cotton plantings classify off their seed cotton
+  // loads and report lint = receipts + the turnout estimate. Off → receipts.
+  const cottonSources = await fetchCottonYieldSources(supabase, { orgId: org, updatedAt: true }).catch(() => null)
+  const cotton = buildCottonYieldModel({ sources: cottonSources, crops, assumptions })
+
   const partner = buildProductionRecords({
     plantings, loads, splits, ginReceipts, combineEntries, cropAssumptions: assumptions, fields, farms, entities, crops, year, crop: null,
+    cotton: cotton.on ? cotton : null,
   })
 
   // Yield per acre + harvest classification through the projected-yields
@@ -178,21 +191,21 @@ export async function loadProductionPayload(supabase: SupabaseClient, org: strin
     const { buildDoubleCropSet } = await import('@/lib/plantings')
     for (const id of buildDoubleCropSet(plantings, cropById)) doubleCropIds.add(id)
   }
-  const { analyzeYields, expectedYieldForPlanting } = await import('@/lib/yields')
-  const assumptionByCrop = new Map(assumptions.map((a) => [a.crop_id, a]))
-  const analysis = analyzeYields(plantings.map((p) => {
-    const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
-    return {
-      id: p.id, cropId: p.crop_id, acres: Number(p.planted_acres ?? 0), dryBu: agg?.dryBu ?? 0,
-      lastLoadDate: agg?.lastLoadDate ?? null, lastLoadTime: agg?.lastLoadTime ?? null,
-      override: p.yield_include_override ?? null, combineComplete: agg?.combine?.harvestComplete,
-      expectedYield: expectedYieldForPlanting(assumptionByCrop.get(p.crop_id), p),
-    }
-  }))
+  const { analyzeYields, buildYieldInputs } = await import('@/lib/yields')
+  const analysis = analyzeYields(buildYieldInputs({ plantings, aggByKey, assumptions, cotton: cotton.adapter }))
   const cropCompleteKeys = new Set<string>()
   for (const a of assumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
+  // Cotton lint per field: receipts, plus (module on) the turnout estimate on
+  // seed cotton still on the yard — the same figure /production carries.
   const cottonLbsByField = new Map<string, number>()
-  for (const g of ginReceipts) if (g.field_id) cottonLbsByField.set(g.field_id, (cottonLbsByField.get(g.field_id) ?? 0) + num(g.total_bale_weight))
+  if (cotton.on) {
+    for (const p of plantings) {
+      const y = cotton.yieldFor(p)
+      if (y) cottonLbsByField.set(p.field_id, (cottonLbsByField.get(p.field_id) ?? 0) + y.lintLbs)
+    }
+  } else {
+    for (const g of ginReceipts) if (g.field_id) cottonLbsByField.set(g.field_id, (cottonLbsByField.get(g.field_id) ?? 0) + num(g.total_bale_weight))
+  }
   const projected = buildProjectedYieldRecords({
     cropYear: year, plantings, fields, crops, assumptions, doubleCropIds, aggByKey, cottonLbsByField,
     excluded: analysis.excluded, cropCompleteKeys, allowedFieldIds: null, fieldEntity: fieldEntityMap({ fields, farms }),

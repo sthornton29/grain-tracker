@@ -1,8 +1,8 @@
 ---
 page_route: /cotton
 title: Cotton — Loads, Gin Receipts, Bales & Grades
-updated: 2026-10-01
-keywords: cotton, seed cotton, module, rolls, rounds, number of rounds, handwritten rolls, busted roll, sequence mark, round modules, pounds per roll, average per roll, load detail, ticket photo, module ticket, sort, select, delete loads, export loads, duplicate load, scanned twice, already saved, update available, duplicate bale, PBI repeated, turn on cotton, gin, gin receipt, statement of ginning, bales, HVI, classing, PBI, turnout, yard inventory, gin operator
+updated: 2026-10-03
+keywords: cotton, seed cotton, module, rolls, harvest status, ginning status, picked, estimated lint, turnout for estimates, assumed turnout, rounds, number of rounds, handwritten rolls, busted roll, sequence mark, round modules, pounds per roll, average per roll, load detail, ticket photo, module ticket, sort, select, delete loads, export loads, duplicate load, scanned twice, already saved, update available, duplicate bale, PBI repeated, turn on cotton, gin, gin receipt, statement of ginning, bales, HVI, classing, PBI, turnout, yard inventory, gin operator
 ---
 ## What this page is for
 
@@ -29,6 +29,8 @@ The Cotton tab is where seed cotton gets tracked from the field to the classed b
 - Cotton weights are plain pounds — no moisture or shrink math like grain.
 - **Turnout** is lint pounds divided by seed cotton pounds, from the gin receipt.
 - Lint yield per acre is the field's bale net weights (from its receipts) divided by planted acres; the app also shows seed cotton pounds per acre alongside.
+- **Harvest status comes from the seed cotton loads, ginning status from the receipts.** On the Yields page and the Season Summary a cotton field reads not picked / in progress / complete from its loads — the same rules as a grain field, with seed cotton pounds standing in for bushels — and separately on yard / partly ginned / ginned from which loads have landed on a gin receipt.
+- **Lint is estimated until the gin receipt arrives.** Seed cotton on the yard is counted as lint at a turnout percentage and marked **est.** The turnout used is, in order: a figure you set for the crop year, the weighted average of this crop year's gin receipts (lint ÷ seed cotton across all of them), last crop year's, or 40% marked **assumed**. Set your own on the Yields page's cotton table header or under the cotton crop in Marketing → Edit Assumptions; clear it to go back to the automatic figure. Once a field's loads are all on receipts its lint is actual and no turnout is assumed for it.
 - Each bale's loan value in cents per pound comes from its classing data and feeds the Bale Quality report and CCC loan figures on the Marketing page.
 
 ## Common questions

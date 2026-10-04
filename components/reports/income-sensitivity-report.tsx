@@ -29,6 +29,7 @@ import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, type CombineEntryLike } from '@/lib/yields'
 import { segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, resolveAcresByCrop, segmentTotalAcres } from '@/lib/marketing'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
+import { useCottonYields } from '@/lib/use-cotton-yields'
 import { fetchSeedContracts, type SeedContractData } from '@/lib/seed-contracts-fetch'
 import { buildSeedCommitments } from '@/lib/seed-contracts'
 import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
@@ -317,6 +318,11 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
     const stale = [...cropRes.staleIds, ...countyRes.staleIds]
     if (stale.length > 0) viewerA.cleanupStale(stale)
   }, [cropRes, countyRes, viewerA])
+  // Cotton module (092): cotton fields classify off seed cotton loads and a
+  // complete field's fixed production is its lint (receipts + the turnout
+  // estimate on unginned seed cotton). Inert when the module is off.
+  const cottonYields = useCottonYields(supabase, { crops, assumptions: effAssumptions })
+  const cottonModel = cottonYields.model
 
   // Shared entity scoping — the same layer Marketing / Revenue Projections
   // apply, so the pages agree on what "entity selected" means. Assumptions and
@@ -433,8 +439,11 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
   // Harvested-fact vs still-in-the-field, per crop and per planting.
   const harvestSplit = useMemo(() => {
     if (cropYear === '') return { byCrop: new Map<string, HarvestSplit>(), statusByPlanting: new Map<string, 'complete' | 'in_progress' | 'unharvested'>() }
-    return splitHarvestByCrop({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions: effAssumptions })
-  }, [scopedPlantings, aggByKey, cropYear, cropCompleteKeys])
+    return splitHarvestByCrop({
+      plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions: effAssumptions,
+      cotton: cottonModel.adapter ? { adapter: cottonModel.adapter, lintFor: (p) => cottonModel.yieldFor(p)?.lintLbs ?? 0 } : null,
+    })
+  }, [scopedPlantings, aggByKey, cropYear, cropCompleteKeys, effAssumptions, cottonModel])
 
   // Seed commitments per crop id (077): committed production from the linked
   // plantings, attributed like every contract; the scenario cell locks the

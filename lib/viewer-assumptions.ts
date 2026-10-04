@@ -31,6 +31,8 @@ export const OVERRIDABLE_CROP_FIELDS = [
   'cost_per_acre', 'cost_per_acre_irr', 'cost_per_acre_dry', 'cost_per_acre_dc_irr', 'cost_per_acre_dc_dry',
   'assumed_acres', 'assumed_acres_irr', 'assumed_acres_dry', 'assumed_acres_dc_irr', 'assumed_acres_dc_dry',
   'assumed_basis', 'assumed_futures', 'reference_contract_month',
+  // 092: the manual lint turnout behind the picked-but-unginned estimate.
+  'assumed_turnout_pct',
 ] as const
 export type OverridableCropField = (typeof OVERRIDABLE_CROP_FIELDS)[number]
 
@@ -79,6 +81,7 @@ function emptyCropAssumption(cropId: string, cropYear: number): CropAssumption {
     assumed_acres_irr: null, assumed_acres_dry: null, assumed_acres_dc_irr: null, assumed_acres_dc_dry: null,
     cost_per_acre: null,
     cost_per_acre_irr: null, cost_per_acre_dry: null, cost_per_acre_dc_irr: null, cost_per_acre_dc_dry: null,
+    assumed_turnout_pct: null,
     notes: null, created_at: NO_BASE_SENTINEL, updated_at: NO_BASE_SENTINEL,
   }
 }

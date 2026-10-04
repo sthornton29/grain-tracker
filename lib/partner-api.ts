@@ -11,7 +11,9 @@
 import { computeBushels } from '@/lib/shrink'
 import { isCottonCrop } from '@/lib/marketing'
 import { contractUnit, quantityFor } from '@/lib/hedging'
-import { analyzeYields, expectedYieldForPlanting, harvestStatusOf, type HarvestStatus } from '@/lib/yields'
+import { analyzeYields, buildYieldInputs, harvestStatusOf, type CombineAggInfo, type FieldCropAgg, type HarvestStatus } from '@/lib/yields'
+import type { LintBasis } from '@/lib/cotton'
+import type { CottonYieldModel } from '@/lib/cotton-yield-sources'
 
 // ---------------------------------------------------------------------------
 // Auth
@@ -155,6 +157,8 @@ export type CropAssumptionStatusRow = {
   expected_yield?: number | string | null
   expected_yield_irr?: number | string | null
   expected_yield_dry?: number | string | null
+  /** 092: the manual lint turnout (cotton). */
+  assumed_turnout_pct?: number | string | null
 }
 
 const num = (v: number | string | null | undefined): number => {
@@ -363,6 +367,13 @@ export type PartnerProduction = {
   harvest_status: HarvestStatus
   production_units: number
   unit: 'bu' | 'lbs'
+  /** Cotton with the Cotton module on (092): where production_units' lint
+   *  came from — gin receipts ('actual'), seed cotton picked but not ginned at
+   *  the resolved turnout ('estimated_turnout'), or both ('mixed'). Null for
+   *  grain rows and when the module is off (receipts only, as before). */
+  lint_basis?: LintBasis | null
+  /** The turnout % behind an estimate; null when nothing was estimated. */
+  turnout_pct?: number | null
   updated_at: string | null
 }
 
@@ -388,6 +399,11 @@ export function buildProductionRecords(args: {
   crops: readonly CropRow[]
   year: number
   crop?: string | null
+  /** Cotton module on (092): the cotton yield model (lib/cotton-yield-sources)
+   *  — cotton plantings then classify off their seed cotton loads through the
+   *  SAME engine (the adapter), and their production is lint = receipts + the
+   *  turnout estimate on unginned seed cotton. Null/absent = receipts only. */
+  cotton?: Pick<CottonYieldModel, 'on' | 'adapter' | 'yieldFor' | 'loadsFor'> | null
   /** For deterministic tests only — analyzeYields' reference clock. */
   now?: Date
 }): PartnerProduction[] {
@@ -488,26 +504,28 @@ export function buildProductionRecords(args: {
     if (typeof e.harvest_complete === 'boolean') combineCompleteByKey.set(`${e.field_id}|${e.crop_id}`, e.harvest_complete)
   }
   const yearPlantings = args.plantings.filter((p) => p.season_year === args.year)
+  // THE shared mapping (lib/yields buildYieldInputs): the per-field aggregate
+  // above re-shaped as FieldCropAgg (a combine entry's done-marker rides in
+  // `combine`), the year's assumptions as the expected-yield tier, and — with
+  // the Cotton module on — the cotton adapter routing cotton plantings to
+  // their seed cotton loads. One classifier for every consumer.
+  const aggByKey = new Map<string, FieldCropAgg>()
+  for (const [k, a] of agg) aggByKey.set(`${k}|${args.year}`, { dryBu: a.units, lastLoadDate: a.lastDate, lastLoadTime: a.lastTime })
+  for (const [k, done] of combineCompleteByKey) {
+    const key = `${k}|${args.year}`
+    const cur = aggByKey.get(key) ?? { dryBu: 0, lastLoadDate: null, lastLoadTime: null }
+    cur.combine = { harvestComplete: done } as CombineAggInfo
+    aggByKey.set(key, cur)
+  }
   const analysis = analyzeYields(
-    yearPlantings.map((p) => {
-      const a = agg.get(`${p.field_id}|${p.crop_id}`)
-      const assumption = assumptionByCrop.get(p.crop_id)
-      return {
-        id: p.id,
-        cropId: p.crop_id,
-        acres: num(p.planted_acres),
-        dryBu: a?.units ?? 0,
-        lastLoadDate: a?.lastDate ?? null,
-        lastLoadTime: a?.lastTime ?? null,
-        override: p.yield_include_override ?? null,
-        combineComplete: combineCompleteByKey.get(`${p.field_id}|${p.crop_id}`),
-        expectedYield: assumption
-          ? expectedYieldForPlanting(
-              { crop_id: assumption.crop_id, crop_year: assumption.crop_year, expected_yield: assumption.expected_yield ?? null, expected_yield_irr: assumption.expected_yield_irr, expected_yield_dry: assumption.expected_yield_dry },
-              p,
-            )
-          : null,
-      }
+    buildYieldInputs({
+      plantings: yearPlantings,
+      aggByKey,
+      assumptions: [...assumptionByCrop.values()].map((a) => ({
+        crop_id: a.crop_id, crop_year: a.crop_year, expected_yield: a.expected_yield ?? null,
+        expected_yield_irr: a.expected_yield_irr, expected_yield_dry: a.expected_yield_dry,
+      })),
+      cotton: args.cotton?.on ? args.cotton.adapter : null,
     }),
     undefined,
     args.now ?? new Date(),
@@ -535,7 +553,21 @@ export function buildProductionRecords(args: {
     if (!cropFilter(cropName)) return null
     const cotton = isCottonCrop(cropName)
     const a = cotton ? cottonByField.get(fieldId) : agg.get(`${fieldId}|${cropId}`)
-    const units = a?.units ?? 0
+    let units = a?.units ?? 0
+    let updatedAt = a?.updatedAt ?? null
+    let lintBasis: LintBasis | null = null
+    let turnoutPct: number | null = null
+    // Cotton module on (092): lint = receipts + the turnout estimate on seed
+    // cotton still on the yard; the basis and turnout ride along additively.
+    const cy = cotton && args.cotton?.on
+      ? args.cotton.yieldFor({ field_id: fieldId, crop_id: cropId, season_year: args.year, planted_acres: plantedAcres })
+      : null
+    if (cy) {
+      units = cy.lintLbs
+      lintBasis = cy.lintBasis
+      turnoutPct = cy.estimatedLintLbs > 0 ? cy.turnout.pct : null
+      for (const l of args.cotton!.loadsFor(fieldId, args.year)) updatedAt = maxIso(updatedAt, l.updated_at)
+    }
     return {
       field_id: fieldId,
       field_name: field?.name_or_number ?? null,
@@ -551,7 +583,10 @@ export function buildProductionRecords(args: {
       harvest_status: status,
       production_units: Math.round(units * 100) / 100,
       unit: cotton ? 'lbs' : 'bu',
-      updated_at: maxIso(a?.updatedAt, plantingUpdatedAt),
+      // Additive, and only with the module on — an org without it gets the
+      // exact record shape it always got.
+      ...(args.cotton?.on ? { lint_basis: lintBasis, turnout_pct: turnoutPct } : {}),
+      updated_at: maxIso(updatedAt, plantingUpdatedAt),
     }
   }
 

@@ -18,6 +18,9 @@ import EntityFilter from '@/components/entity-filter'
 import CropYearSalesStatus from '@/components/crop-year-sales-status'
 import { buildMarketingExport } from '@/lib/marketing-export'
 import { fieldCropAggregates, cropsWithCompleteHarvest, inProgressPlantingsByCrop, type CombineEntryLike } from '@/lib/yields'
+import { useCottonYields } from '@/lib/use-cotton-yields'
+import TurnoutControl from '@/components/reports/turnout-control'
+import type { TurnoutResolution } from '@/lib/cotton'
 import { roleCanEditYields } from '@/lib/app-role'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { cropToHedgeCommodity } from '@/lib/contracts'
@@ -291,6 +294,12 @@ export default function MarketingPage() {
   const effAssumptions = assumptionRes.rows
   useEffect(() => { if (assumptionRes.staleIds.length > 0) viewerA.cleanupStale(assumptionRes.staleIds) }, [assumptionRes, viewerA])
 
+  // Cotton module (092): cotton plantings classify off their seed cotton loads
+  // (the adapter), and the cotton row's actual production is receipts + the
+  // turnout estimate on seed cotton still on the yard. Inert when off.
+  const cottonYields = useCottonYields(supabase, { crops, assumptions: effAssumptions })
+  const cottonModel = cottonYields.model
+
   // Assumed acres (081) stand in for a crop with no plantings this year — but
   // only for the whole operation: there is no field to attribute them to, so
   // an entity filter (or a viewer's grant scope) keeps the planted-acre rule.
@@ -439,8 +448,8 @@ export default function MarketingPage() {
   }, [effAssumptions])
   const harvestCompleteIds = useMemo(() => {
     if (year == null) return new Set<string>()
-    return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys, assumptions: effAssumptions })
-  }, [year, cropCompleteKeys, scopedPlantings, aggByKey, effAssumptions])
+    return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys, assumptions: effAssumptions, cotton: cottonModel.adapter })
+  }, [year, cropCompleteKeys, scopedPlantings, aggByKey, effAssumptions, cottonModel])
 
   // Fields still reading "in progress" — they hold their crop on the yield
   // ESTIMATE instead of actual production. Named here (with the same "count
@@ -448,8 +457,8 @@ export default function MarketingPage() {
   // hasn't switched to actuals and fix a misjudged field on the spot.
   const stillHarvesting = useMemo(() => {
     if (year == null) return new Map<string, PlantingRow[]>()
-    return inProgressPlantingsByCrop({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys, assumptions: effAssumptions })
-  }, [year, cropCompleteKeys, scopedPlantings, aggByKey, effAssumptions])
+    return inProgressPlantingsByCrop({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys, assumptions: effAssumptions, cotton: cottonModel.adapter })
+  }, [year, cropCompleteKeys, scopedPlantings, aggByKey, effAssumptions, cottonModel])
   const canEditYields = roleCanEditYields(viewer.role)
   const [countingId, setCountingId] = useState<string | null>(null)
   const [countErr, setCountErr] = useState<string | null>(null)
@@ -471,25 +480,17 @@ export default function MarketingPage() {
   const closeAssumptions = useCallback(() => setAssumptionsOpen(false), [])
 
   // Cotton actual production: lbs of lint from the entity's gin receipts —
-  // per-bale net weights when the bales are on file, else the receipt total.
+  // per-bale net weights when the bales are on file, else the receipt total —
+  // plus (Cotton module on, 092) seed cotton still on the yard at the resolved
+  // turnout. ONE seam: lib/cotton.ts cottonProductionTotals via the model.
   const cottonProd = useMemo(() => {
-    const balesByReceipt = new Map<string, { lbs: number; count: number }>()
-    for (const b of cottonBales) {
-      const g = balesByReceipt.get(b.gin_receipt_id) ?? { lbs: 0, count: 0 }
-      g.lbs += Number(b.net_weight_lbs) || 0
-      g.count += 1
-      balesByReceipt.set(b.gin_receipt_id, g)
-    }
-    let lintLbs = 0, baleCount = 0
-    for (const r of scope.ginReceipts(ginReceipts)) {
-      const fromBales = balesByReceipt.get(r.id)
-      lintLbs += fromBales && fromBales.lbs > 0 ? fromBales.lbs : Number(r.total_bale_weight) || 0
-      baleCount += fromBales && fromBales.count > 0 ? fromBales.count : Number(r.bales_count) || 0
-    }
-    const cotton = new Map<string, { lintLbs: number; bales: number }>()
-    for (const c of crops) if (isCottonCrop(c.name)) cotton.set(c.id, { lintLbs, bales: baleCount })
+    const cotton = new Map<string, ReturnType<typeof cottonModel.productionFor>>()
+    if (year == null) return cotton
+    const receipts = scope.ginReceipts(ginReceipts)
+    const loads = cottonModel.sources ? scope.ginReceipts(cottonModel.sources.loads) : null
+    for (const c of crops) if (isCottonCrop(c.name)) cotton.set(c.id, cottonModel.productionFor({ cropId: c.id, cropYear: year, receipts, bales: cottonBales, loads }))
     return cotton
-  }, [scope, ginReceipts, cottonBales, crops])
+  }, [scope, ginReceipts, cottonBales, crops, cottonModel, year])
 
   // Physical cotton marketing summary per cotton crop id — attributed to the
   // entity filter: own-name rows whole, marketing-agent/null rows flow down at
@@ -663,6 +664,9 @@ export default function MarketingPage() {
       assumed_acres_dc_dry: pick('assumed_acres_dc_dry'),
       // Cotton bale weight (085) — null = the 500 lb default.
       bale_weight_lbs: pick('bale_weight_lbs'),
+      // Cotton turnout (092) — only when the editor touched it (a database
+      // without the column keeps saving otherwise).
+      ...(has('assumed_turnout_pct') ? { assumed_turnout_pct: patch.assumed_turnout_pct ?? null } : {}),
       notes: pick('notes'),
       updated_at: new Date().toISOString(),
     }
@@ -867,6 +871,7 @@ export default function MarketingPage() {
           segByCrop={segByCrop} plantedCropIds={plantedCropIdsAll} actualByCrop={actualByCrop}
           onSave={saveAssumption} onClose={closeAssumptions}
           viewerMode={viewer.isViewer}
+          turnoutFor={cottonModel.on ? (cropId) => cottonModel.turnoutFor(cropId, year) : undefined}
           scenarioCrops={new Set(
             Array.from(assumptionRes.appliedKeys)
               .filter((k) => k.startsWith('crop|'))
@@ -1409,9 +1414,18 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
   const headlineProfitAc = scenario ? scenario.profitPerAcre : row.profitPerAcre
   const headlineTotalProfit = scenario ? scenario.totalProfit : row.totalProfit
   const headlineProfitTone = toneText(headlineTotalProfit == null ? 'muted' : headlineTotalProfit >= 0 ? 'favorable' : 'unfavorable')
-  // Unhedged lbs are always valued at an assumed/market price — flag it.
-  const includesAssumptions = row.unpricedBu > 0.5
-  const markerTitle = `Includes assumed pricing on ${bu(row.unpricedBu)} unhedged lbs (valued at ${row.assumedFutures != null ? 'your assumed price' : 'the current futures estimate'}). Open hedges cover the remaining ${bu(Math.min(row.openHedgeBu, prod))} lbs.`
+  // Unhedged lbs are always valued at an assumed/market price — flag it. So
+  // is lint estimated from seed cotton still on the yard (092): the marker
+  // names the turnout it rode on.
+  const lintEst = row.cottonLint && row.cottonLint.basis !== 'actual' ? row.cottonLint : null
+  const includesAssumptions = row.unpricedBu > 0.5 || lintEst != null
+  const pricingNote = row.unpricedBu > 0.5
+    ? `Includes assumed pricing on ${bu(row.unpricedBu)} unhedged lbs (valued at ${row.assumedFutures != null ? 'your assumed price' : 'the current futures estimate'}). Open hedges cover the remaining ${bu(Math.min(row.openHedgeBu, prod))} lbs.`
+    : ''
+  const lintNote = lintEst
+    ? ` ${bu(lintEst.estimatedLbs)} lbs of lint are estimated from seed cotton picked but not ginned, at ${lintEst.turnoutLabel ?? 'the assumed turnout'}; ${bu(lintEst.actualLbs)} lbs are on gin receipts.`
+    : ''
+  const markerTitle = (pricingNote + lintNote).trim()
   const markSup = includesAssumptions ? <sup className="text-amber-600"> *</sup> : null
 
   async function useTodaysPrice() {
@@ -1451,6 +1465,11 @@ function CottonSection({ row, detailsOpen, onToggleDetails, cropYear, refContrac
             <div className="font-bold text-xl leading-tight">{row.cropName}</div>
             <div className="text-sm text-slate-500 tabular-nums mt-0.5 flex flex-wrap items-center gap-x-1">
               <span>{bu(prod)} lbs lint</span>
+              {lintEst && (
+                <InfoTip label={lintEst.basis === 'mixed' ? 'part est.' : 'est.'} tone={lintEst.turnoutAssumed ? 'warning' : 'neutral'}>
+                  {bu(lintEst.estimatedLbs)} lbs estimated from seed cotton on the yard at {lintEst.turnoutLabel ?? 'the assumed turnout'}; {bu(lintEst.actualLbs)} lbs on gin receipts. The bale count stays actual.
+                </InfoTip>
+              )}
               {row.productionBales != null && (
                 <span className="flex items-center gap-1">
                   · ≈ <span className="font-semibold text-slate-700">{bu(row.productionBales)}</span> bales @
@@ -1884,7 +1903,7 @@ function Row({ label, value, tone }: { label: string; value: string; tone?: stri
 // ---------------------------------------------------------------------------
 // Assumptions slide-over panel — collapsible per crop, live recalc, stays open
 // ---------------------------------------------------------------------------
-function AssumptionsPanel({ crops, year, assumptions, segByCrop, plantedCropIds, actualByCrop, onSave, onClose, viewerMode, scenarioCrops, onResetScenario }: {
+function AssumptionsPanel({ crops, year, assumptions, segByCrop, plantedCropIds, actualByCrop, onSave, onClose, viewerMode, scenarioCrops, onResetScenario, turnoutFor }: {
   crops: Crop[]; year: number; assumptions: CropAssumption[]
   segByCrop: Map<string, SegmentAcres>
   /** Crops with a planting row this year anywhere in the operation — their
@@ -1897,6 +1916,8 @@ function AssumptionsPanel({ crops, year, assumptions, segByCrop, plantedCropIds,
   viewerMode?: boolean
   /** Crops the viewer has any private override on (chip + reset). */
   scenarioCrops?: Set<string>
+  /** Cotton module on (092): the resolved lint turnout per cotton crop. */
+  turnoutFor?: (cropId: string) => TurnoutResolution
   onResetScenario?: (cropId: string) => void
 }) {
   const [openCrop, setOpenCrop] = useState<string | null>(crops[0]?.id ?? null)
@@ -1946,6 +1967,7 @@ function AssumptionsPanel({ crops, year, assumptions, segByCrop, plantedCropIds,
                       key={`${c.id}:${a?.updated_at ?? 'new'}`}
                       crop={c} year={year} assumption={a} seg={segByCrop.get(c.id)} hasPlantings={planted} actual={actual} onSave={onSave}
                       viewerMode={viewerMode}
+                      turnout={turnoutFor && isCottonCrop(c.name) ? turnoutFor(c.id) : undefined}
                     />
                   </div>
                 )}
@@ -1960,7 +1982,7 @@ function AssumptionsPanel({ crops, year, assumptions, segByCrop, plantedCropIds,
   )
 }
 
-function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSave, viewerMode }: {
+function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSave, viewerMode, turnout }: {
   crop: Crop; year: number; assumption?: CropAssumption; seg?: SegmentAcres
   /** Plantings exist for this crop × year (anywhere in the operation): the
    *  planted acres count and the assumed acres are ignored (081). */
@@ -1969,6 +1991,8 @@ function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSa
   onSave: (cropId: string, patch: Partial<CropAssumption>) => void
   /** Viewer role: harvest-complete is an operational fact — read-only. */
   viewerMode?: boolean
+  /** Cotton with the module on: the resolved turnout behind lint estimates. */
+  turnout?: TurnoutResolution
 }) {
   const s0 = (v: number | null | undefined) => (v != null ? String(v) : '')
   const a = assumption
@@ -2115,6 +2139,16 @@ function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSa
         />
         Harvest complete
       </label>
+      )}
+      {turnout && (
+        <div className="flex flex-wrap items-center gap-2">
+          <TurnoutControl
+            turnout={turnout}
+            manualPct={a?.assumed_turnout_pct != null ? Number(a.assumed_turnout_pct) : null}
+            onSave={(v) => onSave(crop.id, { assumed_turnout_pct: v })}
+          />
+          <span className="text-xs text-slate-500">Seed cotton picked but not ginned is counted as lint at this turnout until the gin receipt arrives.</span>
+        </div>
       )}
       {assumedMode ? (
         <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">

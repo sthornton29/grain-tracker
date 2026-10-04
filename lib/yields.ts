@@ -726,12 +726,77 @@ export function expectedYieldForPlanting(
 }
 
 /** The planting shape the season-level helpers below classify. */
-type SeasonPlanting = {
+export type SeasonPlanting = {
   id: string; field_id: string; crop_id: string; season_year: number
   planted_acres: number | string | null; yield_include_override?: boolean | null
   /** Optional practice acres — enable the per-practice expected-yield bar. */
   irrigated_acres?: number | string | null
   dryland_acres?: number | string | null
+}
+
+// ---------------------------------------------------------------------------
+// Cotton input adapter (092). A cotton planting is classified by its SEED
+// COTTON LOADS exactly as a grain planting is by its loads — same engine, same
+// rules (active-field hold, persistent low yield, crop-wide silence, "count
+// anyway", the crop-level flag). The adapter is the only thing that differs:
+// where the planting's aggregate comes from (seed cotton lbs per field × crop
+// year, dated by picked date — lib/cotton.ts seedCottonAggregates) and what
+// its expected-yield bar is (expected LINT lbs/ac ÷ the resolved turnout =
+// seed cotton lbs/ac, the unit the loads are weighed in). Callers pass it
+// only when the Cotton module is on; without it every consumer behaves
+// exactly as before. Built by lib/cotton.ts cottonYieldAdapter.
+// ---------------------------------------------------------------------------
+export type CottonYieldAdapter = {
+  isCottonCrop: (cropId: string) => boolean
+  /** The planting's seed cotton aggregate (dryBu = seed cotton lbs). */
+  aggFor: (p: { field_id: string; crop_id: string; season_year: number }) => FieldCropAgg | undefined
+  /** Resolved lint turnout as a FRACTION (0.40) for the crop × crop year. */
+  turnoutFor: (cropId: string, cropYear: number) => number | null
+}
+
+/**
+ * THE mapping from planting rows + aggregates to analyzeYields input — every
+ * consumer (Yields, Season, Marketing, Income Sensitivity, insurance, the
+ * partner API, the farm link) builds its inputs here so fields classify
+ * identically everywhere. `assumptions` (crop_assumptions rows, any years;
+ * matched on crop × the planting's season year) power the thin-peers
+ * expected-yield tier; `cotton` routes cotton plantings to their seed cotton
+ * loads. Pure.
+ */
+export function buildYieldInputs<T extends SeasonPlanting>(args: {
+  plantings: ReadonlyArray<T>
+  aggByKey: ReadonlyMap<string, FieldCropAgg>
+  assumptions?: readonly ExpectedYieldAssumption[] | null
+  cotton?: CottonYieldAdapter | null
+}): YieldInput[] {
+  const assumptionByKey = new Map<string, ExpectedYieldAssumption>()
+  for (const a of args.assumptions ?? []) assumptionByKey.set(`${a.crop_id}|${a.crop_year}`, a)
+  return args.plantings.map((p) => {
+    const practice = { irrigated_acres: p.irrigated_acres ?? null, dryland_acres: p.dryland_acres ?? null }
+    const expectedLint = expectedYieldForPlanting(assumptionByKey.get(`${p.crop_id}|${p.season_year}`), practice)
+    const cotton = args.cotton && args.cotton.isCottonCrop(p.crop_id) ? args.cotton : null
+    if (cotton) {
+      const agg = cotton.aggFor(p)
+      const turnout = cotton.turnoutFor(p.crop_id, p.season_year)
+      return {
+        id: p.id, cropId: p.crop_id, acres: Number(p.planted_acres ?? 0),
+        dryBu: agg?.dryBu ?? 0, lastLoadDate: agg?.lastLoadDate ?? null,
+        lastLoadTime: agg?.lastLoadTime ?? null,
+        override: p.yield_include_override ?? null,
+        // Seed cotton bar: expected lint ÷ turnout. No turnout → no bar.
+        expectedYield: expectedLint != null && turnout != null && turnout > 0 ? expectedLint / turnout : null,
+      }
+    }
+    const agg = args.aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
+    return {
+      id: p.id, cropId: p.crop_id, acres: Number(p.planted_acres ?? 0),
+      dryBu: agg?.dryBu ?? 0, lastLoadDate: agg?.lastLoadDate ?? null,
+      lastLoadTime: agg?.lastLoadTime ?? null,
+      override: p.yield_include_override ?? null,
+      combineComplete: agg?.combine?.harvestComplete,
+      expectedYield: expectedLint,
+    }
+  })
 }
 
 // One shared mapping from planting rows + aggregates to the analyzeYields
@@ -743,28 +808,12 @@ function analyzeSeason<T extends SeasonPlanting>(args: {
   aggByKey: Map<string, FieldCropAgg>
   cropYear: number
   assumptions?: readonly ExpectedYieldAssumption[] | null
+  cotton?: CottonYieldAdapter | null
   now?: Date
 }): { yearPlantings: T[]; analysis: YieldAnalysis } {
   const yearPlantings = args.plantings.filter((p) => p.season_year === args.cropYear)
-  const assumptionByCrop = new Map<string, ExpectedYieldAssumption>()
-  for (const a of args.assumptions ?? []) {
-    if (a.crop_year === args.cropYear) assumptionByCrop.set(a.crop_id, a)
-  }
   const analysis = analyzeYields(
-    yearPlantings.map((p) => {
-      const agg = args.aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
-      return {
-        id: p.id, cropId: p.crop_id, acres: Number(p.planted_acres ?? 0),
-        dryBu: agg?.dryBu ?? 0, lastLoadDate: agg?.lastLoadDate ?? null,
-        lastLoadTime: agg?.lastLoadTime ?? null,
-        override: p.yield_include_override ?? null,
-        combineComplete: agg?.combine?.harvestComplete,
-        expectedYield: expectedYieldForPlanting(assumptionByCrop.get(p.crop_id), {
-          irrigated_acres: p.irrigated_acres ?? null,
-          dryland_acres: p.dryland_acres ?? null,
-        }),
-      }
-    }),
+    buildYieldInputs({ plantings: yearPlantings, aggByKey: args.aggByKey, assumptions: args.assumptions, cotton: args.cotton }),
     IN_PROGRESS_THRESHOLD, args.now,
   )
   return { yearPlantings, analysis }
@@ -782,6 +831,8 @@ export function cropsWithCompleteHarvest(args: {
   cropYear: number
   cropCompleteKeys: ReadonlySet<string>
   assumptions?: readonly ExpectedYieldAssumption[] | null
+  /** Cotton module on: cotton plantings classify off their seed cotton loads. */
+  cotton?: CottonYieldAdapter | null
   now?: Date
 }): Set<string> {
   const { yearPlantings, analysis } = analyzeSeason(args)
@@ -809,6 +860,7 @@ export function inProgressPlantingsByCrop<T extends SeasonPlanting>(args: {
   cropYear: number
   cropCompleteKeys: ReadonlySet<string>
   assumptions?: readonly ExpectedYieldAssumption[] | null
+  cotton?: CottonYieldAdapter | null
   now?: Date
 }): Map<string, T[]> {
   const { yearPlantings, analysis } = analyzeSeason(args)

@@ -25,6 +25,7 @@ import {
   type PlantingRow,
   type SplitRow,
 } from '@/lib/partner-api'
+import { buildCottonYieldModel, fetchCottonYieldSources } from '@/lib/cotton-yield-sources'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -112,13 +113,21 @@ export async function GET(req: NextRequest) {
     let cropAssumptions: CropAssumptionStatusRow[] = []
     const assumptionResult = await supabase
       .from('crop_assumptions')
-      .select('crop_id, crop_year, harvest_complete, expected_yield, expected_yield_irr, expected_yield_dry')
+      .select('*')
       .eq('org_id', org)
       .eq('crop_year', year)
     if (!assumptionResult.error) cropAssumptions = (assumptionResult.data ?? []) as CropAssumptionStatusRow[]
 
+    // Cotton module (092): with the org's flag on, cotton rows classify off
+    // their seed cotton loads and carry lint = receipts + the turnout estimate
+    // (lint_basis / turnout_pct). Off → null → receipts only, as before. A
+    // read error degrades the same way rather than failing the endpoint.
+    const cottonSources = await fetchCottonYieldSources(supabase, { orgId: org, updatedAt: true }).catch(() => null)
+    const cotton = buildCottonYieldModel({ sources: cottonSources, crops, assumptions: cropAssumptions })
+
     let records: Array<Record<string, unknown>> = buildProductionRecords({
       plantings, loads, splits, ginReceipts, combineEntries, cropAssumptions, fields, farms, entities, crops, year, crop,
+      cotton: cotton.on ? cotton : null,
     })
     if (access.share) {
       const allowed = await sharedFieldIds(supabase, org, access.share.landownerId)

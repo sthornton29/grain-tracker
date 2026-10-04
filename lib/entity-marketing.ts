@@ -16,11 +16,14 @@ import {
   expectedProductionFromBreakout,
   isCottonCrop,
   segmentAcresByCrop,
+  type CottonProductionLike,
   type MarketingRow,
 } from '@/lib/marketing'
+import type { CottonYieldModel } from '@/lib/cotton-yield-sources'
 import { buildEntityScope } from '@/lib/entity-scope'
 import { cropsWithCompleteHarvest, type FieldCropAgg } from '@/lib/yields'
 import { buildSeedCommitments, type SeedContractBundle } from '@/lib/seed-contracts'
+import { cottonProductionTotals } from '@/lib/cotton'
 import type { CottonPhysicalInputs, CottonPhysicalSummary } from '@/lib/cotton-sales'
 import type { Contract, Crop, CropAssumption, FieldPlanting, FuturesPosition, OptionPosition } from '@/lib/types'
 
@@ -49,6 +52,9 @@ export type EntityMarketingInputs = {
     bales_count: number | null
   }>
   cottonBales: ReadonlyArray<{ gin_receipt_id: string; net_weight_lbs: number | null }>
+  /** The cotton yield model (092): seed-cotton classification + the turnout
+   *  estimate on unginned cotton. Absent / off = receipts only, as before. */
+  cotton?: CottonYieldModel | null
   /** Physical cotton marketing inputs (044); null when none exist. */
   cottonPhysicalInputs: CottonPhysicalInputs | null
   currentFuturesByCrop: ReadonlyMap<string, number>
@@ -82,29 +88,24 @@ export function computeEntityMarketingRows(inputs: EntityMarketingInputs, entity
 
   const cropCompleteKeys = new Set<string>()
   for (const a of inputs.assumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
-  const harvestCompleteCropIds = cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions: inputs.assumptions })
+  const cotton = inputs.cotton?.on ? inputs.cotton : null
+  const harvestCompleteCropIds = cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions: inputs.assumptions, cotton: cotton?.adapter ?? null })
 
-  // Cotton actuals from the entity's gin receipts (per-bale weights first).
-  const balesByReceipt = new Map<string, { lbs: number; count: number }>()
-  for (const b of inputs.cottonBales) {
-    const g = balesByReceipt.get(b.gin_receipt_id) ?? { lbs: 0, count: 0 }
-    g.lbs += num(b.net_weight_lbs)
-    g.count += 1
-    balesByReceipt.set(b.gin_receipt_id, g)
-  }
-  let lintLbs = 0
-  let baleCount = 0
-  for (const r of scope.ginReceipts(inputs.ginReceipts)) {
-    const fromBales = balesByReceipt.get(r.id)
-    lintLbs += fromBales && fromBales.lbs > 0 ? fromBales.lbs : num(r.total_bale_weight)
-    baleCount += fromBales && fromBales.count > 0 ? fromBales.count : num(r.bales_count)
-  }
-  const cottonProductionByCrop = new Map<string, { lintLbs: number; bales: number }>()
+  // Cotton actuals from the entity's gin receipts (per-bale weights first)
+  // plus, module on (092), the entity's seed cotton still on the yard at the
+  // resolved turnout — lib/cotton.ts cottonProductionTotals, one seam.
+  const scopedReceipts = scope.ginReceipts(inputs.ginReceipts)
+  const scopedLoads = cotton?.sources ? scope.ginReceipts(cotton.sources.loads) : null
+  const cottonProductionByCrop = new Map<string, CottonProductionLike>()
   const cottonPhysicalByCrop = new Map<string, CottonPhysicalSummary>()
   const cottonSummary = inputs.cottonPhysicalInputs ? attribution.cottonSummary(inputs.cottonPhysicalInputs) : null
   for (const c of crops) {
     if (!isCottonCrop(c.name)) continue
-    cottonProductionByCrop.set(c.id, { lintLbs, bales: baleCount })
+    cottonProductionByCrop.set(c.id, cottonProductionTotals({
+      receipts: scopedReceipts, bales: inputs.cottonBales,
+      loads: scopedLoads, ginnedLoadIds: cotton?.sources?.ginnedLoadIds ?? null,
+      turnout: cotton ? cotton.turnoutFor(c.id, cropYear) : null,
+    }))
     if (cottonSummary) cottonPhysicalByCrop.set(c.id, cottonSummary)
   }
 
