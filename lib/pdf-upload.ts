@@ -197,7 +197,13 @@ export type DiscountScheduleExtraction = {
 
 export type TicketExtraction = {
   ticket_number: string | null
-  date: string | null
+  /** The date EXACTLY as printed ("10/03", "OCT 3 26") — lib/ticket-date
+   *  resolveTicketDate turns it into a load date; the code decides the year. */
+  date_text: string | null
+  /** Whether a year was printed as part of that date (null = no date). */
+  year_printed: boolean | null
+  /** Legacy field (pre-093 extractions returned an ISO date). */
+  date?: string | null
   time: string | null
   truck: string | null
   crop: string | null
@@ -597,6 +603,8 @@ export type CottonLoadExtraction = {
   producer: string | null
   farm_number: string | null
   field: string | null
+  /** As printed on the ticket ("10/03") until the page resolves them through
+   *  lib/ticket-date — then YYYY-MM-DD. */
   picked_date: string | null
   delivered_date: string | null
   truck: string | null

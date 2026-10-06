@@ -20,6 +20,11 @@ import { imagesToPdf } from '@/lib/image-capture'
 import { practiceOf } from '@/lib/yields'
 import { rememberHarvestEntryPath } from '@/lib/harvest-entry-path'
 import { reportError } from '@/lib/friendly-error'
+import { effectiveCropYear, resolveTicketDate, yearAssumedNote } from '@/lib/ticket-date'
+import {
+  cropConflictNote, cropForFieldOnDate, fieldDefaultNote, resolveTicketCrop,
+  type CropProvenance, type FieldCropDefault,
+} from '@/lib/load-crop-default'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
 import { ConfirmDialog } from '@/components/app-dialog'
@@ -34,6 +39,7 @@ type Row = {
   raw_crop: string | null
   raw_from: string | null
   raw_to: string | null
+  raw_date: string | null
   // Editable form state.
   date: string
   time: string
@@ -53,6 +59,16 @@ type Row = {
   to_buyer_id: string
   contract_id: string
   practice: '' | 'irrigated' | 'dryland'
+  // Review state (never stored): where the date's year and the crop came from.
+  date_year_assumed: boolean
+  date_problem: 'unreadable' | 'impossible' | null
+  /** The crop the printed commodity fuzzy-matched (the paper evidence). */
+  printed_crop_id: string | null
+  crop_prov: CropProvenance
+  /** The field's planting default for this row's field × crop year × date. */
+  crop_default: FieldCropDefault | null
+  /** The printed commodity names a crop the field is not planted to. */
+  crop_conflict: { ticketCropId: string; fieldCropIds: string[] } | null
 }
 
 function numStr(n: number | null | undefined): string {
@@ -65,23 +81,31 @@ function num(s: string): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-function todayISO() {
-  const d = new Date()
-  const tz = d.getTimezoneOffset() * 60000
-  return new Date(d.getTime() - tz).toISOString().slice(0, 10)
+type Refs = { crops: Crop[]; trucks: Truck[]; fields: Field[]; bins: Bin[]; buyers: Buyer[]; plantings: FieldPlanting[] }
+
+/**
+ * The crop rule on a row (lib/load-crop-default), re-run whenever the field,
+ * the date, or the page's crop year changes — unless the user has picked the
+ * crop ('user'), which nothing overwrites. Order: the date is already
+ * resolved → the crop year (the existing rule: the page's crop year, else the
+ * date's year) → the field's planting → precedence against the printed crop.
+ * Rows sourced from a bin have no field default and keep the printed crop.
+ */
+function applyCropRule(r: Row, refs: Refs, pageCropYear: string): Row {
+  if (r.crop_prov === 'user') return r
+  const cropYear = effectiveCropYear(pageCropYear, r.date || null)
+  const fieldDefault = r.from_type === 'field' && r.from_field_id
+    ? cropForFieldOnDate({ plantings: refs.plantings, crops: refs.crops, fieldId: r.from_field_id, cropYear, date: r.date || null })
+    : null
+  const res = resolveTicketCrop({ printedCropId: r.printed_crop_id, fieldDefault, fallbackCropId: r.printed_crop_id ?? '' })
+  return { ...r, crop_id: res.cropId, crop_prov: res.provenance, crop_default: fieldDefault, crop_conflict: res.conflict }
 }
 
-function ticketToRow(
-  t: TicketExtraction,
-  crops: Crop[],
-  trucks: Truck[],
-  fields: Field[],
-  bins: Bin[],
-  buyers: Buyer[],
-  plantings: FieldPlanting[],
-): Row {
-  // Crop first — most other matches depend on it.
-  const crop = findBestMatch(t.crop, crops, (c) => c.name)
+function ticketToRow(t: TicketExtraction, refs: Refs, pageCropYear: string, today: Date): Row {
+  const { crops, trucks, fields, bins, buyers } = refs
+  // The printed commodity is evidence on paper — matched, then weighed
+  // against the field's plantings in applyCropRule.
+  const printedCrop = findBestMatch(t.crop, crops, (c) => c.name)
   const truck = findBestMatch(t.truck, trucks, (tr) => tr.name_or_number)
 
   // From: type as read, fallback to inferring from name match.
@@ -119,18 +143,24 @@ function ticketToRow(
     net = +(t.gross_weight - t.tare_weight).toFixed(2)
   }
 
-  void plantings
+  // The date exactly as printed → a load date. THE CODE decides the year:
+  // printed → as printed; missing → this year (last year when that would put
+  // the ticket more than a week ahead); unreadable or impossible → blank, so
+  // the row needs a look instead of silently landing on today.
+  const dateText = t.date_text ?? t.date ?? null
+  const resolved = resolveTicketDate(dateText, today, { yearPrinted: t.year_printed })
 
-  return {
+  const base: Row = {
     raw_truck: t.truck,
     raw_crop: t.crop,
     raw_from: t.from_name,
     raw_to: t.to_name,
-    date: t.date && /^\d{4}-\d{2}-\d{2}$/.test(t.date) ? t.date : todayISO(),
+    raw_date: dateText,
+    date: resolved.date ?? '',
     time: t.time && /^\d{2}:\d{2}$/.test(t.time) ? t.time : '',
     ticket_number: t.ticket_number ?? '',
     truck_id: truck?.id ?? '',
-    crop_id: crop?.id ?? '',
+    crop_id: printedCrop?.id ?? '',
     gross_weight: numStr(t.gross_weight),
     tare_weight: numStr(t.tare_weight),
     net_weight: numStr(net),
@@ -144,13 +174,22 @@ function ticketToRow(
     to_buyer_id,
     contract_id: '',
     practice: '',
+    date_year_assumed: resolved.yearAssumed,
+    date_problem: resolved.problem,
+    printed_crop_id: printedCrop?.id ?? null,
+    crop_prov: printedCrop ? 'ticket' : 'fallback',
+    crop_default: null,
+    crop_conflict: null,
   }
+  return applyCropRule(base, refs, pageCropYear)
 }
 
 function rowStatus(r: Row, cropYear: string): 'ready' | 'review' {
   if (!cropYear) return 'review'
   if (!r.date) return 'review'
   if (!r.crop_id) return 'review'
+  // The ticket names one crop and the field is planted to another: a person decides.
+  if (r.crop_conflict && r.crop_prov !== 'user') return 'review'
   if (!r.truck_id) return 'review'
   const net = num(r.net_weight)
   if (net == null || net <= 0) return 'review'
@@ -236,6 +275,8 @@ export default function ScanTicketsPage() {
     })()
   }, [supabase])
 
+  const refs: Refs = useMemo(() => ({ crops, trucks, fields, bins, buyers, plantings }), [crops, trucks, fields, bins, buyers, plantings])
+
   const seasonYearOptions = useMemo(
     () =>
       cropYearOptionsFromPlantings(
@@ -245,7 +286,14 @@ export default function ScanTicketsPage() {
     [plantings, cropYear],
   )
 
-  function fieldsForCrop(crop_id: string): Field[] {
+  // The page's crop year is part of the crop rule (which plantings count), so
+  // changing it re-runs the rule on every row the user hasn't settled.
+  function changeCropYear(v: string) {
+    setCropYear(v)
+    setRows((rs) => rs.map((r) => applyCropRule(r, refs, v)))
+  }
+
+  function fieldsForCrop(crop_id: string, keepFieldId = ''): Field[] {
     if (!crop_id) return fields
     const yearNum = cropYear === '' ? null : Number(cropYear)
     const ids = new Set(
@@ -253,6 +301,9 @@ export default function ScanTicketsPage() {
         .filter((p) => p.crop_id === crop_id && (yearNum == null || p.season_year === yearNum))
         .map((p) => p.field_id),
     )
+    // The row's own field stays listed even when it is planted to another
+    // crop — that is exactly the conflict the row is flagged for.
+    if (keepFieldId) ids.add(keepFieldId)
     return fields.filter((f) => ids.has(f.id))
   }
 
@@ -317,7 +368,8 @@ export default function ScanTicketsPage() {
         return
       }
       if (warning) setErr(warning)
-      const next = tickets.map((t) => ticketToRow(t, crops, trucks, fields, bins, buyers, plantings))
+      const today = new Date()
+      const next = tickets.map((t) => ticketToRow(t, refs, cropYear, today))
       setRows(next)
       setBanner(`Turnrow read ${next.length} ticket${next.length === 1 ? '' : 's'} — please check them against the original before saving.`)
     } catch (e: any) {
@@ -358,12 +410,28 @@ export default function ScanTicketsPage() {
     setRows((rs) =>
       rs.map((r, j) => {
         if (i !== j) return r
-        const next = { ...r, ...patch }
+        let next: Row = { ...r, ...patch }
         // Auto-recompute net when gross or tare changes via this update.
         if ('gross_weight' in patch || 'tare_weight' in patch) {
           const g = num(next.gross_weight)
           const tr = num(next.tare_weight)
           if (g != null && tr != null) next.net_weight = String(+(g - tr).toFixed(2))
+        }
+        // The user picked the crop: it is theirs from here on — nothing
+        // (field change, date change, crop year change) overwrites it.
+        if ('crop_id' in patch) {
+          next.crop_prov = 'user'
+          next.crop_conflict = null
+        }
+        // A typed date clears the "year assumed" chip and any read problem.
+        if ('date' in patch) {
+          next.date_year_assumed = false
+          next.date_problem = null
+        }
+        // Field, source type, or date changed → re-run the crop rule (unless
+        // the user has chosen the crop).
+        if ('from_field_id' in patch || 'from_type' in patch || 'date' in patch) {
+          next = applyCropRule(next, refs, cropYear)
         }
         // When crop changes, drop selections that no longer fit the crop filter.
         if ('crop_id' in patch) {
@@ -491,6 +559,55 @@ export default function ScanTicketsPage() {
   const hl = (cond: boolean) => (cond ? 'bg-amber-50 rounded-lg' : '')
   const readHint = (text: string | null) => text ? <div className="text-xs text-amber-700 mt-1">Ticket says “{text}”</div> : null
 
+  const cropName = (id: string) => crops.find((c) => c.id === id)?.name ?? '—'
+  const quickPick = (i: number, id: string, label?: string) => (
+    <button key={id} type="button" onClick={() => updateRow(i, { crop_id: id })} className="inline-flex items-center min-h-10 px-2 rounded-lg border border-slate-300 bg-white text-brand-deep text-xs font-semibold no-print">
+      {label ?? `Use ${cropName(id)}`}
+    </button>
+  )
+  // Where the row's crop came from, in plain words — and the one-tap switches.
+  function cropNote(r: Row, i: number): ReactNode {
+    const rowCropYear = effectiveCropYear(cropYear, r.date || null)
+    const fieldName = r.from_type === 'field' && r.from_field_id ? fields.find((f) => f.id === r.from_field_id)?.name_or_number ?? 'this field' : null
+    const d = r.crop_default
+    if (r.crop_prov === 'user') return null
+    // 3. Paper says one crop, the field is planted to another: keep the
+    //    ticket's crop, flag it, offer the field's crop(s).
+    if (r.crop_conflict && r.crop_id) {
+      return (
+        <div className="text-xs text-amber-800 space-y-1">
+          <div>{cropConflictNote({ ticketCrop: cropName(r.crop_id), fieldName: fieldName ?? 'this field', fieldCrops: r.crop_conflict.fieldCropIds.map(cropName), cropYear: rowCropYear })}</div>
+          <div className="flex flex-wrap gap-1">{r.crop_conflict.fieldCropIds.map((id) => quickPick(i, id))}</div>
+        </div>
+      )
+    }
+    // 1. From the ticket, and the field agrees.
+    if (r.crop_prov === 'ticket' && r.crop_id) {
+      return <div className="text-xs text-slate-500">{d && d.fieldCropIds.includes(r.crop_id) ? 'from ticket, matches field' : 'from ticket'}</div>
+    }
+    // 2. From the field's planting — the spring/fall pair offers the switch.
+    if (r.crop_prov === 'field_planting' && d?.cropId) {
+      return (
+        <div className="text-xs text-slate-500 flex flex-wrap items-center gap-1">
+          <span>{d.reason === 'spring_fall_by_date' ? fieldDefaultNote(d, cropName, rowCropYear) : `from field (${rowCropYear ?? ''} planting)`}</span>
+          {d.reason === 'spring_fall_by_date' && d.alternatives.map((id) => quickPick(i, id, `Switch to ${cropName(id)}`))}
+        </div>
+      )
+    }
+    // 4. Nothing decided it: say why, with the field's crops as quick picks.
+    if (!r.crop_id) {
+      const note = d ? fieldDefaultNote(d, cropName, rowCropYear) : null
+      return (
+        <div className="text-xs text-amber-700 space-y-1">
+          {note && <div>{note}</div>}
+          {d && d.alternatives.length > 0 && <div className="flex flex-wrap gap-1">{d.alternatives.map((id) => quickPick(i, id))}</div>}
+          {readHint(r.raw_crop)}
+        </div>
+      )
+    }
+    return null
+  }
+
   // One set of controls per ticket, rendered into the wide table (xl+) and
   // into stacked cards (below xl) — the same inputs, two layouts.
   function fieldsFor(r: Row, i: number): Record<(typeof COLUMNS)[number], ReactNode> & { tareWarn: string | null } {
@@ -502,7 +619,7 @@ export default function ScanTicketsPage() {
       baseMoisturePct: crop?.base_moisture_pct ?? null,
       baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
     })
-    const ff = fieldsForCrop(r.crop_id)
+    const ff = fieldsForCrop(r.crop_id, r.from_type === 'field' ? r.from_field_id : '')
     const bb = binsForCrop(r.crop_id)
     const cc = contractsFor(r.to_buyer_id, r.crop_id)
     const tareWarn = lowTareWarning(num(r.tare_weight), tareStatsIndex.get(truckTareKey({ truck_id: r.truck_id }) ?? ''))
@@ -515,7 +632,15 @@ export default function ScanTicketsPage() {
       ) : (
         <span className="inline-block rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 text-xs font-semibold">Needs a look</span>
       ),
-      Date: <input type="date" aria-label="Date" value={r.date} onChange={(e) => updateRow(i, { date: e.target.value })} className={`${inputCls} ${hl(!r.date)}`} />,
+      Date: (
+        <div className={hl(!r.date)}>
+          <input type="date" aria-label="Date" value={r.date} onChange={(e) => updateRow(i, { date: e.target.value })} className={inputCls} />
+          {r.date && r.date_year_assumed && <div className="text-xs text-amber-700 mt-1">{yearAssumedNote(r.date)}</div>}
+          {!r.date && r.date_problem && (
+            <div className="text-xs text-amber-700 mt-1">{r.date_problem === 'impossible' ? "That isn't a real date" : "Couldn't read the date"}{r.raw_date ? ` — ticket says “${r.raw_date}”` : ''}</div>
+          )}
+        </div>
+      ),
       Time: <input type="time" aria-label="Time" value={r.time} onChange={(e) => updateRow(i, { time: e.target.value })} className={inputCls} />,
       'Ticket #': <input aria-label="Ticket number" value={r.ticket_number} onChange={(e) => updateRow(i, { ticket_number: e.target.value })} className={inputCls} />,
       Truck: (
@@ -528,12 +653,12 @@ export default function ScanTicketsPage() {
         </div>
       ),
       Crop: (
-        <div className={hl(!r.crop_id)}>
+        <div className={`${hl(!r.crop_id || (r.crop_conflict != null && r.crop_prov !== 'user'))} space-y-1`}>
           <select aria-label="Crop" value={r.crop_id} onChange={(e) => updateRow(i, { crop_id: e.target.value })} className={inputCls}>
             <option value="">— select —</option>
             {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
-          {!r.crop_id && readHint(r.raw_crop)}
+          {cropNote(r, i)}
         </div>
       ),
       'Gross lb': <input type="number" step="0.01" inputMode="decimal" aria-label="Gross pounds" value={r.gross_weight} onChange={(e) => updateRow(i, { gross_weight: e.target.value })} className={`${inputCls} tabular-nums`} />,
@@ -663,7 +788,7 @@ export default function ScanTicketsPage() {
             Crop year
             <select
               value={cropYear}
-              onChange={(e) => setCropYear(e.target.value)}
+              onChange={(e) => changeCropYear(e.target.value)}
               className="mt-1 w-40 rounded-lg border border-slate-300 px-3 min-h-11 text-base bg-white"
             >
               <option value="">— select —</option>

@@ -442,8 +442,9 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
     return splitHarvestByCrop({
       plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions: effAssumptions,
       cotton: cottonModel.adapter ? { adapter: cottonModel.adapter, lintFor: (p) => cottonModel.yieldFor(p)?.lintLbs ?? 0 } : null,
+      doubleCropIds,
     })
-  }, [scopedPlantings, aggByKey, cropYear, cropCompleteKeys, effAssumptions, cottonModel])
+  }, [scopedPlantings, aggByKey, cropYear, cropCompleteKeys, effAssumptions, cottonModel, doubleCropIds])
 
   // Seed commitments per crop id (077): committed production from the linked
   // plantings, attributed like every contract; the scenario cell locks the

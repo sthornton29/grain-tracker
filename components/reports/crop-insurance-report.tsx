@@ -20,7 +20,7 @@ import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { analyzeYields, buildYieldInputs, fieldCropAggregates, harvestStatusOf, withLoadBreakouts, type CombineEntryLike, type HarvestStatus } from '@/lib/yields'
 import { useCottonYields } from '@/lib/use-cotton-yields'
-import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { buildDoubleCropSet, cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { roleCanEditYields } from '@/lib/app-role'
@@ -278,13 +278,16 @@ export default function CropInsuranceReport() {
   // uses (analyzeYields + the crop-level harvest-complete override). Only
   // complete fields can need (or block on) a production breakout.
   const harvestStatusById = useMemo(() => {
+    // Full-season / double-crop cohorts come from EVERY planting (the wheat
+    // that makes a bean field double-cropped is not in the year's crop filter).
+    const doubleCropIds = buildDoubleCropSet(plantings, cropById)
     const analysis = analyzeYields(
-      buildYieldInputs({ plantings: yearPlantings, aggByKey, assumptions: effAssumptions, cotton: cottonModel.adapter }),
+      buildYieldInputs({ plantings: yearPlantings, aggByKey, assumptions: effAssumptions, cotton: cottonModel.adapter, doubleCropIds }),
     )
     const m = new Map<string, HarvestStatus>()
     for (const p of yearPlantings) m.set(p.id, harvestStatusOf(p, analysis.excluded, cropCompleteKeys))
     return m
-  }, [yearPlantings, aggByKey, cropCompleteKeys, effAssumptions, cottonModel])
+  }, [plantings, cropById, yearPlantings, aggByKey, cropCompleteKeys, effAssumptions, cottonModel])
 
   const isMixedNoBreakout = (p: FieldPlanting) =>
     (Number(p.irrigated_acres) || 0) > 0 && (Number(p.dryland_acres) || 0) > 0 && !p.yield_breakout_entered

@@ -86,7 +86,7 @@ export function mergeTickets(parts: TicketsExtraction[]): TicketsExtraction {
     tickets: mergeList(
       parts.map((p) => p.tickets ?? []),
       // A ticket number identifies the ticket; unnumbered tickets always keep.
-      (t) => (t.ticket_number ? `${norm(t.ticket_number)}|${norm(t.date)}` : null),
+      (t) => (t.ticket_number ? `${norm(t.ticket_number)}|${norm(t.date_text ?? t.date)}` : null),
     ),
   }
 }

@@ -28,7 +28,7 @@ import {
   type MarketingRow,
   type Planting,
 } from '@/lib/marketing'
-import { buildDoubleCropSet } from '@/lib/plantings'
+import { buildDoubleCropSet, croppingOf } from '@/lib/plantings'
 import {
   cropsWithCompleteHarvest,
   fieldCropAggregates,
@@ -173,7 +173,7 @@ async function loadMarketingBundle(
     sources: await fetchCottonYieldSources(supabase).catch(() => null),
     crops, assumptions,
   })
-  const harvestCompleteIds = cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions, cotton: cottonModel.adapter })
+  const harvestCompleteIds = cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions, cotton: cottonModel.adapter, doubleCropIds })
   const scopedReceipts = scope.ginReceipts(ginReceipts)
   const scopedCottonLoads = cottonModel.sources ? scope.ginReceipts(cottonModel.sources.loads) : null
   const cottonProd = new Map<string, CottonProductionLike>()
@@ -359,7 +359,7 @@ async function getMarketingSummary(supabase: SupabaseClient, ctx: AssistantConte
   }
 }
 
-async function getYields(supabase: SupabaseClient, ctx: AssistantContext, input: { crop_year: number; grouping?: 'field' | 'farm' | 'entity' | 'crop' | 'landowner'; crop?: string }) {
+async function getYields(supabase: SupabaseClient, ctx: AssistantContext, input: { crop_year: number; grouping?: 'field' | 'farm' | 'entity' | 'crop' | 'landowner'; crop?: string; cropping?: 'all' | 'full_season' | 'double_crop' }) {
   const grouping = input.grouping ?? 'field'
   const bits = await fetchScopeBits(supabase)
   const [crops, plantings, loads, splits, combineEntries, landowners] = await Promise.all([
@@ -380,8 +380,12 @@ async function getYields(supabase: SupabaseClient, ctx: AssistantContext, input:
   const entityById = new Map(bits.entities.map((e) => [e.id, e]))
   const landownerById = new Map(landowners.map((l) => [l.id, l]))
   const cropFilter = input.crop?.trim().toLowerCase() || null
+  // Full-season vs double-crop (lib/plantings croppingOf — the one rule), over
+  // EVERY planting so the spring crop on the same field is seen.
+  const doubleCropIds = buildDoubleCropSet(plantings, cropById)
+  const croppingFilter = input.cropping && input.cropping !== 'all' ? input.cropping : null
 
-  type Row = { group: string; crop: string; acres: number; dry_bu: number }
+  type Row = { group: string; crop: string; acres: number; dry_bu: number; full_season: { acres: number; dry_bu: number }; double_crop: { acres: number; dry_bu: number } }
   const grouped = new Map<string, Row>()
   for (const p of scope.plantings(plantings)) {
     if (p.season_year !== input.crop_year) continue
@@ -396,18 +400,31 @@ async function getYields(supabase: SupabaseClient, ctx: AssistantContext, input:
       : grouping === 'entity' ? (farm?.entity_id ? entityById.get(farm.entity_id)?.name ?? 'No entity' : 'No entity')
       : grouping === 'landowner' ? (farm?.landowner_id ? landownerById.get(farm.landowner_id)?.name ?? 'No landowner' : 'Owned / no landowner')
       : crop.name
+    const cropping = croppingOf(p, doubleCropIds)
+    if (croppingFilter && cropping !== croppingFilter) continue
     const key = `${groupName}|${crop.name}`
-    const row = grouped.get(key) ?? { group: groupName, crop: crop.name, acres: 0, dry_bu: 0 }
-    row.acres += num(p.planted_acres)
-    row.dry_bu += aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)?.dryBu ?? 0
+    const row = grouped.get(key) ?? { group: groupName, crop: crop.name, acres: 0, dry_bu: 0, full_season: { acres: 0, dry_bu: 0 }, double_crop: { acres: 0, dry_bu: 0 } }
+    const acres = num(p.planted_acres)
+    const bu = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)?.dryBu ?? 0
+    row.acres += acres
+    row.dry_bu += bu
+    row[cropping].acres += acres
+    row[cropping].dry_bu += bu
     grouped.set(key, row)
   }
+  const side = (s: { acres: number; dry_bu: number }) => ({ acres: r0(s.acres), dry_bu: r0(s.dry_bu), yield_per_acre: s.acres > 0 && s.dry_bu > 0 ? r2(s.dry_bu / s.acres) : null })
   const rows = [...grouped.values()]
-    .map((r) => ({ ...r, acres: r0(r.acres), dry_bu: r0(r.dry_bu), yield_per_acre: r.acres > 0 && r.dry_bu > 0 ? r2(r.dry_bu / r.acres) : null }))
+    .map((r) => ({
+      group: r.group, crop: r.crop, acres: r0(r.acres), dry_bu: r0(r.dry_bu), yield_per_acre: r.acres > 0 && r.dry_bu > 0 ? r2(r.dry_bu / r.acres) : null,
+      // The full-season / double-crop split, only where a row has both (they
+      // partition the row exactly: the two sides sum to acres and dry_bu).
+      ...(r.full_season.acres > 0 && r.double_crop.acres > 0 ? { full_season: side(r.full_season), double_crop: side(r.double_crop) } : {}),
+    }))
     .sort((a, b) => (b.dry_bu - a.dry_bu))
   return {
     crop_year: input.crop_year,
     grouping,
+    cropping: input.cropping ?? 'all',
     unit: 'dry bushels (grain); cotton is NOT in these rows — ask about gin receipts for cotton lbs',
     note: 'Combine-monitor entries replace weighed loads for their field, so bushels can exceed hauled loads. In-progress fields are included.',
     rows: rows.slice(0, 120),
@@ -1224,8 +1241,8 @@ export const ASSISTANT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'get_yields',
-    description: 'Harvest yields for a crop year grouped by field, farm, entity, landowner, or crop: acres, dry bushels, yield/acre. Splits-aware and combine-entry-aware — the same math as the Yields page.',
-    input_schema: { type: 'object', properties: { crop_year: cropYearProp, grouping: { type: 'string', enum: ['field', 'farm', 'entity', 'crop', 'landowner'] }, crop: { type: 'string', description: 'Optional crop name filter' } }, required: ['crop_year'] },
+    description: 'Harvest yields for a crop year grouped by field, farm, entity, landowner, or crop: acres, dry bushels, yield/acre. Splits-aware and combine-entry-aware — the same math as the Yields page. Knows full-season vs double-crop (soybeans behind wheat): a row with both carries a full_season / double_crop split that sums to the row exactly, and the optional cropping argument restricts the rows to one of them.',
+    input_schema: { type: 'object', properties: { crop_year: cropYearProp, grouping: { type: 'string', enum: ['field', 'farm', 'entity', 'crop', 'landowner'] }, crop: { type: 'string', description: 'Optional crop name filter' }, cropping: { type: 'string', enum: ['all', 'full_season', 'double_crop'], description: 'Optional: only full-season plantings, only double-crop plantings (a double-crop-designated crop planted behind a spring-harvest crop on the same field that year), or all (default)' } }, required: ['crop_year'] },
   },
   {
     name: 'get_revenue_projection',

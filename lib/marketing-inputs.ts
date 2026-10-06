@@ -189,8 +189,8 @@ export async function loadProductionInputs(
 
   // The SHARED mapping — the cotton adapter routes cotton plantings to their
   // seed cotton loads when the module is on.
-  const analysis = analyzeYields(buildYieldInputs({ plantings, aggByKey, assumptions, cotton: cotton.adapter }))
-  const harvestCompleteCropIds = cropsWithCompleteHarvest({ plantings, aggByKey, cropYear, cropCompleteKeys, assumptions, cotton: cotton.adapter })
+  const analysis = analyzeYields(buildYieldInputs({ plantings, aggByKey, assumptions, cotton: cotton.adapter, doubleCropIds }))
+  const harvestCompleteCropIds = cropsWithCompleteHarvest({ plantings, aggByKey, cropYear, cropCompleteKeys, assumptions, cotton: cotton.adapter, doubleCropIds })
 
   // Cotton: lint lbs per field and the crop-level total — receipts (per-bale
   // weights first, the dashboard rule) plus, module on, the turnout estimate

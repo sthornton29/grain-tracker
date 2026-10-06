@@ -132,6 +132,8 @@ export function splitHarvestByCrop(args: {
    *  (actual receipts + the turnout estimate on unginned seed cotton), not a
    *  grain aggregate. Omit → cotton behaves exactly as before. */
   cotton?: { adapter: CottonYieldAdapter; lintFor: (p: SplitPlanting) => number } | null
+  /** Full-season / double-crop cohorts (lib/plantings buildDoubleCropSet). */
+  doubleCropIds?: ReadonlySet<string> | null
   now?: Date
 }): { byCrop: Map<string, HarvestSplit>; statusByPlanting: Map<string, HarvestStatus> } {
   const aggByFieldCrop = new Map<string, FieldCropAgg>()
@@ -158,7 +160,7 @@ export function splitHarvestByCrop(args: {
   const seasonAgg = new Map<string, FieldCropAgg>()
   for (const [ck, v] of aggByFieldCrop) seasonAgg.set(`${ck}|${args.cropYear}`, v)
   const analysis = analyzeYields(
-    buildYieldInputs({ plantings: yearPlantings, aggByKey: seasonAgg, assumptions: args.assumptions, cotton: args.cotton?.adapter ?? null }),
+    buildYieldInputs({ plantings: yearPlantings, aggByKey: seasonAgg, assumptions: args.assumptions, cotton: args.cotton?.adapter ?? null, doubleCropIds: args.doubleCropIds }),
     IN_PROGRESS_THRESHOLD, args.now ?? new Date(),
   )
   const isCotton = (p: SplitPlanting) => args.cotton != null && args.cotton.adapter.isCottonCrop(p.crop_id)

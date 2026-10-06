@@ -319,8 +319,8 @@ export default function RevenueProjectionsReport({ onPayloadChange, headerAction
     if (cropYear === '') return new Set<string>()
     const cropCompleteKeys = new Set<string>()
     for (const a of effAssumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
-    return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions: effAssumptions, cotton: cottonModel.adapter })
-  }, [scopedPlantings, aggByKey, cropYear, effAssumptions, cottonModel])
+    return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear, cropCompleteKeys, assumptions: effAssumptions, cotton: cottonModel.adapter, doubleCropIds })
+  }, [scopedPlantings, aggByKey, cropYear, effAssumptions, cottonModel, doubleCropIds])
 
   // Current futures per crop to value unpriced bushels in blended revenue — the
   // live harvest-month estimate, the EXACT source the Marketing dashboard uses

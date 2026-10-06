@@ -162,7 +162,8 @@ Respond ONLY in JSON with no other text, no markdown backticks:
 
 const TICKETS_PROMPT = `This PDF contains one or more scanned grain hauling tickets or scale tickets. Each ticket represents one truck load of grain. Extract every individual ticket/load from the document. For each ticket, extract:
 - ticket_number (the ticket number if printed or handwritten on the ticket — null if not visible)
-- date (the date on the ticket, format YYYY-MM-DD — null if not visible)
+- date_text (the date EXACTLY as printed on the ticket, character for character — "10/03", "10/03/26", "OCT 3", "Oct 3, 2026". Do NOT reformat it. NEVER guess or supply a year that is not printed on the ticket; many tickets print only the month and day. null if no date is visible)
+- year_printed (true only when a year — two or four digits — is actually printed as part of that date; false when the printed date has no year; null when there is no date)
 - time (the time on the ticket, format HH:MM in 24hr — null if not visible)
 - truck (truck number or truck identifier — null if not visible)
 - crop (the crop or commodity name if listed — null if not visible)
@@ -181,7 +182,8 @@ Respond ONLY in JSON with no other text, no markdown backticks. Use this exact f
   "tickets": [
     {
       "ticket_number": "string or null",
-      "date": "YYYY-MM-DD or null",
+      "date_text": "string exactly as printed, or null",
+      "year_printed": true or false or null,
       "time": "HH:MM or null",
       "truck": "string or null",
       "crop": "string or null",
@@ -674,7 +676,7 @@ For each load extract:
 - producer (the producer/farmer name)
 - farm_number (the FSA farm number if printed - null if not)
 - field (the field name/description exactly as printed, e.g. "JOE MCCOULOUGH IRR")
-- picked_date, delivered_date (YYYY-MM-DD; null when absent)
+- picked_date, delivered_date (EXACTLY as printed — "10/03", "10/03/26", "Oct 3 2026"; do NOT reformat, and NEVER guess or supply a year that is not printed on the ticket — gin tickets often print only month and day; null when absent)
 - truck (truck/trailer identifier text)
 - gross_weight, tare_weight, net_weight (POUNDS of seed cotton, plain numbers, no commas)
 - rolls: the PRINTED roll count, under ANY of its labels - "Number of Rounds", "Rounds", "Rolls", "Round Modules", "Modules" (e.g. "Number of Rounds: 6" -> 6). Printed only; null when the ticket prints none.
@@ -687,7 +689,7 @@ For each load extract:
 The same load number can appear on two pages (a page scanned twice, or a reprint). Report BOTH pages as separate entries with their own page numbers - the app collapses them.
 
 Respond ONLY in JSON, no other text, no markdown fences:
-{"loads": [{"page": number, "load_number": "...", "producer": "...", "farm_number": "... or null", "field": "... or null", "picked_date": "YYYY-MM-DD or null", "delivered_date": "YYYY-MM-DD or null", "truck": "... or null", "gross_weight": number or null, "tare_weight": number or null, "net_weight": number or null, "rolls": number or null, "handwritten_rolls": number or null, "handwritten_note": "... or null", "sequence_mark": "... or null", "crop_year": number or null}]}`
+{"loads": [{"page": number, "load_number": "...", "producer": "...", "farm_number": "... or null", "field": "... or null", "picked_date": "as printed or null", "delivered_date": "as printed or null", "truck": "... or null", "gross_weight": number or null, "tare_weight": number or null, "net_weight": number or null, "rolls": number or null, "handwritten_rolls": number or null, "handwritten_note": "... or null", "sequence_mark": "... or null", "crop_year": number or null}]}`
 
 const GIN_RECEIPT_PROMPT = `This is a STATEMENT OF GINNING from a cotton gin (a gin receipt). Extract the full statement:
 

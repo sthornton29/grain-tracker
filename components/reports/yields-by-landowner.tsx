@@ -3,7 +3,9 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
-import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { buildDoubleCropSet, buildSpringCropByFieldYear, croppingOf, cropYearOptionsFromPlantings, type Cropping } from '@/lib/plantings'
+import { croppingFilterLabel, type CroppingFilter } from '@/components/reports/cropping'
+import type { CroppingByKey } from '@/components/yields-detail'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useReportCropYear } from '@/lib/report-filters'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
@@ -81,7 +83,7 @@ type Props = {
   /** Embedded on the Yields page: the crop year / crop / entity come from the
    *  page's ONE filter strip; this component then shows only its landowner
    *  pick and no header of its own. */
-  controlled?: { cropYear: number | ''; cropId: string; entityId: string }
+  controlled?: { cropYear: number | ''; cropId: string; entityId: string; cropping?: CroppingFilter }
 }
 
 export default function YieldsByLandowner({ onPayloadChange, headerActions, controlled }: Props) {
@@ -112,6 +114,9 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
   const cropYear = controlled ? controlled.cropYear : ownCropYear
   const cropId = controlled ? controlled.cropId : ownCropId
   const entityId = controlled ? controlled.entityId : ownEntityId
+  // Full-season / double-crop: the Yields page's Cropping control reaches
+  // this tab through `controlled`; standalone the report shows everything.
+  const cropping: CroppingFilter = controlled?.cropping ?? 'all'
 
   useEffect(() => {
     ;(async () => {
@@ -214,6 +219,19 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
     [plantings, cropYear],
   )
 
+  // Full-season / double-crop cohorts, from EVERY planting (the spring crop
+  // that makes a field double-cropped is outside the crop filter).
+  const doubleCropIds = useMemo(() => buildDoubleCropSet(plantings, cropById), [plantings, cropById])
+  const springCropByFieldYear = useMemo(() => buildSpringCropByFieldYear(plantings, cropById), [plantings, cropById])
+  const croppingByKey = useMemo<CroppingByKey>(() => {
+    const m = new Map<string, { cropping: Cropping; springCropName: string | null }>()
+    for (const p of plantings) {
+      const spring = springCropByFieldYear.get(`${p.field_id}|${p.season_year}`)
+      m.set(`${p.field_id}|${p.crop_id}|${p.season_year}`, { cropping: croppingOf(p, doubleCropIds), springCropName: spring ? cropById.get(spring)?.name ?? null : null })
+    }
+    return m
+  }, [plantings, doubleCropIds, springCropByFieldYear, cropById])
+
   // Plantings matching the active filters (before the harvest exclusion).
   const filteredPlantings = useMemo(() => plantings.filter((p) => {
     if (cropYear !== '' && p.season_year !== cropYear) return false
@@ -224,14 +242,15 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
     if (entityId && farm?.entity_id !== entityId) return false
     const ownerKey = farm?.landowner_id ?? NO_LANDOWNER_KEY
     if (landownerId && ownerKey !== landownerId) return false
+    if (cropping !== 'all' && croppingOf(p, doubleCropIds) !== cropping) return false
     return true
-  }), [plantings, fieldById, farmById, cropYear, cropId, entityId, landownerId])
+  }), [plantings, fieldById, farmById, cropYear, cropId, entityId, landownerId, cropping, doubleCropIds])
 
   // Drop unharvested / in-progress fields from the rolled-up numbers and the
   // average-yield header (per crop, over the filtered plantings).
   const yieldAnalysis = useMemo(() => {
-    return analyzeYields(buildYieldInputs({ plantings: filteredPlantings, aggByKey, assumptions, cotton: cottonModel.adapter }))
-  }, [filteredPlantings, aggByKey, assumptions, cottonModel])
+    return analyzeYields(buildYieldInputs({ plantings: filteredPlantings, aggByKey, assumptions, cotton: cottonModel.adapter, doubleCropIds }))
+  }, [filteredPlantings, aggByKey, assumptions, cottonModel, doubleCropIds])
 
   // Build per-landowner aggregation.
   const groups = useMemo<LandownerGroup[]>(() => {
@@ -319,6 +338,7 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
       entityName ?? 'All Entities',
       cropId ? (cropById.get(cropId)?.name ?? 'Crop') : 'All Crops',
       landownerId ? (landownerById.get(landownerId)?.name ?? 'Landowner') : 'All Landowners',
+      croppingFilterLabel(cropping),
     )
   }
 
@@ -529,6 +549,7 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
                                     allowLoadLinks={allowLoadLinks}
                                     perFieldBreakdown
                                     combineEntries={combineEntries}
+                                    croppingByKey={croppingByKey}
                                     cotton={isCottonCrop(t.cropName) ? cottonDetail : null}
                                   />
                                 </td>

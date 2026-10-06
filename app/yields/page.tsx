@@ -10,8 +10,11 @@ import { resolveCropAssumptions } from '@/lib/viewer-assumptions'
 import { useCottonYields } from '@/lib/use-cotton-yields'
 import { roleCanEditYields } from '@/lib/app-role'
 import { roleAllowsPath } from '@/lib/route-guard'
-import { fieldCropAggregates, analyzeYields, buildYieldInputs, harvestStatusOf, isHarvestComplete, groupYieldAggregates, practiceOf, resolvePracticeBreakout, type CropAverage, type HarvestProgress, type GroupYieldAgg, type GroupYieldPlanting, type PracticeBreakout } from '@/lib/yields'
+import { fieldCropAggregates, analyzeYields, buildYieldInputs, cohortKey, harvestStatusOf, isHarvestComplete, groupYieldAggregates, practiceOf, resolvePracticeBreakout, NO_DC_ASSUMPTION_NOTE, type CropAverage, type HarvestProgress, type GroupYieldAgg, type GroupYieldPlanting, type PracticeBreakout } from '@/lib/yields'
+import { buildDoubleCropSet, buildSpringCropByFieldYear, cropHasBothCroppings, croppingOf, CROPPING_LABEL, type Cropping } from '@/lib/plantings'
 import { isCottonCrop } from '@/lib/marketing'
+import { CroppingControl, CroppingTiles, CroppingSplitLine, DcPill, cohortSplit, croppingFilterLabel, type CroppingFilter, type CroppingTileData } from '@/components/reports/cropping'
+import type { CroppingByKey } from '@/components/yields-detail'
 import YieldsByLandowner from '@/components/reports/yields-by-landowner'
 import AvgYieldHeader from '@/components/reports/avg-yield-header'
 import ExportBar from '@/components/export-bar'
@@ -126,6 +129,10 @@ export default function YieldsPage() {
   // report to enter irrigated/dryland breakouts (see the ?breakout=1 effect).
   const [yieldView, setYieldView] = useState<YieldView>('total')
   const [practiceFilter, setPracticeFilter] = usePersistentState<PracticeFilter>('yields:practiceFilter', 'all')
+  // Full-season / double-crop (Part C): persisted with the other filters,
+  // composes with Practice, applies to every tab. Shown only when a crop in
+  // view is designated Double-crop and the season has both kinds planted.
+  const [croppingFilter, setCroppingFilter] = usePersistentState<CroppingFilter>('yields:cropping', 'all')
 
   // Breakout-entry UI state. Tracks which planting's row is being allocated
   // and the in-flight input values. `lastTouched` records which of the two
@@ -234,11 +241,31 @@ export default function YieldsPage() {
   const cropById  = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const entityById = useMemo(() => new Map(entities.map((e) => [e.id, e])), [entities])
 
+  // THE cropping rule (lib/plantings croppingOf) over EVERY planting — the
+  // wheat that makes a bean field double-cropped is a different crop than the
+  // one being viewed, so a filtered list could never classify.
+  const doubleCropIds = useMemo(() => buildDoubleCropSet(plantings, cropById), [plantings, cropById])
+  const springCropByFieldYear = useMemo(() => buildSpringCropByFieldYear(plantings, cropById), [plantings, cropById])
+  const croppingOfP = (p: { id: string }): Cropping => croppingOf(p, doubleCropIds)
+  const springNameFor = (p: FieldPlanting): string | null => {
+    const id = springCropByFieldYear.get(`${p.field_id}|${p.season_year}`)
+    return id ? cropById.get(id)?.name ?? null : null
+  }
+  // The drill-downs' lookup (DC pill + FS/DC subtotals on per-field tables).
+  const croppingByKey = useMemo<CroppingByKey>(() => {
+    const m = new Map<string, { cropping: Cropping; springCropName: string | null }>()
+    for (const p of plantings) {
+      const spring = springCropByFieldYear.get(`${p.field_id}|${p.season_year}`)
+      m.set(`${p.field_id}|${p.crop_id}|${p.season_year}`, { cropping: croppingOf(p, doubleCropIds), springCropName: spring ? cropById.get(spring)?.name ?? null : null })
+    }
+    return m
+  }, [plantings, doubleCropIds, springCropByFieldYear, cropById])
+
   // ---- Drill-down detail --------------------------------------------------
   // One open detail at a time, keyed per view; any view or filter change
   // closes it (the row it pointed at may no longer exist).
   const [openDetail, setOpenDetail] = useState<{ view: ViewMode; key: string } | null>(null)
-  useEffect(() => { setOpenDetail(null) }, [view, year, cropId, farmId, entityId, countyId, practiceFilter])
+  useEffect(() => { setOpenDetail(null) }, [view, year, cropId, farmId, entityId, countyId, practiceFilter, croppingFilter])
   // Cotton sources load lazily the first time a cotton row's detail opens.
   const cottonDetail = useCottonDetailData(supabase)
   function toggleDetail(v: ViewMode, key: string, rowCropName: string) {
@@ -317,7 +344,7 @@ export default function YieldsPage() {
   const isCottonId = (id: string) => cottonOn && cottonModel.cottonCropIds.has(id)
   const cottonFilter = cropId !== '' && isCottonId(cropId)
   const cottonCandidates: FieldPlanting[] = []
-  const visible = plantings.filter((p) => {
+  const visibleAll = plantings.filter((p) => {
     if (year !== '' && p.season_year !== year) return false
     if (cropId && p.crop_id !== cropId) return false
     const fld = fieldById.get(p.field_id)
@@ -343,6 +370,10 @@ export default function YieldsPage() {
     if (isCottonId(p.crop_id)) { cottonCandidates.push(p); return false }
     return true
   })
+  // The Cropping control narrows what is SHOWN; the classifier below still
+  // sees both cohorts (moved-on evidence crosses them), so a field reads the
+  // same whichever view it is looked at from.
+  const visible = croppingFilter === 'all' ? visibleAll : visibleAll.filter((p) => croppingOfP(p) === croppingFilter)
   // The cotton plantings that passed the same filters (every one of them —
   // unharvested rows included, like the grain table).
   const visibleCotton = cottonCandidates
@@ -355,10 +386,10 @@ export default function YieldsPage() {
   // (seed cotton loads in, lint estimates layered on afterwards).
   const yieldAnalysis = useMemo(() => {
     return analyzeYields(
-      buildYieldInputs({ plantings: [...visible, ...visibleCotton], aggByKey, assumptions: effAssumptions, cotton: cottonModel.adapter }),
+      buildYieldInputs({ plantings: [...visibleAll, ...visibleCotton], aggByKey, assumptions: effAssumptions, cotton: cottonModel.adapter, doubleCropIds }),
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plantings, effAssumptions, aggByKey, fieldById, farmById, cropById, cottonOn, cottonModel, year, cropId, farmId, entityId, countyId, view, practiceFilter, viewer.isViewer, viewer.grantedIds])
+  }, [plantings, effAssumptions, aggByKey, fieldById, farmById, cropById, cottonOn, cottonModel, year, cropId, farmId, entityId, countyId, view, practiceFilter, viewer.isViewer, viewer.grantedIds, doubleCropIds])
   const excludedFields = yieldAnalysis.excluded
   const includedPlantings = visible.filter((p) => !excludedFields.has(p.id))
   const includedCotton = visibleCotton.filter((p) => !excludedFields.has(p.id))
@@ -398,6 +429,26 @@ export default function YieldsPage() {
     }
     return m
   }, [yieldAnalysis])
+
+  // Cropping is in play when a crop in view is designated Double-crop AND the
+  // season has both kinds planted (the breakout grid's breakoutShowsSeason idea).
+  const croppingCrops = [...new Set(visibleAll.map((p) => p.crop_id))]
+    .filter((id) => cropById.get(id)?.double_crop && cropHasBothCroppings(plantings, id, year === '' ? null : year, doubleCropIds))
+  const showCropping = croppingCrops.length > 0
+  // Three tiles per such crop — Combined | Full-season | Double-crop — bound to
+  // the Cropping control. The cohorts partition the crop exactly.
+  const croppingTiles: CroppingTileData[] = croppingCrops.map((id) => ({
+    cropId: id,
+    cropName: cropById.get(id)?.name ?? '—',
+    combined: { avg: yieldAnalysis.averages.get(id) ?? null, progress: yieldAnalysis.progress.get(id) ?? null },
+    fullSeason: { avg: yieldAnalysis.cohortAverages.get(cohortKey(id, 'full_season')) ?? null, progress: yieldAnalysis.cohortProgress.get(cohortKey(id, 'full_season')) ?? null },
+    doubleCrop: { avg: yieldAnalysis.cohortAverages.get(cohortKey(id, 'double_crop')) ?? null, progress: yieldAnalysis.cohortProgress.get(cohortKey(id, 'double_crop')) ?? null },
+  }))
+  // The muted "Full-season 53.8 · Double-crop 42.0" split under a combined
+  // aggregate row — only in the combined view, only where a row has both.
+  const splitFor = (ps: readonly FieldPlanting[]) =>
+    cohortSplit(ps, (p) => ({ cropping: croppingOfP(p), acres: Number(p.planted_acres) || 0, dryBu: prodFor(p) }))
+  const showSplitLines = showCropping && croppingFilter === 'all'
 
   // Crop+year combos the user has marked harvest-complete at the crop level
   // (Marketing assumptions). These force every field of that crop to "complete".
@@ -729,7 +780,7 @@ export default function YieldsPage() {
 
     const sections: ExportSection[] = entityGroups.map((g) => {
       const rows: Array<Array<string | number | null>> = []
-      const rowMeta: ('data' | 'subhead' | 'total')[] = []
+      const rowMeta: ('data' | 'subhead' | 'subtotal' | 'total')[] = []
       for (const r of g.rows) {
         const cells: (string | number)[] = [r.cropName]
         if (showEntityYear) cells.push(r.seasonYear)
@@ -740,6 +791,11 @@ export default function YieldsPage() {
         cells.push(r.dryBu)
         if (entityUnit === 'mixed') cells.push(unitOf(r.cropId))
         rows.push(cells); rowMeta.push('data')
+        for (const sub of splitSubRows(
+          splitFor(entityRowPlantings(r)),
+          (label) => [label, ...(showEntityYear ? [r.seasonYear] : [])],
+          (acres, yld, bu) => [acres, ...(entityShowBreakdown ? ['', '', '', ''] : []), yld ?? '', bu, ...(entityUnit === 'mixed' ? [unitOf(r.cropId)] : [])],
+        )) { rows.push(sub.cells); rowMeta.push(sub.meta) }
       }
       if (g.rows.length > 1) {
         const cells: (string | number)[] = [`${g.groupName} total`]
@@ -756,7 +812,7 @@ export default function YieldsPage() {
     })
     const detailSection = openDetailExportSection('entity')
     if (detailSection) sections.push(detailSection)
-    return { title: 'Yields by Entity', filters: fieldFiltersLabel(), singleSheet: true, sections }
+    return { title: exportTitle('Yields by Entity'), filters: fieldFiltersLabel(), singleSheet: true, sections }
   }
 
   type VarietyAgg = {
@@ -820,6 +876,10 @@ export default function YieldsPage() {
     const ids = new Set(r.parts.map((part) => part.plantingId))
     return rollupPlantings.filter((p) => ids.has(p.id))
   }
+  // How a variety did full-season vs double-crop: the SAME attributed parts the
+  // row summed, each part being one cropping.
+  const varietySplit = (r: VarietyAgg) =>
+    cohortSplit(r.parts, (part) => ({ cropping: croppingOf({ id: part.plantingId }, doubleCropIds), acres: part.varietyAcres, dryBu: part.dryBu }))
 
   // Unit-aware column labels for the rollup tables: one unit → that unit's
   // headers ("Dry bu" / "Lint lbs"); grain and cotton together → neutral
@@ -958,8 +1018,23 @@ export default function YieldsPage() {
       parts.push(`County: ${c ? `${c.name}, ${c.state_code}` : '?'}`)
     }
     if (view === 'field' && practiceFilter !== 'all') parts.push(`Practice: ${practiceFilter}`)
+    if (showCropping && croppingFilter !== 'all') parts.push(`Cropping: ${croppingFilterLabel(croppingFilter)}`)
     if (showYieldToggle && yieldView === 'breakdown') parts.push('Irrigated/Dryland breakdown')
     return parts.join(' · ')
+  }
+  // The export title names an active Cropping filter: "Yields by Field — Soybean 2026 · Double-crop only".
+  function exportTitle(base: string): string {
+    if (!showCropping || croppingFilter === 'all') return base
+    const scope = [cropId ? cropById.get(cropId)?.name : null, year !== '' ? String(year) : null].filter(Boolean).join(' ')
+    return `${base} — ${scope ? `${scope} · ` : ''}${croppingFilterLabel(croppingFilter)}`
+  }
+  // Aggregate exports: the Full-season / Double-crop sub-rows under a row that has both.
+  function splitSubRows(split: ReturnType<typeof splitFor>, lead: (label: string) => (string | number)[], tail: (acres: number, yld: number | null, bu: number) => (string | number)[]): Array<{ cells: (string | number)[]; meta: 'subtotal' }> {
+    if (!showSplitLines || !split.both) return []
+    return (['full_season', 'double_crop'] as Cropping[]).map((k) => {
+      const s = k === 'full_season' ? split.fs : split.dc
+      return { cells: [...lead(`  ${CROPPING_LABEL[k]}`), ...tail(s.acres, s.acres > 0 ? s.dryBu / s.acres : null, s.dryBu)], meta: 'subtotal' as const }
+    })
   }
 
   // Both exports emit only the columns the current toggle/filter shows on
@@ -975,6 +1050,7 @@ export default function YieldsPage() {
       { label: 'FSA #' },
       { label: 'Crop' },
       { label: 'Year', format: 'text' },
+      ...(showCropping ? [{ label: 'Cropping' } as ExportColumn] : []),
       { label: 'Acres', align: 'right', format: 'acres' },
     ]
     if (showIrrigatedCol) columns.push({ label: 'Irr ac', align: 'right', format: 'acres' })
@@ -996,6 +1072,7 @@ export default function YieldsPage() {
         r.farm?.fsa_number ?? '',
         r.crop?.name ?? '',
         p.season_year,
+        ...(showCropping ? [CROPPING_LABEL[croppingOfP(p)]] : []),
         r.acres,
       ]
       if (showIrrigatedCol) cells.push(r.irrAc)
@@ -1011,7 +1088,7 @@ export default function YieldsPage() {
     if (detailSection) sections.push(detailSection)
     // The cotton table rides along below the grain table, as on screen.
     if (cottonOn && cottonRows.length > 0) sections.push(cottonSectionExport(cottonRows, `Cotton — ${cropYearLabel(year)}`))
-    return { title: 'Yields by Field', filters: fieldFiltersLabel(), sections }
+    return { title: exportTitle('Yields by Field'), filters: fieldFiltersLabel(), sections }
   }
 
   function buildFarmPayload(): ExportPayload {
@@ -1033,7 +1110,9 @@ export default function YieldsPage() {
     columns.push({ label: prodHeader(farmUnit), align: 'right', format: prodFormat(farmUnit) })
     if (farmUnit === 'mixed') columns.push({ label: 'Unit' })
 
-    const rows = byFarm.map((r) => {
+    const rows: (string | number)[][] = []
+    const rowMeta: ('data' | 'subtotal')[] = []
+    for (const r of byFarm) {
       const y = farmYields(r)
       const cells: (string | number)[] = [
         r.farmName,
@@ -1052,12 +1131,17 @@ export default function YieldsPage() {
       cells.push(y.total ?? '')
       cells.push(r.dryBu)
       if (farmUnit === 'mixed') cells.push(unitOf(r.cropId))
-      return cells
-    })
-    const sections: ExportSection[] = [{ columns, rows }]
+      rows.push(cells); rowMeta.push('data')
+      for (const sub of splitSubRows(
+        splitFor(farmRowPlantings(r)),
+        (label) => [label, '', '', '', r.seasonYear],
+        (acres, yld, bu) => [acres, ...(farmShowBreakdown ? ['', '', '', ''] : []), yld ?? '', bu, ...(farmUnit === 'mixed' ? [unitOf(r.cropId)] : [])],
+      )) { rows.push(sub.cells); rowMeta.push(sub.meta) }
+    }
+    const sections: ExportSection[] = [{ columns, rows, rowMeta }]
     const detailSection = openDetailExportSection('farm')
     if (detailSection) sections.push(detailSection)
-    return { title: 'Yields by Farm', filters: fieldFiltersLabel(), sections }
+    return { title: exportTitle('Yields by Farm'), filters: fieldFiltersLabel(), sections }
   }
 
   function buildVarietyPayload(): ExportPayload {
@@ -1072,9 +1156,11 @@ export default function YieldsPage() {
       ...(varietyUnit === 'mixed' ? [{ label: 'Unit' } as ExportColumn] : []),
       { label: 'Note' },
     ]
-    const rows = varietyAgg.map((r) => {
+    const rows: (string | number)[][] = []
+    const rowMeta: ('data' | 'subtotal')[] = []
+    for (const r of varietyAgg) {
       const yld = r.acres > 0 ? r.dryBu / r.acres : null
-      return [
+      rows.push([
         r.cropName,
         r.variety,
         r.seasonYear,
@@ -1084,9 +1170,14 @@ export default function YieldsPage() {
         r.dryBu,
         ...(varietyUnit === 'mixed' ? [unitOf(varietyCropId(r))] : []),
         r.anyAcreShare ? 'incl. acre-share est.' : '',
-      ]
-    })
-    const sections: ExportSection[] = [{ columns, rows }]
+      ]); rowMeta.push('data')
+      for (const sub of splitSubRows(
+        varietySplit(r),
+        (label) => [label, '', r.seasonYear, ''],
+        (acres, yld2, bu) => [acres, yld2 ?? '', bu, ...(varietyUnit === 'mixed' ? [unitOf(varietyCropId(r))] : []), ''],
+      )) { rows.push(sub.cells); rowMeta.push(sub.meta) }
+    }
+    const sections: ExportSection[] = [{ columns, rows, rowMeta }]
     // An open drill-down exports its variety detail sheets (per-field
     // attribution + the constituent loads) through the shared layer.
     if (openDetail?.view === 'variety') {
@@ -1108,7 +1199,7 @@ export default function YieldsPage() {
         }
       }
     }
-    return { title: 'Yields by Variety', filters: fieldFiltersLabel(), sections }
+    return { title: exportTitle('Yields by Variety'), filters: fieldFiltersLabel(), sections }
   }
 
   function openBreakout(p: FieldPlanting) {
@@ -1333,6 +1424,7 @@ export default function YieldsPage() {
   )
   const activeFilterCount = (cropId ? 1 : 0) + (farmId ? 1 : 0) + (entityId ? 1 : 0) + (countyId ? 1 : 0)
     + (view === 'field' && practiceFilter !== 'all' ? 1 : 0)
+    + (showCropping && croppingFilter !== 'all' ? 1 : 0)
 
   return (
     <div className="space-y-4">
@@ -1409,6 +1501,11 @@ export default function YieldsPage() {
             </select>
           </FilterField>
         )}
+        {showCropping && (
+          <FilterField label="Cropping">
+            <CroppingControl value={croppingFilter} onChange={setCroppingFilter} />
+          </FilterField>
+        )}
         {view !== 'landowner' && view !== 'variety' && showYieldToggle && (
           <FilterField label="Columns">
             <span className="inline-flex rounded-lg border border-slate-300 overflow-hidden text-sm">
@@ -1464,6 +1561,9 @@ export default function YieldsPage() {
           label={view === 'field' ? 'Yield & harvest progress by crop' : undefined}
         />
       )}
+      {view !== 'landowner' && showCropping && (
+        <CroppingTiles tiles={croppingTiles} value={croppingFilter} onChange={setCroppingFilter} unitOf={cottonOn ? unitOf : undefined} />
+      )}
 
       {overrideErr && <p className="text-sm text-red-600 no-print">{overrideErr}</p>}
       {turnoutErr && <p className="text-sm text-red-600 no-print">{turnoutErr}</p>}
@@ -1495,7 +1595,7 @@ export default function YieldsPage() {
       ) : view === 'landowner' ? (
         <YieldsByLandowner
           onPayloadChange={handleLandownerPayload}
-          controlled={{ cropYear: year, cropId, entityId }}
+          controlled={{ cropYear: year, cropId, entityId, cropping: showCropping ? croppingFilter : 'all' }}
         />
       ) : view === 'variety' ? (
         <div className="space-y-4">
@@ -1670,7 +1770,10 @@ export default function YieldsPage() {
                         {showVarietyYear && <td className="px-3 py-2">{r.seasonYear}</td>}
                         <td className="px-3 py-2 text-right">{r.plantings}</td>
                         <td className="px-3 py-2 text-right">{fmtNum(r.acres, 1)}</td>
-                        <td className="px-3 py-2 text-right font-semibold">{yieldCell(yld, varietyUnit, varietyCropId(r))}</td>
+                        <td className="px-3 py-2 text-right font-semibold">
+                          {yieldCell(yld, varietyUnit, varietyCropId(r))}
+                          {showSplitLines && <CroppingSplitLine split={varietySplit(r)} unit={unitOf(varietyCropId(r))} />}
+                        </td>
                         <td className="px-3 py-2 text-right">
                           {prodCell(r.dryBu, varietyUnit, varietyCropId(r))}
                           {r.anyAcreShare && (
@@ -1704,6 +1807,7 @@ export default function YieldsPage() {
                                 farmNameByField={farmNameByField}
                                 allowLoadLinks={allowLoadLinks}
                                 combineEntries={combineEntries}
+                                croppingByKey={croppingByKey}
                                 cotton={isCottonCrop(r.cropName) ? cottonDetail : null}
                               />
                             )}
@@ -1765,6 +1869,7 @@ export default function YieldsPage() {
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span>{r.fld?.name_or_number ?? '—'}</span>
+                          {croppingOfP(p) === 'double_crop' && <DcPill springCropName={springNameFor(p)} />}
                           {exclusion === 'in_progress' && (
                             <span className="text-xs rounded px-2 py-0.5 bg-amber-100 text-amber-800">
                               in progress
@@ -1900,7 +2005,9 @@ export default function YieldsPage() {
                                 // Classification defaulted: nothing to judge this
                                 // field against yet — say so instead of a silent ✓.
                                 <span className="text-xs text-slate-500">
-                                  Counted as finished — no other harvested fields and no yield estimate to compare against yet.
+                                  {croppingOfP(p) === 'double_crop'
+                                    ? `Counted as finished — ${NO_DC_ASSUMPTION_NOTE}`
+                                    : 'Counted as finished — no other harvested fields and no yield estimate to compare against yet.'}
                                 </span>
                               ) : undefined
                             }
@@ -2050,7 +2157,10 @@ export default function YieldsPage() {
                               {entityShowBreakdown && <td className="px-3 py-2 text-right">{r.dryAc > 0 ? fmtNum(r.dryAc, 1) : '—'}</td>}
                               {entityShowBreakdown && <td className="px-3 py-2 text-right font-semibold">{r.irrigatedYield != null ? fmtNum(r.irrigatedYield, 1) : '—'}</td>}
                               {entityShowBreakdown && <td className="px-3 py-2 text-right font-semibold">{r.drylandYield != null ? fmtNum(r.drylandYield, 1) : '—'}</td>}
-                              <td className="px-3 py-2 text-right font-semibold">{yieldCell(r.yield, entityUnit, r.cropId)}</td>
+                              <td className="px-3 py-2 text-right font-semibold">
+                                {yieldCell(r.yield, entityUnit, r.cropId)}
+                                {showSplitLines && <CroppingSplitLine split={splitFor(entityRowPlantings(r))} unit={unitOf(r.cropId)} />}
+                              </td>
                               <td className="px-3 py-2 text-right">{prodCell(r.dryBu, entityUnit, r.cropId)}</td>
                             </tr>
                             {detailOpen && (
@@ -2076,6 +2186,7 @@ export default function YieldsPage() {
                                       lookups={detailLookups}
                                       allowLoadLinks={allowLoadLinks}
                                       combineEntries={combineEntries}
+                                      croppingByKey={croppingByKey}
                                       perFieldBreakdown
                                       cotton={isCottonCrop(r.cropName) ? cottonDetail : null}
                                     />
@@ -2163,6 +2274,7 @@ export default function YieldsPage() {
                       )}
                       <td className="px-3 py-2 text-right font-semibold">
                         {yieldCell(y.total, farmUnit, r.cropId)}
+                        {showSplitLines && <CroppingSplitLine split={splitFor(farmRowPlantings(r))} unit={unitOf(r.cropId)} />}
                       </td>
                       <td className="px-3 py-2 text-right">{prodCell(r.dryBu, farmUnit, r.cropId)}</td>
                     </tr>
@@ -2189,6 +2301,7 @@ export default function YieldsPage() {
                               lookups={detailLookups}
                               allowLoadLinks={allowLoadLinks}
                               combineEntries={combineEntries}
+                              croppingByKey={croppingByKey}
                               perFieldBreakdown
                               cotton={isCottonCrop(r.cropName) ? cottonDetail : null}
                             />

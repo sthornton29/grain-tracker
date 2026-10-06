@@ -1,8 +1,8 @@
 ---
 page_route: /reports/season
 title: Season Summary
-updated: 2026-10-03
-keywords: season, acres, yield, bushels, irrigated, dryland, double crop, harvest, cotton, lint
+updated: 2026-10-05
+keywords: season, acres, yield, bushels, irrigated, dryland, double crop, double-crop, full-season, harvest, cotton, lint
 ---
 ## What this page is for
 
@@ -22,7 +22,8 @@ When harvest is running, check back as loads come in: the production and yield c
 
 ## How the numbers work
 
-- **Acres** count every planted field, split into full-season and double-crop, and into irrigated and dryland where you have entered that breakout.
+- **Acres** count every planted field, split into full-season and double-crop, and into irrigated and dryland where you have entered that breakout. A field is double-crop when its crop is marked Double-crop under Settings → Crops and the same field grew a spring-harvest crop (wheat, canola) that year.
+- **Full-season and double-crop rows.** A crop grown both ways in the year gets two indented rows under its line — **Full-season** and **Double-crop** — each with its acres, bushels, and yield. They always add up to the crop's row exactly; nothing is estimated. The export carries the same sub-rows.
 - **Dry bushels** come from your recorded loads, adjusted to each crop's base moisture — the same dry-bushel rules used everywhere else in Turnrow.
 - **Yield per acre** divides production by the acres of fields that are actually finished. Fields that are unharvested or still in progress are left out of both production and yield, so a half-picked field never drags the average down. Their acres still show in the acreage columns. The **% harvested** tile is finished acres over all planted acres; the **weighted yield** tile is grain bushels over finished grain acres.
 - **Average yields** for recent seasons appear in the header strip, computed the same way.

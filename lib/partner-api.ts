@@ -12,6 +12,12 @@ import { computeBushels } from '@/lib/shrink'
 import { isCottonCrop } from '@/lib/marketing'
 import { contractUnit, quantityFor } from '@/lib/hedging'
 import { analyzeYields, buildYieldInputs, harvestStatusOf, type CombineAggInfo, type FieldCropAgg, type HarvestStatus } from '@/lib/yields'
+import { buildDoubleCropSet } from '@/lib/plantings'
+
+/** The crop rows re-shaped for the cropping rule (missing columns → no double-crop). */
+function croppingCropsById(crops: readonly CropRow[]): Map<string, { harvest_category: 'fall' | 'spring'; double_crop?: boolean }> {
+  return new Map(crops.map((c) => [c.id, { harvest_category: c.harvest_category ?? 'fall', double_crop: c.double_crop ?? false }]))
+}
 import type { LintBasis } from '@/lib/cotton'
 import type { CottonYieldModel } from '@/lib/cotton-yield-sources'
 
@@ -88,6 +94,11 @@ export type CropRow = {
   name: string
   base_moisture_pct: number | null
   base_lb_per_bushel: number | null
+  /** Harvest timing + the Double-crop designation (Settings → Crops) — when
+   *  present, full-season / double-crop cohorts classify through the one rule
+   *  (lib/plantings buildDoubleCropSet). */
+  harvest_category?: 'fall' | 'spring' | null
+  double_crop?: boolean | null
 }
 export type PlantingRow = {
   id: string
@@ -157,6 +168,8 @@ export type CropAssumptionStatusRow = {
   expected_yield?: number | string | null
   expected_yield_irr?: number | string | null
   expected_yield_dry?: number | string | null
+  expected_yield_dc_irr?: number | string | null
+  expected_yield_dc_dry?: number | string | null
   /** 092: the manual lint turnout (cotton). */
   assumed_turnout_pct?: number | string | null
 }
@@ -524,8 +537,12 @@ export function buildProductionRecords(args: {
       assumptions: [...assumptionByCrop.values()].map((a) => ({
         crop_id: a.crop_id, crop_year: a.crop_year, expected_yield: a.expected_yield ?? null,
         expected_yield_irr: a.expected_yield_irr, expected_yield_dry: a.expected_yield_dry,
+        expected_yield_dc_irr: a.expected_yield_dc_irr, expected_yield_dc_dry: a.expected_yield_dc_dry,
       })),
       cotton: args.cotton?.on ? args.cotton.adapter : null,
+      // Cohorts from EVERY planting of the org (the spring crop lives on the
+      // same field under a different crop id).
+      doubleCropIds: buildDoubleCropSet(args.plantings, croppingCropsById(args.crops)),
     }),
     undefined,
     args.now ?? new Date(),

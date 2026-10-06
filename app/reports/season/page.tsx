@@ -1,10 +1,11 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import CottonYieldsSection, { cottonSectionExport, type CottonSectionRow } from '@/components/reports/cotton-yields-section'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
-import { buildDoubleCropSet } from '@/lib/plantings'
+import { buildDoubleCropSet, CROPPING_LABEL } from '@/lib/plantings'
+import { seasonCropRows, seasonYieldOf, type SeasonCropRow } from '@/lib/season-summary'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { fieldCropAggregates, analyzeYields, buildYieldInputs, harvestStatusOf, type CombineEntryLike, type CropAverage } from '@/lib/yields'
 import { useCottonYields } from '@/lib/use-cotton-yields'
@@ -206,10 +207,16 @@ export default function SeasonSummaryPage() {
   // and yield (per crop). Acreage columns still count every planted field.
   // Cotton plantings (module on) classify off their seed cotton loads through
   // the same engine via the cotton adapter.
+  // Full-season / double-crop (THE rule, lib/plantings) over EVERY planting:
+  // the cohorts the classifier judges within and the sub-rows below.
+  const doubleCropIds = useMemo(
+    () => buildDoubleCropSet(plantings, cropById),
+    [plantings, cropById],
+  )
   const yieldAnalysis = useMemo(() => {
-    return analyzeYields(buildYieldInputs({ plantings: yearPlantings, aggByKey, assumptions, cotton: cottonModel.adapter }))
+    return analyzeYields(buildYieldInputs({ plantings: yearPlantings, aggByKey, assumptions, cotton: cottonModel.adapter, doubleCropIds }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plantings, assumptions, aggByKey, year, scope, cottonModel])
+  }, [plantings, assumptions, aggByKey, year, scope, cottonModel, doubleCropIds])
   const cropCompleteKeys = useMemo(() => {
     const s = new Set<string>()
     for (const a of assumptions) if (a.harvest_complete) s.add(`${a.crop_id}|${a.crop_year}`)
@@ -272,55 +279,19 @@ export default function SeasonSummaryPage() {
     return m
   }, [yieldAnalysis, cottonRows, cottonModel])
 
-  type Agg = {
-    cropName: string
-    // Cotton is lbs-native — its production/yield live in the Cotton Yields
-    // section below, never in this table's bushel columns.
-    isCotton: boolean
-    fullSeasonAcres: number
-    doubleCropAcres: number
-    totalAcres: number
-    irrigatedAcres: number
-    drylandAcres: number
-    dryBu: number
-    // Acres of the harvested, included fields only — the denominator for yield
-    // so partial/unharvested fields don't drag bu/ac down.
-    harvestedAcres: number
-  }
-
-  const doubleCropIds = useMemo(
-    () => buildDoubleCropSet(plantings, cropById),
-    [plantings, cropById],
-  )
-
-  const byCrop = useMemo(() => {
-    const excluded = yieldAnalysis.excluded
-    const m = new Map<string, Agg>()
-    for (const p of yearPlantings) {
-      const cropName = cropById.get(p.crop_id)?.name ?? '—'
-      const key = p.crop_id
-      if (!m.has(key)) m.set(key, {
-        cropName,
-        isCotton: isCottonCrop(cropName),
-        fullSeasonAcres: 0, doubleCropAcres: 0, totalAcres: 0,
-        irrigatedAcres: 0, drylandAcres: 0, dryBu: 0, harvestedAcres: 0,
-      })
-      const agg = m.get(key)!
-      const acres = Number(p.planted_acres)
-      agg.totalAcres += acres
-      agg.irrigatedAcres += Number(p.irrigated_acres) || 0
-      agg.drylandAcres   += Number(p.dryland_acres)   || 0
-      if (doubleCropIds.has(p.id)) agg.doubleCropAcres += acres
-      else agg.fullSeasonAcres += acres
-      // Production + yield count only harvested, non-in-progress fields.
-      if (!excluded.has(p.id)) {
-        agg.dryBu += dryBuFor(p.field_id, p.crop_id, p.season_year)
-        agg.harvestedAcres += acres
-      }
-    }
-    return [...m.values()].sort((a, b) => a.cropName.localeCompare(b.cropName))
+  // Per-crop rows through the one builder (lib/season-summary): a crop with
+  // both croppings carries Full-season / Double-crop sub-rows that partition
+  // its combined row exactly. Cotton is lbs-native — its production/yield live
+  // in the Cotton Yields section below, never in this table's bushel columns.
+  const byCrop = useMemo<SeasonCropRow[]>(() => seasonCropRows({
+    plantings: yearPlantings,
+    cropName: (id) => cropById.get(id)?.name ?? '—',
+    isCotton: (id) => isCottonCrop(cropById.get(id)?.name ?? ''),
+    dryBuFor,
+    excluded: yieldAnalysis.excluded,
+    doubleCropIds,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [yearPlantings, cropById, aggByKey, yieldAnalysis, doubleCropIds, scope])
+  }), [yearPlantings, cropById, aggByKey, yieldAnalysis, doubleCropIds, scope])
 
   const totals = byCrop.reduce(
     (acc, r) => {
@@ -352,15 +323,23 @@ export default function SeasonSummaryPage() {
 
   // Export mirrors the on-screen table (real numbers + shared formatting).
   function buildPayload(): ExportPayload {
-    const rows = byCrop.map((r) => {
-      const yld = !r.isCotton && r.harvestedAcres > 0 ? r.dryBu / r.harvestedAcres : ''
-      return [
+    const rows: Array<Array<string | number>> = []
+    const rowMeta: Array<'data' | 'subtotal' | 'total'> = []
+    for (const r of byCrop) {
+      rows.push([
         r.isCotton ? `${r.cropName} (lbs — see Cotton Yields)` : r.cropName, r.fullSeasonAcres, r.doubleCropAcres, r.totalAcres,
         r.irrigatedAcres > 0 ? r.irrigatedAcres : '', r.drylandAcres > 0 ? r.drylandAcres : '',
-        r.isCotton ? '' : r.dryBu, yld,
-      ]
-    })
-    rows.push(['Total', totals.fullSeason, totals.doubleCrop, totals.acres, totals.irrigated, totals.dryland, totals.dryBu, ''])
+        r.isCotton ? '' : r.dryBu, !r.isCotton ? (seasonYieldOf(r) ?? '') : '',
+      ]); rowMeta.push('data')
+      // Full-season / Double-crop sub-rows mirror the screen.
+      if (r.cohorts && !r.isCotton) {
+        for (const c of r.cohorts) {
+          rows.push([`  ${c.label}`, c.cropping === 'full_season' ? c.acres : '', c.cropping === 'double_crop' ? c.acres : '', c.acres, '', '', c.dryBu, seasonYieldOf(c) ?? ''])
+          rowMeta.push('subtotal')
+        }
+      }
+    }
+    rows.push(['Total', totals.fullSeason, totals.doubleCrop, totals.acres, totals.irrigated, totals.dryland, totals.dryBu, '']); rowMeta.push('total')
     return {
       title: 'Season Summary',
       filters: filterSummary,
@@ -379,7 +358,7 @@ export default function SeasonSummaryPage() {
           { label: 'Yield (bu/ac)', align: 'right', format: 'yield' },
         ],
         rows,
-        rowMeta: [...byCrop.map(() => 'data' as const), 'total'],
+        rowMeta,
       },
       ...(cottonOn && cottonRows.length > 0 ? [cottonSectionExport(cottonRows, `Cotton — ${year}`)] : []),
       ...(checkoffRows.length > 0 ? [{
@@ -439,24 +418,43 @@ export default function SeasonSummaryPage() {
                 </thead>
                 <tbody>
                   {byCrop.map((r) => {
-                    const yld = !r.isCotton && r.harvestedAcres > 0 ? r.dryBu / r.harvestedAcres : null
+                    const yld = !r.isCotton ? seasonYieldOf(r) : null
                     return (
-                      <tr key={r.cropName} className="border-t border-slate-100">
-                        <td className={`${textCell} font-semibold`}>{r.cropName}</td>
-                        <td className={numCell}>{fmtNum(r.fullSeasonAcres, 1)}</td>
-                        <td className={numCell}>{fmtNum(r.doubleCropAcres, 1)}</td>
-                        <td className={numCell}>{fmtNum(r.totalAcres, 1)}</td>
-                        <td className={numCell}>{r.irrigatedAcres > 0 ? fmtNum(r.irrigatedAcres, 1) : '—'}</td>
-                        <td className={numCell}>{r.drylandAcres > 0 ? fmtNum(r.drylandAcres, 1) : '—'}</td>
-                        {r.isCotton ? (
-                          <td colSpan={2} className={`${numCell} text-xs text-slate-400 font-normal`}>lbs of lint — see Cotton Yields below</td>
-                        ) : (
-                          <>
-                            <td className={numCell}>{fmtInt(r.dryBu)}</td>
-                            <td className={`${numCell} font-semibold`}>{yld != null ? fmtNum(yld, 1) : '—'}</td>
-                          </>
-                        )}
-                      </tr>
+                      <Fragment key={r.cropName}>
+                        <tr className="border-t border-slate-100">
+                          <td className={`${textCell} font-semibold`}>{r.cropName}</td>
+                          <td className={numCell}>{fmtNum(r.fullSeasonAcres, 1)}</td>
+                          <td className={numCell}>{fmtNum(r.doubleCropAcres, 1)}</td>
+                          <td className={numCell}>{fmtNum(r.totalAcres, 1)}</td>
+                          <td className={numCell}>{r.irrigatedAcres > 0 ? fmtNum(r.irrigatedAcres, 1) : '—'}</td>
+                          <td className={numCell}>{r.drylandAcres > 0 ? fmtNum(r.drylandAcres, 1) : '—'}</td>
+                          {r.isCotton ? (
+                            <td colSpan={2} className={`${numCell} text-xs text-slate-400 font-normal`}>lbs of lint — see Cotton Yields below</td>
+                          ) : (
+                            <>
+                              <td className={numCell}>{fmtInt(r.dryBu)}</td>
+                              <td className={`${numCell} font-semibold`}>{yld != null ? fmtNum(yld, 1) : '—'}</td>
+                            </>
+                          )}
+                        </tr>
+                        {/* A double-crop crop with both kinds: its Full-season and
+                            Double-crop sub-rows, which partition the row above. */}
+                        {r.cohorts && !r.isCotton && r.cohorts.map((c) => {
+                          const cy = seasonYieldOf(c)
+                          return (
+                            <tr key={`${r.cropName}|${c.cropping}`} className="text-slate-500 text-xs">
+                              <td className={`${textCell} pl-7`}>{CROPPING_LABEL[c.cropping]}</td>
+                              <td className={numCell}>{c.cropping === 'full_season' ? fmtNum(c.acres, 1) : ''}</td>
+                              <td className={numCell}>{c.cropping === 'double_crop' ? fmtNum(c.acres, 1) : ''}</td>
+                              <td className={numCell}>{fmtNum(c.acres, 1)}</td>
+                              <td className={numCell}></td>
+                              <td className={numCell}></td>
+                              <td className={numCell}>{fmtInt(c.dryBu)}</td>
+                              <td className={`${numCell} font-semibold`}>{cy != null ? fmtNum(cy, 1) : '—'}</td>
+                            </tr>
+                          )
+                        })}
+                      </Fragment>
                     )
                   })}
                   <tr className={grandTotalRowCls}>

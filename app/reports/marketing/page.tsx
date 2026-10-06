@@ -17,7 +17,7 @@ import { buildEntityScope } from '@/lib/entity-scope'
 import EntityFilter from '@/components/entity-filter'
 import CropYearSalesStatus from '@/components/crop-year-sales-status'
 import { buildMarketingExport } from '@/lib/marketing-export'
-import { fieldCropAggregates, cropsWithCompleteHarvest, inProgressPlantingsByCrop, type CombineEntryLike } from '@/lib/yields'
+import { fieldCropAggregates, cropsWithCompleteHarvest, inProgressPlantingsByCrop, type CombineEntryLike, type Cropping } from '@/lib/yields'
 import { useCottonYields } from '@/lib/use-cotton-yields'
 import TurnoutControl from '@/components/reports/turnout-control'
 import type { TurnoutResolution } from '@/lib/cotton'
@@ -448,17 +448,17 @@ export default function MarketingPage() {
   }, [effAssumptions])
   const harvestCompleteIds = useMemo(() => {
     if (year == null) return new Set<string>()
-    return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys, assumptions: effAssumptions, cotton: cottonModel.adapter })
-  }, [year, cropCompleteKeys, scopedPlantings, aggByKey, effAssumptions, cottonModel])
+    return cropsWithCompleteHarvest({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys, assumptions: effAssumptions, cotton: cottonModel.adapter, doubleCropIds })
+  }, [year, cropCompleteKeys, scopedPlantings, aggByKey, effAssumptions, cottonModel, doubleCropIds])
 
   // Fields still reading "in progress" — they hold their crop on the yield
   // ESTIMATE instead of actual production. Named here (with the same "count
   // anyway" override the Yields page offers) so the user can see why a crop
   // hasn't switched to actuals and fix a misjudged field on the spot.
   const stillHarvesting = useMemo(() => {
-    if (year == null) return new Map<string, PlantingRow[]>()
-    return inProgressPlantingsByCrop({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys, assumptions: effAssumptions, cotton: cottonModel.adapter })
-  }, [year, cropCompleteKeys, scopedPlantings, aggByKey, effAssumptions, cottonModel])
+    if (year == null) return new Map<string, Array<PlantingRow & { cropping: Cropping }>>()
+    return inProgressPlantingsByCrop({ plantings: scopedPlantings, aggByKey, cropYear: year, cropCompleteKeys, assumptions: effAssumptions, cotton: cottonModel.adapter, doubleCropIds })
+  }, [year, cropCompleteKeys, scopedPlantings, aggByKey, effAssumptions, cottonModel, doubleCropIds])
   const canEditYields = roleCanEditYields(viewer.role)
   const [countingId, setCountingId] = useState<string | null>(null)
   const [countErr, setCountErr] = useState<string | null>(null)
@@ -755,6 +755,7 @@ export default function MarketingPage() {
                     <span key={p.id}>
                       {i > 0 && ', '}
                       <span className="font-medium">{fieldName}</span>
+                      {p.cropping === 'double_crop' && <span className="text-amber-800"> · double-crop</span>}
                       {canEditYields && (
                         <button
                           type="button"
@@ -2138,6 +2139,7 @@ function AssumptionRow({ crop, year, assumption, seg, hasPlantings, actual, onSa
           }}
         />
         Harvest complete
+        {crop.double_crop && <span className="text-xs text-slate-500">— marks every field of this crop finished, full-season and double-crop</span>}
       </label>
       )}
       {turnout && (

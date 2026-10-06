@@ -192,7 +192,7 @@ export async function loadProductionPayload(supabase: SupabaseClient, org: strin
     for (const id of buildDoubleCropSet(plantings, cropById)) doubleCropIds.add(id)
   }
   const { analyzeYields, buildYieldInputs } = await import('@/lib/yields')
-  const analysis = analyzeYields(buildYieldInputs({ plantings, aggByKey, assumptions, cotton: cotton.adapter }))
+  const analysis = analyzeYields(buildYieldInputs({ plantings, aggByKey, assumptions, cotton: cotton.adapter, doubleCropIds }))
   const cropCompleteKeys = new Set<string>()
   for (const a of assumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
   // Cotton lint per field: receipts, plus (module on) the turnout estimate on

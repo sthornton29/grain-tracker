@@ -87,7 +87,7 @@ export async function GET(req: NextRequest) {
         supabase.from('entities').select('id, name, entity_role, updated_at').eq('org_id', org).order('id').range(f, t),
       ),
       fetchAll<CropRow>((f, t) =>
-        supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel').eq('org_id', org).order('id').range(f, t),
+        supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel, harvest_category, double_crop').eq('org_id', org).order('id').range(f, t),
       ),
     ])
     // Combine entries (062) net against weighed loads and carry the explicit

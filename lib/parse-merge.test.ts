@@ -32,7 +32,7 @@ import type {
 import type { CottonMarketingExtraction } from './cotton-doc-import'
 
 const ticket = (over: Partial<TicketExtraction> = {}): TicketExtraction => ({
-  ticket_number: '1001', date: '2026-08-01', time: null, truck: null, crop: 'Corn',
+  ticket_number: '1001', date_text: '8/01/26', year_printed: true, time: null, truck: null, crop: 'Corn',
   gross_weight: 80000, tare_weight: 30000, net_weight: 50000, moisture: 15.1,
   test_weight: null, from_type: 'field', from_name: 'North 40', to_type: 'buyer', to_name: 'ADM',
   ...over,

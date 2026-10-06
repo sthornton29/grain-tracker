@@ -14,6 +14,7 @@
 //     year, and a receipt number already saved.
 
 import type { CottonLoadExtraction } from '@/lib/pdf-upload'
+import { resolveTicketDate } from '@/lib/ticket-date'
 
 /** Digits only, leading zeros dropped: "031627" and "31627" are one load. */
 export function loadNumberKey(n: string | null | undefined): string {
@@ -33,6 +34,25 @@ const weightsDiffer = (a: number | null | undefined, b: number | null | undefine
   a != null && b != null && Math.abs(Number(a) - Number(b)) > 0.5
 
 /** One row per load number; later pages fold into the first. */
+/** The two ticket dates resolved through the one date seam (lib/ticket-date):
+ *  as-printed text → YYYY-MM-DD, the year supplied by the code when the gin
+ *  left it off (flagged), unreadable → null. Run BEFORE collapsing so pages
+ *  compare real dates. Pure. */
+export function resolveCottonLoadDates<T extends Pick<CottonLoadExtraction, 'picked_date' | 'delivered_date'>>(
+  load: T,
+  today: Date | string,
+): T & { picked_year_assumed: boolean; delivered_year_assumed: boolean } {
+  const picked = resolveTicketDate(load.picked_date, today)
+  const delivered = resolveTicketDate(load.delivered_date, today)
+  return {
+    ...load,
+    picked_date: picked.date,
+    delivered_date: delivered.date,
+    picked_year_assumed: picked.yearAssumed,
+    delivered_year_assumed: delivered.yearAssumed,
+  }
+}
+
 export function collapseExtractedLoads(loads: ReadonlyArray<CottonLoadExtraction>): ReviewLoad[] {
   const out: ReviewLoad[] = []
   const byKey = new Map<string, ReviewLoad>()

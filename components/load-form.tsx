@@ -6,6 +6,8 @@ import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { cropForFieldOnDate, fieldDefaultNote } from '@/lib/load-crop-default'
+import { effectiveCropYear } from '@/lib/ticket-date'
 import { allocateSplits, validateSplitDrafts, type SplitDraft } from '@/lib/load-splits'
 import { practiceOf } from '@/lib/yields'
 import { rememberHarvestEntryPath } from '@/lib/harvest-entry-path'
@@ -257,6 +259,18 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   // whether the user touched the date before the default could land.
   const [defaultedDate, setDefaultedDate] = useState<string | null>(null)
   const dateTouchedRef = useRef(false)
+  // Crop from the field's planting (lib/load-crop-default): applied only while
+  // the user has not chosen a crop in this form session — once they pick one,
+  // nothing overwrites it. The note names where the default came from.
+  const cropTouchedRef = useRef(false)
+  const [cropDefaultNote, setCropDefaultNote] = useState<string | null>(null)
+  function defaultCropFromField(f: FormState, fieldId: string): FormState {
+    if (cropTouchedRef.current || !fieldId) return f
+    const d = cropForFieldOnDate({ plantings, crops, fieldId, cropYear: effectiveCropYear(f.crop_year, f.date), date: f.date })
+    if (!d.cropId) { setCropDefaultNote(d.reason === 'cotton_only' || d.reason === 'multiple' ? fieldDefaultNote(d, (id) => crops.find((c) => c.id === id)?.name ?? '', effectiveCropYear(f.crop_year, f.date)) : null); return f }
+    setCropDefaultNote(d.cropId !== f.crop_id || d.reason === 'spring_fall_by_date' ? fieldDefaultNote(d, (id) => crops.find((c) => c.id === id)?.name ?? '', effectiveCropYear(f.crop_year, f.date)) : null)
+    return d.cropId === f.crop_id ? f : { ...f, crop_id: d.cropId, contract_id: '' }
+  }
   // Delivered-so-far (dry bushels) on the selected contract, for the fill
   // progress widget. Excludes the load being edited (added back live below).
   const [contractDelivered, setContractDelivered] = useState<{ dryBu: number; count: number } | null>(null)
@@ -1035,7 +1049,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
             type="date"
             required
             value={form.date}
-            onChange={(e) => { dateTouchedRef.current = true; set('date', e.target.value) }}
+            onChange={(e) => { dateTouchedRef.current = true; setForm((f) => defaultCropFromField({ ...f, date: e.target.value }, f.from_type === 'field' ? f.from_field_id : '')) }}
             className={inputCls}
           />
           {(() => {
@@ -1105,10 +1119,11 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className={labelCls}>
           Crop
-          <select value={form.crop_id} onChange={(e) => set('crop_id', e.target.value)} className={inputCls}>
+          <select value={form.crop_id} onChange={(e) => { cropTouchedRef.current = true; setCropDefaultNote(null); set('crop_id', e.target.value) }} className={inputCls}>
             <option value="">— select —</option>
             {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
+          {cropDefaultNote && <span className="block text-xs text-slate-500 mt-1 font-normal">{cropDefaultNote}</span>}
         </label>
         <label className={labelCls}>
           Crop year
@@ -1142,7 +1157,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
           <>
             <FieldPicker
               value={form.from_field_id}
-              onChange={(id) => setForm((f) => ({ ...f, from_field_id: id, practice: '' }))}
+              onChange={(id) => setForm((f) => defaultCropFromField({ ...f, from_field_id: id, practice: '' }, id))}
               fields={filteredFields}
               farms={farms}
               className={inputCls}

@@ -29,12 +29,13 @@ import {
 } from '@/lib/cotton-loads'
 import { documentsForLoads, fileToLoadDocument, insertCottonLoads, rollsNum, updateCottonLoad, uploadLoadDocument } from '@/lib/cotton-load-writes'
 import {
-  classificationSummary, classifyAgainstSaved, collapseExtractedLoads, loadNumberKey, reviewRolls,
+  classificationSummary, classifyAgainstSaved, collapseExtractedLoads, resolveCottonLoadDates, loadNumberKey, reviewRolls,
   type LoadClassification, type ReviewLoad,
 } from '@/lib/cotton-load-review'
 import Link from 'next/link'
 import { reportError } from '@/lib/friendly-error'
 import { fmtDate } from '@/lib/format-date'
+import { yearAssumedNote } from '@/lib/ticket-date'
 import type { ExportCell, ExportPayload } from '@/lib/exports'
 import type { CottonLoad, Gin, Farm, Field, Entity } from '@/lib/types'
 
@@ -58,7 +59,7 @@ const emptyDraft: Draft = {
 // One review row per distinct load in the scan (lib/cotton-load-review):
 // the pages it came from, the farm / field picks, whether it saves, and
 // whether the user took a handwritten roll count over the printed one.
-type AiRow = ReviewLoad & { farm_id: string; field_id: string; include: boolean; usedHandwritten: boolean }
+type AiRow = ReviewLoad & { farm_id: string; field_id: string; include: boolean; usedHandwritten: boolean; picked_year_assumed?: boolean; delivered_year_assumed?: boolean }
 
 export default function CottonLoadsPage() {
   const supabase = useMemo(() => createClient(), [])
@@ -258,7 +259,9 @@ export default function CottonLoadsPage() {
       const extracted: CottonLoadExtraction[] = Array.isArray(data.loads) ? data.loads : []
       if (extracted.length === 0) { setErr(warning ?? 'No loads found in this document.'); return }
       if (warning) setErr(warning)
-      const rows = collapseExtractedLoads(extracted)
+      // Dates as printed → load dates through the one date seam: the code
+      // supplies the year a gin ticket leaves off (and says so on the row).
+      const rows = collapseExtractedLoads(extracted.map((l) => resolveCottonLoadDates(l, new Date())))
       setAiRows(rows.map(extractionToRow))
       const twice = rows.filter((r) => r.pages.length > 1).length
       setMsg(`Read ${extracted.length} page${extracted.length === 1 ? '' : 's'} — ${rows.length} load${rows.length === 1 ? '' : 's'}${twice > 0 ? ` (${twice} scanned twice)` : ''}. Review and save.`)
@@ -528,8 +531,8 @@ export default function CottonLoadsPage() {
                         </select>
                         {!r.field_id && r.field && <div className="text-amber-700">From the document: {r.field}</div>}
                       </td>
-                      <td className="px-1 py-1">{r.picked_date ? fmtDate(r.picked_date) : '—'}</td>
-                      <td className="px-1 py-1">{r.delivered_date ? fmtDate(r.delivered_date) : '—'}</td>
+                      <td className="px-1 py-1">{r.picked_date ? fmtDate(r.picked_date) : '—'}{r.picked_date && r.picked_year_assumed && <span className="block text-[10px] rounded bg-amber-100 text-amber-800 px-1 py-0.5 mt-0.5 whitespace-nowrap">{yearAssumedNote(r.picked_date)}</span>}</td>
+                      <td className="px-1 py-1">{r.delivered_date ? fmtDate(r.delivered_date) : '—'}{r.delivered_date && r.delivered_year_assumed && <span className="block text-[10px] rounded bg-amber-100 text-amber-800 px-1 py-0.5 mt-0.5 whitespace-nowrap">{yearAssumedNote(r.delivered_date)}</span>}</td>
                       <td className="px-1 py-1">{r.truck ?? '—'}</td>
                       <td className="px-1 py-1">
                         <input

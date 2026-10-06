@@ -1,4 +1,7 @@
 import { computeBushels } from '@/lib/shrink'
+import { croppingOf, type Cropping } from '@/lib/plantings'
+
+export type { Cropping } from '@/lib/plantings'
 
 // Shared yield math for the yield-average views (Yields by field/farm/variety/
 // landowner and the Season Summary). Two pieces:
@@ -413,6 +416,15 @@ export type YieldInput = {
    *  FIRST field cut can still classify in-progress. Null/undefined = no
    *  estimate entered. */
   expectedYield?: number | null
+  /** Full-season or double-crop (lib/plantings croppingOf). The COHORT a row
+   *  is judged within is crop × cropping: peers, the expected-yield bar and
+   *  the quiet clock never cross it. Undefined = full_season. */
+  cropping?: Cropping
+}
+
+/** The cohort key analyzeYields reports per-cohort figures under. */
+export function cohortKey(cropId: string, cropping: Cropping): string {
+  return `${cropId}|${cropping}`
 }
 
 export type CropAverage = {
@@ -450,45 +462,59 @@ export type YieldAnalysis = {
    *  against — no harvested peer fields and no expected yield entered. The
    *  drill-down surfaces this state so a defaulted classification is visible. */
   noBaseline: Set<string>
+  /** cohortKey(crop, cropping) → the cohort's weighted average over the
+   *  survivors. Full-season + double-crop partition the crop exactly: their
+   *  acres and bushels sum to `averages`. Only cohorts with rows appear. */
+  cohortAverages: Map<string, CropAverage & { cropping: Cropping }>
+  /** cohortKey(crop, cropping) → the cohort's harvest progress. */
+  cohortProgress: Map<string, HarvestProgress & { cropping: Cropping }>
 }
 
 // A field whose yield is more than this far below its crop's settled average is
 // treated as still-being-harvested (in progress) while its loads are recent.
 export const IN_PROGRESS_THRESHOLD = 0.15
 
-// ...until the CROP has sat quiet this long. The inactivity clock is
-// crop-wide: a low field completes by silence only when no loads for its crop
-// have arrived ANYWHERE for more than this window (harvest genuinely paused or
-// over) — never merely because ITS OWN loads stopped. Operators routinely
-// start a field, work others for days, and come back to finish, so while crop
-// loads are still arriving a below-normal field stays in progress regardless
-// of how long since its own last load.
+// ...until its COHORT (crop × cropping — full-season or double-crop) has sat
+// quiet this long. The inactivity clock is cohort-wide: a low field completes
+// by silence only when no loads for its cohort have arrived ANYWHERE for more
+// than this window (that harvest genuinely paused or over) — never merely
+// because ITS OWN loads stopped. Operators routinely start a field, work
+// others for days, and come back to finish, so while cohort loads are still
+// arriving a below-normal field stays in progress regardless of how long
+// since its own last load. Double-crop loads never reopen or hold a
+// full-season field, and the reverse: the full-season harvest finishing in
+// September is not re-judged when double-crop beans start in late October.
 export const IN_PROGRESS_STALE_DAYS = 10
 
-// With fewer than this many OTHER harvested fields, the peer comparison is too
-// thin to call a yield "low" — the crop's expected yield (crop_assumptions,
-// per-practice where broken out) stands in as the bar, so the first field cut
-// can still classify in-progress instead of defaulting complete.
+// With fewer than this many OTHER harvested fields IN THE COHORT, the peer
+// comparison is too thin to call a yield "low" — the cohort's own expected
+// yield (crop_assumptions, per-practice where broken out; the double-crop
+// breakout for a double-crop planting) stands in as the bar, so the first
+// field cut can still classify in-progress instead of defaulting complete.
 export const IN_PROGRESS_MIN_PEERS = 2
 
-// Per crop:
+// Per crop, then per COHORT (crop × cropping — full-season or double-crop; a
+// planting is entirely one cropping, so the two partition the crop exactly):
 //   * a row with no bushels is "unharvested" → excluded.
-//   * THE ACTIVE FIELD IS NEVER COMPLETE. While the crop is active (loads
-//     within the window), a field with loads but NO later-dated load from
-//     any other field of the crop is the one the combine is sitting in —
-//     "in_progress" regardless of yield, even a perfectly normal one. The
-//     hold clears when EITHER a later-dated load lands on another field
-//     (moved on — the yield rules below then decide: normal → complete, low
-//     → stays in progress) OR the crop goes quiet past the window (harvest
-//     wrapped or paused; for the trailing field of the season its own last
-//     load IS the crop's last load, so both formulations coincide). Two
-//     fields loaded the same day are ordered by their loads' TIME of day
-//     (loads.time) when both are known — the field with the later load is
-//     the one the combine moved to; with a time missing the day is a tie
-//     and both are held. "Count anyway" and the explicit harvest-complete
-//     markers still complete a field from any state.
+//   * THE ACTIVE FIELD IS NEVER COMPLETE. While its cohort is active (cohort
+//     loads within the window), a field with loads but NO later-dated load
+//     from any other field OF THE CROP — EITHER cohort — is the one the
+//     combine is sitting in: "in_progress" regardless of yield, even a
+//     perfectly normal one. Moved-on evidence crosses cohorts on purpose:
+//     that rule is about where the combine physically is, not about yield,
+//     so a load on a double-crop field shows the combine left the last
+//     full-season field. The hold clears when EITHER a later-dated load
+//     lands on another field of the crop (moved on — the yield rules below
+//     then decide: normal → complete, low → stays in progress) OR the cohort
+//     goes quiet past the window (that harvest wrapped or paused; for the
+//     trailing field of a cohort its own last load IS the cohort's last load,
+//     so both formulations coincide). Two fields loaded the same day are
+//     ordered by their loads' TIME of day (loads.time) when both are known —
+//     the field with the later load is the one the combine moved to; with a
+//     time missing the day is a tie and both are held. "Count anyway" and the
+//     explicit harvest-complete markers still complete a field from any state.
 //   * LOW YIELD is the primary in-progress signal, and it PERSISTS. A field
-//     whose yield is more than `threshold` below the crop's baseline is
+//     whose yield is more than `threshold` below its COHORT's baseline is
 //     "in_progress" → excluded (its partial bushels would understate the true
 //     yield). A load from ANOTHER field dated later is NOT completion
 //     evidence — operators routinely start a field, move off to others for
@@ -497,8 +523,8 @@ export const IN_PROGRESS_MIN_PEERS = 2
 //       - the user's explicit "count anyway" override (always offered), OR
 //       - the field's combine-entry harvest_complete / the crop-level
 //         harvest-complete flag (applied by harvestStatusOf's callers), OR
-//       - more than IN_PROGRESS_STALE_DAYS (10) of silence since the field's
-//         last load — a long, conservative "clearly not coming back" fallback.
+//       - more than IN_PROGRESS_STALE_DAYS (10) of silence across its cohort
+//         — a long, conservative "clearly not coming back" fallback.
 //     A field at/above the baseline (within `threshold`) is complete as usual
 //     once the combine has moved on — the low-yield gate is what separates
 //     "partially harvested" from "done" for a field that is no longer the
@@ -511,20 +537,27 @@ export const IN_PROGRESS_MIN_PEERS = 2
 //     Days are counted calendar-date to calendar-date: load dates are date-only
 //     strings, so subtracting them from the raw clock would silently shorten
 //     the window by the local time of day and flip a field to completed partway
-//     through the last day. The silence window is CROP-WIDE (see
-//     IN_PROGRESS_STALE_DAYS): the crop quiet 10+ days completes everything;
-//     while its loads still arrive anywhere, every harvested field is judged.
-//     The baseline hierarchy per candidate:
-//       1. with >= IN_PROGRESS_MIN_PEERS other harvested fields: their
-//          weighted average — preferring the RESTING ones (own loads quiet
-//          past the window; harvest has probably finished with them), so one
-//          partial field can't drag the bar down for another;
-//       2. with thinner peers: the planting's expected yield
-//          (crop_assumptions via expectedYieldForPlanting) — so the FIRST
-//          field cut classifies correctly; failing that, whatever peers exist;
+//     through the last day. The silence window is COHORT-WIDE (see
+//     IN_PROGRESS_STALE_DAYS): the cohort quiet 10+ days completes all of it;
+//     while its loads still arrive anywhere, every harvested field in it is
+//     judged. The other cohort's loads never hold, reopen, or complete it.
+//     The baseline hierarchy per candidate, peers = OTHER harvested fields of
+//     the SAME cohort (a double-crop field is never measured against
+//     full-season fields, and the reverse):
+//       1. with >= IN_PROGRESS_MIN_PEERS cohort peers: their weighted average
+//          — preferring the RESTING ones (own loads quiet past the window;
+//          harvest has probably finished with them), so one partial field
+//          can't drag the bar down for another;
+//       2. with thinner peers: the planting's expected yield — the cohort's
+//          own assumption (crop_assumptions via expectedYieldForPlanting: the
+//          double-crop breakout for a double-crop planting, NEVER the crop's
+//          overall / blended number, which is full-season heavy and would flag
+//          every double-crop field low) — so the FIRST field cut classifies
+//          correctly; failing that, whatever cohort peers exist;
 //       3. with neither: the field cannot be judged — it stays complete and
 //          is reported in `noBaseline` so the UI can say why.
-// Averages are weighted (Σ dry bu / Σ acres) over the survivors.
+// Averages are weighted (Σ dry bu / Σ acres) over the survivors, per crop and
+// per cohort.
 export function analyzeYields(
   rows: readonly YieldInput[],
   threshold: number = IN_PROGRESS_THRESHOLD,
@@ -535,6 +568,10 @@ export function analyzeYields(
   const averages = new Map<string, CropAverage>()
   const progress = new Map<string, HarvestProgress>()
   const noBaseline = new Set<string>()
+  const cohortAverages = new Map<string, CropAverage & { cropping: Cropping }>()
+  const cohortProgress = new Map<string, HarvestProgress & { cropping: Cropping }>()
+
+  const croppingOfRow = (r: YieldInput): Cropping => r.cropping ?? 'full_season'
 
   const byCrop = new Map<string, YieldInput[]>()
   for (const r of rows) {
@@ -559,47 +596,59 @@ export function analyzeYields(
       const pad2 = (n: number) => String(n).padStart(2, '0')
       const today = Date.parse(`${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`)
       const daysSince = (date: string) => Math.round((today - Date.parse(date.slice(0, 10))) / 86_400_000)
-      // The inactivity clock is CROP-WIDE: fields complete by silence only
-      // when no loads for the crop have arrived ANYWHERE (in the analyzed
-      // scope) for more than the window — harvest genuinely paused or over.
-      // While crop loads are still arriving, a below-normal field stays in
-      // progress no matter how long since ITS OWN last load: the combine
-      // routinely leaves a field for days and comes back to finish it.
-      const cropLast = harvested.reduce<string | null>((max, r) => {
-        const d = r.lastLoadDate ? r.lastLoadDate.slice(0, 10) : null
-        return d != null && (max == null || d > max) ? d : max
-      }, null)
-      const cropActive = cropLast != null && daysSince(cropLast) <= IN_PROGRESS_STALE_DAYS
-      if (cropActive) {
-        // "Resting" fields — own loads quiet past the window — are the
-        // preferred peer baseline (harvest has probably finished with them),
-        // though while the crop is active they remain candidates themselves.
-        const isResting = (r: YieldInput) =>
-          r.lastLoadDate == null || daysSince(r.lastLoadDate) > IN_PROGRESS_STALE_DAYS
-        // The field the combine is in right now: loads, and no OTHER field
-        // of the crop has a later load. Held in progress whatever its yield
-        // — you can't be done with a field you're still cutting. (A field
-        // with bushels but no load date can't be placed in time and is not
-        // held.) "Later" is by calendar date first; on the same day the
-        // loads' times decide when BOTH are known (the operation switched
-        // fields mid-day — the field hauled later is the current one);
-        // with a time missing the day is a tie and both fields stay held.
-        const loadedAfter = (other: YieldInput, own: YieldInput) => {
-          const a = other.lastLoadDate!.slice(0, 10)
-          const b = own.lastLoadDate!.slice(0, 10)
-          if (a !== b) return a > b
-          return other.lastLoadTime != null && own.lastLoadTime != null && other.lastLoadTime > own.lastLoadTime
-        }
-        const isActiveField = (cand: YieldInput) => {
-          if (cand.lastLoadDate == null) return false
-          return !harvested.some((r) => r.id !== cand.id && r.lastLoadDate != null && loadedAfter(r, cand))
-        }
-        for (const cand of harvested) {
+      // "Later" is by calendar date first; on the same day the loads' times
+      // decide when BOTH are known (the operation switched fields mid-day —
+      // the field hauled later is the current one); with a time missing the
+      // day is a tie and both fields stay held.
+      const loadedAfter = (other: YieldInput, own: YieldInput) => {
+        const a = other.lastLoadDate!.slice(0, 10)
+        const b = own.lastLoadDate!.slice(0, 10)
+        if (a !== b) return a > b
+        return other.lastLoadTime != null && own.lastLoadTime != null && other.lastLoadTime > own.lastLoadTime
+      }
+      // The field the combine is in right now: loads, and no OTHER field of
+      // the CROP (either cohort) has a later load. (A field with bushels but
+      // no load date can't be placed in time and is not held.)
+      const isActiveField = (cand: YieldInput) => {
+        if (cand.lastLoadDate == null) return false
+        return !harvested.some((r) => r.id !== cand.id && r.lastLoadDate != null && loadedAfter(r, cand))
+      }
+      // "Resting" fields — own loads quiet past the window — are the
+      // preferred peer baseline (harvest has probably finished with them),
+      // though while their cohort is active they remain candidates themselves.
+      const isResting = (r: YieldInput) =>
+        r.lastLoadDate == null || daysSince(r.lastLoadDate) > IN_PROGRESS_STALE_DAYS
+
+      const cohorts = new Map<Cropping, YieldInput[]>()
+      for (const r of harvested) {
+        const k = croppingOfRow(r)
+        const arr = cohorts.get(k)
+        if (arr) arr.push(r)
+        else cohorts.set(k, [r])
+      }
+
+      for (const members of cohorts.values()) {
+        // The inactivity clock is COHORT-WIDE: fields complete by silence
+        // only when no loads for the cohort have arrived ANYWHERE (in the
+        // analyzed scope) for more than the window — that harvest genuinely
+        // paused or over. While cohort loads are still arriving, a
+        // below-normal field stays in progress no matter how long since ITS
+        // OWN last load: the combine routinely leaves a field for days and
+        // comes back to finish it.
+        const cohortLast = members.reduce<string | null>((max, r) => {
+          const d = r.lastLoadDate ? r.lastLoadDate.slice(0, 10) : null
+          return d != null && (max == null || d > max) ? d : max
+        }, null)
+        const cohortActive = cohortLast != null && daysSince(cohortLast) <= IN_PROGRESS_STALE_DAYS
+        if (!cohortActive) continue
+
+        for (const cand of members) {
           if (isActiveField(cand)) {
             autoExcluded.set(cand.id, 'in_progress')
             continue
           }
-          const others = harvested.filter((r) => r.id !== cand.id)
+          // Peers: the other harvested fields of the SAME cohort only.
+          const others = members.filter((r) => r.id !== cand.id)
           let bu = 0
           let ac = 0
           for (const r of others) {
@@ -615,14 +664,21 @@ export function analyzeYields(
             }
           }
           const peerBaseline = ac > 0 ? bu / ac : null
-          // Thin peers → the planting's expected yield stands in, so the
-          // first field cut classifies correctly; failing that, whatever
-          // peers exist; with neither the field cannot be judged.
+          // Thin peers → the planting's expected yield (the cohort's own
+          // assumption) stands in, so the first field cut classifies
+          // correctly; failing that, whatever cohort peers exist; with
+          // neither the field cannot be judged.
+          // A DOUBLE-CROP planting with no double-crop assumption has no bar
+          // at all: a lone, possibly half-cut double-crop peer is not one,
+          // and the crop's overall number is never borrowed. Full-season
+          // keeps today's behavior (whatever peers exist).
           const baseline =
             others.length >= IN_PROGRESS_MIN_PEERS
               ? peerBaseline
               : cand.expectedYield != null && cand.expectedYield > 0
               ? cand.expectedYield
+              : croppingOfRow(cand) === 'double_crop'
+              ? null
               : peerBaseline
           if (baseline == null) {
             noBaseline.add(cand.id)
@@ -651,6 +707,7 @@ export function analyzeYields(
     // has no bushels, so "count anyway" never applies to it.
     let bu = 0
     let ac = 0
+    const cohortSums = new Map<Cropping, { bu: number; ac: number }>()
     for (const r of list) {
       const auto = autoExcluded.get(r.id)
       const overrideCounts = auto === 'in_progress' && r.override === true
@@ -660,32 +717,45 @@ export function analyzeYields(
       }
       bu += r.dryBu
       ac += r.acres
+      const k = croppingOfRow(r)
+      const cs = cohortSums.get(k) ?? { bu: 0, ac: 0 }
+      cs.bu += r.dryBu
+      cs.ac += r.acres
+      cohortSums.set(k, cs)
     }
     if (ac > 0) averages.set(cropId, { cropId, acres: ac, dryBu: bu, yield: bu / ac })
+    for (const [k, cs] of cohortSums) {
+      if (cs.ac > 0) cohortAverages.set(cohortKey(cropId, k), { cropId, cropping: k, acres: cs.ac, dryBu: cs.bu, yield: cs.bu / cs.ac })
+    }
 
     // Harvest progress (by acres), using the effective classification so a
     // "count anyway" override moves a field from in-progress into completed.
-    let completedAcres = 0
-    let inProgressAcres = 0
-    let remainingAcres = 0
-    for (const r of list) {
-      const eff = excluded.get(r.id)
-      if (eff === 'unharvested') remainingAcres += r.acres
-      else if (eff === 'in_progress') inProgressAcres += r.acres
-      else completedAcres += r.acres
+    // Per crop and per cohort — the cohorts partition the crop.
+    const tally = (rowsIn: readonly YieldInput[]): HarvestProgress => {
+      let completedAcres = 0
+      let inProgressAcres = 0
+      let remainingAcres = 0
+      for (const r of rowsIn) {
+        const eff = excluded.get(r.id)
+        if (eff === 'unharvested') remainingAcres += r.acres
+        else if (eff === 'in_progress') inProgressAcres += r.acres
+        else completedAcres += r.acres
+      }
+      const totalAcres = completedAcres + inProgressAcres + remainingAcres
+      return { cropId, completedAcres, inProgressAcres, remainingAcres, totalAcres, pctComplete: totalAcres > 0 ? (completedAcres / totalAcres) * 100 : 0 }
     }
-    const totalAcres = completedAcres + inProgressAcres + remainingAcres
-    progress.set(cropId, {
-      cropId,
-      completedAcres,
-      inProgressAcres,
-      remainingAcres,
-      totalAcres,
-      pctComplete: totalAcres > 0 ? (completedAcres / totalAcres) * 100 : 0,
-    })
+    progress.set(cropId, tally(list))
+    const cohortRows = new Map<Cropping, YieldInput[]>()
+    for (const r of list) {
+      const k = croppingOfRow(r)
+      const arr = cohortRows.get(k)
+      if (arr) arr.push(r)
+      else cohortRows.set(k, [r])
+    }
+    for (const [k, rs] of cohortRows) cohortProgress.set(cohortKey(cropId, k), { ...tally(rs), cropping: k })
   }
 
-  return { excluded, autoExcluded, averages, progress, noBaseline }
+  return { excluded, autoExcluded, averages, progress, noBaseline, cohortAverages, cohortProgress }
 }
 
 /** The crop_assumptions slice the expected-yield fallback reads. */
@@ -695,16 +765,30 @@ export type ExpectedYieldAssumption = {
   expected_yield: number | string | null
   expected_yield_irr?: number | string | null
   expected_yield_dry?: number | string | null
+  /** The double-crop breakout (029) — the ONLY bar a double-crop planting
+   *  is judged against. */
+  expected_yield_dc_irr?: number | string | null
+  expected_yield_dc_dry?: number | string | null
 }
 
 // The expected yield to judge ONE planting against (the thin-peers fallback
-// bar): per-practice where the assumptions carry a breakout — pure-irrigated
-// and pure-dryland plantings read their side (blank side falls back to the
-// overall, the app-wide breakout convention), mixed plantings acre-weight the
-// two sides. Null when no usable number is entered. Pure.
+// bar), per cohort:
+//   * FULL-SEASON: per-practice where the assumptions carry a breakout —
+//     pure-irrigated and pure-dryland plantings read their side (blank side
+//     falls back to the overall, the app-wide breakout convention), mixed
+//     plantings acre-weight the two sides.
+//   * DOUBLE-CROP: the double-crop breakout ONLY (expected_yield_dc_irr /
+//     expected_yield_dc_dry; a blank side falls back to the other double-crop
+//     side). It NEVER falls back to the crop's overall or full-season numbers
+//     — those are full-season heavy and would flag every double-crop field
+//     low. With no double-crop number entered at all the planting has no bar
+//     (null → the field cannot be judged → complete once moved on, reported
+//     in noBaseline so the UI can say "No double-crop yield assumption set").
+// Null when no usable number is entered. Pure.
 export function expectedYieldForPlanting(
   a: ExpectedYieldAssumption | null | undefined,
   p: { irrigated_acres: number | string | null; dryland_acres: number | string | null },
+  cropping: Cropping = 'full_season',
 ): number | null {
   if (!a) return null
   const numOrNull = (v: number | string | null | undefined): number | null => {
@@ -712,9 +796,21 @@ export function expectedYieldForPlanting(
     const n = Number(v)
     return Number.isFinite(n) && n > 0 ? n : null
   }
-  const overall = numOrNull(a.expected_yield)
-  const irr = numOrNull(a.expected_yield_irr) ?? overall
-  const dry = numOrNull(a.expected_yield_dry) ?? overall
+  let overall: number | null
+  let irr: number | null
+  let dry: number | null
+  if (cropping === 'double_crop') {
+    const dcIrr = numOrNull(a.expected_yield_dc_irr)
+    const dcDry = numOrNull(a.expected_yield_dc_dry)
+    if (dcIrr == null && dcDry == null) return null
+    irr = dcIrr ?? dcDry
+    dry = dcDry ?? dcIrr
+    overall = null
+  } else {
+    overall = numOrNull(a.expected_yield)
+    irr = numOrNull(a.expected_yield_irr) ?? overall
+    dry = numOrNull(a.expected_yield_dry) ?? overall
+  }
   const practice = practiceOf(p)
   if (practice === 'pure-irr') return irr
   if (practice === 'pure-dry') return dry
@@ -724,6 +820,10 @@ export function expectedYieldForPlanting(
   const totalAc = irrAc + dryAc
   return totalAc > 0 ? (irr * irrAc + dry * dryAc) / totalAc : overall
 }
+
+/** The note the drill-down shows for a double-crop field that stayed complete
+ *  only because its cohort has no bar (noBaseline + double_crop). */
+export const NO_DC_ASSUMPTION_NOTE = 'No double-crop yield assumption set. Add one in Marketing assumptions to sharpen this.'
 
 /** The planting shape the season-level helpers below classify. */
 export type SeasonPlanting = {
@@ -737,7 +837,7 @@ export type SeasonPlanting = {
 // ---------------------------------------------------------------------------
 // Cotton input adapter (092). A cotton planting is classified by its SEED
 // COTTON LOADS exactly as a grain planting is by its loads — same engine, same
-// rules (active-field hold, persistent low yield, crop-wide silence, "count
+// rules (active-field hold, persistent low yield, cohort-wide silence, "count
 // anyway", the crop-level flag). The adapter is the only thing that differs:
 // where the planting's aggregate comes from (seed cotton lbs per field × crop
 // year, dated by picked date — lib/cotton.ts seedCottonAggregates) and what
@@ -761,19 +861,25 @@ export type CottonYieldAdapter = {
  * identically everywhere. `assumptions` (crop_assumptions rows, any years;
  * matched on crop × the planting's season year) power the thin-peers
  * expected-yield tier; `cotton` routes cotton plantings to their seed cotton
- * loads. Pure.
+ * loads; `doubleCropIds` (lib/plantings buildDoubleCropSet over EVERY planting
+ * of the seasons in play — the wheat that makes a field double-cropped is a
+ * different crop than the beans being judged) puts each row in its cohort.
+ * Omitted → every row is full-season, today's behavior. Pure.
  */
 export function buildYieldInputs<T extends SeasonPlanting>(args: {
   plantings: ReadonlyArray<T>
   aggByKey: ReadonlyMap<string, FieldCropAgg>
   assumptions?: readonly ExpectedYieldAssumption[] | null
   cotton?: CottonYieldAdapter | null
+  doubleCropIds?: ReadonlySet<string> | null
 }): YieldInput[] {
   const assumptionByKey = new Map<string, ExpectedYieldAssumption>()
   for (const a of args.assumptions ?? []) assumptionByKey.set(`${a.crop_id}|${a.crop_year}`, a)
+  const dcIds: ReadonlySet<string> = args.doubleCropIds ?? new Set<string>()
   return args.plantings.map((p) => {
+    const cropping = croppingOf(p, dcIds)
     const practice = { irrigated_acres: p.irrigated_acres ?? null, dryland_acres: p.dryland_acres ?? null }
-    const expectedLint = expectedYieldForPlanting(assumptionByKey.get(`${p.crop_id}|${p.season_year}`), practice)
+    const expectedLint = expectedYieldForPlanting(assumptionByKey.get(`${p.crop_id}|${p.season_year}`), practice, cropping)
     const cotton = args.cotton && args.cotton.isCottonCrop(p.crop_id) ? args.cotton : null
     if (cotton) {
       const agg = cotton.aggFor(p)
@@ -785,6 +891,7 @@ export function buildYieldInputs<T extends SeasonPlanting>(args: {
         override: p.yield_include_override ?? null,
         // Seed cotton bar: expected lint ÷ turnout. No turnout → no bar.
         expectedYield: expectedLint != null && turnout != null && turnout > 0 ? expectedLint / turnout : null,
+        cropping,
       }
     }
     const agg = args.aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)
@@ -795,6 +902,7 @@ export function buildYieldInputs<T extends SeasonPlanting>(args: {
       override: p.yield_include_override ?? null,
       combineComplete: agg?.combine?.harvestComplete,
       expectedYield: expectedLint,
+      cropping,
     }
   })
 }
@@ -802,39 +910,37 @@ export function buildYieldInputs<T extends SeasonPlanting>(args: {
 // One shared mapping from planting rows + aggregates to the analyzeYields
 // input, so every season-level consumer classifies fields identically.
 // `assumptions` (crop_assumptions rows) power the thin-peers expected-yield
-// fallback; omitting them just disables that comparison tier.
-function analyzeSeason<T extends SeasonPlanting>(args: {
+// fallback; omitting them just disables that comparison tier. `doubleCropIds`
+// is built over args.plantings (the FULL list the caller holds — never a
+// crop-filtered one) when `cropsById` is given, or passed in ready-made.
+type SeasonArgs<T extends SeasonPlanting> = {
   plantings: ReadonlyArray<T>
   aggByKey: Map<string, FieldCropAgg>
   cropYear: number
   assumptions?: readonly ExpectedYieldAssumption[] | null
   cotton?: CottonYieldAdapter | null
+  /** Full-season / double-crop cohorts: pass buildDoubleCropSet's result. */
+  doubleCropIds?: ReadonlySet<string> | null
   now?: Date
-}): { yearPlantings: T[]; analysis: YieldAnalysis } {
+}
+
+function analyzeSeason<T extends SeasonPlanting>(args: SeasonArgs<T>): { yearPlantings: T[]; analysis: YieldAnalysis } {
   const yearPlantings = args.plantings.filter((p) => p.season_year === args.cropYear)
   const analysis = analyzeYields(
-    buildYieldInputs({ plantings: yearPlantings, aggByKey: args.aggByKey, assumptions: args.assumptions, cotton: args.cotton }),
+    buildYieldInputs({ plantings: yearPlantings, aggByKey: args.aggByKey, assumptions: args.assumptions, cotton: args.cotton, doubleCropIds: args.doubleCropIds }),
     IN_PROGRESS_THRESHOLD, args.now,
   )
   return { yearPlantings, analysis }
 }
 
 // Crop ids whose harvest is COMPLETE for a crop year: the crop has at least one
-// planting and every planting is harvest-complete (analyzeYields not-excluded, or
-// the crop-level harvest_complete flag via cropCompleteKeys). The Marketing
-// dashboard and Revenue Projections use this to switch a crop from the yield
-// ESTIMATE to ACTUAL harvested production once it's fully in the bin — so a poor
-// harvest stops showing estimate-based revenue/profit. Pure.
-export function cropsWithCompleteHarvest(args: {
-  plantings: ReadonlyArray<SeasonPlanting>
-  aggByKey: Map<string, FieldCropAgg>
-  cropYear: number
-  cropCompleteKeys: ReadonlySet<string>
-  assumptions?: readonly ExpectedYieldAssumption[] | null
-  /** Cotton module on: cotton plantings classify off their seed cotton loads. */
-  cotton?: CottonYieldAdapter | null
-  now?: Date
-}): Set<string> {
+// planting and every planting — in EVERY cohort, full-season and double-crop —
+// is harvest-complete (analyzeYields not-excluded, or the crop-level
+// harvest_complete flag via cropCompleteKeys). The Marketing dashboard and
+// Revenue Projections use this to switch a crop from the yield ESTIMATE to
+// ACTUAL harvested production once it's fully in the bin — so a poor harvest
+// stops showing estimate-based revenue/profit. Pure.
+export function cropsWithCompleteHarvest(args: SeasonArgs<SeasonPlanting> & { cropCompleteKeys: ReadonlySet<string> }): Set<string> {
   const { yearPlantings, analysis } = analyzeSeason(args)
   const byCrop = new Map<string, typeof yearPlantings>()
   for (const p of yearPlantings) {
@@ -851,28 +957,26 @@ export function cropsWithCompleteHarvest(args: {
 
 // Plantings still effectively in progress (after any "count anyway" override),
 // grouped by crop id — the fields holding a crop back from the estimate→actual
-// switch. Same inputs and classification as cropsWithCompleteHarvest, so a
-// surface that uses one can name the other's holdouts and offer the "count
-// anyway" override on them. Pure.
-export function inProgressPlantingsByCrop<T extends SeasonPlanting>(args: {
-  plantings: ReadonlyArray<T>
-  aggByKey: Map<string, FieldCropAgg>
-  cropYear: number
-  cropCompleteKeys: ReadonlySet<string>
-  assumptions?: readonly ExpectedYieldAssumption[] | null
-  cotton?: CottonYieldAdapter | null
-  now?: Date
-}): Map<string, T[]> {
+// switch, each carrying its cohort so a surface can name it ("Cedar Lane ·
+// double-crop"). Same inputs and classification as cropsWithCompleteHarvest,
+// so a surface that uses one can name the other's holdouts and offer the
+// "count anyway" override on them. Pure.
+export function inProgressPlantingsByCrop<T extends SeasonPlanting>(
+  args: SeasonArgs<T> & { cropCompleteKeys: ReadonlySet<string> },
+): Map<string, Array<T & { cropping: Cropping }>> {
   const { yearPlantings, analysis } = analyzeSeason(args)
-  const out = new Map<string, T[]>()
+  const dcIds: ReadonlySet<string> = args.doubleCropIds ?? new Set<string>()
+  const out = new Map<string, Array<T & { cropping: Cropping }>>()
   for (const p of yearPlantings) {
     if (harvestStatusOf(p, analysis.excluded, args.cropCompleteKeys) !== 'in_progress') continue
+    const row = { ...p, cropping: croppingOf(p, dcIds) }
     const arr = out.get(p.crop_id)
-    if (arr) arr.push(p)
-    else out.set(p.crop_id, [p])
+    if (arr) arr.push(row)
+    else out.set(p.crop_id, [row])
   }
   return out
 }
+
 
 // ---------------------------------------------------------------------------
 // Group-level yield rollup — powers Yields by Entity (and is generic enough for

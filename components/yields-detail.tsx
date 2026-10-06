@@ -22,6 +22,8 @@ import {
   type CombineDetailRow,
 } from '@/lib/yield-detail'
 import { combineNegativeNetMessage, type CombineEntryLike } from '@/lib/yields'
+import { CROPPING_LABEL, type Cropping } from '@/lib/plantings'
+import { DcPill } from '@/components/reports/cropping'
 import {
   summarizeVarietyDetail, varietyShareOfField, VARIETY_BASIS_LABEL,
   type VarietyFieldDetailInput, type VarietyPlantingPart,
@@ -49,6 +51,11 @@ type DetailCropLike = {
   base_moisture_pct: number | null
   base_lb_per_bushel: number | null
 }
+
+/** `field_id|crop_id|season_year` → the planting's cropping and the spring crop a
+ *  double-crop planting sits behind — the drill-down's DC pill + FS/DC subtotals.
+ *  Omit → no pills, no subtotals (today's rendering). */
+export type CroppingByKey = ReadonlyMap<string, { cropping: Cropping; springCropName: string | null }>
 
 /** id → display-name lookups for the load list (fetched light: id + name). */
 export type DetailLookups = {
@@ -383,6 +390,7 @@ function PerFieldBreakdown({
   lookups,
   allowLoadLinks,
   combineEntries,
+  croppingByKey,
 }: {
   plantings: readonly DetailPlantingRef[]
   loads: readonly DetailLoadLike[]
@@ -391,6 +399,7 @@ function PerFieldBreakdown({
   lookups: DetailLookups
   allowLoadLinks: boolean
   combineEntries?: readonly CombineEntryLike[] | null
+  croppingByKey?: CroppingByKey | null
 }) {
   const rows = useMemo(() => {
     const m = new Map<string, { key: string; fieldId: string; cropId: string; seasonYear: number; acres: number; plantings: DetailPlantingRef[] }>()
@@ -416,6 +425,17 @@ function PerFieldBreakdown({
   const showYear = new Set(rows.map((r) => r.seasonYear)).size > 1
   const [openField, setOpenField] = useState<string | null>(null)
   const colCount = 7 + (showYear ? 1 : 0)
+  // Full-season / double-crop subtotals — shown only when the rows hold both,
+  // and they foot to the parent exactly (every field is one cropping).
+  const croppingOfRow = (r: { key: string }) => croppingByKey?.get(r.key)?.cropping ?? 'full_season'
+  const cohortTotals = (['full_season', 'double_crop'] as Cropping[]).map((k) => {
+    const rs = rows.filter((r) => croppingOfRow(r) === k)
+    const acres = rs.reduce((t, r) => t + r.acres, 0)
+    const bu = rs.reduce((t, r) => t + r.detail.summary.fieldProductionDryBu, 0)
+    const loadsN = rs.reduce((t, r) => t + r.detail.summary.loadCount, 0)
+    return { k, acres, bu, loadsN, n: rs.length }
+  })
+  const showCohortRows = cohortTotals.every((c) => c.n > 0)
 
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
@@ -447,7 +467,10 @@ function PerFieldBreakdown({
                   }}
                 >
                   <td className="px-2 py-2 text-slate-400">{isOpen ? '▾' : '▸'}</td>
-                  <td className="px-3 py-2 font-medium">{r.fieldName}</td>
+                  <td className="px-3 py-2 font-medium">
+                    {r.fieldName}
+                    {croppingOfRow(r) === 'double_crop' && <DcPill springCropName={croppingByKey?.get(r.key)?.springCropName ?? null} className="ml-1.5" />}
+                  </td>
                   {showYear && <td className="px-3 py-2">{r.seasonYear}</td>}
                   <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.acres, 1)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">
@@ -478,6 +501,22 @@ function PerFieldBreakdown({
             )
           })}
         </tbody>
+        {showCohortRows && (
+          <tfoot>
+            {cohortTotals.map((c) => (
+              <tr key={c.k} className="border-t border-slate-200 bg-slate-50 text-slate-600">
+                <td></td>
+                <td className="px-3 py-1.5 text-xs font-semibold">{CROPPING_LABEL[c.k]} · {c.n} field{c.n === 1 ? '' : 's'}</td>
+                {showYear && <td></td>}
+                <td className="px-3 py-1.5 text-right tabular-nums text-xs">{fmtNum(c.acres, 1)}</td>
+                <td className="px-3 py-1.5 text-right tabular-nums text-xs">{fmtNum(c.bu)}</td>
+                <td className="px-3 py-1.5 text-right tabular-nums text-xs font-semibold">{c.acres > 0 ? (c.bu / c.acres).toFixed(1) : '—'}</td>
+                <td></td>
+                <td className="px-3 py-1.5 text-right tabular-nums text-xs">{c.loadsN}</td>
+              </tr>
+            ))}
+          </tfoot>
+        )}
       </table>
     </div>
   )
@@ -624,6 +663,7 @@ export function YieldRowDetail({
   flag,
   cotton,
   combineEntries,
+  croppingByKey,
 }: {
   /** The row's constituent plantings — the SAME set its numbers rolled up from. */
   plantings: readonly DetailPlantingRef[]
@@ -641,6 +681,8 @@ export function YieldRowDetail({
   cotton?: CottonDetailState | null
   /** Combine yield entries (062) — labeled source rows with the netting. */
   combineEntries?: readonly CombineEntryLike[] | null
+  /** Full-season / double-crop per constituent planting (DC pill + subtotals). */
+  croppingByKey?: CroppingByKey | null
 }) {
   const detail = useMemo(
     () => buildDetailForPlantings({ plantings, loads, splits, cropById, combineEntries }),
@@ -673,6 +715,7 @@ export function YieldRowDetail({
               lookups={lookups}
               allowLoadLinks={allowLoadLinks}
               combineEntries={combineEntries}
+              croppingByKey={croppingByKey}
             />
           ) : (
             <>
@@ -772,6 +815,7 @@ export function VarietyRowDetail({
   allowLoadLinks,
   cotton,
   combineEntries,
+  croppingByKey,
 }: {
   /** The row's per-planting attributions — the SAME parts its numbers summed. */
   parts: readonly VarietyPlantingPart[]
@@ -784,6 +828,7 @@ export function VarietyRowDetail({
   /** Pass the shared cotton state when this variety's crop is cotton. */
   cotton?: CottonDetailState | null
   combineEntries?: readonly CombineEntryLike[] | null
+  croppingByKey?: CroppingByKey | null
 }) {
   const rows = useMemo(
     () => buildVarietyFieldRows({ parts, loads, splits, cropById, combineEntries, lookups, farmNameByField }),
@@ -848,7 +893,12 @@ export function VarietyRowDetail({
                     }}
                   >
                     <td className="px-2 py-2 text-slate-400">{isOpen ? '▾' : '▸'}</td>
-                    <td className="px-3 py-2 font-medium">{r.fieldName}</td>
+                    <td className="px-3 py-2 font-medium">
+                      {r.fieldName}
+                      {croppingByKey?.get(`${r.part.fieldId}|${r.part.cropId}|${r.part.seasonYear}`)?.cropping === 'double_crop' && (
+                        <DcPill springCropName={croppingByKey?.get(`${r.part.fieldId}|${r.part.cropId}|${r.part.seasonYear}`)?.springCropName ?? null} className="ml-1.5" />
+                      )}
+                    </td>
                     {showFarm && <td className="px-3 py-2">{r.farmName ?? '—'}</td>}
                     {showYear && <td className="px-3 py-2">{r.part.seasonYear}</td>}
                     <td className="px-3 py-2 text-right tabular-nums">{fmtNum(r.part.varietyAcres, 1)}</td>
