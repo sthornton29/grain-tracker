@@ -1,4 +1,5 @@
 import type { CropAverage, HarvestProgress } from '@/lib/yields'
+import HarvestProgressBar from '@/components/reports/harvest-progress-bar'
 
 type Props = {
   /** Crop id → weighted average, as returned by analyzeYields. */
@@ -44,20 +45,7 @@ export default function AvgYieldHeader({ averages, cropName, label = 'Average yi
               <span className="text-sm font-medium text-slate-500"> {unitOf?.(a.id) === 'lbs' ? 'lbs lint/ac' : 'bu/ac'}</span>
             </div>
             {a.prog ? (
-              <div className="mt-1.5">
-                <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
-                  {a.prog.totalAcres > 0 && (
-                    <>
-                      <div className="bg-green-600" style={{ width: `${(a.prog.completedAcres / a.prog.totalAcres) * 100}%` }} />
-                      <div className="bg-amber-500" style={{ width: `${(a.prog.inProgressAcres / a.prog.totalAcres) * 100}%` }} />
-                    </>
-                  )}
-                </div>
-                <div className="text-xs font-semibold text-slate-700 mt-1">{a.prog.pctComplete.toFixed(0)}% harvested</div>
-                <div className="text-xs text-slate-500">
-                  {fmtAc(a.prog.completedAcres)} done · {fmtAc(a.prog.inProgressAcres)} in progress · {fmtAc(a.prog.remainingAcres)} left
-                </div>
-              </div>
+              <HarvestProgressBar progress={a.prog} />
             ) : (
               <div className="text-xs text-slate-400">{a.avg ? `${fmtAc(a.avg.acres)} ac` : ''}</div>
             )}

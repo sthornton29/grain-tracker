@@ -10,6 +10,7 @@ import type { ReactNode } from 'react'
 import { CROPPING_LABEL, type Cropping } from '@/lib/plantings'
 import type { CropAverage, HarvestProgress } from '@/lib/yields'
 import { InfoTip, fmtInt, fmtNum } from '@/components/reports/report-kit'
+import HarvestProgressBar from '@/components/reports/harvest-progress-bar'
 
 export type CroppingFilter = 'all' | Cropping
 
@@ -121,9 +122,7 @@ export function CroppingTiles({ tiles, value, onChange, unitOf }: {
         <div className="text-xs text-slate-600 tabular-nums">
           {side.avg ? `${fmtNum(side.avg.acres, 1)} ac harvested · ${fmtInt(side.avg.dryBu)} ${unitOf?.(t.cropId) === 'lbs' ? 'lbs' : 'bu'}` : 'nothing harvested yet'}
         </div>
-        {p && p.totalAcres > 0 && (
-          <div className="text-xs text-slate-500 tabular-nums">{fmtNum(p.completedAcres, 0)} of {fmtNum(p.totalAcres, 0)} ac in</div>
-        )}
+        {p && <HarvestProgressBar progress={p} />}
       </button>
     )
   }
