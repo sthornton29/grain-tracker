@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-10-08 · version 0.1.0 · build 4e06082. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-10-08 · version 0.1.0 · build a9cac83. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -39,7 +39,7 @@ Ask Turnrow answers questions about **your own account's numbers** in plain Engl
 What it covers, module by module:
 
 - **Marketing** — average prices, contracted and unpriced bushels, blended revenue, cost and profit per crop.
-- **Yields** — by field, farm, entity, landowner or crop, including combine-monitor entries and how they reconcile with weighed loads.
+- **Yields** — by field, farm, entity, landowner or crop, the same way the Yields page figures them: yield per acre counts only fields whose harvest is complete, with acres harvested, in progress and not yet harvested shown for every row. It knows full-season from double-crop (soybeans behind wheat) for every planting, so "full-season soybeans by entity" is a straight answer. It also knows your entity, farm, crop, landowner, buyer and variety names, so a question like "Two Seasons vs View Celeste" is read as the two entities. Combine-monitor entries are included and reconciled with weighed loads.
 - **Contracts** — grain contract delivery progress, prices and status; **seed production contracts** with their pricing elections, the expected price walk, and payments.
 - **Cotton** — sales contracts (bales committed, delivered and remaining, pricing status), pools and their payments, CCC loans, LDPs, the bale disposition board, gin receipts, bales, classing grades, and lint per acre.
 - **Settlements** — each statement's bushels, gross, net and average price, with every itemized discount in dollars and cents per bushel.

@@ -6,6 +6,7 @@ import { HELP_DIGEST } from '@/lib/help-content.generated'
 import { ASSISTANT_SCHEMA_SUMMARY } from '@/lib/assistant-schema'
 import { toolsForRole, type AssistantContext } from '@/lib/assistant-tools'
 import { runAssistantTurn, SYSTEM_RULES } from '@/lib/assistant-turn'
+import { buildAccountVocabulary, fetchAccountVocabulary } from '@/lib/assistant-vocabulary'
 
 // "Ask Turnrow" — the data assistant. An Anthropic tool-use loop
 // (lib/assistant-turn.ts) whose every data access runs through the CALLER'S
@@ -66,7 +67,13 @@ export async function POST(req: NextRequest) {
 
   // Role + viewer grants — for tool availability and viewer-correct scoping
   // (RLS enforces regardless; this keeps attribution math report-identical).
-  const { data: profile } = await supabase.from('user_profiles').select('role').eq('user_id', user.id).maybeSingle()
+  // The account's names ride along so the model can tell an entity from a
+  // variety before it picks a tool (lib/assistant-vocabulary). Best effort:
+  // a failed read leaves the block out rather than failing the answer.
+  const [{ data: profile }, vocabulary] = await Promise.all([
+    supabase.from('user_profiles').select('role').eq('user_id', user.id).maybeSingle(),
+    fetchAccountVocabulary(supabase).then(buildAccountVocabulary).catch((err) => { console.warn('[assistant] vocabulary read failed', err); return null }),
+  ])
   const role = coerceAppRole((profile as { role?: string } | null)?.role)
   let grantedEntityIds: string[] | null = null
   if (role === 'viewer') {
@@ -116,6 +123,9 @@ export async function POST(req: NextRequest) {
       // cache them so an 8-round turn doesn't pay for them 8 times.
       cache_control: { type: 'ephemeral' },
     },
+    // After the cached block: the names change whenever land is edited, so
+    // they must not invalidate the digest's cache.
+    ...(vocabulary ? [{ type: 'text' as const, text: vocabulary }] : []),
   ]
 
   const client = new Anthropic()

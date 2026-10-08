@@ -28,10 +28,13 @@ import {
   type MarketingRow,
   type Planting,
 } from '@/lib/marketing'
-import { buildDoubleCropSet, croppingOf } from '@/lib/plantings'
+import { buildDoubleCropSet, cropHasBothCroppings, croppingOf, type Cropping } from '@/lib/plantings'
 import {
+  analyzeYields,
+  buildYieldInputs,
   cropsWithCompleteHarvest,
   fieldCropAggregates,
+  harvestStatusOf,
   withLoadBreakouts,
 } from '@/lib/yields'
 import { computeBushels } from '@/lib/shrink'
@@ -362,7 +365,7 @@ async function getMarketingSummary(supabase: SupabaseClient, ctx: AssistantConte
 async function getYields(supabase: SupabaseClient, ctx: AssistantContext, input: { crop_year: number; grouping?: 'field' | 'farm' | 'entity' | 'crop' | 'landowner'; crop?: string; cropping?: 'all' | 'full_season' | 'double_crop' }) {
   const grouping = input.grouping ?? 'field'
   const bits = await fetchScopeBits(supabase)
-  const [crops, plantings, loads, splits, combineEntries, landowners] = await Promise.all([
+  const [crops, plantings, loads, splits, combineEntries, landowners, assumptions] = await Promise.all([
     all<Crop>(supabase.from('crops').select('*')),
     allRows<FieldPlanting>((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
     allPaged<{ id: string; date: string; crop_id: string | null; crop_year: number | null; from_type: string | null; from_field_id: string | null; net_weight: number | null; moisture: number | null; dry_bushels_override: number | null }>(
@@ -371,6 +374,7 @@ async function getYields(supabase: SupabaseClient, ctx: AssistantContext, input:
     allRows<CombineRow>((f, t) =>
       supabase.from('combine_yield_entries').select(COMBINE_SELECT).order('id').range(f, t)),
     all<{ id: string; name: string }>(supabase.from('landowners').select('id, name')),
+    all<CropAssumption>(supabase.from('crop_assumptions').select('*')),
   ])
   const scope = buildEntityScope({ entityId: '', farms: bits.farms, fields: bits.fields, entities: bits.entities, grantedEntityIds: ctx.grantedEntityIds })
   const cropById = new Map(crops.map((c) => [c.id, c]))
@@ -385,10 +389,21 @@ async function getYields(supabase: SupabaseClient, ctx: AssistantContext, input:
   const doubleCropIds = buildDoubleCropSet(plantings, cropById)
   const croppingFilter = input.cropping && input.cropping !== 'all' ? input.cropping : null
 
-  type Row = { group: string; crop: string; acres: number; dry_bu: number; full_season: { acres: number; dry_bu: number }; double_crop: { acres: number; dry_bu: number } }
+  // Harvest status, the Yields page way: the classifier runs over the whole
+  // scoped season (never the crop-narrowed set, so a field reads the same in
+  // every view), and the crop-level "Harvest complete" flag forces every
+  // planting of that crop complete. Yield/acre then counts ONLY complete
+  // fields — a half-harvested field would drag the average down.
+  const yearPlantings = scope.plantings(plantings).filter((p) => p.season_year === input.crop_year)
+  const analysis = analyzeYields(buildYieldInputs({ plantings: yearPlantings, aggByKey, assumptions, doubleCropIds }))
+  const cropCompleteKeys = new Set<string>()
+  for (const a of assumptions) if (a.harvest_complete) cropCompleteKeys.add(`${a.crop_id}|${a.crop_year}`)
+
+  type Side = { planted_acres: number; harvested_acres: number; harvested_dry_bu: number; in_progress_acres: number; not_harvested_acres: number; dry_bu_so_far: number }
+  const emptySide = (): Side => ({ planted_acres: 0, harvested_acres: 0, harvested_dry_bu: 0, in_progress_acres: 0, not_harvested_acres: 0, dry_bu_so_far: 0 })
+  type Row = { group: string; crop: string; cropId: string; all: Side; full_season: Side; double_crop: Side }
   const grouped = new Map<string, Row>()
-  for (const p of scope.plantings(plantings)) {
-    if (p.season_year !== input.crop_year) continue
+  for (const p of yearPlantings) {
     const crop = cropById.get(p.crop_id)
     if (!crop) continue
     if (cropFilter && !crop.name.toLowerCase().includes(cropFilter)) continue
@@ -400,33 +415,47 @@ async function getYields(supabase: SupabaseClient, ctx: AssistantContext, input:
       : grouping === 'entity' ? (farm?.entity_id ? entityById.get(farm.entity_id)?.name ?? 'No entity' : 'No entity')
       : grouping === 'landowner' ? (farm?.landowner_id ? landownerById.get(farm.landowner_id)?.name ?? 'No landowner' : 'Owned / no landowner')
       : crop.name
-    const cropping = croppingOf(p, doubleCropIds)
+    const cropping: Cropping = croppingOf(p, doubleCropIds)
     if (croppingFilter && cropping !== croppingFilter) continue
     const key = `${groupName}|${crop.name}`
-    const row = grouped.get(key) ?? { group: groupName, crop: crop.name, acres: 0, dry_bu: 0, full_season: { acres: 0, dry_bu: 0 }, double_crop: { acres: 0, dry_bu: 0 } }
+    const row = grouped.get(key) ?? { group: groupName, crop: crop.name, cropId: p.crop_id, all: emptySide(), full_season: emptySide(), double_crop: emptySide() }
     const acres = num(p.planted_acres)
     const bu = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)?.dryBu ?? 0
-    row.acres += acres
-    row.dry_bu += bu
-    row[cropping].acres += acres
-    row[cropping].dry_bu += bu
+    const status = harvestStatusOf(p, analysis.excluded, cropCompleteKeys)
+    for (const side of [row.all, row[cropping]]) {
+      side.planted_acres += acres
+      side.dry_bu_so_far += bu
+      if (status === 'complete') { side.harvested_acres += acres; side.harvested_dry_bu += bu }
+      else if (status === 'in_progress') side.in_progress_acres += acres
+      else side.not_harvested_acres += acres
+    }
     grouped.set(key, row)
   }
-  const side = (s: { acres: number; dry_bu: number }) => ({ acres: r0(s.acres), dry_bu: r0(s.dry_bu), yield_per_acre: s.acres > 0 && s.dry_bu > 0 ? r2(s.dry_bu / s.acres) : null })
+  const side = (s: Side) => ({
+    planted_acres: r2(s.planted_acres),
+    harvested_acres: r2(s.harvested_acres),
+    harvested_dry_bu: r0(s.harvested_dry_bu),
+    yield_per_acre: s.harvested_acres > 0 && s.harvested_dry_bu > 0 ? r2(s.harvested_dry_bu / s.harvested_acres) : null,
+    in_progress_acres: r2(s.in_progress_acres),
+    not_harvested_acres: r2(s.not_harvested_acres),
+    pct_harvested: s.planted_acres > 0 ? r0((s.harvested_acres / s.planted_acres) * 100) : 0,
+    dry_bu_so_far: r0(s.dry_bu_so_far),
+  })
   const rows = [...grouped.values()]
     .map((r) => ({
-      group: r.group, crop: r.crop, acres: r0(r.acres), dry_bu: r0(r.dry_bu), yield_per_acre: r.acres > 0 && r.dry_bu > 0 ? r2(r.dry_bu / r.acres) : null,
-      // The full-season / double-crop split, only where a row has both (they
-      // partition the row exactly: the two sides sum to acres and dry_bu).
-      ...(r.full_season.acres > 0 && r.double_crop.acres > 0 ? { full_season: side(r.full_season), double_crop: side(r.double_crop) } : {}),
+      group: r.group, crop: r.crop, ...side(r.all),
+      // The full-season / double-crop split whenever the crop has both kinds
+      // planted this season (they partition the row exactly: the two sides
+      // sum to every acre and bushel figure above).
+      ...(cropHasBothCroppings(yearPlantings, r.cropId, input.crop_year, doubleCropIds) ? { full_season: side(r.full_season), double_crop: side(r.double_crop) } : {}),
     }))
-    .sort((a, b) => (b.dry_bu - a.dry_bu))
+    .sort((a, b) => (b.harvested_dry_bu - a.harvested_dry_bu) || (b.dry_bu_so_far - a.dry_bu_so_far) || a.group.localeCompare(b.group))
   return {
     crop_year: input.crop_year,
     grouping,
     cropping: input.cropping ?? 'all',
     unit: 'dry bushels (grain); cotton is NOT in these rows — ask about gin receipts for cotton lbs',
-    note: 'Combine-monitor entries replace weighed loads for their field, so bushels can exceed hauled loads. In-progress fields are included.',
+    note: 'The Yields page math: yield_per_acre, harvested_acres and harvested_dry_bu count only fields whose harvest is complete; in-progress and not-yet-harvested fields are excluded from the average but their acres are listed, and dry_bu_so_far includes in-progress fields. pct_harvested = harvested_acres / planted_acres. Combine-monitor entries replace weighed loads for their field, so bushels can exceed hauled loads. full_season / double_crop sides appear when the crop has both kinds planted this season.',
     rows: rows.slice(0, 120),
     truncated: rows.length > 120 ? rows.length - 120 : 0,
   }
@@ -1241,7 +1270,7 @@ export const ASSISTANT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'get_yields',
-    description: 'Harvest yields for a crop year grouped by field, farm, entity, landowner, or crop: acres, dry bushels, yield/acre. Splits-aware and combine-entry-aware — the same math as the Yields page. Knows full-season vs double-crop (soybeans behind wheat): a row with both carries a full_season / double_crop split that sums to the row exactly, and the optional cropping argument restricts the rows to one of them.',
+    description: 'Harvest yields for a crop year grouped by field, farm, entity (the operating company — use this for "X vs Y" entity splits), landowner, or crop: planted acres, acres harvested / in progress / not yet harvested, dry bushels, yield/acre. The same math as the Yields page: yield/acre counts only fields whose harvest is complete; splits-aware and combine-entry-aware. Knows full-season vs double-crop (e.g. soybeans behind wheat): every row of a crop with both carries a full_season / double_crop split that sums to the row exactly, and the cropping argument restricts the rows to one of them — pass cropping "full_season" for "full-season soybeans".',
     input_schema: { type: 'object', properties: { crop_year: cropYearProp, grouping: { type: 'string', enum: ['field', 'farm', 'entity', 'crop', 'landowner'] }, crop: { type: 'string', description: 'Optional crop name filter' }, cropping: { type: 'string', enum: ['all', 'full_season', 'double_crop'], description: 'Optional: only full-season plantings, only double-crop plantings (a double-crop-designated crop planted behind a spring-harvest crop on the same field that year), or all (default)' } }, required: ['crop_year'] },
   },
   {
