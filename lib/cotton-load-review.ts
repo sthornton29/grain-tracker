@@ -9,18 +9,18 @@
 //     weights / dates / rolls — the policy-upload pattern), else "new".
 //   * reviewRolls: the printed rolls vs a handwritten correction — never
 //     silently picked; the user taps "Use N".
-//   * pbiReview / receiptClassification: the gin-receipt side — a PBI
-//     repeated in the bale list, a PBI already on another receipt this crop
-//     year, and a receipt number already saved.
+//   * pbiReview: the gin-receipt side — a PBI repeated in the bale list or
+//     already on another receipt this crop year (through pbiKeys, so a
+//     12-digit tag and its 7-digit bale number are one bale for this gin).
 
 import type { CottonLoadExtraction } from '@/lib/pdf-upload'
 import { resolveTicketDate } from '@/lib/ticket-date'
+import { numberKey, pbiKeys } from '@/lib/number-key'
 
-/** Digits only, leading zeros dropped: "031627" and "31627" are one load. */
+/** The cotton number key (lib/number-key): "031627" and "31627" are one
+ *  load; a tick mark read as punctuation never splits them. '' when blank. */
 export function loadNumberKey(n: string | null | undefined): string {
-  const d = (n ?? '').replace(/\D+/g, '').replace(/^0+(?=\d)/, '')
-  if (d) return d
-  return (n ?? '').trim().toUpperCase()
+  return numberKey(n) ?? ''
 }
 
 export type ReviewLoad = CottonLoadExtraction & {
@@ -176,51 +176,37 @@ export type BaleReviewRow<T> = {
   flags: string[]
 }
 
-export function normalizePbiKey(raw: string | null | undefined): string {
-  return (raw ?? '').replace(/\D/g, '').replace(/^0+/, '')
-}
-
 /** Flag bales repeated within the list and bales already on another receipt
- *  this crop year (named). Flagged bales are excluded by default. */
+ *  this crop year (named). Flagged bales are excluded by default. PBIs
+ *  compare through pbiKeys (lib/number-key): a saved 12-digit tag whose
+ *  prefix is this gin's code matches the statement's 7-digit bale number. */
 export function pbiReview<T extends { pbi_number: string | null }>(
   bales: ReadonlyArray<T>,
-  existing: ReadonlyArray<{ pbi_number: string; crop_year: number; receipt_number: string | null }>,
+  existing: ReadonlyArray<{ pbi_number: string; crop_year: number; receipt_number: string | null; receipt_label?: string | null }>,
   cropYear: number,
+  /** THIS statement's gin code: a 12-digit tag on either side drops its 5-digit prefix only when the prefix is this gin. */
+  ginCode?: string | null,
 ): BaleReviewRow<T>[] {
   const seen = new Set<string>()
   const onReceipt = new Map<string, string>()
-  for (const e of existing) if (e.crop_year === cropYear) onReceipt.set(normalizePbiKey(e.pbi_number), e.receipt_number ?? 'another receipt')
+  for (const e of existing) {
+    if (e.crop_year !== cropYear) continue
+    for (const k of pbiKeys(e.pbi_number, ginCode)) onReceipt.set(k, e.receipt_label ?? e.receipt_number ?? 'another receipt')
+  }
   return bales.map((b) => {
-    const pbi = normalizePbiKey(b.pbi_number)
+    const keys = pbiKeys(b.pbi_number, ginCode)
+    const pbi = keys[0] ?? ''
     const flags: string[] = []
     if (pbi) {
-      if (seen.has(pbi)) flags.push('repeated in this bale list')
-      seen.add(pbi)
-      const r = onReceipt.get(pbi)
-      if (r) flags.push(`already on receipt #${r}`)
+      if (keys.some((k) => seen.has(k))) flags.push('repeated in this bale list')
+      for (const k of keys) seen.add(k)
+      const r = keys.map((k) => onReceipt.get(k)).find(Boolean)
+      if (r) flags.push(`already on receipt ${r}`)
     }
     return { bale: b, pbi, flags }
   })
 }
 
-export type ReceiptClassification =
-  | { status: 'new' }
-  | { status: 'saved'; existingId: string }
-  | { status: 'update'; existingId: string; diffs: string[] }
-
-export function receiptClassification(
-  scanned: { receipt_number: string | null; receipt_date?: string | null; bales_count?: number | null; total_seed_cotton_weight?: number | null; total_bale_weight?: number | null },
-  saved: ReadonlyArray<{ id: string; receipt_number: string; crop_year: number; receipt_date: string | null; bales_count: number | null; total_seed_cotton_weight: number | null; total_bale_weight: number | null }>,
-  cropYear: number,
-): ReceiptClassification {
-  const key = loadNumberKey(scanned.receipt_number)
-  if (!key) return { status: 'new' }
-  const existing = saved.find((s) => s.crop_year === cropYear && loadNumberKey(s.receipt_number) === key)
-  if (!existing) return { status: 'new' }
-  const diffs: string[] = []
-  if (scanned.receipt_date && existing.receipt_date && scanned.receipt_date !== existing.receipt_date) diffs.push(`date ${existing.receipt_date} → ${scanned.receipt_date}`)
-  if (scanned.bales_count != null && existing.bales_count != null && Number(scanned.bales_count) !== Number(existing.bales_count)) diffs.push(`bales ${existing.bales_count} → ${scanned.bales_count}`)
-  if (scanned.total_seed_cotton_weight != null && existing.total_seed_cotton_weight != null && weightsDiffer(existing.total_seed_cotton_weight, scanned.total_seed_cotton_weight)) diffs.push(`seed cotton ${fmt(existing.total_seed_cotton_weight)} → ${fmt(scanned.total_seed_cotton_weight)} lbs`)
-  if (scanned.total_bale_weight != null && existing.total_bale_weight != null && weightsDiffer(existing.total_bale_weight, scanned.total_bale_weight)) diffs.push(`lint ${fmt(existing.total_bale_weight)} → ${fmt(scanned.total_bale_weight)} lbs`)
-  return diffs.length > 0 ? { status: 'update', existingId: existing.id, diffs } : { status: 'saved', existingId: existing.id }
-}
+// The receipt itself (new / already saved / update) is classified by its
+// STATEMENT IDENTITY in lib/gin-statements (classifyStatement) — "Gin 40614"
+// is the gin code, never the receipt number.

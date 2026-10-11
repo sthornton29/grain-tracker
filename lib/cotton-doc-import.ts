@@ -12,6 +12,7 @@
 // No I/O — the page passes already-fetched rows in, mirroring lib/cotton-sales.
 
 import type { CottonDisposition } from '@/lib/types'
+import { pbiKey, pbiKeys } from '@/lib/number-key'
 
 // ---------- AI extraction categories & shapes ----------
 
@@ -103,10 +104,10 @@ export type CottonMarketingExtraction = {
 
 // ---------- PBI normalization ----------
 
-// Bale/PBI numbers match on digits with leading zeros ignored — the same rule
-// the classing-CSV import uses (lib/cotton-grades.ts). "PBI# 0123456" → "123456".
+// Bale/PBI numbers match through the ONE cotton key (lib/number-key pbiKey):
+// digits, leading zeros ignored. "PBI# 0123456" → "123456"; no digits → ''.
 export function normalizePbi(raw: string): string {
-  return raw.replace(/\D/g, '').replace(/^0+/, '')
+  return pbiKey(raw) ?? ''
 }
 
 // A token counts as a bale number when its digit content is at least 4 long —
@@ -173,7 +174,7 @@ export function parseBaleNumberList(text: string): ParsedBaleList {
 
 export type AssignTarget = 'loan' | 'ldp' | 'contract'
 
-export type BaleForAssign = { id: string; pbi_number: string; net_weight_lbs: number | string }
+export type BaleForAssign = { id: string; pbi_number: string; net_weight_lbs: number | string; /** The receipt's gin code (093) — lets a 12-digit tag in the file match the saved 7-digit bale number and vice versa. */ gin_code?: string | null }
 
 export type BalePartitionInput = {
   /** Raw bale-number tokens (from parseBaleNumberList entries or AI extraction). */
@@ -233,10 +234,29 @@ export function baleConflictReason(args: {
 }
 
 export function partitionBaleAssignment(inp: BalePartitionInput): BalePartition {
+  // Every saved bale under every key it answers to (its own, and its bale
+  // number alone when it is a 12-digit tag for its receipt's gin); an
+  // incoming 12-digit token drops its prefix only against a bale whose gin
+  // code is that prefix.
   const baleByPbi = new Map<string, BaleForAssign>()
+  const ginCodes = new Set<string>()
   for (const b of inp.bales) {
-    const key = normalizePbi(String(b.pbi_number ?? ''))
-    if (key !== '') baleByPbi.set(key, b)
+    const gin = (b.gin_code ?? '').replace(/\D/g, '')
+    if (gin) ginCodes.add(gin.padStart(5, '0'))
+    for (const key of pbiKeys(String(b.pbi_number ?? ''), b.gin_code)) if (!baleByPbi.has(key)) baleByPbi.set(key, b)
+  }
+  const lookup = (raw: string): { pbi: string; bale: BaleForAssign | undefined } => {
+    const own = pbiKey(raw)
+    if (own == null) return { pbi: '', bale: undefined }
+    const direct = baleByPbi.get(own)
+    if (direct) return { pbi: own, bale: direct }
+    const digits = raw.replace(/\D/g, '')
+    if (digits.length === 12 && ginCodes.has(digits.slice(0, 5))) {
+      const tail = pbiKey(digits.slice(5))
+      const b = tail != null ? baleByPbi.get(tail) : undefined
+      if (b && (b.gin_code ?? '').replace(/\D/g, '').padStart(5, '0') === digits.slice(0, 5)) return { pbi: own, bale: b }
+    }
+    return { pbi: own, bale: undefined }
   }
 
   const seen = new Set<string>()
@@ -244,10 +264,11 @@ export function partitionBaleAssignment(inp: BalePartitionInput): BalePartition 
   const conflicts: BaleConflict[] = []
   const unmatched: string[] = []
   for (const raw of inp.tokens) {
-    const pbi = normalizePbi(raw)
+    const { pbi, bale } = lookup(raw)
     if (pbi === '' || seen.has(pbi)) continue // blank / duplicate rows fold away
     seen.add(pbi)
-    const bale = baleByPbi.get(pbi)
+    if (bale && seen.has(bale.id)) continue // the same bale under two spellings
+    if (bale) seen.add(bale.id)
     if (!bale) { unmatched.push(raw); continue }
     const disposition = inp.dispositionByBale.get(bale.id) ?? 'held'
     const row: BaleMatch = { baleId: bale.id, pbi, lbs: Number(bale.net_weight_lbs ?? 0), disposition }

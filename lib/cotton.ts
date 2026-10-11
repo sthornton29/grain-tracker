@@ -5,6 +5,7 @@
 // weights are plain lbs (seed cotton on loads, lint on bales).
 
 import type { CottonYieldAdapter, FieldCropAgg } from '@/lib/yields'
+import { pbiKeys, pbiMatches } from '@/lib/number-key'
 
 const round1 = (n: number) => Math.round(n * 10) / 10
 const round2 = (n: number) => Math.round(n * 100) / 100
@@ -36,9 +37,8 @@ export function reconcileBaleCount(stated: number | null | undefined, actual: nu
 
 // ---------- Bale ↔ grade matching ----------
 
-export type BaleLite = { id: string; pbi_number: string; net_weight_lbs: number }
+export type BaleLite = { id: string; pbi_number: string; net_weight_lbs: number; /** The receipt's gin code (093): a classing row carrying the 12-digit tag matches the 7-digit bale number only through it. */ gin_code?: string | null }
 
-const normPbi = (s: string) => s.trim().replace(/^0+(?=\d)/, '').toUpperCase()
 
 export type GradeMatch<T> = {
   matched: Array<{ row: T; bale: BaleLite; weightMismatch: boolean }>
@@ -46,20 +46,25 @@ export type GradeMatch<T> = {
 }
 
 /**
- * Match grade rows to bales by PBI number (leading zeros ignored). NetWt is
- * cross-checked against the bale's receipt net weight — >1% difference flags
- * the pair (the classing office weighs independently). Farm/Field columns are
- * corroboration only, never the join key.
+ * Match grade rows to bales by PBI number through the one cotton key
+ * (lib/number-key pbiKeys: digits, leading zeros ignored; a 12-digit tag
+ * matches the bale number when its prefix is the receipt's gin code). NetWt
+ * is cross-checked against the bale's receipt net weight — >1% difference
+ * flags the pair (the classing office weighs independently). Farm/Field
+ * columns are corroboration only, never the join key.
  */
 export function matchGradesToBales<T extends { pbi_number: string; net_weight_lbs: number | null }>(
   rows: readonly T[],
   bales: readonly BaleLite[],
 ): GradeMatch<T> {
-  const byPbi = new Map(bales.map((b) => [normPbi(b.pbi_number), b]))
+  const byPbi = new Map<string, BaleLite>()
+  for (const b of bales) for (const k of pbiKeys(b.pbi_number, b.gin_code)) if (!byPbi.has(k)) byPbi.set(k, b)
   const matched: GradeMatch<T>['matched'] = []
   const unmatched: T[] = []
   for (const row of rows) {
-    const bale = byPbi.get(normPbi(row.pbi_number))
+    // A 12-digit classing tag drops its gin prefix only against a bale of that gin.
+    const bale = pbiKeys(row.pbi_number).map((k) => byPbi.get(k)).find(Boolean)
+      ?? bales.map((b) => (pbiMatches(row.pbi_number, b.pbi_number, b.gin_code) ? b : undefined)).find(Boolean)
     if (!bale) { unmatched.push(row); continue }
     const weightMismatch =
       row.net_weight_lbs != null && bale.net_weight_lbs > 0

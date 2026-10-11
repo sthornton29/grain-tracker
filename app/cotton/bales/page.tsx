@@ -16,7 +16,7 @@ import { matchGradesToBales } from '@/lib/cotton'
 import type { CottonBale, CottonBaleGrade, GinReceipt, Farm, Field } from '@/lib/types'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
 import { reportError } from '@/lib/friendly-error'
-import { normalizePbiKey } from '@/lib/cotton-load-review'
+import { pbiKey } from '@/lib/number-key'
 
 const fmt = (n: number | null | undefined, d = 1) => (n == null ? '—' : Number(n).toFixed(d))
 
@@ -68,7 +68,7 @@ export default function CottonBalesPage() {
     const seen = new Set<string>()
     const repeats: string[] = []
     const rows = parsed.rows.filter((r) => {
-      const k = normalizePbiKey(r.pbi_number)
+      const k = pbiKey(r.pbi_number) ?? ''
       if (!k) return true
       if (seen.has(k)) { repeats.push(r.pbi_number); return false }
       seen.add(k)

@@ -27,6 +27,7 @@ import type {
   BrokerageStatementExtraction,
   ContractExtraction,
   GinReceiptExtraction,
+  GinReceiptPage,
   TicketExtraction,
 } from './pdf-upload'
 import type { CottonMarketingExtraction } from './cotton-doc-import'
@@ -209,33 +210,20 @@ describe('mergeCottonLoads', () => {
 })
 
 describe('mergeGinReceipts', () => {
-  const receipt = (over: Partial<GinReceiptExtraction> = {}): GinReceiptExtraction => ({
-    gin_name: null, gin_address: null, gin_phone: null, receipt_number: null,
-    receipt_date: null, producer: null, farm_number: null, farm_name: null, field: null,
-    crop_year: null, modules_count: null, total_seed_cotton_weight: null, bales_count: null,
-    total_bale_weight: null, avg_bale_weight: null, seed_lbs: null, lint_turnout_pct: null,
-    lint_lbs_per_bale: null, loads: [], bales: [], ...over,
+  const receipt = (over: Partial<GinReceiptExtraction> = {}): GinReceiptExtraction => ({ pages: [], ...over })
+  const page = (n: number, over: Partial<GinReceiptPage> = {}): GinReceiptPage => ({
+    page: n, statement_date: null, has_totals_block: false, gin_name: 'Valley Gin', gin_address: null, gin_phone: null, gin_code: '40614', statement_number: null,
+    producer: null, farm_number: null, farm_name: null, field: null, crop_year: null, totals: null, farm_ytd: null, loads: [], bales: [], bale_row_first: null, bale_row_last: null, ...over,
   })
-  it('header from chunk 1, bales deduped on the PBI rule (digits, no leading zeros)', () => {
+  it('pages concatenate in page order; the same page returned twice across a chunk boundary keeps the first; nothing folds statements together', () => {
     const merged = mergeGinReceipts([
-      receipt({
-        gin_name: 'Valley Gin', receipt_number: 'G-42', bales_count: 3,
-        bales: [{ pbi_number: '0123456', net_weight_lbs: 480 }],
-        loads: [{ load_number: 'L-1', rolls: null, gross: null, tare: null, net: 40000 }],
-      }),
-      receipt({
-        bales: [
-          { pbi_number: '123456', net_weight_lbs: 480 }, // same bale, zeros stripped
-          { pbi_number: '123457', net_weight_lbs: 495 },
-        ],
-        loads: [{ load_number: 'L-1', rolls: null, gross: null, tare: null, net: 40000 }],
-      }),
+      receipt({ pages: [page(2, { bales: [{ pbi_number: '123457', net_weight_lbs: 495 }] }), page(1, { statement_date: '2026-10-10', has_totals_block: true, loads: [{ load_number: '31633', rolls: 6, gross: 62_400, tare: 31_400, net: 31_000 }] })] }),
+      receipt({ pages: [page(2, { bales: [{ pbi_number: '999999', net_weight_lbs: 1 }] }), page(3, { statement_date: '2026-10-07', has_totals_block: true })] }),
     ])
-    expect(merged.gin_name).toBe('Valley Gin')
-    expect(merged.receipt_number).toBe('G-42')
-    expect(merged.bales_count).toBe(3)
-    expect(merged.bales.map((b) => b.pbi_number)).toEqual(['0123456', '123457'])
-    expect(merged.loads).toHaveLength(1)
+    expect(merged.pages.map((p) => p.page)).toEqual([1, 2, 3])
+    expect(merged.pages[1].bales.map((b) => b.pbi_number)).toEqual(['123457'])
+    expect(merged.pages[0].loads).toHaveLength(1)
+    expect(merged.pages[2].statement_date).toBe('2026-10-07')
   })
 })
 

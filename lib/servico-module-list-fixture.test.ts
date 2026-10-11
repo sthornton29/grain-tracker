@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { CottonLoadExtraction, CottonLoadsExtraction } from '@/lib/pdf-upload'
 import { mergeCottonLoads } from '@/lib/parse-merge'
 import {
-  classificationSummary, classifyAgainstSaved, collapseExtractedLoads, loadNumberKey, pbiReview, receiptClassification, reviewRolls,
+  classificationSummary, classifyAgainstSaved, collapseExtractedLoads, loadNumberKey, pbiReview, reviewRolls,
   type SavedCottonLoad,
 } from '@/lib/cotton-load-review'
 import { documentPagePlan } from '@/lib/cotton-loads'
@@ -96,7 +96,10 @@ describe('Servico module list — merge and collapse', () => {
   it('leading zeros never split a load: "31627" and "031627" are one key', () => {
     expect(loadNumberKey('031627')).toBe('31627')
     expect(loadNumberKey('31627')).toBe('31627')
-    expect(loadNumberKey('M-0031627')).toBe('31627')
+    // Letters and internal dashes are part of the number (lib/number-key):
+    // a lettered ticket is its own key; only LEADING zeros and tick marks go.
+    expect(loadNumberKey('M-0031627')).toBe('M-0031627')
+    expect(loadNumberKey(' 031627, ')).toBe('31627')
   })
 
   it('a second page with different weights flags the row red', () => {
@@ -162,21 +165,19 @@ describe('Servico module list — against the loads already saved', () => {
   })
 })
 
-describe('Servico — the receipt side: PBI and receipt-number rules', () => {
+describe('Servico — the receipt side: PBI rules', () => {
   it('flags a PBI repeated in the bale list and one already on another receipt this crop year, by name', () => {
     const bales = [{ pbi_number: '0012345', net: 500 }, { pbi_number: '12346', net: 498 }, { pbi_number: '12345', net: 500 }, { pbi_number: '12347', net: 502 }]
-    const existing = [{ pbi_number: '12347', crop_year: 2026, receipt_number: '040611' }, { pbi_number: '12346', crop_year: 2025, receipt_number: '039001' }]
+    const existing = [{ pbi_number: '12347', crop_year: 2026, receipt_number: '040611', receipt_label: 'Servico, Inc. · 10/2/2026 · farm 5824 · Pivot' }, { pbi_number: '12346', crop_year: 2025, receipt_number: '039001' }]
     const rows = pbiReview(bales, existing, 2026)
-    expect(rows.map((r) => r.flags)).toEqual([[], [], ['repeated in this bale list'], ['already on receipt #040611']])
+    expect(rows.map((r) => r.flags)).toEqual([[], [], ['repeated in this bale list'], ['already on receipt Servico, Inc. · 10/2/2026 · farm 5824 · Pivot']])
   })
 
-  it('a receipt number already saved classifies saved or update; a new number is new', () => {
-    const saved = [{ id: 'r1', receipt_number: '040614', crop_year: 2026, receipt_date: '2026-10-02', bales_count: 48, total_seed_cotton_weight: 120_000, total_bale_weight: 24_000 }]
-    expect(receiptClassification({ receipt_number: '40614', receipt_date: '2026-10-02', bales_count: 48 }, saved, 2026)).toEqual({ status: 'saved', existingId: 'r1' })
-    const u = receiptClassification({ receipt_number: '040614', bales_count: 49, total_bale_weight: 24_480 }, saved, 2026)
-    expect(u.status).toBe('update')
-    if (u.status === 'update') expect(u.diffs).toEqual(['bales 48 → 49', 'lint 24,000 → 24,480 lbs'])
-    expect(receiptClassification({ receipt_number: '040615' }, saved, 2026).status).toBe('new')
-    expect(receiptClassification({ receipt_number: '040614' }, saved, 2025).status).toBe('new')
+  it('a saved 12-digit tag is the same bale as the statement’s 7-digit number for THIS gin only', () => {
+    const existing = [{ pbi_number: '406140179122', crop_year: 2026, receipt_number: 'x' }]
+    expect(pbiReview([{ pbi_number: '179122' }], existing, 2026, '40614')[0].flags).toEqual(['already on receipt x'])
+    expect(pbiReview([{ pbi_number: '179122' }], existing, 2026, '40615')[0].flags).toEqual([])
   })
+  // The receipt itself (new / saved / update) is classified by statement
+  // identity in lib/servico-statement-fixture.test.ts.
 })

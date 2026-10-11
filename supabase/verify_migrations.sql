@@ -132,13 +132,33 @@ checks(seq, migration, evidence, applied) as (values
   ( 89, '089_farm_link_landowners',          'table landowner_field_changes + landowners.merged_into_id + lease_terms.farm_lease_uid + fn farm_link_landowner_apply', exists (select 1 from tbls where t = 'landowner_field_changes') and exists (select 1 from cols where t = 'landowners' and c = 'merged_into_id') and exists (select 1 from cols where t = 'lease_terms' and c = 'farm_lease_uid') and exists (select 1 from fns where f = 'farm_link_landowner_apply')),
   ( 90, '090_cotton_load_rolls',             'cotton_loads.rolls',                             exists (select 1 from cols where t = 'cotton_loads' and c = 'rolls')),
   ( 91, '091_buyer_ticket_number',           'loads.buyer_ticket_number',                      exists (select 1 from cols where t = 'loads' and c = 'buyer_ticket_number')),
-  ( 92, '092_assumed_turnout',               'crop_assumptions.assumed_turnout_pct',           exists (select 1 from cols where t = 'crop_assumptions' and c = 'assumed_turnout_pct'))
+  ( 92, '092_assumed_turnout',               'crop_assumptions.assumed_turnout_pct',           exists (select 1 from cols where t = 'crop_assumptions' and c = 'assumed_turnout_pct')),
+  ( 93, '093_cotton_number_key',             'fn cotton_number_key + unique cotton_loads_org_year_key_unique + gins.gin_code + gin_receipts.statement_number',
+        exists (select 1 from fns where f = 'cotton_number_key') and exists (select 1 from pg_indexes where schemaname = 'public' and indexname = 'cotton_loads_org_year_key_unique')
+        and exists (select 1 from cols where t = 'gins' and c = 'gin_code') and exists (select 1 from cols where t = 'gin_receipts' and c = 'statement_number')),
+  -- 093 PARITY: the SQL key must agree with lib/number-key numberKey on the
+  -- hand-verified list (lib/number-key.test.ts pins the same pairs). Probed
+  -- only once the function exists (CASE short-circuits), so this script
+  -- still runs on a database before 093.
+  ( 94, '093 parity cotton_number_key',      'cotton_number_key(''031633'') = ''31633'', cotton_number_key(''0031633'') = ''31633'', cotton_number_key(''31632,'') = ''31632'', cotton_number_key(''000'') = ''0'', cotton_number_key(''988-1'') = ''988-1''',
+        case when exists (select 1 from fns where f = 'cotton_number_key')
+             then (xpath('/row/ok/text()', query_to_xml('select (public.cotton_number_key(''031633'') = ''31633'' and public.cotton_number_key(''0031633'') = ''31633'' and public.cotton_number_key(''31632,'') = ''31632'' and public.cotton_number_key(''000'') = ''0'' and public.cotton_number_key(''988-1'') = ''988-1'' and public.cotton_number_key('' 31633 -'') = ''31633'' and public.cotton_number_key(''A0012'') = ''A0012'' and public.cotton_number_key('''') is null and public.cotton_pbi_key(''0179122'') = ''179122'')::int as ok', false, true, '')))[1]::text = '1'
+             else false end),
+  -- 093 GUARANTEE: colliding cotton_loads number keys within an org × crop year must be 0.
+  ( 95, '093 colliding load keys = 0',       'count of (org_id, crop_year, cotton_number_key(load_number)) groups with > 1 row',
+        case when exists (select 1 from fns where f = 'cotton_number_key')
+             then (xpath('/row/n/text()', query_to_xml('select count(*) as n from (select org_id, crop_year, public.cotton_number_key(load_number) k from public.cotton_loads where public.cotton_number_key(load_number) is not null group by 1, 2, 3 having count(*) > 1) c', false, true, '')))[1]::text = '0'
+             else false end),
+  ( 96, '093 colliding bale PBI keys = 0',   'count of (org_id, crop_year, cotton_pbi_key(pbi_number)) groups with > 1 row',
+        case when exists (select 1 from fns where f = 'cotton_pbi_key')
+             then (xpath('/row/n/text()', query_to_xml('select count(*) as n from (select org_id, crop_year, public.cotton_pbi_key(pbi_number) k from public.cotton_bales where public.cotton_pbi_key(pbi_number) is not null group by 1, 2, 3 having count(*) > 1) c', false, true, '')))[1]::text = '0'
+             else false end)
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 092'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 093'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

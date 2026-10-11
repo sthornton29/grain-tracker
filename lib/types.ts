@@ -930,7 +930,7 @@ export type ViewerAssumptionOverride = {
   updated_at: string
 }
 
-export type Gin = { id: string; name: string; address: string | null; phone: string | null; notes: string | null }
+export type Gin = { id: string; name: string; address: string | null; phone: string | null; notes: string | null; /** 093: the USDA gin code ("40614") — the 5-digit prefix of a 12-digit PBI tag. */ gin_code?: string | null }
 
 // Seed cotton module/weight ticket — yard inventory until it appears on a
 // gin receipt. Weights in lbs (no moisture/shrink math).
@@ -959,8 +959,23 @@ export type CottonLoad = {
 export type GinReceipt = {
   id: string
   gin_id: string | null
+  /** The unique key per org × crop year: the gin's printed statement number, or
+   *  the deterministic synthesized key (lib/gin-statements synthesizeReceiptNumber)
+   *  when the statement prints none — never shown as the receipt's name. */
   receipt_number: string
   receipt_date: string | null
+  /** 093: the gin code printed on this statement ("40614"). */
+  gin_code?: string | null
+  /** 093: a distinct per-statement number ONLY when the gin printed one. */
+  statement_number?: string | null
+  /** 093: the farm # and field exactly as the statement printed them. */
+  printed_farm_number?: string | null
+  printed_field?: string | null
+  /** 093: the gin's Farm YTD block as printed. */
+  farm_ytd_modules?: number | null
+  farm_ytd_seed_cotton_lbs?: number | null
+  farm_ytd_bales?: number | null
+  farm_ytd_bale_weight?: number | null
   entity_id: string | null
   farm_id: string | null
   field_id: string | null

@@ -691,21 +691,25 @@ The same load number can appear on two pages (a page scanned twice, or a reprint
 Respond ONLY in JSON, no other text, no markdown fences:
 {"loads": [{"page": number, "load_number": "...", "producer": "...", "farm_number": "... or null", "field": "... or null", "picked_date": "as printed or null", "delivered_date": "as printed or null", "truck": "... or null", "gross_weight": number or null, "tare_weight": number or null, "net_weight": number or null, "rolls": number or null, "handwritten_rolls": number or null, "handwritten_note": "... or null", "sequence_mark": "... or null", "crop_year": number or null}]}`
 
-const GIN_RECEIPT_PROMPT = `This is a STATEMENT OF GINNING from a cotton gin (a gin receipt). Extract the full statement:
+const GIN_RECEIPT_PROMPT = `This is a STATEMENT OF GINNING from a cotton gin (a gin receipt). One PDF may hold SEVERAL statements back to back (different dates, each with its own totals block, load table, and bale list), and you may be given only some of a document's pages. Report the document PAGE BY PAGE so the app can group pages into statements. For each page you are given, in order, report:
 
-- gin_name (the gin's name), gin_address, gin_phone (null when absent)
-- receipt_number (the statement/gin number, e.g. "040614" from "Gin 040614")
-- receipt_date (YYYY-MM-DD)
-- producer (producer/farmer name)
-- farm_number (FSA farm number if printed), farm_name
-- field (field name/description)
-- crop_year (number, else null)
-- Statement totals: modules_count, total_seed_cotton_weight (lbs), bales_count, total_bale_weight (lbs lint), avg_bale_weight, seed_lbs (cottonseed produced), lint_turnout_pct, lint_lbs_per_bale
-- loads: the statement's load table - one entry per line: {"load_number": "...", "rolls": number or null, "gross": number or null, "tare": number or null, "net": number or null}
-- bales: the FULL bale list - it may span multiple pages; extract EVERY bale row: {"pbi_number": "...", "net_weight_lbs": number}. Do not truncate or summarize the list.
+- page: the 1-based page number WITHIN THIS DOCUMENT (the first page you are given is 1). Every page gets an entry, even a page that holds only bale rows.
+- statement_date: the statement date printed in the page header (YYYY-MM-DD), null when the page prints none.
+- has_totals_block: true when the page carries the statement's "Producer Totals" / totals block (modules, seed cotton weight, bales, bale weight, turnout). The FIRST page of each statement carries it; continuation pages of the bale list do not.
+- gin_name, gin_address, gin_phone (null when absent).
+- gin_code: the gin's USDA gin code — the 5-digit number printed as "Gin 40614" / "Gin No." / "Gin Code". This identifies the GIN, not the statement. Digits exactly as printed.
+- statement_number: ONLY a distinct per-statement number the document prints (a "Statement #", "Receipt #", "Ticket #", "Invoice #" that differs from one statement to the next). The gin code is NOT a statement number. null when the document prints no such number.
+- producer (producer/farmer name), farm_number (FSA farm number, digits as printed), farm_name, field (field name/description), crop_year (number, else null).
+- totals: the statement totals block when the page has it, else null: {"modules_count", "total_seed_cotton_weight" (lbs seed cotton), "bales_count", "total_bale_weight" (lbs lint), "avg_bale_weight", "seed_lbs" (cottonseed produced), "lint_turnout_pct", "lint_lbs_per_bale"} — plain numbers, no commas.
+- farm_ytd: the Farm (or Producer) Year-To-Date column/block when the page prints one, else null: {"modules", "seed_cotton_lbs", "bales", "bale_weight"} — plain numbers.
+- loads: the statement's load / module table on this page, one entry per line: {"load_number": "exactly as printed", "rolls": number or null, "gross": number or null, "tare": number or null, "net": number or null}. Empty array when the page has no load table.
+- bales: EVERY bale row on this page: {"pbi_number": "digits exactly as printed", "net_weight_lbs": number}. Do not truncate or summarize the list.
+- bale_row_first, bale_row_last: the PRINTED sequence number of the first and last bale rows on this page (the "No." / row column), null when the rows carry no number. Bale numbering restarts at 1 on the first page of each statement.
+
+HANDWRITING AND MARKS: producers tick off loads and totals by hand. IGNORE handwritten check marks, ticks, slashes, circles, underlines and dots beside printed values, and read the PRINTED characters only. A check mark or slash after "31641" must NOT turn it into "316411" or "31641/"; a tick after "585" must NOT make it "5854" or "5851". A handwritten figure is never a load number, PBI, or total. Keep every printed leading zero exactly as printed (an "031633" stays "031633"; a "31633" stays "31633").
 
 Respond ONLY in JSON, no other text, no markdown fences:
-{"gin_name": "...", "gin_address": null, "gin_phone": null, "receipt_number": "...", "receipt_date": "YYYY-MM-DD or null", "producer": "...", "farm_number": "... or null", "farm_name": "... or null", "field": "... or null", "crop_year": number or null, "modules_count": number or null, "total_seed_cotton_weight": number or null, "bales_count": number or null, "total_bale_weight": number or null, "avg_bale_weight": number or null, "seed_lbs": number or null, "lint_turnout_pct": number or null, "lint_lbs_per_bale": number or null, "loads": [...], "bales": [...]}`
+{"pages": [{"page": 1, "statement_date": "YYYY-MM-DD or null", "has_totals_block": true, "gin_name": "...", "gin_address": null, "gin_phone": null, "gin_code": "... or null", "statement_number": null, "producer": "...", "farm_number": "... or null", "farm_name": "... or null", "field": "... or null", "crop_year": number or null, "totals": {"modules_count": number or null, "total_seed_cotton_weight": number or null, "bales_count": number or null, "total_bale_weight": number or null, "avg_bale_weight": number or null, "seed_lbs": number or null, "lint_turnout_pct": number or null, "lint_lbs_per_bale": number or null} or null, "farm_ytd": {"modules": number or null, "seed_cotton_lbs": number or null, "bales": number or null, "bale_weight": number or null} or null, "loads": [...], "bales": [...], "bale_row_first": number or null, "bale_row_last": number or null}]}`
 
 // ---------------------------------------------------------------------------
 // Cotton marketing documents — ONE upload point classifies the document AND

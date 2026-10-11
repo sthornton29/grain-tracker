@@ -634,17 +634,7 @@ export type GinReceiptLoadLine = {
   tare: number | null
   net: number | null
 }
-export type GinReceiptExtraction = {
-  gin_name: string | null
-  gin_address: string | null
-  gin_phone: string | null
-  receipt_number: string | null
-  receipt_date: string | null
-  producer: string | null
-  farm_number: string | null
-  farm_name: string | null
-  field: string | null
-  crop_year: number | null
+export type GinReceiptTotals = {
   modules_count: number | null
   total_seed_cotton_weight: number | null
   bales_count: number | null
@@ -653,6 +643,36 @@ export type GinReceiptExtraction = {
   seed_lbs: number | null
   lint_turnout_pct: number | null
   lint_lbs_per_bale: number | null
-  loads: GinReceiptLoadLine[]
-  bales: Array<{ pbi_number: string | null; net_weight_lbs: number | null }>
 }
+/** The gin's Farm (Producer) Year-To-Date block. */
+export type GinFarmYtd = { modules: number | null; seed_cotton_lbs: number | null; bales: number | null; bale_weight: number | null }
+export type GinReceiptBaleRow = { pbi_number: string | null; net_weight_lbs: number | null }
+/** One PAGE of a Statement of Ginning as the prompt reports it (2026-10-11):
+ *  one PDF can hold several statements, so the model reports pages and
+ *  lib/gin-statements groups them (totals block / date change / bale rows
+ *  restarting at 1 start a new statement). */
+export type GinReceiptPage = {
+  /** 1-based page (rebased to the whole document by lib/parse-chunked). */
+  page: number | null
+  statement_date: string | null
+  has_totals_block: boolean | null
+  gin_name: string | null
+  gin_address: string | null
+  gin_phone: string | null
+  /** The gin's USDA gin code ("40614") — the GIN, not the statement. */
+  gin_code: string | null
+  /** A distinct per-statement number ONLY when the document prints one. */
+  statement_number: string | null
+  producer: string | null
+  farm_number: string | null
+  farm_name: string | null
+  field: string | null
+  crop_year: number | null
+  totals: GinReceiptTotals | null
+  farm_ytd: GinFarmYtd | null
+  loads: GinReceiptLoadLine[]
+  bales: GinReceiptBaleRow[]
+  bale_row_first: number | null
+  bale_row_last: number | null
+}
+export type GinReceiptExtraction = { pages: GinReceiptPage[] }

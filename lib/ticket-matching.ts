@@ -44,6 +44,8 @@
 // written to loads.buyer_ticket_number (ours is never overwritten) so the
 // next statement — and the paid / unpaid badge — matches on Tier 1.
 
+import { stripLeadingZeros } from '@/lib/number-key'
+
 export type MatchTier = 'exact' | 'segment' | 'suffix' | 'attribute'
 export type MatchConfidence = 'high' | 'medium'
 
@@ -109,7 +111,7 @@ export type TicketMatchResult =
 export function normalizeTicket(s: string | null | undefined): string {
   const t = (s ?? '').trim().toUpperCase().replace(/\s+/g, ' ')
   if (!t) return ''
-  return /^\d+$/.test(t) ? t.replace(/^0+(?=\d)/, '') : t
+  return /^\d+$/.test(t) ? stripLeadingZeros(t) : t
 }
 
 /** The lowercase keys a load answers to when settlement lines are looked up

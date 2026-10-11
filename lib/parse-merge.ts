@@ -27,6 +27,7 @@ import type {
 } from '@/lib/pdf-upload'
 import type { CottonMarketingExtraction, CottonMarketingExtracted } from '@/lib/cotton-doc-import'
 import { normalizePbi } from '@/lib/cotton-doc-import'
+import { numberKey } from '@/lib/number-key'
 
 // ---------- generic helpers ----------
 
@@ -204,27 +205,24 @@ export function mergeCottonLoads(parts: CottonLoadsExtraction[]): CottonLoadsExt
   return {
     loads: mergeList(
       parts.map((p) => p.loads ?? []),
-      (l) => (l.load_number ? `${norm(l.load_number)}|${l.page ?? ''}` : null),
+      (l) => (numberKey(l.load_number) ? `${numberKey(l.load_number)}|${l.page ?? ''}` : null),
     ),
   }
 }
 
 export function mergeGinReceipts(parts: GinReceiptExtraction[]): GinReceiptExtraction {
-  const scalars = mergeScalars(
-    parts.map(({ loads: _l, bales: _b, ...rest }) => rest),
-  ) as Omit<GinReceiptExtraction, 'loads' | 'bales'>
-  return {
-    ...scalars,
-    loads: mergeList(
-      parts.map((p) => p.loads ?? []),
-      (l) => (l.load_number ? norm(l.load_number) : null),
-    ),
-    // Bale numbers match on digits, leading zeros ignored (the PBI rule).
-    bales: mergeList(
-      parts.map((p) => p.bales ?? []),
-      (b) => (b.pbi_number ? normalizePbi(String(b.pbi_number)) || null : null),
-    ),
-  }
+  // The statement is reported PAGE BY PAGE (2026-10-11) and the pages are
+  // rebased to the whole document before this runs, so the only boundary
+  // artifact is the same page returned twice — first wins. Nothing here
+  // folds one statement into another: lib/gin-statements groups the pages
+  // (totals block / header date / bale rows restarting at 1) afterwards,
+  // and a bale repeated in a statement's list is the review's call
+  // (pbiReview), never silently dropped.
+  const pages = mergeList(
+    parts.map((p) => (Array.isArray(p?.pages) ? p.pages : [])),
+    (pg) => (pg.page != null && Number.isFinite(Number(pg.page)) ? String(Number(pg.page)) : null),
+  )
+  return { pages: [...pages].sort((a, b) => Number(a.page ?? 0) - Number(b.page ?? 0)) }
 }
 
 export function mergeLeaseAgreements(parts: LeaseAgreementExtraction[]): LeaseAgreementExtraction {
