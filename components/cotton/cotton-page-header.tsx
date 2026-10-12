@@ -7,6 +7,9 @@
 // Presentation only.
 
 import type { ReactNode } from 'react'
+import { InfoTip, fmtInt } from '@/components/reports/report-kit'
+import { lintEstimateChip } from '@/lib/cotton-field-yields'
+import type { LintBasis } from '@/lib/cotton'
 
 export function CottonPageHeader({
   title, sub, cropYear, years, onCropYear, actions, eyebrow = 'Cotton',
@@ -75,4 +78,32 @@ export function GinnedPill({ ginned, size = 'sm' }: { ginned: boolean; size?: 's
   return ginned
     ? <span className={`inline-block rounded-full font-semibold bg-green-100 text-green-800 ${pad}`}>Ginned</span>
     : <span className={`inline-block rounded-full font-semibold bg-amber-100 text-amber-800 ${pad}`}>On the yard</span>
+}
+
+/** Pounds per acre with the estimate chip the Yields page uses: "1,279 lbs/ac" + "est." / "part est." (tap for the turnout behind it). */
+export function YieldFigure({
+  perAcre, basis, turnoutLabel, unit = 'lbs/ac', size = 'sm', className = '',
+}: {
+  perAcre: number | null | undefined
+  /** Lint only: how much of the figure is estimated. Omit for seed cotton (always actual). */
+  basis?: LintBasis | null
+  /** The turnout phrase behind an estimate ("41.5% from your ginned cotton"). */
+  turnoutLabel?: string | null
+  unit?: string
+  size?: 'sm' | 'lg'
+  className?: string
+}) {
+  if (perAcre == null) return <span className={`text-slate-400 ${className}`}>—</span>
+  const chip = lintEstimateChip(basis)
+  return (
+    <span className={`inline-flex items-baseline gap-1 whitespace-nowrap ${className}`}>
+      <span className={`tabular-nums font-semibold text-slate-900 ${size === 'lg' ? 'text-2xl' : ''}`}>{fmtInt(Math.round(perAcre))}</span>
+      <span className="text-xs text-slate-500">{unit}</span>
+      {chip && (
+        <InfoTip label={chip} tone="warning" className="ml-0.5">
+          {chip === 'est.' ? 'This lint is estimated: the seed cotton is picked but not ginned yet' : 'Part of this lint is estimated: some seed cotton is still on the yard'}{turnoutLabel ? `, at ${turnoutLabel}` : ''}. The gin receipt replaces it.
+        </InfoTip>
+      )}
+    </span>
+  )
 }

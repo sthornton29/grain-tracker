@@ -13,7 +13,8 @@ import ExportBar from '@/components/export-bar'
 import { ConfirmDialog, NoticeDialog } from '@/components/app-dialog'
 import CottonLoadDocument from '@/components/cotton/cotton-load-document'
 import { fmtInt } from '@/components/reports/report-kit'
-import { CottonPageHeader, GinnedPill } from '@/components/cotton/cotton-page-header'
+import { CottonPageHeader, GinnedPill, YieldFigure } from '@/components/cotton/cotton-page-header'
+import { useCottonFieldYields } from '@/lib/use-cotton-field-yields'
 import { lbsPerRoll } from '@/lib/cotton-loads'
 import { rollsNum, updateCottonLoad } from '@/lib/cotton-load-writes'
 import { reportError } from '@/lib/friendly-error'
@@ -53,6 +54,8 @@ export default function CottonLoadDetailPage() {
   const [askDelete, setAskDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  // The field's yield this crop year (the Yields page's cotton model).
+  const fieldYields = useCottonFieldYields(supabase, load?.crop_year ?? new Date().getFullYear())
 
   async function refresh() {
     const [l, r, f, fl, en, g] = await Promise.all([
@@ -197,11 +200,24 @@ export default function CottonLoadDetailPage() {
         )}
       />
 
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         <StatCard label="Net seed cotton" value={`${lbs(load.net_weight)} lbs`} />
         <StatCard label="Rolls" value={load.rolls != null ? fmtInt(load.rolls) : '—'} />
         <StatCard label="Lbs per roll" value={perRoll != null ? fmtInt(perRoll) : '—'} />
         <StatCard label="Status"><GinnedPill ginned={ginned} size="md" /></StatCard>
+        <StatCard label={`${field?.name_or_number ?? 'Field'} yield`}>
+          {(() => {
+            const y = fieldYields.yieldFor(load.field_id)
+            const acres = fieldYields.acresFor(load.field_id)
+            if (!y || !acres) return <span className="text-sm font-normal text-slate-400">{load.field_id ? 'no cotton planting on file' : 'no field on the ticket'}</span>
+            return (
+              <div className="space-y-0.5">
+                <div><YieldFigure perAcre={y.lintPerAcre} basis={y.lintBasis} turnoutLabel={y.turnout.label} unit="lbs lint/ac" size="lg" /></div>
+                <div className="text-xs font-normal text-slate-500"><YieldFigure perAcre={y.seedPerAcre} unit="lbs seed/ac" /> · {fmtInt(acres)} ac · {fmtInt(y.loadCount)} load{y.loadCount === 1 ? '' : 's'}</div>
+              </div>
+            )
+          })()}
+        </StatCard>
       </div>
 
       {err && <p className="text-sm text-red-700" role="alert">{err}</p>}

@@ -24,6 +24,7 @@ import { ConfirmDialog, NoticeDialog } from '@/components/app-dialog'
 import { Disclosure, EmptyState, ReportFilterBar, ViewTabs, theadCls, fmtInt } from '@/components/reports/report-kit'
 import { CottonPageHeader, CottonSection, GinnedPill } from '@/components/cotton/cotton-page-header'
 import { SeasonFlow } from '@/components/cotton/season-flow'
+import { useCottonFieldYields } from '@/lib/use-cotton-field-yields'
 import {
   EMPTY_COTTON_FILTERS, filterCottonLoads, lbsPerRoll, rollsSummary, seasonFlow, sortCottonLoads,
   type CottonLoadFilters, type CottonSortContext, type CottonSortKey,
@@ -79,6 +80,8 @@ export default function CottonLoadsPage() {
   const [draft, setDraft] = useState<Draft>({ ...emptyDraft, truck: lastTruck })
   useEffect(() => { setDraft((d) => (d.truck === '' && lastTruck ? { ...d, truck: lastTruck } : d)) }, [lastTruck])
   const [intake, setIntake] = useState<'upload' | 'hand'>('upload')
+  // Yields beside every field and farm-wide figure — the Yields page's own model.
+  const fieldYields = useCottonFieldYields(supabase, cropYear)
   const [draftDoc, setDraftDoc] = useState<File | null>(null)
   // Hand entry of a load number that is already saved: blocked unless the
   // user chooses to update that load instead.
@@ -235,7 +238,7 @@ export default function CottonLoadsPage() {
     if (error) { setErr(reportError(error, { action: 'save the load', noun: 'load', name: `${draft.load_number.trim()} (${cropYear})` })); return }
     if (draft.truck.trim()) setLastTruck(draft.truck.trim())
     setDraft({ ...emptyDraft, entity_id: draft.entity_id, farm_id: draft.farm_id, field_id: draft.field_id, gin_id: draft.gin_id, truck: draft.truck.trim() })
-    setDraftDoc(null); setNewGin(''); setMsg('Load saved.'); refresh()
+    setDraftDoc(null); setNewGin(''); setMsg('Load saved.'); refresh(); fieldYields.refresh()
   }
 
   function extractionToRow(x: ReviewLoad): AiRow {
@@ -347,7 +350,7 @@ export default function CottonLoadsPage() {
         updated += 1
       }
       setMsg(`Saved ${inserts.length} new load${inserts.length === 1 ? '' : 's'}${updated > 0 ? ` and updated ${updated}` : ''}${aiSummary.saved > 0 ? ` · ${aiSummary.saved} already saved, left alone` : ''}.`)
-      setAiRows([]); setSource(null); refresh()
+      setAiRows([]); setSource(null); refresh(); fieldYields.refresh()
     } finally {
       setSaving(false)
     }
@@ -478,6 +481,9 @@ export default function CottonLoadsPage() {
         cropYear={cropYear}
         fieldLabel={fieldLabel}
         onPick={(status) => setFilters({ ...filters, status: filters.status === status ? '' : status })}
+        farm={fieldYields.farm}
+        fieldYield={fieldYields.yieldFor}
+        acresFor={fieldYields.acresFor}
       />
 
       {/* Intake — one card, two ways in. */}

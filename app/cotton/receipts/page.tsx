@@ -38,7 +38,9 @@ import {
 } from '@/lib/gin-receipt-matching'
 import { fmtDate } from '@/lib/format-date'
 import { EmptyState, SummaryCards, ViewTabs, fmtInt, fmtPct, theadCls, type SummaryCardData } from '@/components/reports/report-kit'
-import { CottonPageHeader, CottonSection } from '@/components/cotton/cotton-page-header'
+import { CottonPageHeader, CottonSection, YieldFigure } from '@/components/cotton/cotton-page-header'
+import { useCottonFieldYields } from '@/lib/use-cotton-field-yields'
+import { perAcre } from '@/lib/cotton-field-yields'
 import type { GinReceipt, Gin, Farm, Field, Entity, CottonLoad } from '@/lib/types'
 
 const lbs = (n: number | null | undefined) => (n == null ? '—' : Number(n).toLocaleString())
@@ -95,6 +97,8 @@ export default function GinReceiptsPage() {
   const [stage, setStage] = useState<string | null>(null)
   const [reviews, setReviews] = useState<StatementReview[]>([])
   const [intake, setIntake] = useState<'upload' | 'hand'>('upload')
+  // Field and farm-wide yields — the Yields page's cotton model.
+  const fieldYields = useCottonFieldYields(supabase, cropYear)
   const [saving, setSaving] = useState(false)
   const [existingBales, setExistingBales] = useState<Array<{ pbi_number: string; crop_year: number; gin_receipt_id: string }>>([])
   // manual form
@@ -378,7 +382,7 @@ export default function GinReceiptsPage() {
         }
       }
       setMsg([...done, ...(skipped.length ? [`Left alone (already saved): ${skipped.join('; ')}`] : [])].join(' · '))
-      setReviews([]); setSource(null); refresh()
+      setReviews([]); setSource(null); refresh(); fieldYields.refresh()
     } catch (e: any) {
       setErr(e?.message ?? String(e))
       refresh()
@@ -439,6 +443,14 @@ export default function GinReceiptsPage() {
     { label: 'Bales', value: yearBales ? fmtInt(yearBales) : (yearReceipts.length ? fmtInt(yearReceipts.reduce((s, r) => s + Number(r.bales_count ?? 0), 0)) : '—'), sub: yearBales ? 'with PBI numbers on file' : 'from the statements' },
     { label: 'Lint', value: yearLint ? `${fmtInt(yearLint)} lbs` : '—', sub: yearSeed ? `from ${fmtInt(yearSeed)} lbs seed cotton` : undefined },
     { label: 'Turnout', value: yearLint && yearSeed ? fmtPct((yearLint / yearSeed) * 100, 2) : '—', sub: 'lint ÷ seed cotton, all statements', tone: 'neutral' },
+    {
+      label: 'Lint per acre',
+      value: fieldYields.farm.lintPerAcre != null ? `${fmtInt(Math.round(fieldYields.farm.lintPerAcre))} lbs/ac` : '—',
+      sub: fieldYields.farm.acresPicked > 0
+        ? `${fieldYields.farm.lintBasis === 'actual' ? 'ginned lint' : fieldYields.farm.lintBasis === 'mixed' ? 'part estimated' : 'estimated'} on ${fmtInt(fieldYields.farm.acresPicked)} ac picked · seed cotton ${fieldYields.farm.seedPerAcre != null ? fmtInt(Math.round(fieldYields.farm.seedPerAcre)) : '—'} lbs/ac`
+        : 'needs a cotton planting with acres on the field',
+      tone: fieldYields.farm.lintBasis && fieldYields.farm.lintBasis !== 'actual' ? 'warning' : 'neutral',
+    },
   ]
   const anyAmbiguous = derived.some((d) => d.rows.some((r) => r.status === 'ambiguous'))
   const allAlreadySaved = reviews.length > 0 && reviews.every((rv, i) => derived[i]?.classification.status !== 'new' && !rv.updateReceipt)
@@ -501,6 +513,12 @@ export default function GinReceiptsPage() {
                     {(s.farm_name || s.producer || s.field || s.farm_number) && <span className="text-xs text-amber-700">Printed: {s.producer ?? s.farm_name}{s.farm_number ? ` · farm #${s.farm_number}` : ''}{s.field ? ` · ${s.field}` : ''}</span>}
                   </div>
                   {d.farmFieldNote && <p className="text-amber-700 text-xs font-semibold" role="status">{d.farmFieldNote}</p>}
+                  {rv.fieldId && fieldYields.acresFor(rv.fieldId) != null && s.total_bale_weight != null && (
+                    <p className="text-xs text-slate-600">
+                      This statement on {fieldById.get(rv.fieldId)?.name_or_number ?? 'the field'}’s {fmtInt(fieldYields.acresFor(rv.fieldId)!)} ac: <YieldFigure perAcre={perAcre(s.total_bale_weight, fieldYields.acresFor(rv.fieldId))} unit="lbs lint/ac" /> · <YieldFigure perAcre={perAcre(s.total_seed_cotton_weight, fieldYields.acresFor(rv.fieldId))} unit="lbs seed/ac" />
+                      {fieldYields.yieldFor(rv.fieldId) && fieldYields.yieldFor(rv.fieldId)!.receiptCount > 0 && <> · field to date <YieldFigure perAcre={fieldYields.yieldFor(rv.fieldId)!.lintPerAcre} basis={fieldYields.yieldFor(rv.fieldId)!.lintBasis} turnoutLabel={fieldYields.yieldFor(rv.fieldId)!.turnout.label} unit="lbs lint/ac" /></>}
+                    </p>
+                  )}
 
                   <div className="flex flex-wrap gap-2 text-xs">
                     <span className={chip}>{s.modules_count ?? '—'} modules</span>
@@ -608,7 +626,7 @@ export default function GinReceiptsPage() {
       <CottonSection title="Statements" sub={`${cropYear} crop · ${yearReceipts.length} statement${yearReceipts.length === 1 ? '' : 's'}`}>
         <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
-          <thead className={theadCls}><tr>{['Statement', 'Date', 'Gin', 'Farm', 'Field', 'Bales', 'Lint lbs', 'Turnout', ''].map((h, k) => <th key={h || k} className={`${k >= 5 && k <= 7 ? 'text-right' : 'text-left'} px-3 py-2 whitespace-nowrap`}>{h}</th>)}</tr></thead>
+          <thead className={theadCls}><tr>{['Statement', 'Date', 'Gin', 'Farm', 'Field', 'Bales', 'Lint lbs', 'Turnout', 'Field lint / ac', ''].map((h, k) => <th key={h || k} className={`${k >= 5 && k <= 8 ? 'text-right' : 'text-left'} px-3 py-2 whitespace-nowrap`}>{h}</th>)}</tr></thead>
           <tbody>
             {yearReceipts.map((r) => {
               const sn = r.statement_number?.trim() || (isSynthesizedReceiptNumber(r.receipt_number) ? null : r.receipt_number)
@@ -625,6 +643,9 @@ export default function GinReceiptsPage() {
                   <td className="px-3 py-2 text-right tabular-nums">{balesByReceipt.get(r.id) ?? r.bales_count ?? '—'}</td>
                   <td className="px-3 py-2 text-right tabular-nums font-semibold">{lbs(r.total_bale_weight)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{r.lint_turnout_pct != null ? `${Number(r.lint_turnout_pct)}%` : '—'}</td>
+                  <td className="px-3 py-2 text-right">
+                    {(() => { const y = fieldYields.yieldFor(r.field_id); return y ? <YieldFigure perAcre={y.lintPerAcre} basis={y.lintBasis} turnoutLabel={y.turnout.label} /> : <span className="text-slate-400">—</span> })()}
+                  </td>
                   <td className="px-3 py-2 text-right"><button onClick={() => deleteReceipt(r.id)} className="text-red-600 text-xs min-h-11 px-2">Delete</button></td>
                 </tr>
               )
