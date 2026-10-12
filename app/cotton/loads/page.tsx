@@ -21,10 +21,11 @@ import { mergeCottonLoads } from '@/lib/parse-merge'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import ExportBar from '@/components/export-bar'
 import { ConfirmDialog, NoticeDialog } from '@/components/app-dialog'
-import { ReportFilterBar, SummaryCards, theadCls, fmtInt, fmtNum, type SummaryCardData } from '@/components/reports/report-kit'
-import { yardInventoryByField } from '@/lib/cotton'
+import { Disclosure, EmptyState, ReportFilterBar, ViewTabs, theadCls, fmtInt } from '@/components/reports/report-kit'
+import { CottonPageHeader, CottonSection, GinnedPill } from '@/components/cotton/cotton-page-header'
+import { SeasonFlow } from '@/components/cotton/season-flow'
 import {
-  EMPTY_COTTON_FILTERS, filterCottonLoads, lbsPerRoll, rollsSummary, sortCottonLoads,
+  EMPTY_COTTON_FILTERS, filterCottonLoads, lbsPerRoll, rollsSummary, seasonFlow, sortCottonLoads,
   type CottonLoadFilters, type CottonSortContext, type CottonSortKey,
 } from '@/lib/cotton-loads'
 import { documentsForLoads, fileToLoadDocument, insertCottonLoads, rollsNum, updateCottonLoad, uploadLoadDocument } from '@/lib/cotton-load-writes'
@@ -72,7 +73,12 @@ export default function CottonLoadsPage() {
   const [ginnedIds, setGinnedIds] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(true)
   const [cropYear, setCropYear] = usePersistentState<number>('cotton:cropYear', new Date().getFullYear())
-  const [draft, setDraft] = useState<Draft>(emptyDraft)
+  // The same truck hauls every load, so the truck is remembered across loads
+  // and sessions and sits under "More details" instead of in the main form.
+  const [lastTruck, setLastTruck] = usePersistentState<string>('cotton:truck', '')
+  const [draft, setDraft] = useState<Draft>({ ...emptyDraft, truck: lastTruck })
+  useEffect(() => { setDraft((d) => (d.truck === '' && lastTruck ? { ...d, truck: lastTruck } : d)) }, [lastTruck])
+  const [intake, setIntake] = useState<'upload' | 'hand'>('upload')
   const [draftDoc, setDraftDoc] = useState<File | null>(null)
   // Hand entry of a load number that is already saved: blocked unless the
   // user chooses to update that load instead.
@@ -156,12 +162,9 @@ export default function CottonLoadsPage() {
   const sorted = useMemo(() => sortCottonLoads(filtered, sortKey, sortDir, ctx), [filtered, sortKey, sortDir, ctx])
   const filterFields = fields.filter((f) => !filters.farmId || f.farm_id === filters.farmId)
 
-  // Yard inventory: delivered but not on any gin receipt, by field.
-  const yard = useMemo(() => yardInventoryByField(yearLoads, ginnedIds), [yearLoads, ginnedIds])
-  const yardTotal = useMemo(() => Array.from(yard.values()).reduce((s, v) => s + v, 0), [yard])
-  // Rolls (090): the year, what's on the yard, and what the filters show.
-  const yearRolls = useMemo(() => rollsSummary(yearLoads), [yearLoads])
-  const yardRolls = useMemo(() => rollsSummary(yearLoads.filter((l) => !ginnedIds.has(l.id))), [yearLoads, ginnedIds])
+  // The season at a glance: ginned vs on the yard, rolls waiting, by field.
+  const flow = useMemo(() => seasonFlow(yearLoads, (id) => ginnedIds.has(id)), [yearLoads, ginnedIds])
+  // What the filters show (the list footer).
   const shownRolls = useMemo(() => rollsSummary(sorted), [sorted])
 
   async function ensureGin(name: string): Promise<string | null> {
@@ -206,7 +209,8 @@ export default function CottonLoadsPage() {
       if (Object.keys(patch).length === 0) { setErr('Nothing new to update — fill in the fields that changed.'); return }
       const { error } = await updateCottonLoad(supabase, draftExisting.id, patch)
       if (error) { setErr(reportError(error, { action: 'update the load', noun: 'load', name: draftExisting.load_number })); return }
-      setDraft({ ...emptyDraft, entity_id: draft.entity_id, farm_id: draft.farm_id, field_id: draft.field_id, gin_id: draft.gin_id })
+      if (draft.truck.trim()) setLastTruck(draft.truck.trim())
+      setDraft({ ...emptyDraft, entity_id: draft.entity_id, farm_id: draft.farm_id, field_id: draft.field_id, gin_id: draft.gin_id, truck: draft.truck.trim() })
       setDraftDoc(null); setNewGin(''); setMsg(`Load ${draftExisting.load_number} updated.`); refresh()
       return
     }
@@ -229,7 +233,8 @@ export default function CottonLoadsPage() {
       gin_id, notes: draft.notes.trim() || null, source: 'manual', source_pdf_url,
     }])
     if (error) { setErr(reportError(error, { action: 'save the load', noun: 'load', name: `${draft.load_number.trim()} (${cropYear})` })); return }
-    setDraft({ ...emptyDraft, entity_id: draft.entity_id, farm_id: draft.farm_id, field_id: draft.field_id, gin_id: draft.gin_id })
+    if (draft.truck.trim()) setLastTruck(draft.truck.trim())
+    setDraft({ ...emptyDraft, entity_id: draft.entity_id, farm_id: draft.farm_id, field_id: draft.field_id, gin_id: draft.gin_id, truck: draft.truck.trim() })
     setDraftDoc(null); setNewGin(''); setMsg('Load saved.'); refresh()
   }
 
@@ -445,241 +450,244 @@ export default function CottonLoadsPage() {
     return [...ys].sort((a, b) => b - a)
   }, [loads, cropYear])
 
-  const summaryCards: SummaryCardData[] = [
-    { label: `${cropYear} loads`, value: fmtInt(yearRolls.loads), sub: `${fmtInt(yearRolls.netLbs)} lbs seed cotton` },
-    { label: 'Rolls', value: yearRolls.rolls > 0 ? fmtInt(yearRolls.rolls) : '—', sub: yearRolls.loadsWithRolls < yearRolls.loads && yearRolls.loads > 0 ? `${fmtInt(yearRolls.loads - yearRolls.loadsWithRolls)} load${yearRolls.loads - yearRolls.loadsWithRolls === 1 ? '' : 's'} without a roll count` : 'every load counted' },
-    { label: 'Avg lbs per roll', value: yearRolls.avgLbsPerRoll != null ? fmtInt(yearRolls.avgLbsPerRoll) : '—', sub: yearRolls.avgLbsPerRoll != null ? `${fmtInt(yearRolls.netLbsWithRolls)} lbs ÷ ${fmtInt(yearRolls.rolls)} rolls` : 'enter rolls on the loads to see this', tone: 'neutral' },
-    { label: 'On the yard', value: `${fmtInt(yardTotal)} lbs`, sub: yardRolls.rolls > 0 ? `${fmtInt(yardRolls.rolls)} rolls waiting${yardRolls.avgLbsPerRoll != null ? ` · ${fmtInt(yardRolls.avgLbsPerRoll)} lbs/roll` : ''}` : 'awaiting the gin', tone: yardTotal > 0 ? 'warning' : 'muted' },
-  ]
+  const fieldLabel = (fieldId: string | null) => {
+    if (!fieldId) return 'No field on the ticket'
+    const f = fieldById.get(fieldId)
+    const farm = f?.farm_id ? farmById.get(f.farm_id) : null
+    return [farm?.name, f?.name_or_number ?? '—'].filter(Boolean).join(' · ')
+  }
 
   const nothingYet = !loading && yearLoads.length === 0
   const nothingMatches = !loading && yearLoads.length > 0 && sorted.length === 0
+  const newCount = aiRows.filter((r, i) => r.include && aiClassified[i].status === 'new').length
+  const updateCount = aiRows.filter((r, i) => r.include && aiClassified[i].status === 'update').length
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-3">
-        <h1 className="text-2xl font-bold flex-1">Seed Cotton Loads</h1>
-        <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Crop year</span>
-          <select value={cropYear} onChange={(e) => { setCropYear(Number(e.target.value)); setSelected(new Set()) }} className={inputCls}>
-            {years.map((y) => <option key={y} value={y}>{y}</option>)}
-          </select>
-        </label>
-      </div>
+      <CottonPageHeader
+        title="Seed Cotton Loads"
+        sub="Module tickets off the field, and what is still waiting on the gin yard."
+        cropYear={cropYear}
+        years={years}
+        onCropYear={(y) => { setCropYear(y); setSelected(new Set()) }}
+        actions={sorted.length > 0 ? <ExportBar buildPayload={() => buildPayload()} formats={['xlsx', 'pdf', 'csv', 'print']} /> : undefined}
+      />
 
-      <SummaryCards cards={summaryCards} />
+      <SeasonFlow
+        flow={flow}
+        cropYear={cropYear}
+        fieldLabel={fieldLabel}
+        onPick={(status) => setFilters({ ...filters, status: filters.status === status ? '' : status })}
+      />
 
-      {/* Yard inventory — delivered but not yet on a gin receipt. */}
-      <section className="bg-white rounded-xl shadow p-4 space-y-2">
-        <h2 className="font-semibold">Yard Inventory <span className="text-sm font-normal text-slate-500">seed cotton delivered, awaiting gin</span></h2>
-        {yardTotal === 0 ? (
-          <p className="text-sm text-slate-400">Nothing on the yard — every {cropYear} load is on a gin receipt.</p>
-        ) : (
-          <div className="flex flex-wrap gap-3 text-sm">
-            <span className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-1.5 font-semibold">{lbs(yardTotal)} lbs total{yardRolls.rolls > 0 ? ` · ${fmtInt(yardRolls.rolls)} rolls` : ''}</span>
-            {Array.from(yard.entries()).filter(([, v]) => v > 0).map(([fieldId, v]) => {
-              const f = fieldId ? fieldById.get(fieldId) : null
-              const farm = f?.farm_id ? farmById.get(f.farm_id) : null
-              return <span key={fieldId ?? 'none'} className="rounded-lg bg-slate-50 border border-slate-200 px-3 py-1.5">{farm ? `${farm.name} · ` : ''}{f?.name_or_number ?? 'no field'}: {lbs(v)} lbs</span>
-            })}
+      {/* Intake — one card, two ways in. */}
+      <CottonSection title="Add loads" sub="Upload the gin’s module list, or type a ticket in. Nothing saves until you review it.">
+        <div className="px-4 pt-2">
+          <ViewTabs
+            ariaLabel="How to add loads"
+            value={intake}
+            onChange={setIntake}
+            tabs={[{ key: 'upload', label: 'Upload a module list' }, { key: 'hand', label: 'Add by hand' }]}
+          />
+        </div>
+        {intake === 'upload' ? (
+          <div className="p-4 space-y-3">
+            <DocumentCapture onSource={onSource} busy={stage != null} stageLabel={stage} pdfLabel="Upload module list PDF or photos" />
+            <p className="text-xs text-slate-500">One load per page. Each load keeps its own page as its ticket.</p>
+            {aiRows.length > 0 && (
+              <>
+                <div className="overflow-x-auto -mx-4 px-4">
+                  <table className="min-w-full text-xs">
+                    <thead className={theadCls}><tr>{['', 'Load #', 'Farm', 'Field', 'Picked', 'Delivered', 'Rolls', 'Gross', 'Tare', 'Net', 'Lbs/roll'].map((h, k) => <th key={h || k} className={`${k >= 7 ? 'text-right' : 'text-left'} px-2 py-1.5 whitespace-nowrap`}>{h}</th>)}</tr></thead>
+                    <tbody>
+                      {aiRows.map((r, i) => {
+                        const c = aiClassified[i]
+                        const rr = reviewRolls(r)
+                        const rowCls = r.pageConflict ? 'bg-red-50' : c.status === 'saved' ? 'bg-slate-50 text-slate-500' : c.status === 'update' ? 'bg-amber-50' : ''
+                        return (
+                        <tr key={i} className={`border-t border-slate-100 align-top ${rowCls}`}>
+                          <td className="px-2 py-1"><input type="checkbox" className="h-5 w-5" checked={r.include && c.status !== 'saved'} disabled={c.status === 'saved'} onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, include: e.target.checked } : x))} aria-label={`Save load ${r.load_number ?? i + 1}`} /></td>
+                          <td className="px-2 py-1 font-mono font-semibold">
+                            {r.load_number ?? '—'}
+                            {r.pages.length > 1 && <span className="block font-sans font-normal text-[10px] rounded bg-sky-100 text-sky-800 px-1 py-0.5 mt-0.5 whitespace-nowrap">appears twice in this scan (pages {r.pages.slice(0, -1).join(', ')} and {r.pages[r.pages.length - 1]})</span>}
+                            {r.pageConflict && <span className="block font-sans font-normal text-[10px] rounded bg-red-100 text-red-800 px-1 py-0.5 mt-0.5">pages disagree: {r.pageConflict} — check</span>}
+                            {c.status === 'saved' && <span className="block font-sans font-normal text-[10px] rounded bg-slate-200 text-slate-700 px-1 py-0.5 mt-0.5 whitespace-nowrap">Already saved · <Link href={`/cotton/loads/${c.existing.id}`} className="underline">open</Link></span>}
+                            {c.status === 'update' && (
+                              <span className="block font-sans font-normal text-[10px] rounded bg-amber-100 text-amber-900 px-1 py-0.5 mt-0.5">
+                                Update available · <Link href={`/cotton/loads/${c.existing.id}`} className="underline">open</Link>
+                                {c.diffs.map((d) => <span key={d.field} className="block">{d.label}: {d.saved} → <b>{d.scanned}</b></span>)}
+                              </span>
+                            )}
+                            {r.sequence_mark && <span className="block font-sans font-normal text-[10px] text-slate-400 mt-0.5">mark {r.sequence_mark} (sequence, not rolls)</span>}
+                          </td>
+                          <td className="px-2 py-1">
+                            <select value={r.farm_id} onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, farm_id: e.target.value, field_id: '' } : x))} className="rounded border border-slate-300 px-1 py-0.5 min-h-9">
+                              <option value="">— farm —</option>
+                              {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                            </select>
+                            {!r.farm_id && r.producer && <div className="text-amber-700">From the document: {r.producer}{r.farm_number ? ` #${r.farm_number}` : ''}</div>}
+                          </td>
+                          <td className="px-2 py-1">
+                            <select value={r.field_id} onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, field_id: e.target.value } : x))} className="rounded border border-slate-300 px-1 py-0.5 min-h-9">
+                              <option value="">— field —</option>
+                              {fields.filter((f) => !r.farm_id || f.farm_id === r.farm_id).map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
+                            </select>
+                            {!r.field_id && r.field && <div className="text-amber-700">From the document: {r.field}</div>}
+                          </td>
+                          <td className="px-2 py-1 whitespace-nowrap">{r.picked_date ? fmtDate(r.picked_date) : '—'}{r.picked_date && r.picked_year_assumed && <span className="block text-[10px] rounded bg-amber-100 text-amber-800 px-1 py-0.5 mt-0.5 whitespace-nowrap">{yearAssumedNote(r.picked_date)}</span>}</td>
+                          <td className="px-2 py-1 whitespace-nowrap">{r.delivered_date ? fmtDate(r.delivered_date) : '—'}{r.delivered_date && r.delivered_year_assumed && <span className="block text-[10px] rounded bg-amber-100 text-amber-800 px-1 py-0.5 mt-0.5 whitespace-nowrap">{yearAssumedNote(r.delivered_date)}</span>}</td>
+                          <td className="px-2 py-1 text-right">
+                            <input
+                              type="number" inputMode="numeric" step="1" min="0"
+                              value={r.rolls ?? ''}
+                              onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, rolls: rollsNum(e.target.value), usedHandwritten: false } : x))}
+                              className="rounded border border-slate-300 px-1 py-0.5 w-16 text-right min-h-9"
+                              aria-label={`Rolls on load ${r.load_number ?? i + 1}`}
+                            />
+                            {rr.chip && !r.usedHandwritten && (
+                              <span className="block mt-0.5 rounded bg-amber-100 text-amber-900 px-1 py-0.5 text-[10px] max-w-[14rem] text-left">
+                                {rr.chip}{' '}
+                                <button type="button" onClick={() => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, rolls: rr.handwritten, usedHandwritten: true } : x))} className="underline font-semibold min-h-6">Use {rr.handwritten}</button>
+                              </span>
+                            )}
+                            {r.usedHandwritten && <span className="block mt-0.5 text-[10px] text-amber-800">handwritten count used · printed {rr.printed ?? '—'}</span>}
+                            {r.handwritten_note && !rr.chip && <span className="block mt-0.5 text-[10px] text-slate-500">note: {r.handwritten_note}</span>}
+                          </td>
+                          <td className="px-2 py-1 text-right tabular-nums">{lbs(r.gross_weight)}</td>
+                          <td className="px-2 py-1 text-right tabular-nums">{lbs(r.tare_weight)}</td>
+                          <td className="px-2 py-1 text-right tabular-nums font-semibold">{lbs(r.net_weight)}</td>
+                          <td className="px-2 py-1 text-right tabular-nums text-slate-500">{lbsPerRoll(r.net_weight, r.rolls) != null ? fmtInt(lbsPerRoll(r.net_weight, r.rolls)) : '—'}</td>
+                        </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button onClick={saveAiRows} disabled={saving} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold disabled:opacity-50">
+                    {saving ? (stage ?? 'Saving…') : `Save ${newCount} new${updateCount > 0 ? ` · update ${updateCount}` : ''}`}
+                  </button>
+                  <span className="text-sm text-slate-600">{aiSummary.text}</span>
+                  {aiRows.some((r) => r.pageConflict) && <span className="text-sm text-red-700">Pages that disagree are marked in red — check the weights before saving.</span>}
+                </div>
+              </>
+            )}
           </div>
-        )}
-      </section>
-
-      {/* AI intake */}
-      <section className="bg-white rounded-xl shadow p-4 space-y-3">
-        <h2 className="font-semibold">Upload a module list</h2>
-        <p className="text-sm text-slate-500">PDF or photos of the gin&apos;s module/load tickets — one load per page. Review before saving. Each load keeps its own page as its ticket.</p>
-        <DocumentCapture onSource={onSource} busy={stage != null} stageLabel={stage} pdfLabel="Upload module list PDF or photo" />
-        {aiRows.length > 0 && (
-          <>
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-xs">
-                <thead className="text-slate-500"><tr>{['', 'Load #', 'Farm', 'Field', 'Picked', 'Delivered', 'Truck', 'Rolls', 'Gross', 'Tare', 'Net', 'Lbs/roll'].map((h) => <th key={h} className="text-left px-1 py-1">{h}</th>)}</tr></thead>
-                <tbody>
-                  {aiRows.map((r, i) => {
-                    const c = aiClassified[i]
-                    const rr = reviewRolls(r)
-                    const rowCls = r.pageConflict ? 'bg-red-50' : c.status === 'saved' ? 'bg-slate-50 text-slate-500' : c.status === 'update' ? 'bg-amber-50' : ''
-                    return (
-                    <tr key={i} className={`border-t border-slate-100 align-top ${rowCls}`}>
-                      <td className="px-1 py-1"><input type="checkbox" className="h-5 w-5" checked={r.include && c.status !== 'saved'} disabled={c.status === 'saved'} onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, include: e.target.checked } : x))} aria-label={`Save load ${r.load_number ?? i + 1}`} /></td>
-                      <td className="px-1 py-1 font-mono">
-                        {r.load_number ?? '—'}
-                        {r.pages.length > 1 && <span className="block font-sans text-[10px] rounded bg-sky-100 text-sky-800 px-1 py-0.5 mt-0.5 whitespace-nowrap">appears twice in this scan (pages {r.pages.slice(0, -1).join(', ')} and {r.pages[r.pages.length - 1]})</span>}
-                        {r.pageConflict && <span className="block font-sans text-[10px] rounded bg-red-100 text-red-800 px-1 py-0.5 mt-0.5">pages disagree: {r.pageConflict} — check</span>}
-                        {c.status === 'saved' && <span className="block font-sans text-[10px] rounded bg-slate-200 text-slate-700 px-1 py-0.5 mt-0.5 whitespace-nowrap">Already saved · <Link href={`/cotton/loads/${c.existing.id}`} className="underline">open</Link></span>}
-                        {c.status === 'update' && (
-                          <span className="block font-sans text-[10px] rounded bg-amber-100 text-amber-900 px-1 py-0.5 mt-0.5">
-                            Update available · <Link href={`/cotton/loads/${c.existing.id}`} className="underline">open</Link>
-                            {c.diffs.map((d) => <span key={d.field} className="block">{d.label}: {d.saved} → <b>{d.scanned}</b></span>)}
-                          </span>
-                        )}
-                        {r.sequence_mark && <span className="block font-sans text-[10px] text-slate-400 mt-0.5">mark {r.sequence_mark} (sequence, not rolls)</span>}
-                      </td>
-                      <td className="px-1 py-1">
-                        <select value={r.farm_id} onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, farm_id: e.target.value, field_id: '' } : x))} className="rounded border border-slate-300 px-1 py-0.5 min-h-9">
-                          <option value="">— farm —</option>
-                          {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-                        </select>
-                        {!r.farm_id && r.producer && <div className="text-amber-700">From the document: {r.producer}{r.farm_number ? ` #${r.farm_number}` : ''}</div>}
-                      </td>
-                      <td className="px-1 py-1">
-                        <select value={r.field_id} onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, field_id: e.target.value } : x))} className="rounded border border-slate-300 px-1 py-0.5 min-h-9">
-                          <option value="">— field —</option>
-                          {fields.filter((f) => !r.farm_id || f.farm_id === r.farm_id).map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
-                        </select>
-                        {!r.field_id && r.field && <div className="text-amber-700">From the document: {r.field}</div>}
-                      </td>
-                      <td className="px-1 py-1">{r.picked_date ? fmtDate(r.picked_date) : '—'}{r.picked_date && r.picked_year_assumed && <span className="block text-[10px] rounded bg-amber-100 text-amber-800 px-1 py-0.5 mt-0.5 whitespace-nowrap">{yearAssumedNote(r.picked_date)}</span>}</td>
-                      <td className="px-1 py-1">{r.delivered_date ? fmtDate(r.delivered_date) : '—'}{r.delivered_date && r.delivered_year_assumed && <span className="block text-[10px] rounded bg-amber-100 text-amber-800 px-1 py-0.5 mt-0.5 whitespace-nowrap">{yearAssumedNote(r.delivered_date)}</span>}</td>
-                      <td className="px-1 py-1">{r.truck ?? '—'}</td>
-                      <td className="px-1 py-1">
-                        <input
-                          type="number" inputMode="numeric" step="1" min="0"
-                          value={r.rolls ?? ''}
-                          onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, rolls: rollsNum(e.target.value), usedHandwritten: false } : x))}
-                          className="rounded border border-slate-300 px-1 py-0.5 w-16 text-right min-h-9"
-                          aria-label={`Rolls on load ${r.load_number ?? i + 1}`}
-                        />
-                        {/* A handwritten count that differs from the printed one:
-                            shown, never picked for the user. One tap takes it. */}
-                        {rr.chip && !r.usedHandwritten && (
-                          <span className="block mt-0.5 rounded bg-amber-100 text-amber-900 px-1 py-0.5 text-[10px] max-w-[14rem]">
-                            {rr.chip}{' '}
-                            <button type="button" onClick={() => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, rolls: rr.handwritten, usedHandwritten: true } : x))} className="underline font-semibold min-h-6">Use {rr.handwritten}</button>
-                          </span>
-                        )}
-                        {r.usedHandwritten && <span className="block mt-0.5 text-[10px] text-amber-800">handwritten count used · printed {rr.printed ?? '—'}</span>}
-                        {r.handwritten_note && !rr.chip && <span className="block mt-0.5 text-[10px] text-slate-500">note: {r.handwritten_note}</span>}
-                      </td>
-                      <td className="px-1 py-1 text-right">{lbs(r.gross_weight)}</td>
-                      <td className="px-1 py-1 text-right">{lbs(r.tare_weight)}</td>
-                      <td className="px-1 py-1 text-right font-semibold">{lbs(r.net_weight)}</td>
-                      <td className="px-1 py-1 text-right text-slate-500">{lbsPerRoll(r.net_weight, r.rolls) != null ? fmtInt(lbsPerRoll(r.net_weight, r.rolls)) : '—'}</td>
-                    </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <button onClick={saveAiRows} disabled={saving} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold disabled:opacity-50">
-                {saving ? (stage ?? 'Saving…') : `Save ${aiRows.filter((r, i) => r.include && aiClassified[i].status === 'new').length} new${aiRows.filter((r, i) => r.include && aiClassified[i].status === 'update').length > 0 ? ` · update ${aiRows.filter((r, i) => r.include && aiClassified[i].status === 'update').length}` : ''}`}
-              </button>
-              <span className="text-sm text-slate-600">{aiSummary.text}</span>
-              {aiRows.some((r) => r.pageConflict) && <span className="text-sm text-red-700">Pages that disagree are marked in red — check the weights before saving.</span>}
-            </div>
-          </>
-        )}
-      </section>
-
-      {/* Manual entry */}
-      <form onSubmit={addManual} className="bg-white rounded-xl shadow p-4 space-y-2">
-        <h2 className="font-semibold">Add a load by hand</h2>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          <label className={labelCls}>
-            Load #
-            <input value={draft.load_number} onChange={(e) => setDraft({ ...draft, load_number: e.target.value })} className={`${inputCls} mt-1 ${draftExisting && !updateExisting ? 'border-amber-400 bg-amber-50' : ''}`} aria-describedby={draftExisting ? 'draft-existing' : undefined} />
-          </label>
-          {draftExisting && (
-            <div id="draft-existing" className="col-span-2 sm:col-span-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 flex flex-wrap items-center gap-x-3 gap-y-1" role="status">
-              <span>
-                Load <b>{draftExisting.load_number}</b> is already saved ({draftExisting.delivered_date ? fmtDate(draftExisting.delivered_date) : draftExisting.picked_date ? fmtDate(draftExisting.picked_date) : 'no date'}, {draftExisting.net_weight != null ? `${fmtInt(draftExisting.net_weight)} lbs` : 'no weight'}{draftExisting.rolls != null ? `, ${draftExisting.rolls} rolls` : ''}).{' '}
-                <Link href={`/cotton/loads/${draftExisting.id}`} className="underline font-semibold">Open it?</Link>
-              </span>
-              <label className="inline-flex items-center gap-2 min-h-8">
-                <input type="checkbox" className="h-5 w-5" checked={updateExisting} onChange={(e) => setUpdateExisting(e.target.checked)} />
-                Update that load with what I fill in here
+        ) : (
+          <form onSubmit={addManual} className="p-4 space-y-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <label className={labelCls}>
+                Load #
+                <input value={draft.load_number} onChange={(e) => setDraft({ ...draft, load_number: e.target.value })} className={`${inputCls} mt-1 font-mono ${draftExisting && !updateExisting ? 'border-amber-400 bg-amber-50' : ''}`} aria-describedby={draftExisting ? 'draft-existing' : undefined} autoComplete="off" />
+              </label>
+              {draftExisting && (
+                <div id="draft-existing" className="col-span-2 sm:col-span-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 flex flex-wrap items-center gap-x-3 gap-y-1" role="status">
+                  <span>
+                    Load <b>{draftExisting.load_number}</b> is already saved ({draftExisting.delivered_date ? fmtDate(draftExisting.delivered_date) : draftExisting.picked_date ? fmtDate(draftExisting.picked_date) : 'no date'}, {draftExisting.net_weight != null ? `${fmtInt(draftExisting.net_weight)} lbs` : 'no weight'}{draftExisting.rolls != null ? `, ${draftExisting.rolls} rolls` : ''}).{' '}
+                    <Link href={`/cotton/loads/${draftExisting.id}`} className="underline font-semibold">Open it?</Link>
+                  </span>
+                  <label className="inline-flex items-center gap-2 min-h-8">
+                    <input type="checkbox" className="h-5 w-5" checked={updateExisting} onChange={(e) => setUpdateExisting(e.target.checked)} />
+                    Update that load with what I fill in here
+                  </label>
+                </div>
+              )}
+              {!isGin && entities.length > 1 && (
+                <label className={labelCls}>
+                  Entity
+                  <select value={draft.entity_id} onChange={(e) => setDraft({ ...draft, entity_id: e.target.value })} className={`${inputCls} mt-1`}>
+                    <option value="">— from the farm —</option>
+                    {entities.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+                  </select>
+                </label>
+              )}
+              <label className={labelCls}>
+                Farm
+                <select value={draft.farm_id} onChange={(e) => setDraft({ ...draft, farm_id: e.target.value, field_id: '' })} className={`${inputCls} mt-1`}>
+                  <option value="">—</option>
+                  {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                </select>
+              </label>
+              <label className={labelCls}>
+                Field
+                <select value={draft.field_id} onChange={(e) => setDraft({ ...draft, field_id: e.target.value })} className={`${inputCls} mt-1`}>
+                  <option value="">—</option>
+                  {draftFields.map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
+                </select>
+              </label>
+              <label className={labelCls}>
+                Picked
+                <input type="date" value={draft.picked_date} onChange={(e) => setDraft({ ...draft, picked_date: e.target.value })} className={`${inputCls} mt-1`} />
+              </label>
+              <label className={labelCls}>
+                Delivered
+                <input type="date" value={draft.delivered_date} onChange={(e) => setDraft({ ...draft, delivered_date: e.target.value })} className={`${inputCls} mt-1`} />
+              </label>
+              <label className={labelCls}>
+                Gross lbs
+                <input type="number" inputMode="numeric" step="1" value={draft.gross_weight} onChange={(e) => setDraft({ ...draft, gross_weight: e.target.value })} className={`${inputCls} mt-1 min-h-12 text-lg tabular-nums`} />
+              </label>
+              <label className={labelCls}>
+                Tare lbs
+                <input type="number" inputMode="numeric" step="1" value={draft.tare_weight} onChange={(e) => setDraft({ ...draft, tare_weight: e.target.value })} className={`${inputCls} mt-1 min-h-12 text-lg tabular-nums`} />
+              </label>
+              <label className={labelCls}>
+                Rolls <span className="text-slate-400">(round modules on the load)</span>
+                <input type="number" inputMode="numeric" step="1" min="0" value={draft.rolls} onChange={(e) => setDraft({ ...draft, rolls: e.target.value })} className={`${inputCls} mt-1 min-h-12 text-lg tabular-nums`} />
+              </label>
+              <label className={labelCls}>
+                Gin
+                <select value={draft.gin_id} onChange={(e) => setDraft({ ...draft, gin_id: e.target.value })} className={`${inputCls} mt-1`}>
+                  <option value="">—</option>
+                  {gins.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                </select>
               </label>
             </div>
-          )}
-          {!isGin && entities.length > 1 && (
-            <label className={labelCls}>
-              Entity
-              <select value={draft.entity_id} onChange={(e) => setDraft({ ...draft, entity_id: e.target.value })} className={`${inputCls} mt-1`}>
-                <option value="">— from the farm —</option>
-                {entities.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
-              </select>
-            </label>
-          )}
-          <label className={labelCls}>
-            Farm
-            <select value={draft.farm_id} onChange={(e) => setDraft({ ...draft, farm_id: e.target.value, field_id: '' })} className={`${inputCls} mt-1`}>
-              <option value="">—</option>
-              {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
-            </select>
-          </label>
-          <label className={labelCls}>
-            Field
-            <select value={draft.field_id} onChange={(e) => setDraft({ ...draft, field_id: e.target.value })} className={`${inputCls} mt-1`}>
-              <option value="">—</option>
-              {draftFields.map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
-            </select>
-          </label>
-          <label className={labelCls}>
-            Picked
-            <input type="date" value={draft.picked_date} onChange={(e) => setDraft({ ...draft, picked_date: e.target.value })} className={`${inputCls} mt-1`} />
-          </label>
-          <label className={labelCls}>
-            Delivered
-            <input type="date" value={draft.delivered_date} onChange={(e) => setDraft({ ...draft, delivered_date: e.target.value })} className={`${inputCls} mt-1`} />
-          </label>
-          <label className={labelCls}>
-            Truck
-            <input value={draft.truck} onChange={(e) => setDraft({ ...draft, truck: e.target.value })} className={`${inputCls} mt-1`} />
-          </label>
-          <label className={labelCls}>
-            Gin
-            <select value={draft.gin_id} onChange={(e) => setDraft({ ...draft, gin_id: e.target.value })} className={`${inputCls} mt-1`}>
-              <option value="">—</option>
-              {gins.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
-            </select>
-          </label>
-          <label className={labelCls}>
-            Gross lbs
-            <input type="number" inputMode="numeric" step="1" value={draft.gross_weight} onChange={(e) => setDraft({ ...draft, gross_weight: e.target.value })} className={`${inputCls} mt-1`} />
-          </label>
-          <label className={labelCls}>
-            Tare lbs
-            <input type="number" inputMode="numeric" step="1" value={draft.tare_weight} onChange={(e) => setDraft({ ...draft, tare_weight: e.target.value })} className={`${inputCls} mt-1`} />
-          </label>
-          <label className={labelCls}>
-            Rolls <span className="text-slate-400">(round modules on the load)</span>
-            <input type="number" inputMode="numeric" step="1" min="0" value={draft.rolls} onChange={(e) => setDraft({ ...draft, rolls: e.target.value })} className={`${inputCls} mt-1`} />
-          </label>
-          <label className={labelCls}>
-            New gin name <span className="text-slate-400">(if not listed)</span>
-            <input value={newGin} onChange={(e) => setNewGin(e.target.value)} className={`${inputCls} mt-1`} />
-          </label>
-          <label className={labelCls}>
-            Notes
-            <input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} className={`${inputCls} mt-1`} />
-          </label>
-          <label className={labelCls}>
-            Ticket photo or PDF <span className="text-slate-400">(optional)</span>
-            <input type="file" accept="application/pdf,.pdf,image/*" onChange={(e) => setDraftDoc(e.target.files?.[0] ?? null)} className={`${inputCls} mt-1 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1`} />
-          </label>
-        </div>
-        {(num(draft.gross_weight) != null && num(draft.tare_weight) != null) && (
-          <p className="text-sm text-slate-500">
-            Net: <b>{lbs(num(draft.gross_weight)! - num(draft.tare_weight)!)}</b> lbs seed cotton
-            {rollsNum(draft.rolls) != null && rollsNum(draft.rolls)! > 0 && <> · <b>{fmtInt((num(draft.gross_weight)! - num(draft.tare_weight)!) / rollsNum(draft.rolls)!)}</b> lbs per roll</>}
-          </p>
+            {/* The same truck hauls every load, so it lives here — remembered, out of the way. */}
+            <Disclosure title="More details" tone="neutral" defaultOpen={false}>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+                <label className={labelCls}>
+                  Truck <span className="text-slate-400">(remembered)</span>
+                  <input value={draft.truck} onChange={(e) => setDraft({ ...draft, truck: e.target.value })} className={`${inputCls} mt-1`} placeholder="Same truck as last load" />
+                </label>
+                <label className={labelCls}>
+                  New gin name <span className="text-slate-400">(if not listed)</span>
+                  <input value={newGin} onChange={(e) => setNewGin(e.target.value)} className={`${inputCls} mt-1`} />
+                </label>
+                <label className={labelCls}>
+                  Notes
+                  <input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} className={`${inputCls} mt-1`} />
+                </label>
+                <label className={labelCls}>
+                  Ticket photo or PDF <span className="text-slate-400">(optional)</span>
+                  <input type="file" accept="application/pdf,.pdf,image/*" onChange={(e) => setDraftDoc(e.target.files?.[0] ?? null)} className={`${inputCls} mt-1 file:mr-2 file:rounded file:border-0 file:bg-slate-100 file:px-2 file:py-1`} />
+                </label>
+              </div>
+            </Disclosure>
+            <div className="flex flex-wrap items-center gap-3">
+              <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold disabled:opacity-50" disabled={!!draftExisting && !updateExisting}>
+                {draftExisting ? (updateExisting ? `Update load ${draftExisting.load_number}` : 'Already saved') : 'Add load'}
+              </button>
+              {(num(draft.gross_weight) != null && num(draft.tare_weight) != null) && (
+                <p className="text-sm text-slate-600">
+                  Net <b className="tabular-nums">{lbs(num(draft.gross_weight)! - num(draft.tare_weight)!)}</b> lbs seed cotton
+                  {rollsNum(draft.rolls) != null && rollsNum(draft.rolls)! > 0 && <> · <b className="tabular-nums">{fmtInt((num(draft.gross_weight)! - num(draft.tare_weight)!) / rollsNum(draft.rolls)!)}</b> lbs per roll</>}
+                </p>
+              )}
+              {draft.truck && <span className="text-xs text-slate-400">Hauled on {draft.truck}</span>}
+            </div>
+          </form>
         )}
-        <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold disabled:opacity-50" disabled={!!draftExisting && !updateExisting}>
-          {draftExisting ? (updateExisting ? `Update load ${draftExisting.load_number}` : 'Already saved') : 'Add load'}
-        </button>
-      </form>
+      </CottonSection>
 
       {err && <p className="text-sm text-red-600" role="alert">{err}</p>}
-      {msg && <p className="text-sm text-green-700">{msg}</p>}
+      {msg && <p className="text-sm text-green-700" role="status">{msg}</p>}
 
-      {/* Load list — filters, sort, select, export, delete; tap a row to open it. */}
+      {/* The list — filters, sort, select, export, delete; tap a row to open it. */}
       <ReportFilterBar activeCount={activeFilterCount}>
         <label className={`${filterLabel} sm:min-w-[14rem]`}>
           Search
-          <input type="search" placeholder="Load #, truck, farm, field, gin…" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} className={filterSelect} />
+          <input type="search" placeholder="Load #, farm, field, gin…" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} className={filterSelect} />
         </label>
         <label className={filterLabel}>
           Farm
@@ -723,15 +731,6 @@ export default function CottonLoadsPage() {
         )}
       </ReportFilterBar>
 
-      {sorted.length > 0 && (
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="text-sm text-slate-500 flex-1">
-            {filterSummary()}{shownRolls.rolls > 0 ? ` · ${fmtInt(shownRolls.rolls)} rolls · ${fmtInt(shownRolls.avgLbsPerRoll ?? 0)} lbs/roll` : ''}
-          </span>
-          <ExportBar buildPayload={() => buildPayload()} formats={['xlsx', 'pdf', 'csv', 'print']} />
-        </div>
-      )}
-
       {selected.size > 0 && (
         <div className="flex flex-wrap items-center gap-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm">
           <span className="font-semibold">{selected.size} selected</span>
@@ -742,16 +741,19 @@ export default function CottonLoadsPage() {
       )}
 
       {nothingYet ? (
-        <div className="bg-white rounded-xl shadow p-8 text-center text-slate-500">No {cropYear} seed cotton loads yet. Upload a module list or add one by hand above.</div>
+        <EmptyState message={`No ${cropYear} seed cotton loads yet.`} hint="Upload the gin’s module list or add the first ticket by hand above." />
       ) : nothingMatches ? (
         <div className="bg-white rounded-xl shadow p-8 text-center space-y-3">
           <p className="text-slate-600 font-medium">No loads match these filters.</p>
           <button type="button" onClick={() => setFilters(EMPTY_COTTON_FILTERS)} className={`${quietBtn} font-semibold text-brand-deep`}>Clear filters</button>
         </div>
       ) : (
-        <>
-          <p className="text-sm text-slate-500">Tap any load to see its details and ticket. Tap a rolls figure to change it in place.</p>
-          <div className="overflow-x-auto bg-white rounded-xl shadow">
+        <CottonSection
+          title="Loads"
+          sub={`${filterSummary()}${shownRolls.rolls > 0 ? ` · ${fmtInt(shownRolls.rolls)} rolls · ${fmtInt(shownRolls.avgLbsPerRoll ?? 0)} lbs/roll` : ''}`}
+          aside={<span className="text-xs text-slate-400 no-print">Tap a load for its ticket · tap a rolls figure to change it</span>}
+        >
+          <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
               <thead className={theadCls}>
                 <tr>
@@ -765,17 +767,16 @@ export default function CottonLoadsPage() {
                   <SortTh onClick={() => toggleSort('field')} active={sortKey === 'field'} dir={sortDir}>Field</SortTh>
                   <SortTh onClick={() => toggleSort('picked')} active={sortKey === 'picked'} dir={sortDir} className="hidden md:table-cell">Picked</SortTh>
                   <SortTh onClick={() => toggleSort('delivered')} active={sortKey === 'delivered'} dir={sortDir}>Delivered</SortTh>
-                  <SortTh onClick={() => toggleSort('truck')} active={sortKey === 'truck'} dir={sortDir}>Truck</SortTh>
                   <SortTh onClick={() => toggleSort('gin')} active={sortKey === 'gin'} dir={sortDir} className="hidden md:table-cell">Gin</SortTh>
                   <SortTh onClick={() => toggleSort('rolls')} active={sortKey === 'rolls'} dir={sortDir} align="right">Rolls</SortTh>
                   <SortTh onClick={() => toggleSort('net')} active={sortKey === 'net'} dir={sortDir} align="right">Net lbs</SortTh>
-                  <SortTh onClick={() => toggleSort('perRoll')} active={sortKey === 'perRoll'} dir={sortDir} align="right">Lbs/roll</SortTh>
+                  <SortTh onClick={() => toggleSort('perRoll')} active={sortKey === 'perRoll'} dir={sortDir} align="right" className="hidden md:table-cell">Lbs/roll</SortTh>
                   <SortTh onClick={() => toggleSort('status')} active={sortKey === 'status'} dir={sortDir}>Status</SortTh>
-                  <th className="px-2 py-1 text-left whitespace-nowrap">Ticket</th>
+                  <th className="px-2 py-1 text-left whitespace-nowrap hidden md:table-cell">Ticket</th>
                 </tr>
               </thead>
               <tbody>
-                {loading && <tr><td colSpan={13} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
+                {loading && <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">Loading…</td></tr>}
                 {sorted.map((l) => {
                   const perRoll = lbsPerRoll(l.net_weight, l.rolls)
                   return (
@@ -794,19 +795,14 @@ export default function CottonLoadsPage() {
                         <td className="px-3 py-2">{ctx.fieldName(l.field_id) || '—'}</td>
                         <td className="px-3 py-2 whitespace-nowrap hidden md:table-cell">{l.picked_date ? fmtDate(l.picked_date) : '—'}</td>
                         <td className="px-3 py-2 whitespace-nowrap">{l.delivered_date ? fmtDate(l.delivered_date) : '—'}</td>
-                        <td className="px-3 py-2">{l.truck ?? '—'}</td>
                         <td className="px-3 py-2 hidden md:table-cell">{ctx.ginName(l.gin_id) || '—'}</td>
                         <td className="px-1 py-1 text-right tabular-nums" onClick={(e) => e.stopPropagation()}>
                           <RollsCell load={l} onSaved={refresh} onError={setErr} />
                         </td>
                         <td className="px-3 py-2 text-right tabular-nums font-semibold">{lbs(l.net_weight)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums text-slate-600">{perRoll != null ? fmtInt(perRoll) : '—'}</td>
-                        <td className="px-3 py-2">
-                          {ginnedIds.has(l.id)
-                            ? <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">ginned</span>
-                            : <span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">on yard</span>}
-                        </td>
-                        <td className="px-2 py-1 text-xs">
+                        <td className="px-3 py-2 text-right tabular-nums text-slate-600 hidden md:table-cell">{perRoll != null ? fmtInt(perRoll) : '—'}</td>
+                        <td className="px-3 py-2"><GinnedPill ginned={ginnedIds.has(l.id)} /></td>
+                        <td className="px-2 py-1 text-xs hidden md:table-cell">
                           {l.source_pdf_url
                             ? <span className="text-slate-600">on file</span>
                             : <span className="text-slate-400">none</span>}
@@ -817,17 +813,18 @@ export default function CottonLoadsPage() {
                 })}
                 {sorted.length > 0 && (
                   <tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold">
-                    <td className="px-3 py-2" colSpan={8}>{sorted.length} load{sorted.length === 1 ? '' : 's'}</td>
+                    <td className="px-3 py-2" colSpan={7}>{sorted.length} load{sorted.length === 1 ? '' : 's'}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{shownRolls.rolls > 0 ? fmtInt(shownRolls.rolls) : '—'}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{fmtInt(shownRolls.netLbs)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{shownRolls.avgLbsPerRoll != null ? fmtInt(shownRolls.avgLbsPerRoll) : '—'}</td>
-                    <td colSpan={2} />
+                    <td className="px-3 py-2 text-right tabular-nums hidden md:table-cell">{shownRolls.avgLbsPerRoll != null ? fmtInt(shownRolls.avgLbsPerRoll) : '—'}</td>
+                    <td />
+                    <td className="hidden md:table-cell" />
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
-        </>
+        </CottonSection>
       )}
 
       <ConfirmDialog

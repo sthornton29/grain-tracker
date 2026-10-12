@@ -17,6 +17,8 @@ import type { CottonBale, CottonBaleGrade, GinReceipt, Farm, Field } from '@/lib
 import Dropzone, { rejectMessage } from '@/components/dropzone'
 import { reportError } from '@/lib/friendly-error'
 import { pbiKey } from '@/lib/number-key'
+import { EmptyState, SummaryCards, fmtInt, fmtNum, theadCls, type SummaryCardData } from '@/components/reports/report-kit'
+import { CottonPageHeader, CottonSection } from '@/components/cotton/cotton-page-header'
 
 const fmt = (n: number | null | undefined, d = 1) => (n == null ? '—' : Number(n).toFixed(d))
 
@@ -109,25 +111,31 @@ export default function CottonBalesPage() {
     return [...ys].sort((a, b) => b - a)
   }, [bales, cropYear])
   const gradedCount = yearBales.filter((b) => gradeByBale.has(b.id)).length
+  const yearLbs = yearBales.reduce((s, b) => s + Number(b.net_weight_lbs), 0)
+  const graded = yearBales.map((b) => gradeByBale.get(b.id)).filter((g): g is CottonBaleGrade => g != null)
+  const loanTotal = graded.reduce((s, g) => s + Number(g.loan_value_total ?? 0), 0)
+  const loanLbs = graded.reduce((s, g) => s + (g.loan_value_total != null ? Number(yearBales.find((b) => b.id === g.bale_id)?.net_weight_lbs ?? 0) : 0), 0)
+  const summaryCards: SummaryCardData[] = [
+    { label: `${cropYear} bales`, value: fmtInt(yearBales.length), sub: yearBales.length ? `${fmtInt(yearLbs)} lbs lint · avg ${fmtInt(yearLbs / yearBales.length)} lbs` : 'from gin receipts' },
+    { label: 'Classed', value: yearBales.length ? `${fmtInt(gradedCount)} of ${fmtInt(yearBales.length)}` : '—', sub: yearBales.length && gradedCount < yearBales.length ? `${fmtInt(yearBales.length - gradedCount)} waiting on the classing office` : yearBales.length ? 'every bale has grades' : undefined, tone: yearBales.length && gradedCount < yearBales.length ? 'warning' : 'neutral' },
+    { label: 'Loan value', value: loanLbs ? `$${fmtNum(loanTotal / loanLbs / 1, 4)} /lb` : '—', sub: loanLbs ? `$${fmtNum(loanTotal, 2)} on ${fmtInt(graded.filter((g) => g.loan_value_total != null).length)} classed bales` : 'from the classing loan values' },
+  ]
+  void inputCls
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-3">
-        <h1 className="text-2xl font-bold flex-1">Bales &amp; Grades</h1>
-        <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Crop year</span>
-          <select value={cropYear} onChange={(e) => setCropYear(Number(e.target.value))} className={inputCls}>
-            {years.map((y) => <option key={y} value={y}>{y}</option>)}
-          </select>
-        </label>
-      </div>
+      <CottonPageHeader
+        title="Bales & Grades"
+        sub="Every bale from your gin receipts, with its HVI classing once the office’s file arrives."
+        cropYear={cropYear}
+        years={years}
+        onCropYear={setCropYear}
+      />
 
-      <section className="bg-white rounded-xl shadow p-4 space-y-3">
-        <h2 className="font-semibold">Import Classing Data (CSV)</h2>
-        <p className="text-sm text-slate-500">
-          The classing office&apos;s CSV is read as-is: the preamble is skipped and columns are matched by their
-          headings. Rows match bales by <b>Bale # (PBI)</b>; Farm/Field columns are only used to double-check.
-        </p>
+      <SummaryCards cards={summaryCards} />
+
+      <CottonSection title="Import classing data" sub="The classing office’s CSV is read as-is: rows match bales by PBI number (leading zeros don’t matter); farm and field columns only double-check.">
+        <div className="p-4 space-y-3">
         <Dropzone
           onFiles={(files) => void onCsv(files[0])}
           onReject={(rejected) => setErr(rejectMessage("Use the classing office's CSV file.", rejected))}
@@ -180,47 +188,52 @@ export default function CottonBalesPage() {
               </table>
             </div>
             <div className="flex gap-2">
-              <button onClick={saveGrades} disabled={saving || preview.matched.length === 0} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
+              <button onClick={saveGrades} disabled={saving || preview.matched.length === 0} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold disabled:opacity-50">
                 {saving ? 'Saving…' : `Save ${preview.matched.length} matched grades`}
               </button>
-              <button onClick={() => setPreview(null)} className="rounded-lg bg-white border border-slate-300 px-4 py-2">Cancel</button>
+              <button onClick={() => setPreview(null)} className="rounded-lg bg-white border border-slate-300 px-4 min-h-11">Cancel</button>
             </div>
           </div>
         )}
-      </section>
+        </div>
+      </CottonSection>
 
-      {err && <p className="text-sm text-red-600">{err}</p>}
-      {msg && <p className="text-sm text-green-700">{msg}</p>}
+      {err && <p className="text-sm text-red-600" role="alert">{err}</p>}
+      {msg && <p className="text-sm text-green-700" role="status">{msg}</p>}
 
-      <div className="bg-white rounded-xl shadow overflow-x-auto">
-        <div className="px-3 pt-3 text-sm text-slate-500">{yearBales.length} bales · {gradedCount} classed</div>
+      {yearBales.length === 0 ? (
+        <EmptyState message={`No ${cropYear} bales yet.`} hint="Bales come from gin receipts — upload a Statement of Ginning and they appear here." linkHref="/cotton/receipts" linkLabel="Open Gin Receipts" />
+      ) : (
+      <CottonSection title="Bales" sub={`${cropYear} crop · ${fmtInt(yearBales.length)} bales · ${fmtInt(gradedCount)} classed`}>
+        <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
-          <thead className="bg-slate-100 text-slate-700"><tr>{['PBI #', 'Farm', 'Field', 'Net lbs', 'Gr', 'Lf', 'St', 'Mic', 'Str', 'Cgr', 'Loan $/lb', 'Loan $'].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+          <thead className={theadCls}><tr>{['PBI #', 'Farm', 'Field', 'Net lbs', 'Gr', 'Lf', 'St', 'Mic', 'Str', 'Cgr', 'Loan $/lb', 'Loan $'].map((h, k) => <th key={h} className={`${k === 3 || k >= 10 ? 'text-right' : 'text-left'} px-3 py-2 whitespace-nowrap`}>{h}</th>)}</tr></thead>
           <tbody>
-            {yearBales.length === 0 && <tr><td colSpan={12} className="px-3 py-6 text-center text-slate-400">No {cropYear} bales yet — they come from gin receipts.</td></tr>}
             {yearBales.map((b) => {
               const g = gradeByBale.get(b.id)
               const r = receiptById.get(b.gin_receipt_id)
               return (
-                <tr key={b.id} className="border-t border-slate-100">
-                  <td className="px-3 py-1.5 font-mono">{b.pbi_number}</td>
+                <tr key={b.id} className={`border-t border-slate-100 ${g ? '' : 'text-slate-500'}`}>
+                  <td className="px-3 py-1.5 font-mono font-semibold text-slate-900">{b.pbi_number}{!g && <span className="ml-2 inline-block rounded-full bg-slate-100 text-slate-500 text-[10px] font-medium px-1.5 py-0.5 align-middle">not classed</span>}</td>
                   <td className="px-3 py-1.5">{r?.farm_id ? farmById.get(r.farm_id)?.name ?? '—' : '—'}</td>
                   <td className="px-3 py-1.5">{r?.field_id ? fieldById.get(r.field_id)?.name_or_number ?? '—' : '—'}</td>
-                  <td className="px-3 py-1.5 text-right font-mono">{Number(b.net_weight_lbs).toLocaleString()}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{fmtInt(Number(b.net_weight_lbs))}</td>
                   <td className="px-3 py-1.5">{g?.color_grade ?? '—'}</td>
                   <td className="px-3 py-1.5">{g?.leaf_grade ?? '—'}</td>
                   <td className="px-3 py-1.5">{fmt(g?.staple_32nds, 0)}</td>
                   <td className="px-3 py-1.5">{fmt(g?.micronaire, 1)}</td>
                   <td className="px-3 py-1.5">{fmt(g?.strength_g_tex, 1)}</td>
                   <td className="px-3 py-1.5">{g?.composite_grade ?? '—'}</td>
-                  <td className="px-3 py-1.5 text-right">{g?.loan_value_cents_per_lb != null ? `$${(Number(g.loan_value_cents_per_lb) / 100).toFixed(4)}` : '—'}</td>
-                  <td className="px-3 py-1.5 text-right">{g?.loan_value_total != null ? `$${Number(g.loan_value_total).toFixed(2)}` : '—'}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{g?.loan_value_cents_per_lb != null ? `$${(Number(g.loan_value_cents_per_lb) / 100).toFixed(4)}` : '—'}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums">{g?.loan_value_total != null ? `$${fmtNum(Number(g.loan_value_total), 2)}` : '—'}</td>
                 </tr>
               )
             })}
           </tbody>
         </table>
-      </div>
+        </div>
+      </CottonSection>
+      )}
     </div>
   )
 }

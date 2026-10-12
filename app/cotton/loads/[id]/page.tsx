@@ -13,6 +13,7 @@ import ExportBar from '@/components/export-bar'
 import { ConfirmDialog, NoticeDialog } from '@/components/app-dialog'
 import CottonLoadDocument from '@/components/cotton/cotton-load-document'
 import { fmtInt } from '@/components/reports/report-kit'
+import { CottonPageHeader, GinnedPill } from '@/components/cotton/cotton-page-header'
 import { lbsPerRoll } from '@/lib/cotton-loads'
 import { rollsNum, updateCottonLoad } from '@/lib/cotton-load-writes'
 import { reportError } from '@/lib/friendly-error'
@@ -164,7 +165,7 @@ export default function CottonLoadDetailPage() {
         ['Rolls', load.rolls != null ? fmtInt(load.rolls) : '—'], ['Lbs per roll', perRoll != null ? fmtInt(perRoll) : '—'],
       ] },
       { title: 'Gin receipt', columns: KV, rows: ginned
-        ? receipts.map((r) => [`Receipt #${r.receipt_number}`, `${r.receipt_date ? fmtDate(r.receipt_date) : 'undated'}${r.gin_id && ginById.get(r.gin_id) ? ` · ${ginById.get(r.gin_id)!.name}` : ''}`])
+        ? receipts.map((r) => ['Statement of Ginning', `${r.receipt_date ? fmtDate(r.receipt_date) : 'undated'}${r.gin_id && ginById.get(r.gin_id) ? ` · ${ginById.get(r.gin_id)!.name}` : ''}`])
         : [['Status', 'On the yard — not on a gin receipt yet']] },
       ...(load.notes ? [{ title: 'Notes', columns: KV, rows: [['Notes', load.notes]] } as ExportSection] : []),
     ],
@@ -176,34 +177,31 @@ export default function CottonLoadDetailPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-end gap-3 flex-wrap">
-        <div className="flex-1 min-w-0">
-          <h1 className="text-2xl font-bold">Seed cotton load {load.load_number}</h1>
-          <p className="text-sm text-slate-500">{sub}</p>
-        </div>
-        <div className="flex gap-2 flex-wrap no-print">
-          <Link href="/cotton/loads" className="inline-flex items-center rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm">Back</Link>
-          {!editing && <button type="button" onClick={startEdit} className="rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm font-semibold text-brand-deep">Edit</button>}
-          <button
-            type="button"
-            onClick={() => ginned ? setNotice(`Load ${load.load_number} is on gin receipt ${receipts.map((r) => `#${r.receipt_number}`).join(', ')}, so it can’t be deleted here. Remove it from the receipt first.`) : setAskDelete(true)}
-            className="rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm font-semibold text-red-600"
-          >
-            Delete
-          </button>
-          <ExportBar buildPayload={() => payload} />
-        </div>
-      </div>
+      <CottonPageHeader
+        eyebrow="Cotton · Seed cotton load"
+        title={<span className="font-mono">{load.load_number}</span>}
+        sub={sub}
+        actions={(
+          <>
+            <Link href="/cotton/loads" className="inline-flex items-center rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm">Back</Link>
+            {!editing && <button type="button" onClick={startEdit} className="rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm font-semibold text-brand-deep">Edit</button>}
+            <button
+              type="button"
+              onClick={() => ginned ? setNotice(`Load ${load.load_number} is on a gin receipt (${receipts.map((r) => r.receipt_date ? fmtDate(r.receipt_date) : 'undated').join(', ')}), so it can’t be deleted here. Remove it from the receipt first.`) : setAskDelete(true)}
+              className="rounded-lg bg-white border border-slate-300 px-3 min-h-11 text-sm font-semibold text-red-600"
+            >
+              Delete
+            </button>
+            <ExportBar buildPayload={() => payload} />
+          </>
+        )}
+      />
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <StatCard label="Net seed cotton" value={`${lbs(load.net_weight)} lbs`} />
         <StatCard label="Rolls" value={load.rolls != null ? fmtInt(load.rolls) : '—'} />
         <StatCard label="Lbs per roll" value={perRoll != null ? fmtInt(perRoll) : '—'} />
-        <StatCard label="Status">
-          {ginned
-            ? <span className="inline-block rounded-full px-3 py-1 text-sm font-semibold bg-green-100 text-green-800">Ginned</span>
-            : <span className="inline-block rounded-full px-3 py-1 text-sm font-semibold bg-amber-100 text-amber-800">On the yard</span>}
-        </StatCard>
+        <StatCard label="Status"><GinnedPill ginned={ginned} size="md" /></StatCard>
       </div>
 
       {err && <p className="text-sm text-red-700" role="alert">{err}</p>}
@@ -235,7 +233,6 @@ export default function CottonLoadDetailPage() {
             </label>
             <label className={labelCls}>Picked<input type="date" value={draft.picked_date} onChange={(e) => setDraft({ ...draft, picked_date: e.target.value })} className={inputCls} /></label>
             <label className={labelCls}>Delivered<input type="date" value={draft.delivered_date} onChange={(e) => setDraft({ ...draft, delivered_date: e.target.value })} className={inputCls} /></label>
-            <label className={labelCls}>Truck<input value={draft.truck} onChange={(e) => setDraft({ ...draft, truck: e.target.value })} className={inputCls} /></label>
             <label className={labelCls}>Gin
               <select value={draft.gin_id} onChange={(e) => setDraft({ ...draft, gin_id: e.target.value })} className={inputCls}>
                 <option value="">—</option>
@@ -246,6 +243,7 @@ export default function CottonLoadDetailPage() {
             <label className={labelCls}>Tare lbs<input type="number" inputMode="numeric" step="1" value={draft.tare_weight} onChange={(e) => setDraft({ ...draft, tare_weight: e.target.value })} className={inputCls} /></label>
             <label className={labelCls}>Rolls<input type="number" inputMode="numeric" step="1" min="0" value={draft.rolls} onChange={(e) => setDraft({ ...draft, rolls: e.target.value })} className={inputCls} /></label>
             <label className={labelCls}>Notes<input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} className={inputCls} /></label>
+            <label className={`${labelCls} text-slate-500`}>Truck <span className="text-slate-400">(same truck every load)</span><input value={draft.truck} onChange={(e) => setDraft({ ...draft, truck: e.target.value })} className={inputCls} /></label>
           </div>
           {num(draft.gross_weight) != null && num(draft.tare_weight) != null && (
             <p className="text-sm text-slate-500">Net: <b>{fmtInt(num(draft.gross_weight)! - num(draft.tare_weight)!)}</b> lbs{rollsNum(draft.rolls) ? <> · <b>{fmtInt((num(draft.gross_weight)! - num(draft.tare_weight)!) / rollsNum(draft.rolls)!)}</b> lbs per roll</> : null}</p>
@@ -266,10 +264,10 @@ export default function CottonLoadDetailPage() {
               <Def label="Field" value={field?.name_or_number ?? '—'} />
               <Def label="Picked" value={load.picked_date ? fmtDate(load.picked_date) : '—'} />
               <Def label="Delivered" value={load.delivered_date ? fmtDate(load.delivered_date) : '—'} />
-              <Def label="Truck" value={load.truck ?? '—'} />
               <Def label="Gin" value={gin?.name ?? '—'} />
               <Def label="Entered" value={load.source === 'document_import' ? 'from an uploaded ticket' : 'by hand'} sub={fmtDate(load.created_at.slice(0, 10))} />
             </dl>
+            {load.truck && <p className="px-4 pb-3 text-xs text-slate-400">Hauled on {load.truck}</p>}
           </Section>
 
           <Section title="Weights & Rolls">
@@ -287,7 +285,7 @@ export default function CottonLoadDetailPage() {
               <div className="px-4 py-3 space-y-1 text-sm">
                 {receipts.map((r) => (
                   <p key={r.id}>
-                    Receipt <b>#{r.receipt_number}</b>{r.receipt_date ? ` · ${fmtDate(r.receipt_date)}` : ''}{r.gin_id && ginById.get(r.gin_id) ? ` · ${ginById.get(r.gin_id)!.name}` : ''}
+                    Statement of Ginning <b>{r.receipt_date ? fmtDate(r.receipt_date) : 'undated'}</b>{r.gin_id && ginById.get(r.gin_id) ? ` · ${ginById.get(r.gin_id)!.name}` : ''}
                     {r.bales_count != null ? ` · ${fmtInt(r.bales_count)} bales` : ''}{r.total_seed_cotton_weight != null ? ` · ${fmtInt(r.total_seed_cotton_weight)} lbs seed cotton on the statement` : ''}
                     {' '}<Link href="/cotton/receipts" className="text-brand-deep underline no-print">Open gin receipts →</Link>
                   </p>

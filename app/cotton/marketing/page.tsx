@@ -15,6 +15,7 @@ import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { BuyerPicker } from '@/components/buyer-location-pickers'
 import { formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
+import { CottonPageHeader } from '@/components/cotton/cotton-page-header'
 import MarketingDocImport from '@/components/cotton/marketing-doc-import'
 import BaleFileAssign from '@/components/cotton/bale-file-assign'
 import EntitySelect from '@/components/entity-select'
@@ -530,18 +531,13 @@ export default function CottonMarketingPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold flex-1">Cotton Marketing</h1>
-        <label className="text-sm flex items-center gap-2">
-          Crop year
-          <input type="number" value={cropYear} onChange={(e) => setCropYear(Number(e.target.value) || cropYear)} className={`${inputCls} w-24`} />
-        </label>
-      </div>
-      <p className="text-sm text-slate-600 max-w-3xl">
-        Physical cotton: sales contracts, CCC loans (per-bale principal from classing loan values), LDP, equity sales,
-        fees, and the weekly AWP. Everything here flows into the Marketing Dashboard, Revenue Projections, Cash Flow,
-        and Income Sensitivity. LDP and marketing-loan gains count once, in cotton revenue — never in the government pool.
-      </p>
+      <CottonPageHeader
+        title="Cotton Marketing"
+        sub="Sales contracts, CCC loans, LDP, equity sales, fees and the weekly AWP — everything flows into the Marketing dashboard, Revenue Projections, Cash Flow and Income Sensitivity."
+        cropYear={cropYear}
+        years={[...new Set([cropYear, new Date().getFullYear(), new Date().getFullYear() - 1, new Date().getFullYear() + 1])].sort((a, b) => b - a)}
+        onCropYear={(y) => setCropYear(y || cropYear)}
+      />
 
       {banner && <div className="rounded-lg bg-green-50 border border-green-200 px-3 py-2 text-sm text-green-900">{banner}</div>}
       {err && <p className="text-sm text-red-600">{err}</p>}

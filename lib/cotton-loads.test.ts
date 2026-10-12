@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  EMPTY_COTTON_FILTERS, documentPagePlan, filterCottonLoads, lbsPerRoll, rollsSummary, sortCottonLoads,
+  EMPTY_COTTON_FILTERS, documentPagePlan, filterCottonLoads, lbsPerRoll, rollsSummary, seasonFlow, sortCottonLoads,
   type CottonLoadRow, type CottonSortContext,
 } from './cotton-loads'
 
@@ -74,5 +74,26 @@ describe('documentPagePlan', () => {
     expect(documentPagePlan(12, 12)).toBe('per-page')
     expect(documentPagePlan(10, 12)).toBe('whole')
     expect(documentPagePlan(0, 3)).toBe('none')
+  })
+})
+
+describe('seasonFlow — field → yard → gin', () => {
+  it('splits pounds into ginned and on the yard, counts rolls waiting, and breaks the yard out by field (heaviest first, no-field last)', () => {
+    const flow = seasonFlow([A, B, C], (id) => id === 'b')
+    expect(flow.loads).toBe(3)
+    expect(flow.netLbs).toBe(93_000)
+    expect(flow.ginnedLbs).toBe(33_000)
+    expect(flow.yardLbs).toBe(60_000)
+    expect(flow.yardRolls).toBe(4) // A's 4; C has no count
+    expect(flow.loadsWithoutRolls).toBe(1)
+    expect(flow.avgLbsPerRoll).toBe((40_000 + 33_000) / 7)
+    expect(flow.fields.map((f) => [f.fieldId, f.netLbs, f.yardLbs, f.ginnedLbs, f.yardRolls])).toEqual([
+      ['x1', 40_000, 40_000, 0, 4],
+      ['x2', 33_000, 0, 33_000, 0],
+      [null, 20_000, 20_000, 0, 0],
+    ])
+  })
+  it('an empty season is all zeros with no fields', () => {
+    expect(seasonFlow([], () => false)).toMatchObject({ loads: 0, netLbs: 0, yardLbs: 0, ginnedLbs: 0, yardRolls: 0, fields: [] })
   })
 })

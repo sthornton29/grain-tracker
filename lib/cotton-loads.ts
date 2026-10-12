@@ -56,6 +56,53 @@ export function rollsSummary(loads: ReadonlyArray<Pick<CottonLoadRow, 'net_weigh
   }
 }
 
+// ---------- the season flow: field → yard → gin ----------
+
+export type SeasonFlowField = {
+  fieldId: string | null
+  loads: number
+  netLbs: number
+  yardLbs: number
+  ginnedLbs: number
+  yardRolls: number
+}
+
+export type SeasonFlow = RollsSummary & {
+  yardLbs: number
+  ginnedLbs: number
+  yardRolls: number
+  loadsWithoutRolls: number
+  /** Heaviest field first; loads without a field last (fieldId null). */
+  fields: SeasonFlowField[]
+}
+
+/** The season at a glance: pounds ginned vs still on the yard, rolls waiting,
+ *  and the same split per field. One pass over the year's loads. */
+export function seasonFlow(loads: ReadonlyArray<Pick<CottonLoadRow, 'id' | 'field_id' | 'net_weight' | 'rolls'>>, ginned: (id: string) => boolean): SeasonFlow {
+  const totals = rollsSummary(loads)
+  let yardLbs = 0, ginnedLbs = 0, yardRolls = 0
+  const byField = new Map<string | null, SeasonFlowField>()
+  for (const l of loads) {
+    const net = Number(l.net_weight ?? 0)
+    const isGinned = ginned(l.id)
+    const rolls = l.rolls != null && Number(l.rolls) > 0 ? Number(l.rolls) : 0
+    if (isGinned) ginnedLbs += net
+    else { yardLbs += net; yardRolls += rolls }
+    const key = l.field_id ?? null
+    const f = byField.get(key) ?? { fieldId: key, loads: 0, netLbs: 0, yardLbs: 0, ginnedLbs: 0, yardRolls: 0 }
+    f.loads += 1
+    f.netLbs += net
+    if (isGinned) f.ginnedLbs += net
+    else { f.yardLbs += net; f.yardRolls += rolls }
+    byField.set(key, f)
+  }
+  const fields = [...byField.values()].sort((a, b) => {
+    if ((a.fieldId == null) !== (b.fieldId == null)) return a.fieldId == null ? 1 : -1
+    return b.netLbs - a.netLbs
+  })
+  return { ...totals, yardLbs, ginnedLbs, yardRolls, loadsWithoutRolls: totals.loads - totals.loadsWithRolls, fields }
+}
+
 export type CottonSortKey = 'load' | 'farm' | 'field' | 'picked' | 'delivered' | 'truck' | 'gin' | 'rolls' | 'net' | 'perRoll' | 'status'
 
 export type CottonSortContext = {

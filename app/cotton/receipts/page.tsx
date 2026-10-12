@@ -37,6 +37,8 @@ import {
   type LineMatch, type MatchableLoad,
 } from '@/lib/gin-receipt-matching'
 import { fmtDate } from '@/lib/format-date'
+import { EmptyState, SummaryCards, ViewTabs, fmtInt, fmtPct, theadCls, type SummaryCardData } from '@/components/reports/report-kit'
+import { CottonPageHeader, CottonSection } from '@/components/cotton/cotton-page-header'
 import type { GinReceipt, Gin, Farm, Field, Entity, CottonLoad } from '@/lib/types'
 
 const lbs = (n: number | null | undefined) => (n == null ? '—' : Number(n).toLocaleString())
@@ -92,6 +94,7 @@ export default function GinReceiptsPage() {
   const [source, setSource] = useState<DocumentSource | null>(null)
   const [stage, setStage] = useState<string | null>(null)
   const [reviews, setReviews] = useState<StatementReview[]>([])
+  const [intake, setIntake] = useState<'upload' | 'hand'>('upload')
   const [saving, setSaving] = useState(false)
   const [existingBales, setExistingBales] = useState<Array<{ pbi_number: string; crop_year: number; gin_receipt_id: string }>>([])
   // manual form
@@ -422,24 +425,43 @@ export default function GinReceiptsPage() {
     refresh()
   }
 
-  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2'
+  const inputCls = 'rounded-lg border border-slate-300 px-3 py-2 min-h-11'
   const chip = 'rounded bg-slate-50 border border-slate-200 px-2 py-1'
+  const years = useMemo(() => {
+    const ys = new Set<number>([cropYear, new Date().getFullYear(), ...receipts.map((r) => r.crop_year)])
+    return [...ys].sort((a, b) => b - a)
+  }, [receipts, cropYear])
+  const yearBales = useMemo(() => existingBales.filter((b) => b.crop_year === cropYear).length, [existingBales, cropYear])
+  const yearLint = yearReceipts.reduce((s, r) => s + Number(r.total_bale_weight ?? 0), 0)
+  const yearSeed = yearReceipts.reduce((s, r) => s + Number(r.total_seed_cotton_weight ?? 0), 0)
+  const summaryCards: SummaryCardData[] = [
+    { label: `${cropYear} statements`, value: fmtInt(yearReceipts.length), sub: yearReceipts.length ? `${fmtInt(yearReceipts.reduce((s, r) => s + Number(r.modules_count ?? 0), 0))} modules ginned` : 'none yet' },
+    { label: 'Bales', value: yearBales ? fmtInt(yearBales) : (yearReceipts.length ? fmtInt(yearReceipts.reduce((s, r) => s + Number(r.bales_count ?? 0), 0)) : '—'), sub: yearBales ? 'with PBI numbers on file' : 'from the statements' },
+    { label: 'Lint', value: yearLint ? `${fmtInt(yearLint)} lbs` : '—', sub: yearSeed ? `from ${fmtInt(yearSeed)} lbs seed cotton` : undefined },
+    { label: 'Turnout', value: yearLint && yearSeed ? fmtPct((yearLint / yearSeed) * 100, 2) : '—', sub: 'lint ÷ seed cotton, all statements', tone: 'neutral' },
+  ]
   const anyAmbiguous = derived.some((d) => d.rows.some((r) => r.status === 'ambiguous'))
   const allAlreadySaved = reviews.length > 0 && reviews.every((rv, i) => derived[i]?.classification.status !== 'new' && !rv.updateReceipt)
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-3">
-        <h1 className="text-2xl font-bold flex-1">Gin Receipts</h1>
-        <label className="text-sm flex flex-col gap-1">
-          <span className="text-slate-500">Crop year</span>
-          <input type="number" value={cropYear} onChange={(e) => setCropYear(Number(e.target.value))} className={`${inputCls} w-24`} />
-        </label>
-      </div>
+      <CottonPageHeader
+        title="Gin Receipts"
+        sub="The gin’s Statements of Ginning: modules in, bales and lint out, matched to your loads."
+        cropYear={cropYear}
+        years={years}
+        onCropYear={setCropYear}
+      />
 
-      <section className="bg-white rounded-xl shadow p-4 space-y-3">
-        <h2 className="font-semibold">Upload a Statement of Ginning</h2>
-        <DocumentCapture onSource={onSource} busy={stage != null} stageLabel={stage} pdfLabel="Upload Statement PDF or Photo (AI)" />
+      <SummaryCards cards={summaryCards} />
+
+      <CottonSection title="Add a statement" sub="Upload the gin’s Statement of Ginning — one PDF can hold several — or type one in. Nothing saves until you review it.">
+        <div className="px-4 pt-2">
+          <ViewTabs ariaLabel="How to add a statement" value={intake} onChange={setIntake} tabs={[{ key: 'upload', label: 'Upload a statement' }, { key: 'hand', label: 'Add by hand' }]} />
+        </div>
+        {intake === 'upload' && (
+        <div className="p-4 space-y-3">
+        <DocumentCapture onSource={onSource} busy={stage != null} stageLabel={stage} pdfLabel="Upload Statement PDF or photos" />
         {reviews.length > 0 && (
           <div className="space-y-4 text-sm">
             {reviews.map((rv, i) => {
@@ -546,11 +568,11 @@ export default function GinReceiptsPage() {
             </div>
           </div>
         )}
-      </section>
-
-      <form onSubmit={addManual} className="bg-white rounded-xl shadow p-4 space-y-2">
-        <h2 className="font-semibold">Add Receipt Manually</h2>
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+        </div>
+        )}
+        {intake === 'hand' && (
+      <form onSubmit={addManual} className="p-4 space-y-3">
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
           <input placeholder="Statement # (if printed)" value={m.receipt_number} onChange={(e) => setM({ ...m, receipt_number: e.target.value })} className={inputCls} />
           <input type="date" value={m.receipt_date} onChange={(e) => setM({ ...m, receipt_date: e.target.value })} className={inputCls} aria-label="Statement date" />
           <select value={m.gin_id} onChange={(e) => setM({ ...m, gin_id: e.target.value })} className={inputCls}>
@@ -572,17 +594,22 @@ export default function GinReceiptsPage() {
           <input type="number" placeholder="Cottonseed lbs" value={m.seedlbs} onChange={(e) => setM({ ...m, seedlbs: e.target.value })} className={inputCls} />
         </div>
         <p className="text-xs text-slate-500">A statement with no printed number is identified by its gin, farm, field, date and totals.</p>
-        <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold">Add Receipt</button>
+        <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold">Add receipt</button>
       </form>
+        )}
+      </CottonSection>
 
       {err && <p className="text-sm text-red-600" role="alert">{err}</p>}
       {msg && <p className="text-sm text-green-700" role="status">{msg}</p>}
 
-      <div className="bg-white rounded-xl shadow overflow-x-auto">
+      {yearReceipts.length === 0 ? (
+        <EmptyState message={`No ${cropYear} gin receipts yet.`} hint="Upload the gin’s Statement of Ginning above — the bales and lint come from it." />
+      ) : (
+      <CottonSection title="Statements" sub={`${cropYear} crop · ${yearReceipts.length} statement${yearReceipts.length === 1 ? '' : 's'}`}>
+        <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
-          <thead className="bg-slate-100 text-slate-700"><tr>{['Statement', 'Date', 'Gin', 'Farm', 'Field', 'Bales', 'Lint lbs', 'Turnout', ''].map((h) => <th key={h} className="text-left px-3 py-2 whitespace-nowrap">{h}</th>)}</tr></thead>
+          <thead className={theadCls}><tr>{['Statement', 'Date', 'Gin', 'Farm', 'Field', 'Bales', 'Lint lbs', 'Turnout', ''].map((h, k) => <th key={h || k} className={`${k >= 5 && k <= 7 ? 'text-right' : 'text-left'} px-3 py-2 whitespace-nowrap`}>{h}</th>)}</tr></thead>
           <tbody>
-            {yearReceipts.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-400">No {cropYear} gin receipts yet.</td></tr>}
             {yearReceipts.map((r) => {
               const sn = r.statement_number?.trim() || (isSynthesizedReceiptNumber(r.receipt_number) ? null : r.receipt_number)
               return (
@@ -595,16 +622,18 @@ export default function GinReceiptsPage() {
                   <td className="px-3 py-2">{r.gin_id ? ginById.get(r.gin_id)?.name ?? '—' : '—'}</td>
                   <td className="px-3 py-2">{r.farm_id ? farmById.get(r.farm_id)?.name ?? '—' : r.printed_farm_number ? `#${r.printed_farm_number}` : '—'}</td>
                   <td className="px-3 py-2">{r.field_id ? fieldById.get(r.field_id)?.name_or_number ?? '—' : r.printed_field ?? '—'}</td>
-                  <td className="px-3 py-2 text-right">{balesByReceipt.get(r.id) ?? r.bales_count ?? '—'}</td>
-                  <td className="px-3 py-2 text-right font-mono">{lbs(r.total_bale_weight)}</td>
-                  <td className="px-3 py-2 text-right">{r.lint_turnout_pct != null ? `${Number(r.lint_turnout_pct)}%` : '—'}</td>
-                  <td className="px-3 py-2"><button onClick={() => deleteReceipt(r.id)} className="text-red-600 text-xs">Delete</button></td>
+                  <td className="px-3 py-2 text-right tabular-nums">{balesByReceipt.get(r.id) ?? r.bales_count ?? '—'}</td>
+                  <td className="px-3 py-2 text-right tabular-nums font-semibold">{lbs(r.total_bale_weight)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{r.lint_turnout_pct != null ? `${Number(r.lint_turnout_pct)}%` : '—'}</td>
+                  <td className="px-3 py-2 text-right"><button onClick={() => deleteReceipt(r.id)} className="text-red-600 text-xs min-h-11 px-2">Delete</button></td>
                 </tr>
               )
             })}
           </tbody>
         </table>
-      </div>
+        </div>
+      </CottonSection>
+      )}
       {dialogs}
     </div>
   )
