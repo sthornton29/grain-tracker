@@ -30,27 +30,39 @@ const row = (key: string, fieldName: string, seedLbs: number, status: CottonSect
 describe('CottonYieldsSection', () => {
   const rows = [row('a', 'Wheeler Pivot', 300_000, 'complete'), row('b', 'South', 120_000, 'in_progress'), row('c', 'Back Forty', 0, 'unharvested')]
 
-  it('renders every planting, including the not-yet-picked one, with harvest and ginning status and no "not shown" note', () => {
+  it('renders every planting, including the not-yet-picked one, with ginning status, no Harvest column and no "not shown" note', () => {
     render(<CottonYieldsSection rows={rows} turnouts={[]} model={model} title="Cotton — 2026" canEdit={false} allowLoadLinks={false} />)
     expect(screen.getByText('Wheeler Pivot')).toBeTruthy()
     expect(screen.getByText('South')).toBeTruthy()
     expect(screen.getByText('Back Forty')).toBeTruthy()
-    expect(screen.getByText('not picked')).toBeTruthy()
-    expect(screen.getByText('in progress')).toBeTruthy()
-    expect(screen.getAllByText('complete').length).toBeGreaterThan(0)
     expect(screen.getAllByText('on yard').length).toBe(2)
     expect(screen.queryByText(/not shown/)).toBeNull()
-    // Column headings: seed cotton, lint, turnout, both statuses.
-    for (const h of ['Seed cotton lbs', 'Seed cotton lbs/ac', 'Lint lbs', 'Lint lbs/ac', 'Turnout %', 'Bales', 'Harvest', 'Ginning']) {
+    // No harvest status in the table: no heading, no pills.
+    expect(screen.queryByText('Harvest')).toBeNull()
+    expect(screen.queryByText('complete')).toBeNull()
+    expect(screen.queryByText('in progress')).toBeNull()
+    expect(screen.queryByText('not picked')).toBeNull()
+    for (const h of ['Seed cotton lbs', 'Seed cotton lbs/ac', 'Lint lbs', 'Lint lbs/ac', 'Turnout %', 'Bales', 'Ginning']) {
       expect(screen.getByText(h)).toBeTruthy()
     }
   })
 
-  it('a field counted as finished by hand reads like any complete row; Undo only appears once that row is opened', () => {
+  it('an in-progress row says so in its detail, with Count anyway for editors; a not-yet-picked row says nothing was picked', () => {
+    const onCountAnyway = vi.fn()
+    render(<CottonYieldsSection rows={rows} turnouts={[]} model={model} title="Cotton — 2026" canEdit allowLoadLinks={false} onCountAnyway={onCountAnyway} />)
+    expect(screen.queryByText('Count anyway')).toBeNull()
+    fireEvent.click(screen.getByText('South'))
+    expect(screen.getByText('in progress')).toBeTruthy()
+    fireEvent.click(screen.getByText('Count anyway'))
+    expect(onCountAnyway).toHaveBeenCalledWith('b')
+    fireEvent.click(screen.getByText('Back Forty'))
+    expect(screen.getByText(/Nothing picked from this field yet/)).toBeTruthy()
+  })
+
+  it('a field counted as finished by hand reads like any other row; Undo only appears once that row is opened', () => {
     const counted = { ...row('d', 'River Bottom', 90_000, 'complete'), autoFlag: 'in_progress' as const, overridden: true }
     const onUndoCount = vi.fn()
     render(<CottonYieldsSection rows={[counted]} turnouts={[]} model={model} title="Cotton — 2026" canEdit allowLoadLinks={false} onUndoCount={onUndoCount} />)
-    expect(screen.getByText('complete')).toBeTruthy()
     expect(screen.queryByText('counted')).toBeNull()
     expect(screen.queryByText('Undo')).toBeNull()
     fireEvent.click(screen.getByText('River Bottom'))

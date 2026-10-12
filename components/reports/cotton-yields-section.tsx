@@ -5,14 +5,18 @@
 // planting of the year, classified by the SAME engine as grain (harvest
 // status from the seed cotton loads via lib/yields buildYieldInputs + the
 // cotton adapter) with the lint estimate for picked-but-unginned cotton
-// layered on top (lib/cotton.ts cottonPlantingYield). Harvest status and
-// ginning status are separate columns: a field can be picked out and still
-// sitting on the yard.
+// layered on top (lib/cotton.ts cottonPlantingYield). Harvest status is not a
+// column (2026-10-12, Stuart: it carried no information on a table that is
+// mostly finished fields): a not-yet-complete row is dimmed, and its status
+// line — "still being picked" with Count anyway, "nothing picked yet", or the
+// counted-as-finished note with Undo — lives in the row's detail. Ginning
+// status stays a column: a field can be picked out and still on the yard.
 //
 // Columns: Farm · Field · Acres · Seed cotton lbs · Seed cotton lbs/ac ·
 // Lint lbs (actual / est.) · Lint lbs/ac · Turnout % (actual / est.) · Bales ·
-// Harvest status · Ginning status. The drill-down lists the field's seed
-// cotton loads and its gin receipts, with totals that equal the row.
+// Ginning status. The export keeps a Harvest status column so a spreadsheet
+// can still tell the rows apart. The drill-down lists the field's seed cotton
+// loads and its gin receipts, with totals that equal the row.
 
 import { Fragment, useState } from 'react'
 import TurnoutControl from '@/components/reports/turnout-control'
@@ -66,40 +70,6 @@ function EstChip({ y, soFar }: { y: CottonPlantingYield; soFar: boolean }) {
   )
 }
 
-function HarvestBadge({ r, canEdit, onCountAnyway, saving }: {
-  r: CottonSectionRow
-  canEdit: boolean
-  onCountAnyway?: (plantingId: string) => void
-  saving: boolean
-}) {
-  if (r.status === 'unharvested') return <span className="text-xs rounded px-2 py-0.5 bg-slate-100 text-slate-500">not picked</span>
-  if (r.status === 'in_progress') {
-    return (
-      <span className="inline-flex items-center gap-1.5 flex-wrap">
-        <span className="text-xs rounded px-2 py-0.5 bg-amber-100 text-amber-800">in progress</span>
-        {canEdit && onCountAnyway && (
-          <button
-            type="button"
-            disabled={saving}
-            onClick={() => onCountAnyway(r.plantingId)}
-            className="inline-flex items-center min-h-10 px-2 rounded-lg border border-slate-300 bg-white text-brand-deep text-xs font-semibold disabled:opacity-50 no-print"
-          >Count anyway</button>
-        )}
-      </span>
-    )
-  }
-  // A field the user counted as finished reads exactly like one the engine
-  // called complete; the "counted" note and its Undo live in the row's detail.
-  return (
-    <span className="inline-flex items-center gap-1.5">
-      <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">complete</span>
-      {!r.overridden && r.noBaseline && (
-        <InfoTip label="?" tone="neutral">Counted as finished — no other picked fields and no yield estimate to compare against yet.</InfoTip>
-      )}
-    </span>
-  )
-}
-
 function GinningBadge({ y }: { y: CottonPlantingYield }) {
   const g = y.ginning
   if (g === 'none') return <span className="text-slate-400">—</span>
@@ -112,31 +82,38 @@ function GinningBadge({ y }: { y: CottonPlantingYield }) {
   )
 }
 
+const detailBtnCls = 'inline-flex items-center min-h-10 px-2 rounded-lg border border-slate-300 bg-white text-brand-deep text-xs font-semibold disabled:opacity-50 no-print'
+
 /** Seed cotton loads + gin receipts behind one row; totals equal the row.
- *  A field the user counted as finished says so here (with Undo) — never in
- *  the row itself, so the table reads the same as an auto-complete field. */
-export function CottonRowDetail({ r, model, allowLoadLinks, onUndoCount, saving }: {
+ *  The field's harvest status lives here, not in the table: still being
+ *  picked (with Count anyway), nothing picked yet, or counted as finished by
+ *  hand (with Undo). Handlers absent = read-only. */
+export function CottonRowDetail({ r, model, allowLoadLinks, onCountAnyway, onUndoCount, saving }: {
   r: CottonSectionRow
   model: CottonYieldModel
   allowLoadLinks: boolean
+  onCountAnyway?: (plantingId: string) => void
   onUndoCount?: (plantingId: string) => void
   saving?: boolean
 }) {
   const src = model.sources
-  const countedNote = r.overridden ? (
+  const statusNote = r.overridden ? (
     <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
       <span>Counted as finished — you marked this field done while it still read in progress.</span>
-      {onUndoCount && (
-        <button
-          type="button"
-          disabled={saving}
-          onClick={() => onUndoCount(r.plantingId)}
-          className="inline-flex items-center min-h-10 px-2 rounded-lg border border-slate-300 bg-white text-brand-deep text-xs font-semibold disabled:opacity-50 no-print"
-        >Undo</button>
-      )}
+      {onUndoCount && <button type="button" disabled={saving} onClick={() => onUndoCount(r.plantingId)} className={detailBtnCls}>Undo</button>}
     </div>
+  ) : r.status === 'in_progress' ? (
+    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+      <span className="text-xs rounded px-2 py-0.5 bg-amber-100 text-amber-800">in progress</span>
+      <span>Still being picked — its lint is not in the averages yet.</span>
+      {onCountAnyway && <button type="button" disabled={saving} onClick={() => onCountAnyway(r.plantingId)} className={detailBtnCls}>Count anyway</button>}
+    </div>
+  ) : r.status === 'unharvested' ? (
+    <div className="text-xs text-slate-500">Nothing picked from this field yet.</div>
+  ) : r.noBaseline ? (
+    <div className="text-xs text-slate-500">Counted as finished — no other picked fields and no yield estimate to compare against yet.</div>
   ) : null
-  if (!src) return countedNote
+  if (!src) return statusNote
   const loads = [...model.loadsFor(r.fieldId, r.year)].sort((a, b) => ((a.picked_date ?? a.delivered_date ?? '') < (b.picked_date ?? b.delivered_date ?? '') ? -1 : 1))
   const receipts = [...model.receiptsFor(r.fieldId, r.year)].sort((a, b) => ((a.receipt_date ?? '') < (b.receipt_date ?? '') ? -1 : 1))
   const ginName = new Map(src.gins.map((g) => [g.id, g.name]))
@@ -162,7 +139,7 @@ export function CottonRowDetail({ r, model, allowLoadLinks, onUndoCount, saving 
   )
   return (
     <div className="space-y-3">
-      {countedNote}
+      {statusNote}
       <div className="flex flex-wrap gap-2">
         {stat('Seed cotton', `${lbs(r.y.seedLbs)} lbs · ${r.y.loadCount} load${r.y.loadCount === 1 ? '' : 's'}`)}
         {stat('Lint', `${lbs(r.y.lintLbs)} lbs${r.y.lintBasis === 'actual' || r.y.lintBasis == null ? '' : r.y.lintBasis === 'mixed' ? ' (part est.)' : ' (est.)'}`)}
@@ -288,7 +265,7 @@ export const COTTON_SECTION_COLUMNS: ExportColumn[] = [
 
 const STATUS_LABEL: Record<HarvestStatus, string> = { complete: 'complete', in_progress: 'in progress', unharvested: 'not picked' }
 
-/** The cotton table as an export section (mirrors the on-screen columns). */
+/** The cotton table as an export section (the on-screen columns plus Harvest status, which the screen keeps in the row detail). */
 export function cottonSectionExport(rows: readonly CottonSectionRow[], title?: string): ExportSection {
   const data = rows.map((r) => [
     r.farmName, r.fieldName, r.year, r.acres,
@@ -358,7 +335,7 @@ export default function CottonYieldsSection({
   const toggle = (key: string) => (onToggle ? onToggle(key) : setLocalOpen((k) => (k === key ? null : key)))
   const t = totalsOf(rows)
   const anyEst = t.est > 0
-  const colCount = 12 + (showYear ? 1 : 0)
+  const colCount = 11 + (showYear ? 1 : 0)
   const rowClickIsOnControl = (e: { target: EventTarget | null }) =>
     e.target instanceof Element && e.target.closest('button, a, input') != null
 
@@ -378,7 +355,6 @@ export default function CottonYieldsSection({
             <th className="text-right px-2 py-1.5 whitespace-nowrap">Lint lbs/ac</th>
             <th className="text-right px-2 py-1.5 whitespace-nowrap">Turnout %</th>
             <th className="text-right px-2 py-1.5 whitespace-nowrap">Bales</th>
-            <th className="text-left px-2 py-1.5 whitespace-nowrap">Harvest</th>
             <th className="text-left px-2 py-1.5 whitespace-nowrap">Ginning</th>
           </tr>
         </thead>
@@ -418,15 +394,12 @@ export default function CottonYieldsSection({
                     )}
                   </td>
                   <td className="px-2 py-1.5 text-right tabular-nums">{r.y.bales > 0 ? r.y.bales : '—'}</td>
-                  <td className="px-2 py-1.5 whitespace-nowrap">
-                    <HarvestBadge r={r} canEdit={canEdit} onCountAnyway={onCountAnyway} saving={savingPlantingId === r.plantingId} />
-                  </td>
                   <td className="px-2 py-1.5 whitespace-nowrap"><GinningBadge y={r.y} /></td>
                 </tr>
                 {detailOpen && (
                   <tr className="bg-slate-50">
                     <td colSpan={colCount} className="px-3 py-3">
-                      <CottonRowDetail r={r} model={model} allowLoadLinks={allowLoadLinks} onUndoCount={canEdit ? onUndoCount : undefined} saving={savingPlantingId === r.plantingId} />
+                      <CottonRowDetail r={r} model={model} allowLoadLinks={allowLoadLinks} onCountAnyway={canEdit ? onCountAnyway : undefined} onUndoCount={canEdit ? onUndoCount : undefined} saving={savingPlantingId === r.plantingId} />
                     </td>
                   </tr>
                 )}
@@ -447,7 +420,7 @@ export default function CottonYieldsSection({
               <td className="px-2 py-1.5 text-right tabular-nums">{t.acres > 0 && t.lint > 0 ? fmtNum(t.lint / t.acres, 1) : '—'}</td>
               <td className="px-2 py-1.5 text-right tabular-nums">{t.seedGinned > 0 && t.actual > 0 ? `${Math.round((t.actual / t.seedGinned) * 1000) / 10}%` : '—'}</td>
               <td className="px-2 py-1.5 text-right tabular-nums">{t.bales > 0 ? t.bales : '—'}</td>
-              <td className="px-2 py-1.5" colSpan={2}>{t.yard > 0 ? <span className="text-xs text-amber-700 font-normal">{lbs(t.yard)} lbs on yard</span> : null}</td>
+              <td className="px-2 py-1.5">{t.yard > 0 ? <span className="text-xs text-amber-700 font-normal">{lbs(t.yard)} lbs on yard</span> : null}</td>
             </tr>
           )}
         </tbody>
