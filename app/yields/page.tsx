@@ -11,6 +11,7 @@ import { useCottonYields } from '@/lib/use-cotton-yields'
 import { roleCanEditYields } from '@/lib/app-role'
 import { roleAllowsPath } from '@/lib/route-guard'
 import { fieldCropAggregates, analyzeYields, buildYieldInputs, cohortKey, harvestStatusOf, isHarvestComplete, groupYieldAggregates, practiceOf, resolvePracticeBreakout, NO_DC_ASSUMPTION_NOTE, type CropAverage, type HarvestProgress, type GroupYieldAgg, type GroupYieldPlanting, type PracticeBreakout } from '@/lib/yields'
+import { summarizeCottonCropProgress, type CottonCropProgress, type CottonFieldYieldRow } from '@/lib/cotton-field-yields'
 import { buildDoubleCropSet, buildSpringCropByFieldYear, cropHasBothCroppings, croppingOf, CROPPING_LABEL, type Cropping } from '@/lib/plantings'
 import { isCottonCrop } from '@/lib/marketing'
 import { CroppingControl, CroppingTiles, CroppingSplitLine, DcPill, cohortSplit, croppingFilterLabel, type CroppingFilter, type CroppingTileData } from '@/components/reports/cropping'
@@ -429,6 +430,24 @@ export default function YieldsPage() {
     return m
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [yieldAnalysis, includedCotton, cottonModel])
+
+  // The cotton crop card's extras: percent ginned (pounds, every planting in
+  // view) and the ginned / not-ginned yield split (the counted plantings —
+  // the same ones behind the headline lint average above).
+  const cottonProgress = useMemo(() => {
+    const m = new Map<string, CottonCropProgress>()
+    if (!cottonOn) return m
+    const byCrop = new Map<string, Array<CottonFieldYieldRow & { counted: boolean }>>()
+    for (const p of visibleCotton) {
+      const y = cottonModel.yieldFor(p)
+      if (!y) continue
+      const list = byCrop.get(p.crop_id) ?? []
+      list.push({ fieldId: p.field_id, acres: Number(p.planted_acres) || 0, y, counted: !excludedFields.has(p.id) })
+      byCrop.set(p.crop_id, list)
+    }
+    for (const [id, rows] of byCrop) m.set(id, summarizeCottonCropProgress(rows))
+    return m
+  }, [cottonOn, visibleCotton, cottonModel, excludedFields])
 
   // Summary cards only for crops with harvest activity — a crop with nothing
   // done and nothing in progress (e.g. fall crops in June) is just a row of 0%
@@ -1569,6 +1588,7 @@ export default function YieldsPage() {
           cropName={(id) => cropById.get(id)?.name ?? '—'}
           unitOf={cottonOn ? unitOf : undefined}
           progress={view === 'field' ? activeProgress : undefined}
+          cotton={cottonOn && view === 'field' ? (id) => cottonProgress.get(id) ?? null : undefined}
           label={view === 'field' ? 'Yield & harvest progress by crop' : undefined}
         />
       )}

@@ -75,6 +75,72 @@ export function summarizeCottonFieldYields(rows: ReadonlyArray<CottonFieldYieldR
   }
 }
 
+export type CottonYieldBucket = {
+  /** Planted acres of the counted fields in this bucket. */
+  acres: number
+  lintLbs: number
+  /** lintLbs ÷ acres. */
+  lintPerAcre: number | null
+  lintBasis: LintBasis | null
+}
+
+export type CottonCropProgress = {
+  /** Seed cotton pounds hauled off every field in view (picked, whether ginned or not). */
+  seedLbs: number
+  /** Seed cotton on gin receipts (seed − yard). */
+  ginnedSeedLbs: number
+  yardSeedLbs: number
+  /** ginnedSeedLbs ÷ seedLbs, 0–100 (0 with nothing hauled). */
+  pctGinned: number
+  /** Counted fields whose lint is all on gin receipts — the actual yield. */
+  ginned: CottonYieldBucket
+  /** Counted fields with seed cotton still on the yard — lint estimated at the turnout (part est. once some is ginned). */
+  unginned: CottonYieldBucket
+  /** The turnout phrase behind the unginned estimate, when there is one. */
+  turnoutLabel: string | null
+}
+
+const bucketOf = (acres: number, lintLbs: number, actual: number, est: number): CottonYieldBucket => ({
+  acres, lintLbs,
+  lintPerAcre: perAcre(lintLbs, acres),
+  lintBasis: lintLbs <= 0 ? null : est <= 0 ? 'actual' : actual <= 0 ? 'estimated_turnout' : 'mixed',
+})
+
+/**
+ * The cotton crop card's second bar and its yield split. Percent ginned is in
+ * POUNDS of seed cotton (ginning is a pounds matter — a partly ginned field
+ * contributes what is on receipts), over every field handed in. The yield
+ * split is over the COUNTED fields only (`counted` = harvest complete, the
+ * same fields behind the headline average): the ginned bucket holds fields
+ * with nothing left to estimate, the unginned bucket the rest, so the two
+ * acre-weighted together equal the headline.
+ */
+export function summarizeCottonCropProgress(rows: ReadonlyArray<CottonFieldYieldRow & { counted: boolean }>): CottonCropProgress {
+  let seedLbs = 0, yardSeedLbs = 0
+  let gAcres = 0, gLint = 0
+  let uAcres = 0, uLint = 0, uActual = 0, uEst = 0
+  let turnoutLabel: string | null = null
+  for (const r of rows) {
+    seedLbs += r.y.seedLbs
+    yardSeedLbs += r.y.yardSeedLbs
+    if (!r.counted) continue
+    if (r.y.estimatedLintLbs > 0) {
+      uAcres += r.acres; uLint += r.y.lintLbs; uActual += r.y.actualLintLbs; uEst += r.y.estimatedLintLbs
+      if (!turnoutLabel) turnoutLabel = r.y.turnout.label
+    } else {
+      gAcres += r.acres; gLint += r.y.lintLbs
+    }
+  }
+  const ginnedSeedLbs = Math.max(0, seedLbs - yardSeedLbs)
+  return {
+    seedLbs, ginnedSeedLbs, yardSeedLbs,
+    pctGinned: seedLbs > 0 ? (ginnedSeedLbs / seedLbs) * 100 : 0,
+    ginned: bucketOf(gAcres, gLint, gLint, 0),
+    unginned: bucketOf(uAcres, uLint, uActual, uEst),
+    turnoutLabel,
+  }
+}
+
 /** "est." / "part est." / null — the chip text for a lint figure. */
 export function lintEstimateChip(basis: LintBasis | null | undefined): 'est.' | 'part est.' | null {
   if (basis === 'estimated_turnout') return 'est.'

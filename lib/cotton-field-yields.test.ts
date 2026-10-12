@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { lintEstimateChip, perAcre, summarizeCottonFieldYields, type CottonFieldYieldRow } from '@/lib/cotton-field-yields'
+import { lintEstimateChip, perAcre, summarizeCottonCropProgress, summarizeCottonFieldYields, type CottonFieldYieldRow } from '@/lib/cotton-field-yields'
 import type { CottonPlantingYield, TurnoutResolution } from '@/lib/cotton'
 
 const turnout: TurnoutResolution = { pct: 40, fraction: 0.4, source: 'default', label: '40% (assumed)', assumed: true }
@@ -57,5 +57,55 @@ describe('summarizeCottonFieldYields — the farm-wide roll-up', () => {
     expect(lintEstimateChip('mixed')).toBe('part est.')
     expect(lintEstimateChip('estimated_turnout')).toBe('est.')
     expect(lintEstimateChip(null)).toBeNull()
+  })
+})
+
+describe('summarizeCottonCropProgress — the crop card\'s percent ginned and the ginned / not-ginned yield split', () => {
+  // Pivot: 250 ac, fully ginned, 282,956 lbs lint actual — counted.
+  // East: 100 ac, 120,000 lbs seed on the yard → 48,000 lbs est. — counted (count anyway).
+  // North: 60 ac, 200,000 lbs seed of which 50,000 on the yard: 60,000 actual + 20,000 est. — still in progress (NOT counted).
+  // West: 80 ac planted, nothing off it.
+  const rows = [
+    { fieldId: 'pivot', acres: 250, counted: true, y: y({ seedLbs: 645_220, loadCount: 22, receiptCount: 1, actualLintLbs: 282_956, lintLbs: 282_956, lintBasis: 'actual', ginning: 'ginned' }) },
+    { fieldId: 'east', acres: 100, counted: true, y: y({ seedLbs: 120_000, yardSeedLbs: 120_000, loadCount: 4, estimatedLintLbs: 48_000, lintLbs: 48_000, lintBasis: 'estimated_turnout', ginning: 'on_yard' }) },
+    { fieldId: 'north', acres: 60, counted: false, y: y({ seedLbs: 200_000, yardSeedLbs: 50_000, loadCount: 7, receiptCount: 1, actualLintLbs: 60_000, estimatedLintLbs: 20_000, lintLbs: 80_000, lintBasis: 'mixed', ginning: 'partly_ginned' }) },
+    { fieldId: 'west', acres: 80, counted: true, y: y({}) },
+  ] satisfies Array<CottonFieldYieldRow & { counted: boolean }>
+  const p = summarizeCottonCropProgress(rows)
+
+  it('percent ginned is pounds of seed cotton on receipts over pounds hauled, across every field in view', () => {
+    expect(p.seedLbs).toBe(965_220)
+    expect(p.yardSeedLbs).toBe(170_000)
+    expect(p.ginnedSeedLbs).toBe(795_220)
+    expect(p.pctGinned).toBeCloseTo((795_220 / 965_220) * 100, 6)
+  })
+  it('the split covers only the counted fields: ginned = nothing left to estimate, not ginned yet = the rest', () => {
+    // Pivot and the empty West field (nothing to estimate) are the ginned bucket; East is the estimate.
+    expect(p.ginned.acres).toBe(330)
+    expect(p.ginned.lintLbs).toBe(282_956)
+    expect(p.ginned.lintPerAcre).toBeCloseTo(282_956 / 330, 6)
+    expect(p.ginned.lintBasis).toBe('actual')
+    expect(p.unginned.acres).toBe(100)
+    expect(p.unginned.lintLbs).toBe(48_000)
+    expect(p.unginned.lintPerAcre).toBeCloseTo(480, 6)
+    expect(p.unginned.lintBasis).toBe('estimated_turnout')
+    expect(p.turnoutLabel).toBe('40% (assumed)')
+    // The in-progress field is in neither bucket — it is not in the headline either.
+    expect(p.ginned.acres + p.unginned.acres).toBe(430)
+  })
+  it('acre-weighting the two buckets gives back the headline average', () => {
+    const headline = (282_956 + 48_000) / 430
+    const blend = (p.ginned.lintLbs + p.unginned.lintLbs) / (p.ginned.acres + p.unginned.acres)
+    expect(blend).toBeCloseTo(headline, 9)
+  })
+  it('a partly ginned counted field is "part est." in the not-ginned bucket; nothing hauled = 0% ginned and empty buckets', () => {
+    const q = summarizeCottonCropProgress([{ ...rows[2], counted: true }])
+    expect(q.unginned.lintBasis).toBe('mixed')
+    expect(q.unginned.acres).toBe(60)
+    expect(q.ginned.acres).toBe(0)
+    const none = summarizeCottonCropProgress([rows[3]])
+    expect(none.pctGinned).toBe(0)
+    expect(none.seedLbs).toBe(0)
+    expect(none.unginned.lintPerAcre).toBeNull()
   })
 })
