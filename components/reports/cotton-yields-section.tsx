@@ -66,11 +66,10 @@ function EstChip({ y, soFar }: { y: CottonPlantingYield; soFar: boolean }) {
   )
 }
 
-function HarvestBadge({ r, canEdit, onCountAnyway, onUndoCount, saving }: {
+function HarvestBadge({ r, canEdit, onCountAnyway, saving }: {
   r: CottonSectionRow
   canEdit: boolean
   onCountAnyway?: (plantingId: string) => void
-  onUndoCount?: (plantingId: string) => void
   saving: boolean
 }) {
   if (r.status === 'unharvested') return <span className="text-xs rounded px-2 py-0.5 bg-slate-100 text-slate-500">not picked</span>
@@ -89,26 +88,12 @@ function HarvestBadge({ r, canEdit, onCountAnyway, onUndoCount, saving }: {
       </span>
     )
   }
-  if (r.overridden) {
-    return (
-      <span className="inline-flex items-center gap-1.5 flex-wrap">
-        <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">complete</span>
-        <InfoTip label="counted" tone="neutral">You counted this field as finished while it still read in progress.</InfoTip>
-        {canEdit && onUndoCount && (
-          <button
-            type="button"
-            disabled={saving}
-            onClick={() => onUndoCount(r.plantingId)}
-            className="inline-flex items-center min-h-10 px-2 rounded-lg border border-slate-300 bg-white text-brand-deep text-xs font-semibold disabled:opacity-50 no-print"
-          >Undo</button>
-        )}
-      </span>
-    )
-  }
+  // A field the user counted as finished reads exactly like one the engine
+  // called complete; the "counted" note and its Undo live in the row's detail.
   return (
     <span className="inline-flex items-center gap-1.5">
       <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">complete</span>
-      {r.noBaseline && (
+      {!r.overridden && r.noBaseline && (
         <InfoTip label="?" tone="neutral">Counted as finished — no other picked fields and no yield estimate to compare against yet.</InfoTip>
       )}
     </span>
@@ -127,10 +112,31 @@ function GinningBadge({ y }: { y: CottonPlantingYield }) {
   )
 }
 
-/** Seed cotton loads + gin receipts behind one row; totals equal the row. */
-export function CottonRowDetail({ r, model, allowLoadLinks }: { r: CottonSectionRow; model: CottonYieldModel; allowLoadLinks: boolean }) {
+/** Seed cotton loads + gin receipts behind one row; totals equal the row.
+ *  A field the user counted as finished says so here (with Undo) — never in
+ *  the row itself, so the table reads the same as an auto-complete field. */
+export function CottonRowDetail({ r, model, allowLoadLinks, onUndoCount, saving }: {
+  r: CottonSectionRow
+  model: CottonYieldModel
+  allowLoadLinks: boolean
+  onUndoCount?: (plantingId: string) => void
+  saving?: boolean
+}) {
   const src = model.sources
-  if (!src) return null
+  const countedNote = r.overridden ? (
+    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+      <span>Counted as finished — you marked this field done while it still read in progress.</span>
+      {onUndoCount && (
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => onUndoCount(r.plantingId)}
+          className="inline-flex items-center min-h-10 px-2 rounded-lg border border-slate-300 bg-white text-brand-deep text-xs font-semibold disabled:opacity-50 no-print"
+        >Undo</button>
+      )}
+    </div>
+  ) : null
+  if (!src) return countedNote
   const loads = [...model.loadsFor(r.fieldId, r.year)].sort((a, b) => ((a.picked_date ?? a.delivered_date ?? '') < (b.picked_date ?? b.delivered_date ?? '') ? -1 : 1))
   const receipts = [...model.receiptsFor(r.fieldId, r.year)].sort((a, b) => ((a.receipt_date ?? '') < (b.receipt_date ?? '') ? -1 : 1))
   const ginName = new Map(src.gins.map((g) => [g.id, g.name]))
@@ -156,6 +162,7 @@ export function CottonRowDetail({ r, model, allowLoadLinks }: { r: CottonSection
   )
   return (
     <div className="space-y-3">
+      {countedNote}
       <div className="flex flex-wrap gap-2">
         {stat('Seed cotton', `${lbs(r.y.seedLbs)} lbs · ${r.y.loadCount} load${r.y.loadCount === 1 ? '' : 's'}`)}
         {stat('Lint', `${lbs(r.y.lintLbs)} lbs${r.y.lintBasis === 'actual' || r.y.lintBasis == null ? '' : r.y.lintBasis === 'mixed' ? ' (part est.)' : ' (est.)'}`)}
@@ -412,14 +419,14 @@ export default function CottonYieldsSection({
                   </td>
                   <td className="px-2 py-1.5 text-right tabular-nums">{r.y.bales > 0 ? r.y.bales : '—'}</td>
                   <td className="px-2 py-1.5 whitespace-nowrap">
-                    <HarvestBadge r={r} canEdit={canEdit} onCountAnyway={onCountAnyway} onUndoCount={onUndoCount} saving={savingPlantingId === r.plantingId} />
+                    <HarvestBadge r={r} canEdit={canEdit} onCountAnyway={onCountAnyway} saving={savingPlantingId === r.plantingId} />
                   </td>
                   <td className="px-2 py-1.5 whitespace-nowrap"><GinningBadge y={r.y} /></td>
                 </tr>
                 {detailOpen && (
                   <tr className="bg-slate-50">
                     <td colSpan={colCount} className="px-3 py-3">
-                      <CottonRowDetail r={r} model={model} allowLoadLinks={allowLoadLinks} />
+                      <CottonRowDetail r={r} model={model} allowLoadLinks={allowLoadLinks} onUndoCount={canEdit ? onUndoCount : undefined} saving={savingPlantingId === r.plantingId} />
                     </td>
                   </tr>
                 )}

@@ -6,8 +6,8 @@
 // and only when the crop filter is not a cotton crop). The export mirrors the
 // rows. Pure rendering: the page builds the rows.
 
-import { describe, expect, it, afterEach } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { describe, expect, it, afterEach, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import CottonYieldsSection, { cottonSectionExport, type CottonSectionRow } from '@/components/reports/cotton-yields-section'
 import { cottonPlantingYield, resolveTurnout } from '@/lib/cotton'
 import { buildCottonYieldModel } from '@/lib/cotton-yield-sources'
@@ -44,6 +44,27 @@ describe('CottonYieldsSection', () => {
     for (const h of ['Seed cotton lbs', 'Seed cotton lbs/ac', 'Lint lbs', 'Lint lbs/ac', 'Turnout %', 'Bales', 'Harvest', 'Ginning']) {
       expect(screen.getByText(h)).toBeTruthy()
     }
+  })
+
+  it('a field counted as finished by hand reads like any complete row; Undo only appears once that row is opened', () => {
+    const counted = { ...row('d', 'River Bottom', 90_000, 'complete'), autoFlag: 'in_progress' as const, overridden: true }
+    const onUndoCount = vi.fn()
+    render(<CottonYieldsSection rows={[counted]} turnouts={[]} model={model} title="Cotton — 2026" canEdit allowLoadLinks={false} onUndoCount={onUndoCount} />)
+    expect(screen.getByText('complete')).toBeTruthy()
+    expect(screen.queryByText('counted')).toBeNull()
+    expect(screen.queryByText('Undo')).toBeNull()
+    fireEvent.click(screen.getByText('River Bottom'))
+    expect(screen.getByText(/Counted as finished/)).toBeTruthy()
+    fireEvent.click(screen.getByText('Undo'))
+    expect(onUndoCount).toHaveBeenCalledWith('d')
+  })
+
+  it('read-only viewers see the counted note but no Undo', () => {
+    const counted = { ...row('d', 'River Bottom', 90_000, 'complete'), autoFlag: 'in_progress' as const, overridden: true }
+    render(<CottonYieldsSection rows={[counted]} turnouts={[]} model={model} title="Cotton — 2026" canEdit={false} allowLoadLinks={false} onUndoCount={() => {}} />)
+    fireEvent.click(screen.getByText('River Bottom'))
+    expect(screen.getByText(/Counted as finished/)).toBeTruthy()
+    expect(screen.queryByText('Undo')).toBeNull()
   })
 
   it('the export mirrors the rows (one line per planting + a total)', () => {
