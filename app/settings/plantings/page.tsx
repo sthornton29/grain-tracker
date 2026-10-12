@@ -8,6 +8,7 @@ import { fetchAllRows } from '@/lib/fetch-all-rows'
 import CsvImport from '@/components/csv-import'
 import SettingsDocImport from '@/components/settings-doc-import'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { plantedFieldIds, scopeToPlanted } from '@/lib/planted-scope'
 import { plantingsImportConfig } from '@/lib/import-configs'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { dismissalKey } from '@/lib/variety-resolution'
@@ -419,6 +420,18 @@ export default function PlantingsPage() {
 
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
   const farmById  = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
+  // The Farm and Field filters offer only the farms and fields with a
+  // planting in the chosen season (lib/planted-scope); the add form below
+  // still lists every field, since that is where a planting gets created.
+  const seasonScope = useMemo(
+    () => scopeToPlanted({ fields, farms, plantedFieldIds: plantedFieldIds(plantings, { cropIds: null, seasonYear: year }) }),
+    [fields, farms, plantings, year],
+  )
+  useEffect(() => {
+    if (farms.length === 0) return
+    if (farmFilter && !seasonScope.farms.some((f) => f.id === farmFilter)) setFarmFilter('')
+    if (fieldFilter && !seasonScope.fields.some((f) => f.id === fieldFilter)) setFieldFilter('')
+  }, [farms.length, seasonScope, farmFilter, fieldFilter, setFarmFilter])
   const cropById  = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
 
   // Grouped varieties by planting id, in display/insert order.
@@ -663,14 +676,14 @@ export default function PlantingsPage() {
               className={inputCls}
             >
               <option value="">All farms</option>
-              {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+              {seasonScope.farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
             </select>
           </label>
           <label className="text-sm flex items-center gap-2">
             Field
             <select value={fieldFilter} onChange={(e) => setFieldFilter(e.target.value)} className={inputCls}>
               <option value="">All fields</option>
-              {fields.filter((f) => !farmFilter || f.farm_id === farmFilter).map((f) => <option key={f.id} value={f.id}>{fieldLabel(f.id)}</option>)}
+              {seasonScope.fields.filter((f) => !farmFilter || f.farm_id === farmFilter).map((f) => <option key={f.id} value={f.id}>{fieldLabel(f.id)}</option>)}
             </select>
           </label>
           <label className="text-sm flex items-center gap-2">

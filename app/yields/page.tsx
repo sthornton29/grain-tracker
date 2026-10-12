@@ -30,6 +30,7 @@ import {
 } from '@/components/yields-detail'
 import { attributeVarietyBushels, type VarietyPlantingPart } from '@/lib/variety-yields'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { plantedFieldIds, scopeToPlanted } from '@/lib/planted-scope'
 import type { ExportColumn, ExportPayload, ExportSection } from '@/lib/exports'
 import type { CombineYieldEntry, Crop, CropAssumption, Entity, Farm, Field, FieldPlanting, FieldPlantingVariety, County, LoadSplit } from '@/lib/types'
 
@@ -175,7 +176,7 @@ export default function YieldsPage() {
       supabase.from('farms').select('*').order('name'),
       supabase.from('fields').select('*').order('name_or_number'),
       supabase.from('crops').select('*').order('name'),
-      supabase.from('field_plantings').select('*'),
+      fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
       // Paginated: a bare select caps at ~1,000 rows and silently drops loads
       // once harvest crosses it (the Blythe Big South bug) — see lib/fetch-all-rows.
       fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, net_weight, moisture, test_weight, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, to_type, to_bin_id, to_buyer_id, truck_id, truck_label, hauler_truck, ticket_number, practice').order('id').range(f, t)),
@@ -238,6 +239,16 @@ export default function YieldsPage() {
 
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
   const farmById  = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
+  // The Farm filter offers only the farms with a planting of the chosen crop
+  // in the chosen crop year — every crop when none is picked (lib/planted-
+  // scope). A remembered farm that drops out of that set is cleared.
+  const farmOptions = useMemo(() => {
+    const planted = plantedFieldIds(plantings, { cropIds: cropId || null, seasonYear: year === '' ? null : year })
+    return scopeToPlanted({ fields, farms, plantedFieldIds: planted }).farms
+  }, [farms, fields, plantings, cropId, year])
+  useEffect(() => {
+    if (farmId && farms.length > 0 && !farmOptions.some((f) => f.id === farmId)) setFarmId('')
+  }, [farmId, farms.length, farmOptions, setFarmId])
   const cropById  = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const entityById = useMemo(() => new Map(entities.map((e) => [e.id, e])), [entities])
 
@@ -1468,7 +1479,7 @@ export default function YieldsPage() {
           <FilterField label="Farm">
             <select value={farmId} onChange={(e) => setFarmId(e.target.value)} className={selectCls}>
               <option value="">All farms</option>
-              {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+              {farmOptions.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
             </select>
           </FilterField>
         )}

@@ -42,6 +42,8 @@ import { CottonPageHeader, CottonSection, YieldFigure } from '@/components/cotto
 import { useCottonFieldYields } from '@/lib/use-cotton-field-yields'
 import { perAcre } from '@/lib/cotton-field-yields'
 import type { GinReceipt, Gin, Farm, Field, Entity, CottonLoad } from '@/lib/types'
+import Link from 'next/link'
+import { scopeToPlanted } from '@/lib/planted-scope'
 
 const lbs = (n: number | null | undefined) => (n == null ? '—' : Number(n).toLocaleString())
 const num = (s: string): number | null => { const n = Number(s); return s.trim() !== '' && Number.isFinite(n) ? n : null }
@@ -133,6 +135,19 @@ export default function GinReceiptsPage() {
 
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
+  // Every farm/field picker here — the statement review rows, hand entry,
+  // the printed farm/field match — offers only the farms and fields with a
+  // cotton planting THIS crop year (lib/planted-scope).
+  const scope = useMemo(
+    () => scopeToPlanted({ fields, farms, plantedFieldIds: fieldYields.plantedFieldIds }),
+    [fields, farms, fieldYields.plantedFieldIds],
+  )
+  useEffect(() => {
+    if (!scope.narrowed) return
+    const fieldOk = (id: string) => !id || scope.fields.some((f) => f.id === id)
+    const farmOk = (id: string) => !id || scope.farms.some((f) => f.id === id)
+    setM((x) => (fieldOk(x.field_id) && farmOk(x.farm_id) ? x : { ...x, field_id: fieldOk(x.field_id) ? x.field_id : '', farm_id: farmOk(x.farm_id) ? x.farm_id : '' }))
+  }, [scope])
   const ginById = useMemo(() => new Map(gins.map((g) => [g.id, g])), [gins])
   const receiptById = useMemo(() => new Map(receipts.map((r) => [r.id, r])), [receipts])
   const yearReceipts = receipts.filter((r) => r.crop_year === cropYear)
@@ -253,10 +268,10 @@ export default function GinReceiptsPage() {
   }
 
   function printedFarmField(s: GinStatement): { farmId: string; fieldId: string } {
-    const farm = (s.farm_number ? farms.find((f) => numberKey(f.fsa_number) === numberKey(s.farm_number)) : null)
-      ?? (s.farm_name ? findBestMatch(s.farm_name, farms, (f) => f.name) : null)
-      ?? (s.producer ? findBestMatch(s.producer, farms, (f) => f.name) : null)
-    const farmFields = fields.filter((f) => !farm || f.farm_id === farm.id)
+    const farm = (s.farm_number ? scope.farms.find((f) => numberKey(f.fsa_number) === numberKey(s.farm_number)) : null)
+      ?? (s.farm_name ? findBestMatch(s.farm_name, scope.farms, (f) => f.name) : null)
+      ?? (s.producer ? findBestMatch(s.producer, scope.farms, (f) => f.name) : null)
+    const farmFields = scope.fields.filter((f) => !farm || f.farm_id === farm.id)
     const field = s.field ? findBestMatch(s.field, farmFields, (f) => f.name_or_number) : null
     return { farmId: farm?.id ?? '', fieldId: field?.id ?? '' }
   }
@@ -498,14 +513,14 @@ export default function GinReceiptsPage() {
                       <span className="text-slate-500">Farm</span>
                       <select value={rv.farmId} onChange={(e) => patchReview(i, { farmId: e.target.value, fieldId: '', farmFieldFrom: 'user' })} className={inputCls}>
                         <option value="">— farm —</option>
-                        {farms.map((f) => <option key={f.id} value={f.id}>{f.name}{f.fsa_number ? ` (#${f.fsa_number})` : ''}</option>)}
+                        {scope.farms.map((f) => <option key={f.id} value={f.id}>{f.name}{f.fsa_number ? ` (#${f.fsa_number})` : ''}</option>)}
                       </select>
                     </label>
                     <label className="flex flex-col gap-1 text-xs">
                       <span className="text-slate-500">Field</span>
                       <select value={rv.fieldId} onChange={(e) => patchReview(i, { fieldId: e.target.value, farmFieldFrom: 'user' })} className={inputCls}>
                         <option value="">— field —</option>
-                        {fields.filter((f) => !rv.farmId || f.farm_id === rv.farmId).map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
+                        {scope.fields.filter((f) => !rv.farmId || f.farm_id === rv.farmId).map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
                       </select>
                     </label>
                     {rv.farmFieldFrom === 'matched' && <span className="text-xs rounded-full bg-green-50 border border-green-200 text-green-800 px-2 py-0.5">from matched loads</span>}
@@ -599,11 +614,11 @@ export default function GinReceiptsPage() {
           </select>
           <select value={m.farm_id} onChange={(e) => setM({ ...m, farm_id: e.target.value, field_id: '' })} className={inputCls}>
             <option value="">— farm —</option>
-            {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            {scope.farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
           </select>
           <select value={m.field_id} onChange={(e) => setM({ ...m, field_id: e.target.value })} className={inputCls}>
             <option value="">— field —</option>
-            {fields.filter((f) => !m.farm_id || f.farm_id === m.farm_id).map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
+            {scope.fields.filter((f) => !m.farm_id || f.farm_id === m.farm_id).map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
           </select>
           <input type="number" placeholder="Modules" value={m.modules} onChange={(e) => setM({ ...m, modules: e.target.value })} className={inputCls} />
           <input type="number" placeholder="Seed cotton lbs" value={m.seedwt} onChange={(e) => setM({ ...m, seedwt: e.target.value })} className={inputCls} />
@@ -611,6 +626,12 @@ export default function GinReceiptsPage() {
           <input type="number" placeholder="Lint lbs" value={m.balewt} onChange={(e) => setM({ ...m, balewt: e.target.value })} className={inputCls} />
           <input type="number" placeholder="Cottonseed lbs" value={m.seedlbs} onChange={(e) => setM({ ...m, seedlbs: e.target.value })} className={inputCls} />
         </div>
+        {scope.narrowed && scope.fields.length === 0 && (
+          <p className="text-xs text-amber-700">
+            No fields have cotton planted for {cropYear}, so there is no farm or field to pick yet.{' '}
+            <Link href="/settings/plantings" className="underline">Add the cotton plantings</Link> and they show up here.
+          </p>
+        )}
         <p className="text-xs text-slate-500">A statement with no printed number is identified by its gin, farm, field, date and totals.</p>
         <button className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold">Add receipt</button>
       </form>

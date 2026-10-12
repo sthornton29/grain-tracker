@@ -6,6 +6,8 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { plantedFieldIds } from '@/lib/planted-scope'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { findBestMatch } from '@/lib/fuzzy'
 import {
   MAX_PDF_BYTES,
@@ -252,7 +254,7 @@ export default function ScanTicketsPage() {
         supabase.from('bins').select('*').order('name_or_number'),
         supabase.from('buyers').select('*').order('name'),
         supabase.from('contracts').select('*').order('contract_number'),
-        supabase.from('field_plantings').select('*'),
+        fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
         supabase
           .from('loads')
           .select('crop_year')
@@ -296,11 +298,7 @@ export default function ScanTicketsPage() {
   function fieldsForCrop(crop_id: string, keepFieldId = ''): Field[] {
     if (!crop_id) return fields
     const yearNum = cropYear === '' ? null : Number(cropYear)
-    const ids = new Set(
-      plantings
-        .filter((p) => p.crop_id === crop_id && (yearNum == null || p.season_year === yearNum))
-        .map((p) => p.field_id),
-    )
+    const ids = plantedFieldIds(plantings, { cropIds: crop_id, seasonYear: yearNum })
     // The row's own field stays listed even when it is planted to another
     // crop — that is exactly the conflict the row is flagged for.
     if (keepFieldId) ids.add(keepFieldId)

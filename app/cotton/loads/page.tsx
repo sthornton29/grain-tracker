@@ -40,6 +40,7 @@ import { fmtDate } from '@/lib/format-date'
 import { yearAssumedNote } from '@/lib/ticket-date'
 import type { ExportCell, ExportPayload } from '@/lib/exports'
 import type { CottonLoad, Gin, Farm, Field, Entity } from '@/lib/types'
+import { scopeToPlanted } from '@/lib/planted-scope'
 
 const lbs = (n: number | null | undefined) => (n == null ? '—' : fmtInt(Number(n)))
 const num = (s: string): number | null => {
@@ -140,7 +141,24 @@ export default function CottonLoadsPage() {
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
   const ginById = useMemo(() => new Map(gins.map((g) => [g.id, g])), [gins])
   const yearLoads = useMemo(() => loads.filter((l) => l.crop_year === cropYear), [loads, cropYear])
-  const draftFields = fields.filter((f) => !draft.farm_id || f.farm_id === draft.farm_id)
+  // Every farm/field picker on this page — hand entry, the scanned rows, the
+  // list filters, the document match — offers only the farms and fields with
+  // a cotton planting THIS crop year (lib/planted-scope). Until the plantings
+  // load nothing is narrowed, so the pickers never flash empty.
+  const scope = useMemo(
+    () => scopeToPlanted({ fields, farms, plantedFieldIds: fieldYields.plantedFieldIds }),
+    [fields, farms, fieldYields.plantedFieldIds],
+  )
+  const draftFields = scope.fields.filter((f) => !draft.farm_id || f.farm_id === draft.farm_id)
+  // A farm or field picked under another crop year (the draft and filters
+  // survive a year change) drops out once the scope no longer offers it.
+  useEffect(() => {
+    if (!scope.narrowed) return
+    const fieldOk = (id: string) => !id || scope.fields.some((f) => f.id === id)
+    const farmOk = (id: string) => !id || scope.farms.some((f) => f.id === id)
+    setDraft((d) => (fieldOk(d.field_id) && farmOk(d.farm_id) ? d : { ...d, field_id: fieldOk(d.field_id) ? d.field_id : '', farm_id: farmOk(d.farm_id) ? d.farm_id : '' }))
+    setFilters((x) => (fieldOk(x.fieldId) && farmOk(x.farmId) ? x : { ...x, fieldId: fieldOk(x.fieldId) ? x.fieldId : '', farmId: farmOk(x.farmId) ? x.farmId : '' }))
+  }, [scope])
 
   const ctx: CottonSortContext = useMemo(() => ({
     farmName: (id) => (id ? farmById.get(id)?.name ?? '' : ''),
@@ -163,7 +181,7 @@ export default function CottonLoadsPage() {
 
   const filtered = useMemo(() => filterCottonLoads(yearLoads, filters, ctx), [yearLoads, filters, ctx])
   const sorted = useMemo(() => sortCottonLoads(filtered, sortKey, sortDir, ctx), [filtered, sortKey, sortDir, ctx])
-  const filterFields = fields.filter((f) => !filters.farmId || f.farm_id === filters.farmId)
+  const filterFields = scope.fields.filter((f) => !filters.farmId || f.farm_id === filters.farmId)
 
   // The season at a glance: ginned vs on the yard, rolls waiting, by field.
   const flow = useMemo(() => seasonFlow(yearLoads, (id) => ginnedIds.has(id)), [yearLoads, ginnedIds])
@@ -242,9 +260,9 @@ export default function CottonLoadsPage() {
   }
 
   function extractionToRow(x: ReviewLoad): AiRow {
-    const farm = (x.farm_number ? farms.find((f) => (f.fsa_number ?? '').trim() === x.farm_number!.trim()) : null)
-      ?? (x.producer ? findBestMatch(x.producer, farms, (f) => f.name) : null)
-    const farmFields = fields.filter((f) => !farm || f.farm_id === farm.id)
+    const farm = (x.farm_number ? scope.farms.find((f) => (f.fsa_number ?? '').trim() === x.farm_number!.trim()) : null)
+      ?? (x.producer ? findBestMatch(x.producer, scope.farms, (f) => f.name) : null)
+    const farmFields = scope.fields.filter((f) => !farm || f.farm_id === farm.id)
     const field = x.field ? findBestMatch(x.field, farmFields, (f) => f.name_or_number) : null
     return { ...x, farm_id: farm?.id ?? '', field_id: field?.id ?? '', include: true, usedHandwritten: false }
   }
@@ -529,14 +547,14 @@ export default function CottonLoadsPage() {
                           <td className="px-2 py-1">
                             <select value={r.farm_id} onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, farm_id: e.target.value, field_id: '' } : x))} className="rounded border border-slate-300 px-1 py-0.5 min-h-9">
                               <option value="">— farm —</option>
-                              {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                              {scope.farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
                             </select>
                             {!r.farm_id && r.producer && <div className="text-amber-700">From the document: {r.producer}{r.farm_number ? ` #${r.farm_number}` : ''}</div>}
                           </td>
                           <td className="px-2 py-1">
                             <select value={r.field_id} onChange={(e) => setAiRows((xs) => xs.map((x, j) => j === i ? { ...x, field_id: e.target.value } : x))} className="rounded border border-slate-300 px-1 py-0.5 min-h-9">
                               <option value="">— field —</option>
-                              {fields.filter((f) => !r.farm_id || f.farm_id === r.farm_id).map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
+                              {scope.fields.filter((f) => !r.farm_id || f.farm_id === r.farm_id).map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
                             </select>
                             {!r.field_id && r.field && <div className="text-amber-700">From the document: {r.field}</div>}
                           </td>
@@ -611,7 +629,7 @@ export default function CottonLoadsPage() {
                 Farm
                 <select value={draft.farm_id} onChange={(e) => setDraft({ ...draft, farm_id: e.target.value, field_id: '' })} className={`${inputCls} mt-1`}>
                   <option value="">—</option>
-                  {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                  {scope.farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
                 </select>
               </label>
               <label className={labelCls}>
@@ -621,6 +639,12 @@ export default function CottonLoadsPage() {
                   {draftFields.map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
                 </select>
               </label>
+              {scope.narrowed && scope.fields.length === 0 && (
+                <p className="col-span-2 sm:col-span-4 text-xs text-amber-700">
+                  No fields have cotton planted for {cropYear}, so there is nothing to pick yet.{' '}
+                  <Link href="/settings/plantings" className="underline">Add the cotton plantings</Link> and they show up here.
+                </p>
+              )}
               <label className={labelCls}>
                 Picked
                 <input type="date" value={draft.picked_date} onChange={(e) => setDraft({ ...draft, picked_date: e.target.value })} className={`${inputCls} mt-1`} />
@@ -699,7 +723,7 @@ export default function CottonLoadsPage() {
           Farm
           <select value={filters.farmId} onChange={(e) => setFilters({ ...filters, farmId: e.target.value, fieldId: '' })} className={filterSelect}>
             <option value="">All farms</option>
-            {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+            {scope.farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
           </select>
         </label>
         <label className={filterLabel}>

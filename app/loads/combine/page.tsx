@@ -14,6 +14,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { plantedFieldIds as plantedFieldIdsOf } from '@/lib/planted-scope'
 import { fieldCropAggregates, practiceOf, combineEntryTotals, combineNegativeNetMessage } from '@/lib/yields'
 import { rememberHarvestEntryPath } from '@/lib/harvest-entry-path'
 import { reportError } from '@/lib/friendly-error'
@@ -83,7 +84,7 @@ export default function CombineYieldPage() {
         supabase.from('farms').select('id, name, entity_id').order('name'),
         supabase.from('fields').select('*').order('name_or_number'),
         supabase.from('crops').select('*').order('name'),
-        supabase.from('field_plantings').select('*'),
+        fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
         supabase.from('bins').select('id, name_or_number').order('name_or_number'),
         fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, practice').order('id').range(f, t)),
         fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
@@ -113,7 +114,7 @@ export default function CombineYieldPage() {
   // Fields with a planting for the chosen year; the shared FieldPicker
   // handles the farm grouping + search.
   const yearPlantings = useMemo(() => plantings.filter((p) => p.season_year === cropYear), [plantings, cropYear])
-  const plantedFieldIds = useMemo(() => new Set(yearPlantings.map((p) => p.field_id)), [yearPlantings])
+  const plantedFieldIds = useMemo(() => plantedFieldIdsOf(plantings, { cropIds: null, seasonYear: cropYear }), [plantings, cropYear])
   const plantedFields = useMemo(
     () => fields.filter((f) => plantedFieldIds.has(f.id)),
     [fields, plantedFieldIds],

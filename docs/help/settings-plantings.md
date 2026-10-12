@@ -1,7 +1,7 @@
 ---
 page_route: /settings/plantings
 title: Field Plantings
-updated: 2026-09-24
+updated: 2026-10-12
 keywords: plantings, planting, season year, crop year, planted acres, varieties, double-crop, acreage report, planting report, spreadsheet import, from field acres
 ---
 ## What this page is for
@@ -12,7 +12,7 @@ A planting is a field, a crop, and a season together — "North 40, corn, 2026".
 
 - **Add a planting**: pick the field, the crop, the season year (use the harvest year), and the planted acres, with one or more varieties. Leave acres blank and the field's full acres fill in, shown as "from field acres" so you can override it.
 - **Upload an acreage or planting report**, or bring in a spreadsheet. Both recognize variety spellings that differ only by brand prefix and ask whether to link or keep them separate, so "DG 3644" and "Dyna-Gro 3644" don't become two varieties.
-- Filter by **season year** to work one year at a time.
+- Filter by **season year** to work one year at a time. The Farm and Field filters beside it list only the farms and fields that have a planting in that season; the add form below still lists every field, since that is where a planting gets created.
 
 ## What the controls do
 

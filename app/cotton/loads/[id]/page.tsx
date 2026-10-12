@@ -21,6 +21,7 @@ import { reportError } from '@/lib/friendly-error'
 import { fmtDate } from '@/lib/format-date'
 import type { ExportPayload, ExportSection } from '@/lib/exports'
 import type { CottonLoad, Entity, Farm, Field, Gin } from '@/lib/types'
+import { keptWithoutPlanting, scopeToPlanted } from '@/lib/planted-scope'
 
 type Receipt = { id: string; receipt_number: string; receipt_date: string | null; gin_id: string | null; bales_count: number | null; total_seed_cotton_weight: number | null }
 type ReceiptLink = { receipt: Receipt | null }
@@ -88,6 +89,13 @@ export default function CottonLoadDetailPage() {
 
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
+  // The pickers offer only the farms and fields with a cotton planting in the
+  // load's crop year (lib/planted-scope); what the ticket already says stays
+  // selectable so editing something else never drops the field.
+  const scope = useMemo(
+    () => scopeToPlanted({ fields, farms, plantedFieldIds: fieldYields.plantedFieldIds, keep: { fieldId: load?.field_id, farmId: load?.farm_id } }),
+    [fields, farms, fieldYields.plantedFieldIds, load?.field_id, load?.farm_id],
+  )
   const entityById = useMemo(() => new Map(entities.map((e) => [e.id, e])), [entities])
   const ginById = useMemo(() => new Map(gins.map((g) => [g.id, g])), [gins])
 
@@ -176,7 +184,7 @@ export default function CottonLoadDetailPage() {
 
   const inputCls = 'rounded-lg border border-slate-300 px-3 py-2 min-h-11 w-full mt-1'
   const labelCls = 'block text-sm text-slate-700'
-  const draftFields = fields.filter((f) => !draft?.farm_id || f.farm_id === draft.farm_id)
+  const draftFields = scope.fields.filter((f) => !draft?.farm_id || f.farm_id === draft.farm_id)
 
   return (
     <div className="space-y-4">
@@ -238,7 +246,7 @@ export default function CottonLoadDetailPage() {
             <label className={labelCls}>Farm
               <select value={draft.farm_id} onChange={(e) => setDraft({ ...draft, farm_id: e.target.value, field_id: '' })} className={inputCls}>
                 <option value="">—</option>
-                {farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                {scope.farms.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
               </select>
             </label>
             <label className={labelCls}>Field
@@ -246,6 +254,9 @@ export default function CottonLoadDetailPage() {
                 <option value="">—</option>
                 {draftFields.map((f) => <option key={f.id} value={f.id}>{f.name_or_number}</option>)}
               </select>
+              {keptWithoutPlanting(draft.field_id, fieldYields.plantedFieldIds) && (
+                <span className="block mt-1 text-xs text-amber-700">This field has no cotton planting on file for {load.crop_year}. It stays on the ticket; the other choices are the fields planted to cotton that year.</span>
+              )}
             </label>
             <label className={labelCls}>Picked<input type="date" value={draft.picked_date} onChange={(e) => setDraft({ ...draft, picked_date: e.target.value })} className={inputCls} /></label>
             <label className={labelCls}>Delivered<input type="date" value={draft.delivered_date} onChange={(e) => setDraft({ ...draft, delivered_date: e.target.value })} className={inputCls} /></label>

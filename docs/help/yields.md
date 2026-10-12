@@ -1,7 +1,7 @@
 ---
 page_route: /yields
 title: Yields
-updated: 2026-10-08
+updated: 2026-10-12
 keywords: yields, bushels per acre, cotton, seed cotton, lint, turnout, estimated lint, picked, ginned, on yard, ginning status, field, farm, entity, variety, landowner, irrigated, dryland, harvest, allocation, load tags, practice, season, export, detail, loads, tickets, moisture, test weight, split load, drill down, combine, yield monitor, no scales, double-crop, full-season, cropping, DC, behind wheat, soybeans after wheat
 ---
 ## What this page is for
@@ -11,7 +11,7 @@ Yields turns your load log into bushels per acre. The same production can be vie
 ## How to use it
 
 - Pick a view from the tabs under the title: **By field**, **By farm**, **By entity**, **By variety**, or **By landowner**. The Reports page's "Yields by Field" and "Yields by Farm" cards open straight onto the matching tab.
-- One filter row serves every tab: crop year, crop, farm, entity, and county. In the by-field view you can also filter to irrigated or dryland ground; the landowner tab adds a landowner pick. Your filter choices are remembered, so the page comes back the way you left it.
+- One filter row serves every tab: crop year, crop, farm, entity, and county. The Farm list offers only the farms with something planted in that crop year — and, once you pick a crop, only the farms with that crop planted that year. In the by-field view you can also filter to irrigated or dryland ground; the landowner tab adds a landowner pick. Your filter choices are remembered, so the page comes back the way you left it.
 - Toggle between **Total yield only** and **Irrigated / Dryland breakdown** to split the yield columns by practice.
 - When a crop you grow both ways is in view — soybeans planted full-season on some fields and behind wheat on others — a **Cropping** control appears beside Practice: **All**, **Full-season**, or **Double-crop**. It works on every tab, stacks with the Practice filter (Irrigated + Double-crop is fine), and is remembered like the other filters. It only shows for a crop marked Double-crop under Settings → Crops in a year that actually has both kinds planted.
 - **Tap any row (or its ▸ button) to open its detail.** A field row shows the loads behind its yield; a farm, entity, landowner, or variety row shows its totals plus a field-by-field breakdown, and each field there opens further into its loads — two taps from a landowner (or a variety) to a scale ticket.

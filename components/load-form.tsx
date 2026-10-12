@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
 import { cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { plantedFieldIds } from '@/lib/planted-scope'
 import { cropForFieldOnDate, fieldDefaultNote } from '@/lib/load-crop-default'
 import { effectiveCropYear } from '@/lib/ticket-date'
 import { allocateSplits, validateSplitDrafts, type SplitDraft } from '@/lib/load-splits'
@@ -487,17 +488,14 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   }, [bins, form.crop_id])
 
   // Only show fields with a planting that matches BOTH the selected crop and
-  // the selected crop year. Filtering on crop alone surfaced last year's wheat
-  // fields when entering 2026 wheat loads.
+  // the selected crop year (lib/planted-scope — the one rule, shared with the
+  // scan page and the cotton pages). Filtering on crop alone surfaced last
+  // year's wheat fields when entering 2026 wheat loads.
   const filteredFields = useMemo(() => {
     if (!form.crop_id) return fields
     const yearNum = form.crop_year === '' ? null : Number(form.crop_year)
-    const plantedFieldIds = new Set(
-      plantings
-        .filter((p) => p.crop_id === form.crop_id && (yearNum == null || p.season_year === yearNum))
-        .map((p) => p.field_id),
-    )
-    return fields.filter((f) => plantedFieldIds.has(f.id))
+    const planted = plantedFieldIds(plantings, { cropIds: form.crop_id, seasonYear: yearNum })
+    return fields.filter((f) => planted.has(f.id))
   }, [fields, plantings, form.crop_id, form.crop_year])
 
   // Planting for a field under the selected crop (+ crop year when picked).

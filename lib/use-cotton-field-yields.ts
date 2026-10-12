@@ -23,6 +23,12 @@ export type CottonFieldYields = {
   /** The Cotton module flag; null while loading. */
   on: boolean | null
   model: CottonYieldModel
+  /**
+   * The fields with a live cotton planting this crop year — what every
+   * farm/field picker on the cotton pages narrows to (lib/planted-scope).
+   * Null until the plantings have loaded, so a picker never flashes empty.
+   */
+  plantedFieldIds: ReadonlySet<string> | null
   /** Planted cotton acres on a field this crop year; null when the field has no cotton planting. */
   acresFor: (fieldId: string | null | undefined) => number | null
   /** The field's seed cotton and lint figures this crop year; null without a cotton planting (or with the module off). */
@@ -37,6 +43,7 @@ export function useCottonFieldYields(supabase: SupabaseClient, cropYear: number)
   const [assumptions, setAssumptions] = useState<AssumptionRow[]>([])
   const [plantings, setPlantings] = useState<PlantingRow[]>([])
   const [loadingRefs, setLoadingRefs] = useState(true)
+  const [plantingsLoaded, setPlantingsLoaded] = useState(false)
   const [nonce, setNonce] = useState(0)
 
   useEffect(() => {
@@ -52,6 +59,7 @@ export function useCottonFieldYields(supabase: SupabaseClient, cropYear: number)
         setCrops((c.data as CropRow[]) ?? [])
         setAssumptions((a.data as AssumptionRow[]) ?? [])
         setPlantings(((p.data as PlantingRow[]) ?? []).filter((x) => x.archived_at == null))
+        setPlantingsLoaded(true)
       } finally {
         if (!cancelled) setLoadingRefs(false)
       }
@@ -61,7 +69,7 @@ export function useCottonFieldYields(supabase: SupabaseClient, cropYear: number)
 
   const cotton = useCottonYields(supabase, { crops, assumptions })
 
-  const { rows, acresByField, yieldByField } = useMemo(() => {
+  const { rows, acresByField, yieldByField, plantedFieldIds } = useMemo(() => {
     const acresByField = new Map<string, number>()
     const cropByField = new Map<string, string>()
     for (const p of plantings) {
@@ -69,6 +77,8 @@ export function useCottonFieldYields(supabase: SupabaseClient, cropYear: number)
       acresByField.set(p.field_id, (acresByField.get(p.field_id) ?? 0) + Number(p.planted_acres ?? 0))
       if (!cropByField.has(p.field_id)) cropByField.set(p.field_id, p.crop_id)
     }
+    // A zero-acre planting still counts as planted — acres are a separate question.
+    const plantedFieldIds: ReadonlySet<string> | null = plantingsLoaded && crops.length > 0 ? new Set(acresByField.keys()) : null
     const yieldByField = new Map<string, CottonPlantingYield>()
     const rows: CottonFieldYieldRow[] = []
     for (const [fieldId, acres] of acresByField) {
@@ -77,8 +87,8 @@ export function useCottonFieldYields(supabase: SupabaseClient, cropYear: number)
       yieldByField.set(fieldId, y)
       rows.push({ fieldId, acres, y })
     }
-    return { rows, acresByField, yieldByField }
-  }, [plantings, cotton.model, cropYear])
+    return { rows, acresByField, yieldByField, plantedFieldIds }
+  }, [plantings, plantingsLoaded, crops.length, cotton.model, cropYear])
 
   const farm = useMemo(() => summarizeCottonFieldYields(rows), [rows])
 
@@ -86,6 +96,7 @@ export function useCottonFieldYields(supabase: SupabaseClient, cropYear: number)
     loading: loadingRefs || cotton.loading,
     on: cotton.on,
     model: cotton.model,
+    plantedFieldIds,
     acresFor: (fieldId) => (fieldId ? acresByField.get(fieldId) ?? null : null),
     yieldFor: (fieldId) => (fieldId ? yieldByField.get(fieldId) ?? null : null),
     rows,
