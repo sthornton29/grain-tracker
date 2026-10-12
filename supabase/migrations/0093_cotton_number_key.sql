@@ -1,4 +1,6 @@
--- 093: ONE number key for cotton + statement identity (2026-10-11).
+-- 0093: ONE number key for cotton + statement identity (2026-10-11).
+-- The first migration applied with `npx supabase db push` (supabase/migrations/);
+-- 002–092 were applied by hand from supabase/NNN_*.sql and stay there.
 --
 -- The module list prints a load as "031633"; the Statement of Ginning prints
 -- the same load as "31633". The app compares every cotton number through

@@ -46,7 +46,7 @@ describe('numberKey — the one cotton number key', () => {
       expect(numberKey(raw)).toBe(key)
     }
     // The migration's SQL mirrors the four steps in the same order.
-    const mig = readFileSync(join(process.cwd(), 'supabase', '093_cotton_number_key.sql'), 'utf8')
+    const mig = readFileSync(join(process.cwd(), 'supabase', 'migrations', '0093_cotton_number_key.sql'), 'utf8')
     expect(mig).toContain('create or replace function public.cotton_number_key(raw text)')
     expect(mig).toMatch(/immutable/i)
     expect(mig).toContain("cotton_loads_org_year_key_unique")

@@ -1,4 +1,4 @@
--- 093_preflight.sql — READ-ONLY report to run BEFORE 093_cotton_number_key.sql.
+-- 093_preflight.sql — READ-ONLY report to run BEFORE migrations/0093_cotton_number_key.sql.
 -- Changes nothing. Four result sets (run each statement, or the whole file
 -- in the SQL editor and page through the results):
 --

@@ -14,17 +14,21 @@
 --   * the duplicates are deleted. The keeper keeps the number its ticket
 --     printed; nothing is rewritten.
 --
--- Prints one NOTICE per merged pair. Run 093_cotton_number_key.sql after.
+-- Prints one NOTICE per merged pair. Safe to re-run (no collisions → merges
+-- 0). Run migrations/0093_cotton_number_key.sql after (npx supabase db push). Only scalar PL/pgSQL variables
+-- are referenced inside SQL (2026-10-12 fix: a %rowtype variable's fields
+-- were parsed as a relation — 'relation "keeper" does not exist').
 
 begin;
 
 do $$
 declare
   grp record;
-  keeper public.cotton_loads%rowtype;
-  dup record;
-  moved int;
-  merged int := 0;
+  v_keeper_id uuid;
+  v_keeper_number text;
+  v_dup record;
+  v_moved int;
+  v_merged int := 0;
 begin
   for grp in
     with keyed as (
@@ -41,7 +45,7 @@ begin
     group by org_id, crop_year, k
     having count(*) > 1
   loop
-    select l.* into keeper
+    select l.id, l.load_number into v_keeper_id, v_keeper_number
     from public.cotton_loads l
     where l.id = any (grp.ids)
     order by (l.source = 'document_import' and l.source_pdf_url is not null) desc,
@@ -49,48 +53,53 @@ begin
              l.created_at asc
     limit 1;
 
-    for dup in
-      select l.* from public.cotton_loads l where l.id = any (grp.ids) and l.id <> keeper.id order by l.created_at
+    for v_dup in
+      select l.id, l.load_number, l.source
+      from public.cotton_loads l
+      where l.id = any (grp.ids) and l.id <> v_keeper_id
+      order by l.created_at
     loop
       -- 1. move receipt links (skip ones the keeper already has)
       update public.gin_receipt_loads grl
-         set cotton_load_id = keeper.id
-       where grl.cotton_load_id = dup.id
-         and not exists (select 1 from public.gin_receipt_loads k2 where k2.receipt_id = grl.receipt_id and k2.cotton_load_id = keeper.id);
-      get diagnostics moved = row_count;
-      delete from public.gin_receipt_loads where cotton_load_id = dup.id;
+         set cotton_load_id = v_keeper_id
+       where grl.cotton_load_id = v_dup.id
+         and not exists (select 1 from public.gin_receipt_loads k2
+                          where k2.receipt_id = grl.receipt_id and k2.cotton_load_id = v_keeper_id);
+      get diagnostics v_moved = row_count;
+      delete from public.gin_receipt_loads where cotton_load_id = v_dup.id;
 
       -- 2. fill the keeper's blanks from the duplicate; never overwrite
       update public.cotton_loads k
-         set rolls          = coalesce(k.rolls, dup.rolls),
-             picked_date    = coalesce(k.picked_date, dup.picked_date),
-             delivered_date = coalesce(k.delivered_date, dup.delivered_date),
-             truck          = coalesce(k.truck, dup.truck),
-             gross_weight   = coalesce(k.gross_weight, dup.gross_weight),
-             tare_weight    = coalesce(k.tare_weight, dup.tare_weight),
-             net_weight     = coalesce(k.net_weight, dup.net_weight),
-             farm_id        = coalesce(k.farm_id, dup.farm_id),
-             field_id       = coalesce(k.field_id, dup.field_id),
-             entity_id      = coalesce(k.entity_id, dup.entity_id),
-             gin_id         = coalesce(k.gin_id, dup.gin_id),
-             location       = coalesce(k.location, dup.location),
-             source_pdf_url = coalesce(k.source_pdf_url, dup.source_pdf_url),
+         set rolls          = coalesce(k.rolls, d.rolls),
+             picked_date    = coalesce(k.picked_date, d.picked_date),
+             delivered_date = coalesce(k.delivered_date, d.delivered_date),
+             truck          = coalesce(k.truck, d.truck),
+             gross_weight   = coalesce(k.gross_weight, d.gross_weight),
+             tare_weight    = coalesce(k.tare_weight, d.tare_weight),
+             net_weight     = coalesce(k.net_weight, d.net_weight),
+             farm_id        = coalesce(k.farm_id, d.farm_id),
+             field_id       = coalesce(k.field_id, d.field_id),
+             entity_id      = coalesce(k.entity_id, d.entity_id),
+             gin_id         = coalesce(k.gin_id, d.gin_id),
+             location       = coalesce(k.location, d.location),
+             source_pdf_url = coalesce(k.source_pdf_url, d.source_pdf_url),
              notes          = case
-                                when dup.notes is null or btrim(dup.notes) = '' then k.notes
-                                when k.notes is null or btrim(k.notes) = '' then dup.notes
-                                when position(dup.notes in k.notes) > 0 then k.notes
-                                else k.notes || E'\n' || dup.notes
+                                when d.notes is null or btrim(d.notes) = '' then k.notes
+                                when k.notes is null or btrim(k.notes) = '' then d.notes
+                                when position(d.notes in k.notes) > 0 then k.notes
+                                else k.notes || E'\n' || d.notes
                               end
-       where k.id = keeper.id;
+        from public.cotton_loads d
+       where k.id = v_keeper_id and d.id = v_dup.id;
 
       -- 3. delete the duplicate
-      delete from public.cotton_loads where id = dup.id;
-      merged := merged + 1;
+      delete from public.cotton_loads where id = v_dup.id;
+      v_merged := v_merged + 1;
       raise notice '093 merge: % (%) kept; % (%, source %) folded in — % receipt link(s) moved',
-        keeper.load_number, keeper.id, dup.load_number, dup.id, dup.source, moved;
+        v_keeper_number, v_keeper_id, v_dup.load_number, v_dup.id, v_dup.source, v_moved;
     end loop;
   end loop;
-  raise notice '093 merge: % duplicate load(s) merged.', merged;
+  raise notice '093 merge: % duplicate load(s) merged.', v_merged;
 end $$;
 
 commit;
