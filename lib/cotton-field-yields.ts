@@ -85,13 +85,18 @@ export type CottonYieldBucket = {
 }
 
 export type CottonCropProgress = {
-  /** Seed cotton pounds hauled off every field in view (picked, whether ginned or not). */
+  /** Every cotton acre planted this crop year, in view — the percent-ginned denominator. */
+  acresPlanted: number
+  /** Acres of fields whose cotton is all ginned (every load on a gin receipt). */
+  acresGinned: number
+  /** Acres of fields with some loads on receipts and some still on the yard. */
+  acresPartlyGinned: number
+  /** acresGinned ÷ acresPlanted, 0–100 (0 with nothing planted). */
+  pctGinned: number
+  /** Seed cotton pounds hauled off every field in view, and how much of it is on receipts / on the yard. */
   seedLbs: number
-  /** Seed cotton on gin receipts (seed − yard). */
   ginnedSeedLbs: number
   yardSeedLbs: number
-  /** ginnedSeedLbs ÷ seedLbs, 0–100 (0 with nothing hauled). */
-  pctGinned: number
   /** Counted fields whose lint is all on gin receipts — the actual yield. */
   ginned: CottonYieldBucket
   /** Counted fields with seed cotton still on the yard — lint estimated at the turnout (part est. once some is ginned). */
@@ -107,22 +112,30 @@ const bucketOf = (acres: number, lintLbs: number, actual: number, est: number): 
 })
 
 /**
- * The cotton crop card's second bar and its yield split. Percent ginned is in
- * POUNDS of seed cotton (ginning is a pounds matter — a partly ginned field
- * contributes what is on receipts), over every field handed in. The yield
- * split is over the COUNTED fields only (`counted` = harvest complete, the
+ * The cotton crop card's second bar and its yield split. Percent ginned is
+ * ACRES: fields whose cotton is all ginned over every cotton acre planted
+ * (Stuart, 2026-10-12: "percent of total cotton acres, not of what has been
+ * harvested"), so it reads against the same denominator as percent picked;
+ * a partly ginned field is its own amber band and does not count yet. The
+ * pounds are kept alongside for anything that needs them. The yield split is
+ * over the COUNTED fields only (`counted` = harvest complete, the
  * same fields behind the headline average): the ginned bucket holds fields
  * with nothing left to estimate, the unginned bucket the rest, so the two
  * acre-weighted together equal the headline.
  */
 export function summarizeCottonCropProgress(rows: ReadonlyArray<CottonFieldYieldRow & { counted: boolean }>): CottonCropProgress {
   let seedLbs = 0, yardSeedLbs = 0
+  let acresPlanted = 0, acresGinned = 0, acresPartlyGinned = 0
   let gAcres = 0, gLint = 0
   let uAcres = 0, uLint = 0, uActual = 0, uEst = 0
   let turnoutLabel: string | null = null
   for (const r of rows) {
     seedLbs += r.y.seedLbs
     yardSeedLbs += r.y.yardSeedLbs
+    acresPlanted += r.acres
+    // All ginned: every load on a receipt — or receipts with no loads on file at all.
+    if (r.y.ginning === 'ginned' || (r.y.ginning === 'none' && r.y.receiptCount > 0)) acresGinned += r.acres
+    else if (r.y.ginning === 'partly_ginned') acresPartlyGinned += r.acres
     if (!r.counted) continue
     if (r.y.estimatedLintLbs > 0) {
       uAcres += r.acres; uLint += r.y.lintLbs; uActual += r.y.actualLintLbs; uEst += r.y.estimatedLintLbs
@@ -133,8 +146,9 @@ export function summarizeCottonCropProgress(rows: ReadonlyArray<CottonFieldYield
   }
   const ginnedSeedLbs = Math.max(0, seedLbs - yardSeedLbs)
   return {
+    acresPlanted, acresGinned, acresPartlyGinned,
+    pctGinned: acresPlanted > 0 ? (acresGinned / acresPlanted) * 100 : 0,
     seedLbs, ginnedSeedLbs, yardSeedLbs,
-    pctGinned: seedLbs > 0 ? (ginnedSeedLbs / seedLbs) * 100 : 0,
     ginned: bucketOf(gAcres, gLint, gLint, 0),
     unginned: bucketOf(uAcres, uLint, uActual, uEst),
     turnoutLabel,

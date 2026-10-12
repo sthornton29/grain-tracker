@@ -3,7 +3,8 @@
 // The per-crop header cards: the headline yield carries a thousands comma
 // (cotton lint runs past 1,000 lbs/ac), and a cotton crop card shows the
 // ginned / not-ginned split under the headline plus TWO trackers — percent
-// picked (the harvest tracker, reworded) and percent ginned (pounds).
+// picked (the harvest tracker, reworded) and percent ginned (acres all
+// ginned over every cotton acre planted).
 
 import { describe, expect, it, afterEach } from 'vitest'
 import { cleanup, render, screen } from '@testing-library/react'
@@ -22,7 +23,8 @@ const progress = new Map<string, HarvestProgress>([
   ['corn', { cropId: 'corn', completedAcres: 400, inProgressAcres: 0, remainingAcres: 100, totalAcres: 500, pctComplete: 80 }],
 ])
 const cotton: CottonCropProgress = {
-  seedLbs: 965_220, ginnedSeedLbs: 795_220, yardSeedLbs: 170_000, pctGinned: (795_220 / 965_220) * 100,
+  acresPlanted: 490, acresGinned: 250, acresPartlyGinned: 60, pctGinned: (250 / 490) * 100,
+  seedLbs: 965_220, ginnedSeedLbs: 795_220, yardSeedLbs: 170_000,
   ginned: { acres: 250, lintLbs: 282_956, lintPerAcre: 282_956 / 250, lintBasis: 'actual' },
   unginned: { acres: 100, lintLbs: 148_000, lintPerAcre: 1480, lintBasis: 'estimated_turnout' },
   turnoutLabel: '40% (assumed)',
@@ -44,8 +46,8 @@ describe('AvgYieldHeader', () => {
     expect(screen.getByText('1,480.0')).toBeTruthy()
     expect(screen.getByText('est.')).toBeTruthy()
     expect(screen.getByText('71% picked')).toBeTruthy()
-    expect(screen.getByText('82% ginned')).toBeTruthy()
-    expect(screen.getByText(/795,220 lbs ginned · 170,000 lbs on the yard/)).toBeTruthy()
+    expect(screen.getByText('51% ginned')).toBeTruthy()
+    expect(screen.getByText(/250 ginned · 60 partly · 180 not ginned/)).toBeTruthy()
     expect(screen.getByText('80% harvested')).toBeTruthy()
     expect(screen.queryByText('80% picked')).toBeNull()
   })

@@ -73,11 +73,20 @@ describe('summarizeCottonCropProgress — the crop card\'s percent ginned and th
   ] satisfies Array<CottonFieldYieldRow & { counted: boolean }>
   const p = summarizeCottonCropProgress(rows)
 
-  it('percent ginned is pounds of seed cotton on receipts over pounds hauled, across every field in view', () => {
+  it('percent ginned is acres of all-ginned fields over EVERY cotton acre planted — the partly ginned and unpicked acres count against it', () => {
+    expect(p.acresPlanted).toBe(490)
+    expect(p.acresGinned).toBe(250)
+    expect(p.acresPartlyGinned).toBe(60)
+    expect(p.pctGinned).toBeCloseTo((250 / 490) * 100, 6)
+    // The pounds ride along for anything that wants them.
     expect(p.seedLbs).toBe(965_220)
     expect(p.yardSeedLbs).toBe(170_000)
     expect(p.ginnedSeedLbs).toBe(795_220)
-    expect(p.pctGinned).toBeCloseTo((795_220 / 965_220) * 100, 6)
+  })
+  it('a field with receipts but no loads on file counts as ginned', () => {
+    const q = summarizeCottonCropProgress([{ fieldId: 'r', acres: 40, counted: true, y: y({ receiptCount: 1, actualLintLbs: 30_000, lintLbs: 30_000, lintBasis: 'actual', ginning: 'none' }) }])
+    expect(q.acresGinned).toBe(40)
+    expect(q.pctGinned).toBe(100)
   })
   it('the split covers only the counted fields: ginned = nothing left to estimate, not ginned yet = the rest', () => {
     // Pivot and the empty West field (nothing to estimate) are the ginned bucket; East is the estimate.
@@ -105,6 +114,8 @@ describe('summarizeCottonCropProgress — the crop card\'s percent ginned and th
     expect(q.ginned.acres).toBe(0)
     const none = summarizeCottonCropProgress([rows[3]])
     expect(none.pctGinned).toBe(0)
+    expect(none.acresPlanted).toBe(80)
+    expect(none.acresGinned).toBe(0)
     expect(none.seedLbs).toBe(0)
     expect(none.unginned.lintPerAcre).toBeNull()
   })

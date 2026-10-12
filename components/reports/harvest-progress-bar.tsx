@@ -28,20 +28,22 @@ export default function HarvestProgressBar({ progress, verb = 'harvested' }: {
   )
 }
 
-/** The cotton card's second tracker, in the same shape as the one above: a
- *  green (ginned) / amber (on the yard) bar over the seed cotton hauled, the
- *  percent ginned, and the pounds either side. Nothing hauled → nothing shown. */
+/** The cotton card's second tracker, the same shape as the one above and over
+ *  the same acres: green = fields all ginned, amber = partly ginned, the rest
+ *  of the planted acres grey (on the yard or not picked). Nothing planted →
+ *  nothing shown. */
 export function GinningProgressBar({ progress }: { progress: CottonCropProgress }) {
-  if (progress.seedLbs <= 0) return null
+  if (progress.acresPlanted <= 0) return null
+  const notGinned = Math.max(0, progress.acresPlanted - progress.acresGinned - progress.acresPartlyGinned)
   return (
     <div className="mt-1.5">
       <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
-        <div className="bg-green-600" style={{ width: `${progress.pctGinned}%` }} />
-        <div className="bg-amber-500" style={{ width: `${100 - progress.pctGinned}%` }} />
+        <div className="bg-green-600" style={{ width: `${(progress.acresGinned / progress.acresPlanted) * 100}%` }} />
+        <div className="bg-amber-500" style={{ width: `${(progress.acresPartlyGinned / progress.acresPlanted) * 100}%` }} />
       </div>
       <div className="text-xs font-semibold text-slate-700 mt-1">{progress.pctGinned.toFixed(0)}% ginned</div>
       <div className="text-xs text-slate-500 tabular-nums">
-        {fmtAc(progress.ginnedSeedLbs)} lbs ginned · {fmtAc(progress.yardSeedLbs)} lbs on the yard
+        {fmtAc(progress.acresGinned)} ginned · {fmtAc(progress.acresPartlyGinned)} partly · {fmtAc(notGinned)} not ginned
       </div>
     </div>
   )
