@@ -22,6 +22,8 @@
 // can show the "not today" note (dateDefaultNote) — a session entered the
 // next morning must never silently land on the wrong day.
 
+import { singleSaleRow, type LoadSaleInput, type SaleType } from './load-sales'
+
 export const LAST_LOAD_DEFAULTS_SELECT =
   'date, crop_id, crop_year, from_type, from_field_id, from_bin_id, to_type, to_bin_id, to_buyer_id, contract_id'
 
@@ -139,6 +141,50 @@ export function saveAndNewPatch(time: string): {
     ticket_number: '',
     practice: '',
   }
+}
+
+/**
+ * SALE-TYPE MEMORY (094): the kind of sale the last load used. A contract
+ * on the last load → that contract (one full row — the same thing
+ * contract_id defaulting did before 094). No contract but one spot /
+ * price-later row → that kind, WITHOUT the bid (a bid belongs to its own
+ * load). Anything else (a split, no rows, a bin load) → nothing seeded.
+ */
+export function defaultSaleRows(
+  recent: Pick<LastLoadDefaultsSource, 'contract_id' | 'to_type'>,
+  recentSales: ReadonlyArray<{ sale_type: SaleType; contract_id?: string | null }>,
+): LoadSaleInput[] {
+  if (recent.to_type !== 'buyer') return []
+  if (recent.contract_id) return singleSaleRow({ sale_type: 'contract', contract_id: recent.contract_id })
+  if (recentSales.length === 1 && recentSales[0].sale_type !== 'contract') return singleSaleRow({ sale_type: recentSales[0].sale_type })
+  return []
+}
+
+/**
+ * What Save & New carries into the next load's sale: the same contract,
+ * the same spot / price-later kind. A typed bid carries too (the buyer's
+ * posted bid holds for the day), an ESTIMATE never does (it is recomputed
+ * per load). A split carries only its LAST part — after an overflow split
+ * the contract is full, so the next load goes where the overflow went.
+ */
+export function saleForNextLoad(rows: ReadonlyArray<LoadSaleInput>): LoadSaleInput[] {
+  if (rows.length === 0) return []
+  const last = rows[rows.length - 1]
+  const keepBid = last.sale_type === 'spot' && last.spot_price_source === 'entered' && last.spot_price != null
+  return singleSaleRow({
+    sale_type: last.sale_type,
+    contract_id: last.contract_id ?? null,
+    spot_price: keepBid ? last.spot_price : null,
+    spot_price_source: keepBid ? 'entered' : null,
+  })
+}
+
+/** The loads.contract_id MIRROR for a sale: the contract when the whole
+ *  load is on exactly one contract, else '' (null on save). */
+export function mirrorContractId(rows: ReadonlyArray<LoadSaleInput>): string {
+  if (rows.length !== 1) return ''
+  const r = rows[0]
+  return r.sale_type === 'contract' && r.contract_id && Math.abs(r.share - 1) < 1e-6 ? r.contract_id : ''
 }
 
 /** "8/14" from "2026-08-14" — no leading zeros, no year (it's this season). */

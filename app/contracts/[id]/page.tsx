@@ -14,7 +14,11 @@ import StaticExportBar from '@/components/static-export-bar'
 import { formatNumber, type ExportPayload } from '@/lib/exports'
 import { fmtDate } from '@/lib/format-date'
 import { fmtInt, fmtUsd, fmtNum, theadCls } from '@/components/reports/report-format'
-import { loadTicketKeys } from '@/lib/ticket-matching'
+import {
+  LOAD_SALES_SELECT, describeSale, fetchLoadSales, isContractComplete, isMissingRelation, saleAllocations,
+  type LoadSale, type SaleAllocation,
+} from '@/lib/load-sales'
+import { allocationPaid, fetchSettlementLinesForSales, settlementLinesByLoad } from '@/lib/contracts-sales-fetch'
 
 export const dynamic = 'force-dynamic'
 
@@ -66,37 +70,42 @@ type LoadRow = {
   from_bin: { name_or_number: string } | null
 }
 
-type SettlementLineRow = {
-  load_id: string | null
-  ticket_number: string | null
-  net_bushels: number
-  net_revenue: number | null
-}
+const LOAD_SELECT = `
+  id, date, ticket_number, buyer_ticket_number, net_weight, moisture, dry_bushels_override, crop_id, from_type, hauler_truck, truck_label,
+  truck:trucks(name_or_number),
+  from_field:fields!loads_from_field_id_fkey(name_or_number),
+  from_bin:bins!loads_from_bin_id_fkey(name_or_number)
+`
 
-async function fetchAllLoadsForContract(
+/**
+ * The loads applied to this contract (094 seam): the contract's load_sales
+ * rows → their loads (a split load's contract part counts here), plus any
+ * load whose contract_id mirror still names it (a database before 094 has
+ * only that). Returns every sale row of those loads too, so a split can be
+ * described ("split: 58 bu contract … · 913 bu spot").
+ */
+async function fetchLoadsForContract(
   supabase: SupabaseClient,
   contractId: string,
-): Promise<LoadRow[]> {
-  const PAGE = 1000
-  const out: LoadRow[] = []
-  for (let from = 0; ; from += PAGE) {
-    const { data, error } = await supabase
-      .from('loads')
-      .select(`
-        id, date, ticket_number, buyer_ticket_number, net_weight, moisture, dry_bushels_override, crop_id, from_type, hauler_truck, truck_label,
-        truck:trucks(name_or_number),
-        from_field:fields!loads_from_field_id_fkey(name_or_number),
-        from_bin:bins!loads_from_bin_id_fkey(name_or_number)
-      `)
-      .eq('contract_id', contractId)
-      .order('date', { ascending: true })
-      .range(from, from + PAGE - 1)
-    if (error) throw error
-    const batch = (data ?? []) as unknown as LoadRow[]
-    out.push(...batch)
-    if (batch.length < PAGE) break
+): Promise<{ loads: LoadRow[]; sales: LoadSale[] }> {
+  const rowsQ = await fetchAllRows<LoadSale>((f, t) => supabase
+    .from('load_sales').select(LOAD_SALES_SELECT).eq('contract_id', contractId).order('id').range(f, t))
+  let contractRows: LoadSale[] = []
+  if (rowsQ.error) { if (!isMissingRelation(rowsQ.error.message)) throw new Error(rowsQ.error.message) } else contractRows = rowsQ.data
+  const byId = new Map<string, LoadRow>()
+  const ids = [...new Set(contractRows.map((r) => r.load_id))]
+  for (let i = 0; i < ids.length; i += 500) {
+    const { data, error } = await supabase.from('loads').select(LOAD_SELECT).in('id', ids.slice(i, i + 500))
+    if (error) throw new Error(error.message)
+    for (const l of (data ?? []) as unknown as LoadRow[]) byId.set(l.id, l)
   }
-  return out
+  const mirrorQ = await fetchAllRows<LoadRow>((f, t) => supabase
+    .from('loads').select(LOAD_SELECT).eq('contract_id', contractId).order('date', { ascending: true }).order('id').range(f, t))
+  if (mirrorQ.error) throw new Error(mirrorQ.error.message)
+  for (const l of mirrorQ.data) if (!byId.has(l.id)) byId.set(l.id, l)
+  const loads = [...byId.values()].sort((a, b) => a.date.localeCompare(b.date) || a.id.localeCompare(b.id))
+  const sales = await fetchLoadSales(supabase, { loadIds: loads.map((l) => l.id) })
+  return { loads, sales }
 }
 
 export default async function ContractDetailPage({ params }: { params: { id: string } }) {
@@ -120,35 +129,22 @@ export default async function ContractDetailPage({ params }: { params: { id: str
   if (contractErr || !contractData) notFound()
   const contract = contractData as unknown as ContractDetail
 
-  const loads = await fetchAllLoadsForContract(supabase, contract.id)
+  const { loads, sales } = await fetchLoadsForContract(supabase, contract.id)
 
-  // Pull settlement lines that reference any of these loads (by id OR ticket #).
+  // Settlement lines that reference any of these loads (by id OR ticket #),
+  // and the numbers of the OTHER contracts a split load is partly on.
   const loadIds = loads.map((l) => l.id)
   const ticketNumbers = loads.map((l) => l.ticket_number).filter(Boolean) as string[]
-  let lines: SettlementLineRow[] = []
-  if (loadIds.length || ticketNumbers.length) {
-    const filters: string[] = []
-    if (loadIds.length) filters.push(`load_id.in.(${loadIds.join(',')})`)
-    if (ticketNumbers.length) {
-      const escaped = ticketNumbers.map((t) => `"${t.replace(/"/g, '\\"')}"`).join(',')
-      filters.push(`ticket_number.in.(${escaped})`)
-    }
-    const { data, error } = await fetchAllRows((f, t) => supabase
-      .from('settlement_lines')
-      .select('load_id, ticket_number, net_bushels, net_revenue')
-      .or(filters.join(','))
-      .order('id')
-      .range(f, t))
-    if (error) throw error
-    lines = (data ?? []) as SettlementLineRow[]
-  }
-
-  const lineByLoadId = new Map<string, SettlementLineRow>()
-  const lineByTicket = new Map<string, SettlementLineRow>()
-  for (const l of lines) {
-    if (l.load_id) lineByLoadId.set(l.load_id, l)
-    if (l.ticket_number) lineByTicket.set(l.ticket_number.trim().toLowerCase(), l)
-  }
+  const otherContractIds = [...new Set(sales.map((s) => s.contract_id).filter((id): id is string => !!id && id !== contract.id))]
+  const [lines, otherContractsQ] = await Promise.all([
+    fetchSettlementLinesForSales(supabase, { loadIds, ticketNumbers }),
+    otherContractIds.length > 0
+      ? supabase.from('contracts').select('id, contract_number').in('id', otherContractIds)
+      : Promise.resolve({ data: [] as Array<{ id: string; contract_number: string }> }),
+  ])
+  const contractNumberById = new Map<string, string>([[contract.id, contract.contract_number]])
+  for (const c of (otherContractsQ.data ?? []) as Array<{ id: string; contract_number: string }>) contractNumberById.set(c.id, c.contract_number)
+  const linesFor = settlementLinesByLoad(lines)
 
   function dryBu(load: LoadRow): number {
     const { dryBushels } = computeBushels({
@@ -160,22 +156,31 @@ export default async function ContractDetailPage({ params }: { params: { id: str
     })
     return dryBushels ?? 0
   }
-  function lineFor(load: LoadRow): SettlementLineRow | null {
-    if (lineByLoadId.has(load.id)) return lineByLoadId.get(load.id)!
-    for (const k of loadTicketKeys(load)) if (lineByTicket.has(k)) return lineByTicket.get(k)!
-    return null
+
+  // Each load's part on THIS contract (094 seam): a whole load, or the
+  // contract share of a split one. Paid figures follow the settlement line
+  // that names this contract, or the load's single line scaled by the share.
+  const allocations = saleAllocations(loads.map((l) => ({ id: l.id, contract_id: null, to_type: 'buyer' as const, dryBu: dryBu(l) })), sales)
+  type LoadPart = { load: LoadRow; part: SaleAllocation; allocs: SaleAllocation[]; splitNote: string | null; paid: { bushels: number; revenue: number } | null }
+  const parts: LoadPart[] = []
+  for (const load of loads) {
+    const allocs = allocations.get(load.id) ?? []
+    const part = allocs.find((a) => a.saleType === 'contract' && a.contractId === contract.id)
+      // The mirror column named this contract but no sale row exists yet (pre-094): the whole load.
+      ?? (allocs.length === 0 ? { loadId: load.id, saleType: 'contract' as const, contractId: contract.id, share: 1, bushels: dryBu(load), sale: null } : null)
+    if (!part) continue
+    const splitNote = allocs.length > 1 ? describeSale(allocs, (id) => contractNumberById.get(id), load as { to_type?: 'buyer' }) : null
+    parts.push({ load, part, allocs, splitNote, paid: allocationPaid(part, linesFor(load)) })
   }
 
   let delivered = 0
   let paidBu = 0
   let paidRev = 0
-  for (const load of loads) {
-    const bu = dryBu(load)
-    delivered += bu
-    const ln = lineFor(load)
-    if (ln) {
-      paidBu += Number(ln.net_bushels ?? 0)
-      paidRev += Number(ln.net_revenue ?? 0)
+  for (const p of parts) {
+    delivered += p.part.bushels
+    if (p.paid) {
+      paidBu += p.paid.bushels
+      paidRev += p.paid.revenue
     }
   }
   const remaining = Math.max(0, Number(contract.contracted_bushels) - delivered)
@@ -186,9 +191,8 @@ export default async function ContractDetailPage({ params }: { params: { id: str
   const contractRevenue = contractPrice != null
     ? contractPrice * Number(contract.contracted_bushels)
     : null
-  const autoComplete = Number(contract.contracted_bushels) > 0
-    && delivered >= Number(contract.contracted_bushels)
-  const isComplete = contract.completed_at != null || autoComplete
+  const autoComplete = isContractComplete(null, Number(contract.contracted_bushels), delivered)
+  const isComplete = isContractComplete(contract.completed_at, Number(contract.contracted_bushels), delivered)
 
   // Seed production contract (077): its own detail page — elections + payments
   // ledgers, expected-outcome selector, linked fields, effective price walk.
@@ -243,7 +247,7 @@ export default async function ContractDetailPage({ params }: { params: { id: str
           a?.assumed_futures != null ? Number(a.assumed_futures) + Number(a.assumed_basis ?? 0) : null
         }
         deliveredBu={delivered}
-        loadCount={loads.length}
+        loadCount={parts.length}
       />
     )
   }
@@ -318,22 +322,21 @@ export default async function ContractDetailPage({ params }: { params: { id: str
       {
         title: 'Loads delivered',
         columns: [
-          { label: 'Date' }, { label: 'Ticket' }, { label: 'Truck' }, { label: 'From' },
+          { label: 'Date' }, { label: 'Ticket' }, { label: 'Sale' }, { label: 'Truck' }, { label: 'From' },
           { label: 'Net wt (lb)', align: 'right', format: 'int' }, { label: 'Moisture %', align: 'right', format: 'dec1' },
           { label: 'Dry bu', align: 'right', format: 'bu' }, { label: 'Paid bu', align: 'right', format: 'bu' }, { label: 'Paid $', align: 'right', format: 'usd0' },
         ],
         rows: [
-          ...loads.map((l) => {
-            const ln = lineFor(l)
+          ...parts.map(({ load: l, part, splitNote, paid }) => {
             const fromName = l.from_type === 'bin' ? l.from_bin?.name_or_number : l.from_field?.name_or_number
             return [
-              fmtDate(l.date), l.ticket_number ?? '', truckExportLabel(l), fromName ?? '',
-              l.net_weight ?? '', l.moisture ?? '', dryBu(l), ln ? Number(ln.net_bushels) : '', ln?.net_revenue != null ? Number(ln.net_revenue) : '',
+              fmtDate(l.date), l.ticket_number ?? '', splitNote ?? `Contract ${contract.contract_number}`, truckExportLabel(l), fromName ?? '',
+              l.net_weight ?? '', l.moisture ?? '', part.bushels, paid ? paid.bushels : '', paid ? paid.revenue : '',
             ]
           }),
-          ['Totals', '', '', '', '', '', delivered, paidBu, paidRev],
+          ['Totals', '', '', '', '', '', '', delivered, paidBu, paidRev],
         ],
-        rowMeta: [...loads.map(() => 'data' as const), 'total'],
+        rowMeta: [...parts.map(() => 'data' as const), 'total'],
       },
     ],
   }
@@ -413,9 +416,9 @@ export default async function ContractDetailPage({ params }: { params: { id: str
 
         <section>
           <h2 className="text-sm font-semibold text-slate-700 mb-2">
-            Loads ({loads.length})
+            Loads ({parts.length})
           </h2>
-          {loads.length === 0 ? (
+          {parts.length === 0 ? (
             <p className="text-sm text-slate-400">No loads delivered against this contract yet.</p>
           ) : (
             <div className="overflow-x-auto">
@@ -428,22 +431,23 @@ export default async function ContractDetailPage({ params }: { params: { id: str
                     <th className="text-left px-3 py-2 whitespace-nowrap">From</th>
                     <th className="text-right px-3 py-2 whitespace-nowrap">Net weight (lb)</th>
                     <th className="text-right px-3 py-2 whitespace-nowrap">Moisture %</th>
-                    <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu</th>
+                    <th className="text-right px-3 py-2 whitespace-nowrap">Dry bu <span className="font-normal text-slate-400">(on this contract)</span></th>
                     <th className="text-right px-3 py-2 whitespace-nowrap">Paid bu</th>
                     <th className="text-right px-3 py-2 whitespace-nowrap">Paid $</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {loads.map((l) => {
-                    const bu = dryBu(l)
-                    const ln = lineFor(l)
+                  {parts.map(({ load: l, part, splitNote, paid }) => {
                     const fromName = l.from_type === 'bin'
                       ? l.from_bin?.name_or_number
                       : l.from_field?.name_or_number
                     return (
                       <tr key={l.id} className="border-t border-slate-100">
                         <td className="px-3 py-2 whitespace-nowrap"><Link href={`/loads/${l.id}`} className="text-brand-deep hover:underline">{fmtDate(l.date)}</Link></td>
-                        <td className="px-3 py-2 whitespace-nowrap">{l.ticket_number ?? ''}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          {l.ticket_number ?? ''}
+                          {splitNote && <span className="block text-xs text-slate-500">{splitNote}</span>}
+                        </td>
                         <td className="px-3 py-2 whitespace-nowrap">
                           {truckDisplay(l).name}
                           {truckDisplay(l).hauler && <span className="ml-1.5 text-[10px] uppercase tracking-wide bg-slate-100 text-slate-500 rounded px-1.5 py-0.5">hauler</span>}
@@ -451,9 +455,9 @@ export default async function ContractDetailPage({ params }: { params: { id: str
                         <td className="px-3 py-2 whitespace-nowrap">{fromName ?? ''}</td>
                         <td className="px-3 py-2 text-right tabular-nums">{l.net_weight != null ? fmtInt(Number(l.net_weight)) : ''}</td>
                         <td className="px-3 py-2 text-right tabular-nums">{l.moisture != null ? fmtNum(Number(l.moisture), 1) : ''}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{fmtInt(bu)}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{ln ? fmtInt(Number(ln.net_bushels)) : ''}</td>
-                        <td className="px-3 py-2 text-right tabular-nums">{ln?.net_revenue != null ? fmtUsd(Number(ln.net_revenue)) : ''}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{fmtInt(part.bushels)}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{paid ? fmtInt(paid.bushels) : ''}</td>
+                        <td className="px-3 py-2 text-right tabular-nums">{paid ? fmtUsd(paid.revenue) : ''}</td>
                       </tr>
                     )
                   })}

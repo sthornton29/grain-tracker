@@ -9,6 +9,17 @@ import { parseCsv } from '@/lib/csv'
 import { reportError } from '@/lib/friendly-error'
 import type { Bin, Buyer, Contract, Crop, Field, Truck } from '@/lib/types'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
+import { isMissingRelation, singleSaleRow, writeManyLoadSales, type LoadSaleInput, type SaleType } from '@/lib/load-sales'
+import { estimateSpotPrice, withSpotEstimate } from '@/lib/spot-estimate'
+
+/** The contract_number column also takes the two off-contract sales (094):
+ *  "SPOT" / "Spot" → spot; "DP" / "Price later" / "PRICE LATER" → price later. */
+function saleKindFromCell(s: string): 'spot' | 'price_later' | null {
+  const t = s.trim().toLowerCase().replace(/[_\s]+/g, ' ')
+  if (t === 'spot') return 'spot'
+  if (t === 'dp' || t === 'price later' || t === 'delayed price') return 'price_later'
+  return null
+}
 
 const TEMPLATE_HEADERS = [
   'date',
@@ -50,8 +61,29 @@ const SAMPLE_ROW = [
   'C-2025-01',
 ]
 
+/** A second sample: a load sold spot (no contract) — "SPOT" in contract_number. */
+const SAMPLE_SPOT_ROW = [
+  '2025-10-15',
+  '15:10',
+  '12346',
+  '1',
+  'Corn',
+  '2025',
+  '81500',
+  '32000',
+  '',
+  '15.8',
+  '57.5',
+  '',
+  'Field A',
+  '',
+  '',
+  'ADM',
+  'SPOT',
+]
+
 function downloadTemplate() {
-  const csv = TEMPLATE_HEADERS.join(',') + '\n' + SAMPLE_ROW.join(',') + '\n'
+  const csv = TEMPLATE_HEADERS.join(',') + '\n' + SAMPLE_ROW.join(',') + '\n' + SAMPLE_SPOT_ROW.join(',') + '\n'
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
@@ -82,6 +114,8 @@ type Built = {
   ticketKey: string
   issues: string[]
   summary: string
+  /** How the load is sold (094), written as sale rows after the insert. */
+  sale: { kind: SaleType; contract_id: string | null } | null
 }
 
 export default function LoadsImportPage() {
@@ -136,7 +170,18 @@ export default function LoadsImportPage() {
   const fieldByName = useMemo(() => new Map(fields.map((f) => [norm(f.name_or_number), f])), [fields])
   const binByName = useMemo(() => new Map(bins.map((b) => [norm(b.name_or_number), b])), [bins])
   const buyerByName = useMemo(() => new Map(buyers.map((b) => [norm(b.name), b])), [buyers])
-  const contractByNumber = useMemo(() => new Map(contracts.map((c) => [norm(c.contract_number), c])), [contracts])
+  // A contract number can repeat across buyers / years; the row's buyer +
+  // crop + crop year picks among duplicates.
+  const contractsByNumber = useMemo(() => {
+    const m = new Map<string, Contract[]>()
+    for (const c of contracts) {
+      const k = norm(c.contract_number)
+      const list = m.get(k) ?? []
+      list.push(c)
+      m.set(k, list)
+    }
+    return m
+  }, [contracts])
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -230,26 +275,38 @@ export default function LoadsImportPage() {
       else { to_type = 'buyer'; to_buyer_id = b.id }
     }
 
-    let contract_id: string | null = null
-    if (contractStr) {
-      const c = contractByNumber.get(norm(contractStr))
-      if (!c) issues.push(`contract "${contractStr}" not found`)
-      else contract_id = c.id
+    const cropYearRaw = cell(row, 'crop_year')
+    const cropYear = cropYearRaw === '' ? null : Number(cropYearRaw)
+    if (cropYearRaw !== '' && (!Number.isFinite(cropYear) || (cropYear as number) < 1900)) {
+      issues.push(`crop_year "${cropYearRaw}" is not a valid year`)
     }
-    if (contract_id && to_type !== 'buyer') {
-      issues.push('contract only applies to buyer deliveries')
+
+    // The sale (094): a contract number, or SPOT / DP / PRICE LATER.
+    let contract_id: string | null = null
+    let sale: Built['sale'] = null
+    if (contractStr) {
+      const kind = saleKindFromCell(contractStr)
+      if (kind) {
+        sale = { kind, contract_id: null }
+      } else {
+        const candidates = contractsByNumber.get(norm(contractStr)) ?? []
+        const score = (c: Contract) =>
+          (to_buyer_id && c.buyer_id === to_buyer_id ? 4 : 0) +
+          (crop && c.crop_id === crop.id ? 2 : 0) +
+          (cropYear != null && c.crop_year === cropYear ? 1 : 0)
+        const best = [...candidates].sort((a, b) => score(b) - score(a))[0]
+        if (!best) issues.push(`contract "${contractStr}" not found`)
+        else { contract_id = best.id; sale = { kind: 'contract', contract_id: best.id } }
+      }
+    }
+    if (sale && to_type !== 'buyer') {
+      issues.push(sale.kind === 'contract' ? 'contract only applies to buyer deliveries' : `${contractStr} only applies to buyer deliveries`)
     }
 
     const gross = num(cell(row, 'gross_weight'))
     const tare = num(cell(row, 'tare_weight'))
     let net = num(cell(row, 'net_weight'))
     if (net == null && gross != null && tare != null) net = +(gross - tare).toFixed(2)
-
-    const cropYearRaw = cell(row, 'crop_year')
-    const cropYear = cropYearRaw === '' ? null : Number(cropYearRaw)
-    if (cropYearRaw !== '' && (!Number.isFinite(cropYear) || (cropYear as number) < 1900)) {
-      issues.push(`crop_year "${cropYearRaw}" is not a valid year`)
-    }
 
     const timeRaw = cell(row, 'time')
 
@@ -286,11 +343,14 @@ export default function LoadsImportPage() {
     if (from_type === 'bin' && from_bin_id) summaryParts.push(`← bin ${fromBinStr}`)
     if (to_type === 'bin' && to_bin_id) summaryParts.push(`→ bin ${toBinStr}`)
     if (to_type === 'buyer' && to_buyer_id) summaryParts.push(`→ ${toBuyerStr}`)
+    if (sale?.kind === 'spot') summaryParts.push('spot')
+    if (sale?.kind === 'price_later') summaryParts.push('price later')
+    if (sale?.kind === 'contract') summaryParts.push(`#${contractStr}`)
 
-    return { rowIdx, payload, ticketKey, issues, summary: summaryParts.join(' · ') }
+    return { rowIdx, payload, ticketKey, issues, summary: summaryParts.join(' · '), sale }
   }
 
-  const built = useMemo(() => rows.map((r, i) => buildPayload(r, i)), [rows, colIdx, truckByName, cropByName, fieldByName, binByName, buyerByName, contractByNumber])
+  const built = useMemo(() => rows.map((r, i) => buildPayload(r, i)), [rows, colIdx, truckByName, cropByName, fieldByName, binByName, buyerByName, contractsByNumber])
 
   const totals = useMemo(() => {
     let ok = 0, withIssues = 0, dupes = 0
@@ -309,7 +369,7 @@ export default function LoadsImportPage() {
   async function doImport() {
     setErr(null); setResult(null); setBusy(true); setShowAllFailures(false)
     const failed: Array<{ rowIdx: number; reason: string }> = []
-    const toInsert: Array<{ rowIdx: number; payload: Record<string, unknown> }> = []
+    const toInsert: Array<{ rowIdx: number; payload: Record<string, unknown>; sale: Built['sale'] }> = []
     let skipped = 0
     const seenInFile = new Set<string>()
     for (const b of built) {
@@ -318,29 +378,68 @@ export default function LoadsImportPage() {
         if (existingTickets.has(b.ticketKey) || seenInFile.has(b.ticketKey)) { skipped++; continue }
         seenInFile.add(b.ticketKey)
       }
-      toInsert.push({ rowIdx: b.rowIdx, payload: b.payload! })
+      toInsert.push({ rowIdx: b.rowIdx, payload: b.payload!, sale: b.sale })
     }
 
     let ok = 0
+    // Saved load ids paired with their sale, for the sale rows below (094).
+    const savedSales: Array<{ loadId: string; sale: NonNullable<Built['sale']>; payload: Record<string, unknown> }> = []
     if (toInsert.length > 0) {
       // Stamp who imported them (073 — per-user last-load defaults). If the
       // column isn't applied yet, the existing per-row fallback path retries
       // each row without it, so an unapplied migration degrades, never fails.
       const { data: { user } } = await supabase.auth.getUser()
       const stamp = (p: Record<string, unknown>) => (user?.id ? { ...p, created_by: user.id } : p)
-      const { error } = await supabase.from('loads').insert(toInsert.map((x) => stamp(x.payload)))
+      const { data: inserted, error } = await supabase.from('loads').insert(toInsert.map((x) => stamp(x.payload))).select('id')
       if (error) {
         // Fall back per-row so partial progress still saves.
-        for (const { rowIdx, payload } of toInsert) {
-          let { error: e2 } = await supabase.from('loads').insert(stamp(payload))
+        for (const { rowIdx, payload, sale } of toInsert) {
+          let { data: one, error: e2 } = await supabase.from('loads').insert(stamp(payload)).select('id').single()
           if (e2 && user?.id && e2.message.includes('created_by')) {
-            ;({ error: e2 } = await supabase.from('loads').insert(payload))
+            ;({ data: one, error: e2 } = await supabase.from('loads').insert(payload).select('id').single())
           }
           if (e2) failed.push({ rowIdx, reason: reportError(e2, { action: 'save this row', noun: 'load' }) })
-          else ok++
+          else {
+            ok++
+            const id = (one as { id: string } | null)?.id
+            if (id && sale) savedSales.push({ loadId: id, sale, payload })
+          }
         }
       } else {
         ok = toInsert.length
+        const ids = ((inserted as Array<{ id: string }> | null) ?? []).map((r) => r.id)
+        toInsert.forEach((x, k) => { if (x.sale && ids[k]) savedSales.push({ loadId: ids[k], sale: x.sale, payload: x.payload }) })
+      }
+    }
+    // The sale rows: contract rows for consistency with the mirror, spot
+    // rows priced by the estimate (the sheet carries no bid), price-later
+    // rows unpriced. A database before 094 has no table — nothing to do.
+    if (savedSales.length > 0) {
+      const items: Array<{ loadId: string; rows: LoadSaleInput[] }> = []
+      for (const s of savedSales) {
+        let rows = s.sale.kind === 'contract'
+          ? singleSaleRow({ sale_type: 'contract', contract_id: s.sale.contract_id })
+          : singleSaleRow({ sale_type: s.sale.kind })
+        if (s.sale.kind === 'spot') {
+          try {
+            const cropId = (s.payload.crop_id as string | null) ?? null
+            const buyerId = (s.payload.to_buyer_id as string | null) ?? null
+            const d = await estimateSpotPrice(supabase, {
+              cropName: crops.find((c) => c.id === cropId)?.name ?? null, cropId, cropYear: (s.payload.crop_year as number | null) ?? null,
+              buyerId, buyerName: buyers.find((b) => b.id === buyerId)?.name ?? null, deliveryDate: String(s.payload.date),
+            })
+            rows = rows.map((r) => withSpotEstimate(r, d))
+          } catch { /* unpriced until the settlement */ }
+        }
+        items.push({ loadId: s.loadId, rows })
+      }
+      try {
+        await writeManyLoadSales(supabase, items)
+      } catch (e) {
+        const msg = (e as Error)?.message ?? ''
+        if (!isMissingRelation(msg)) {
+          setErr(`The loads imported, but how they were sold didn’t save. ${reportError(e as Error, { action: 'save how these loads were sold', noun: 'sale' })} Set it from the Loads page.`)
+        }
       }
     }
     setBusy(false)
@@ -406,6 +505,7 @@ export default function LoadsImportPage() {
             <li>Set <code>to_bin</code> <strong>or</strong> <code>to_buyer</code> (not both) to record a destination.</li>
             <li>If <code>net_weight</code> is blank, it&rsquo;s computed as <code>gross_weight - tare_weight</code>.</li>
             <li>Truck / crop / field / bin / buyer look up by name (case-insensitive). Contracts look up by <code>contract_number</code>.</li>
+            <li>For a buyer load sold off-contract, put <code>SPOT</code> or <code>PRICE LATER</code> (or <code>DP</code>) in <code>contract_number</code>. Spot loads get an estimated price until their settlement arrives.</li>
             <li>Duplicates are detected by <code>ticket_number</code>.</li>
           </ul>
         </div>

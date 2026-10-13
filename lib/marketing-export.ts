@@ -83,9 +83,10 @@ export function buildMarketingExport(args: {
     const adv = cropMeta.get(r.cropId) ?? false
     // Seed production contracts get their own block below, never the grain type lines.
     const cropContracts = contracts.filter((c) => c.crop_id === r.cropId && (c.contract_kind ?? 'grain') !== 'seed_production')
+    // The virtual spot contract (094) lists as its own line, never as a forward.
     const byType = new Map<string, number>()
     for (const c of cropContracts) {
-      const t = CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']
+      const t = (c as { virtual?: string }).virtual === 'spot' ? 'Spot' : CONTRACT_TYPE_LABEL[c.contract_type ?? 'forward']
       byType.set(t, (byType.get(t) ?? 0) + Number(c.contracted_bushels ?? 0))
     }
     // The standing headline figures lean on assumed pricing whenever some

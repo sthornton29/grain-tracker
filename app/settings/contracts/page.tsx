@@ -169,10 +169,16 @@ export default function ContractsSettingsPage() {
 
   async function remove(c: Contract) {
     setErr(null)
-    const { count } = await supabase.from('loads').select('id', { count: 'exact', head: true }).eq('contract_id', c.id)
-    const loads = count ?? 0
+    // Loads applied to the contract (094): one load_sales row per load on it
+    // (a split load counts here even though loads.contract_id is null), plus
+    // the mirror column for a database before 094.
+    const [salesQ, loadsQ] = await Promise.all([
+      supabase.from('load_sales').select('id', { count: 'exact', head: true }).eq('contract_id', c.id),
+      supabase.from('loads').select('id', { count: 'exact', head: true }).eq('contract_id', c.id),
+    ])
+    const loads = Math.max(salesQ.error ? 0 : salesQ.count ?? 0, loadsQ.count ?? 0)
     if (loads > 0) {
-      setErr(`Contract #${c.contract_number} has ${plural(loads, 'load')} delivered against it, so it can’t be deleted. Move those loads to another contract first.`)
+      setErr(`${plural(loads, 'load')} ${loads === 1 ? 'is' : 'are'} applied to contract #${c.contract_number}, so it can’t be deleted. Move those loads to another sale first.`)
       return
     }
     const ok = await confirm({ title: `Delete contract #${c.contract_number}?`, body: 'No loads are delivered against it. This can’t be undone.', confirmLabel: 'Delete', danger: true })

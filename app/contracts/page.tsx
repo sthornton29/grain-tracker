@@ -7,14 +7,18 @@ import {
   CONTRACT_FILTER_COOKIE, CONTRACTS_ALL_HREF, activeContractFilterCount, hasAnyContractFilterParam,
   parseContractFilters, savedContractFilters, serializeContractFilters,
 } from '@/lib/contract-filters'
-import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/server'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
-import { computeBushels } from '@/lib/shrink'
 import { buildDoubleCropSet, cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { buildEntityScope } from '@/lib/entity-scope'
 import { expectedProductionFromBreakout, isCottonCrop, segmentAcresByCrop } from '@/lib/marketing'
-import { contractPosition } from '@/lib/contract-position'
+import { contractPosition, spotPositionContract } from '@/lib/contract-position'
+import { isContractComplete } from '@/lib/load-sales'
+import {
+  allocationPaid, fetchSalesForContracts, fetchSettlementLinesForSales, narrowPool, priceLaterRowFacts,
+  settlementLinesByLoad, spotRowFacts, type PriceLaterRowFacts, type SpotRowFacts,
+} from '@/lib/contracts-sales-fetch'
+import { priceLaterPoolId } from '@/lib/virtual-contracts'
 import { fmtDate } from '@/lib/format-date'
 import ContractFlagIcon, { CONTRACT_FLAG_LABEL, type ContractFlag } from '@/components/contract-flag'
 import StaticExportBar from '@/components/static-export-bar'
@@ -27,13 +31,13 @@ import {
 } from '@/components/reports/report-format'
 import type { ExportPayload } from '@/lib/exports'
 import { CONTRACT_TYPE_LABEL, effectiveContractType, type ContractType, type PricingStatus } from '@/lib/contracts'
+import { CONTRACT_TYPE_FILTER_LABEL, type ContractTypeFilter } from '@/lib/contract-filters'
 import { parseContractMonth } from '@/lib/hedging'
 import { blendedElectedPrice, cumulativePricedPct, effectivePriceWalk, missingPremiumRows } from '@/lib/seed-contracts'
 import type { SeedContractDetails, SeedContractPayment, SeedContractPremium, SeedPricingElection } from '@/lib/seed-contracts'
 import type { CropAssumption } from '@/lib/types'
 import ContractFilters from './contract-filters'
 import LinkRow from './link-row'
-import { loadTicketKeys } from '@/lib/ticket-matching'
 
 export const dynamic = 'force-dynamic'
 
@@ -68,40 +72,6 @@ function isSeedKind(c: Pick<ContractRow, 'contract_kind'>): boolean {
   return c.contract_kind === 'seed_production'
 }
 
-type LoadRow = {
-  id: string
-  contract_id: string | null
-  ticket_number: string | null
-  buyer_ticket_number?: string | null
-  net_weight: number | null
-  moisture: number | null
-  crop_id: string | null
-  crop_year: number | null
-  dry_bushels_override: number | null
-  from_type: string | null
-  from_field_id: string | null
-  to_type: string | null
-}
-
-type CropRow = {
-  id: string
-  name: string
-  base_moisture_pct: number | null
-  base_lb_per_bushel: number | null
-  harvest_category: 'fall' | 'spring'
-  double_crop: boolean | null
-}
-
-type SettlementLineRow = {
-  load_id: string | null
-  ticket_number: string | null
-  net_bushels: number
-  net_revenue: number | null
-}
-
-type FieldRow = { id: string; farm_id: string | null }
-type FarmRow = { id: string; entity_id: string | null }
-type EntityRow = { id: string; name: string; entity_role: string | null }
 type PlantingRow = {
   id: string; field_id: string; crop_id: string; season_year: number
   planted_acres: number | null; irrigated_acres: number | null; dryland_acres: number | null
@@ -132,20 +102,6 @@ function daysUntilFirstNotice(contractMonth: string | null): number | null {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
   return Math.ceil((fnd.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
-}
-
-// Paginated fetch of every load (lib/fetch-all-rows — cap-agnostic
-// termination, so a lowered db-max-rows can never silently truncate it).
-async function fetchAllContractLoads(supabase: SupabaseClient): Promise<LoadRow[]> {
-  const { data, error } = await fetchAllRows<LoadRow>((f, t) =>
-    supabase
-      .from('loads')
-      .select('id, contract_id, ticket_number, buyer_ticket_number, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, to_type')
-      .order('id', { ascending: true })
-      .range(f, t),
-  )
-  if (error) throw new Error(error.message)
-  return data
 }
 
 function isFuture(start: string | null): boolean {
@@ -184,7 +140,7 @@ export default async function ContractsPage({
   const hideCompleted = filters.hide_completed
   const hideFuture = filters.hide_future
 
-  const [contractsRes, loads, cropsRes, fieldsRes, farmsRes, entitiesRes, linesRes, plantingsRes] = await Promise.all([
+  const [contractsRes, salesData, lines, assumptionsRes, plantingsRes] = await Promise.all([
     fetchAllRows((f, t) => supabase
       .from('contracts')
       .select(`
@@ -197,41 +153,22 @@ export default async function ContractsPage({
       .order('contract_number')
       .order('id')
       .range(f, t)),
-    fetchAllContractLoads(supabase),
-    supabase.from('crops').select('id, name, base_moisture_pct, base_lb_per_bushel, harvest_category, double_crop').order('name'),
-    supabase.from('fields').select('id, farm_id'),
-    supabase.from('farms').select('id, entity_id'),
-    supabase.from('entities').select('id, name, entity_role').order('name'),
-    fetchAllRows((f, t) => supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue').order('id').range(f, t)),
+    // Every load with how it was sold (094 seam): allocations per load, delivered
+    // per contract, the spot contracts and price-later pools, plus the lookups.
+    fetchSalesForContracts(supabase),
+    fetchSettlementLinesForSales(supabase),
+    supabase.from('crop_assumptions').select('crop_id, crop_year, assumed_futures, assumed_basis'),
     fetchAllRows((f, t) => supabase.from('field_plantings').select('season_year').order('id').range(f, t)),
   ])
 
   const allContracts = (contractsRes.data as unknown as ContractRow[]) ?? []
-  const crops = (cropsRes.data ?? []) as CropRow[]
-  const fields = (fieldsRes.data ?? []) as FieldRow[]
-  const farms = (farmsRes.data ?? []) as FarmRow[]
-  const entities = (entitiesRes.data ?? []) as EntityRow[]
-  const lines = (linesRes.data ?? []) as SettlementLineRow[]
+  const { loads, allocations, deliveredByContract, spots, pools, unassigned, crops, fields, farms, entities, buyers, fieldEntity } = salesData
+  const assumptions = (assumptionsRes.data ?? []) as Array<{ crop_id: string; crop_year: number; assumed_futures: number | null; assumed_basis: number | null }>
 
   const cropById = new Map(crops.map((c) => [c.id, c]))
-  const farmEntity = new Map(farms.map((f) => [f.id, f.entity_id]))
-  const fieldEntity = new Map(fields.map((f) => [f.id, f.farm_id ? farmEntity.get(f.farm_id) ?? null : null]))
-
-  // Build maps:
-  //   loadIdToLine:     load_id    -> line (paid lookup by load_id)
-  //   ticketToLine:     ticket#    -> line (paid lookup by ticket, for loads whose line was added later)
-  const loadIdToLine = new Map<string, SettlementLineRow>()
-  const ticketToLine = new Map<string, SettlementLineRow>()
-  for (const l of lines) {
-    if (l.load_id) loadIdToLine.set(l.load_id, l)
-    if (l.ticket_number) ticketToLine.set(l.ticket_number.trim().toLowerCase(), l)
-  }
-
-  function lineForLoad(load: LoadRow): SettlementLineRow | null {
-    if (loadIdToLine.has(load.id)) return loadIdToLine.get(load.id)!
-    for (const k of loadTicketKeys(load)) if (ticketToLine.has(k)) return ticketToLine.get(k)!
-    return null
-  }
+  const buyerName = (id: string) => buyers.find((b) => b.id === id)?.name
+  const assumptionFor = (cropId: string, year: number) => assumptions.find((a) => a.crop_id === cropId && a.crop_year === year) ?? null
+  const linesFor = settlementLinesByLoad(lines)
 
   const plantingYears = ((plantingsRes.data ?? []) as Array<{ season_year: number | null }>).map((p) => p.season_year)
   const cropYearOptions = cropYearOptionsFromPlantings(plantingYears, cropYear)
@@ -266,18 +203,6 @@ export default async function ContractsPage({
     }
   }
 
-  function loadDryBu(l: LoadRow): number {
-    const crop = l.crop_id ? cropById.get(l.crop_id) : null
-    const { dryBushels } = computeBushels({
-      netWeightLb: l.net_weight,
-      moisturePct: l.moisture,
-      baseMoisturePct: crop?.base_moisture_pct ?? null,
-      baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
-      dryBushelsOverride: l.dry_bushels_override,
-    })
-    return dryBushels ?? 0
-  }
-
   type Agg = {
     delivered: number
     paidBushels: number
@@ -293,12 +218,13 @@ export default async function ContractsPage({
     return a
   }
   // Two kinds of loads whose bushels can't be counted against a contract here:
-  // loads still pointing at a contract that has since been deleted, and loads
-  // delivered to a buyer with no contract picked at all. Both notices respect
-  // the crop year / crop / entity filters, so the counts describe the same
-  // slice of the operation the table does.
+  // loads still applied to a contract that has since been deleted, and loads
+  // delivered to a buyer with no sale type picked at all (spot and price-later
+  // loads are sold — they are never "missing"). Both notices respect the crop
+  // year / crop / entity filters, so the counts describe the same slice of
+  // the operation the table does.
   const knownContractIds = new Set(allContracts.map((c) => c.id))
-  const loadInFilters = (load: LoadRow): boolean => {
+  const loadInFilters = (load: (typeof loads)[number]): boolean => {
     if (cropYear != null && load.crop_year != null && load.crop_year !== cropYear) return false
     if (cropFilter && load.crop_id !== cropFilter) return false
     if (entityId) {
@@ -307,29 +233,36 @@ export default async function ContractsPage({
     }
     return true
   }
-  let orphanLoadCount = 0
-  let noContractBuyerLoads = 0
+  const loadEntity = (load: { from_type?: string | null; from_field_id?: string | null }): string | null =>
+    load.from_type === 'field' && load.from_field_id ? fieldEntity.get(load.from_field_id) ?? null : null
+  const unassignedBuyerLoadCount = unassigned.filter(loadInFilters).length
+  const orphanLoadIds = new Set<string>()
+  // Per contract: each load contributes ITS SHARE — a split load's contract
+  // part (bushels = share × dry bushels), paid from the settlement line that
+  // names this contract (or its single line scaled by the share).
   for (const load of loads) {
-    if (!load.contract_id) {
-      if (load.to_type === 'buyer' && loadInFilters(load)) noContractBuyerLoads++
-      continue
-    }
-    if (!knownContractIds.has(load.contract_id)) { if (loadInFilters(load)) orphanLoadCount++; continue }
-    const agg = ensure(load.contract_id)
-    agg.loadCount++
-    const bu = loadDryBu(load)
-    agg.delivered += bu
-    const line = lineForLoad(load)
-    if (line) {
-      agg.paidBushels += Number(line.net_bushels ?? 0)
-      agg.revenue += Number(line.net_revenue ?? 0)
-    } else {
-      agg.deliveredUnpaid += bu
-    }
-    if (load.from_type === 'field' && load.from_field_id) {
-      const ent = fieldEntity.get(load.from_field_id) ?? null
+    for (const a of allocations.get(load.id) ?? []) {
+      if (a.saleType !== 'contract' || !a.contractId) continue
+      if (!knownContractIds.has(a.contractId)) { if (loadInFilters(load)) orphanLoadIds.add(load.id); continue }
+      const agg = ensure(a.contractId)
+      agg.loadCount++
+      agg.delivered += a.bushels
+      const paid = allocationPaid(a, linesFor(load))
+      if (paid) {
+        agg.paidBushels += paid.bushels
+        agg.revenue += paid.revenue
+      } else {
+        agg.deliveredUnpaid += a.bushels
+      }
+      const ent = loadEntity(load)
       if (ent) agg.entityIds.add(ent)
     }
+  }
+  const orphanLoadCount = orphanLoadIds.size
+  for (const [id, d] of deliveredByContract) {
+    // The seam's delivered figure is THE rule; the loop above reconciles to it.
+    const agg = aggByContract.get(id)
+    if (agg && Math.abs(agg.delivered - d.dryBu) > 1e-6) agg.delivered = d.dryBu
   }
 
   // contract_number has no unique constraint, so detect dupes and tell them
@@ -348,9 +281,8 @@ export default async function ContractsPage({
       if (isFuture(c.delivery_start_date)) return 'future'
       return 'open'
     }
-    const agg = aggByContract.get(c.id)
-    const delivered = agg?.delivered ?? 0
-    if (delivered >= Number(c.contracted_bushels) && Number(c.contracted_bushels) > 0) return 'complete'
+    const delivered = aggByContract.get(c.id)?.delivered ?? 0
+    if (isContractComplete(c.completed_at, Number(c.contracted_bushels), delivered)) return 'complete'
     if (isFuture(c.delivery_start_date)) return 'future'
     return 'open'
   }
@@ -470,7 +402,37 @@ export default async function ContractsPage({
     return { c, seed, agg, contracted, delivered: agg.delivered, remaining, pct, price, value, paidBu: agg.paidBushels, unpaidBu: agg.deliveredUnpaid, unpaidDollars, flag: flagFor(c) }
   })
 
-  const totals = rows.reduce(
+  // Virtual rows (094): the spot contract per crop × crop year (held by the
+  // marketing agent, or per field entity without one) and the price-later
+  // pools per crop × year × buyer (following the loads' field entities). They
+  // follow the crop / year / entity / type filters; the two "show" toggles
+  // never hide them, and a pricing filter shows spot only under fully priced.
+  const typeFilterV = typeFilter as ContractTypeFilter | ''
+  const spotRows: Array<{ spot: (typeof spots)[number]; facts: SpotRowFacts; href: string }> =
+    (typeFilterV === '' || typeFilterV === 'spot') && (!pricingFilter || pricingFilter === 'fully_priced')
+      ? spots
+        .filter((s) => (cropYear == null || s.crop_year === cropYear) && (!cropFilter || s.crop_id === cropFilter) && (!entityId || s.entity_id === entityId))
+        .map((spot) => ({
+          spot,
+          facts: spotRowFacts(spot, cropById.get(spot.crop_id)?.name, buyerName),
+          href: `/contracts/spot/${spot.crop_id}/${spot.crop_year}${!salesData.marketingAgentEntityId && spot.entity_id ? `?entity=${spot.entity_id}` : ''}`,
+        }))
+      : []
+  const poolRows: Array<{ pool: (typeof pools)[number]; facts: PriceLaterRowFacts; href: string }> =
+    (typeFilterV === '' || typeFilterV === 'price_later') && !pricingFilter
+      ? pools
+        .filter((p) => (cropYear == null || p.crop_year === cropYear) && (!cropFilter || p.crop_id === cropFilter))
+        .map((p) => (entityId ? narrowPool(p, (r) => loadEntity(r.load) === entityId) : p))
+        .filter((p): p is NonNullable<typeof p> => p != null)
+        .map((pool) => ({
+          pool,
+          facts: priceLaterRowFacts(pool, cropById.get(pool.crop_id)?.name, buyerName(pool.buyer_id), assumptionFor(pool.crop_id, pool.crop_year)),
+          href: `/contracts/price-later/${pool.crop_id}/${pool.crop_year}/${pool.buyer_id}`,
+        }))
+      : []
+  const anyRows = rows.length > 0 || spotRows.length > 0 || poolRows.length > 0
+
+  const contractTotals = rows.reduce(
     (t, r) => ({
       contracted: t.contracted + r.contracted,
       delivered: t.delivered + r.delivered,
@@ -484,6 +446,17 @@ export default async function ContractsPage({
     }),
     { contracted: 0, delivered: 0, remaining: 0, value: 0, paidBu: 0, unpaidBu: 0, unpaidDollars: 0, loads: 0, pricedBu: 0 },
   )
+  // Spot joins the totals in full (delivered, value, paid / unpaid); price
+  // later adds its delivered bushels and loads only — it has no price yet.
+  const totals = spotRows.reduce((t, { facts }) => ({
+    ...t,
+    delivered: t.delivered + facts.bushels,
+    value: t.value + facts.value,
+    paidBu: t.paidBu + facts.paidBu,
+    unpaidBu: t.unpaidBu + facts.unpaidBu,
+    unpaidDollars: t.unpaidDollars + facts.unpaidRevenue,
+    loads: t.loads + facts.loadCount,
+  }), poolRows.reduce((t, { facts }) => ({ ...t, delivered: t.delivered + facts.bushels, loads: t.loads + facts.loadCount }), contractTotals))
   const pricedPct = totals.contracted > 0 ? (totals.pricedBu / totals.contracted) * 100 : null
 
   // Sold vs unsold needs a crop year: expected production from that year's
@@ -521,15 +494,20 @@ export default async function ContractsPage({
       if (!any) productionNote = `Enter expected yields for ${cropYear} on the Marketing page to see sold vs unsold.`
     }
   }
+  // The spot contract's priced bushels are sold (a fully priced forward at
+  // the weighted average); price-later bushels stay unsold until priced.
   const position = cropYear != null
-    ? contractPosition(rows.map((r) => ({ bushels: r.contracted, pricingStatus: r.c.pricing_status, isSeed: r.seed != null })), productionBu)
+    ? contractPosition([
+      ...rows.map((r) => ({ bushels: r.contracted, pricingStatus: r.c.pricing_status, isSeed: r.seed != null })),
+      ...spotRows.map((r) => spotPositionContract(r.spot)),
+    ], productionBu)
     : null
 
   const filterSummary = [
     entityId ? entities.find((e) => e.id === entityId)?.name ?? 'Entity' : 'All entities',
     cropFilter ? crops.find((c) => c.id === cropFilter)?.name ?? 'Crop' : 'All crops',
     cropYear ? `${cropYear} crop` : 'All crop years',
-    typeFilter ? (typeFilter === 'seed' ? 'Seed' : CONTRACT_TYPE_LABEL[typeFilter as ContractType]) : null,
+    typeFilter ? CONTRACT_TYPE_FILTER_LABEL[typeFilter as ContractTypeFilter] : null,
     pricingFilter ? pricingFilter.replace(/_/g, ' ') : null,
     hideCompleted ? 'completed hidden' : null,
     hideFuture ? 'not-open-yet hidden' : null,
@@ -566,9 +544,17 @@ export default async function ContractsPage({
             r.contracted, r.delivered, r.remaining, r.pct, r.price ?? '', r.value ?? '', r.paidBu, r.unpaidBu, r.unpaidDollars ?? '',
           ]
         }),
+        ...spotRows.map(({ spot, facts }) => [
+          'Spot', facts.buyersLabel, cropById.get(spot.crop_id)?.name ?? '', facts.estimated ? 'Spot (est.)' : 'Spot', spot.crop_year,
+          '', 'Delivered', '', '', facts.bushels, '', '', facts.avgPrice ?? '', facts.value, facts.paidBu, facts.unpaidBu, facts.unpaidRevenue,
+        ]),
+        ...poolRows.map(({ pool, facts }) => [
+          'Price later', buyerName(pool.buyer_id) ?? '', cropById.get(pool.crop_id)?.name ?? '', 'Price later', pool.crop_year,
+          '', 'Delivered', facts.oldestDate ? `oldest ${fmtDate(facts.oldestDate)}` : '', '', facts.bushels, '', '', facts.assumedPrice ?? '', facts.value ?? '', '', '', '',
+        ]),
         ['Totals', '', '', '', '', '', '', '', totals.contracted, totals.delivered, totals.remaining, '', '', totals.value, totals.paidBu, totals.unpaidBu, totals.unpaidDollars],
       ],
-      rowMeta: [...rows.map(() => 'data' as const), 'total'],
+      rowMeta: [...rows.map(() => 'data' as const), ...spotRows.map(() => 'data' as const), ...poolRows.map(() => 'data' as const), 'total'],
     }],
   }
 
@@ -584,7 +570,7 @@ export default async function ContractsPage({
           <h1 className="text-2xl font-bold">Contract Tracker</h1>
           <p className="text-sm text-slate-500">{filterSummary}</p>
         </div>
-        {rows.length > 0 && <StaticExportBar payload={contractsExportPayload} />}
+        {anyRows && <StaticExportBar payload={contractsExportPayload} />}
         {/* Grain contracts are 95%+ of volume: the primary button goes straight
             to the grain form. Seed contracts live behind the caret. */}
         <div className="inline-flex items-stretch rounded-lg bg-brand text-white text-sm font-semibold shadow-sm">
@@ -638,10 +624,10 @@ export default async function ContractsPage({
         )}
       </p>
 
-      {noContractBuyerLoads > 0 && (
+      {unassignedBuyerLoadCount > 0 && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          <strong>{fmtInt(noContractBuyerLoads)}</strong> load{noContractBuyerLoads === 1 ? '' : 's'} went to a buyer with no contract picked, so {noContractBuyerLoads === 1 ? 'its' : 'their'} bushels don&rsquo;t count against any contract here.{' '}
-          <Link href="/loads" className="underline font-semibold">Open Loads</Link> to attach {noContractBuyerLoads === 1 ? 'it' : 'them'}.
+          <strong>{fmtInt(unassignedBuyerLoadCount)}</strong> load{unassignedBuyerLoadCount === 1 ? '' : 's'} delivered to buyers without a sale type.{' '}
+          <Link href="/loads/assign-sales" className="underline font-semibold">Pick contract, spot or price later</Link> so {unassignedBuyerLoadCount === 1 ? 'its' : 'their'} bushels count here.
         </div>
       )}
 
@@ -670,9 +656,9 @@ export default async function ContractsPage({
         </div>
       )}
 
-      {rows.length > 0 && (
+      {anyRows && (
         <SummaryCards cards={[
-          { label: 'Contracted', value: `${fmtInt(totals.contracted)} bu`, sub: `${rows.length} contract${rows.length === 1 ? '' : 's'}` },
+          { label: 'Contracted', value: `${fmtInt(totals.contracted)} bu`, sub: `${rows.length} contract${rows.length === 1 ? '' : 's'}${spotRows.length > 0 ? ` · ${spotRows.length} spot` : ''}${poolRows.length > 0 ? ` · ${poolRows.length} price later` : ''}` },
           { label: 'Delivered', value: `${fmtInt(totals.delivered)} bu`, sub: `${fmtInt(totals.loads)} load${totals.loads === 1 ? '' : 's'}`, tone: 'favorable' },
           { label: 'Remaining to deliver', value: `${fmtInt(totals.remaining)} bu`, tone: totals.remaining > 0 ? 'neutral' : 'muted' },
           { label: 'Delivered but unpaid', value: `${fmtInt(totals.unpaidBu)} bu`, sub: totals.unpaidDollars > 0 ? `about ${fmtUsd(totals.unpaidDollars)} at contract price` : 'nothing waiting on a settlement', tone: totals.unpaidBu > 0 ? 'warning' : 'muted' },
@@ -680,7 +666,7 @@ export default async function ContractsPage({
         ]} />
       )}
 
-      {position && rows.length > 0 && (
+      {position && anyRows && (
         <div className="bg-white rounded-xl shadow p-4 space-y-2">
           <div className="flex items-baseline gap-3 flex-wrap">
             <h2 className="font-semibold">Sold vs unsold · {cropYear} crop{cropFilter ? ` · ${cropById.get(cropFilter)?.name ?? ''}` : ''}</h2>
@@ -713,7 +699,7 @@ export default async function ContractsPage({
         </div>
       )}
 
-      {rows.length === 0 ? (
+      {!anyRows ? (
         <EmptyState
           message={anyFilters ? 'No contracts match these filters.' : 'No contracts yet.'}
           hint={anyFilters ? 'Try clearing a filter.' : 'Add your first grain contract to start tracking deliveries and payments.'}
@@ -828,9 +814,83 @@ export default async function ContractsPage({
                   </LinkRow>
                 )
               })}
+              {spotRows.map(({ spot, facts, href }) => (
+                <LinkRow key={spot.id} href={href} className="border-t border-slate-100">
+                  <td className={`${stickyColCls} ${cellCls} font-semibold whitespace-nowrap`}>
+                    <Link href={href} className="text-brand-deep hover:underline">{facts.title}</Link>
+                  </td>
+                  <td className={cellCls}>{facts.buyersLabel}</td>
+                  <td className={cellCls}>{cropById.get(spot.crop_id)?.name ?? ''}</td>
+                  <td className={cellCls}>
+                    <span className="whitespace-nowrap">
+                      <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5">Spot</span>
+                      {facts.estimated && <span className="ml-1 text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5">est.</span>}
+                    </span>
+                  </td>
+                  <td className={cellCls}>{spot.crop_year}</td>
+                  <td className={`${cellCls} whitespace-nowrap`}><span className="text-slate-400">—</span></td>
+                  <td className={cellCls}>Delivered</td>
+                  <td className={`${cellCls} whitespace-nowrap`}><span className="text-slate-400">—</span></td>
+                  <td className={numCls}><span className="text-slate-400">—</span></td>
+                  <td className={numCls}>
+                    {fmtInt(facts.bushels)}
+                    <span className="ml-1 text-xs text-slate-400">({facts.loadCount} load{facts.loadCount === 1 ? '' : 's'})</span>
+                  </td>
+                  <td className={`${cellCls} w-44`}>
+                    <div className="text-xs text-slate-500 whitespace-nowrap">{facts.statusText}</div>
+                  </td>
+                  <td className={numCls}>
+                    {facts.avgText}
+                    {facts.estimated && <span className="ml-1 text-[10px] rounded bg-amber-100 text-amber-800 px-1">est.</span>}
+                  </td>
+                  <td className={numCls}>{fmtUsd(facts.value)}</td>
+                  <td className={numCls}>{fmtInt(facts.paidBu)}</td>
+                  <td className={`${numCls} ${facts.unpaidBu > 0 ? 'text-amber-700 font-semibold' : ''}`}>{fmtInt(facts.unpaidBu)}</td>
+                  <td className={`${numCls} ${facts.unpaidBu > 0 ? 'text-amber-700' : 'text-slate-400'}`}>{facts.unpaidBu > 0 ? fmtUsd(facts.unpaidRevenue) : ''}</td>
+                </LinkRow>
+              ))}
+              {poolRows.map(({ pool, facts, href }) => (
+                <LinkRow key={priceLaterPoolId(pool.crop_id, pool.crop_year, pool.buyer_id)} href={href} className="border-t border-slate-100">
+                  <td className={`${stickyColCls} ${cellCls} font-semibold whitespace-nowrap`}>
+                    <Link href={href} className="text-brand-deep hover:underline">{facts.title}</Link>
+                  </td>
+                  <td className={cellCls}>{buyerName(pool.buyer_id) ?? ''}</td>
+                  <td className={cellCls}>{cropById.get(pool.crop_id)?.name ?? ''}</td>
+                  <td className={cellCls}><span className="text-xs rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 whitespace-nowrap">Price later</span></td>
+                  <td className={cellCls}>{pool.crop_year}</td>
+                  <td className={`${cellCls} whitespace-nowrap`}><span className="text-slate-400">—</span></td>
+                  <td className={cellCls}>Delivered</td>
+                  <td className={`${cellCls} whitespace-nowrap`}>{facts.oldestDate ? `oldest ${fmtDate(facts.oldestDate)}` : <span className="text-slate-400">—</span>}</td>
+                  <td className={numCls}><span className="text-slate-400">—</span></td>
+                  <td className={numCls}>
+                    {fmtInt(facts.bushels)}
+                    <span className="ml-1 text-xs text-slate-400">({facts.loadCount} load{facts.loadCount === 1 ? '' : 's'})</span>
+                  </td>
+                  <td className={`${cellCls} w-44`}>
+                    <div className="text-xs text-slate-500 whitespace-nowrap">{fmtInt(facts.bushels)} bu unpriced</div>
+                  </td>
+                  <td className={numCls}>
+                    {facts.assumedPrice != null
+                      ? <span>{fmtUsd(facts.assumedPrice, 2)} <span className="text-[10px] rounded bg-amber-100 text-amber-800 px-1">unpriced</span></span>
+                      : <span className="text-[10px] rounded bg-amber-100 text-amber-800 px-1">unpriced</span>}
+                  </td>
+                  <td className={numCls}>
+                    {facts.value != null
+                      ? <span>{fmtUsd(facts.value)} <span className="text-[10px] text-slate-400">at today&rsquo;s assumed price</span></span>
+                      : <span className="text-slate-400">—</span>}
+                  </td>
+                  <td className={numCls}><span className="text-slate-400">—</span></td>
+                  <td className={numCls}><span className="text-slate-400">—</span></td>
+                  <td className={numCls}><span className="text-slate-400">—</span></td>
+                </LinkRow>
+              ))}
               <tr className={grandTotalRowCls}>
                 <td className={`${stickyColCls} ${cellCls} bg-slate-100`}>Totals</td>
-                <td className={cellCls} colSpan={7}>{rows.length} contract{rows.length === 1 ? '' : 's'}</td>
+                <td className={cellCls} colSpan={7}>
+                  {rows.length} contract{rows.length === 1 ? '' : 's'}
+                  {spotRows.length > 0 ? ` · ${spotRows.length} spot` : ''}
+                  {poolRows.length > 0 ? ` · ${poolRows.length} price later` : ''}
+                </td>
                 <td className={numCls}>{fmtInt(totals.contracted)}</td>
                 <td className={numCls}>{fmtInt(totals.delivered)}</td>
                 <td className={`${cellCls} text-xs font-normal text-slate-600 whitespace-nowrap`}>{fmtInt(totals.remaining)} bu left</td>
@@ -848,6 +908,7 @@ export default async function ContractsPage({
       <p className="text-xs text-slate-500">
         Contract value is price × contracted bushels. Paid bu are the buyer&rsquo;s settled bushels from settlements; Unpaid bu are delivered loads not yet on a settlement, and Unpaid $ is those bushels at the contract price.
         Seed contracts show bushels as an estimate and their progress as the share priced, not delivered.
+        Spot rows gather every load sold at the buyer&rsquo;s posted bid for a crop year, priced at the bushel-weighted average; price-later rows are bushels delivered but not yet priced, valued at today&rsquo;s assumed price until you price them.
       </p>
     </div>
   )

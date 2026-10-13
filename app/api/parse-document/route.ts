@@ -29,6 +29,7 @@ const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'i
 
 const SETTLEMENT_PROMPT = `This is a grain settlement sheet from a grain buyer. Pages may be scanned sideways or upside down — read each page in whichever orientation its text runs. Extract every TICKET line item from this document. For each ticket line, extract:
 - ticket_number (the scale ticket or load ticket number, EXACTLY as printed including leading zeros — e.g. "0498074")
+- contract_number (the "Contract Number: X" block header this ticket line printed under, EXACTLY as printed — "2002960604-10", "SPOT", "S12", "DP". See CONTRACT BLOCKS below. null ONLY when the statement prints no contract blocks at all.)
 - secondary_ref (any second identifier printed for the same load — a Load Order #, BOL, or reference number — null if none)
 - delivery_date (the date the load was delivered/weighed, format YYYY-MM-DD — null if not shown)
 - vehicle_plate (the truck's license plate or vehicle id when the statement prints one — null otherwise)
@@ -47,11 +48,17 @@ WHAT COUNTS AS A TICKET LINE — read this carefully, it is the most common extr
 (d) TOTAL, GRAND TOTAL, SUBTOTAL, and summary rows printed after the ticket lines are EXCLUDED from line_items.
 (e) Instead, put the settlement's grand total in the document-level fields below: statement_reported_total (the net dollars the settlement pays, as printed on its total line or check stub) and statement_reported_bushels (the total net bushels). These are for reconciliation only — the app checks that the ticket lines add up to them.
 
+CONTRACT BLOCKS — how each ticket was SOLD:
+(f) Many statements group their ticket lines under block headers such as "Contract Number: 2002960604-10" followed by that contract's tickets, then a "Contract Total" row, then ANOTHER header such as "Contract Number: SPOT" with more tickets and its own "Contract Total". A statement may print SEVERAL such blocks. Every ticket line's contract_number is the header of the block it printed under, copied exactly as printed. A "Contract Total" / "Total From" row ENDS a block (and is never a line item, rule (d)); the next "Contract Number:" header starts the next block.
+(g) The SAME ticket number can appear under TWO blocks — e.g. ticket 0502289 shows 58.284 bu under "Contract Number: 2002960604-10" (the truck that finished the contract) and 912.744 bu under "Contract Number: SPOT" (the rest of that same truck sold spot). These are TWO line items with the same ticket_number and different contract_number values. Keep BOTH lines, each with its own bushels and dollars. NEVER merge them, NEVER drop one as a duplicate, and NEVER sum them into one line.
+(h) "SPOT", "Spot Sale", "Spot Purchase", "Cash", "Cash Sale", "Open" and the like are sale KINDS printed in the contract-number position, not contract numbers — still copy the text exactly as printed into contract_number (the app classifies it). "DP", "Delayed Price", "Price Later" and similar mark grain stored unpriced — copy those exactly too.
+(i) When the statement prints no contract blocks and no per-ticket contract column, contract_number is null on every line. When a per-ticket CONTRACT column exists instead of blocks, use that column's value for each line.
+
 Also extract these document-level fields:
 - buyer_name (the company name of the buyer/elevator)
 - settlement_date (the date on the settlement, format YYYY-MM-DD)
 - settlement_number (the settlement / statement number as printed, e.g. "0000161152" — null if not found)
-- contract_number (the buyer's contract number printed in the header, e.g. "2002960604-10" — null if not shown)
+- contract_number (the buyer's contract number printed in the header — or, when the statement prints contract blocks (rule (f)), the FIRST block's contract number, e.g. "2002960604-10"; null if no contract number is shown anywhere)
 - payment_number, check_number, payment_date (from the CHECK / REMITTANCE page: the payment or remittance number, the check number, and the check date YYYY-MM-DD — null when absent. These are PAYMENT facts, never tickets and never the settlement_number unless the statement uses one number for both.)
 - statement_reported_total (the settlement's grand total net dollars as printed — null if not shown)
 - statement_reported_bushels (the settlement's total net bushels as printed — null if not shown)
@@ -91,6 +98,7 @@ Respond ONLY in JSON with no other text, no markdown backticks. Use this exact f
   "line_items": [
     {
       "ticket_number": "string",
+      "contract_number": "string or null (the contract block this line printed under, exactly as printed, e.g. 2002960604-10 or SPOT or S12)",
       "secondary_ref": "string or null",
       "delivery_date": "YYYY-MM-DD or null",
       "vehicle_plate": "string or null",

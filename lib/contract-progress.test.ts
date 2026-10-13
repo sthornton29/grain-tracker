@@ -12,7 +12,8 @@
 //   * loads with no usable weight contribute nothing (and don't count).
 
 import { describe, expect, it } from 'vitest'
-import { contractDeliveredTotals, contractProgress, type ContractProgressLoad } from './contract-progress'
+import { contractDeliveredTotals, contractProgress, deliveredTotalsByContract, type ContractProgressLoad } from './contract-progress'
+import type { LoadSale } from './load-sales'
 
 // Corn-ish crop: 56 lb/bu, base 15% MC.
 const cropById = new Map([['corn', { base_moisture_pct: 15, base_lb_per_bushel: 56 }]])
@@ -55,6 +56,47 @@ describe('contractDeliveredTotals', () => {
     )
     expect(dryBu).toBeCloseTo(1000, 5)
     expect(count).toBe(1)
+  })
+})
+
+describe('deliveredTotalsByContract — per contract through the sale rows (094)', () => {
+  const sale = (over: Partial<LoadSale> & Pick<LoadSale, 'load_id' | 'sale_type' | 'share'>): LoadSale => ({
+    id: `s-${over.load_id}-${over.contract_id ?? over.sale_type}`, contract_id: null, buyer_net_bushels: null, spot_price: null,
+    spot_price_source: null, est_futures_price: null, est_futures_symbol: null, est_basis: null, settlement_line_id: null, ...over,
+  })
+  const L = (id: string, over: Partial<ContractProgressLoad> & { contract_id?: string | null } = {}) => ({ id, to_type: 'buyer' as const, ...load(), ...over })
+
+  it('whole loads on one contract sum like before; a split load counts only its contract share', () => {
+    const loads = [L('L1'), L('L2'), L('L3')]
+    const sales = [
+      sale({ load_id: 'L1', sale_type: 'contract', contract_id: 'A', share: 1 }),
+      sale({ load_id: 'L2', sale_type: 'contract', contract_id: 'A', share: 1 }),
+      // L3: 300 bu on A, the other 700 spot.
+      sale({ load_id: 'L3', sale_type: 'contract', contract_id: 'A', share: 0.3 }),
+      sale({ load_id: 'L3', sale_type: 'spot', share: 0.7 }),
+    ]
+    const d = deliveredTotalsByContract(loads, sales, cropById)
+    expect(d.get('A')!.dryBu).toBeCloseTo(2300, 5)
+    expect(d.get('A')!.count).toBe(3)
+    expect(d.size).toBe(1) // spot never shows up as a contract
+  })
+
+  it('a load with no rows but a contract_id (pre-094 database) still counts in full', () => {
+    const d = deliveredTotalsByContract([L('L1', { contract_id: 'B' })], [], cropById)
+    expect(d.get('B')).toEqual({ dryBu: expect.closeTo(1000, 5), count: 1 })
+  })
+
+  it('two contracts on one load each get their share; weightless loads contribute nothing', () => {
+    const loads = [L('L1'), L('L2', { net_weight: null })]
+    const sales = [
+      sale({ load_id: 'L1', sale_type: 'contract', contract_id: 'A', share: 0.25 }),
+      sale({ load_id: 'L1', sale_type: 'contract', contract_id: 'B', share: 0.75 }),
+      sale({ load_id: 'L2', sale_type: 'contract', contract_id: 'B', share: 1 }),
+    ]
+    const d = deliveredTotalsByContract(loads, sales, cropById)
+    expect(d.get('A')!.dryBu).toBeCloseTo(250, 5)
+    expect(d.get('B')!.dryBu).toBeCloseTo(750, 5)
+    expect(d.get('B')!.count).toBe(1)
   })
 })
 

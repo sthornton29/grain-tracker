@@ -10,12 +10,56 @@
 // the line, not one load late.
 
 import { computeBushels } from './shrink'
+import { deliveredBushelsByContract, type LoadSale, type SaleLoad } from './load-sales'
 
 export type ContractProgressLoad = {
   net_weight: number | null
   moisture: number | null
   crop_id: string | null
   dry_bushels_override: number | null
+}
+
+/** A saved load as the per-contract tracker reads it after 094: its weights
+ *  plus the identity/mirror the sale seam allocates by. */
+export type ContractProgressSaleLoad = ContractProgressLoad & {
+  id: string
+  contract_id?: string | null
+  to_type?: 'bin' | 'buyer' | null
+}
+
+/** One load's dry bushels under its crop's bases (null when not computable). */
+export function loadDryBushels(l: ContractProgressLoad, cropById: Map<string, CropBases>): number | null {
+  const crop = l.crop_id ? cropById.get(l.crop_id) ?? null : null
+  return computeBushels({
+    netWeightLb: l.net_weight,
+    moisturePct: l.moisture,
+    baseMoisturePct: crop?.base_moisture_pct ?? null,
+    baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
+    dryBushelsOverride: l.dry_bushels_override,
+  }).dryBushels
+}
+
+/**
+ * Delivered dry bushels PER CONTRACT from loads + their sale rows (094):
+ * each load's dry bushels are computed here, then lib/load-sales allocates
+ * them — a split load counts only its contract share, a load with no rows
+ * but a contract_id (pre-094) counts in full. The SAME staleness rule as
+ * contractDeliveredTotals applies: callers refetch after every save.
+ */
+export function deliveredTotalsByContract(
+  rows: ReadonlyArray<ContractProgressSaleLoad>,
+  sales: ReadonlyArray<LoadSale>,
+  cropById: Map<string, CropBases>,
+): Map<string, { dryBu: number; count: number }> {
+  const saleLoads: SaleLoad[] = []
+  for (const l of rows) {
+    const dryBu = loadDryBushels(l, cropById)
+    if (!dryBu) continue
+    saleLoads.push({ id: l.id, contract_id: l.contract_id ?? null, to_type: l.to_type ?? null, dryBu })
+  }
+  const out = new Map<string, { dryBu: number; count: number }>()
+  for (const [contractId, d] of deliveredBushelsByContract(saleLoads, sales)) out.set(contractId, { dryBu: d.dryBu, count: d.count })
+  return out
 }
 
 export type CropBases = {

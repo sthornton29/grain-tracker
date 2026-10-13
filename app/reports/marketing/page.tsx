@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { fetchLoadSales, type LoadSale } from '@/lib/load-sales'
+import { buildSpotInputs } from '@/lib/spot-contracts'
 import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, assumedAcresTotal, assumedSegmentAcres, resolveAcresByCrop, segmentTotalAcres, DEFAULT_BALE_LBS, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
 import { marketingCropYearOptions } from '@/lib/crop-years'
 import { quoteFromWire, quoteMapFromWire, type Quote } from '@/lib/quotes'
@@ -49,9 +51,13 @@ type LoadRow = {
   net_weight: number | null
   moisture: number | null
   dry_bushels_override: number | null
+  // Sale side (094): where it went and the mirror contract, for the spot contracts.
+  to_type: string | null
+  to_buyer_id: string | null
+  contract_id: string | null
 }
 
-type SplitRow = { load_id: string; field_id: string; crop_id: string; dry_bushels: number | null }
+type SplitRow = { load_id: string; field_id: string; crop_id: string; dry_bushels: number | null; percentage: number | null }
 
 type PlantingRow = {
   id: string
@@ -171,6 +177,7 @@ export default function MarketingPage() {
   const [crops, setCrops] = useState<Crop[]>([])
   const [plantings, setPlantings] = useState<PlantingRow[]>([])
   const [contracts, setContracts] = useState<Contract[]>([])
+  const [loadSales, setLoadSales] = useState<LoadSale[]>([])
   const [futures, setFutures] = useState<FuturesPosition[]>([])
   const [options, setOptions] = useState<OptionPosition[]>([])
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
@@ -245,8 +252,8 @@ export default function MarketingPage() {
       supabase.from('futures_positions').select('*').eq('crop_year', cropYear),
       supabase.from('options_positions').select('*').eq('crop_year', cropYear),
       supabase.from('crop_assumptions').select('*').eq('crop_year', cropYear),
-      fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override').eq('crop_year', cropYear).order('id').range(f, t)),
-      fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels').order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override, to_type, to_buyer_id, contract_id').eq('crop_year', cropYear).order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels, percentage').order('id').range(f, t)),
       supabase.from('gin_receipts').select('id, crop_year, bales_count, total_bale_weight, entity_id, farm_id, field_id').eq('crop_year', cropYear),
       fetchAllRows((f, t) => supabase.from('cotton_bales').select('gin_receipt_id, net_weight_lbs').eq('crop_year', cropYear).order('id').range(f, t)),
       // May not exist yet (migration 062): an error leaves data null → [].
@@ -261,6 +268,9 @@ export default function MarketingPage() {
     setLoads((ld.data as LoadRow[]) ?? [])
     setSplits((sp.data as SplitRow[]) ?? [])
     setCombineEntries((ce.data as CombineEntryLike[]) ?? [])
+    // How each buyer load was sold (094) — the spot contracts build from these.
+    // A database before 094 reads as no rows.
+    setLoadSales(await fetchLoadSales(supabase, { loadIds: (((ld.data as LoadRow[]) ?? []).filter((l) => l.to_type === 'buyer')).map((l) => l.id) }).catch(() => []))
     setGinReceipts(((gr.data as unknown) as Array<Pick<GinReceipt, 'id' | 'bales_count' | 'total_bale_weight' | 'entity_id' | 'farm_id' | 'field_id'>>) ?? [])
     setCottonBales(((cb.data as unknown) as Array<Pick<CottonBale, 'gin_receipt_id' | 'net_weight_lbs'>>) ?? [])
 
@@ -399,7 +409,18 @@ export default function MarketingPage() {
     : viewerAllEntitiesLabel(viewer, entities)
   const scopedPlantings = useMemo(() => scope.plantings(plantings), [scope, plantings])
   const attribution = useMemo(() => scope.attribution({ plantings, crops }), [scope, plantings, crops])
-  const scopedContracts = useMemo(() => attribution.contracts(contracts), [attribution, contracts])
+  // Spot sales (094): every spot load of a crop × year is ONE virtual, fully
+  // priced contract (held by the marketing agent, or by the field's entity
+  // when the operation has no agent), appended to the real contracts so the
+  // position bars count it as Sold and the price buildup lists it as
+  // "Spot (N loads)". The entity filter flows it down pro-rata like any
+  // agent-held contract. Price-later bushels stay unpriced — nothing to add.
+  const spotInputs = useMemo(
+    () => buildSpotInputs({ loads, sales: loadSales, crops, entities, fields, farms, splits }),
+    [loads, loadSales, crops, entities, fields, farms, splits],
+  )
+  const contractsWithSpot = useMemo<Contract[]>(() => spotInputs.contractsWithSpot(contracts), [spotInputs, contracts])
+  const scopedContracts = useMemo(() => attribution.contracts(contractsWithSpot), [attribution, contractsWithSpot])
   const scopedFutures = useMemo(() => attribution.futures(futures), [attribution, futures])
   const scopedOptions = useMemo(() => attribution.options(options), [attribution, options])
 

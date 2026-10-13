@@ -40,6 +40,9 @@ const NEW_TOOLS = [
   ['get_combine_entries', { crop_year: 2026 }],
   ['get_rent_settlements', { crop_year: 2026 }],
   ['get_budget', { year: 2026 }],
+  // 094: the sale-aware tools (spot rows, price-later pools, load sale types).
+  ['get_contracts', { crop_year: 2026 }],
+  ['get_loads', { crop_year: 2026, destination: 'buyer' }],
 ] as const
 
 describe('RLS canary — a session that sees no rows gets nothing from every new tool', () => {

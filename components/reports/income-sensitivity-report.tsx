@@ -21,6 +21,8 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useReportCropYear } from '@/lib/report-filters'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { fetchLoadSales, type LoadSale } from '@/lib/load-sales'
+import { buildSpotInputs } from '@/lib/spot-contracts'
 import { buildDoubleCropSet } from '@/lib/plantings'
 import { quoteMapFromWire, type Quote } from '@/lib/quotes'
 import ManualQuoteControl, { QuoteChip } from '@/components/quote-chip'
@@ -69,8 +71,12 @@ type LoadRow = {
   net_weight: number | null
   moisture: number | null
   dry_bushels_override: number | null
+  // Sale side (094): where it went and the mirror contract, for the spot contracts.
+  to_type: string | null
+  to_buyer_id: string | null
+  contract_id: string | null
 }
-type SplitRow = { load_id: string; field_id: string; crop_id: string; dry_bushels: number | null }
+type SplitRow = { load_id: string; field_id: string; crop_id: string; dry_bushels: number | null; percentage: number | null }
 
 type Props = {
   onPayloadChange?: (build: () => ExportPayload) => void
@@ -138,6 +144,7 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<SplitRow[]>([])
+  const [loadSales, setLoadSales] = useState<LoadSale[]>([])
   const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [policies, setPolicies] = useState<CropInsurancePolicy[]>([])
   const [scos, setScos] = useState<CropInsuranceSco[]>([])
@@ -239,15 +246,15 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
 
   useEffect(() => {
     ;(async () => {
-      const [cr, pl, ct, fp, op, ca, ld, sp, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp, en, fa, fi, ce] = await Promise.all([
+      const [cr, pl, ct, fp, op, ca, ld, sp, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp, en, fa, fi, ce, ls] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('field_plantings').select('*'),
         supabase.from('contracts').select('*'),
         supabase.from('futures_positions').select('*'),
         supabase.from('options_positions').select('*'),
         supabase.from('crop_assumptions').select('*'),
-        fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override').order('id').range(f, t)),
-        fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, crop_id, crop_year, from_type, from_field_id, net_weight, moisture, dry_bushels_override, to_type, to_buyer_id, contract_id').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels, percentage').order('id').range(f, t)),
         fetchAllRows((f, t) => supabase.from('crop_insurance_policies').select('*').order('id').range(f, t)),
         supabase.from('crop_insurance_sco').select('*'),
         supabase.from('crop_insurance_eco').select('*'),
@@ -264,7 +271,10 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
         supabase.from('fields').select('id, farm_id'),
         // May not exist yet (migration 062): an error leaves data null → [].
         fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date').order('id').range(f, t)),
+        // How each buyer load was sold (094) — a database before 094 reads as none.
+        fetchLoadSales(supabase).catch(() => [] as LoadSale[]),
       ])
+      setLoadSales(ls)
       setEntities((en.data as Entity[]) || [])
       setFarms((fa.data as Array<{ id: string; entity_id: string | null }>) || [])
       setFields((fi.data as Array<{ id: string; farm_id: string | null }>) || [])
@@ -338,7 +348,16 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
   // Contracts/hedges attribute (entity-keyed → whole; operation-level → the
   // entity's acre share of the crop), so filtered sales don't vanish.
   const attribution = useMemo(() => scope.attribution({ plantings, crops }), [scope, plantings, crops])
-  const scopedContracts = useMemo(() => attribution.contracts(contracts), [attribution, contracts])
+  // Spot sales (094): one virtual, fully priced contract per crop × year
+  // (cash_price = the weighted average), appended to the real contracts. The
+  // engine locks a fully priced contract, so spot bushels are priced in
+  // every scenario and never sensitized — only unpriced bushels move.
+  const spotInputs = useMemo(
+    () => buildSpotInputs({ loads, sales: loadSales, crops, entities, fields, farms, splits }),
+    [loads, loadSales, crops, entities, fields, farms, splits],
+  )
+  const contractsWithSpot = useMemo<Contract[]>(() => spotInputs.contractsWithSpot(contracts), [spotInputs, contracts])
+  const scopedContracts = useMemo(() => attribution.contracts(contractsWithSpot), [attribution, contractsWithSpot])
   const scopedFutures = useMemo(() => attribution.futures(futures), [attribution, futures])
   const scopedOptions = useMemo(() => attribution.options(options), [attribution, options])
   const scopedPolicies = useMemo(() => scope.byEntity(policies), [scope, policies])

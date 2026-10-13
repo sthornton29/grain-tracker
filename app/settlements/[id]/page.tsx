@@ -12,6 +12,13 @@ import AddLineButton from './add-line-button'
 import DiscountsBlock from './discounts-block'
 import SettlementHeaderActions from './header-actions'
 import type { SettlementDiscountItem } from '@/lib/types'
+// 094 — each line's sale (contract block / spot / price later) and the
+// owner's re-read / assign actions.
+import { coerceAppRole } from '@/lib/app-role'
+import { fetchLoadSales } from '@/lib/load-sales'
+import type { ReviewContract } from '@/lib/settlement-sale-review'
+import SettlementSaleActions, { type SavedSaleLine, type SaleLoadInfo } from '@/components/settlement-sale-actions'
+import { SaleChip } from '@/components/settlement-sale-review'
 
 export const dynamic = 'force-dynamic'
 
@@ -23,6 +30,8 @@ type Settlement = {
   notes: string | null
   source_pdf_url: string | null
   buyer: { name: string } | null
+  /** 086 — the header contract, when the columns exist. */
+  contract?: { id: string; contract_number: string } | null
 }
 
 type Line = {
@@ -36,6 +45,10 @@ type Line = {
   price_per_bushel: number | null
   notes: string | null
   load: LoadShape | null
+  // 094 — the sale the line printed under (absent before the migration).
+  sale_type?: string | null
+  contract_number_text?: string | null
+  contract_id?: string | null
 }
 
 type LoadShape = {
@@ -48,6 +61,7 @@ type LoadShape = {
   dry_bushels_override: number | null
   contract_id: string | null
   to_buyer_id: string | null
+  crop_id?: string | null
   crop: { name: string; base_moisture_pct: number | null; base_lb_per_bushel: number | null } | null
   contract: { id: string; contract_number: string; delivery_start_date: string | null; delivery_end_date: string | null } | null
 }
@@ -69,17 +83,26 @@ const SAVED_NOTES: Record<string, string> = {
   'partial-lines': 'Saved, but the line detail didn’t come through — add the lines here, or contact support.',
   'partial-items': 'Saved with its lines, but the itemized discounts didn’t come through — add them in the Discounts block below, or contact support.',
   'partial-writeback': 'Saved. A couple of matched loads couldn’t be updated with the statement’s ticket or grade readings — nothing is missing from the settlement itself.',
+  'partial-sales': 'Saved, but the sales (contract / spot) couldn’t be applied to the matched loads — use Re-read contract assignments below, or contact support.',
 }
 
 export default async function SettlementDetailPage({ params, searchParams }: { params: { id: string }; searchParams?: { saved?: string } }) {
   const supabase = createClient()
 
-  const sRes = await supabase
+  // The header contract (086) when the column exists; the base header otherwise.
+  const sFull = await supabase
     .from('settlements')
-    .select('id, buyer_id, settlement_date, settlement_number, notes, source_pdf_url, buyer:buyers(name)')
+    .select('id, buyer_id, settlement_date, settlement_number, notes, source_pdf_url, buyer:buyers(name), contract:contracts(id, contract_number)')
     .eq('id', params.id)
     .single()
-  const settlement = sRes.data as unknown as Settlement | null
+  const sData: unknown = sFull.error
+    ? (await supabase
+        .from('settlements')
+        .select('id, buyer_id, settlement_date, settlement_number, notes, source_pdf_url, buyer:buyers(name)')
+        .eq('id', params.id)
+        .single()).data
+    : sFull.data
+  const settlement = sData as Settlement | null
   if (!settlement) notFound()
 
   // Persist unambiguous ticket→load matches before reading, so what is stored
@@ -87,20 +110,42 @@ export default async function SettlementDetailPage({ params, searchParams }: { p
   // export consistent with the Review screen (no more view-time-only re-pairing).
   await relinkSettlementLines(supabase, params.id)
 
-  const linesRes = await supabase
-    .from('settlement_lines')
-    .select(`
-      id, ticket_number, load_id, net_bushels, gross_revenue, discounts, net_revenue, price_per_bushel, notes,
+  const lineSelect = (saleColumns: boolean) => `
+      id, ticket_number, load_id, net_bushels, gross_revenue, discounts, net_revenue, price_per_bushel, notes,${saleColumns ? ' sale_type, contract_number_text, contract_id,' : ''}
       load:loads(
-        id, date, ticket_number, net_weight, moisture, dry_bushels_override, contract_id, to_buyer_id,
+        id, date, ticket_number, net_weight, moisture, dry_bushels_override, contract_id, to_buyer_id, crop_id,
         crop:crops(name, base_moisture_pct, base_lb_per_bushel),
         contract:contracts(id, contract_number, delivery_start_date, delivery_end_date)
       )
-    `)
-    .eq('settlement_id', params.id)
-    .order('ticket_number')
+    `
+  // 094 sale columns first; a database before that migration reads without them.
+  const linesFull = await supabase.from('settlement_lines').select(lineSelect(true)).eq('settlement_id', params.id).order('ticket_number')
+  const saleColumnsReady = !linesFull.error
+  const linesData: unknown = linesFull.error
+    ? (await supabase.from('settlement_lines').select(lineSelect(false)).eq('settlement_id', params.id).order('ticket_number')).data
+    : linesFull.data
 
-  const lines = (linesRes.data as unknown as Line[]) ?? []
+  const lines = (linesData as Line[] | null) ?? []
+
+  // 094 — who may assign sales (owners), this buyer's contracts for the
+  // link / sale selects, and the matched loads' stored sale rows.
+  const { data: { user } } = await supabase.auth.getUser()
+  const { data: profile } = user
+    ? await supabase.from('user_profiles').select('role').eq('user_id', user.id).maybeSingle()
+    : { data: null }
+  const canAssignSales = saleColumnsReady && coerceAppRole((profile as { role?: string } | null)?.role) === 'owner'
+  const { data: buyerContractRows } = await fetchAllRows<ReviewContract>((f, t) => supabase
+    .from('contracts').select('id, contract_number, buyer_id, crop_id, crop_year').eq('buyer_id', settlement.buyer_id).order('crop_year', { ascending: false }).order('id').range(f, t))
+  const buyerContracts = buyerContractRows ?? []
+  const matchedLoadIds = lines.map((l) => l.load?.id).filter((id): id is string => !!id)
+  const loadSales = canAssignSales ? await fetchLoadSales(supabase, { loadIds: matchedLoadIds }) : []
+  const headerContractNumber = settlement.contract?.contract_number ?? null
+  const saleLines: SavedSaleLine[] = lines.map((l) => ({
+    id: l.id, ticket_number: l.ticket_number, load_id: l.load?.id ?? null, net_bushels: Number(l.net_bushels ?? 0), gross_revenue: Number(l.gross_revenue ?? 0),
+    sale_type: l.sale_type ?? null, contract_number_text: l.contract_number_text ?? null, contract_id: l.contract_id ?? null,
+  }))
+  const saleLoads: SaleLoadInfo[] = lines.flatMap((l) => (l.load ? [{ id: l.load.id, date: l.load.date, ticket_number: l.load.ticket_number, dryBu: dryBu(l.load), crop_id: l.load.crop_id ?? null, contract_id: l.load.contract_id }] : []))
+  const saleCell = (l: Line) => <SaleChip line={{ sale_type: l.sale_type, contract_number_text: l.contract_number_text ?? (l.contract_id ? buyerContracts.find((c) => c.id === l.contract_id)?.contract_number ?? null : null) }} fallbackContractNumber={headerContractNumber} />
 
   // Missing loads: buyer-delivered loads under this buyer with NO settlement info
   // on any settlement for this buyer (not just this one), inside the contract's
@@ -232,6 +277,20 @@ export default async function SettlementDetailPage({ params, searchParams }: { p
 
       <SettlementPdfPanel settlementId={settlement.id} currentUrl={settlement.source_pdf_url} />
 
+      {canAssignSales && (
+        <SettlementSaleActions
+          settlementId={settlement.id}
+          sourcePdfUrl={settlement.source_pdf_url}
+          buyerName={settlement.buyer?.name ?? ''}
+          headerContractNumber={headerContractNumber}
+          lines={saleLines}
+          loads={saleLoads}
+          loadSales={loadSales}
+          contracts={buyerContracts}
+          canEdit
+        />
+      )}
+
       {/* Net revenue leads — it is the number the check is for. */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         <div className="col-span-2 bg-white rounded-xl shadow p-4">
@@ -259,7 +318,7 @@ export default async function SettlementDetailPage({ params, searchParams }: { p
 
       <Section title="Matched loads" subtitle="Lines tied to a load. Their net bushels beside our dry bushels — green when they paid on more than we weighed, red when less; anything over 1% either way is worth a look.">
         {matched.length === 0 ? <Empty>None yet.</Empty> : (
-          <Table headers={['Ticket', 'Load date', 'Crop', 'Our dry bu', 'Their net bu', 'Difference', 'Net $', '$/bu']} rightFrom={3}>
+          <Table headers={['Ticket', 'Load date', 'Crop', 'Sale', 'Our dry bu', 'Their net bu', 'Difference', 'Net $', '$/bu']} rightFrom={4}>
             {matched.map((l) => {
               const ld = l.load!
               const ourBu = dryBu(ld)
@@ -271,6 +330,7 @@ export default async function SettlementDetailPage({ params, searchParams }: { p
                   <td className="px-3 py-2">{l.ticket_number}</td>
                   <td className="px-3 py-2 whitespace-nowrap"><Link href={`/loads/${ld.id}`} className="text-brand-deep hover:underline">{fmtDate(ld.date)}</Link></td>
                   <td className="px-3 py-2">{ld.crop?.name ?? ''}</td>
+                  <td className="px-3 py-2">{saleCell(l)}</td>
                   <td className={numCls}>{fmtInt(ourBu)}</td>
                   <td className={numCls}>{fmtInt(theirBu)}</td>
                   <td className={`${numCls} ${toneText(signedTone(diff))} ${big ? 'font-semibold' : ''}`}>
@@ -290,7 +350,7 @@ export default async function SettlementDetailPage({ params, searchParams }: { p
           <Table headers={['Ticket', 'Why', 'Net bu', 'Net $', '$/bu', 'Match to load']} rightFrom={2} rightTo={4}>
             {ambiguous.map((l) => (
               <tr key={l.id} className="border-t border-slate-100 bg-amber-50">
-                <td className="px-3 py-2 font-semibold">{l.ticket_number || <span className="text-slate-400">—</span>}</td>
+                <td className="px-3 py-2 font-semibold">{l.ticket_number || <span className="text-slate-400">—</span>}<span className="block mt-0.5">{saleCell(l)}</span></td>
                 <td className="px-3 py-2"><span className="rounded-full bg-amber-200 text-amber-900 px-2 py-0.5 text-xs font-semibold whitespace-nowrap">Several loads share this ticket</span></td>
                 <td className={numCls}>{fmtInt(l.net_bushels)}</td>
                 <td className={numCls}>{fmtUsd(l.net_revenue, 2)}</td>
@@ -300,7 +360,7 @@ export default async function SettlementDetailPage({ params, searchParams }: { p
             ))}
             {noMatch.map((l) => (
               <tr key={l.id} className="border-t border-slate-100 bg-slate-50">
-                <td className="px-3 py-2 font-semibold">{l.ticket_number || <span className="text-slate-400">—</span>}</td>
+                <td className="px-3 py-2 font-semibold">{l.ticket_number || <span className="text-slate-400">—</span>}<span className="block mt-0.5">{saleCell(l)}</span></td>
                 <td className="px-3 py-2"><span className="rounded-full bg-slate-200 text-slate-700 px-2 py-0.5 text-xs font-semibold whitespace-nowrap">No load with this ticket</span></td>
                 <td className={numCls}>{fmtInt(l.net_bushels)}</td>
                 <td className={numCls}>{fmtUsd(l.net_revenue, 2)}</td>

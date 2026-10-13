@@ -10,6 +10,15 @@ describe('contract filters — one definition of the query string', () => {
     expect(parseContractFilters(new URLSearchParams(serializeContractFilters(v)))).toEqual(v)
   })
 
+  it('round-trips the virtual sale types (spot, price later) like any contract type', () => {
+    for (const type of ['spot', 'price_later']) {
+      const v = { ...EMPTY_CONTRACT_FILTERS, type }
+      expect(parseContractFilters(new URLSearchParams(serializeContractFilters(v)))).toEqual(v)
+      expect(savedContractFilters(`type=${type}`)).toBe(`type=${type}`)
+    }
+    expect(activeContractFilterCount({ ...EMPTY_CONTRACT_FILTERS, type: 'spot' })).toBe(1)
+  })
+
   it('parses the server page\'s searchParams object the same as URLSearchParams', () => {
     const qs = 'crop_year=2026&type=forward&hide_completed=1'
     expect(parseContractFilters({ crop_year: '2026', type: 'forward', hide_completed: '1' })).toEqual(parseContractFilters(new URLSearchParams(qs)))

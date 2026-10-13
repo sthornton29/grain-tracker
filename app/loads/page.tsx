@@ -19,6 +19,24 @@ import { EmptyState, ReportFilterBar, fmtInt, fmtNum, theadCls } from '@/compone
 import type { ExportPayload, ExportCell } from '@/lib/exports'
 import type { Entity, Farm, Field, FieldPlanting, County, LoadSplit } from '@/lib/types'
 import { loadTicketKeys } from '@/lib/ticket-matching'
+import { describeSale, fetchLoadSales, saleAllocations, saleKind, unassignedBuyerLoads, type LoadSale, type SaleAllocation, type SaleKind } from '@/lib/load-sales'
+
+/** The contract filter's three non-contract values (094). */
+const SALE_FILTERS = [
+  { value: 'spot', label: 'Spot' },
+  { value: 'price_later', label: 'Price later' },
+  { value: 'unassigned', label: 'Unassigned' },
+] as const
+const SALE_FILTER_VALUES = new Set<string>(SALE_FILTERS.map((f) => f.value))
+
+/** The small chip after the buyer's name: how the load was sold. */
+const SALE_CHIP_CLS: Record<Exclude<SaleKind, 'none'>, string> = {
+  contract: 'bg-slate-100 text-slate-700',
+  spot: 'bg-sky-100 text-sky-800',
+  price_later: 'bg-indigo-100 text-indigo-800',
+  split: 'bg-sky-100 text-sky-800',
+  unassigned: 'bg-amber-100 text-amber-800',
+}
 
 type Row = {
   id: string
@@ -130,6 +148,9 @@ export default function LoadsPage() {
   const [crops, setCrops] = useState<Array<{ id: string; name: string }>>([])
   const [paidTickets, setPaidTickets] = useState<Set<string>>(new Set())
   const [paidLoadIds, setPaidLoadIds] = useState<Set<string>>(new Set())
+  // How each listed load was sold (094) — the sale rows behind the To chip,
+  // the contract filter and the exports' Sale column.
+  const [sales, setSales] = useState<LoadSale[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [splitsByLoad, setSplitsByLoad] = useState<Map<string, LoadSplit[]>>(new Map())
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -171,7 +192,14 @@ export default function LoadsPage() {
       fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
       supabase.from('crops').select('id, name').order('name'),
     ])
-    setRows((loadsRes.data as unknown as Row[]) || [])
+    const loadRows = (loadsRes.data as unknown as Row[]) || []
+    setRows(loadRows)
+    // The listed loads' sale rows (paged; [] on a database before 094).
+    try {
+      setSales(await fetchLoadSales(supabase, { loadIds: loadRows.map((r) => r.id) }))
+    } catch {
+      setSales([])
+    }
     setHasAnyLoads((anyRes.count ?? 0) > 0)
     setCrops(((cropsRes.data as Array<{ id: string; name: string }>) ?? []))
     const splitMap = new Map<string, LoadSplit[]>()
@@ -211,6 +239,28 @@ export default function LoadsPage() {
     () => new Map(fields.map((f) => [f.id, f.name_or_number])),
     [fields],
   )
+
+  // Sale allocations per load (lib/load-sales): a split load carries one
+  // allocation per part; a load with only the contract_id mirror (pre-094)
+  // reads as one full contract allocation.
+  const allocsByLoad = useMemo(
+    () => saleAllocations(rows.map((r) => ({ id: r.id, contract_id: r.contract_id, to_type: r.to_type, dryBu: bushelsFor(r).dryBushels ?? 0 })), sales),
+    [rows, sales],
+  )
+  const contractNumberById = useMemo(() => new Map(contracts.map((c) => [c.id, c.contract_number])), [contracts])
+  const allocsOf = (r: Row): SaleAllocation[] => allocsByLoad.get(r.id) ?? []
+  const saleText = (r: Row): string => describeSale(allocsOf(r), (id) => contractNumberById.get(id) ?? r.contract?.contract_number, r)
+  /** The export's Contract column: the number only when the load is wholly on one contract. */
+  const wholeContractNumber = (r: Row): string => {
+    const a = allocsOf(r)
+    return a.length === 1 && a[0].saleType === 'contract' && a[0].contractId ? contractNumberById.get(a[0].contractId) ?? r.contract?.contract_number ?? '' : ''
+  }
+  // Buyer loads with no sale type at all, within the crop-year filter — the
+  // notice above the list points them at the bulk tool.
+  const unassignedCount = useMemo(() => {
+    const inYear = cropYear === '' ? rows : rows.filter((r) => r.crop_year === cropYear)
+    return unassignedBuyerLoads(inYear.map((r) => ({ id: r.id, contract_id: r.contract_id, to_type: r.to_type, dryBu: 0 })), sales).length
+  }, [rows, sales, cropYear])
 
   const fieldEntityId = useMemo(() => {
     const farmEntity = new Map(farms.map((f) => [f.id, f.entity_id]))
@@ -265,7 +315,7 @@ export default function LoadsPage() {
   // If the active contract drops out of the cascade (e.g. user changed crop year),
   // clear the contract filter so we don't silently show zero results.
   useEffect(() => {
-    if (contractId && !contractOptions.some((c) => c.id === contractId)) setContractId('')
+    if (contractId && !SALE_FILTER_VALUES.has(contractId) && !contractOptions.some((c) => c.id === contractId)) setContractId('')
   }, [contractOptions, contractId])
 
   const filtered = rows.filter((r) => {
@@ -281,20 +331,22 @@ export default function LoadsPage() {
         fromFieldIds.push(r.from_field_id)
       }
       const fromFieldMatches = fromFieldIds.some((id) => fieldEntityId.get(id) === entityId)
-      // If the load has a contract attached, that contract's entity is
-      // authoritative — don't fall back to "this buyer also sells to entity X".
-      // The buyer fallback only applies to loads not yet linked to a contract.
-      let contractAttribution: string | null = null
+      // If the load is on a contract (any part of it — a split counts each),
+      // those contracts' entities are authoritative — don't fall back to
+      // "this buyer also sells to entity X". The buyer fallback only applies
+      // to loads not on any contract.
+      const contractIds = allocsOf(r).filter((a) => a.saleType === 'contract' && a.contractId).map((a) => a.contractId as string)
+      let contractMatches = false
       let buyerMatches = false
-      if (r.contract_id) {
-        contractAttribution = contractEntityById.get(r.contract_id) ?? null
+      if (contractIds.length > 0) {
+        contractMatches = contractIds.some((id) => (contractEntityById.get(id) ?? null) === entityId)
       } else if (r.to_buyer_id) {
         const set = buyerEntityIds.get(r.to_buyer_id)
         if (set) buyerMatches = set.has(entityId)
       }
       const matchesEntity =
         fromFieldMatches
-        || contractAttribution === entityId
+        || contractMatches
         || buyerMatches
       if (!matchesEntity) return false
     }
@@ -308,7 +360,14 @@ export default function LoadsPage() {
       }
       if (!fieldIds.some((id) => fieldCountyId.get(id) === countyId)) return false
     }
-    if (contractId && r.contract_id !== contractId) return false
+    if (contractId) {
+      // A contract matches through ANY allocation on it (a split load shows
+      // under each of its contracts); the three sale kinds match the same way.
+      const a = allocsOf(r)
+      if (contractId === 'unassigned') { if (saleKind(a, r) !== 'unassigned') return false }
+      else if (contractId === 'spot' || contractId === 'price_later') { if (!a.some((x) => x.saleType === contractId)) return false }
+      else if (!a.some((x) => x.saleType === 'contract' && x.contractId === contractId)) return false
+    }
     if (cropYear !== '' && r.crop_year !== cropYear) return false
     if (cropId) {
       // Split loads carry several crops — match ANY split's crop.
@@ -318,7 +377,7 @@ export default function LoadsPage() {
     if (!q) return true
     const hay = [
       r.ticket_number, truckDisplay(r).name, r.crop?.name,
-      fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number, r.date, fmtDate(r.date),
+      fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number, saleText(r), r.date, fmtDate(r.date),
     ].filter(Boolean).join(' ').toLowerCase()
     return hay.includes(q.toLowerCase())
   })
@@ -431,7 +490,10 @@ export default function LoadsPage() {
     if (countyId) { const c = counties.find((x) => x.id === countyId); if (c) parts.push(`${c.name}, ${c.state_code}`) }
     if (cropYear !== '') parts.push(`${cropYear} crop`)
     if (cropId) parts.push(crops.find((c) => c.id === cropId)?.name ?? 'Crop')
-    if (contractId) parts.push(`#${contracts.find((c) => c.id === contractId)?.contract_number ?? contractId}`)
+    if (contractId) {
+      const kind = SALE_FILTERS.find((f) => f.value === contractId)
+      parts.push(kind ? kind.label : `#${contracts.find((c) => c.id === contractId)?.contract_number ?? contractId}`)
+    }
     if (q) parts.push(`“${q}”`)
     parts.push(`${count} load${count === 1 ? '' : 's'}`)
     return parts.join(' · ')
@@ -448,7 +510,7 @@ export default function LoadsPage() {
       sections: [{
         columns: [
           { label: 'Date' }, { label: 'Time' }, { label: 'Ticket' }, { label: 'Truck' }, { label: 'Crop' },
-          { label: 'From' }, { label: 'To' }, { label: 'Contract' }, { label: 'Payment' },
+          { label: 'From' }, { label: 'To' }, { label: 'Contract' }, { label: 'Sale' }, { label: 'Payment' },
           { label: 'Gross lb', align: 'right', format: 'int' }, { label: 'Tare lb', align: 'right', format: 'int' }, { label: 'Net lb', align: 'right', format: 'int' },
           { label: 'Wet bu', align: 'right', format: 'bu' }, { label: 'Dry bu', align: 'right', format: 'bu' },
           { label: 'Moisture %', align: 'right', format: 'dec1' }, { label: 'Test wt', align: 'right', format: 'dec1' },
@@ -472,7 +534,7 @@ export default function LoadsPage() {
             : ''
           return [
             fmtDate(r.date), r.time ? r.time.slice(0, 5) : '', r.ticket_number ?? '', truckExportLabel(r), r.crop?.name ?? '',
-            fromLabel(r, rSplits, fieldNameById), toLabel(r), r.contract?.contract_number ?? '', payCell,
+            fromLabel(r, rSplits, fieldNameById), toLabel(r), wholeContractNumber(r), saleText(r), payCell,
             r.gross_weight ?? '', r.tare_weight ?? '', r.net_weight ?? '',
             wetBushels ?? '', dryBushels ?? '', r.moisture ?? '', r.test_weight ?? '',
             isSplit ? 'Yes' : '', splitDetails,
@@ -578,6 +640,7 @@ export default function LoadsPage() {
             title="Loads attached to this contract"
           >
             <option value="">All contracts</option>
+            {SALE_FILTERS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
             {contractOptions.map((c) => {
               const parts = [
                 `#${c.contract_number}`,
@@ -595,6 +658,16 @@ export default function LoadsPage() {
           </button>
         )}
       </ReportFilterBar>
+
+      {/* Buyer loads with no sale type yet (094) — the bulk tool fixes them in one go. */}
+      {!loading && unassignedCount > 0 && (
+        <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span>{unassignedCount.toLocaleString()} load{unassignedCount === 1 ? '' : 's'} delivered to buyers without a sale type.</span>
+          <Link href="/loads/assign-sales" className="inline-flex items-center min-h-11 font-semibold text-brand-deep underline">
+            Set them now →
+          </Link>
+        </div>
+      )}
 
       {/* One export bar for the page: the filtered list, every format. */}
       {sorted.length > 0 && (
@@ -708,7 +781,15 @@ export default function LoadsPage() {
                         )}
                       </td>
                       <td className="px-3 py-2">
-                        {toLabel(r)}{r.contract?.contract_number ? ` (#${r.contract.contract_number})` : ''}
+                        {toLabel(r)}
+                        {(() => {
+                          // How it was sold: "Contract 2002960604-10" · "Spot" ·
+                          // "Price later" · "split: 58 bu contract … · 913 bu spot" ·
+                          // "Unassigned" (lib/load-sales describeSale).
+                          const kind = saleKind(allocsOf(r), r)
+                          if (kind === 'none') return null
+                          return <span className={`ml-2 text-xs rounded px-2 py-0.5 ${SALE_CHIP_CLS[kind]}`}>{saleText(r)}</span>
+                        })()}
                         {(() => {
                           const s = paymentStatus(r)
                           if (s === 'paid') return <span className="ml-2 text-xs bg-green-100 text-green-800 rounded px-2 py-0.5">paid</span>

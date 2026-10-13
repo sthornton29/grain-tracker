@@ -1,8 +1,8 @@
 ---
 page_route: /reports/cash-flow
 title: Cash Flow Forecast
-updated: 2026-09-30
-keywords: cash flow, monthly, received, outstanding, projected, delivery window, safety net, ARC, PLC, insurance, cotton, contracts, where does this number come from, drill down, detail, tap a number
+updated: 2026-10-13
+keywords: cash flow, monthly, received, outstanding, projected, delivery window, safety net, ARC, PLC, insurance, cotton, contracts, where does this number come from, drill down, detail, tap a number, spot, price later, unpriced at buyers
 ---
 ## What this page is for
 
@@ -37,6 +37,7 @@ When a **seed production contract** is in the year, a **Seed (net)** column and 
 
 - **Why is a month's projected revenue lower than I expected?** The contract's value is spread across every remaining month of its delivery window — one month carries only its share.
 - **Why does my ARC/PLC payment seem to be for last year?** That is how the program works: a program year's payment arrives the October after it. The forecast puts the cash in the month it actually lands.
+- **Where do spot and price-later loads show?** Spot loads have their own row per crop year ("Spot · Soybean 2026"): settled loads are **received** in the month the settlement was dated, unsettled ones are **outstanding** at their current price (marked est. while a price is still Turnrow's estimate), and nothing is ever projected for them — there's no contract to fill. Price-later bushels aren't dated cash at all; an info line under the table says how many bushels sit unpriced at buyers and what they'd be worth at today's assumed price.
 - **A number looks wrong — how do I check it?** Tap it. The list shows exactly which settlements, contracts, policies, or payments add up to it, with a link to each one.
 - **How firm are these numbers?** Received is fact. Outstanding is owed. Projected and the safety net are estimates — final program and insurance amounts are set by RMA and FSA after harvest.
 

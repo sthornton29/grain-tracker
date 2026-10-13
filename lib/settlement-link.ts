@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { matchTicket, normalizeTicket } from '@/lib/ticket-matching'
+import { contractNumberKey } from '@/lib/settlement-sales'
 
 // Ticket ↔ load matching persistence — on the SHARED seam (lib/ticket-
 // matching, 086): exact after normalization (trim, case, leading zeros),
@@ -79,13 +80,42 @@ export async function relinkSettlementLines(
   const buyerId = (settlement as { buyer_id: string } | null)?.buyer_id
   if (!buyerId) return 0
 
-  const { data: lines } = await supabase
+  type SavedLine = { id: string; ticket_number: string | null; load_id: string | null; buyer_ref?: string | null; contract_number_text?: string | null }
+  // The 094 contract text first (a split ticket's lines differ on it); a
+  // database before that migration reads without it.
+  const full = await supabase
     .from('settlement_lines')
-    .select('id, ticket_number, load_id, buyer_ref')
+    .select('id, ticket_number, load_id, buyer_ref, contract_number_text')
     .eq('settlement_id', settlementId)
-  const unlinked = ((lines ?? []) as Array<{ id: string; ticket_number: string | null; load_id: string | null; buyer_ref?: string | null }>)
-    .filter((l) => !l.load_id && (normalizeTicket(l.ticket_number) || normalizeTicket(l.buyer_ref)))
+  const linesData: unknown = full.error
+    ? (await supabase.from('settlement_lines').select('id, ticket_number, load_id, buyer_ref').eq('settlement_id', settlementId)).data
+    : full.data
+  const lines = ((linesData as SavedLine[] | null) ?? [])
+  const unlinked = lines.filter((l) => !l.load_id && (normalizeTicket(l.ticket_number) || normalizeTicket(l.buyer_ref)))
   if (unlinked.length === 0) return 0
+
+  // 094: a ticket printed under two contract blocks is ONE load split across
+  // two sales — an unlinked line whose ticket another line of THIS settlement
+  // already links takes the same load, unless both lines name the same
+  // contract (a true repeat, left for the manual pick).
+  const updates: Array<{ lineId: string; loadId: string; tier: string; reason: string }> = []
+  const linkedByTicket = new Map<string, Array<{ loadId: string; text: string }>>()
+  for (const l of lines) {
+    const key = normalizeTicket(l.ticket_number)
+    if (!l.load_id || !key) continue
+    linkedByTicket.set(key, [...(linkedByTicket.get(key) ?? []), { loadId: l.load_id, text: contractNumberKey(l.contract_number_text) }])
+  }
+  const remaining: SavedLine[] = []
+  for (const ln of unlinked) {
+    const key = normalizeTicket(ln.ticket_number)
+    const mine = contractNumberKey(ln.contract_number_text)
+    const sibling = (key ? linkedByTicket.get(key) ?? [] : []).find((s) => s.text === '' || mine === '' || s.text !== mine)
+    if (sibling) {
+      updates.push({ lineId: ln.id, loadId: sibling.loadId, tier: 'exact', reason: `ticket ${key} matches exactly — the same ticket under a second contract block (a split sale)` })
+      continue
+    }
+    remaining.push(ln)
+  }
 
   // Paginated (lib/fetch-all-rows): a buyer's loads exceed the ~1,000-row
   // request cap over the years, and a truncated read here would silently
@@ -101,11 +131,12 @@ export async function relinkSettlementLines(
   )
   const pool = buyerLoads ?? []
 
-  // Text tiers only (exact, segment); each load claimed once; ambiguous or
-  // no match → left null for the manual pick.
-  const used = new Set<string>()
-  const updates: Array<{ lineId: string; loadId: string; tier: string; reason: string }> = []
-  for (const ln of unlinked) {
+  // Text tiers only (exact, segment); each load claimed once WITHIN this
+  // settlement — loads other lines here already link are off the table (a
+  // true repeat stays unlinked for the manual pick). Loads paid on OTHER
+  // settlements are not blocked: that is the duplicate check's job.
+  const used = new Set<string>(lines.map((l) => l.load_id).filter((id): id is string => !!id))
+  for (const ln of remaining) {
     const r = matchTicket({ ticket_number: ln.ticket_number, secondary_refs: [ln.buyer_ref] }, pool, {}, used)
     if (r.status !== 'matched') continue
     used.add(r.match.loadId)

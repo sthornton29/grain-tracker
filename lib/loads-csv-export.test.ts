@@ -39,6 +39,27 @@ describe('buildCsv', () => {
       'Date,Truck,Net lb,Dry bu\r\n9/24/2026,"Kenworth, 12",50000,893\r\nTotal,,50000,893\r\n',
     )
   })
+  it('the Loads page shape: Contract carries the number only when the load is wholly on one contract, Sale always describes it (094)', () => {
+    const loads: ExportPayload = {
+      title: 'Load Log',
+      sections: [{
+        columns: [{ label: 'Date' }, { label: 'To' }, { label: 'Contract' }, { label: 'Sale' }, { label: 'Dry bu', format: 'bu' }],
+        rows: [
+          ['10/2/2026', 'Bunge', '2002960604-10', 'Contract 2002960604-10', 894.14],
+          ['10/2/2026', 'Bunge', '', 'split: 58 bu contract 2002960604-10 · 913 bu spot', 971.028],
+          ['10/2/2026', 'Bunge', '', 'Spot', 959.926],
+          ['10/2/2026', 'Bunge', '', 'Unassigned', 944.23],
+        ],
+      }],
+    }
+    expect(buildCsv(loads)).toBe(
+      'Date,To,Contract,Sale,Dry bu\r\n' +
+      '10/2/2026,Bunge,2002960604-10,Contract 2002960604-10,894\r\n' +
+      '10/2/2026,Bunge,,split: 58 bu contract 2002960604-10 · 913 bu spot,971\r\n' +
+      '10/2/2026,Bunge,,Spot,960\r\n' +
+      '10/2/2026,Bunge,,Unassigned,944\r\n',
+    )
+  })
   it('a subhead row collapses to its label; later sections get a blank line and a title', () => {
     const multi: ExportPayload = {
       title: 'Two',

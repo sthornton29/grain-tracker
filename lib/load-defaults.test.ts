@@ -17,9 +17,12 @@ import {
   LAST_LOAD_DEFAULTS_SELECT,
   applyLastLoadDefaults,
   dateDefaultNote,
+  defaultSaleRows,
   isTransferShape,
+  mirrorContractId,
   pickLastLoadDefaults,
   pickPerUserLastLoadDefaults,
+  saleForNextLoad,
   saveAndNewPatch,
   type DefaultableForm,
   type LastLoadDefaultsSource,
@@ -193,6 +196,43 @@ describe('saveAndNewPatch — what Save & New clears vs keeps', () => {
     // Belt and braces: the SELECT feeding applyLastLoadDefaults carries no
     // truck column, so a truck can't sneak back in through the seam.
     expect(LAST_LOAD_DEFAULTS_SELECT).not.toContain('truck')
+  })
+})
+
+describe('sale-type memory (094)', () => {
+  it('the last load\'s contract → one full contract row (what contract_id defaulting always did)', () => {
+    expect(defaultSaleRows(fieldToBuyer, [])).toEqual([{ sale_type: 'contract', contract_id: 'c-1', share: 1, spot_price: null, spot_price_source: null }])
+  })
+  it('no contract but one spot / price-later row → that kind, without the bid', () => {
+    const spotLast = recent({ to_type: 'buyer', to_buyer_id: 'by-1', contract_id: null })
+    expect(defaultSaleRows(spotLast, [{ sale_type: 'spot' }])).toEqual([{ sale_type: 'spot', contract_id: null, share: 1, spot_price: null, spot_price_source: null }])
+    expect(defaultSaleRows(spotLast, [{ sale_type: 'price_later' }])[0]).toMatchObject({ sale_type: 'price_later', share: 1 })
+  })
+  it('a split, an unassigned load, or a bin load seeds nothing', () => {
+    const buyerLast = recent({ to_type: 'buyer', to_buyer_id: 'by-1', contract_id: null })
+    expect(defaultSaleRows(buyerLast, [{ sale_type: 'contract', contract_id: 'c-1' }, { sale_type: 'spot' }])).toEqual([])
+    expect(defaultSaleRows(buyerLast, [])).toEqual([])
+    expect(defaultSaleRows(fieldToBin, [{ sale_type: 'spot' }])).toEqual([])
+  })
+
+  it('Save & New keeps the contract, the kind, and a typed bid — never an estimate', () => {
+    expect(saleForNextLoad([{ sale_type: 'contract', contract_id: 'c-1', share: 1 }])).toMatchObject([{ sale_type: 'contract', contract_id: 'c-1', share: 1 }])
+    expect(saleForNextLoad([{ sale_type: 'spot', share: 1, spot_price: 13.74, spot_price_source: 'entered' }]))
+      .toMatchObject([{ sale_type: 'spot', share: 1, spot_price: 13.74, spot_price_source: 'entered' }])
+    expect(saleForNextLoad([{ sale_type: 'spot', share: 1, spot_price: 13.39, spot_price_source: 'estimate', est_futures_symbol: 'ZSX26' }]))
+      .toEqual([{ sale_type: 'spot', contract_id: null, share: 1, spot_price: null, spot_price_source: null }])
+    expect(saleForNextLoad([])).toEqual([])
+  })
+  it('after an overflow split the next load goes where the overflow went', () => {
+    const split = [{ sale_type: 'contract' as const, contract_id: 'c-1', share: 0.3 }, { sale_type: 'spot' as const, share: 0.7 }]
+    expect(saleForNextLoad(split)).toEqual([{ sale_type: 'spot', contract_id: null, share: 1, spot_price: null, spot_price_source: null }])
+  })
+
+  it('the contract_id mirror: exactly one full contract row, else blank', () => {
+    expect(mirrorContractId([{ sale_type: 'contract', contract_id: 'c-1', share: 1 }])).toBe('c-1')
+    expect(mirrorContractId([{ sale_type: 'spot', share: 1 }])).toBe('')
+    expect(mirrorContractId([{ sale_type: 'contract', contract_id: 'c-1', share: 0.3 }, { sale_type: 'spot', share: 0.7 }])).toBe('')
+    expect(mirrorContractId([])).toBe('')
   })
 })
 

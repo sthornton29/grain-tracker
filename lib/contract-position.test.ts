@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { contractPosition } from './contract-position'
+import { contractPosition, spotPositionContract } from './contract-position'
 
 describe('contractPosition', () => {
+  it('counts the spot contract\'s priced bushels as sold, never its unpriced ones', () => {
+    const spot = spotPositionContract({ bushels: 4793.9, summary: { unpricedBushels: 944.23 } })
+    expect(spot).toEqual({ bushels: 4793.9 - 944.23, pricingStatus: 'fully_priced', isSeed: false })
+    const p = contractPosition([
+      { bushels: 10_000, pricingStatus: 'fully_priced', isSeed: false },
+      spot,
+    ], 40_000)
+    expect(p.soldBu).toBeCloseTo(10_000 + 4793.9 - 944.23, 6)
+    expect(p.openPricedBu).toBe(0)
+  })
+
   it('splits sold / open-priced / unsold against production', () => {
     const p = contractPosition([
       { bushels: 10_000, pricingStatus: 'fully_priced', isSeed: false },

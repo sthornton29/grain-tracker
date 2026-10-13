@@ -32,9 +32,12 @@ import { useReportCropYear } from '@/lib/report-filters'
 import { fmtDate } from '@/lib/format-date'
 import { AppModal } from '@/components/app-dialog'
 import {
-  CASH_KIND_EXPLAINER, CASH_KIND_LABEL, projectionMonths, selectCashDetails, sumCashDetails,
-  type CashDetail, type CashKind, type CashSelection,
+  CASH_KIND_EXPLAINER, CASH_KIND_LABEL, contractCashAggregates, priceLaterInfo, projectionMonths, selectCashDetails, spotCashRows, sumCashDetails,
+  type CashDetail, type CashKind, type CashLine, type CashSelection, type ContractCashAgg,
 } from '@/lib/cash-flow-detail'
+import { fetchLoadSales, isContractComplete, type LoadSale, type SaleLoad } from '@/lib/load-sales'
+import { buildSpotInputs, spotContractLabel, spotForBuyer } from '@/lib/spot-contracts'
+import type { VirtualSpotContract } from '@/lib/virtual-contracts'
 import type {
   Buyer, Contract, Crop, Entity, FieldPlanting,
   CropAssumption, CropInsurancePolicy, CropInsuranceSco, CropInsuranceEco, HarvestPriceEstimate, ProgramYearConfig,
@@ -56,6 +59,9 @@ type LoadRow = {
   from_type: string | null
   from_field_id: string | null
   practice: 'irrigated' | 'dryland' | null
+  // Sale side (094): where it went, for the sale allocations and spot rows.
+  to_type: string | null
+  to_buyer_id: string | null
 }
 
 type CashFlowSplitRow = {
@@ -64,15 +70,18 @@ type CashFlowSplitRow = {
   crop_id: string
   dry_bushels: number | null
   practice: 'irrigated' | 'dryland' | null
+  percentage: number | null
 }
 
-type LineRow = {
+type LineRow = CashLine & {
   load_id: string | null
   ticket_number: string | null
   net_bushels: number
   net_revenue: number | null
   settlement_id: string
 }
+const LINE_SELECT_094 = 'load_id, ticket_number, net_bushels, net_revenue, settlement_id, contract_id, sale_type'
+const LINE_SELECT_PRE_094 = 'load_id, ticket_number, net_bushels, net_revenue, settlement_id'
 
 type SettlementRow = { id: string; settlement_date: string; settlement_number: string | null; buyer_id: string | null }
 type FarmRow = { id: string; entity_id: string | null; name: string }
@@ -86,18 +95,15 @@ function monthLabel(key: string): string {
 }
 
 // A contract is "complete" when explicitly marked complete or fully delivered
-// (mirrors the contracts list). A completed contract books NO further projected
-// revenue even if bushels remain — once it's closed out, no more grain will ship
-// against it, so we stop assuming future income from those undelivered bushels.
-function isContractComplete(completedAt: string | null, contractedBu: number, delivered: number): boolean {
-  if (completedAt != null) return true
-  return contractedBu > 0 && delivered >= contractedBu
-}
+// (lib/load-sales isContractComplete — the one rule). A completed contract
+// books NO further projected revenue even if bushels remain — once it's
+// closed out, no more grain will ship against it.
 
 export default function CashFlowPage() {
   const supabase = useMemo(() => createClient(), [])
   const [contracts, setContracts] = useState<Contract[]>([])
   const [loads, setLoads] = useState<LoadRow[]>([])
+  const [loadSales, setLoadSales] = useState<LoadSale[]>([])
   const [splits, setSplits] = useState<CashFlowSplitRow[]>([])
   const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [lines, setLines] = useState<LineRow[]>([])
@@ -209,18 +215,26 @@ export default function CashFlowPage() {
         const { data, error } = await fetchAllRows<LoadRow>((f, t) =>
           supabase
             .from('loads')
-            .select('id, date, time, contract_id, ticket_number, buyer_ticket_number, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, practice')
+            .select('id, date, time, contract_id, ticket_number, buyer_ticket_number, net_weight, moisture, crop_id, crop_year, dry_bushels_override, from_type, from_field_id, practice, to_type, to_buyer_id')
             .order('id', { ascending: true })
             .range(f, t),
         )
         if (error) throw new Error(error.message)
         return data
       }
-      const [ct, ld, sp, ln, st, cr, by, en, fa, fi, pl] = await Promise.all([
+      // Settlement lines with their 094 per-line sale tag (contract_id /
+      // sale_type); a database before 094 lacks the columns, so fall back to
+      // the untagged shape rather than losing every received dollar.
+      async function fetchLines() {
+        const tagged = await fetchAllRows((f, t) => supabase.from('settlement_lines').select(LINE_SELECT_094).order('id').range(f, t))
+        if (!tagged.error) return tagged
+        return fetchAllRows((f, t) => supabase.from('settlement_lines').select(LINE_SELECT_PRE_094).order('id').range(f, t))
+      }
+      const [ct, ld, sp, ln, st, cr, by, en, fa, fi, pl, ls] = await Promise.all([
         supabase.from('contracts').select('*'),
         fetchAllLoads(),
-        fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels, practice').order('id').range(f, t)),
-        fetchAllRows((f, t) => supabase.from('settlement_lines').select('load_id, ticket_number, net_bushels, net_revenue, settlement_id').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels, practice, percentage').order('id').range(f, t)),
+        fetchLines(),
         fetchAllRows((f, t) => supabase.from('settlements').select('id, settlement_date, settlement_number, buyer_id').order('id').range(f, t)),
         supabase.from('crops').select('*'),
         supabase.from('buyers').select('*').order('name'),
@@ -228,6 +242,8 @@ export default function CashFlowPage() {
         supabase.from('farms').select('id, entity_id, name'),
         supabase.from('fields').select('id, farm_id'),
         fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
+        // How each buyer load was sold (094) — a database before 094 reads as none.
+        fetchLoadSales(supabase).catch(() => [] as LoadSale[]),
       ])
       const [ca, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp, ce] = await Promise.all([
         supabase.from('crop_assumptions').select('*'),
@@ -247,6 +263,7 @@ export default function CashFlowPage() {
       ])
       setContracts((ct.data as Contract[]) || [])
       setLoads(ld)
+      setLoadSales(ls)
       setSplits((sp.data as CashFlowSplitRow[]) || [])
       setLines((ln.data as LineRow[]) || [])
       setSettlements((st.data as SettlementRow[]) || [])
@@ -334,22 +351,34 @@ export default function CashFlowPage() {
     })()
     return () => { cancelled = true }
   }, [insurancePolicyScope, cropById])
-  const lineByLoadId = useMemo(() => {
-    const m = new Map<string, LineRow>()
-    for (const l of lines) if (l.load_id) m.set(l.load_id, l)
+  // A load can carry MORE than one settlement line (a split ticket prints a
+  // line under each contract block), so lines are kept per load, not one.
+  const linesByLoadId = useMemo(() => {
+    const m = new Map<string, LineRow[]>()
+    for (const l of lines) if (l.load_id) { const arr = m.get(l.load_id) ?? []; arr.push(l); m.set(l.load_id, arr) }
     return m
   }, [lines])
-  const lineByTicket = useMemo(() => {
-    const m = new Map<string, LineRow>()
-    for (const l of lines) if (l.ticket_number) m.set(l.ticket_number.trim().toLowerCase(), l)
+  const linesByTicket = useMemo(() => {
+    const m = new Map<string, LineRow[]>()
+    for (const l of lines) {
+      if (!l.ticket_number) continue
+      const k = l.ticket_number.trim().toLowerCase()
+      const arr = m.get(k) ?? []; arr.push(l); m.set(k, arr)
+    }
     return m
   }, [lines])
+  const loadById = useMemo(() => new Map(loads.map((l) => [l.id, l])), [loads])
 
-  function lineFor(load: LoadRow): LineRow | null {
-    if (lineByLoadId.has(load.id)) return lineByLoadId.get(load.id)!
-    for (const k of loadTicketKeys(load)) if (lineByTicket.has(k)) return lineByTicket.get(k)!
-    return null
-  }
+  const linesFor = useCallback((load: LoadRow): LineRow[] => {
+    const direct = linesByLoadId.get(load.id)
+    if (direct && direct.length > 0) return direct
+    for (const k of loadTicketKeys(load)) { const hit = linesByTicket.get(k); if (hit && hit.length > 0) return hit }
+    return []
+  }, [linesByLoadId, linesByTicket])
+  const linesForLoadId = useCallback((loadId: string): LineRow[] => {
+    const load = loadById.get(loadId)
+    return load ? linesFor(load) : linesByLoadId.get(loadId) ?? []
+  }, [loadById, linesFor, linesByLoadId])
 
   function dryBu(l: LoadRow): number {
     const crop = l.crop_id ? cropById.get(l.crop_id) : null
@@ -375,46 +404,38 @@ export default function CashFlowPage() {
     [plantings, contracts, assumptions, cropYear],
   )
 
-  type Agg = {
-    contract: Contract
-    delivered: number
-    deliveredUnpaid: number
-    unpaidLoads: number
-    revenueReceived: number
-    /** Received dollars by settlement (the drill-down's rows); the month
-     *  comes from the settlement's date. */
-    receivedBySettlement: Map<string, { amount: number; bushels: number; loads: number }>
-  }
-  const aggByContract = useMemo(() => {
-    const map = new Map<string, Agg>()
-    for (const c of contracts) map.set(c.id, {
-      contract: c, delivered: 0, deliveredUnpaid: 0, unpaidLoads: 0, revenueReceived: 0,
-      receivedBySettlement: new Map(),
-    })
-    for (const load of loads) {
-      if (!load.contract_id) continue
-      const agg = map.get(load.contract_id)
-      if (!agg) continue
-      const bu = dryBu(load)
-      agg.delivered += bu
-      const line = lineFor(load)
-      if (line) {
-        const rev = Number(line.net_revenue ?? 0)
-        agg.revenueReceived += rev
-        if (settlementById.has(line.settlement_id)) {
-          const cur = agg.receivedBySettlement.get(line.settlement_id) ?? { amount: 0, bushels: 0, loads: 0 }
-          cur.amount += rev
-          cur.bushels += Number(line.net_bushels ?? 0)
-          cur.loads += 1
-          agg.receivedBySettlement.set(line.settlement_id, cur)
-        }
-      } else {
-        agg.deliveredUnpaid += bu
-        agg.unpaidLoads += 1
-      }
+  // The buyer loads as the sale seam sees them (dry bushels resolved with
+  // each load's crop bases) — the sale allocations, the per-contract
+  // delivered / unpaid / received figures and the spot contracts all build
+  // from these, never from a load's mirror contract_id.
+  const saleLoads = useMemo<SaleLoad[]>(
+    () => loads.filter((l) => l.to_type === 'buyer').map((l) => ({ id: l.id, contract_id: l.contract_id, to_type: 'buyer' as const, dryBu: dryBu(l) })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [loads, cropById],
+  )
+  const aggByContract = useMemo<Map<string, ContractCashAgg>>(() => {
+    const map = contractCashAggregates({ loads: saleLoads, sales: loadSales, linesForLoad: linesForLoadId })
+    // Drop settlements we cannot date (a line whose settlement is gone).
+    for (const agg of map.values()) {
+      for (const id of [...agg.receivedBySettlement.keys()]) if (!settlementById.has(id)) agg.receivedBySettlement.delete(id)
     }
     return map
-  }, [contracts, loads, cropById, lineByLoadId, lineByTicket, settlementById])
+  }, [saleLoads, loadSales, linesForLoadId, settlementById])
+  const emptyAgg: ContractCashAgg = useMemo(() => ({ delivered: 0, deliveredUnpaid: 0, unpaidLoads: 0, revenueReceived: 0, receivedBySettlement: new Map() }), [])
+  const aggFor = (c: Contract): ContractCashAgg => aggByContract.get(c.id) ?? emptyAgg
+
+  // Spot sales (094): every spot load of a crop × year is ONE row of its own
+  // ("Spot · Soybean 2026") — settled loads are Received in their settlement
+  // month, unsettled ones Outstanding at their current price, and nothing is
+  // ever Projected (spot has no target). Price-later bushels are unpriced:
+  // no dated cash, just the info line under the table.
+  const spotInputs = useMemo(
+    () => buildSpotInputs({ loads, sales: loadSales, crops, entities, fields, farms, splits }),
+    [loads, loadSales, crops, entities, fields, farms, splits],
+  )
+  const spotLabel = (s: VirtualSpotContract) => spotContractLabel(s, (id) => cropById.get(id)?.name)
+  const spotHref = (s: VirtualSpotContract) => `/contracts/spot/${s.crop_id}/${s.crop_year}${s.entity_id && !spotInputs.marketingAgentEntityId ? `?entity=${s.entity_id}` : ''}`
+  const spotShare = (s: VirtualSpotContract) => attribution.shareForContract({ entity_id: s.entity_id, crop_id: s.crop_id, crop_year: s.crop_year })
 
   const contractLabel = (c: Contract) => `Contract #${c.contract_number}${c.buyer_id ? ` · ${buyerById.get(c.buyer_id)?.name ?? ''}` : ''}${c.crop_id ? ` · ${cropById.get(c.crop_id)?.name ?? ''}` : ''}`
 
@@ -435,6 +456,21 @@ export default function CashFlowPage() {
     if (shareFor(c) <= 0) return false
     return true
   })
+  // The spot rows under the same filters; the buyer filter narrows a spot
+  // row to that buyer's loads (spotForBuyer) rather than hiding it.
+  const visibleSpots = useMemo<VirtualSpotContract[]>(() => {
+    if (viewerPending) return []
+    const out: VirtualSpotContract[] = []
+    for (const s of spotInputs.spots) {
+      if (cropYear !== '' && s.crop_year !== cropYear) continue
+      if (cropId && s.crop_id !== cropId) continue
+      if (spotShare(s) <= 0) continue
+      const narrowed = spotForBuyer(s, buyerId || null)
+      if (narrowed && narrowed.bushels > 0) out.push(narrowed)
+    }
+    return out
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spotInputs, cropYear, cropId, buyerId, viewerPending, attribution])
 
   // Compute monthly cash flow buckets — and, beside each total, the rows it
   // is made of (lib/cash-flow-detail) so any number on screen can open them.
@@ -451,9 +487,33 @@ export default function CashFlowPage() {
     today.setHours(0, 0, 0, 0)
     const thisMonth = monthKey(today)
 
+    // Spot rows: received by settlement month, outstanding at the current
+    // price this month, never projected (lib/cash-flow-detail spotCashRows).
+    const spotStats = new Map<string, ReturnType<typeof spotCashRows>>()
+    for (const s of visibleSpots) {
+      const res = spotCashRows({
+        spot: s,
+        label: spotLabel(s),
+        href: spotHref(s),
+        linesForLoad: linesForLoadId,
+        settlementMonth: (id) => { const st = settlementById.get(id); return st ? monthKey(new Date(st.settlement_date + 'T00:00:00')) : null },
+        settlementLabel: (id) => { const st = settlementById.get(id)!; return `Settlement ${st.settlement_number ? `#${st.settlement_number}` : fmtDate(st.settlement_date)}${st.buyer_id ? ` · ${buyerById.get(st.buyer_id)?.name ?? ''}` : ''}` },
+        settlementHref: (id) => `/settlements/${id}`,
+        thisMonth,
+        share: spotShare(s),
+        fmtBu: fmtInt,
+        fmtUsd: (n) => fmtUsd(n, 2),
+      })
+      spotStats.set(s.id, res)
+      for (const d of res.details) {
+        if (d.kind === 'received') ensure(d.month).received += d.amount
+        else if (d.kind === 'outstanding') ensure(d.month).outstanding += d.amount
+        details.push(d)
+      }
+    }
+
     for (const c of visibleContracts) {
-      const agg = aggByContract.get(c.id)
-      if (!agg) continue
+      const agg = aggFor(c)
       const price = Number(c.price_per_bushel ?? 0)
       // Entity share of this contract (1 unfiltered / entity-keyed).
       const s = shareFor(c)
@@ -519,10 +579,30 @@ export default function CashFlowPage() {
         }
       }
     }
-    return { buckets, details }
+    return { buckets, details, spotStats }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleContracts, aggByContract, settlementById, buyerById, cropById])
+  }, [visibleContracts, visibleSpots, aggByContract, settlementById, buyerById, cropById, linesForLoadId])
   const monthly = contractFlow.buckets
+
+  // Price-later bushels (094): delivered but UNPRICED — never dated cash.
+  // Valued at today's price for the line under the table only: the crop's
+  // assumed futures + assumed basis from Marketing assumptions.
+  const priceLater = useMemo(() => {
+    if (viewerPending) return null
+    const pools = spotInputs.pools.filter((p) =>
+      (cropYear === '' || p.crop_year === cropYear) && (!cropId || p.crop_id === cropId) && (!buyerId || p.buyer_id === buyerId))
+    return priceLaterInfo({
+      pools,
+      priceFor: (id, yr) => {
+        const a = effAssumptions.find((x) => x.crop_id === id && x.crop_year === yr)
+        return a?.assumed_futures != null ? Number(a.assumed_futures) + Number(a.assumed_basis ?? 0) : null
+      },
+      cropName: (id) => cropById.get(id)?.name,
+      share: (p) => attribution.shareForCrop(p.crop_id, p.crop_year),
+      fmtBu: fmtInt,
+      fmtUsd: (n) => fmtUsd(n),
+    })
+  }, [spotInputs, cropYear, cropId, buyerId, viewerPending, effAssumptions, cropById, attribution])
 
   // Safety net (crop insurance + government payments) bucketed by month, with the
   // program-specific timing: ARC/PLC in October of crop_year + 1, crop insurance
@@ -759,7 +839,7 @@ export default function CashFlowPage() {
   const summary = useMemo(() => {
     let value = 0, received = 0, outstanding = 0, remaining = 0
     for (const c of visibleContracts) {
-      const agg = aggByContract.get(c.id)!
+      const agg = aggFor(c)
       const price = Number(c.price_per_bushel ?? 0)
       const s = shareFor(c)
       value += Number(c.contracted_bushels) * price * s
@@ -769,9 +849,17 @@ export default function CashFlowPage() {
       const complete = isContractComplete(c.completed_at, Number(c.contracted_bushels), agg.delivered)
       remaining += complete ? 0 : remainingBu * price
     }
+    // Spot: its value is what its loads are worth at their prices; nothing
+    // remains to deliver.
+    for (const sp of visibleSpots) {
+      const st = contractFlow.spotStats.get(sp.id)
+      value += sp.revenue * spotShare(sp)
+      received += st?.received ?? 0
+      outstanding += st?.outstanding ?? 0
+    }
     return { value, received, outstanding, remaining }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleContracts, aggByContract])
+  }, [visibleContracts, visibleSpots, aggByContract, contractFlow.spotStats])
 
   const filterSummary = filterSummaryOf(
     cropYearLabel(cropYear),
@@ -792,8 +880,18 @@ export default function CashFlowPage() {
         sub: `${fmtInt(Number(c.contracted_bushels) * s)} bu × ${fmtUsd(price, 2)}${s < 1 ? ` · ${Math.round(s * 100)}% entity share` : ''}${price === 0 ? ' · no price set yet' : ''}`,
         href: `/contracts/${c.id}`,
       }
-    }).sort((a, b) => b.amount - a.amount)
-    setDrill({ title: `Contract value · ${filterSummary}`, explainer: 'Each contract\'s bushels at its contract price. Unpriced contracts count as zero until a price is set.', rows })
+    })
+    for (const sp of visibleSpots) {
+      const s = spotShare(sp)
+      rows.push({
+        kind: 'projected' as const, month: '', amount: sp.revenue * s,
+        label: spotLabel(sp),
+        sub: `${fmtInt(sp.bushels * s)} bu delivered spot${sp.avgPrice != null ? ` × ${fmtUsd(sp.avgPrice, 2)} avg` : ''}${sp.estimated ? ' (est. on some loads)' : ''}${s < 1 ? ` · ${Math.round(s * 100)}% entity share` : ''}`,
+        href: spotHref(sp),
+      })
+    }
+    rows.sort((a, b) => b.amount - a.amount)
+    setDrill({ title: `Contract value · ${filterSummary}`, explainer: 'Each contract\'s bushels at its contract price, and each Spot row\'s delivered bushels at their prices. Unpriced contracts count as zero until a price is set.', rows })
   }
 
   const summaryCards: SummaryCardData[] = [
@@ -893,22 +991,35 @@ export default function CashFlowPage() {
         { label: 'Value', align: 'right', format: 'usd0' }, { label: 'Received', align: 'right', format: 'usd0' },
         { label: 'Outstanding', align: 'right', format: 'usd0' }, { label: 'Projected', align: 'right', format: 'usd0' },
       ],
-      rows: visibleContracts.map((c) => {
-        const agg = aggByContract.get(c.id)!
-        const price = Number(c.price_per_bushel ?? 0)
-        const s = shareFor(c)
-        const contractedBu = Number(c.contracted_bushels) * s
-        const delivered = agg.delivered * s
-        const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered) * s
-        const complete = isContractComplete(c.completed_at, Number(c.contracted_bushels), agg.delivered)
-        const window = (c.delivery_start_date || c.delivery_end_date) ? `${c.delivery_start_date ?? '?'} → ${c.delivery_end_date ?? '?'}` : '—'
-        return [
-          complete ? `${c.contract_number} (complete)` : c.contract_number ?? '',
-          buyerById.get(c.buyer_id ?? '')?.name ?? '', cropById.get(c.crop_id ?? '')?.name ?? '', c.crop_year ?? '', window,
-          price || '', contractedBu, delivered, remainingBu,
-          contractedBu * price, agg.revenueReceived * s, agg.deliveredUnpaid * price * s, complete ? 0 : remainingBu * price,
-        ]
-      }),
+      rows: [
+        ...visibleContracts.map((c) => {
+          const agg = aggFor(c)
+          const price = Number(c.price_per_bushel ?? 0)
+          const s = shareFor(c)
+          const contractedBu = Number(c.contracted_bushels) * s
+          const delivered = agg.delivered * s
+          const remainingBu = Math.max(0, Number(c.contracted_bushels) - agg.delivered) * s
+          const complete = isContractComplete(c.completed_at, Number(c.contracted_bushels), agg.delivered)
+          const window = (c.delivery_start_date || c.delivery_end_date) ? `${c.delivery_start_date ?? '?'} → ${c.delivery_end_date ?? '?'}` : '—'
+          return [
+            complete ? `${c.contract_number} (complete)` : c.contract_number ?? '',
+            buyerById.get(c.buyer_id ?? '')?.name ?? '', cropById.get(c.crop_id ?? '')?.name ?? '', c.crop_year ?? '', window,
+            price || '', contractedBu, delivered, remainingBu,
+            contractedBu * price, agg.revenueReceived * s, agg.deliveredUnpaid * price * s, complete ? 0 : remainingBu * price,
+          ]
+        }),
+        ...visibleSpots.map((sp) => {
+          const s = spotShare(sp)
+          const st = contractFlow.spotStats.get(sp.id)
+          return [
+            `Spot${sp.estimated ? ' (est.)' : ''}`,
+            sp.buyers.map((b) => buyerById.get(b.buyerId ?? '')?.name ?? '').filter(Boolean).join(', '),
+            cropById.get(sp.crop_id)?.name ?? '', sp.crop_year, '—',
+            sp.avgPrice ?? '', sp.bushels * s, sp.bushels * s, 0,
+            sp.revenue * s, st?.received ?? 0, st?.outstanding ?? 0, 0,
+          ]
+        }),
+      ],
     }
 
     return {
@@ -930,7 +1041,7 @@ export default function CashFlowPage() {
       <ReportHeader
         title="Cash Flow Forecast"
         filterSummary={filterSummary}
-        actions={!loading && !viewerPending && (monthlyRows.length > 0 || visibleContracts.length > 0) ? <ExportBar buildPayload={buildPayload} /> : undefined}
+        actions={!loading && !viewerPending && (monthlyRows.length > 0 || visibleContracts.length > 0 || visibleSpots.length > 0) ? <ExportBar buildPayload={buildPayload} /> : undefined}
       />
 
       <ReportFilterBar activeCount={activeFilters}>
@@ -988,8 +1099,8 @@ export default function CashFlowPage() {
             <div className="px-4 py-2 border-b border-slate-100 font-semibold">Monthly forecast</div>
             <p className="px-4 py-2 text-xs text-slate-500 leading-relaxed border-b border-slate-100">
               <span className={`font-semibold ${toneText('favorable')}`}>Received</span> — cash already collected on settled loads, in the settlement&rsquo;s month.{' '}
-              <span className={`font-semibold ${toneText('warning')}`}>Outstanding</span> — grain you&rsquo;ve <em>delivered but not yet been paid for</em>, valued at the contract price and shown in the current month as money still owed to you.{' '}
-              <span className={`font-semibold ${toneText('neutral')}`}>Projected</span> — contracted bushels <em>not yet delivered</em>, valued at the contract price and spread across the remaining delivery window (future income you still expect). Completed contracts add nothing to Projected.
+              <span className={`font-semibold ${toneText('warning')}`}>Outstanding</span> — grain you&rsquo;ve <em>delivered but not yet been paid for</em>, valued at the contract price (spot loads at their current price) and shown in the current month as money still owed to you.{' '}
+              <span className={`font-semibold ${toneText('neutral')}`}>Projected</span> — contracted bushels <em>not yet delivered</em>, valued at the contract price and spread across the remaining delivery window (future income you still expect). Completed contracts add nothing to Projected, and spot sales are never projected.
             </p>
             {monthlyRows.length === 0 ? (
               <EmptyState
@@ -1063,6 +1174,11 @@ export default function CashFlowPage() {
                 </div>
                 <p className="px-4 py-2 text-xs text-slate-500 no-print">Tap any amount to see the settlements, contracts, policies, or payments behind it.</p>
               </>
+            )}
+            {priceLater && (
+              <p className="px-4 py-2 text-xs text-slate-600 border-t border-slate-100">
+                <span className="font-semibold">Price later:</span> {priceLater.text}. These bushels are not in any month above until they are priced.
+              </p>
             )}
           </div>
 
@@ -1183,7 +1299,7 @@ export default function CashFlowPage() {
 
           <div className="bg-white rounded-xl shadow overflow-hidden">
             <div className="px-4 py-2 border-b border-slate-100 font-semibold">Contract detail</div>
-            {visibleContracts.length === 0 ? (
+            {visibleContracts.length === 0 && visibleSpots.length === 0 ? (
               <EmptyState
                 message="No contracts match these filters."
                 hint="Try widening the crop year, crop, buyer, or entity filters."
@@ -1202,7 +1318,7 @@ export default function CashFlowPage() {
                   </thead>
                   <tbody>
                     {visibleContracts.map((c) => {
-                      const agg = aggByContract.get(c.id)!
+                      const agg = aggFor(c)
                       const price = Number(c.price_per_bushel ?? 0)
                       // Entity share: operation-level contracts show the
                       // entity's pro-rata slice under an entity filter.
@@ -1239,6 +1355,35 @@ export default function CashFlowPage() {
                           <td className={`${numCell} ${toneText('favorable')}`}>{fmtUsd(agg.revenueReceived * s)}</td>
                           <td className={`${numCell} ${toneText('warning')}`}>{fmtUsd(outstanding)}</td>
                           <td className={numCell}>{fmtUsd(unearned)}</td>
+                        </tr>
+                      )
+                    })}
+                    {visibleSpots.map((sp) => {
+                      // The Spot row: no number, no window, nothing to
+                      // deliver — delivered IS contracted, and Projected is —.
+                      const s = spotShare(sp)
+                      const st = contractFlow.spotStats.get(sp.id)
+                      const buyers = sp.buyers.map((b) => buyerById.get(b.buyerId ?? '')?.name ?? '').filter(Boolean).join(', ')
+                      return (
+                        <tr key={sp.id} className="border-t border-slate-100">
+                          <td className={`${textCell} ${stickyColCls} font-semibold whitespace-nowrap`}>
+                            <a href={spotHref(sp)} className="text-brand-deep underline">{spotLabel(sp)}</a>
+                            <span className="ml-1.5 rounded-full bg-sky-100 text-sky-800 text-[10px] font-medium px-1.5 py-0.5 align-middle">Spot</span>
+                            {sp.estimated && <span className="ml-1.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-medium px-1.5 py-0.5 align-middle">est.</span>}
+                            {s < 1 && <span className="ml-1.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-medium px-1.5 py-0.5 align-middle">{Math.round(s * 100)}% share</span>}
+                          </td>
+                          <td className={textCell}>{buyers}</td>
+                          <td className={textCell}>{cropById.get(sp.crop_id)?.name ?? ''}</td>
+                          <td className={textCell}>{sp.crop_year}</td>
+                          <td className={`${textCell} text-xs`}><span className="text-slate-400">—</span></td>
+                          <td className={numCell}>{sp.avgPrice != null ? fmtUsd(sp.avgPrice, 2) : ''}</td>
+                          <td className={numCell}>{fmtInt(sp.bushels * s)}</td>
+                          <td className={numCell}>{fmtInt(sp.bushels * s)}</td>
+                          <td className={numCell}><span className="text-slate-400">—</span></td>
+                          <td className={numCell}>{fmtUsd(sp.revenue * s)}</td>
+                          <td className={`${numCell} ${toneText('favorable')}`}>{fmtUsd(st?.received ?? 0)}</td>
+                          <td className={`${numCell} ${toneText('warning')}`}>{fmtUsd(st?.outstanding ?? 0)}</td>
+                          <td className={numCell}><span className="text-slate-400">—</span></td>
                         </tr>
                       )
                     })}

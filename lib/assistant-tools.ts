@@ -38,6 +38,9 @@ import {
   withLoadBreakouts,
 } from '@/lib/yields'
 import { computeBushels } from '@/lib/shrink'
+import { describeSale, fetchLoadSales, isContractComplete, saleAllocations, saleKind, type LoadSale, type SaleLoad } from '@/lib/load-sales'
+import { contractCashAggregates, priceLaterInfo, spotCashRows, type CashLine } from '@/lib/cash-flow-detail'
+import { buildSpotInputs, priceLaterPoolLabel, spotContractLabel, type SpotLoadRecord } from '@/lib/spot-contracts'
 import {
   actualYieldByCropFromLoads,
   projectInsuranceIndemnities,
@@ -95,7 +98,7 @@ const PRICE_BASIS = 'stored positions and assumptions — not live futures quote
 
 // ---------- shared fetch helpers (lib/assistant-tools-shared.ts) ----------
 
-import { all, allRows, allPaged, COMBINE_SELECT, num, r0, r2, fetchScopeBits, type CombineRow, type ScopeBits } from '@/lib/assistant-tools-shared'
+import { all, allRows, allPaged, COMBINE_SELECT, nameOf, num, r0, r2, fetchScopeBits, type CombineRow, type ScopeBits } from '@/lib/assistant-tools-shared'
 import {
   getCottonMarketing, getCottonProduction, getSettlements, getBinTransfers, getCombineEntries, getRentSettlements, getBudget, getCheckoffPaid,
   MODULE_TOOLS, MODULE_STATUS_LABELS,
@@ -559,42 +562,92 @@ async function getRevenueProjection(supabase: SupabaseClient, ctx: AssistantCont
   }
 }
 
-async function getContracts(supabase: SupabaseClient, _ctx: AssistantContext, input: { crop_year?: number; buyer?: string; status?: 'open' | 'complete' | 'future' }) {
+// ---------- the sale side of the loads (094) ----------
+
+type SaleLoadRow = SpotLoadRecord & { ticket_number: string | null; buyer_ticket_number: string | null }
+const SALE_LOAD_SELECT = 'id, date, crop_id, crop_year, net_weight, moisture, dry_bushels_override, from_type, from_field_id, to_type, to_buyer_id, contract_id, ticket_number, buyer_ticket_number'
+type SettlementLineRow = CashLine & { load_id: string | null; ticket_number: string | null; settlement_id: string }
+
+/** The buyer loads with how each was sold, the spot contracts and the
+ *  price-later pools — built the one shared way (lib/spot-contracts). A
+ *  session before 094 reads as no sale rows. */
+async function loadSaleSide(supabase: SupabaseClient, ctx: AssistantContext, cropYear?: number) {
+  const [loads, crops, bits, splits] = await Promise.all([
+    allRows<SaleLoadRow>((f, t) => {
+      let q = supabase.from('loads').select(SALE_LOAD_SELECT).eq('to_type', 'buyer').order('id')
+      if (cropYear != null) q = q.eq('crop_year', cropYear)
+      return q.range(f, t)
+    }),
+    all<Crop>(supabase.from('crops').select('*')),
+    fetchScopeBits(supabase),
+    allPaged<{ load_id: string; field_id: string; percentage: number | null }>(supabase, 'load_splits', 'load_id, field_id, percentage'),
+  ])
+  const sales = await fetchLoadSales(supabase, { loadIds: loads.map((l) => l.id) }).catch(() => [] as LoadSale[])
+  const spot = buildSpotInputs({ loads, sales, crops, entities: bits.entities, fields: bits.fields, farms: bits.farms, splits })
+  const scope = buildEntityScope({ entityId: '', farms: bits.farms, fields: bits.fields, entities: bits.entities, grantedEntityIds: ctx.grantedEntityIds })
+  return { loads, crops, bits, sales, spot, scope }
+}
+
+/** Settlement lines per load (a split ticket prints one per contract
+ *  block), matched by load id then by ticket — the 094 per-line sale tag
+ *  rides along when the columns exist. */
+async function loadSettlementLines(supabase: SupabaseClient) {
+  let lines: SettlementLineRow[]
+  try {
+    lines = await allPaged<SettlementLineRow>(supabase, 'settlement_lines', 'load_id, ticket_number, net_bushels, net_revenue, settlement_id, contract_id, sale_type')
+  } catch {
+    lines = await allPaged<SettlementLineRow>(supabase, 'settlement_lines', 'load_id, ticket_number, net_bushels, net_revenue, settlement_id')
+  }
+  const byLoad = new Map<string, SettlementLineRow[]>()
+  const byTicket = new Map<string, SettlementLineRow[]>()
+  for (const l of lines) {
+    if (l.load_id) { const a = byLoad.get(l.load_id) ?? []; a.push(l); byLoad.set(l.load_id, a) }
+    if (l.ticket_number) { const k = String(l.ticket_number).trim().toLowerCase(); const a = byTicket.get(k) ?? []; a.push(l); byTicket.set(k, a) }
+  }
+  const linesFor = (load: { id: string; ticket_number: string | null; buyer_ticket_number?: string | null }): SettlementLineRow[] => {
+    const direct = byLoad.get(load.id)
+    if (direct && direct.length > 0) return direct
+    for (const k of loadTicketKeys(load)) { const hit = byTicket.get(k); if (hit && hit.length > 0) return hit }
+    return []
+  }
+  return { lines, linesFor }
+}
+
+async function getContracts(supabase: SupabaseClient, ctx: AssistantContext, input: { crop_year?: number; buyer?: string; status?: 'open' | 'complete' | 'future' }) {
   type ContractRow = Contract & { buyer: { name: string } | null; crop: { name: string; base_moisture_pct: number | null; base_lb_per_bushel: number | null } | null }
-  const contracts = await allRows<ContractRow>((f, t) => {
-    let q = supabase.from('contracts').select('*, buyer:buyers(name), crop:crops(name, base_moisture_pct, base_lb_per_bushel)').order('contract_number').order('id')
-    if (input.crop_year != null) q = q.eq('crop_year', input.crop_year)
-    return q.range(f, t)
-  })
-  const loads = await allPaged<{ id: string; contract_id: string | null; ticket_number: string | null; net_weight: number | null; moisture: number | null; crop_id: string | null; dry_bushels_override: number | null }>(
-    supabase, 'loads', 'id, contract_id, ticket_number, buyer_ticket_number, net_weight, moisture, crop_id, dry_bushels_override')
-  const lines = await allPaged<{ load_id: string | null; ticket_number: string | null; net_bushels: number | null; net_revenue: number | null }>(
-    supabase, 'settlement_lines', 'load_id, ticket_number, net_bushels, net_revenue')
-  const linesByLoad = new Map(lines.filter((l) => l.load_id).map((l) => [l.load_id as string, l]))
-  const linesByTicket = new Map(lines.filter((l) => l.ticket_number).map((l) => [String(l.ticket_number).trim().toLowerCase(), l]))
+  const [contracts, side, settled, buyers] = await Promise.all([
+    allRows<ContractRow>((f, t) => {
+      let q = supabase.from('contracts').select('*, buyer:buyers(name), crop:crops(name, base_moisture_pct, base_lb_per_bushel)').order('contract_number').order('id')
+      if (input.crop_year != null) q = q.eq('crop_year', input.crop_year)
+      return q.range(f, t)
+    }),
+    loadSaleSide(supabase, ctx, input.crop_year),
+    loadSettlementLines(supabase),
+    all<{ id: string; name: string }>(supabase.from('buyers').select('id, name')),
+  ])
+  const loadById = new Map(side.loads.map((l) => [l.id, l]))
+  const linesForLoadId = (id: string) => { const l = loadById.get(id); return l ? settled.linesFor(l) : [] }
+  // Delivered / settled per contract from the sale ALLOCATIONS (a split load
+  // counts each contract's share; a tagged settlement line counts whole).
+  const agg = contractCashAggregates({ loads: side.spot.sourceLoads, sales: side.sales, linesForLoad: linesForLoadId })
   const today = new Date().toISOString().slice(0, 10)
   const buyerFilter = input.buyer?.trim().toLowerCase() || null
+  const buyerName = nameOf(buyers)
+  const cropName = (id: string) => side.crops.find((c) => c.id === id)?.name
   const out = contracts
     .filter((c) => !buyerFilter || (c as ContractRow).buyer?.name?.toLowerCase().includes(buyerFilter))
     .map((c) => {
-      let delivered = 0, paidBushels = 0, revenue = 0
-      for (const l of loads) {
-        if (l.contract_id !== c.id) continue
-        const { dryBushels } = computeBushels({
-          netWeightLb: l.net_weight, moisturePct: l.moisture,
-          baseMoisturePct: c.crop?.base_moisture_pct ?? null, baseLbPerBushel: c.crop?.base_lb_per_bushel ?? null,
-          dryBushelsOverride: l.dry_bushels_override,
-        })
-        if (!dryBushels) continue
-        delivered += dryBushels
-        const line = linesByLoad.get(l.id) ?? loadTicketKeys(l as { ticket_number: string | null; buyer_ticket_number?: string | null }).map((k) => linesByTicket.get(k)).find(Boolean)
-        if (line) { paidBushels += num(line.net_bushels); revenue += num(line.net_revenue) }
-      }
+      const a = agg.get(c.id)
+      const delivered = a?.delivered ?? 0
+      let paidBushels = 0
+      for (const r of a?.receivedBySettlement.values() ?? []) paidBushels += r.bushels
+      const revenue = a?.revenueReceived ?? 0
       const contracted = num(c.contracted_bushels)
-      const status = c.completed_at != null || (contracted > 0 && delivered >= contracted)
+      const status = isContractComplete(c.completed_at, contracted, delivered)
         ? 'complete'
         : c.delivery_start_date && c.delivery_start_date > today ? 'future' : 'open'
       return {
+        kind: 'contract' as const,
         contract_number: c.contract_number,
         buyer: (c as ContractRow).buyer?.name ?? null,
         crop: c.crop?.name ?? null,
@@ -615,7 +668,56 @@ async function getContracts(supabase: SupabaseClient, _ctx: AssistantContext, in
       }
     })
     .filter((c) => !input.status || c.status === input.status)
-  return { count: out.length, note: 'Grain contracts only (cotton has its own contracts under Cotton → Marketing). Prices $/bu.', contracts: out.slice(0, 80), truncated: out.length > 80 ? out.length - 80 : 0 }
+  // The Spot rows: all spot loads of a crop × year together act as ONE
+  // contract (no number) priced at the bushel-weighted average.
+  const spotRows = side.spot.spots
+    .map((s) => {
+      const buyersIn = s.buyers.filter((b) => !buyerFilter || (buyerName(b.buyerId) ?? '').toLowerCase().includes(buyerFilter))
+      if (buyersIn.length === 0) return null
+      const status = s.summary.settledCount >= s.summary.loadCount ? 'complete' : 'open'
+      return {
+        kind: 'spot' as const,
+        contract_number: null,
+        label: spotContractLabel(s, cropName),
+        crop: cropName(s.crop_id) ?? null,
+        crop_year: s.crop_year,
+        bushels: r0(s.bushels),
+        avg_price_per_bu: s.avgPrice != null ? r2(s.avgPrice) : null,
+        revenue_usd: r0(s.revenue),
+        loads: s.summary.loadCount,
+        settled_loads: s.summary.settledCount,
+        estimated_loads: s.summary.estimatedCount,
+        unpriced_loads: s.summary.unpricedCount,
+        price_status: s.summary.statusText,
+        buyers: buyersIn.map((b) => ({ buyer: buyerName(b.buyerId), bushels: r0(b.bushels), avg_price_per_bu: b.avgPrice != null ? r2(b.avgPrice) : null, loads: b.loadCount })),
+        status,
+      }
+    })
+    .filter((s): s is NonNullable<typeof s> => s != null && (!input.status || s.status === input.status))
+  // Price-later pools: delivered but UNPRICED, per crop × year × buyer.
+  const poolRows = side.spot.pools
+    .filter((p) => !buyerFilter || (buyerName(p.buyer_id) ?? '').toLowerCase().includes(buyerFilter))
+    .filter(() => !input.status || input.status === 'open')
+    .map((p) => ({
+      kind: 'price_later' as const,
+      contract_number: null,
+      label: priceLaterPoolLabel(p, cropName, buyerName),
+      crop: cropName(p.crop_id) ?? null,
+      crop_year: p.crop_year,
+      buyer: buyerName(p.buyer_id),
+      bushels: r0(p.bushels),
+      loads: p.loadCount,
+      oldest_delivery: p.oldestDate,
+      newest_delivery: p.newestDate,
+      status: 'open' as const,
+    }))
+  const rows = [...out, ...spotRows, ...poolRows]
+  return {
+    count: rows.length,
+    note: 'Grain contracts only (cotton has its own contracts under Cotton → Marketing). Prices $/bu. Rows with kind "spot" are the Spot rows (every spot load of a crop × year as one contract at the weighted average price); kind "price_later" rows are bushels delivered but not yet priced. Delivered bushels count a split load by each contract\'s share.',
+    contracts: rows.slice(0, 80),
+    truncated: rows.length > 80 ? rows.length - 80 : 0,
+  }
 }
 
 async function getHedgingPositions(supabase: SupabaseClient, _ctx: AssistantContext, input: { crop_year?: number }) {
@@ -771,20 +873,17 @@ async function getGovernmentPayments(supabase: SupabaseClient, ctx: AssistantCon
 async function getCashFlow(supabase: SupabaseClient, ctx: AssistantContext, input: { months?: number }) {
   const bits = await fetchScopeBits(supabase)
   const scope = buildEntityScope({ entityId: '', farms: bits.farms, fields: bits.fields, entities: bits.entities, grantedEntityIds: ctx.grantedEntityIds })
-  const [contracts, loads, lines, settlements, crops, otherPayments] = await Promise.all([
+  const [contracts, side, settled, settlements, assumptions, otherPayments] = await Promise.all([
     allRows<Contract>((f, t) => supabase.from('contracts').select('*').order('id').range(f, t)),
-    allPaged<{ id: string; contract_id: string | null; ticket_number: string | null; net_weight: number | null; moisture: number | null; crop_id: string | null; dry_bushels_override: number | null }>(
-      supabase, 'loads', 'id, contract_id, ticket_number, buyer_ticket_number, net_weight, moisture, crop_id, dry_bushels_override'),
-    allPaged<{ load_id: string | null; ticket_number: string | null; net_bushels: number | null; net_revenue: number | null; settlement_id: string }>(
-      supabase, 'settlement_lines', 'load_id, ticket_number, net_bushels, net_revenue, settlement_id'),
+    loadSaleSide(supabase, ctx),
+    loadSettlementLines(supabase),
     allRows<{ id: string; settlement_date: string | null }>((f, t) => supabase.from('settlements').select('id, settlement_date').order('id').range(f, t)),
-    all<Crop>(supabase.from('crops').select('*')),
+    all<CropAssumption>(supabase.from('crop_assumptions').select('*')),
     allRows<import('@/lib/types').OtherGovernmentPayment>((f, t) => supabase.from('other_government_payments').select('*').order('id').range(f, t)),
   ])
-  const cropById = new Map(crops.map((c) => [c.id, c]))
   const settlementDate = new Map(settlements.map((s) => [s.id, s.settlement_date]))
-  const linesByLoad = new Map(lines.filter((l) => l.load_id).map((l) => [l.load_id as string, l]))
-  const linesByTicket = new Map(lines.filter((l) => l.ticket_number).map((l) => [String(l.ticket_number).trim().toLowerCase(), l]))
+  const loadById = new Map(side.loads.map((l) => [l.id, l]))
+  const linesForLoadId = (id: string) => { const l = loadById.get(id); return l ? settled.linesFor(l) : [] }
   const nowKey = new Date().toISOString().slice(0, 7)
   const monthly = new Map<string, { received: number; outstanding: number; projected: number; other_govt: number }>()
   const bucket = (key: string) => {
@@ -792,27 +891,21 @@ async function getCashFlow(supabase: SupabaseClient, ctx: AssistantContext, inpu
     monthly.set(key, b)
     return b
   }
+  // Contracts: delivered / unpaid / received from the sale allocations.
+  const agg = contractCashAggregates({ loads: side.spot.sourceLoads, sales: side.sales, linesForLoad: linesForLoadId })
   for (const c of contracts) {
-    let delivered = 0, deliveredUnpaid = 0
-    for (const l of loads) {
-      if (l.contract_id !== c.id) continue
-      const crop = l.crop_id ? cropById.get(l.crop_id) : undefined
-      const { dryBushels } = computeBushels({ netWeightLb: l.net_weight, moisturePct: l.moisture, baseMoisturePct: crop?.base_moisture_pct ?? null, baseLbPerBushel: crop?.base_lb_per_bushel ?? null, dryBushelsOverride: l.dry_bushels_override })
-      if (!dryBushels) continue
-      delivered += dryBushels
-      const line = linesByLoad.get(l.id) ?? loadTicketKeys(l as { ticket_number: string | null; buyer_ticket_number?: string | null }).map((k) => linesByTicket.get(k)).find(Boolean)
-      if (line) {
-        const sd = settlementDate.get(line.settlement_id)
-        bucket((sd ?? '').slice(0, 7) || nowKey).received += num(line.net_revenue)
-      } else {
-        deliveredUnpaid += dryBushels
-      }
+    const a = agg.get(c.id)
+    const delivered = a?.delivered ?? 0
+    const deliveredUnpaid = a?.deliveredUnpaid ?? 0
+    for (const [sid, r] of a?.receivedBySettlement ?? []) {
+      const sd = settlementDate.get(sid)
+      bucket((sd ?? '').slice(0, 7) || nowKey).received += r.amount
     }
     const price = num(c.cash_price) || num(c.price_per_bushel)
     bucket(nowKey).outstanding += deliveredUnpaid * price
     const contracted = num(c.contracted_bushels)
     const remaining = Math.max(0, contracted - delivered)
-    const complete = c.completed_at != null || (contracted > 0 && delivered >= contracted)
+    const complete = isContractComplete(c.completed_at, contracted, delivered)
     if (!complete && remaining > 0 && price > 0) {
       const start = c.delivery_start_date?.slice(0, 7) ?? nowKey
       const end = c.delivery_end_date?.slice(0, 7) ?? start
@@ -828,6 +921,32 @@ async function getCashFlow(supabase: SupabaseClient, ctx: AssistantContext, inpu
       for (const key of months) bucket(key).projected += per
     }
   }
+  // Spot rows: settled loads received in their settlement month, unsettled
+  // ones outstanding this month at their current price — never projected.
+  const cropName = (id: string) => side.crops.find((c) => c.id === id)?.name
+  let spotEstimated = false
+  for (const s of side.spot.spots) {
+    const res = spotCashRows({
+      spot: s, label: spotContractLabel(s, cropName), linesForLoad: linesForLoadId,
+      settlementMonth: (sid) => (settlementDate.get(sid) ?? '').slice(0, 7) || nowKey,
+      settlementLabel: (sid) => `Settlement ${sid}`,
+      thisMonth: nowKey,
+    })
+    for (const d of res.details) {
+      if (d.kind === 'received') bucket(d.month).received += d.amount
+      else if (d.kind === 'outstanding') bucket(d.month).outstanding += d.amount
+    }
+    if (res.estimated) spotEstimated = true
+  }
+  // Price-later bushels: unpriced, never dated cash — reported as a figure.
+  const later = priceLaterInfo({
+    pools: side.spot.pools,
+    priceFor: (id, yr) => {
+      const a = assumptions.find((x) => x.crop_id === id && x.crop_year === yr)
+      return a?.assumed_futures != null ? num(a.assumed_futures) + num(a.assumed_basis) : null
+    },
+    cropName,
+  })
   for (const o of scope.otherPayments(otherPayments)) {
     const key = (o.payment_date ?? `${o.crop_year}-12-01`).slice(0, 7)
     bucket(key).other_govt += num(o.amount)
@@ -838,8 +957,10 @@ async function getCashFlow(supabase: SupabaseClient, ctx: AssistantContext, inpu
   const past = keys.filter((k) => k < nowKey)
   const pastReceived = past.reduce((s, k) => s + (monthly.get(k)?.received ?? 0), 0)
   return {
-    components_included: 'contract grain revenue (received / delivered-unpaid / projected remaining) + other USDA payments by date. Insurance, ARC/PLC timing, and cotton events are on the Cash Flow report.',
+    components_included: `contract grain revenue (received / delivered-unpaid / projected remaining) + spot sales (settled loads received in their settlement month, unsettled loads outstanding this month at their current price${spotEstimated ? ' — some estimated' : ''}; spot is never projected) + other USDA payments by date. Price-later bushels are unpriced and carry no dated cash. Insurance, ARC/PLC timing, and cotton events are on the Cash Flow report.`,
     price_basis: PRICE_BASIS,
+    price_later_unpriced_bu: later ? r0(later.bushels) : 0,
+    price_later_value_at_assumed_price_usd: later?.value != null ? r0(later.value) : null,
     settled_revenue_before_this_month_usd: r0(pastReceived),
     months: kept.map((k) => {
       const b = monthly.get(k)!
@@ -852,7 +973,7 @@ async function getLoads(supabase: SupabaseClient, _ctx: AssistantContext, input:
   const limit = Math.min(Math.max(input.limit ?? 25, 1), 100)
   let q = supabase.from('loads').select(`
     id, date, time, ticket_number, crop_year, net_weight, moisture, test_weight, dry_bushels_override,
-    from_type, to_type, hauler_truck, truck_label,
+    from_type, to_type, hauler_truck, truck_label, contract_id,
     truck:trucks(name_or_number),
     crop:crops(name, base_moisture_pct, base_lb_per_bushel),
     from_field:fields!loads_from_field_id_fkey(name_or_number),
@@ -869,6 +990,7 @@ async function getLoads(supabase: SupabaseClient, _ctx: AssistantContext, input:
     id: string; date: string; time: string | null; ticket_number: string | null; crop_year: number | null
     net_weight: number | null; moisture: number | null; test_weight: number | null; dry_bushels_override: number | null
     from_type: string | null; to_type: string | null; hauler_truck: string | null; truck_label: string | null
+    contract_id: string | null
     truck: { name_or_number: string } | null
     crop: { name: string; base_moisture_pct: number | null; base_lb_per_bushel: number | null } | null
     from_field: { name_or_number: string } | null; from_bin: { name_or_number: string } | null
@@ -878,21 +1000,40 @@ async function getLoads(supabase: SupabaseClient, _ctx: AssistantContext, input:
   let rows = await all<Row>(q)
   const cropFilter = input.crop?.trim().toLowerCase() || null
   if (cropFilter) rows = rows.filter((rw) => rw.crop?.name?.toLowerCase().includes(cropFilter))
+  // How each buyer load was sold (094): contract / spot / price later / a
+  // split across them / unassigned. A session before 094 reads as no rows.
+  const dryOf = (rw: Row) => computeBushels({ netWeightLb: rw.net_weight, moisturePct: rw.moisture, baseMoisturePct: rw.crop?.base_moisture_pct ?? null, baseLbPerBushel: rw.crop?.base_lb_per_bushel ?? null, dryBushelsOverride: rw.dry_bushels_override })
+  const buyerRows = rows.filter((rw) => rw.to_type === 'buyer')
+  const sales = buyerRows.length > 0 ? await fetchLoadSales(supabase, { loadIds: buyerRows.map((rw) => rw.id) }).catch(() => [] as LoadSale[]) : []
+  const allocs = saleAllocations(buyerRows.map((rw): SaleLoad => ({ id: rw.id, contract_id: rw.contract_id, to_type: 'buyer', dryBu: dryOf(rw).dryBushels ?? 0 })), sales)
+  const contractIds = new Set<string>()
+  for (const list of allocs.values()) for (const a of list) if (a.contractId) contractIds.add(a.contractId)
+  const contractNumbers = new Map<string, string>()
+  for (const rw of rows) if (rw.contract_id && rw.contract?.contract_number) contractNumbers.set(rw.contract_id, rw.contract.contract_number)
+  const missing = [...contractIds].filter((id) => !contractNumbers.has(id))
+  if (missing.length > 0) {
+    for (const c of await all<{ id: string; contract_number: string }>(supabase.from('contracts').select('id, contract_number').in('id', missing))) contractNumbers.set(c.id, c.contract_number)
+  }
   return {
     count: rows.length,
     limit,
     loads: rows.map((rw) => {
-      const { dryBushels, wetBushels } = computeBushels({ netWeightLb: rw.net_weight, moisturePct: rw.moisture, baseMoisturePct: rw.crop?.base_moisture_pct ?? null, baseLbPerBushel: rw.crop?.base_lb_per_bushel ?? null, dryBushelsOverride: rw.dry_bushels_override })
+      const { dryBushels, wetBushels } = dryOf(rw)
+      const list = allocs.get(rw.id) ?? []
+      const kind = saleKind(list, { to_type: rw.to_type === 'buyer' ? 'buyer' : rw.to_type === 'bin' ? 'bin' : null })
       return {
         date: rw.date, ticket: rw.ticket_number, crop: rw.crop?.name ?? null, crop_year: rw.crop_year,
         truck: truckExportLabel(rw) || null,
         from: rw.from_type === 'bin' ? `bin ${rw.from_bin?.name_or_number ?? '?'}` : rw.from_field?.name_or_number ?? null,
         to: rw.to_type === 'bin' ? `bin ${rw.to_bin?.name_or_number ?? '?'}` : rw.to_buyer?.name ?? null,
         contract: rw.contract?.contract_number ?? null,
+        sale_type: kind === 'none' ? null : kind,
+        sale: kind === 'none' ? null : describeSale(list, (id) => contractNumbers.get(id), { to_type: 'buyer' }),
         net_lb: rw.net_weight, moisture_pct: rw.moisture, test_weight: rw.test_weight,
         wet_bu: wetBushels != null ? r2(wetBushels) : null, dry_bu: dryBushels != null ? r2(dryBushels) : null,
       }
     }),
+    note: 'sale_type is contract / spot / price_later / split (parts across more than one) / unassigned (delivered to a buyer, sale not picked yet); null for bin loads. "sale" spells it out, e.g. "split: 58 bu contract 2002960604-10 · 913 bu spot".',
   }
 }
 
@@ -1180,6 +1321,9 @@ async function getBuyerDiscountHistory(
       settlementNumber: s.settlement_number,
       settledBu: lines.reduce((t, l) => t + num(l.net_bushels), 0),
       items: itemsBySettlement.get(s.id) ?? [],
+      // loads.contract_id is the 094 mirror: the contract ONLY when the load
+      // is wholly on one (a split or spot load reads null) — exactly the
+      // allocation rule, without another read of the sale rows.
       contractId: mode(matched.map((m) => m.load.contract_id)),
       loads: matched.map(({ line, load }) => {
         const crop = load.crop_id ? cropById.get(load.crop_id) : undefined
@@ -1280,7 +1424,7 @@ export const ASSISTANT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'get_contracts',
-    description: 'Grain contracts with delivery progress: contracted vs delivered vs remaining bushels, prices, settled revenue, and open/complete/future status.',
+    description: 'Grain contracts with delivery progress: contracted vs delivered vs remaining bushels, prices, settled revenue, and open/complete/future status (a split load counts each contract\'s share). Also returns the Spot rows (kind "spot": every spot load of a crop × year as one contract at the bushel-weighted average price, with per-buyer bushels and how many loads are settled vs estimated) and the Price-later pools (kind "price_later": bushels delivered to a buyer but not yet priced, per crop × year × buyer).',
     input_schema: { type: 'object', properties: { crop_year: { type: 'number' }, buyer: { type: 'string' }, status: { type: 'string', enum: ['open', 'complete', 'future'] } } },
   },
   {
@@ -1300,12 +1444,12 @@ export const ASSISTANT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'get_cash_flow',
-    description: 'Monthly grain cash flow: settled revenue by settlement month, delivered-but-unpaid, projected remaining contract revenue across delivery windows, other USDA payments. (Insurance/ARC-PLC timing and cotton are on the Cash Flow report.)',
+    description: 'Monthly grain cash flow: settled revenue by settlement month, delivered-but-unpaid (contract loads at the contract price, spot loads at their current price), projected remaining contract revenue across delivery windows (spot is never projected), other USDA payments, plus the price-later bushels still unpriced. (Insurance/ARC-PLC timing and cotton are on the Cash Flow report.)',
     input_schema: { type: 'object', properties: { months: { type: 'number', description: 'Months ahead to include (default 18)' } } },
   },
   {
     name: 'get_loads',
-    description: 'Recent load records (newest first): date, ticket, truck, crop, from/to, weights, moisture, wet/dry bushels. Max 100 per call.',
+    description: 'Recent load records (newest first): date, ticket, truck, crop, from/to, weights, moisture, wet/dry bushels, and for buyer loads the sale (sale_type contract / spot / price_later / split / unassigned, with "sale" spelling out a split\'s parts). Max 100 per call.',
     input_schema: { type: 'object', properties: { crop_year: { type: 'number' }, crop: { type: 'string' }, from_date: { type: 'string', description: 'YYYY-MM-DD' }, to_date: { type: 'string' }, destination: { type: 'string', enum: ['bin', 'buyer'] }, limit: { type: 'number' } } },
   },
   {

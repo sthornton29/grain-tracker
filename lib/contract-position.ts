@@ -27,6 +27,13 @@ export type ContractPosition = {
   contractedPct: number | null
 }
 
+/** The spot contract (094) in the position: its PRICED bushels are sold at
+ *  the weighted average — a fully priced forward in every respect. Bushels
+ *  with no price yet are left out (they are not sold at a known price). */
+export function spotPositionContract(spot: { bushels: number; summary: { unpricedBushels: number } }): PositionContract {
+  return { bushels: Math.max(0, spot.bushels - spot.summary.unpricedBushels), pricingStatus: 'fully_priced', isSeed: false }
+}
+
 export function contractPosition(contracts: readonly PositionContract[], productionBu: number | null): ContractPosition {
   let soldBu = 0
   let openPricedBu = 0

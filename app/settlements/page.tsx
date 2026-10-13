@@ -12,6 +12,9 @@ import { checkoffByCrop } from '@/lib/checkoff'
 import { fmtDate } from '@/lib/format-date'
 import { FilterField, ReportFilterBar, EmptyState, selectCls, inputCls, theadCls, fmtInt, fmtUsd, fmtNum } from '@/components/reports/report-kit'
 import type { Entity, Farm, Field, FieldPlanting, LoadSplit, Buyer } from '@/lib/types'
+// 094 — which contract a load is on comes from its sale rows (a load can be
+// split across a contract and spot), never from loads.contract_id alone.
+import { fetchLoadSales, saleAllocations, type LoadSale, type SaleAllocation } from '@/lib/load-sales'
 
 // Filters are remembered per page (the contracts tracker does the same), so
 // coming back tomorrow shows the same view.
@@ -79,6 +82,7 @@ export default function SettlementsListPage() {
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [contracts, setContracts] = useState<ContractOption[]>([])
   const [splitsByLoad, setSplitsByLoad] = useState<Map<string, LoadSplit[]>>(new Map())
+  const [loadSales, setLoadSales] = useState<LoadSale[]>([])
   const [loading, setLoading] = useState(true)
   const [q, setQ] = useState('')
   const [from, setFrom] = useState('')
@@ -116,7 +120,7 @@ export default function SettlementsListPage() {
 
   async function refresh() {
     setLoading(true)
-    const [settRes, entitiesRes, farmsRes, fieldsRes, buyersRes, plantingsRes, contractsRes, splitsRes, buyerLoadsRes] = await Promise.all([
+    const [settRes, entitiesRes, farmsRes, fieldsRes, buyersRes, plantingsRes, contractsRes, splitsRes, buyerLoadsRes, salesRows] = await Promise.all([
       fetchAllRows((f, t) => {
         let sq = supabase
           .from('settlements')
@@ -139,9 +143,12 @@ export default function SettlementsListPage() {
         .select('id, to_buyer_id, ticket_number, crop_id, crop_year, contract_id, from_type, from_field_id')
         .eq('to_type', 'buyer')
         .order('id').range(f, t)),
+      // Every load's sale rows (paged; [] before 094 is applied).
+      fetchLoadSales(supabase).catch(() => [] as LoadSale[]),
     ])
     setRows((settRes.data as unknown as Row[]) || [])
     setBuyerLoads((buyerLoadsRes.data as unknown as BuyerLoad[]) || [])
+    setLoadSales(salesRows)
     setEntities((entitiesRes.data as Entity[]) || [])
     setFarms((farmsRes.data as Farm[]) || [])
     setFields((fieldsRes.data as Field[]) || [])
@@ -263,15 +270,30 @@ export default function SettlementsListPage() {
     if (contractId && !contractOptions.some((c) => c.id === contractId)) setContractId('')
   }, [contractOptions, contractId])
 
+  // 094 — each buyer load's sale allocation (the seam). Bushels are not
+  // needed here (membership only), so dry bushels are not computed.
+  const allocsByLoad = useMemo<Map<string, SaleAllocation[]>>(
+    () => saleAllocations(buyerLoads.map((l) => ({ id: l.id, contract_id: l.contract_id, to_type: 'buyer' as const, dryBu: 0 })), loadSales),
+    [buyerLoads, loadSales],
+  )
+  /** The one contract a load is wholly on, else null (split / spot / price later / unassigned). */
+  const wholeContractOf = (ld: BuyerLoad): string | null => {
+    const a = allocsByLoad.get(ld.id) ?? []
+    return a.length === 1 && a[0].saleType === 'contract' ? a[0].contractId : null
+  }
+  const loadOnContract = (ld: BuyerLoad, id: string): boolean => (allocsByLoad.get(ld.id) ?? []).some((a) => a.saleType === 'contract' && a.contractId === id)
+
   function loadMatchesEntity(ld: BuyerLoad, ent: string): boolean {
     const fromFieldIds: string[] = []
     const s = splitsByLoad.get(ld.id)
     if (s && s.length > 0) for (const x of s) fromFieldIds.push(x.field_id)
     else if (ld.from_type === 'field' && ld.from_field_id) fromFieldIds.push(ld.from_field_id)
     if (fromFieldIds.some((id) => fieldEntityId.get(id) === ent)) return true
-    // A contract attached to the load is authoritative — don't fall back to the
-    // buyer's other entities. Buyer fallback only for loads with no contract.
-    if (ld.contract_id) return (contractEntityById.get(ld.contract_id) ?? null) === ent
+    // A load wholly on one contract takes that contract's entity — don't fall
+    // back to the buyer's other entities. A split / spot / price-later load
+    // has already been tested on its field; the buyer fallback covers the rest.
+    const whole = wholeContractOf(ld)
+    if (whole) return (contractEntityById.get(whole) ?? null) === ent
     if (ld.to_buyer_id) return buyerEntityIds.get(ld.to_buyer_id)?.has(ent) ?? false
     return false
   }
@@ -281,7 +303,7 @@ export default function SettlementsListPage() {
     const matched = matchedLoadsByRow.get(r.id) ?? []
     if (entityId && !matched.some((ld) => loadMatchesEntity(ld, entityId))) return false
     if (cropYear !== '' && !matched.some((ld) => ld.crop_year === cropYear)) return false
-    if (contractId && !matched.some((ld) => ld.contract_id === contractId)) return false
+    if (contractId && !matched.some((ld) => loadOnContract(ld, contractId))) return false
     if (!q) return true
     const hay = [
       r.settlement_number, r.buyer?.name, r.notes, r.settlement_date,

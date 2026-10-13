@@ -24,14 +24,20 @@ import {
   LAST_LOAD_DEFAULTS_SELECT,
   applyLastLoadDefaults,
   dateDefaultNote,
+  defaultSaleRows,
+  mirrorContractId,
   pickLastLoadDefaults,
   pickPerUserLastLoadDefaults,
+  saleForNextLoad,
   saveAndNewPatch,
   type LastLoadDefaultsSource,
 } from '@/lib/load-defaults'
-import { contractDeliveredTotals, contractProgress } from '@/lib/contract-progress'
+import { contractProgress, deliveredTotalsByContract, type ContractProgressSaleLoad } from '@/lib/contract-progress'
+import { fetchLoadSales, isMissingRelation, singleSaleRow, writeLoadSales, type LoadSale, type LoadSaleInput } from '@/lib/load-sales'
+import { estimateSpotPrice, withSpotEstimate } from '@/lib/spot-estimate'
 import { HaulerTruckField, TruckPicker, findExternalTruck } from '@/components/truck-picker'
 import { FieldPicker } from '@/components/field-picker'
+import SalePicker from '@/components/sale-picker'
 import { ConfirmDialog, NoticeDialog } from '@/components/app-dialog'
 import { lowTareWarning, truckTareKey, truckTareStats, type TareHistoryLoad } from '@/lib/truck-tare'
 import { fetchTruckTareHistory } from '@/lib/truck-tare-fetch'
@@ -272,9 +278,19 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     setCropDefaultNote(d.cropId !== f.crop_id || d.reason === 'spring_fall_by_date' ? fieldDefaultNote(d, (id) => crops.find((c) => c.id === id)?.name ?? '', effectiveCropYear(f.crop_year, f.date)) : null)
     return d.cropId === f.crop_id ? f : { ...f, crop_id: d.cropId, contract_id: '' }
   }
-  // Delivered-so-far (dry bushels) on the selected contract, for the fill
-  // progress widget. Excludes the load being edited (added back live below).
-  const [contractDelivered, setContractDelivered] = useState<{ dryBu: number; count: number } | null>(null)
+  // HOW THE LOAD IS SOLD (094): the sale rows the SalePicker builds — one
+  // contract / spot / price-later row, or a split. form.contract_id stays
+  // the MIRROR (the contract when the whole load is on one contract, else
+  // '') so the defaults seam, the pickup-truck logic and the unsaved guard
+  // keep working unchanged; the sync effect below keeps the two in step.
+  const [sale, setSale] = useState<LoadSaleInput[]>([])
+  const [saleError, setSaleError] = useState<string | null>(null)
+  const saleSeedRef = useRef<string>('[]')
+  // Delivered-so-far (dry bushels) per contract this buyer holds for the
+  // crop + year — the picker's "N bu left" labels, the overfill prompt and
+  // the fill tracker all read it. Excludes the load being edited (added
+  // back live below).
+  const [deliveredByContract, setDeliveredByContract] = useState<Map<string, { dryBu: number; count: number }>>(new Map())
   const [contractProgressLoading, setContractProgressLoading] = useState(false)
   // Bumped after each Save & New so the tracker refetches WITH the load just
   // saved — without it the delivered total was fetched once per contract
@@ -285,7 +301,8 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   // previously selected truck can't land on the current one.
   const [tareHistory, setTareHistory] = useState<{ key: string; loads: TareHistoryLoad[] } | null>(null)
 
-  const isPickupForTare = !!form.contract_id && contracts.find((c) => c.id === form.contract_id)?.delivery_type === 'pickup'
+  const firstContractId = sale.find((r) => r.sale_type === 'contract')?.contract_id ?? null
+  const isPickupForTare = !!firstContractId && contracts.find((c) => c.id === firstContractId)?.delivery_type === 'pickup'
   const tareKey = truckTareKey(isPickupForTare && !form.truck_id ? { hauler_truck: form.hauler_truck } : { truck_id: form.truck_id })
   useEffect(() => {
     if (!tareKey) { setTareHistory(null); return }
@@ -350,6 +367,65 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     })()
   }, [supabase])
 
+  // Edit mode: the load's sale rows. A load with a contract_id but no rows
+  // (a database before 094) reads as one full contract row.
+  useEffect(() => {
+    if (mode !== 'edit' || !initial?.id) return
+    let cancelled = false
+    const loadId = initial.id
+    const contractId = initial.contract_id ?? null
+    ;(async () => {
+      let rows: LoadSale[] = []
+      try { rows = await fetchLoadSales(supabase, { loadIds: [loadId] }) } catch { rows = [] }
+      if (cancelled) return
+      const next: LoadSaleInput[] = rows.length > 0
+        ? rows.map((r) => ({
+            sale_type: r.sale_type, contract_id: r.contract_id, share: r.share, buyer_net_bushels: r.buyer_net_bushels,
+            spot_price: r.spot_price, spot_price_source: r.spot_price_source, est_futures_price: r.est_futures_price,
+            est_futures_symbol: r.est_futures_symbol, est_basis: r.est_basis, settlement_line_id: r.settlement_line_id,
+          }))
+        : contractId ? singleSaleRow({ sale_type: 'contract', contract_id: contractId }) : []
+      saleSeedRef.current = JSON.stringify(next)
+      setSale(next)
+    })()
+    return () => { cancelled = true }
+  }, [mode, initial?.id, initial?.contract_id, supabase])
+
+  // Keep the contract_id mirror and the sale rows in step when the mirror
+  // is set from OUTSIDE the picker (last-load defaults, a From/To type
+  // switch): a contract id → one full contract row; a cleared id while the
+  // sale was that single contract → no sale. A split or a spot/price-later
+  // sale is never touched here (its mirror is '' by definition).
+  useEffect(() => {
+    setSale((s) => {
+      const mirror = mirrorContractId(s)
+      if (form.contract_id && form.contract_id !== mirror) {
+        const next = singleSaleRow({ sale_type: 'contract', contract_id: form.contract_id })
+        if (JSON.stringify(form) === seedRef.current) saleSeedRef.current = JSON.stringify(next)
+        return next
+      }
+      if (!form.contract_id && mirror) {
+        if (JSON.stringify(form) === seedRef.current) saleSeedRef.current = '[]'
+        return []
+      }
+      return s
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.contract_id])
+
+  /** The picker's change: rows + why they can't save yet; the mirror follows. */
+  function applySale(rows: LoadSaleInput[], err: string | null) {
+    setSale(rows)
+    setSaleError(err)
+    const mirror = mirrorContractId(rows)
+    setForm((f) => (f.contract_id === mirror ? f : { ...f, contract_id: mirror }))
+  }
+  /** Crop / buyer / year changed: the sale no longer applies. */
+  function clearSale() {
+    setSale([])
+    setSaleError(null)
+  }
+
   // On create, pre-fill date + crop + from/to + contract selections from the
   // most recently ENTERED load (lib/load-defaults — the one seam for every
   // source/destination shape, bin→buyer included; transfers skipped).
@@ -365,24 +441,25 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       // tier is the fallback when I have no loads yet (or when created_by
       // isn't applied yet — the mine-query errors and we degrade to org).
       const { data: { user } } = await supabase.auth.getUser()
-      let mine: LastLoadDefaultsSource[] = []
+      type RecentRow = LastLoadDefaultsSource & { id: string }
+      let mine: RecentRow[] = []
       if (user?.id) {
         const res = await supabase
           .from('loads')
-          .select(LAST_LOAD_DEFAULTS_SELECT)
+          .select(`id, ${LAST_LOAD_DEFAULTS_SELECT}`)
           .eq('created_by', user.id)
           .order('created_at', { ascending: false })
           .limit(10)
-        if (!res.error) mine = (res.data ?? []) as LastLoadDefaultsSource[]
+        if (!res.error) mine = (res.data ?? []) as unknown as RecentRow[]
       }
-      let org: LastLoadDefaultsSource[] = []
+      let org: RecentRow[] = []
       if (pickLastLoadDefaults(mine) == null) {
         const { data } = await supabase
           .from('loads')
-          .select(LAST_LOAD_DEFAULTS_SELECT)
+          .select(`id, ${LAST_LOAD_DEFAULTS_SELECT}`)
           .order('created_at', { ascending: false })
           .limit(10)
-        org = (data ?? []) as LastLoadDefaultsSource[]
+        org = (data ?? []) as unknown as RecentRow[]
       }
       const recent = pickPerUserLastLoadDefaults({ mine, org })
       if (!recent) return
@@ -395,6 +472,21 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         if (untouched) seedRef.current = JSON.stringify(next)
         return next
       })
+      // SALE-TYPE MEMORY (094): a contract on the last load arrives through
+      // contract_id above (the sync effect turns it into a contract row); a
+      // spot / price-later last load seeds that kind from its sale row.
+      if (recent.to_type === 'buyer' && !recent.contract_id) {
+        let recentSales: LoadSale[] = []
+        try { recentSales = await fetchLoadSales(supabase, { loadIds: [recent.id] }) } catch { recentSales = [] }
+        const seeded = defaultSaleRows(recent, recentSales)
+        if (seeded.length > 0) {
+          setSale((s) => {
+            if (s.length > 0) return s
+            saleSeedRef.current = JSON.stringify(seeded)
+            return seeded
+          })
+        }
+      }
     })()
   }, [refsLoaded, mode, supabase])
 
@@ -426,49 +518,90 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   // When no crop year is picked yet, show no contracts (the dropdown asks for
   // a year first) so users don't accidentally attach a load to the wrong year.
   const cropYearNum = form.crop_year === '' ? null : Number(form.crop_year)
-  const buyerContracts =
-    cropYearNum == null
-      ? []
-      : contracts.filter(
-          (c) =>
-            (!form.to_buyer_id || c.buyer_id === form.to_buyer_id) &&
-            (!form.crop_id || c.crop_id === form.crop_id) &&
-            c.crop_year === cropYearNum
-        )
+  const buyerContracts = useMemo(
+    () =>
+      cropYearNum == null
+        ? []
+        : contracts.filter(
+            (c) =>
+              (!form.to_buyer_id || c.buyer_id === form.to_buyer_id) &&
+              (!form.crop_id || c.crop_id === form.crop_id) &&
+              c.crop_year === cropYearNum,
+          ),
+    [contracts, cropYearNum, form.to_buyer_id, form.crop_id],
+  )
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const buyerName = (id: string | null) => (id ? buyers.find((b) => b.id === id)?.name ?? '' : '')
-  const selectedContract = contracts.find((c) => c.id === form.contract_id) ?? null
+  // The (first) contract part of the sale drives the tracker and the
+  // pickup-truck flow; a split's other parts are listed by the picker.
+  const selectedContract = contracts.find((c) => c.id === firstContractId) ?? null
   // Pickup contract: the buyer's trucks load at the farm, so the Truck field
   // switches to the hauler-truck flow (free text + saved external trucks).
   const isPickup = selectedContract?.delivery_type === 'pickup'
 
-  // Fetch the contract's delivered dry bushels whenever the selection changes
-  // — and again after every Save & New (contractRefresh), so loads saved
-  // earlier in THIS session always count. A mid-session contract switch takes
-  // the contract_id branch and fetches that contract's true current total.
+  // Delivered dry bushels per contract this buyer holds for the crop + year,
+  // through the sale rows (094: a split load counts only its contract share)
+  // — refetched whenever that set changes and after every Save & New
+  // (contractRefresh), so loads saved earlier in THIS session always count.
+  // On a database before 094 the rows are missing; the loads' contract_id
+  // then stands in (the seam's pre-094 fallback).
+  const buyerContractIdsKey = useMemo(() => buyerContracts.map((c) => c.id).sort().join(','), [buyerContracts])
   useEffect(() => {
-    if (!form.contract_id) { setContractDelivered(null); return }
+    if (!buyerContractIdsKey) { setDeliveredByContract(new Map()); return }
+    const ids = buyerContractIdsKey.split(',')
     let cancelled = false
     setContractProgressLoading(true)
     ;(async () => {
-      let q = supabase
-        .from('loads')
-        .select('id, net_weight, moisture, crop_id, dry_bushels_override')
-        .eq('contract_id', form.contract_id)
-      if (mode === 'edit' && initial?.id) q = q.neq('id', initial.id)
-      const { data } = await q
+      const SEL = 'id, net_weight, moisture, crop_id, dry_bushels_override, contract_id, to_type'
+      let sales: LoadSale[] = []
+      let loads: ContractProgressSaleLoad[] = []
+      let missingTable = false
+      try {
+        const res = await supabase.from('load_sales').select('id, load_id, sale_type, contract_id, share, buyer_net_bushels, spot_price, spot_price_source, est_futures_price, est_futures_symbol, est_basis, settlement_line_id').in('contract_id', ids)
+        if (res.error) {
+          if (!isMissingRelation(res.error.message)) throw new Error(res.error.message)
+          missingTable = true
+        } else {
+          sales = ((res.data ?? []) as LoadSale[]).map((r) => ({ ...r, share: Number(r.share) }))
+          const loadIds = Array.from(new Set(sales.map((s) => s.load_id)))
+          for (let i = 0; i < loadIds.length; i += 300) {
+            const { data } = await supabase.from('loads').select(SEL).in('id', loadIds.slice(i, i + 300))
+            loads.push(...((data ?? []) as ContractProgressSaleLoad[]))
+          }
+        }
+      } catch {
+        missingTable = true
+      }
+      if (missingTable) {
+        const { data } = await supabase.from('loads').select(SEL).in('contract_id', ids)
+        loads = (data ?? []) as ContractProgressSaleLoad[]
+        sales = []
+      }
       if (cancelled) return
-      setContractDelivered(contractDeliveredTotals((data ?? []) as Parameters<typeof contractDeliveredTotals>[0], cropById))
+      if (mode === 'edit' && initial?.id) {
+        const editId = initial.id
+        loads = loads.filter((l) => l.id !== editId)
+        sales = sales.filter((s) => s.load_id !== editId)
+      }
+      setDeliveredByContract(deliveredTotalsByContract(loads, sales, cropById))
       setContractProgressLoading(false)
     })()
     return () => { cancelled = true }
-  }, [form.contract_id, mode, initial?.id, supabase, cropById, contractRefresh])
+  }, [buyerContractIdsKey, mode, initial?.id, supabase, cropById, contractRefresh])
+  const deliveredBuByContract = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const [id, d] of deliveredByContract) m.set(id, d.dryBu)
+    return m
+  }, [deliveredByContract])
+  const contractDelivered = selectedContract ? deliveredByContract.get(selectedContract.id) ?? { dryBu: 0, count: 0 } : null
 
-  // Contract fill progress: delivered + this (unsaved/edited) load vs contracted.
+  // Contract fill progress: delivered + this load's CONTRACT PART (the whole
+  // load, or its share of a split) vs contracted.
   const contractTotal = selectedContract ? Number(selectedContract.contracted_bushels) : 0
   const deliveredBu = contractDelivered?.dryBu ?? 0
-  const thisLoadBu = dryBushels ?? 0
+  const contractShare = selectedContract ? sale.find((r) => r.sale_type === 'contract' && r.contract_id === selectedContract.id)?.share ?? 0 : 0
+  const thisLoadBu = (dryBushels ?? 0) * contractShare
   const { projectedBu, remainingBu, pctDelivered, pctThisLoad } = contractProgress({
     contractedBu: contractTotal,
     deliveredBu,
@@ -546,6 +679,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   const splitsKey = JSON.stringify(splits.map((s) => [s.field_id, s.weight, s.practice]))
   const dirty = !busy && (
     JSON.stringify(form) !== seedRef.current ||
+    JSON.stringify(sale) !== saleSeedRef.current ||
     (splitMode ? splitsKey !== initialSplitsKey && splits.some((s) => s.field_id || s.weight) : (initialSplits?.length ?? 0) > 0) ||
     photos.length > 0
   )
@@ -579,6 +713,8 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     const toType = next.to_type ?? form.to_type
     // Reflect the toggle immediately; the lookup below fills in the details.
     setForm((f) => ({ ...f, ...next }))
+    // A destination switch re-defaults the sale from the matched load below.
+    if (next.to_type) clearSale()
 
     let q = supabase
       .from('loads')
@@ -775,6 +911,11 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         return
       }
     }
+    // A sale split that doesn't add up yet blocks the same way.
+    if (form.to_type === 'buyer' && saleError) {
+      setError(saleError)
+      return
+    }
 
     // Plausibility (lib/load-checks): a negative net blocks; everything else
     // asks "Save anyway / Go back" in the app's own dialog.
@@ -848,7 +989,10 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       to_type: form.to_type || null,
       to_bin_id: form.to_type === 'bin' ? form.to_bin_id || null : null,
       to_buyer_id: form.to_type === 'buyer' ? form.to_buyer_id || null : null,
-      contract_id: form.to_type === 'buyer' ? form.contract_id || null : null,
+      // The MIRROR (094): the contract only when the whole load is on exactly
+      // one contract; a split, spot or price-later sale writes null here and
+      // its rows below. Harmless on a database before 094.
+      contract_id: form.to_type === 'buyer' ? mirrorContractId(sale) || null : null,
       ticket_number: form.ticket_number || null,
       // Only mixed-practice fields carry a designation; pure fields imply it.
       practice:
@@ -945,6 +1089,40 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         }
       }
     }
+    // HOW IT WAS SOLD (094): the sale rows, through the seam's RPC. A spot
+    // part with no typed bid gets the estimate first (lib/spot-estimate) so
+    // the load carries a price from day one; if nothing can be estimated it
+    // stays unpriced until the settlement. On a database before 094 (table
+    // missing) the mirror column above already carries the contract case.
+    // Create mode writes only when a sale was picked; edit mode always
+    // writes so a load moved off a buyer, or un-assigned, drops its rows.
+    let savedSale = sale
+    if (savedLoadId && (mode === 'edit' || (payload.to_type === 'buyer' && sale.length > 0))) {
+      const rows = payload.to_type === 'buyer' ? [...sale] : []
+      for (let i = 0; i < rows.length; i++) {
+        if (rows[i].sale_type !== 'spot' || rows[i].spot_price != null) continue
+        try {
+          const d = await estimateSpotPrice(supabase, {
+            cropName: selectedCrop?.name ?? null, cropId: payload.crop_id, cropYear: payload.crop_year,
+            buyerId: payload.to_buyer_id, buyerName: buyerName(payload.to_buyer_id), deliveryDate: payload.date,
+          })
+          rows[i] = withSpotEstimate(rows[i], d)
+        } catch {
+          /* unpriced until the settlement */
+        }
+      }
+      try {
+        await writeLoadSales(supabase, savedLoadId, rows)
+        savedSale = rows
+      } catch (e) {
+        const msg = (e as Error)?.message ?? ''
+        if (!isMissingRelation(msg)) {
+          failSave(`The load saved, but how it was sold didn’t. ${reportError(e as Error, { action: 'save how this load was sold', noun: 'sale' })}`)
+          return
+        }
+      }
+    }
+
     // Back-fill load_id on any settlement line that was waiting on this load's
     // ticket (e.g. the settlement was entered before the load, or the ticket
     // was just corrected here). Best-effort: the load already saved, and the
@@ -976,7 +1154,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
     // "Save & New" — stay on the form for the next load of the session.
     if (mode === 'create' && saveAndNewRef.current) {
       saveAndNewRef.current = false
-      startNextLoad(payload.ticket_number)
+      startNextLoad(payload.ticket_number, savedSale)
       if (photoFailures > 0) {
         setNotice({
           title: 'Load saved — photo not attached',
@@ -988,6 +1166,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
 
     // Saved and leaving: the guard must not fire on the way out.
     seedRef.current = JSON.stringify(form)
+    saleSeedRef.current = JSON.stringify(sale)
     // Leave submittingRef = true; we're navigating away. Resetting it here
     // would briefly re-enable the button before the route change commits.
     router.push('/loads')
@@ -1001,10 +1180,17 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
   // weights, moisture, test weight, ticket, time, AND THE TRUCK — clear
   // (saveAndNewPatch): consecutive harvest loads rotate between trucks, so an
   // inherited truck silently writes wrong-truck records.
-  function startNextLoad(ticket: string | null) {
-    const next = { ...form, ...saveAndNewPatch(nowHHMM()) }
+  function startNextLoad(ticket: string | null, savedSale: LoadSaleInput[]) {
+    // The sale carries like the contract does (lib/load-defaults
+    // saleForNextLoad): same contract or kind, a typed bid but never an
+    // estimate, and after an overflow split only where the overflow went.
+    const nextSale = saleForNextLoad(savedSale)
+    const next = { ...form, ...saveAndNewPatch(nowHHMM()), contract_id: mirrorContractId(nextSale) }
     setForm(next)
     seedRef.current = JSON.stringify(next)
+    setSale(nextSale)
+    setSaleError(null)
+    saleSeedRef.current = JSON.stringify(nextSale)
     // Splits describe the load just saved, not the next one.
     setSplitMode(false)
     setSplits([])
@@ -1117,7 +1303,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <label className={labelCls}>
           Crop
-          <select value={form.crop_id} onChange={(e) => { cropTouchedRef.current = true; setCropDefaultNote(null); set('crop_id', e.target.value) }} className={inputCls}>
+          <select value={form.crop_id} onChange={(e) => { cropTouchedRef.current = true; setCropDefaultNote(null); clearSale(); setForm((f) => ({ ...f, crop_id: e.target.value, contract_id: '' })) }} className={inputCls}>
             <option value="">— select —</option>
             {crops.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
@@ -1127,7 +1313,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
           Crop year
           <select
             value={form.crop_year}
-            onChange={(e) => setForm((f) => ({ ...f, crop_year: e.target.value, contract_id: '' }))}
+            onChange={(e) => { clearSale(); setForm((f) => ({ ...f, crop_year: e.target.value, contract_id: '' })) }}
             className={inputCls}
           >
             <option value="">— select —</option>
@@ -1384,29 +1570,22 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
         )}
         {form.to_type === 'buyer' && (
           <>
-            <select value={form.to_buyer_id} onChange={(e) => { set('to_buyer_id', e.target.value); set('contract_id', '') }} className={inputCls} aria-label="Buyer">
+            <select value={form.to_buyer_id} onChange={(e) => { clearSale(); setForm((f) => ({ ...f, to_buyer_id: e.target.value, contract_id: '' })) }} className={inputCls} aria-label="Buyer">
               <option value="">— select buyer —</option>
               {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
-            <label className={labelCls}>
-              Contract
-              <select
-                value={form.contract_id}
-                onChange={(e) => set('contract_id', e.target.value)}
-                className={inputCls}
-                disabled={cropYearNum == null}
-              >
-                <option value="">
-                  {cropYearNum == null ? 'Select crop year first' : '— none —'}
-                </option>
-                {buyerContracts.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    #{c.contract_number} · {buyerName(c.buyer_id)} · {Number(c.contracted_bushels).toLocaleString()} bu
-                  </option>
-                ))}
-              </select>
-              <span className="mt-1 block text-xs text-slate-500">Showing this buyer’s contracts for this crop and year.</span>
-            </label>
+            {/* How the load is sold (094): contract / spot / price later, or a split. */}
+            <SalePicker
+              contracts={buyerContracts}
+              buyerName={buyerName(form.to_buyer_id)}
+              loadDryBu={dryBushels ?? 0}
+              deliveredByContract={deliveredBuByContract}
+              value={sale}
+              onChange={applySale}
+              disabled={cropYearNum == null}
+              disabledNote="Select crop year first"
+              inputClassName={inputCls}
+            />
 
             {selectedContract && (
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-2">
@@ -1427,7 +1606,7 @@ export default function LoadForm({ initial, initialSplits, mode }: Props) {
                     {contractProgressLoading && <span className="text-slate-400"> · updating…</span>}
                   </span>
                   {thisLoadBu > 0 && (
-                    <span className="text-green-700">+{Math.round(thisLoadBu).toLocaleString()} bu this load → {Math.round(projectedBu).toLocaleString()} bu</span>
+                    <span className="text-green-700">+{Math.round(thisLoadBu).toLocaleString()} bu {contractShare < 1 ? 'from this load' : 'this load'} → {Math.round(projectedBu).toLocaleString()} bu</span>
                   )}
                   <span className={remainingBu < 0 ? 'text-amber-700 font-semibold' : 'text-slate-600'}>
                     {remainingBu >= 0

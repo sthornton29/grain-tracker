@@ -1,8 +1,8 @@
 ---
 page_route: /contracts
 title: Contracts
-updated: 2026-09-30
-keywords: contracts, forward, cash, HTA, basis, futures, pricing, delivered, contracted, first notice day, delivery window, attachments, entity, seed, seed contract, seed production
+updated: 2026-10-13
+keywords: contracts, forward, cash, HTA, basis, futures, pricing, delivered, contracted, first notice day, delivery window, attachments, entity, seed, seed contract, seed production, spot, spot contract, spot sales, weighted average, price later, delayed price, DP, price bushels, unpriced, split load
 ---
 ## What this page is for
 
@@ -24,6 +24,8 @@ The contract tracker shows every grain contract with how much you've delivered a
 
 When you later set the open leg — an HTA gets its basis, or a basis contract gets its futures — the contract shows as Forward, because at that point both legs are locked and it prices like one. The pricing status (fully priced, awaiting basis, awaiting futures) is shown and filterable on the list.
 
+- **Spot** — not a paper contract at all. Every load you sold spot (at the elevator's posted bid the day it was delivered) in a crop year is gathered into one row, "Spot · Soybean 2026", priced at the bushel-weighted average of those loads. It has no contracted target, so there's no progress bar — just delivered bushels, the loads, the buyers, the average price, and how many of the loads are settled ("5 of 5 settled" or "4 of 5 settled · est. on 1" while a price is still Turnrow's estimate). Tap it for every spot load with its price and where that price came from, per-buyer subtotals, and the futures and basis behind any estimate. Spot bushels count as sold everywhere a priced contract does: the Marketing page, Revenue Projections, Income Sensitivity and Cash Flow.
+- **Price later** — bushels delivered to a buyer and left unpriced (delayed price, or stored at the elevator). One row per crop year and buyer, "Price later · Soybean 2026 · Bunge", shows the unpriced bushels, the loads, the oldest delivery date, and what they'd be worth at today's assumed price, marked *unpriced*. Open it and press **Price bushels** to enter the bushels, price and date (the contract number can wait until the buyer confirms it): Turnrow creates an ordinary forward contract and moves the oldest bushels onto it first, splitting the last load if needed. From then on it's just a contract.
 - **Seed** — a seed production agreement (growing seed beans for a seed company). These commit acres instead of bushels and have their own entry form, detail page, and progress: the bar shows the share of the bushels you've priced, not deliveries, and the contract completes when the final payment arrives. See the **Seed production contracts** help topic for the full story.
 
 ## What the controls do
@@ -34,11 +36,11 @@ When you later set the open leg — an HTA gets its basis, or a basis contract g
 
 - **Warnings** appear at the top for contracts approaching risk: an HTA or basis contract with pricing still open whose contract month's first notice day is within 30 days (or already past), and contracts whose delivery window ends within 14 days. Both warnings stop once a contract is completed — marked complete or fully delivered — since there's nothing left to price or deliver.
 - **Entity** on a contract is optional. If your operation has one entity, Turnrow fills it in for you — you'll see it on the form but won't need to touch it. With more than one entity, leave it blank when the contract belongs to the operation as a whole, or pick an entity when one company holds the contract in its own name. If your operation markets everyone's grain through a single marketing company, put that company on the contract — entity-filtered reports then share its bushels out to the farming entities by their share of the acres.
-- **Load warnings** at the top flag two things: loads delivered to a buyer with no contract picked (open Loads to attach them so the bushels count), and loads still pointing at a contract that has since been deleted. Both counts follow the crop year, crop, and entity filters, so they describe the same slice of the operation the table does.
+- **Load warnings** at the top flag two things: loads delivered to a buyer with no sale type picked — not on a contract, not spot, not price later — with a link to mark them several at a time, and loads still pointing at a contract that has since been deleted. Both counts follow the crop year, crop, and entity filters, so they describe the same slice of the operation the table does.
 
 ## How the numbers work
 
-- **Delivered** counts the loads attached to the contract. **Remaining** = contracted − delivered.
+- **Delivered** counts each load's share applied to the contract — a whole load, or just the 58 bushels of a split load that finished the contract. **Remaining** = contracted − delivered. A contract is complete when it's marked complete or delivered reaches contracted.
 - **Contract value** = contract price × contracted bushels, for priced contracts.
 - **Paid bushels** are the buyer's settled bushels from settlements. **Unpaid bushels** are delivered loads not yet on any settlement, and **Unpaid $** is those bushels at the contract price — what you're still owed at that price.
 - The contract page shows **Fully delivered** once delivered bushels reach the contracted amount, or the date you marked it complete.
@@ -48,7 +50,8 @@ When you later set the open leg — an HTA gets its basis, or a basis contract g
 - **I picked an entity and most contracts vanished.** An entity filter shows only contracts written in that entity's name. Contracts entered with no entity belong to the operation as a whole and are left out — the note beside the legend says how many. Clear the entity filter to see them.
 - **Why is a contract's price blank?** One pricing leg is still open. An HTA shows no cash price until its basis is set; a basis contract, until its futures is set.
 - **Why did my HTA start showing as Forward?** You set its basis. Both legs are now locked, so it reads as a forward — the history is still on the contract.
-- **A delivered load isn't counting against the contract.** The load isn't attached to it. Open the load, edit it, and pick the contract.
+- **A delivered load isn't counting against the contract.** The load's sale isn't this contract. Open the load, edit it, and pick the contract in the Sale box — or split the load if only part of it belongs here.
+- **The buyer applied a load differently than I entered it.** The settlement review shows both versions side by side with the buyer's pre-selected; saving takes the buyer's allocation, since the settlement is what you were paid on.
 - **What does marking a contract complete do?** It ends the warnings and stops the contract from projecting future revenue in reports. Use it when a contract is finished even if a few bushels never shipped.
 
 ## If something looks wrong

@@ -406,6 +406,12 @@ export type SettlementLine = {
   buyer_ref?: string | null
   match_tier?: 'exact' | 'segment' | 'suffix' | 'attribute' | 'manual' | null
   match_reason?: string | null
+  // 094 — the sale the line printed under: the "Contract Number: X" block's
+  // text as printed, its kind, and the contract it resolved to. The same
+  // ticket on two lines with different sales is ONE split load.
+  sale_type?: 'contract' | 'spot' | 'price_later' | null
+  contract_number_text?: string | null
+  contract_id?: string | null
 }
 
 // An itemized discount/deduction line on a settlement (074). Amounts are

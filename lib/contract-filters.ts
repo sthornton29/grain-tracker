@@ -30,7 +30,13 @@ export const EMPTY_CONTRACT_FILTERS: ContractFilterValues = {
 export const CONTRACT_FILTER_KEYS = ['entity', 'crop', 'crop_year', 'type', 'pricing', 'hide_completed', 'hide_future', 'sort', 'dir'] as const
 export type ContractFilterKey = (typeof CONTRACT_FILTER_KEYS)[number]
 
-export const CONTRACT_TYPE_FILTERS = ['forward', 'hta', 'basis', 'seed'] as const
+// 'spot' and 'price_later' (094) are the tracker's VIRTUAL rows — the spot
+// contract per crop × year and the price-later pools per buyer.
+export const CONTRACT_TYPE_FILTERS = ['forward', 'hta', 'basis', 'seed', 'spot', 'price_later'] as const
+export type ContractTypeFilter = (typeof CONTRACT_TYPE_FILTERS)[number]
+export const CONTRACT_TYPE_FILTER_LABEL: Record<ContractTypeFilter, string> = {
+  forward: 'Forward', hta: 'HTA', basis: 'Basis', seed: 'Seed', spot: 'Spot', price_later: 'Price later',
+}
 export const CONTRACT_PRICING_FILTERS = ['fully_priced', 'awaiting_basis', 'awaiting_futures'] as const
 const SORT_KEYS = ['crop'] as const
 

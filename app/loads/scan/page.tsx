@@ -34,6 +34,12 @@ import { fmtInt } from '@/components/reports/report-kit'
 import type { Bin, Buyer, Contract, Crop, Field, FieldPlanting, Truck } from '@/lib/types'
 import { buildTareStatsIndex, lowTareWarning, truckTareKey, type TareHistoryLoad } from '@/lib/truck-tare'
 import { fetchTrucksTareHistory } from '@/lib/truck-tare-fetch'
+import { isMissingRelation, singleSaleRow, writeManyLoadSales, type LoadSaleInput } from '@/lib/load-sales'
+import { estimateSpotPrice, withSpotEstimate } from '@/lib/spot-estimate'
+import { PRICE_LATER_OPTION_LABEL, SPOT_OPTION_LABEL } from '@/lib/sale-picker'
+
+/** How a buyer row is sold (094): a contract, spot, price later, or not yet picked. */
+type SaleKindChoice = '' | 'contract' | 'spot' | 'price_later'
 
 type Row = {
   // What was read off the ticket, kept for display when no match is found.
@@ -60,6 +66,9 @@ type Row = {
   to_bin_id: string
   to_buyer_id: string
   contract_id: string
+  /** The sale (094): 'contract' pairs with contract_id; spot may carry a bid. */
+  sale_kind: SaleKindChoice
+  spot_bid: string
   practice: '' | 'irrigated' | 'dryland'
   // Review state (never stored): where the date's year and the crop came from.
   date_year_assumed: boolean
@@ -175,6 +184,8 @@ function ticketToRow(t: TicketExtraction, refs: Refs, pageCropYear: string, toda
     to_bin_id,
     to_buyer_id,
     contract_id: '',
+    sale_kind: '',
+    spot_bid: '',
     practice: '',
     date_year_assumed: resolved.yearAssumed,
     date_problem: resolved.problem,
@@ -204,7 +215,7 @@ function rowStatus(r: Row, cropYear: string): 'ready' | 'review' {
   return 'ready'
 }
 
-const COLUMNS = ['Status', 'Date', 'Time', 'Ticket #', 'Truck', 'Crop', 'Gross lb', 'Tare lb', 'Net lb', 'Moisture %', 'Test wt', 'From', 'To', 'Contract', 'Bushels', ''] as const
+const COLUMNS = ['Status', 'Date', 'Time', 'Ticket #', 'Truck', 'Crop', 'Gross lb', 'Tare lb', 'Net lb', 'Moisture %', 'Test wt', 'From', 'To', 'Sale', 'Bushels', ''] as const
 
 // A labelled cell in the stacked-card layout. Module-level on purpose: a
 // component defined inside render remounts its inputs on every keystroke.
@@ -439,8 +450,13 @@ export default function ScanTicketsPage() {
           if (next.from_bin_id && !bb.some((x) => x.id === next.from_bin_id)) next.from_bin_id = ''
           if (next.to_bin_id && !bb.some((x) => x.id === next.to_bin_id)) next.to_bin_id = ''
           next.contract_id = ''
+          if (next.sale_kind === 'contract') next.sale_kind = ''
         }
-        if ('to_buyer_id' in patch) next.contract_id = ''
+        // Contracts belong to a buyer; spot / price later carry across buyers.
+        if ('to_buyer_id' in patch) {
+          next.contract_id = ''
+          if (next.sale_kind === 'contract') next.sale_kind = ''
+        }
         // The practice tag belongs to a specific mixed field — drop it when the
         // field/crop changes or the field is no longer mixed.
         if (('from_field_id' in patch || 'crop_id' in patch || 'from_type' in patch) &&
@@ -519,7 +535,9 @@ export default function ScanTicketsPage() {
           to_type: r.to_type || null,
           to_bin_id: r.to_type === 'bin' ? r.to_bin_id || null : null,
           to_buyer_id: r.to_type === 'buyer' ? r.to_buyer_id || null : null,
-          contract_id: r.to_type === 'buyer' ? r.contract_id || null : null,
+          // The mirror (094): the contract when the load is on one; the sale
+          // rows proper are written after the insert.
+          contract_id: r.to_type === 'buyer' && r.sale_kind === 'contract' ? r.contract_id || null : null,
           ticket_number: r.ticket_number || null,
           source_pdf_url: pdfUrl,
           practice:
@@ -538,13 +556,48 @@ export default function ScanTicketsPage() {
       res = await supabase.from('loads').insert(payloads).select('id')
     }
     const { data, error } = res
-    setSaving(false)
     if (error) {
+      setSaving(false)
       setErr(reportError(error, { action: 'save these loads', noun: 'load' }))
       return
     }
     savedIdsRef.current = (data as Array<{ id: string }> | null)?.map((d) => d.id) ?? []
     rememberHarvestEntryPath('load')
+    // How each buyer load was sold (094) — the sale rows for the rows just
+    // saved, in insert order. A spot row with no typed bid gets the estimate
+    // (one at a time; a stack of tickets is small). On a database before 094
+    // the table is missing and the contract mirror above already did the job.
+    const savedRows = readyIdx.map((i) => rows[i])
+    const items: Array<{ loadId: string; rows: LoadSaleInput[] }> = []
+    for (let k = 0; k < savedRows.length && k < savedIdsRef.current.length; k++) {
+      const r = savedRows[k]
+      if (r.to_type !== 'buyer' || !r.sale_kind) continue
+      if (r.sale_kind === 'contract' && !r.contract_id) continue
+      let saleRows = r.sale_kind === 'contract'
+        ? singleSaleRow({ sale_type: 'contract', contract_id: r.contract_id })
+        : singleSaleRow({ sale_type: r.sale_kind, spot_price: (num(r.spot_bid) ?? 0) > 0 ? num(r.spot_bid) : null, spot_price_source: (num(r.spot_bid) ?? 0) > 0 ? 'entered' : null })
+      if (r.sale_kind === 'spot' && saleRows[0].spot_price == null) {
+        try {
+          const d = await estimateSpotPrice(supabase, {
+            cropName: crops.find((c) => c.id === r.crop_id)?.name ?? null, cropId: r.crop_id || null, cropYear: cropYearNum,
+            buyerId: r.to_buyer_id || null, buyerName: buyers.find((b) => b.id === r.to_buyer_id)?.name ?? null, deliveryDate: r.date,
+          })
+          saleRows = saleRows.map((row) => withSpotEstimate(row, d))
+        } catch { /* unpriced until the settlement */ }
+      }
+      items.push({ loadId: savedIdsRef.current[k], rows: saleRows })
+    }
+    if (items.length > 0) {
+      try {
+        await writeManyLoadSales(supabase, items)
+      } catch (e) {
+        const msg = (e as Error)?.message ?? ''
+        if (!isMissingRelation(msg)) {
+          setErr(`The loads saved, but how they were sold didn’t. ${reportError(e as Error, { action: 'save how these loads were sold', noun: 'sale' })} Open each load from the Loads page to set it.`)
+        }
+      }
+    }
+    setSaving(false)
     // Drop saved rows; keep unready rows for the user to finish.
     const remaining = rows.filter((r) => statusFor(r) !== 'ready')
     setRows(remaining)
@@ -738,17 +791,38 @@ export default function ScanTicketsPage() {
           {toMissing && readHint(r.raw_to)}
         </div>
       ),
-      Contract: r.to_type === 'buyer' ? (
-        <select
-          aria-label="Contract"
-          value={r.contract_id}
-          onChange={(e) => updateRow(i, { contract_id: e.target.value })}
-          className={inputCls}
-          disabled={!cropYear}
-        >
-          <option value="">{cropYear ? '— none —' : 'Select crop year first'}</option>
-          {cc.map((c) => <option key={c.id} value={c.id}>{c.contract_number}</option>)}
-        </select>
+      Sale: r.to_type === 'buyer' ? (
+        <div className="space-y-1">
+          <select
+            aria-label="Sale"
+            value={r.sale_kind === 'contract' ? `contract:${r.contract_id}` : r.sale_kind}
+            onChange={(e) => {
+              const v = e.target.value
+              if (v.startsWith('contract:')) updateRow(i, { sale_kind: 'contract', contract_id: v.slice('contract:'.length) })
+              else updateRow(i, { sale_kind: v as SaleKindChoice, contract_id: '' })
+            }}
+            className={inputCls}
+            disabled={!cropYear}
+          >
+            <option value="">{cropYear ? '— not set —' : 'Select crop year first'}</option>
+            {cc.map((c) => <option key={c.id} value={`contract:${c.id}`}>#{c.contract_number}</option>)}
+            <option value="spot">{SPOT_OPTION_LABEL}</option>
+            <option value="price_later">{PRICE_LATER_OPTION_LABEL}</option>
+          </select>
+          {r.sale_kind === 'spot' && (
+            <input
+              type="number"
+              step="0.0001"
+              min="0"
+              inputMode="decimal"
+              aria-label="Bid $/bu"
+              placeholder="Bid $/bu (if known)"
+              value={r.spot_bid}
+              onChange={(e) => updateRow(i, { spot_bid: e.target.value })}
+              className={`${inputCls} tabular-nums min-h-12`}
+            />
+          )}
+        </div>
       ) : (
         <span className="text-xs text-slate-400">—</span>
       ),
@@ -881,7 +955,7 @@ export default function ScanTicketsPage() {
                       <td className="px-2 py-1" style={{ minWidth: 80 }}>{f['Test wt']}</td>
                       <td className="px-2 py-1" style={{ minWidth: 200 }}>{f.From}</td>
                       <td className="px-2 py-1" style={{ minWidth: 200 }}>{f.To}</td>
-                      <td className="px-2 py-1" style={{ minWidth: 140 }}>{f.Contract}</td>
+                      <td className="px-2 py-1" style={{ minWidth: 170 }}>{f.Sale}</td>
                       <td className="px-2 py-1" style={{ minWidth: 110 }}>{f.Bushels}</td>
                       <td className="px-2 py-1">{f['']}</td>
                     </tr>
@@ -921,7 +995,7 @@ export default function ScanTicketsPage() {
                     <Field label="Bushels"><div className="flex justify-end">{f.Bushels}</div></Field>
                     <Field label="From" span>{f.From}</Field>
                     <Field label="To" span>{f.To}</Field>
-                    {r.to_type === 'buyer' && <Field label="Contract" span>{f.Contract}</Field>}
+                    {r.to_type === 'buyer' && <Field label="Sale" span>{f.Sale}</Field>}
                   </div>
                 </div>
               )

@@ -43,6 +43,7 @@ import { buildSeedCommitments, type SeedContractBundle, type SeedCropCommitment 
 import type { CottonPhysicalInputs } from '@/lib/cotton-sales'
 import type { EntityMarketingInputs } from '@/lib/entity-marketing'
 import { fetchAll } from '@/lib/partner-api-server'
+import { loadSpotInputs } from '@/lib/spot-contracts-server'
 import type {
   Contract,
   Crop,
@@ -297,14 +298,21 @@ export async function loadMarketingInputs(
   const production = await loadProductionInputs(supabase, org, cropYear)
   const { crops, plantings, assumptions } = production
 
-  const [contracts, futures, options] = await Promise.all([
+  const [realContracts, futures, options, spot] = await Promise.all([
     fetchAll<Contract>((f, t) =>
       supabase.from('contracts').select('*').eq('org_id', org).eq('crop_year', cropYear).order('id').range(f, t)),
     fetchAll<FuturesPosition>((f, t) =>
       supabase.from('futures_positions').select('*').eq('org_id', org).eq('crop_year', cropYear).order('id').range(f, t)),
     fetchAll<OptionPosition>((f, t) =>
       supabase.from('options_positions').select('*').eq('org_id', org).eq('crop_year', cropYear).order('id').range(f, t)),
+    // Spot sales (094): all spot loads of a crop × year act as ONE fully
+    // priced contract held by the marketing agent (or the field's entity),
+    // appended to the contract inputs so every consumer of this bundle — the
+    // partner API's per-entity rows, Farm Link's outbound marketing — prices
+    // them exactly as the dashboard does. A database before 094 yields none.
+    loadSpotInputs(supabase, { org, cropYear, crops }),
   ])
+  const contracts: Contract[] = spot.contractsWithSpot(realContracts)
 
   // Physical cotton marketing (044) — whole-operation summary; missing tables
   // degrade to none, like every other consumer.
@@ -331,7 +339,7 @@ export async function loadMarketingInputs(
   let buyerNameById = new Map<string, string>()
   let seedCommitmentsByCrop: Map<string, SeedCropCommitment[]> | undefined
   try {
-    const seed = await fetchSeedContracts(supabase, cropYear, { orgId: org, contracts })
+    const seed = await fetchSeedContracts(supabase, cropYear, { orgId: org, contracts: realContracts })
     if (seed.bundles.length > 0) {
       seedBundles = seed.bundles
       const buyersQ = await supabase.from('buyers').select('id, name').eq('org_id', org)

@@ -41,6 +41,11 @@ import {
 } from '@/lib/settlement-duplicates'
 import { useDialogs } from '@/components/use-dialogs'
 import { fmtUsd, fmtInt, fmtNum } from '@/components/reports/report-kit'
+// 094 — how each load was SOLD: the statement's contract blocks vs our rows.
+import { fetchLoadSales, isMissingRelation, saleAllocations, writeManyLoadSales, type LoadSale, type SaleType } from '@/lib/load-sales'
+import { contractNumberKey, type SaleLine } from '@/lib/settlement-sales'
+import { buildApplyPlan, buildSaleReview, withSaleType, type ContractLinks, type ReviewContract, type SaleChoice } from '@/lib/settlement-sale-review'
+import SettlementSaleReview, { SaleChip } from '@/components/settlement-sale-review'
 
 type LoadMatch = {
   id: string
@@ -86,6 +91,10 @@ type RowDraft = {
   /** The reviewer's say over the automatic match: 'reject' (import
    *  unmatched) or a load id picked by hand. */
   matchOverride?: 'reject' | string
+  /** 094 — the "Contract Number: X" block the line printed under. */
+  contract_number?: string | null
+  /** 094 — the reviewer's say over the printed text ("S12" confirmed spot). */
+  sale_type?: SaleType | null
 }
 
 const emptyRow = (): RowDraft => ({
@@ -155,7 +164,12 @@ export default function NewSettlementPage() {
   const router = useRouter()
   const [buyers, setBuyers] = useState<Buyer[]>([])
   const [loads, setLoads] = useState<LoadMatch[]>([])
-  const [contracts, setContracts] = useState<Array<{ id: string; contract_number: string; buyer_id: string | null; crop_id: string | null; contracted_bushels: number | null }>>([])
+  const [contracts, setContracts] = useState<Array<{ id: string; contract_number: string; buyer_id: string | null; crop_id: string | null; crop_year: number | null; contracted_bushels: number | null }>>([])
+  // 094 — the matched loads' stored sale rows, the reviewer's ours/theirs
+  // picks per ticket, and the contracts linked to numbers not on file.
+  const [loadSales, setLoadSales] = useState<LoadSale[]>([])
+  const [saleChoices, setSaleChoices] = useState<Map<string, SaleChoice>>(new Map())
+  const [contractLinks, setContractLinks] = useState<Map<string, string>>(new Map())
   // The buyer's own contract summary from the statement (priced / settled /
   // remaining), cross-checked against the app's contract progress.
   const [contractSummary, setContractSummary] = useState<SettlementContractSummary | null>(null)
@@ -192,7 +206,7 @@ export default function NewSettlementPage() {
         fetchAllRows((f, t) => supabase.from('loads')
           .select('id, date, ticket_number, buyer_ticket_number, crop_id, crop:crops(name, base_moisture_pct, base_lb_per_bushel), contract_id, to_buyer_id, net_weight, gross_weight, tare_weight, moisture, test_weight, dry_bushels_override, truck_id, hauler_truck, truck_label, truck:trucks(license_plate, name_or_number)')
           .eq('to_type', 'buyer').order('id').range(f, t)),
-        fetchAllRows((f, t) => supabase.from('contracts').select('id, contract_number, buyer_id, crop_id, contracted_bushels').order('contract_number').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('contracts').select('id, contract_number, buyer_id, crop_id, crop_year, contracted_bushels').order('contract_number').order('id').range(f, t)),
         // The 086 payment columns first; without them (a fresh organization
         // before that migration) the base header still drives the check.
         fetchAllRows((f, t) => supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_number, check_number, payment_number').order('id').range(f, t))
@@ -203,7 +217,7 @@ export default function NewSettlementPage() {
       ])
       setBuyers((b.data as Buyer[]) || [])
       setLoads(((l.data as unknown) as LoadMatch[]) ?? [])
-      setContracts(((c.data as unknown) as Array<{ id: string; contract_number: string; buyer_id: string | null; crop_id: string | null; contracted_bushels: number | null }>) ?? [])
+      setContracts(((c.data as unknown) as Array<{ id: string; contract_number: string; buyer_id: string | null; crop_id: string | null; crop_year: number | null; contracted_bushels: number | null }>) ?? [])
       setExistingSettlements(((s.data as unknown) as ExistingSettlement[]) ?? [])
       setExistingLines(((sl.data as unknown) as ExistingLine[]) ?? [])
     })()
@@ -264,10 +278,12 @@ export default function NewSettlementPage() {
     // Every ticket on the statement: a suffix match needs its tail unique.
     const ctx = { buyer_id: buyerId || null, crop_id: headerContract?.crop_id ?? null, settlement_tickets: rows.filter((r) => !r.excluded).map((r) => r.ticket_number) }
     // Excluded (total) rows never match; rejected rows never claim a load.
+    // The line's contract block rides along (094) so a ticket printed under
+    // two blocks — one split load — matches the one load on both lines.
     const raw = matchAllTickets(
       rows.map((r) => r.excluded || r.matchOverride === 'reject'
         ? { ticket_number: null }
-        : { ticket_number: r.ticket_number, secondary_refs: [r.secondary_ref], net_bushels: num(r.net_bushels), net_weight: r.net_weight, gross_weight: r.gross_weight, tare_weight: r.tare_weight, delivery_date: r.delivery_date, vehicle_plate: r.vehicle_plate }),
+        : { ticket_number: r.ticket_number, contract_number: r.contract_number ?? null, secondary_refs: [r.secondary_ref], net_bushels: num(r.net_bushels), net_weight: r.net_weight, gross_weight: r.gross_weight, tare_weight: r.tare_weight, delivery_date: r.delivery_date, vehicle_plate: r.vehicle_plate }),
       pool,
       ctx,
     )
@@ -304,6 +320,61 @@ export default function NewSettlementPage() {
     if (res.status === 'matched') return { load: loadById.get(res.match.loadId) ?? null, match: res.match, candidates: res.candidates, status: 'matched' }
     if (res.status === 'ambiguous') return { load: null, match: null, candidates: res.candidates, status: 'ambiguous' }
     return { load: null, match: null, candidates: [], status: 'unmatched' }
+  }
+
+  // 094 — the sale review. Our stored rows for the matched loads are read
+  // whenever the matched set changes; the review groups the kept lines by
+  // ticket and compares the buyer's allocation with ours.
+  const dryBuOf = (l: LoadMatch) => computeBushels({
+    netWeightLb: l.net_weight, moisturePct: l.moisture,
+    baseMoisturePct: l.crop?.base_moisture_pct ?? null, baseLbPerBushel: l.crop?.base_lb_per_bushel ?? null,
+    dryBushelsOverride: l.dry_bushels_override,
+  }).dryBushels ?? 0
+  const keptRows = useMemo(() => rows.map((r, i) => ({ r, i })).filter(({ r }) => !r.excluded), [rows])
+  const matchedLoadKey = keptRows.map(({ i }) => matchFor(i).load?.id ?? '').filter(Boolean).sort().join(',')
+  useEffect(() => {
+    const ids = matchedLoadKey ? matchedLoadKey.split(',') : []
+    let cancelled = false
+    if (ids.length === 0) { setLoadSales([]); return }
+    fetchLoadSales(supabase, { loadIds: ids })
+      .then((rows) => { if (!cancelled) setLoadSales(rows) })
+      .catch(() => { if (!cancelled) setLoadSales([]) })
+    return () => { cancelled = true }
+  }, [supabase, matchedLoadKey])
+  const buyerContracts: ReviewContract[] = useMemo(() => contracts.filter((c) => c.buyer_id === buyerId), [contracts, buyerId])
+  const contractNumberById = (id: string) => contracts.find((c) => c.id === id)?.contract_number ?? null
+  const saleReview = useMemo(() => {
+    const lines: SaleLine[] = keptRows.map(({ r }) => ({
+      ticket_number: r.ticket_number.trim() || null,
+      net_bushels: num(r.net_bushels),
+      gross_revenue: num(r.gross_revenue),
+      discounts: num(r.discounts),
+      // A line with no block of its own sells under the header contract.
+      contract_number: r.contract_number ?? (contractNumber.trim() || null),
+      sale_type: r.sale_type ?? null,
+    }))
+    const matchedLoads = keptRows.map(({ i }) => matchFor(i).load).filter((l): l is LoadMatch => !!l)
+    const ours = saleAllocations(matchedLoads.map((l) => ({ id: l.id, contract_id: l.contract_id, to_type: 'buyer' as const, dryBu: dryBuOf(l) })), loadSales)
+    return buildSaleReview({
+      lines,
+      loadIdForLine: (k) => matchFor(keptRows[k]?.i ?? -1).load?.id ?? null,
+      oursByLoad: ours,
+      contracts: buyerContracts,
+      links: contractLinks,
+      cropId: headerContract?.crop_id ?? matchedLoads[0]?.crop_id ?? null,
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keptRows, matchResults, loadSales, buyerContracts, contractLinks, headerContract, contractNumber])
+  // The review's line indexes are positions among the KEPT rows.
+  const keptIndexOfRow = (rowIndex: number) => keptRows.findIndex(({ i }) => i === rowIndex)
+  function confirmSpot(keptIndexes: number[]) {
+    const rowIndexes = new Set(keptIndexes.map((k) => keptRows[k]?.i).filter((i): i is number => i != null))
+    setRows((rs) => rs.map((r, i) => (rowIndexes.has(i) ? { ...r, sale_type: 'spot' } : r)))
+  }
+  const saleLineFor = (rowIndex: number) => {
+    const k = keptIndexOfRow(rowIndex)
+    for (const g of saleReview) { const l = g.lines.find((x) => x.index === k); if (l) return l }
+    return null
   }
 
   // Already paid? The matched load's saved settlement line, or this ticket
@@ -426,8 +497,13 @@ export default function NewSettlementPage() {
         tare_weight: li.tare_weight ?? null,
         net_weight: li.net_weight ?? null,
         grade_readings: li.grade_readings ?? null,
+        // 094 — the contract block the line printed under; a statement with
+        // no blocks leaves it null and the header contract stands in.
+        contract_number: li.contract_number != null ? String(li.contract_number) : null,
       }))
       setRows(nextRows)
+      setSaleChoices(new Map())
+      setContractLinks(new Map())
       setReportedTotal(data.statement_reported_total != null ? String(data.statement_reported_total) : '')
       const flaggedCount = guards.filter((g) => g.flagged).length
       const extractedItems = Array.isArray(data.discount_items) ? data.discount_items : []
@@ -547,7 +623,7 @@ export default function NewSettlementPage() {
     // From here on the settlement exists: any later failure lands the user on
     // its page with a plain note about what still needs adding, never back
     // here with a raw error and a half-saved record they can't see.
-    const finish = (saved?: 'partial-lines' | 'partial-items' | 'partial-writeback') => {
+    const finish = (saved?: 'partial-lines' | 'partial-items' | 'partial-writeback' | 'partial-sales') => {
       setSaving(false)
       router.push(saved ? `/settlements/${settlement.id}?saved=${saved}` : `/settlements/${settlement.id}`)
     }
@@ -569,11 +645,51 @@ export default function NewSettlementPage() {
       match_tier: matched[i].status === 'manual' ? 'manual' : matched[i].match?.tier ?? null,
       match_reason: matched[i].match?.reason ?? null,
     }))
-    // One insert carries every line (086 columns included); if the 086
-    // columns aren't there yet, the same rows go in without them.
-    let lErr = (await supabase.from('settlement_lines').insert(lines086)).error
+    // 094 — the per-line sale facts (includedRows is keptRows in order, so
+    // the review's line index is the row's position here).
+    const salePlan = buildApplyPlan(saleReview, saleChoices)
+    const saleByIndex = new Map(salePlan.lineUpdates.map((u) => [u.index, u]))
+    const lines094 = includedRows.map((r, i) => {
+      const s = saleByIndex.get(i)
+      return {
+        ...lines086[i],
+        sale_type: s?.sale_type ?? null,
+        contract_number_text: s?.contract_number_text ?? (r.contract_number?.trim() || null),
+        contract_id: s?.contract_id ?? null,
+      }
+    })
+    // One insert carries every line (086 + 094 columns included); if those
+    // columns aren't there yet, the same rows go in without them. The 094
+    // insert returns the ids so each sale row can point at its line.
+    const lineKey = (ticket: string | null | undefined, text: string | null | undefined) => `${normalizeTicket(ticket)}|${contractNumberKey(text)}`
+    let lineIds: Map<number, string> | undefined
+    const ins094 = await supabase.from('settlement_lines').insert(lines094).select('id, ticket_number, contract_number_text')
+    let lErr = ins094.error
+    if (!lErr) {
+      const returned = (ins094.data as Array<{ id: string; ticket_number: string | null; contract_number_text: string | null }> | null) ?? []
+      const byKey = new Map<string, string[]>()
+      for (const row of returned) { const k = lineKey(row.ticket_number, row.contract_number_text); byKey.set(k, [...(byKey.get(k) ?? []), row.id]) }
+      lineIds = new Map()
+      lines094.forEach((l, i) => { const ids = byKey.get(lineKey(l.ticket_number, l.contract_number_text)); const id = ids?.shift(); if (id) lineIds!.set(i, id) })
+    } else {
+      lErr = (await supabase.from('settlement_lines').insert(lines086)).error
+    }
     if (lErr) lErr = (await supabase.from('settlement_lines').insert(baseLines)).error
     if (lErr) { reportError(lErr, { action: 'save the settlement lines', noun: 'line' }); finish('partial-lines'); return }
+
+    // 094 — apply the sale review to the matched loads: the buyer's rows
+    // (or ours with the settled spot price) per load, in one call. A
+    // database before 094 has no sale rows to write — the lines still
+    // saved, so this is skipped quietly.
+    let salesFailed = false
+    const salePlanWithIds = lineIds ? buildApplyPlan(saleReview, saleChoices, lineIds) : salePlan
+    if (salePlanWithIds.loadWrites.length > 0) {
+      try {
+        await writeManyLoadSales(supabase, salePlanWithIds.loadWrites)
+      } catch (e: any) {
+        if (!isMissingRelation(e?.message)) { salesFailed = true; reportError(e, { action: 'apply the sales to the matched loads', noun: 'load' }) }
+      }
+    }
 
     // Write-backs (086 / 091), best effort: (a) a load matched by attributes
     // gets the buyer's ticket as its own when it had none; (b) any load
@@ -620,7 +736,7 @@ export default function NewSettlementPage() {
       const { error: dErr } = await supabase.from('settlement_discount_items').insert(items)
       if (dErr) { reportError(dErr, { action: 'save the itemized discounts', noun: 'discount line' }); finish('partial-items'); return }
     }
-    finish(writebackFailed ? 'partial-writeback' : undefined)
+    finish(salesFailed ? 'partial-sales' : writebackFailed ? 'partial-writeback' : undefined)
   }
 
   const totals = rows.reduce(
@@ -885,6 +1001,18 @@ export default function NewSettlementPage() {
                           </span>
                         )}
                         {status}
+                        {(() => {
+                          // 094 — the sale the line printed under (contract block / spot / price later).
+                          const sl = saleLineFor(i)
+                          if (!sl && !r.contract_number && !contractNumber) return null
+                          const unresolved = sl?.sale_type === 'contract' && !!sl.contract_number_text && !sl.contract_id
+                          return (
+                            <span className="mt-1 flex flex-wrap items-center gap-1">
+                              <SaleChip line={sl ?? { sale_type: r.sale_type, contract_number_text: r.contract_number }} fallbackContractNumber={headerContract?.contract_number ?? contractNumber ?? null} />
+                              {unresolved && <span className="text-[11px] text-amber-700">not on file — link it below</span>}
+                            </span>
+                          )
+                        })()}
                       </td>
                       <td className={`px-2 py-1 ${issues.net ? flagCls : ''}`} style={{ minWidth: 90 }}>
                         <input type="number" step="0.01" value={r.net_bushels} onChange={(e) => updateRow(i, { net_bushels: e.target.value })} className={inputCls} />
@@ -933,6 +1061,25 @@ export default function NewSettlementPage() {
             </div>
           )}
         </div>
+
+        {/* 094 — the sale review: ours vs the buyer's per matched load, a
+            contract number not on file, an "S12" that may be spot. */}
+        {rows.length > 0 && (
+          <SettlementSaleReview
+            groups={saleReview}
+            contracts={buyerContracts}
+            contractNumberById={contractNumberById}
+            buyerName={buyers.find((b) => b.id === buyerId)?.name ?? ''}
+            choices={saleChoices}
+            onChoice={(key, choice) => setSaleChoices((m) => new Map(m).set(key, choice))}
+            links={contractLinks}
+            onLink={(key, id) => setContractLinks((m) => { const next = new Map(m); if (id) next.set(key, id); else next.delete(key); return next })}
+            onConfirmSpot={confirmSpot}
+            newContractHref="/contracts/new"
+            loadLabel={(id) => { const ld = loadById.get(id); return ld ? `${fmtDate(ld.date)} · ${ld.ticket_number ? '#' + ld.ticket_number : 'no ticket'} · ${fmtInt(dryBuOf(ld))} bu` : '' }}
+            quiet
+          />
+        )}
 
         {/* Itemized discounts (074): the statement's own deduction lines. The
             AI fills these from the upload; under-itemized statements and

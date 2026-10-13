@@ -88,6 +88,8 @@ export default function ContractFilters({
             <option value="hta">{CONTRACT_TYPE_LABEL.hta}</option>
             <option value="basis">{CONTRACT_TYPE_LABEL.basis}</option>
             <option value="seed">Seed</option>
+            <option value="spot">Spot</option>
+            <option value="price_later">Price later</option>
           </select>
         </FilterField>
         <FilterField label="Pricing">

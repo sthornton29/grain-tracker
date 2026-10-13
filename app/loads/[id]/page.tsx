@@ -9,6 +9,8 @@ import LoadAttachments from '@/components/load-attachments'
 import LoadPdfBar from './load-pdf-bar'
 import DeleteLoadButton from './delete-load-button'
 import type { ExportPayload, ExportSection } from '@/lib/exports'
+import { describeSale, fetchLoadSales, saleAllocations, saleKind, type LoadSale, type SaleAllocation } from '@/lib/load-sales'
+import { spotPriceChip } from '@/lib/spot-price'
 
 export const dynamic = 'force-dynamic'
 
@@ -78,6 +80,14 @@ type SettlementLineShape = {
 }
 
 type PaymentState = 'paid' | 'ambiguous' | 'unpaid' | 'na'
+
+/** A contract a sale part points at (the load's own contract or a split's). */
+type SaleContractShape = {
+  id: string
+  contract_number: string
+  contract_type: 'forward' | 'hta' | 'basis'
+  delivery_location: { name: string } | null
+}
 
 const LINE_SELECT = `
   id, ticket_number, load_id, net_bushels, gross_revenue, discounts, net_revenue, price_per_bushel,
@@ -159,6 +169,37 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
     dryBushelsOverride: load.dry_bushels_override,
   })
 
+  // HOW IT WAS SOLD (094): the sale rows (one per part), through the seam —
+  // a load with only the contract mirror (pre-094) reads as one full
+  // contract part. The contracts any part points at are fetched for their
+  // numbers and links.
+  let saleRows: LoadSale[] = []
+  try { saleRows = await fetchLoadSales(supabase, { loadIds: [params.id] }) } catch { saleRows = [] }
+  const allocs: SaleAllocation[] = saleAllocations(
+    [{ id: load.id, contract_id: load.contract?.id ?? null, to_type: load.to_type, dryBu: dryBushels ?? 0 }],
+    saleRows,
+  ).get(load.id) ?? []
+  const saleContractIds = Array.from(new Set(allocs.filter((a) => a.saleType === 'contract' && a.contractId).map((a) => a.contractId as string)))
+  const saleContracts = new Map<string, SaleContractShape>()
+  if (saleContractIds.length > 0) {
+    const { data: cs } = await supabase
+      .from('contracts')
+      .select('id, contract_number, contract_type, delivery_location:delivery_locations(name)')
+      .in('id', saleContractIds)
+    for (const c of ((cs as unknown as SaleContractShape[]) ?? [])) saleContracts.set(c.id, c)
+  }
+  const contractNumberOf = (id: string) => saleContracts.get(id)?.contract_number ?? (load.contract?.id === id ? load.contract.contract_number : null)
+  const saleKindOf = saleKind(allocs, load)
+  const saleDescription = describeSale(allocs, contractNumberOf, load)
+  const buyerNameText = load.to_buyer?.name ?? null
+  /** One line per part for the export: "894 bu · Contract #2002960604-10" / "913 bu · Spot · est. $13.39 (…)". */
+  const partText = (a: SaleAllocation): string => {
+    const bu = `${fmt(a.bushels)} bu`
+    if (a.saleType === 'contract') return `${bu} · Contract #${contractNumberOf(a.contractId ?? '') ?? '?'}`
+    if (a.saleType === 'spot') return `${bu} · Spot · ${a.sale ? spotPriceChip(a.sale, buyerNameText) : 'no price yet'}`
+    return `${bu} · Price later`
+  }
+
   // Discrepancy (paid only): our dry bu vs their settled net bu, flagged > 1%
   // — the same rule the settlement reconciliation screen uses.
   const ourBu = dryBushels ?? 0
@@ -196,6 +237,7 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
       ['From', fromText],
       ['To', toText],
       ['Contract', load.contract ? `#${load.contract.contract_number}` : '—'],
+      ...(load.to_type === 'buyer' ? [['Sale', saleDescription || '—'] as (string | number)[]] : []),
     ],
   })
   sections.push({
@@ -218,15 +260,15 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
       rows: splits.map((s) => [s.field?.name_or_number ?? '—', fmt(s.net_weight, 0), `${s.percentage.toFixed(1)}%`, fmt(s.wet_bushels), fmt(s.dry_bushels)]),
     })
   }
-  if (load.contract) {
+  if (load.to_type === 'buyer') {
     sections.push({
-      title: 'Contract',
+      title: 'Sale',
       columns: KV,
       rows: [
-        ['Contract #', `#${load.contract.contract_number}`],
-        ['Type', CONTRACT_TYPE_LABEL[load.contract.contract_type] ?? load.contract.contract_type],
-        ['Buyer', load.contract.buyer?.name ?? load.to_buyer?.name ?? '—'],
-        ...(load.contract.delivery_location?.name ? [['Delivery location', load.contract.delivery_location.name] as (string | number)[]] : []),
+        ['Sold as', saleDescription || '—'],
+        ['Buyer', load.to_buyer?.name ?? '—'],
+        ...allocs.map((a, i): (string | number)[] => [`Part ${i + 1}`, partText(a)]),
+        ...(load.contract?.delivery_location?.name ? [['Delivery location', load.contract.delivery_location.name] as (string | number)[]] : []),
       ],
     })
   }
@@ -336,17 +378,51 @@ export default async function LoadDetailPage({ params }: { params: { id: string 
         </Section>
       )}
 
-      {load.contract && (
-        <Section title="Contract">
-          <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2 px-4 py-3">
-            <Def label="Contract #" value={`#${load.contract.contract_number}`} />
-            <Def label="Type" value={CONTRACT_TYPE_LABEL[load.contract.contract_type] ?? load.contract.contract_type} />
-            <Def label="Buyer" value={load.contract.buyer?.name ?? load.to_buyer?.name ?? '—'} />
-            {load.contract.delivery_location?.name && <Def label="Delivery location" value={load.contract.delivery_location.name} />}
-          </dl>
-          <div className="px-4 pb-3 no-print">
-            <Link href={`/contracts/${load.contract.id}`} className="text-brand-deep text-sm font-semibold">View contract →</Link>
-          </div>
+      {load.to_type === 'buyer' && (
+        <Section title="Sale">
+          {saleKindOf === 'unassigned' ? (
+            <div className="px-4 py-3 flex items-center gap-3 flex-wrap">
+              <span className="inline-block rounded-full px-3 py-1 text-sm font-semibold bg-amber-100 text-amber-800">No sale type yet</span>
+              <span className="text-sm text-slate-600">Was this load on a contract, sold spot, or priced later?</span>
+              <Link href={`/loads/${load.id}/edit`} className="text-brand-deep text-sm font-semibold no-print min-h-11 inline-flex items-center">Set it →</Link>
+            </div>
+          ) : (
+            <div className="px-4 py-3 space-y-3">
+              <div className="text-sm font-semibold text-slate-800">{saleDescription}</div>
+              <ul className="space-y-2">
+                {allocs.map((a, i) => {
+                  const c = a.saleType === 'contract' && a.contractId ? saleContracts.get(a.contractId) ?? null : null
+                  return (
+                    <li key={i} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm border-t border-slate-100 pt-2 first:border-t-0 first:pt-0">
+                      <span className="tabular-nums font-semibold text-slate-900 w-24">{fmt(a.bushels)} bu</span>
+                      {a.saleType === 'contract' ? (
+                        <>
+                          <span className="text-slate-700">
+                            Contract #{contractNumberOf(a.contractId ?? '') ?? '?'}
+                            {c ? <span className="text-slate-500"> · {CONTRACT_TYPE_LABEL[c.contract_type] ?? c.contract_type}</span> : null}
+                            {c?.delivery_location?.name ? <span className="text-slate-500"> · {c.delivery_location.name}</span> : null}
+                          </span>
+                          {a.contractId && (
+                            <Link href={`/contracts/${a.contractId}`} className="text-brand-deep font-semibold no-print min-h-11 inline-flex items-center">View contract →</Link>
+                          )}
+                        </>
+                      ) : a.saleType === 'spot' ? (
+                        <>
+                          <span className="text-xs rounded px-2 py-0.5 bg-sky-100 text-sky-800">Spot</span>
+                          <span className="text-slate-600">{a.sale ? spotPriceChip(a.sale, buyerNameText) : 'no price yet'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="text-xs rounded px-2 py-0.5 bg-indigo-100 text-indigo-800">Price later</span>
+                          <span className="text-slate-600">unpriced until you price it</span>
+                        </>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )}
         </Section>
       )}
 

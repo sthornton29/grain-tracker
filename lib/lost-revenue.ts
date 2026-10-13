@@ -68,8 +68,12 @@ export type LostRevenueSettlement = {
   settledBu: number
   items: ReadonlyArray<LostRevenueItem>
   loads: ReadonlyArray<LostRevenueLoad>
-  /** The contract the settlement's matched loads deliver against (mode);
-   *  null = spot/unlinked. */
+  /** The contract the settlement's matched loads deliver against (the
+   *  most common one across them); null = spot/unlinked. Since 094 a load
+   *  can be split across sales — callers should take each load's single
+   *  contract from its sale allocation (lib/load-sales saleAllocations:
+   *  one 'contract' row) and count a split / spot / price-later load as
+   *  no contract, rather than reading loads.contract_id. */
   contractId: string | null
 }
 
