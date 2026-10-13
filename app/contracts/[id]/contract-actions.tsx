@@ -34,6 +34,19 @@ export default function ContractActions({
     setBusy('delete')
     setErr(null)
     const supabase = createClient()
+    // 094: loads applied to the contract hold it (ON DELETE RESTRICT). Say
+    // how many instead of surfacing the generic in-use sentence.
+    const [{ count: saleCount }, { count: mirrorCount }] = await Promise.all([
+      supabase.from('load_sales').select('id', { count: 'exact', head: true }).eq('contract_id', contractId),
+      supabase.from('loads').select('id', { count: 'exact', head: true }).eq('contract_id', contractId),
+    ])
+    const applied = Math.max(saleCount ?? 0, mirrorCount ?? 0)
+    if (applied > 0) {
+      setBusy(null)
+      setAsk(null)
+      setErr(`${applied.toLocaleString('en-US')} load${applied === 1 ? ' is' : 's are'} applied to this contract, so it can't be deleted. Move ${applied === 1 ? 'that load' : 'those loads'} to another sale first.`)
+      return
+    }
     const { error } = await supabase.from('contracts').delete().eq('id', contractId)
     setBusy(null)
     setAsk(null)

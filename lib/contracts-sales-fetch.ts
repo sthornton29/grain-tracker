@@ -1,10 +1,20 @@
 // The contracts pages' view of HOW every load was sold (094, 2026-10-13):
 // one server helper that reads the loads, their sale rows and the lookups
-// the virtual contracts need, and the pure shaping behind the Spot and
+// the virtual contracts need, and the pure facts behind the Spot and
 // Price-later rows on the tracker. Every page that lists contracts beside
 // their deliveries (the tracker, a contract's detail, the spot and price-
 // later detail pages, the settings delete guard) goes through here so a
 // split load counts each part once and nothing else.
+//
+// The SHAPING is not here: loads → SaleSourceLoad (dry bushels from the
+// load's crop bases, the override winning), the marketing-agent lookup, the
+// field → entity map, split fractions and the spot / price-later builders'
+// inputs all come from lib/spot-contracts.ts (buildSpotInputs), the one seam
+// every marketing consumer shares. This module adds what only the contracts
+// pages need: the allocations + delivered-per-contract maps, the unassigned
+// buyer loads, the lookups, settlement-line matching and the tracker's row
+// facts. Buyer loads only (bin loads carry no sale), like every other
+// consumer of the seam.
 //
 // Reads page every growing table through fetchAllRows. A database before 094
 // (no load_sales) reads as no sale rows, so loads.contract_id still drives
@@ -17,34 +27,19 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
-import { computeBushels } from '@/lib/shrink'
 import {
   deliveredBushelsByContract, fetchLoadSales, saleAllocations, unassignedBuyerLoads,
   type ContractDelivered, type LoadSale, type SaleAllocation,
 } from '@/lib/load-sales'
 import {
-  buildPriceLaterPools, buildSpotContracts,
-  type PriceLaterPool, type SaleSourceLoad, type VirtualSpotContract,
-} from '@/lib/virtual-contracts'
+  buildSpotInputs, fieldEntityMap, splitsByLoad as splitFractionsByLoad, SPOT_LOAD_SELECT, type SpotLoadRecord,
+} from '@/lib/spot-contracts'
+import type { PriceLaterPool, SaleSourceLoad, VirtualSpotContract } from '@/lib/virtual-contracts'
 import { loadTicketKeys } from '@/lib/ticket-matching'
 
-/** A load as the contracts pages read it: the sale seam's fields plus what
- *  the tracker prints (ticket, where it went) and what dry bushels need. */
-export type SalesLoad = SaleSourceLoad & {
-  contract_id: string | null
-  to_type: 'bin' | 'buyer' | null
-  to_buyer_id: string | null
-  date: string
-  ticket_number: string | null
-  buyer_ticket_number: string | null
-  net_weight: number | null
-  moisture: number | null
-  dry_bushels_override: number | null
-  from_type: 'field' | 'bin' | null
-  from_field_id: string | null
-}
-
-type LoadQueryRow = Omit<SalesLoad, 'dryBu'>
+/** A load as the contracts pages read it — the seam's SaleSourceLoad (dry
+ *  bushels resolved, ticket + where it went carried for the tracker). */
+export type SalesLoad = SaleSourceLoad
 
 export type SalesCrop = {
   id: string
@@ -60,6 +55,7 @@ export type SalesEntity = { id: string; name: string; entity_role: string | null
 export type SalesBuyer = { id: string; name: string }
 
 export type ContractsSales = {
+  /** The buyer loads (bin loads carry no sale and are not read). */
   loads: SalesLoad[]
   sales: LoadSale[]
   allocations: Map<string, SaleAllocation[]>
@@ -81,29 +77,7 @@ export type ContractsSales = {
   splitsByLoad: Map<string, Array<{ field_id: string; fraction: number }>>
 }
 
-export const SALES_LOAD_SELECT =
-  'id, contract_id, date, ticket_number, buyer_ticket_number, net_weight, moisture, dry_bushels_override, crop_id, crop_year, from_type, from_field_id, to_type, to_buyer_id'
-
-/** Dry bushels of a load from ITS crop's bases — the same rule the tracker
- *  has always used (computeBushels, the override winning). */
-export function loadDryBushels(
-  load: Pick<SalesLoad, 'net_weight' | 'moisture' | 'dry_bushels_override' | 'crop_id'>,
-  cropById: ReadonlyMap<string, Pick<SalesCrop, 'base_moisture_pct' | 'base_lb_per_bushel'>>,
-): number {
-  const crop = load.crop_id ? cropById.get(load.crop_id) : null
-  const { dryBushels } = computeBushels({
-    netWeightLb: load.net_weight,
-    moisturePct: load.moisture,
-    baseMoisturePct: crop?.base_moisture_pct ?? null,
-    baseLbPerBushel: crop?.base_lb_per_bushel ?? null,
-    dryBushelsOverride: load.dry_bushels_override,
-  })
-  return dryBushels ?? 0
-}
-
-export function marketingAgentOf(entities: ReadonlyArray<Pick<SalesEntity, 'id' | 'entity_role'>>): string | null {
-  return entities.find((e) => e.entity_role === 'marketing_agent')?.id ?? null
-}
+type SplitRow = { load_id: string; field_id: string; percentage: number | null }
 
 /**
  * Everything the contracts pages need about sales. `cropYear` narrows the
@@ -115,8 +89,8 @@ export async function fetchSalesForContracts(
   opts: { cropYear?: number | null; orgId?: string | null } = {},
 ): Promise<ContractsSales> {
   const [loadsQ, cropsQ, fieldsQ, farmsQ, entitiesQ, buyersQ, splitsQ] = await Promise.all([
-    fetchAllRows<LoadQueryRow>((f, t) => {
-      let q = supabase.from('loads').select(SALES_LOAD_SELECT).order('id', { ascending: true }).range(f, t)
+    fetchAllRows<SpotLoadRecord>((f, t) => {
+      let q = supabase.from('loads').select(SPOT_LOAD_SELECT).eq('to_type', 'buyer').order('id', { ascending: true }).range(f, t)
       if (opts.cropYear != null) q = q.eq('crop_year', opts.cropYear)
       if (opts.orgId) q = q.eq('org_id', opts.orgId)
       return q
@@ -126,7 +100,7 @@ export async function fetchSalesForContracts(
     supabase.from('farms').select('id, entity_id'),
     supabase.from('entities').select('id, name, entity_role').order('name'),
     supabase.from('buyers').select('id, name').order('name'),
-    fetchAllRows<{ load_id: string; field_id: string; percentage: number | null }>((f, t) => {
+    fetchAllRows<SplitRow>((f, t) => {
       let q = supabase.from('load_splits').select('load_id, field_id, percentage').order('id').range(f, t)
       if (opts.orgId) q = q.eq('org_id', opts.orgId)
       return q
@@ -140,32 +114,28 @@ export async function fetchSalesForContracts(
   const farms = (farmsQ.data ?? []) as SalesFarm[]
   const entities = (entitiesQ.data ?? []) as SalesEntity[]
   const buyers = (buyersQ.data ?? []) as SalesBuyer[]
-  const cropById = new Map(crops.map((c) => [c.id, c]))
-  const loads: SalesLoad[] = loadsQ.data.map((l) => ({ ...l, dryBu: loadDryBushels(l, cropById) }))
+  const splits = splitsQ.data
 
   const sales = await fetchLoadSales(supabase, {
-    loadIds: opts.cropYear != null ? loads.map((l) => l.id) : undefined,
+    loadIds: opts.cropYear != null ? loadsQ.data.map((l) => l.id) : undefined,
     orgId: opts.orgId ?? undefined,
   })
 
-  const farmEntity = new Map(farms.map((f) => [f.id, f.entity_id]))
-  const fieldEntity = new Map(fields.map((f) => [f.id, f.farm_id ? farmEntity.get(f.farm_id) ?? null : null]))
-  const splitsByLoad = new Map<string, Array<{ field_id: string; fraction: number }>>()
-  for (const s of splitsQ.data) {
-    const arr = splitsByLoad.get(s.load_id) ?? []
-    arr.push({ field_id: s.field_id, fraction: Number(s.percentage ?? 0) / 100 })
-    splitsByLoad.set(s.load_id, arr)
-  }
-  const marketingAgentEntityId = marketingAgentOf(entities)
+  // The shared shaping: dry bushels, the agent, the spot contracts and pools.
+  const inputs = buildSpotInputs({ loads: loadsQ.data, sales, crops, entities, fields, farms, splits })
+  const loads = inputs.sourceLoads
 
   return {
     loads, sales,
     allocations: saleAllocations(loads, sales),
     deliveredByContract: deliveredBushelsByContract(loads, sales),
-    spots: buildSpotContracts({ loads, sales, marketingAgentEntityId, fieldEntity, splitsByLoad }),
-    pools: buildPriceLaterPools(loads, sales),
+    spots: inputs.spots,
+    pools: inputs.pools,
     unassigned: unassignedBuyerLoads(loads, sales),
-    crops, fields, farms, entities, buyers, marketingAgentEntityId, fieldEntity, splitsByLoad,
+    crops, fields, farms, entities, buyers,
+    marketingAgentEntityId: inputs.marketingAgentEntityId,
+    fieldEntity: fieldEntityMap(fields, farms),
+    splitsByLoad: splitFractionsByLoad(splits),
   }
 }
 
@@ -213,7 +183,7 @@ export async function fetchSettlementLinesForSales(
 
 /** load → its settlement lines: matched by load id, else by ticket number
  *  (a split ticket has TWO lines; both come back). */
-export function settlementLinesByLoad(lines: ReadonlyArray<SalesSettlementLine>): (load: { id: string; ticket_number: string | null; buyer_ticket_number?: string | null }) => SalesSettlementLine[] {
+export function settlementLinesByLoad(lines: ReadonlyArray<SalesSettlementLine>): (load: { id: string; ticket_number?: string | null; buyer_ticket_number?: string | null }) => SalesSettlementLine[] {
   const byLoad = new Map<string, SalesSettlementLine[]>()
   const byTicket = new Map<string, SalesSettlementLine[]>()
   for (const l of lines) {
@@ -226,7 +196,7 @@ export function settlementLinesByLoad(lines: ReadonlyArray<SalesSettlementLine>)
   return (load) => {
     const own = byLoad.get(load.id)
     if (own && own.length > 0) return own
-    for (const k of loadTicketKeys(load)) { const t = byTicket.get(k); if (t && t.length > 0) return t }
+    for (const k of loadTicketKeys({ ticket_number: load.ticket_number ?? null, buyer_ticket_number: load.buyer_ticket_number ?? null })) { const t = byTicket.get(k); if (t && t.length > 0) return t }
     return []
   }
 }
