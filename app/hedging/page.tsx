@@ -22,6 +22,7 @@ import { QuoteChip } from '@/components/quote-chip'
 import { AppModal, ConfirmDialog, PromptDialog } from '@/components/app-dialog'
 import { reportError } from '@/lib/friendly-error'
 import { fmtDate } from '@/lib/format-date'
+import { legHasActivity, summarizeByCropYear } from '@/lib/hedging-summary'
 import {
   FilterField, ReportFilterBar, selectCls, inputCls,
   theadCls, stickyColCls, stickyColHeadCls, subtotalRowCls, grandTotalRowCls,
@@ -339,37 +340,21 @@ export default function HedgingPage() {
     return m
   }, [openOptions])
 
-  // Crop-year × commodity summary, combining futures and options.
-  type Leg = { contracts: number; bushels: number; priceWeight: number; premium: number; unrealized: number; realized: number; hasOpen: boolean }
-  const emptyLeg = (): Leg => ({ contracts: 0, bushels: 0, priceWeight: 0, premium: 0, unrealized: 0, realized: 0, hasOpen: false })
-  const cropYearSummaries = useMemo(() => {
-    const m = new Map<string, { cropYear: number; commodity: Commodity; fut: Leg; opt: Leg }>()
-    const get = (cropYear: number, commodity: Commodity) => {
-      const key = `${cropYear}|${commodity}`
-      let cur = m.get(key)
-      if (!cur) { cur = { cropYear, commodity, fut: emptyLeg(), opt: emptyLeg() }; m.set(key, cur) }
-      return cur
-    }
-    for (const p of base) {
-      const f = get(p.crop_year, p.commodity as Commodity).fut
-      f.contracts += p.num_contracts
-      f.bushels += quantityFor(p.commodity, p.num_contracts)
-      f.priceWeight += p.trade_price * p.num_contracts
-      if (p.status === 'open') { f.unrealized += posUnrealized(p) ?? 0; f.hasOpen = true }
-      else f.realized += netRealized(p)
-    }
-    for (const o of baseOptions) {
-      const g = get(o.crop_year, o.commodity as Commodity).opt
-      g.contracts += o.num_contracts
-      g.bushels += quantityFor(o.commodity, o.num_contracts)
-      // Net premium cash: buying pays out (negative), selling collects (positive).
-      g.premium += (o.side === 'buy' ? -1 : 1) * (o.premium_total ?? optionPremiumTotal(o.premium_cents, o.num_contracts))
-      if (o.status === 'open') { g.unrealized += optUnrealized(o) ?? 0; g.hasOpen = true }
-      else g.realized += optNetRealized(o)
-    }
-    return Array.from(m.values()).sort((a, b) => b.cropYear - a.cropYear || a.commodity.localeCompare(b.commodity))
+  // Crop-year × commodity summary, combining futures and options — ONE rule in
+  // lib/hedging-summary: bushels hedged are the OPEN legs only (a rolled hedge
+  // counts once); closed lots contribute their realized result.
+  const cropYearSummaries = useMemo(() => summarizeByCropYear({
+    futures: base,
+    options: baseOptions,
+    quantityFor,
+    futuresUnrealized: (p) => posUnrealized(p),
+    futuresRealized: (p) => netRealized(p),
+    optionUnrealized: (o) => optUnrealized(o),
+    optionRealized: (o) => optNetRealized(o),
+    // Net premium cash: buying pays out (negative), selling collects (positive).
+    optionPremium: (o) => (o.side === 'buy' ? -1 : 1) * (o.premium_total ?? optionPremiumTotal(o.premium_cents, o.num_contracts)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [base, baseOptions, prices, optionValueById])
+  }), [base, baseOptions, prices, optionValueById])
 
   function afterMutation() {
     setShowNew(false)
@@ -583,19 +568,21 @@ export default function HedgingPage() {
               return (
                 <div key={`${s.cropYear}-${s.commodity}`} className="bg-white rounded-xl shadow p-4 space-y-2">
                   <h3 className="font-bold">{s.cropYear} {s.commodity}</h3>
-                  {s.fut.contracts > 0 && (
+                  {legHasActivity(s.fut) && (
                     <div className="space-y-0.5">
                       <div className="text-xs uppercase tracking-wide text-slate-400">Futures</div>
-                      <Row label={contractUnit(s.commodity) === 'lbs' ? 'Pounds hedged' : 'Bushels hedged'} value={`${s.fut.bushels.toLocaleString()} ${contractUnit(s.commodity)} (${s.fut.contracts} contract${s.fut.contracts === 1 ? '' : 's'})`} />
-                      <Row label="Average hedge price" value={fmtCommodityPrice(s.commodity, avg)} />
+                      <Row label={contractUnit(s.commodity) === 'lbs' ? 'Pounds hedged' : 'Bushels hedged'} value={s.fut.contracts > 0 ? `${s.fut.quantity.toLocaleString()} ${contractUnit(s.commodity)} (${s.fut.contracts} open contract${s.fut.contracts === 1 ? '' : 's'})` : 'none open'} />
+                      {s.fut.contracts > 0 && <Row label="Average hedge price" value={fmtCommodityPrice(s.commodity, avg)} />}
+                      {s.fut.closedContracts > 0 && <Row label="Closed this crop year" value={`${s.fut.closedContracts} contract${s.fut.closedContracts === 1 ? '' : 's'} (lifted or rolled)`} />}
                       {s.fut.hasOpen && <Row label="Unrealized" value={fmtPnl(s.fut.unrealized)} tone={signedTone(s.fut.unrealized)} />}
                       <Row label="Realized, after commission" value={fmtPnl(s.fut.realized)} tone={signedTone(s.fut.realized)} />
                     </div>
                   )}
-                  {s.opt.contracts > 0 && (
+                  {legHasActivity(s.opt) && (
                     <div className="space-y-0.5">
                       <div className="text-xs uppercase tracking-wide text-slate-400">Options</div>
-                      <Row label={contractUnit(s.commodity) === 'lbs' ? 'Pounds covered' : 'Bushels covered'} value={`${s.opt.bushels.toLocaleString()} ${contractUnit(s.commodity)} (${s.opt.contracts} contract${s.opt.contracts === 1 ? '' : 's'})`} />
+                      <Row label={contractUnit(s.commodity) === 'lbs' ? 'Pounds covered' : 'Bushels covered'} value={s.opt.contracts > 0 ? `${s.opt.quantity.toLocaleString()} ${contractUnit(s.commodity)} (${s.opt.contracts} open contract${s.opt.contracts === 1 ? '' : 's'})` : 'none open'} />
+                      {s.opt.closedContracts > 0 && <Row label="Closed this crop year" value={`${s.opt.closedContracts} contract${s.opt.closedContracts === 1 ? '' : 's'}`} />}
                       <Row label={s.opt.premium < 0 ? 'Premium paid' : 'Premium received'} value={fmtPnl(Math.abs(s.opt.premium))} />
                       {s.opt.hasOpen && <Row label="Unrealized" value={fmtPnl(s.opt.unrealized)} tone={signedTone(s.opt.unrealized)} />}
                       <Row label="Realized, after commission" value={fmtPnl(s.opt.realized)} tone={signedTone(s.opt.realized)} />

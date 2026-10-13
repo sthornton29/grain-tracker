@@ -27,6 +27,8 @@ Hedging tracks your futures and options positions alongside the crops they prote
 
 ## How the numbers work
 
+- **The crop-year cards count what is hedged now.** "Bushels hedged" is the open positions only. When you roll, the old month closes and the new month opens, and the card counts the new leg once — it no longer adds both legs (23 DEC 26 cotton rolled into 23 MAR 27 used to read 46). Lots you lifted or rolled away show on their own line, "Closed this crop year", and their result sits in Realized.
+
 - **Unrealized** is what an open position would make or lose if you offset it at the current market price: the difference between today's price and your trade price, times contracts, times the contract size. It changes with the market and isn't money in the bank.
 - **Realized** is the locked-in result of a closed position: the difference between your opening and closing prices, times contracts, times contract size, minus commissions. It no longer moves.
 - A sold (short) position gains when prices fall; a bought (long) position gains when prices rise.

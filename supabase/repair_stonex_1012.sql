@@ -22,8 +22,8 @@
 -- Every update is logged by the ledger trigger as source 'manual' with the note below.
 --
 -- Effective entry on the MAR leg afterwards = DEC average 79.29130 + roll spread 3.19000 = 82.48130 ¢/lb.
--- NOT touched (not on the statement; report to Stuart): DEC 26 Cotton 4 @ 72.30 open (bed856f9…),
--- Corn DEC 26 12 short open, Soybeans NOV 26 8 short open (the statement shows 2).
+-- The DEC 26 Cotton 4 @ 72.30, Corn DEC 26 12 and Soybeans NOV 26 6 @ 10.55 lots that this cross-org
+-- query also lists belong to the Beta Test Farm organization, not Turnrow Farm.
 
 begin;
 
