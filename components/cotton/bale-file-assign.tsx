@@ -11,7 +11,8 @@
 
 import { useState } from 'react'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
-import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { DEFAULT_MAX_TOKENS, parseDocumentChunked } from '@/lib/parse-chunked'
+import { planPagesPerBatch } from '@/lib/chunk-plan'
 import { mergeCottonMarketing } from '@/lib/parse-merge'
 import {
   parseBaleNumberList, partitionBaleAssignment,
@@ -72,7 +73,7 @@ export default function BaleFileAssign({ target, bales, dispositionByBale, loane
       const { data: result, warning } = await parseDocumentChunked<CottonMarketingExtraction>(
         src.kind === 'pdf' ? src.file : src.images,
         'cotton_marketing_document',
-        { category: 'bale_list', merge: mergeCottonMarketing },
+        { category: 'bale_list', pagesPerBatch: planPagesPerBatch({ documentType: 'cotton_marketing_document', maxTokens: DEFAULT_MAX_TOKENS }), merge: mergeCottonMarketing },
       )
       if (warning) setErr(warning)
       const pbis = ((result.extracted as BaleListExtract | null)?.bale_pbis ?? []).map(String)

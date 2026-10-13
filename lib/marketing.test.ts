@@ -4,6 +4,8 @@ import {
   assumedSegmentAcres, assumedAcresTotal, resolveAcresByCrop, segmentAcresByCrop, expectedProductionFromBreakout,
   type Planting, type SegmentAcres,
 } from '@/lib/marketing'
+import { effectiveEntry } from '@/lib/hedge-lineage'
+import { pnlSizeFor, realizedPnl, unrealizedPnl } from '@/lib/hedging'
 import type { Crop, Contract, CropAssumption, FuturesPosition, OptionPosition } from '@/lib/types'
 
 // Worked examples for the standard marketing methodology. Every expected number
@@ -682,5 +684,87 @@ describe('rolled hedge — realized once + open leg at its own price == effectiv
     const chain = run({ acres: 1000, expectedYield: 180, assumedBasis: -0.30, currentFutures: 5.20, futures: [dec, mar] })
     expect(chain.openHedgeAvg).toBeCloseTo(5.585, 6)
     expect(chain.futuresSources.find((s) => s.label === 'Open hedges (MAR 27)')?.avgPrice).toBeCloseTo(5.585, 6)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Cotton, multi-fill roll (0095): the engine values cotton hedges through its
+// own lbs/¢ path (computeCottonRow: hedged lbs × openHedgeAvg ÷ 100, realized
+// counted once) — the same identity holds there. The 10/12/2026 statement:
+// DEC 26 shorts 10 @ 72.65 and 13 @ 84.40 both closed at the 80.45739 average
+// (exact per-lot realized −13,410.00 in total) → MAR 27 as 3 @ 83.63,
+// 12 @ 83.64, 3 @ 83.65, 3 @ 83.67, 2 @ 83.68. Effective entry of the 23-lot
+// hedge = weighted DEC 79.291304 + (weighted MAR 83.647391 − 80.45739) = 82.481304.
+// ---------------------------------------------------------------------------
+describe('rolled cotton hedge (five fills) — realized once + fills at their own prices == one 23-lot leg at the effective price', () => {
+  const cotton = crop('cotton', 'Cotton')
+  const ct = (over: Partial<FuturesPosition> & Pick<FuturesPosition, 'id' | 'num_contracts' | 'trade_price' | 'status'>): FuturesPosition =>
+    future({ commodity: 'Cotton', contract_month: 'MAR 27', contract_symbol: 'CTH27', trade_date: '2026-10-12', ...over })
+  // realized = (entry − 80.457391304…) × lots × 500 per ¢, rounded per lot: −39,036.96 + 25,626.96 = −13,410.00
+  const dec10 = ct({ id: 'dec10', contract_month: 'DEC 26', contract_symbol: 'CTZ26', num_contracts: 10, trade_price: 72.65, trade_date: '2026-03-18', status: 'closed', close_price: 80.45739, close_date: '2026-10-12', realized_pnl: -39036.96, roll_group_id: 'gc' })
+  const dec13 = ct({ id: 'dec13', contract_month: 'DEC 26', contract_symbol: 'CTZ26', num_contracts: 13, trade_price: 84.4, trade_date: '2026-08-10', status: 'closed', close_price: 80.45739, close_date: '2026-10-12', realized_pnl: 25626.96, roll_group_id: 'gc' })
+  const fills = ([[3, 83.63], [12, 83.64], [3, 83.65], [3, 83.67], [2, 83.68]] as const).map(([q, p], i) =>
+    ct({ id: `mar${i}`, num_contracts: q, trade_price: p, status: 'open', roll_group_id: 'gc', rolled_from_position_id: 'dec10' }),
+  )
+  const EFFECTIVE = 82.481304
+  const single = ct({ id: 'eff', num_contracts: 23, trade_price: EFFECTIVE, trade_date: '2026-03-18', status: 'open' })
+
+  function runCotton(futures: FuturesPosition[], market: number) {
+    return computeMarketing({
+      cropYear: 2026, crops: [cotton], plantings: [planting('cotton', 2000)], contracts: [], options: [],
+      futures,
+      // 2,000 ac × 1,000 lbs lint/ac = 2,000,000 lbs; 23 CT shorts cover 1,150,000 lbs.
+      assumptions: [assumption({ crop_id: 'cotton', expected_yield: 1000 })],
+      actualProductionByCrop: new Map(),
+      currentFuturesByCrop: new Map([['cotton', market]]),
+    })[0]
+  }
+
+  it('the five fills reach the lineage seam as one 23-lot roll at 82.48130', () => {
+    const q = fills.reduce((s, f) => s + f.num_contracts, 0)
+    const weighted = fills.reduce((s, f) => s + effectiveEntry(f, [dec10, dec13, ...fills]).effectivePrice * f.num_contracts, 0) / q
+    expect(weighted).toBeCloseTo(EFFECTIVE, 5)
+  })
+
+  it('blended revenue is identical to the cent at market 83.81 ¢/lb', () => {
+    // chain:  1,150,000 × 83.647391/100 + 850,000 × 83.81/100 − 13,410.00 = 961,944.9965 + 712,385 − 13,410 = 1,660,919.9965
+    // single: 1,150,000 × 82.481304/100 + 850,000 × 83.81/100            = 948,534.996  + 712,385           = 1,660,919.996
+    const chain = runCotton([dec10, dec13, ...fills], 83.81)
+    const one = runCotton([single], 83.81)
+    expect(chain.unit).toBe('lbs')
+    expect(chain.hedgeRealizedPnl).toBeCloseTo(-13410, 2)
+    expect(chain.openHedgeBu).toBe(1_150_000)
+    expect(chain.openHedgeAvg).toBeCloseTo(83.647391, 5)
+    expect(one.hedgeRealizedPnl).toBe(0)
+    expect(one.openHedgeBu).toBe(1_150_000)
+    expect(Math.abs(chain.blendedRevenue - one.blendedRevenue)).toBeLessThan(0.005)
+    expect(chain.blendedRevenue).toBeCloseTo(1_660_920, 1)
+    expect(chain.revenuePerAcre!).toBeCloseTo(one.revenuePerAcre!, 5)
+  })
+
+  it('holds at any market price', () => {
+    for (const m of [60.0, 72.65, 80.45739, 83.81, 95.5]) {
+      const chain = runCotton([dec10, dec13, ...fills], m)
+      const one = runCotton([single], m)
+      expect(Math.abs(chain.blendedRevenue - one.blendedRevenue)).toBeLessThan(0.005)
+    }
+  })
+
+  it('the identity also holds leg by leg through lib/hedging realizedPnl + unrealizedPnl (500 $ per ¢ per contract)', () => {
+    const size = pnlSizeFor('Cotton')
+    expect(size).toBe(500)
+    const market = 83.81
+    const realizedAt = (closePrice: number) =>
+      [dec10, dec13].reduce((s, p) => s + realizedPnl({ side: 'short', tradePrice: p.trade_price, closePrice, numContracts: p.num_contracts, contractSizeBu: size }).gross, 0)
+    // The statement prints the offsetting average rounded (80.45739); per-lot
+    // cents against it net −13,409.98 (what production shows). The exact
+    // average of the five buys, 1,850.52 ÷ 23, nets −13,410.00 to the cent.
+    expect(realizedAt(80.45739)).toBeCloseTo(-13409.98, 2)
+    const realized = realizedAt(1850.52 / 23)
+    expect(realized).toBeCloseTo(-13410, 2)
+    const open = fills.reduce((s, p) => s + (unrealizedPnl({ side: 'short', tradePrice: p.trade_price, currentPrice: market, numContracts: p.num_contracts, contractSizeBu: size }) ?? 0), 0)
+    const oneLeg = unrealizedPnl({ side: 'short', tradePrice: EFFECTIVE, currentPrice: market, numContracts: 23, contractSizeBu: size }) ?? 0
+    expect(open).toBeCloseTo(-1870, 2)
+    expect(Math.abs(realized + open - oneLeg)).toBeLessThan(0.005)
   })
 })

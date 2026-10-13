@@ -21,6 +21,48 @@ export class PdfTooLargeError extends Error {
   }
 }
 
+// The model's answer hit max_tokens (or came back cut off mid-JSON): the
+// chunk holds more than one call can write. lib/parse-chunked halves the
+// chunk and reads each half — never a retry of the same request.
+export class ParseTooLongError extends Error {
+  readonly code = 'TOO_LONG' as const
+  stopReason: string | null
+  outputTokens: number | null
+  constructor(message?: string, extra?: { stopReason?: string | null; outputTokens?: number | null }) {
+    super(message || 'The document section was too long to read in one pass.')
+    this.name = 'ParseTooLongError'
+    this.stopReason = extra?.stopReason ?? null
+    this.outputTokens = extra?.outputTokens ?? null
+  }
+}
+
+// The call ran out of time (the route's 240 s client timeout, a 504 from the
+// gateway, a dropped connection). Also a "split" error for the chunker: a
+// smaller chunk finishes sooner.
+export class ParseTimeoutError extends Error {
+  readonly code = 'TIMEOUT' as const
+  constructor(message?: string) {
+    super(message || 'The document section took too long to read.')
+    this.name = 'ParseTimeoutError'
+  }
+}
+
+const TIMEOUT_RE = /timeout|timed out|504|gateway/i
+
+/** Token usage of one call, from the route's response. */
+export type ParseUsage = { input_tokens: number | null; output_tokens: number | null; stop_reason: string | null }
+
+export type ParseOptions = {
+  category?: CottonMarketingCategory
+  primaryTarget?: string
+  /** Answer cap for this call (the route clamps 1024..24000; default 8192). */
+  maxTokens?: number
+  /** Pages in this call, for the route's log line (PDFs arrive as a URL). */
+  pageCount?: number
+  /** Usage of a successful call, for metrics / the attempt log. */
+  onUsage?: (usage: ParseUsage) => void
+}
+
 export function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -172,6 +214,94 @@ export type SettlementExtraction = {
   contract_summary?: SettlementContractSummary | null
   /** The statement's gross before deductions, when printed separately. */
   statement_reported_gross?: number | null
+  /** "No. Tickets: 94" — the count the statement prints; null when it doesn't. */
+  statement_reported_ticket_count?: number | null
+  /** The contract blocks as the model reports them (2026-10-13 trimmed
+   *  shape): constants stated once per block; the lines are flattened into
+   *  line_items by normalizeSettlementExtraction, so after parseDocument the
+   *  blocks carry only their constants. */
+  contract_blocks?: SettlementContractBlockExtraction[] | null
+}
+
+// One "Contract Number: X" block of the statement — the facts constant
+// across its lines, stated once. The model nests the block's line_items
+// here; the app flattens them (contract_number carried down to each line).
+export type SettlementContractBlockExtraction = {
+  contract_number?: string | null
+  /** The block's flat / contract price when printed ("Flat $4.70250"). */
+  price_per_bushel?: number | null
+  crop?: string | null
+  line_items?: Array<Partial<SettlementLineExtraction>> | null
+}
+
+const SETTLEMENT_LINE_KEYS = [
+  'ticket_number', 'net_bushels', 'gross_revenue', 'discounts', 'secondary_ref', 'delivery_date', 'vehicle_plate',
+  'gross_weight', 'tare_weight', 'net_weight', 'special_discount_codes', 'grade_readings', 'contract_number',
+] as const
+const SETTLEMENT_GRADE_KEYS = ['grade', 'moisture', 'foreign_material', 'splits', 'total_damage', 'heat_damage', 'test_weight', 'other_color', 'oil', 'protein'] as const
+const SETTLEMENT_DOC_KEYS = [
+  'buyer_name', 'settlement_date', 'settlement_number', 'contract_number', 'payment_number', 'check_number', 'payment_date',
+  'statement_reported_total', 'statement_reported_bushels', 'statement_reported_gross', 'statement_reported_ticket_count', 'contract_summary',
+] as const
+
+/**
+ * The settlement answer in the shape the rest of the app reads: the model
+ * now nests line_items under contract_blocks and OMITS null keys (half the
+ * output tokens of the old flat shape). This flattens the blocks back into
+ * line_items with each block's contract_number carried down, tolerates a
+ * flat line_items array (an older parse, or a model that still emits one —
+ * both are kept, deduped on ticket + contract), and fills every missing
+ * key with null so nothing downstream changes. parseDocument applies it to
+ * every 'settlement' answer; mergeSettlements applies it again to be safe.
+ */
+export function normalizeSettlementExtraction(raw: unknown): SettlementExtraction {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const norm = (v: unknown) => (v == null ? '' : String(v).trim().toLowerCase())
+  const blocks = Array.isArray(r.contract_blocks) ? (r.contract_blocks as Array<SettlementContractBlockExtraction | null>) : []
+  const lines: SettlementLineExtraction[] = []
+  const seen = new Set<string>()
+  const push = (line: unknown, blockContract: string | null) => {
+    if (!line || typeof line !== 'object') return
+    const l = line as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    for (const k of SETTLEMENT_LINE_KEYS) out[k] = l[k] ?? null
+    if (out.contract_number == null && blockContract != null) out.contract_number = blockContract
+    const g = l.grade_readings
+    if (g && typeof g === 'object') {
+      const gr: Record<string, unknown> = {}
+      for (const k of SETTLEMENT_GRADE_KEYS) gr[k] = (g as Record<string, unknown>)[k] ?? null
+      out.grade_readings = gr
+    } else {
+      out.grade_readings = null
+    }
+    if (l.sale_type != null) out.sale_type = l.sale_type
+    // A ticket printed under TWO blocks (094) is two lines; the same ticket
+    // under the same block twice in one answer is a double read.
+    const key = out.ticket_number != null && String(out.ticket_number).trim() !== '' ? `${norm(out.ticket_number)}|${norm(out.contract_number)}` : null
+    if (key) {
+      if (seen.has(key)) return
+      seen.add(key)
+    }
+    lines.push(out as SettlementLineExtraction)
+  }
+  for (const line of Array.isArray(r.line_items) ? r.line_items : []) push(line, null)
+  for (const b of blocks) {
+    const c = b?.contract_number != null && String(b.contract_number).trim() !== '' ? String(b.contract_number) : null
+    for (const line of Array.isArray(b?.line_items) ? b!.line_items! : []) push(line, c)
+  }
+  const out: Record<string, unknown> = {}
+  for (const k of SETTLEMENT_DOC_KEYS) out[k] = r[k] ?? null
+  // The header contract is the first block's when the header printed none.
+  const firstBlock = blocks.find((b) => b?.contract_number != null && String(b.contract_number).trim() !== '')
+  if (out.contract_number == null && firstBlock) out.contract_number = String(firstBlock.contract_number)
+  out.line_items = lines
+  out.discount_items = Array.isArray(r.discount_items) ? r.discount_items : []
+  if (blocks.length > 0) {
+    out.contract_blocks = blocks
+      .filter((b): b is SettlementContractBlockExtraction => !!b && typeof b === 'object')
+      .map((b) => ({ contract_number: b.contract_number ?? null, price_per_bushel: b.price_per_bushel ?? null, crop: b.crop ?? null }))
+  }
+  return out as SettlementExtraction
 }
 
 // A buyer's posted discount sheet (document_type 'discount_schedule', 074).
@@ -275,10 +405,49 @@ export type BrokerageClosedGroup = {
   close_date: string | null
   close_price: number | null
   lots: BrokerageClosedGroupLot[]
+  // The closing-side fills, listed separately from the lots (2026-10-13):
+  // the 10/12 BUYs that bought back the DEC 26 shorts are the CLOSING
+  // transaction, never lots. close_price is their contract-weighted average
+  // (the statement's AVG LONG / AVG SHORT line).
+  closing_fills?: BrokerageClosingFill[] | null
   statement_reported_total: number | null
+  // The group's "*" subtotal — the contracts the statement says this offset
+  // closed. lib/statement-lots checks the lots against it.
+  statement_reported_contracts?: number | null
+  // The per-side "TOTAL COMMISSION & FEES" printed under the group, when any.
+  fees?: number | null
   // Trade code on the CLOSING transaction when it appears in CONFIRMATION
   // (same vocabulary as BrokerageOpenPosition.execution_code).
   close_execution_code?: string | null
+}
+export type BrokerageClosingFill = {
+  date: string | null
+  price: number | null
+  contracts: number | null
+}
+// Every fill in the CONFIRMATION section as printed (no subtotals) — the
+// execution codes live here, and lib/statement-lots uses the fills to tell a
+// genuinely repeated open row from a double read.
+export type BrokerageConfirmationTrade = {
+  trade_date: string | null
+  side: 'buy' | 'sell' | null
+  num_contracts: number | null
+  commodity: string | null
+  contract_month: string | null
+  trade_price: number | null
+  execution_code?: string | null
+}
+// One "*" subtotal line of OPEN POSITIONS: the contracts held per commodity,
+// month and side at the statement's CLOSE, with the open trade equity the
+// statement computed at that close. The reconciliation gate
+// (lib/import-reconciliation) compares the import's result to these.
+export type BrokerageOpenSubtotal = {
+  commodity: string | null
+  contract_month: string | null
+  side: 'long' | 'short' | null
+  contracts: number | null
+  close_price: number | null
+  open_trade_equity: number | null
 }
 
 export type BrokerageOpenOption = {
@@ -318,6 +487,10 @@ export type BrokerageStatementExtraction = {
   // fallback (see buildClosedGroups in the statement-import component).
   closed_groups?: BrokerageClosedGroup[]
   closed_trades?: BrokerageClosedTrade[]
+  // 2026-10-13: the CONFIRMATION fills and the OPEN POSITIONS "*" subtotals,
+  // kept apart from the positions themselves (see lib/statement-lots).
+  confirmation_trades?: BrokerageConfirmationTrade[] | null
+  open_position_subtotals?: BrokerageOpenSubtotal[] | null
   open_options?: BrokerageOpenOption[]
   closed_options?: BrokerageClosedOption[]
   account_summary: {
@@ -327,6 +500,9 @@ export type BrokerageStatementExtraction = {
     total_equity: number | null
     margin_requirement: number | null
     excess_equity: number | null
+    // The day's realized total and the fee total, for the reconciliation gate.
+    gross_profit_loss_from_trades?: number | null
+    total_commissions_and_fees?: number | null
   } | null
 }
 
@@ -480,23 +656,23 @@ import type { RawSettingsExtraction } from '@/lib/settings-extraction'
 // parseDocument accepts either a single PDF File (the original path) or an array
 // of compressed photo pages. Both send the identical extraction prompt; only the
 // content blocks differ on the server.
-export async function parseDocument(input: File | ParseImage[], documentType: 'settlement'): Promise<SettlementExtraction>
-export async function parseDocument(input: File | ParseImage[], documentType: 'tickets'): Promise<TicketsExtraction>
-export async function parseDocument(input: File | ParseImage[], documentType: 'brokerage_statement'): Promise<BrokerageStatementExtraction>
-export async function parseDocument(input: File | ParseImage[], documentType: 'contract'): Promise<ContractExtraction>
-export async function parseDocument(input: File | ParseImage[], documentType: 'settings_document', opts?: { primaryTarget?: string }): Promise<RawSettingsExtraction>
-export async function parseDocument(input: File | ParseImage[], documentType: 'crop_insurance_policy'): Promise<CropInsuranceExtraction>
-export async function parseDocument(input: File | ParseImage[], documentType: 'fsa_base_acres'): Promise<FsaBaseAcresExtraction>
-export async function parseDocument(input: File | ParseImage[], documentType: 'cotton_weight_ticket'): Promise<CottonLoadsExtraction>
-export async function parseDocument(input: File | ParseImage[], documentType: 'gin_receipt'): Promise<GinReceiptExtraction>
-export async function parseDocument(input: File | ParseImage[], documentType: 'cotton_marketing_document', opts?: { category?: CottonMarketingCategory }): Promise<CottonMarketingExtraction>
-export async function parseDocument(input: File | ParseImage[], documentType: 'lease_agreement'): Promise<LeaseAgreementExtraction>
-export async function parseDocument(input: File | ParseImage[], documentType: 'discount_schedule'): Promise<DiscountScheduleExtraction>
-export async function parseDocument(input: File | ParseImage[], documentType: 'seed_contract'): Promise<SeedContractExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'settlement', opts?: ParseOptions): Promise<SettlementExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'tickets', opts?: ParseOptions): Promise<TicketsExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'brokerage_statement', opts?: ParseOptions): Promise<BrokerageStatementExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'contract', opts?: ParseOptions): Promise<ContractExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'settings_document', opts?: ParseOptions): Promise<RawSettingsExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'crop_insurance_policy', opts?: ParseOptions): Promise<CropInsuranceExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'fsa_base_acres', opts?: ParseOptions): Promise<FsaBaseAcresExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'cotton_weight_ticket', opts?: ParseOptions): Promise<CottonLoadsExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'gin_receipt', opts?: ParseOptions): Promise<GinReceiptExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'cotton_marketing_document', opts?: ParseOptions): Promise<CottonMarketingExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'lease_agreement', opts?: ParseOptions): Promise<LeaseAgreementExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'discount_schedule', opts?: ParseOptions): Promise<DiscountScheduleExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'seed_contract', opts?: ParseOptions): Promise<SeedContractExtraction>
 export async function parseDocument(
   input: File | ParseImage[],
   documentType: DocumentType,
-  opts?: { category?: CottonMarketingCategory; primaryTarget?: string },
+  opts?: ParseOptions,
 ): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonLoadsExtraction | GinReceiptExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction | SeedContractExtraction> {
   // Build the request body. Photos are compressed small enough to inline as
   // base64. A PDF, however, is uploaded to storage first and sent as a URL:
@@ -520,21 +696,49 @@ export async function parseDocument(
   }
   if (opts?.category) payload.category = opts.category
   if (opts?.primaryTarget) payload.primary_target = opts.primaryTarget
+  if (opts?.maxTokens != null && Number.isFinite(opts.maxTokens)) payload.max_tokens = Math.round(opts.maxTokens)
+  if (opts?.pageCount != null && Number.isFinite(opts.pageCount)) payload.page_count = Math.round(opts.pageCount)
   try {
-    const res = await fetch('/api/parse-document', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
-    })
+    let res: Response
+    try {
+      res = await fetch('/api/parse-document', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+    } catch (e) {
+      // The browser gave up on the request (a gateway timeout surfaces here
+      // as a failed fetch on some networks): the chunker splits on it.
+      if (TIMEOUT_RE.test(String((e as { message?: unknown } | null)?.message ?? e))) throw new ParseTimeoutError()
+      throw e
+    }
     const body = await res.json().catch(() => null)
     if (!res.ok) {
-      const msg = body?.error || `Server returned ${res.status}.`
-      throw new Error(msg)
+      const code = typeof body?.code === 'string' ? body.code : null
+      const msg: string | null = typeof body?.error === 'string' ? body.error : null
+      if (res.status === 422 && code === 'TOO_LONG') {
+        throw new ParseTooLongError(msg ?? undefined, { stopReason: body?.stop_reason ?? null, outputTokens: body?.output_tokens ?? null })
+      }
+      if (res.status === 504 || res.status === 502 || code === 'TIMEOUT' || (msg != null && TIMEOUT_RE.test(msg))) {
+        throw new ParseTimeoutError(msg ?? undefined)
+      }
+      throw new Error(msg || `Server returned ${res.status}.`)
     }
     if (!body || typeof body !== 'object' || !('data' in body)) {
       throw new Error('Malformed response from server.')
     }
-    return body.data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction | SeedContractExtraction
+    if (opts?.onUsage) {
+      const u = body.usage ?? {}
+      opts.onUsage({
+        input_tokens: typeof u.input_tokens === 'number' ? u.input_tokens : null,
+        output_tokens: typeof u.output_tokens === 'number' ? u.output_tokens : null,
+        stop_reason: typeof body.stop_reason === 'string' ? body.stop_reason : null,
+      })
+    }
+    // Settlements come back nested (contract_blocks, nulls omitted) and are
+    // flattened HERE — the one place — so every caller sees the flat shape.
+    const data = documentType === 'settlement' ? normalizeSettlementExtraction(body.data) : body.data
+    return data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction | SeedContractExtraction
   } finally {
     cleanup?.()
   }

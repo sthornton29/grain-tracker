@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { detectRolls, isSpreadCode, type RollDetectGroup, type RollDetectOpen } from '@/lib/roll-detection'
+import { detectRolls, isSpreadCode, pickOpenLegs, type RollDetectGroup, type RollDetectOpen } from '@/lib/roll-detection'
 
 // Hand-verified from the 9/03 StoneX statement: the DEC 26 corn 14-lot short
 // (entered 4.9525) closed @ 5.435 and a MAR 27 14-lot short opened @ 5.585
@@ -112,5 +112,75 @@ describe('detectRolls — the 9/03 shape', () => {
     const g2: RollDetectGroup = { ...DEC_CLOSE, key: 'g1', contract_month: 'SEP 26' }
     const rolls = detectRolls([DEC_CLOSE, g2], [MAR_OPEN])
     expect(rolls).toHaveLength(1)
+  })
+})
+
+// ---------- 10/12: a roll whose new month is SEVERAL fills ----------
+// 23 DEC 26 cotton shorts (10 @ 72.65 + 13 @ 84.40) bought back @ 80.45739
+// and MAR 27 sold the same day as 3 @ 83.63, 12 @ 83.64, 3 @ 83.65,
+// 3 @ 83.67 and 2 @ 83.68 — every fill SE. The open leg is all five.
+
+const DEC_COTTON: RollDetectGroup = {
+  key: 'g0',
+  commodity: 'Cotton', contract_month: 'DEC 26', side: 'short',
+  close_date: '2026-10-12', close_price: 80.4573913, close_execution_code: 'SE',
+  lots: [
+    { contracts: 10, open_price: 72.65, open_date: '2026-03-18', matchedOpenId: 'dec-10', heldContracts: 10, alreadyImported: false, crop_year: 2026 },
+    { contracts: 13, open_price: 84.4, open_date: '2026-08-10', matchedOpenId: 'dec-13', heldContracts: 13, alreadyImported: false, crop_year: 2026 },
+  ],
+}
+const MAR_FILLS: RollDetectOpen[] = ([[3, 83.63], [12, 83.64], [3, 83.65], [3, 83.67], [2, 83.68]] as const).map(([n, px], i) => ({
+  key: `o${i}`, commodity: 'Cotton', contract_month: 'MAR 27', side: 'short', num_contracts: n, trade_date: '2026-10-12', trade_price: px, execution_code: 'SE',
+}))
+
+describe('detectRolls — several fills make up the new month (10/12 cotton)', () => {
+  it('the open leg is every MAR fill, summing exactly to the 23 closed; one roll, high confidence', () => {
+    const rolls = detectRolls([DEC_COTTON], MAR_FILLS)
+    expect(rolls).toHaveLength(1)
+    const [r] = rolls
+    expect(r.openKeys).toEqual(['o0', 'o1', 'o2', 'o3', 'o4'])
+    expect(r.openKey).toBe('o0')
+    expect(r.closedContracts).toBe(23)
+    expect(r.openContracts).toBe(23)
+    expect(r.openPrice).toBeCloseTo(83.6473913, 7)
+    expect(r.spreadPerUnit).toBeCloseTo(3.19, 5)
+    expect(r.confidence).toBe('high')
+    expect(r.countMismatch).toBe(false)
+    expect(r.reasons).toContain('5 fills make up the new month')
+    expect(r.alreadyRecorded).toBe(false)
+  })
+
+  it('an unrelated same-day fill in the new month is left out when the rest sum exactly', () => {
+    const extra: RollDetectOpen = { ...MAR_FILLS[0], key: 'o9', num_contracts: 4, trade_price: 83.7, execution_code: 'E' }
+    const [r] = detectRolls([DEC_COTTON], [extra, ...MAR_FILLS])
+    expect(r.openKeys).toEqual(['o0', 'o1', 'o2', 'o3', 'o4'])
+    expect(r.openContracts).toBe(23)
+  })
+
+  it('pickOpenLegs: single exact spread fill first, then the spread set, then the whole month, then an exact subset', () => {
+    const o = (key: string, n: number, code: string | null): RollDetectOpen => ({ key, commodity: 'Corn', contract_month: 'MAR 27', side: 'short', num_contracts: n, trade_date: '2026-09-03', trade_price: 5.5, execution_code: code })
+    expect(pickOpenLegs([o('a', 10, 'E'), o('b', 14, 'SE')], 14)!.map((x) => x.key)).toEqual(['b'])
+    expect(pickOpenLegs([o('a', 10, 'SE'), o('b', 4, 'SE'), o('c', 14, 'E')], 14)!.map((x) => x.key)).toEqual(['a', 'b'])
+    expect(pickOpenLegs([o('a', 10, 'E'), o('b', 4, 'E')], 14)!.map((x) => x.key)).toEqual(['a', 'b'])
+    expect(pickOpenLegs([o('a', 10, 'E'), o('b', 4, 'E'), o('c', 6, 'E')], 10)!.map((x) => x.key)).toEqual(['a'])
+    expect(pickOpenLegs([o('a', 3, 'E'), o('b', 8, 'E'), o('c', 6, 'E')], 9)!.map((x) => x.key)).toEqual(['a', 'c'])
+    expect(pickOpenLegs([o('a', 3, 'E'), o('b', 8, 'E')], 9)).toBeNull()
+  })
+
+  it('a roll already in the app (closed legs recorded, every open leg stored in a roll group) is "already recorded", off by default', () => {
+    const recorded: RollDetectGroup = { ...DEC_COTTON, lots: DEC_COTTON.lots.map((l) => ({ ...l, matchedOpenId: null, alreadyImported: true })) }
+    const stored = MAR_FILLS.map((f, i) => ({ ...f, existingId: `mar-${i}`, existingRollGroupId: 'rg1' }))
+    const [r] = detectRolls([recorded], stored)
+    expect(r.alreadyRecorded).toBe(true)
+    expect(r.defaultOn).toBe(false)
+    expect(r.reasons).toContain('already recorded in Turnrow')
+    // Stored but NOT in a roll group (production after the 10/13 import: four
+    // plain opens beside the one roll leg) → still a candidate, link-only.
+    const halfLinked = stored.map((f, i) => (i === 1 ? f : { ...f, existingRollGroupId: null }))
+    const [h] = detectRolls([recorded], halfLinked)
+    expect(h.alreadyRecorded).toBe(false)
+    expect(h.openAlreadyRecorded).toBe(true)
+    expect(h.closedAlreadyRecorded).toBe(true)
+    expect(h.defaultOn).toBe(true)
   })
 })

@@ -65,3 +65,31 @@ export async function pickPdfPages(file: File, pageNumbers: number[]): Promise<F
     return file
   }
 }
+
+// The 1-based page range `from..to` (inclusive) of `file` as its own PDF —
+// what the adaptive splitter (lib/parse-chunked) sends per chunk, and what a
+// halved chunk becomes. The range is clamped to the document; the whole
+// file comes back unchanged when the range covers it or the PDF can't be
+// parsed.
+export async function slicePdfPages(file: File, from: number, to: number): Promise<File> {
+  try {
+    const { PDFDocument } = await import('pdf-lib')
+    const bytes = await file.arrayBuffer()
+    const src = await PDFDocument.load(bytes, { ignoreEncryption: true })
+    const total = src.getPageCount()
+    const start = Math.max(1, Math.min(from, to))
+    const end = Math.min(total, Math.max(from, to))
+    if (start === 1 && end === total) return file
+    if (end < start) return file
+    const out = await PDFDocument.create()
+    const indices = Array.from({ length: end - start + 1 }, (_, i) => start - 1 + i)
+    const pages = await out.copyPages(src, indices)
+    pages.forEach((p) => out.addPage(p))
+    const u8 = await out.save()
+    const buf = u8.slice().buffer
+    const baseName = file.name.replace(/\.pdf$/i, '')
+    return new File([buf], `${baseName}-p${start}-${end}.pdf`, { type: 'application/pdf' })
+  } catch {
+    return file
+  }
+}

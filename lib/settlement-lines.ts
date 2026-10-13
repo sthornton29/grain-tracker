@@ -18,6 +18,8 @@
 // re-include if the guard misfires); the reconciliation then compares the
 // INCLUDED lines' total against the statement's captured grand total.
 
+import { fmtInt, fmtUsd } from '@/components/reports/report-format'
+
 export type SettlementLineLike = {
   ticket_number: string | null | undefined
   net_bushels: number | string | null | undefined
@@ -106,4 +108,85 @@ export function reconcileLines(
   const delta = linesTotal - reported
   const tolerance = Math.max(0.5, Math.abs(reported) * 0.005)
   return { linesTotal, reportedTotal: reported, delta, mismatch: Math.abs(delta) > tolerance }
+}
+
+// ---------------------------------------------------------------------------
+// COMPLETENESS GUARD (2026-10-13). A long statement is read in chunks and a
+// chunk can come back cut off; the review must never let 13 of 94 tickets
+// save as a whole settlement without saying so. The statement's own
+// printed facts — "No. Tickets: 94", total bushels, gross and net — are
+// compared with what the lines add up to, and any page range the parser
+// gave up on is named. The page shows the verdict as a red banner with a
+// "Read those pages again" button and turns Save into a confirmation.
+// ---------------------------------------------------------------------------
+
+export type CompletenessInput = {
+  capturedTickets: number
+  reportedTickets: number | null | undefined
+  capturedBushels: number
+  reportedBushels: number | null | undefined
+  capturedGross: number
+  reportedGross: number | null | undefined
+  capturedNet: number
+  reportedNet: number | null | undefined
+  failedRanges: ReadonlyArray<{ from: number; to: number }>
+}
+
+export type Completeness = {
+  ok: boolean
+  /** Printed count minus captured (negative = more lines than printed); null when no count printed. */
+  missingTickets: number | null
+  /** Captured minus printed; null when the statement prints no figure. */
+  bushelsDelta: number | null
+  grossDelta: number | null
+  netDelta: number | null
+  /** The plain sentences for the banner; null when everything agrees. */
+  text: string | null
+}
+
+const reportedNum = (v: number | null | undefined): number | null => (v == null || !Number.isFinite(Number(v)) ? null : Number(v))
+// Tighter than reconcileLines' advisory 0.5%: a missing ticket on a long
+// statement is well under 1% of the money. Per-line rounding noise (±0.005
+// a line) stays inside the $1 / 1 bu floor.
+const dollarsOff = (delta: number, reported: number) => Math.abs(delta) > Math.max(1, Math.abs(reported) * 0.0005)
+const bushelsOff = (delta: number, reported: number) => Math.abs(delta) > Math.max(1, Math.abs(reported) * 0.0005)
+
+/** "Pages 1 to 6 and 8" / "Page 8". */
+export function describeRanges(ranges: ReadonlyArray<{ from: number; to: number }>): string {
+  if (ranges.length === 0) return ''
+  const parts = ranges.map((r) => (r.from === r.to ? String(r.from) : `${r.from} to ${r.to}`))
+  const single = ranges.length === 1 && ranges[0].from === ranges[0].to
+  const list = parts.length <= 1 ? parts[0] : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`
+  return `${single ? 'Page' : 'Pages'} ${list}`
+}
+
+export function settlementCompleteness(input: CompletenessInput): Completeness {
+  const reportedTickets = reportedNum(input.reportedTickets)
+  const reportedBushels = reportedNum(input.reportedBushels)
+  const reportedGross = reportedNum(input.reportedGross)
+  const reportedNet = reportedNum(input.reportedNet)
+  const missingTickets = reportedTickets != null ? Math.round(reportedTickets) - input.capturedTickets : null
+  const bushelsDelta = reportedBushels != null ? input.capturedBushels - reportedBushels : null
+  const grossDelta = reportedGross != null ? input.capturedGross - reportedGross : null
+  const netDelta = reportedNet != null ? input.capturedNet - reportedNet : null
+  const sentences: string[] = []
+  if (missingTickets != null && missingTickets !== 0) sentences.push(`Captured ${fmtInt(input.capturedTickets)} of ${fmtInt(reportedTickets)} tickets.`)
+  if (input.failedRanges.length > 0) sentences.push(`${describeRanges(input.failedRanges)} returned no tickets.`)
+  if (bushelsDelta != null && reportedBushels != null && bushelsOff(bushelsDelta, reportedBushels)) {
+    sentences.push(`The lines add up to ${fmtInt(input.capturedBushels)} bu; the statement prints ${fmtInt(reportedBushels)} bu.`)
+  }
+  if (grossDelta != null && reportedGross != null && dollarsOff(grossDelta, reportedGross)) {
+    sentences.push(`Gross on the lines is ${fmtUsd(input.capturedGross, 2)}; the statement prints ${fmtUsd(reportedGross, 2)}.`)
+  }
+  if (netDelta != null && reportedNet != null && dollarsOff(netDelta, reportedNet)) {
+    sentences.push(`Net on the lines is ${fmtUsd(input.capturedNet, 2)}; the statement prints ${fmtUsd(reportedNet, 2)}.`)
+  }
+  return {
+    ok: sentences.length === 0,
+    missingTickets,
+    bushelsDelta,
+    grossDelta,
+    netDelta,
+    text: sentences.length > 0 ? sentences.join(' ') : null,
+  }
 }

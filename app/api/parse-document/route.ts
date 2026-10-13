@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import Anthropic from '@anthropic-ai/sdk'
+import { jsonLooksTruncated, stripFences } from '@/lib/parse-response'
 
 export const runtime = 'nodejs'
 // 300s is the Fluid-compute ceiling on every Vercel plan (Hobby included);
@@ -12,7 +13,16 @@ export const maxDuration = 300
 const MODEL = 'claude-sonnet-4-6'
 // Headroom for multi-record documents (e.g. a 156EZ packet or a multi-crop
 // insurance summary) so a batch with several records doesn't truncate the JSON.
+// The client may ask for more (a single dense page after a truncation) or
+// less, within MIN..MAX; lib/parse-chunked sizes chunks so the expected
+// answer stays under 60% of this.
 const MAX_TOKENS = 8192
+const MIN_MAX_TOKENS = 1024
+const MAX_MAX_TOKENS = 24000
+// One model call gets 240 s; the route's own ceiling (maxDuration) is 300 s,
+// so a slow call surfaces as a clean 504 TIMEOUT rather than a gateway
+// page. No SDK retries: the client decides what to do with a failed chunk.
+const API_TIMEOUT_MS = 240_000
 
 // Server-side cap on the decoded PDF size. The browser also enforces 20 MB on
 // the raw file; this is the corresponding base64-payload check so we don't ship
@@ -27,44 +37,50 @@ const MAX_IMAGES = 20
 const MAX_IMAGES_BASE64_LEN = Math.ceil((25 * 1024 * 1024 * 4) / 3) + 16
 const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
 
-const SETTLEMENT_PROMPT = `This is a grain settlement sheet from a grain buyer. Pages may be scanned sideways or upside down — read each page in whichever orientation its text runs. Extract every TICKET line item from this document. For each ticket line, extract:
+const SETTLEMENT_PROMPT = `This is a grain settlement sheet from a grain buyer. Pages may be scanned sideways or upside down — read each page in whichever orientation its text runs. Extract every TICKET line item from this document, grouped under the CONTRACT BLOCK each one printed under (see CONTRACT BLOCKS below). For each ticket line, extract:
 - ticket_number (the scale ticket or load ticket number, EXACTLY as printed including leading zeros — e.g. "0498074")
-- contract_number (the "Contract Number: X" block header this ticket line printed under, EXACTLY as printed — "2002960604-10", "SPOT", "S12", "DP". See CONTRACT BLOCKS below. null ONLY when the statement prints no contract blocks at all.)
-- secondary_ref (any second identifier printed for the same load — a Load Order #, BOL, or reference number — null if none)
-- delivery_date (the date the load was delivered/weighed, format YYYY-MM-DD — null if not shown)
-- vehicle_plate (the truck's license plate or vehicle id when the statement prints one — null otherwise)
-- gross_weight and tare_weight (in POUNDS as printed — null if not shown)
-- net_weight (the NET POUNDS paid on the line when the statement prints an LB / Net Wt column — null if not shown)
+- secondary_ref (any second identifier printed for the same load — a Load Order #, BOL, or reference number — leave out if none)
+- delivery_date (the date the load was delivered/weighed, format YYYY-MM-DD — leave out if not shown)
+- vehicle_plate (the truck's license plate or vehicle id when the statement prints one — leave out otherwise)
+- gross_weight and tare_weight (in POUNDS as printed — leave out if not shown)
+- net_weight (the NET POUNDS paid on the line when the statement prints an LB / Net Wt column — leave out if not shown)
 - net_bushels (the net bushels paid for on this line)
-- special_discount_codes (the code(s) printed in a "Special Disc" / "Spec Disc" column for this ticket, exactly as printed, e.g. "2" or "2,4" — null when the column is blank or absent; the legend at the bottom explains the codes)
+- special_discount_codes (the code(s) printed in a "Special Disc" / "Spec Disc" column for this ticket, exactly as printed, e.g. "2" or "2,4" — leave out when the column is blank or absent; the legend at the bottom explains the codes)
 - gross_revenue (the gross dollar amount before any discounts or deductions for this line)
-- discounts (the total dollar amount of all discounts, deductions, checkoff, fees, or adjustments subtracted from gross revenue for this line — if there are multiple discount types, sum them into one number)
-- grade_readings: the ticket's grade / quality block as structured numbers. Many statements print TWO rows per ticket — the first with the weights and dollars, the second with the grade factors (Bunge and others print "MO 13.8  FM 1.2  SPLITS 8  TD 1.5  HD 0.2  TW 56.3  OC 0.5  OIL 18.9  PROT 34.1"; Woodall prints MST / FM / TW / DMG columns and a grade like "1 US #1"). Map them to: grade (the printed grade text, e.g. "1 US #1" — null when none), moisture (%), foreign_material (%), splits (%), total_damage (%), heat_damage (%), test_weight (lb/bu), other_color (%), oil (%), protein (%). MST = moisture, DMG = total_damage. Use null for any factor not printed. Never invent a reading.
+- discounts (the total dollar amount of all discounts, deductions, checkoff, fees, or adjustments subtracted from gross revenue for this line — if there are multiple discount types, sum them into one number; 0 when none)
+- grade_readings: the ticket's grade / quality block as structured numbers. Many statements print TWO rows per ticket — the first with the weights and dollars, the second with the grade factors (Bunge and others print "MO 13.8  FM 1.2  SPLITS 8  TD 1.5  HD 0.2  TW 56.3  OC 0.5  OIL 18.9  PROT 34.1"; Woodall prints MST / FM / TW / DMG columns and a grade like "1 US #1"). Map them to: grade (the printed grade text, e.g. "1 US #1"), moisture (%), foreign_material (%), splits (%), total_damage (%), heat_damage (%), test_weight (lb/bu), other_color (%), oil (%), protein (%). MST = moisture, DMG = total_damage. Include ONLY the factors actually printed — leave the others out. Never invent a reading.
+
+OUTPUT SIZE — this matters as much as accuracy, because a long statement is read in sections and a section that runs past the answer limit is lost:
+- OMIT any field whose value would be null — do not write null keys. A ticket with no second reference, no plate and no gross/tare weights carries only the keys that have values.
+- Facts that are the same for every ticket in a contract block (the contract number, its flat price, the crop) are stated ONCE on the block, never repeated on each line.
+- Write numbers as plain numbers (1006.429, not "1,006.429"); no commentary, no prose.
 
 WHAT COUNTS AS A TICKET LINE — read this carefully, it is the most common extraction mistake:
 (a) Ticket lines come ONLY from the ticket table: rows that have a ticket/load number, a delivery date, and per-load weights or bushels. One row per truckload.
 (b) Lines printed on a CHECK STUB, REMITTANCE ADVICE, or COVER PAGE are NEVER tickets, even when they show bushels and dollars (e.g. "58118.929 bu of yel corn REF 16936 — 289,432.26" on the check stub restates the whole settlement; it is not a load).
-(c) A "ticket number" that is actually the settlement's own REFERENCE / SETTLEMENT / CHECK number is NOT a ticket — leave that line out of line_items.
-(d) TOTAL, GRAND TOTAL, SUBTOTAL, and summary rows printed after the ticket lines are EXCLUDED from line_items.
-(e) Instead, put the settlement's grand total in the document-level fields below: statement_reported_total (the net dollars the settlement pays, as printed on its total line or check stub) and statement_reported_bushels (the total net bushels). These are for reconciliation only — the app checks that the ticket lines add up to them.
+(c) A "ticket number" that is actually the settlement's own REFERENCE / SETTLEMENT / CHECK number is NOT a ticket — leave that line out of the line items.
+(d) TOTAL, GRAND TOTAL, SUBTOTAL, and summary rows printed after the ticket lines are EXCLUDED from the line items.
+(e) Instead, put the settlement's grand total in the document-level fields below: statement_reported_total (the net dollars the settlement pays, as printed on its total line or check stub), statement_reported_bushels (the total net bushels) and statement_reported_ticket_count (the number of tickets the statement says it covers, e.g. "No. Tickets: 94"). These are for reconciliation only — the app checks that the ticket lines add up to them.
 
 CONTRACT BLOCKS — how each ticket was SOLD:
-(f) Many statements group their ticket lines under block headers such as "Contract Number: 2002960604-10" followed by that contract's tickets, then a "Contract Total" row, then ANOTHER header such as "Contract Number: SPOT" with more tickets and its own "Contract Total". A statement may print SEVERAL such blocks. Every ticket line's contract_number is the header of the block it printed under, copied exactly as printed. A "Contract Total" / "Total From" row ENDS a block (and is never a line item, rule (d)); the next "Contract Number:" header starts the next block.
-(g) The SAME ticket number can appear under TWO blocks — e.g. ticket 0502289 shows 58.284 bu under "Contract Number: 2002960604-10" (the truck that finished the contract) and 912.744 bu under "Contract Number: SPOT" (the rest of that same truck sold spot). These are TWO line items with the same ticket_number and different contract_number values. Keep BOTH lines, each with its own bushels and dollars. NEVER merge them, NEVER drop one as a duplicate, and NEVER sum them into one line.
-(h) "SPOT", "Spot Sale", "Spot Purchase", "Cash", "Cash Sale", "Open" and the like are sale KINDS printed in the contract-number position, not contract numbers — still copy the text exactly as printed into contract_number (the app classifies it). "DP", "Delayed Price", "Price Later" and similar mark grain stored unpriced — copy those exactly too.
-(i) When the statement prints no contract blocks and no per-ticket contract column, contract_number is null on every line. When a per-ticket CONTRACT column exists instead of blocks, use that column's value for each line.
+(f) Many statements group their ticket lines under block headers such as "Contract Number: 2002960604-10" followed by that contract's tickets, then a "Contract Total" row, then ANOTHER header such as "Contract Number: SPOT" with more tickets and its own "Contract Total". A statement may print SEVERAL such blocks. Report one contract_blocks entry per block, with contract_number copied exactly from the header, and that block's ticket lines inside it. A "Contract Total" / "Total From" row ENDS a block (and is never a line item, rule (d)); the next "Contract Number:" header starts the next block.
+(g) The SAME ticket number can appear under TWO blocks — e.g. ticket 0502289 shows 58.284 bu under "Contract Number: 2002960604-10" (the truck that finished the contract) and 912.744 bu under "Contract Number: SPOT" (the rest of that same truck sold spot). These are TWO line items in TWO blocks, each with its own bushels and dollars. Keep BOTH, NEVER merge them, NEVER drop one as a duplicate, and NEVER sum them into one line.
+(h) "SPOT", "Spot Sale", "Spot Purchase", "Cash", "Cash Sale", "Open" and the like are sale KINDS printed in the contract-number position, not contract numbers — still copy the text exactly as printed into the block's contract_number (the app classifies it). "DP", "Delayed Price", "Price Later" and similar mark grain stored unpriced — copy those exactly too.
+(i) When the statement prints no contract blocks and no per-ticket contract column, report ONE contract_blocks entry with no contract_number key holding every ticket line. When a per-ticket CONTRACT column exists instead of blocks, make one block per distinct contract value in that column.
+(j) Block fields: contract_number (the header exactly as printed); price_per_bushel (the block's flat / contract price when the statement prints one per block or in its header, e.g. "Flat $4.70250" → 4.7025 — leave out otherwise); crop (when printed for the block, e.g. "Yellow Corn" — leave out otherwise); line_items (the block's ticket lines, in printed order).
 
 Also extract these document-level fields:
 - buyer_name (the company name of the buyer/elevator)
 - settlement_date (the date on the settlement, format YYYY-MM-DD)
-- settlement_number (the settlement / statement number as printed, e.g. "0000161152" — null if not found)
-- contract_number (the buyer's contract number printed in the header — or, when the statement prints contract blocks (rule (f)), the FIRST block's contract number, e.g. "2002960604-10"; null if no contract number is shown anywhere)
-- payment_number, check_number, payment_date (from the CHECK / REMITTANCE page: the payment or remittance number, the check number, and the check date YYYY-MM-DD — null when absent. These are PAYMENT facts, never tickets and never the settlement_number unless the statement uses one number for both.)
-- statement_reported_total (the settlement's grand total net dollars as printed — null if not shown)
-- statement_reported_bushels (the settlement's total net bushels as printed — null if not shown)
-- statement_reported_gross (the settlement's total GROSS dollars before deductions, when a Totals row or Deduction Summary prints it — null if not shown)
-- contract_summary: when the statement prints a CONTRACT / TICKET SUMMARY block (contract number with priced / contracted bushels, bushels settled or applied so far, and bushels remaining), extract it as { "contract_number", "priced_bushels", "settled_bushels", "remaining_bushels" } — numbers exactly as printed (e.g. 42,969.999 → 42969.999); null when there is no such block. It is a summary, never a ticket.
-- Rows labelled "Total From", "Contract Total", "Settlement Total", "Grand Total", "Subtotal", "Totals", a DEDUCTION SUMMARY block, and a REMIT / PAYMENT AMOUNT / remittance restatement are NEVER line_items (rule (d)); they only feed statement_reported_total / statement_reported_gross / statement_reported_bushels.
+- settlement_number (the settlement / statement number as printed, e.g. "0000161152" — leave out if not found)
+- contract_number (the buyer's contract number printed in the header — or, when the statement prints contract blocks (rule (f)), the FIRST block's contract number, e.g. "2002960604-10"; leave out if no contract number is shown anywhere)
+- payment_number, check_number, payment_date (from the CHECK / REMITTANCE page: the payment or remittance number, the check number, and the check date YYYY-MM-DD — leave out when absent. These are PAYMENT facts, never tickets and never the settlement_number unless the statement uses one number for both.)
+- statement_reported_total (the settlement's grand total net dollars as printed — leave out if not shown)
+- statement_reported_bushels (the settlement's total net bushels as printed — leave out if not shown)
+- statement_reported_gross (the settlement's total GROSS dollars before deductions, when a Totals row or Deduction Summary prints it — leave out if not shown)
+- statement_reported_ticket_count (the ticket count the statement prints, e.g. "No. Tickets: 94" → 94 — leave out when the statement prints no count; never count the lines yourself)
+- contract_summary: when the statement prints a CONTRACT / TICKET SUMMARY block (contract number with priced / contracted bushels, bushels settled or applied so far, and bushels remaining), extract it as { "contract_number", "priced_bushels", "settled_bushels", "remaining_bushels" } — numbers exactly as printed (e.g. 42,969.999 → 42969.999); leave out when there is no such block. It is a summary, never a ticket.
+- Rows labelled "Total From", "Contract Total", "Settlement Total", "Grand Total", "Subtotal", "Totals", a DEDUCTION SUMMARY block, and a REMIT / PAYMENT AMOUNT / remittance restatement are NEVER line items (rule (d)); they only feed statement_reported_total / statement_reported_gross / statement_reported_bushels.
 
 ALSO itemize the statement's discounts into document-level discount_items. IMPORTANT: every buyer formats discounts differently — some print named line items, some use footnote codes explained at the bottom, some put discounts as columns on the grade line, some bury weight adjustments inside the bushel math (gross bushels quietly reduced to pay bushels), and some print only a combined "LESS DISCOUNTS" total. Read the WHOLE statement for all of these forms. For each deduction you can attribute:
 - category: exactly one of "moisture_shrink" | "drying" | "test_weight" | "damage" | "heat_damage" | "foreign_material" | "dockage" | "splits" | "sprout" | "musty_sour" | "checkoff" | "fee" | "other".
@@ -77,39 +93,46 @@ ALSO itemize the statement's discounts into document-level discount_items. IMPOR
 - description: the statement's OWN wording for the line, verbatim (e.g. "DRYING CHG", "TW DISC 53.4#", "LESS DISCOUNTS", a footnote code with its legend text)
 - deduction_kind: "price" when the line is DOLLARS subtracted from the check (charges, docks, fees, a combined less-discounts total); "weight" when the line reduces WEIGHT or BUSHELS instead (shrink lbs, FM weight removed, dockage weight). Detect volume-style discounting by comparing the stated gross weights/bushels against the pay weights/bushels: when pay bushels are below gross beyond the printed shrink math, emit a "weight" item describing it, with the implied lbs or bushels in quantity_basis.
 - amount: for "price" items, the total dollars deducted across the whole statement (positive number). For "weight" items, the dollar value ONLY if the statement itself prices the weight taken; otherwise 0 (the app values weight deductions from its own reconciliation — never invent a dollar figure).
-- rate_note: the rate exactly as printed, e.g. "4¢/lb under 54" or "$.025 per 1/2% over 15%" — null when no rate is shown
-- quantity_basis: what the deduction applied to when shown — "1,024.5 bu @ 17.2%" for a price charge, "612 lbs shrink" / "14.6 bu" for a weight deduction — null otherwise
+- rate_note: the rate exactly as printed, e.g. "4¢/lb under 54" or "$.025 per 1/2% over 15%" — leave out when no rate is shown
+- quantity_basis: what the deduction applied to when shown — "1,024.5 bu @ 17.2%" for a price charge, "612 lbs shrink" / "14.6 bu" for a weight deduction — leave out otherwise
 
 If the statement itemizes discounts per ticket line, SUM each distinct category+description across the document into ONE discount_items entry (the per-line "discounts" fields above stay per-line totals — discount_items is the document-level breakdown). The "price" discount_items amounts should add up to the total of the per-line discounts; extract the numbers exactly as printed and DO NOT force them to balance — a gap is meaningful (the app flags it for the user). If the statement shows no discount detail at all, discount_items is [].
 
-Respond ONLY in JSON with no other text, no markdown backticks. Use this exact format:
+Respond ONLY in JSON with no other text, no markdown backticks. Use this exact format — every key is OPTIONAL except contract_blocks, discount_items, and ticket_number / net_bushels / gross_revenue / discounts on a line; LEAVE OUT any key whose value is unknown or not printed (never write null):
 {
   "buyer_name": "string",
   "settlement_date": "YYYY-MM-DD",
-  "settlement_number": "string or null",
-  "contract_number": "string or null",
-  "payment_number": "string or null",
-  "check_number": "string or null",
-  "payment_date": "YYYY-MM-DD or null",
-  "statement_reported_total": number or null,
-  "statement_reported_gross": number or null,
-  "statement_reported_bushels": number or null,
-  "contract_summary": { "contract_number": "string or null", "priced_bushels": number or null, "settled_bushels": number or null, "remaining_bushels": number or null } or null,
-  "line_items": [
+  "settlement_number": "string",
+  "contract_number": "string",
+  "payment_number": "string",
+  "check_number": "string",
+  "payment_date": "YYYY-MM-DD",
+  "statement_reported_total": number,
+  "statement_reported_gross": number,
+  "statement_reported_bushels": number,
+  "statement_reported_ticket_count": number,
+  "contract_summary": { "contract_number": "string", "priced_bushels": number, "settled_bushels": number, "remaining_bushels": number },
+  "contract_blocks": [
     {
-      "ticket_number": "string",
-      "contract_number": "string or null (the contract block this line printed under, exactly as printed, e.g. 2002960604-10 or SPOT or S12)",
-      "secondary_ref": "string or null",
-      "delivery_date": "YYYY-MM-DD or null",
-      "vehicle_plate": "string or null",
-      "gross_weight": number or null,
-      "tare_weight": number or null,
-      "net_weight": number or null,
-      "net_bushels": number,
-      "gross_revenue": number,
-      "discounts": number,
-      "special_discount_codes": "string or null",
-      "grade_readings": { "grade": "string or null", "moisture": number or null, "foreign_material": number or null, "splits": number or null, "total_damage": number or null, "heat_damage": number or null, "test_weight": number or null, "other_color": number or null, "oil": number or null, "protein": number or null }
+      "contract_number": "string (the block header exactly as printed, e.g. 2002960604-10 or SPOT or S12)",
+      "price_per_bushel": number,
+      "crop": "string",
+      "line_items": [
+        {
+          "ticket_number": "string",
+          "secondary_ref": "string",
+          "delivery_date": "YYYY-MM-DD",
+          "vehicle_plate": "string",
+          "gross_weight": number,
+          "tare_weight": number,
+          "net_weight": number,
+          "net_bushels": number,
+          "gross_revenue": number,
+          "discounts": number,
+          "special_discount_codes": "string",
+          "grade_readings": { "grade": "string", "moisture": number, "foreign_material": number, "splits": number, "total_damage": number, "heat_damage": number, "test_weight": number, "other_color": number, "oil": number, "protein": number }
+        }
+      ]
     }
   ],
   "discount_items": [
@@ -118,12 +141,11 @@ Respond ONLY in JSON with no other text, no markdown backticks. Use this exact f
       "description": "string",
       "deduction_kind": "price or weight",
       "amount": number,
-      "rate_note": "string or null",
-      "quantity_basis": "string or null"
+      "rate_note": "string",
+      "quantity_basis": "string"
     }
   ]
 }`
-
 const DISCOUNT_SCHEDULE_PROMPT = `This is a grain buyer's posted DISCOUNT SCHEDULE (discount sheet / grade discount schedule) — the rules an elevator applies to moisture, test weight, damage, and other quality factors when settling grain. Extract the schedule's structured rules. Use null for anything the sheet does not state — NEVER guess a number.
 
 Document-level fields:
@@ -215,6 +237,12 @@ The statement has up to three sections, identified by their headings rather than
 2. PURCHASE & SALE - closed/offset positions, each offset group ending in a single GROSS PROFIT/LOSS total
 3. OPEN POSITIONS - currently held positions
 
+LINES THAT ARE NEVER POSITIONS AND NEVER LOTS (read this first):
+- A line whose quantity carries an asterisk ("23*", "26*", "30*") is a SUBTOTAL for the commodity/month/side above it. It is not a position and not a lot. Capture it ONLY in open_position_subtotals (OPEN POSITIONS) or as statement_reported_contracts on its offset group (PURCHASE & SALE).
+- An "AVG LONG:" or "AVG SHORT:" line is the average price of the fills above it — never a position, never a lot. It is the offset group's close_price.
+- An "LTD-" line (the lifetime-to-date / margin line) and a "CLOSE" price (the settlement price printed on a subtotal line) are never positions.
+- Every position row is listed ONCE. Never emit a row twice because it appears in both CONFIRMATION and OPEN POSITIONS — CONFIRMATION only supplies execution codes and the confirmation_trades list.
+
 CRITICAL RULES FOR DETERMINING LONG VS SHORT:
 
 1. The OPEN POSITIONS section has two quantity columns: LONG and SHORT. The number of contracts appears in ONE of these columns. The other column is blank for that row.
@@ -232,9 +260,10 @@ CRITICAL RULES FOR DETERMINING LONG VS SHORT:
    - Opening lots' quantities in the SELL column, closing transaction in the BUY column -> side = "short" (sold first, bought back).
    - Opening lots in the BUY column, closing transaction in the SELL column -> side = "long".
    - NEVER infer the side from the sign of the GROSS PROFIT/LOSS (a short can lose money and a long can gain), and NEVER from which line is printed first — print order does not follow trade order.
-   WORKED EXAMPLE: a NOV 26 SOYBEANS group shows quantities 2 and 4 dated 3/18 in the SELL column at 11.43 1/2 and 11.43 3/4, and quantity 6 dated 7/06 in the BUY column at 11.91 3/4, followed by "GROSS PROFIT/LOSS FROM TRADES 14,425.00DR". The earliest-dated lots (3/18) are in the SELL column, so this group is side "short": lots = [{ open_date "2026-03-18", open_price 11.435, contracts 2 }, { open_date "2026-03-18", open_price 11.4375, contracts 4 }], close_date "2026-07-06", close_price 11.9175, statement_reported_total -14425.00 (the DR suffix means a loss, so the value is negative — the short was bought back higher than it was sold).
+   WORKED EXAMPLE: a NOV 26 SOYBEANS group shows quantities 2 and 4 dated 3/18 in the SELL column at 11.43 1/2 and 11.43 3/4, and quantity 6 dated 7/06 in the BUY column at 11.91 3/4, followed by "GROSS PROFIT/LOSS FROM TRADES 14,425.00DR". The earliest-dated lots (3/18) are in the SELL column, so this group is side "short": lots = [{ open_date "2026-03-18", open_price 11.435, contracts 2 }, { open_date "2026-03-18", open_price 11.4375, contracts 4 }], close_date "2026-07-06", close_price 11.9175, closing_fills = [{ date "2026-07-06", price 11.9175, contracts 6 }], statement_reported_contracts 6, statement_reported_total -14425.00 (the DR suffix means a loss, so the value is negative — the short was bought back higher than it was sold).
+   SECOND WORKED EXAMPLE (several closing fills): a DEC 26 ICE COTTON 2 group shows 10 dated 3/18 at 72.65 and 13 dated 8/10 at 84.40 in the SELL column, and five rows dated 10/12 in the BUY column — 3 at 80.44, 12 at 80.45, 3 at 80.46, 3 at 80.48, 2 at 80.49 — then a line "23* 23*", an "AVG LONG: 80.45739" line and "GROSS PROFIT/LOSS FROM TRADES 13,410.00DR". The opening fills are the two earlier-dated SELL rows, so side = "short" and lots = [{ 2026-03-18, 72.65, 10 }, { 2026-08-10, 84.40, 13 }] — TWO lots totalling 23. The five 10/12 BUY rows are the CLOSING transaction: closing_fills = the five rows, close_date "2026-10-12", close_price 80.45739 (the AVG LONG line = the contract-weighted average of the closing fills), statement_reported_contracts 23 (the number before the "*"), statement_reported_total -13410.00. The closing fills are NEVER lots: lots must sum to the group's subtotal (23), never double it (46).
 
-For each OPEN POSITION, extract:
+For each OPEN POSITION, extract (OPEN POSITIONS section rows only — each row once; a same-day fill that also appears in CONFIRMATION is still ONE open position):
 - trade_date (format YYYY-MM-DD — the statement may show dates as M/DD/Y like "3/09/6" meaning 2026-03-09)
 - side ("long" or "short" — determine using the CRITICAL RULES above; apply them to every line and do NOT default to "long")
 - num_contracts (the number of contracts)
@@ -246,16 +275,25 @@ For each OPEN POSITION, extract:
 
 PURCHASE & SALE — CLOSED OFFSET GROUPS (read this carefully):
 
-The Purchase & Sale section lists, for each offset, one or more OPENING lots (often at different prices and on different dates) and one or more CLOSING transactions, followed by a SINGLE "GROSS PROFIT/LOSS FROM TRADES" line. That GROSS PROFIT/LOSS line is the TOTAL for the WHOLE offset group — it is NOT a per-lot value and must NOT be split across or attached to individual lots. When several opening lots are offset by one closing transaction, the SAME closing price applies to every lot in that group.
+The Purchase & Sale section lists, for each offset, one or more OPENING lots (often at different prices and on different dates) and one or more CLOSING fills (the rows dated the close date, in the OTHER column), followed by a SINGLE "GROSS PROFIT/LOSS FROM TRADES" line. That GROSS PROFIT/LOSS line is the TOTAL for the WHOLE offset group — it is NOT a per-lot value and must NOT be split across or attached to individual lots. When several opening lots are offset by one closing transaction, the SAME closing price applies to every lot in that group.
+
+The LOTS of an offset group are ONLY the opening fills — the earlier-dated rows in the opening column. The same-day offsetting fills (the rows dated the close date in the other column) are the CLOSING transaction: list them separately as closing_fills and give the group ONE close_price = their contract-weighted average (the statement prints it as the "AVG LONG:" / "AVG SHORT:" line). Never put a closing fill into lots. The lots must sum to the group's "*" subtotal.
 
 Extract ONLY the raw facts for each offset group — do NOT compute, split, or guess any profit/loss yourself. Emit one object per offset group:
 - commodity ("Corn", "Soybeans", "Chicago Wheat", or "Cotton")
 - contract_month (e.g., "DEC 26")
 - side ("short" if the opening lots are in the SELL column and closed by a BUY; "long" if bought first and sold to close — see CRITICAL RULE #4)
 - close_date (the closing transaction date, format YYYY-MM-DD)
-- close_price (the closing price as a decimal — grains: convert fractional, e.g. "4.42 3/4" = 4.4275; cotton: plain decimal ¢/lb as printed)
-- lots (an array with ONE entry per opening lot in this group, each: { open_date (YYYY-MM-DD), open_price (decimal; grains fractional-converted, cotton plain ¢/lb), contracts (the number of contracts in THIS lot only) }). Capture each lot's OWN contract count — three lots of ten contracts each are 10, 10, 10, never 30 and never the group's grand total.
+- close_price (the closing price as a decimal — the AVG LONG / AVG SHORT line when printed, otherwise the contract-weighted average of the closing fills; grains: convert fractional, e.g. "4.42 3/4" = 4.4275; cotton: plain decimal ¢/lb as printed, e.g. 80.45739)
+- closing_fills (an array with ONE entry per closing fill as printed: { date (YYYY-MM-DD), price (decimal), contracts }; these are NOT lots)
+- lots (an array with ONE entry per OPENING lot in this group, each: { open_date (YYYY-MM-DD), open_price (decimal; grains fractional-converted, cotton plain ¢/lb), contracts (the number of contracts in THIS lot only) }). Capture each lot's OWN contract count — three lots of ten contracts each are 10, 10, 10, never 30 and never the group's grand total.
+- statement_reported_contracts (the group's "*" subtotal — the number before the asterisk, e.g. "23* 23*" -> 23)
 - statement_reported_total (the group's printed GROSS PROFIT/LOSS total, as a decimal. SIGN MATTERS: a total suffixed DR is a debit/LOSS and MUST be negative; CR or no suffix is a gain and positive. "14,425.00DR" -> -14425.00). This is for reconciliation ONLY.
+- fees (when a per-side commission/fee block is printed for the group — "TOTAL COMMISSION & FEES 531.53DR" -> 531.53, the per-side amount as a positive number; null when none is printed)
+
+OPEN POSITION SUBTOTALS: for EVERY "*" subtotal line in OPEN POSITIONS emit one open_position_subtotals entry: { commodity, contract_month, side (the column the subtotal sits in — LONG or SHORT), contracts (the number before the "*"), close_price (the CLOSE / settlement price printed on that line; cotton ¢/lb as printed, e.g. 83.81; grains fractional-converted), open_trade_equity (the DR/CR amount on that line — DR negative, CR positive) }. These lines are subtotals only — never positions.
+
+CONFIRMATION TRADES: emit every fill printed in the CONFIRMATION section as one confirmation_trades entry { trade_date, side ("buy" if the quantity is in the BOUGHT/BUY column, "sell" if in the SOLD/SELL column), num_contracts, commodity, contract_month, trade_price, execution_code } — each fill as printed, no subtotals, no AVG lines. These are not positions; they are the day's fills.
 
 ALSO extract any OPTIONS positions from the statement. Options appear in the OPEN POSITIONS section and may look like:
 - "DEC 26 CORN 480 PUT" (a put option on DEC 26 Corn with strike price 480, meaning $4.80/bu)
@@ -283,10 +321,12 @@ Also extract the account summary:
 - total_equity (decimal)
 - margin_requirement (decimal)
 - excess_equity (decimal)
+- gross_profit_loss_from_trades (the day's total GROSS PROFIT/LOSS FROM TRADES in the summary block — DR negative, e.g. "13,410.00DR" -> -13410; null if not printed)
+- total_commissions_and_fees (the summary's TOTAL COMMISSION & FEES as a positive number, e.g. 1063.06; null if not printed)
 
 IMPORTANT: Dates on these statements use abbreviated years. "3/09/6" means March 9, 2026. "5/05/6" means May 5, 2026. Use the statement date's year as context for interpreting 2-digit years.
 
-IMPORTANT: Extract COTTON (ICE Cotton No. 2) positions too — commodity "Cotton", prices in cents/lb exactly as printed (72.65 means 72.65 cents/lb; do NOT convert).
+IMPORTANT: Extract COTTON (ICE Cotton No. 2) positions too — commodity "Cotton", prices in cents/lb exactly as printed (72.65 means 72.65 cents/lb, 83.64 stays 83.64; do NOT convert, round, or move the decimal).
 
 TRADE (EXECUTION) CODES: lines in the CONFIRMATION section carry a short trade code in their own column: E = electronic, S = spread, SE = spread executed electronically. A spread code means that fill was one leg of a spread order — typically a ROLL (closing one contract month and opening another the same day). These codes NEVER change how you read the quantity, the price, the side, or the dates. Copy the code, exactly as printed, onto the matching OPEN POSITION as execution_code (a same-day fill appears in both CONFIRMATION and OPEN POSITIONS — match on month, quantity, and price), and onto a closed offset group as close_execution_code when its CLOSING transaction appears in CONFIRMATION with a code. null when no code is printed.
 
@@ -315,11 +355,37 @@ Respond ONLY in JSON with no other text, no markdown backticks:
       "side": "long or short",
       "close_date": "YYYY-MM-DD",
       "close_price": number,
+      "closing_fills": [
+        { "date": "YYYY-MM-DD", "price": number, "contracts": number }
+      ],
       "lots": [
         { "open_date": "YYYY-MM-DD", "open_price": number, "contracts": number }
       ],
+      "statement_reported_contracts": number or null,
       "statement_reported_total": number,
+      "fees": number or null,
       "close_execution_code": "E or S or SE or null"
+    }
+  ],
+  "open_position_subtotals": [
+    {
+      "commodity": "Corn or Soybeans or Chicago Wheat or Cotton",
+      "contract_month": "string like MAR 27",
+      "side": "long or short",
+      "contracts": number,
+      "close_price": number,
+      "open_trade_equity": number
+    }
+  ],
+  "confirmation_trades": [
+    {
+      "trade_date": "YYYY-MM-DD",
+      "side": "buy or sell",
+      "num_contracts": number,
+      "commodity": "Corn or Soybeans or Chicago Wheat or Cotton",
+      "contract_month": "string like MAR 27",
+      "trade_price": number,
+      "execution_code": "E or S or SE or null"
     }
   ],
   "open_options": [
@@ -356,7 +422,9 @@ Respond ONLY in JSON with no other text, no markdown backticks:
     "open_trade_equity": number,
     "total_equity": number,
     "margin_requirement": number,
-    "excess_equity": number
+    "excess_equity": number,
+    "gross_profit_loss_from_trades": number or null,
+    "total_commissions_and_fees": number or null
   }
 }`
 
@@ -826,6 +894,10 @@ type ParseBody = {
   // settings_document only: the uploading page's section hint. Adds an
   // attention line to the prompt — extraction always covers every section.
   primary_target?: unknown
+  // Answer cap for this call (clamped MIN_MAX_TOKENS..MAX_MAX_TOKENS).
+  max_tokens?: unknown
+  // Pages in this call, for the log line (a PDF arrives as a URL).
+  page_count?: unknown
 }
 
 type ImageInput = { media_type: string; data: string }
@@ -859,6 +931,20 @@ function badRequest(message: string) {
 
 function serverError(message: string) {
   return NextResponse.json({ error: message }, { status: 500 })
+}
+
+function clampMaxTokens(raw: unknown): number {
+  const n = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number(raw) : NaN
+  if (!Number.isFinite(n)) return MAX_TOKENS
+  return Math.max(MIN_MAX_TOKENS, Math.min(MAX_MAX_TOKENS, Math.round(n)))
+}
+
+// The SDK's own timeout / abort, or a gateway timeout surfacing as a message.
+function isTimeoutError(e: unknown, message: string): boolean {
+  if (e instanceof Anthropic.APIConnectionTimeoutError || e instanceof Anthropic.APIUserAbortError) return true
+  const name = (e as { name?: unknown } | null)?.name
+  if (name === 'APIConnectionTimeoutError' || name === 'AbortError') return true
+  return /timeout|timed out|504|ETIMEDOUT/i.test(message)
 }
 
 // Strip any stray markdown fences / leading prose. Anthropic occasionally
@@ -931,13 +1017,21 @@ export async function POST(req: NextRequest) {
     prompt += `\n\nThe user uploaded this from the ${body.primary_target.replace(/_/g, ' ')} settings page, so pay particular attention to that section — but still extract every section the document supports.`
   }
 
-  const client = new Anthropic({ apiKey })
+  const maxTokens = clampMaxTokens(body.max_tokens)
+  const pages = body.images !== undefined
+    ? docBlocks.length
+    : typeof body.page_count === 'number' && Number.isFinite(body.page_count) ? Math.round(body.page_count) : null
+  const client = new Anthropic({ apiKey, timeout: API_TIMEOUT_MS, maxRetries: 0 })
+  const t0 = Date.now()
+  // One line per call: what was asked, how the model stopped, what it cost.
+  const log = (result: string, stopReason: string | null, outputTokens: number | null) =>
+    console.info(`parse-document document_type=${docType} pages=${pages ?? '?'} max_tokens=${maxTokens} stop_reason=${stopReason ?? '-'} output_tokens=${outputTokens ?? '-'} ms=${Date.now() - t0} result=${result}`)
 
-  let resp
+  let resp: Anthropic.Message
   try {
     resp = await client.messages.create({
       model: MODEL,
-      max_tokens: MAX_TOKENS,
+      max_tokens: maxTokens,
       thinking: { type: 'disabled' },
       output_config: { effort: 'low' },
       messages: [
@@ -949,19 +1043,47 @@ export async function POST(req: NextRequest) {
     })
   } catch (e: any) {
     const msg = e?.error?.error?.message ?? e?.message ?? 'Anthropic API call failed.'
+    if (isTimeoutError(e, String(msg))) {
+      log('TIMEOUT', null, null)
+      return NextResponse.json({ error: 'The document section took too long to read.', code: 'TIMEOUT' }, { status: 504 })
+    }
+    log('ERROR', null, null)
     return serverError(`Anthropic API error: ${msg}`)
   }
 
+  const stopReason = resp.stop_reason ?? null
+  const usage = {
+    input_tokens: resp.usage?.input_tokens ?? null,
+    output_tokens: resp.usage?.output_tokens ?? null,
+  }
+  // The answer hit the cap (or came back cut off mid-structure): the chunk
+  // holds more than one call can write. 422 TOO_LONG — the client splits
+  // the chunk, never retries the same request.
+  const tooLong = () => {
+    log('TOO_LONG', stopReason, usage.output_tokens)
+    return NextResponse.json(
+      { error: 'The document section was too long to read in one pass.', code: 'TOO_LONG', stop_reason: stopReason, output_tokens: usage.output_tokens },
+      { status: 422 },
+    )
+  }
+  if (stopReason === 'max_tokens') return tooLong()
+
   const textBlock = resp.content.find((c: any) => c.type === 'text') as { type: 'text'; text: string } | undefined
-  if (!textBlock) return serverError('Anthropic returned no text content.')
+  if (!textBlock) {
+    log('NO_TEXT', stopReason, usage.output_tokens)
+    return serverError('Anthropic returned no text content.')
+  }
 
   const jsonStr = extractJson(textBlock.text)
   let parsed: unknown
   try {
     parsed = JSON.parse(jsonStr)
   } catch {
+    if (jsonLooksTruncated(stripFences(textBlock.text))) return tooLong()
+    log('BAD_JSON', stopReason, usage.output_tokens)
     return serverError("Couldn't parse the response as JSON. The PDF may be unclear.")
   }
 
-  return NextResponse.json({ data: parsed })
+  log('OK', stopReason, usage.output_tokens)
+  return NextResponse.json({ data: parsed, usage, stop_reason: stopReason })
 }

@@ -87,3 +87,51 @@ describe('friendlyRollError', () => {
     expect(friendlyRollError(null)).toBe('Could not record the roll.')
   })
 })
+
+describe('buildRollPayload — several open legs (0095)', () => {
+  const closed = [
+    { positionId: 'dec-10', quantity: 10, side: 'short' as const, commodity: 'Cotton', tradePrice: 72.65 },
+    { positionId: 'dec-13', quantity: 13, side: 'short' as const, commodity: 'Cotton', tradePrice: 84.4 },
+  ]
+  const mar = ([[3, 83.63], [12, 83.64], [3, 83.65], [3, 83.67], [2, 83.68]] as const).map(([n, px]) => ({
+    row: { contract_month: 'MAR 27', num_contracts: n, trade_price: px, trade_date: '2026-10-12', commission: 0 },
+  }))
+
+  it('every MAR fill is an open leg; open is the array shape; close fees once; open fees pro-rata to the cent', () => {
+    const payload = buildRollPayload({
+      source: 'statement_import', statementDate: '2026-10-12', statementRef: 'StoneX', executionCode: 'SE',
+      closePrice: 80.4573913, closeDate: '2026-10-12', fees: 531.53, openFees: 531.53, closedLegs: closed, opens: mar, note: 'Saved with a position mismatch, checked by hand',
+    })
+    const close = payload.close as Leg[]
+    expect(close.map((l) => l.realized_pnl)).toEqual([-39036.96, 25626.96])
+    expect(close.map((l) => l.fees)).toEqual([531.53, 0])
+    const open = payload.open as Array<{ row: { num_contracts: number; commission: number; contract_symbol: string; commodity: string } }>
+    expect(Array.isArray(open)).toBe(true)
+    expect(open.map((o) => o.row.num_contracts)).toEqual([3, 12, 3, 3, 2])
+    expect(open.map((o) => o.row.commission)).toEqual([69.33, 277.32, 69.33, 69.33, 46.22])
+    expect(Math.round(open.reduce((s, o) => s + o.row.commission, 0) * 100) / 100).toBe(531.53)
+    expect(open.every((o) => o.row.contract_symbol === 'CTH27' && o.row.commodity === 'Cotton')).toBe(true)
+    expect(payload.note).toBe('Saved with a position mismatch, checked by hand')
+  })
+
+  it('one open leg via `opens` keeps the 083 object shape; no note key when none given', () => {
+    const payload = buildRollPayload({ source: 'roll_action', closePrice: 5.435, closeDate: '2026-09-03', closedLegs: [closed[0]], opens: [mar[1]] })
+    expect(Array.isArray(payload.open)).toBe(false)
+    expect((payload.open as Leg).row).toBeDefined()
+    expect('note' in payload).toBe(false)
+  })
+
+  it('open fees land only on NEW legs — a leg linked by id keeps its own commission', () => {
+    const payload = buildRollPayload({
+      source: 'statement_import', closePrice: 80.45, closeDate: '2026-10-12', openFees: 100, closedLegs: closed,
+      opens: [{ positionId: 'mar-existing' }, mar[0]],
+    })
+    const open = payload.open as Leg[]
+    expect(open[0].position_id).toBe('mar-existing')
+    expect((open[1].row as Leg).commission).toBe(100)
+  })
+
+  it('refuses a roll with no open leg', () => {
+    expect(() => buildRollPayload({ source: 'roll_action', closePrice: 1, closeDate: '2026-09-03', closedLegs: [closed[0]] })).toThrow(/open leg/)
+  })
+})

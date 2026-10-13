@@ -166,13 +166,18 @@ checks(seq, migration, evidence, applied) as (values
   ( 99, '094 backfill matches contract_id',  'loads where contract_id ≠ load_sales_mirror_contract(id) = 0',
         case when exists (select 1 from fns where f = 'load_sales_mirror_contract')
              then (xpath('/row/n/text()', query_to_xml('select count(*) as n from public.loads l where l.contract_id is distinct from public.load_sales_mirror_contract(l.id)', false, true, '')))[1]::text = '0'
-             else false end)
+             else false end),
+  -- 0095 (supabase/migrations/): the undo RPC, the multi-open roll RPC, and the ledger trigger reading
+  -- the turnrow.hedge_event_note setting (probed in the trigger's source text).
+  (100, '0095_hedge_import_guards',           'fn hedge_undo_import + fn hedge_execute_roll + trigger fn reads turnrow.hedge_event_note',
+        exists (select 1 from fns where f = 'hedge_undo_import') and exists (select 1 from fns where f = 'hedge_execute_roll')
+        and exists (select 1 from fns where f = 'hedge_position_event_trigger' and pg_get_functiondef(oid) like '%turnrow.hedge_event_note%'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 094'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 095'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

@@ -21,7 +21,8 @@ import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { findBestMatch } from '@/lib/fuzzy'
 import { PdfTooLargeError, type GinReceiptExtraction } from '@/lib/pdf-upload'
-import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { DEFAULT_MAX_TOKENS, parseDocumentChunked } from '@/lib/parse-chunked'
+import { planPagesPerBatch } from '@/lib/chunk-plan'
 import { mergeGinReceipts } from '@/lib/parse-merge'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import { reconcileBaleCount, lintTurnoutPct } from '@/lib/cotton'
@@ -287,7 +288,9 @@ export default function GinReceiptsPage() {
       const { data, warning } = await parseDocumentChunked<GinReceiptExtraction>(
         src.kind === 'pdf' ? src.file : src.images,
         'gin_receipt',
-        { onProgress: setStage, merge: mergeGinReceipts, rebase: rebaseGinReceiptPages },
+        // Pages per call from the density plan (lib/chunk-plan: ≈25 tokens a
+        // bale + 300 a page → 3 pages at the default cap).
+        { pagesPerBatch: planPagesPerBatch({ documentType: 'gin_receipt', maxTokens: DEFAULT_MAX_TOKENS }), onProgress: setStage, merge: mergeGinReceipts, rebase: rebaseGinReceiptPages },
       )
       if (warning) setErr(warning)
       const statements = groupStatementPages(data.pages ?? [])

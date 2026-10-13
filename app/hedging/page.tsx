@@ -11,10 +11,13 @@ import StatementImport from '@/components/hedging/statement-import'
 import RollPositionDialog from '@/components/hedging/roll-position-dialog'
 import PositionHistoryDialog from '@/components/hedging/position-history-dialog'
 import HedgingHistory from '@/components/hedging/hedging-history'
+import UndoImportDialog from '@/components/hedging/undo-import-dialog'
 import PriceBoard, { type PriceMap, infoToQuote } from '@/components/hedging/price-board'
 import { markOpenPosition } from '@/lib/hedging-rows'
 import { buildHedgeTimeline, filterTimeline } from '@/lib/hedge-events'
+import { batchHeadline, blockedBy, groupTimelineByImport, importBatches, type ImportBatch } from '@/lib/hedge-undo'
 import { effectiveEntry } from '@/lib/hedge-lineage'
+import { coerceAppRole } from '@/lib/app-role'
 import { QuoteChip } from '@/components/quote-chip'
 import { AppModal, ConfirmDialog, PromptDialog } from '@/components/app-dialog'
 import { reportError } from '@/lib/friendly-error'
@@ -118,6 +121,9 @@ export default function HedgingPage() {
   const [historyTarget, setHistoryTarget] = useState<FuturesPosition | null>(null)
   const [events, setEvents] = useState<HedgePositionEvent[]>([])
   const [historyUnavailable, setHistoryUnavailable] = useState(false)
+  // 0095 — "Undo this import" is an owner's action; the dialog does the work.
+  const [isOwner, setIsOwner] = useState(false)
+  const [undoTarget, setUndoTarget] = useState<ImportBatch | null>(null)
   // Row "…" action sheet, delete confirmation, option premium prompt.
   const [menuFor, setMenuFor] = useState<{ kind: 'position'; row: FuturesPosition } | { kind: 'option'; row: OptionPosition } | null>(null)
   const [deleteFor, setDeleteFor] = useState<{ kind: 'position'; row: FuturesPosition } | { kind: 'option'; row: OptionPosition } | null>(null)
@@ -209,6 +215,17 @@ export default function HedgingPage() {
     loadAll()
   }, [loadAll])
 
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user || cancelled) return
+      const { data } = await supabase.from('user_profiles').select('role').eq('user_id', user.id).maybeSingle()
+      if (!cancelled) setIsOwner(coerceAppRole((data as { role?: string } | null)?.role) === 'owner')
+    })()
+    return () => { cancelled = true }
+  }, [supabase])
+
   const entityName = useCallback(
     (id: string | null) => (id ? entities.find((e) => e.id === id)?.name ?? '' : ''),
     [entities],
@@ -236,6 +253,10 @@ export default function HedgingPage() {
     () => filterTimeline(buildHedgeTimeline(events, { entityName }), { cropYear: fCropYear, commodity: fCommodity, entityId: fEntity }),
     [events, entityName, fCropYear, fCommodity, fEntity],
   )
+  // Statement imports as batches (0095): the History view groups the lines
+  // each statement wrote under one header with its Undo action.
+  const batches = useMemo(() => importBatches(events), [events])
+  const sections = useMemo(() => groupTimelineByImport(timeline, batches), [timeline, batches])
   // Lineage read-out for a rolled-into open leg: "rolled from DEC 26 @ 4.9525"
   // + the effective price since the original entry (original ± roll spreads).
   const lineageOf = (p: FuturesPosition) => (p.rolled_from_position_id ? effectiveEntry(p, positions) : null)
@@ -493,6 +514,33 @@ export default function HedgingPage() {
           ) : (
             <HedgingHistory
               lines={timeline}
+              groups={sections.map((s) => ({
+                key: s.key,
+                lines: s.lines,
+                header: s.batch ? (() => {
+                  const b = s.batch
+                  const blocker = blockedBy(b, batches)
+                  return (
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className="font-semibold text-slate-800">{batchHeadline(b)}</span>
+                      {b.undone && <span className="text-[11px] rounded-full px-2 py-0.5 bg-slate-200 text-slate-700">undone</span>}
+                      {isOwner && !b.undone && (
+                        <span className="ml-auto flex items-center gap-2 no-print">
+                          {blocker && <span className="text-xs text-slate-500">Undo the {blocker.label} import first</span>}
+                          <button
+                            type="button"
+                            disabled={blocker != null}
+                            onClick={() => setUndoTarget(b)}
+                            className={`${smallBtn} border-red-300 text-red-700 bg-white hover:bg-red-50 disabled:opacity-50 disabled:hover:bg-white`}
+                          >
+                            Undo this import
+                          </button>
+                        </span>
+                      )}
+                    </div>
+                  )
+                })() : undefined,
+              }))}
               emptyText="No hedging activity for these filters."
               renderAction={(l) => {
                 const p = positions.find((x) => l.positionIds.includes(x.id))
@@ -917,6 +965,18 @@ export default function HedgingPage() {
       {closeTarget && <ClosePositionDialog position={closeTarget} onClose={() => setCloseTarget(null)} onSaved={afterMutation} />}
       {rollTarget && <RollPositionDialog position={rollTarget} allPositions={positions} onClose={() => setRollTarget(null)} onSaved={afterMutation} />}
       {historyTarget && <PositionHistoryDialog position={historyTarget} allPositions={positions} entityName={entityName} onClose={() => setHistoryTarget(null)} />}
+      {undoTarget && (
+        <UndoImportDialog
+          batch={undoTarget}
+          onClose={() => setUndoTarget(null)}
+          onDone={({ deleted, restored }) => {
+            const label = undoTarget.label
+            setUndoTarget(null)
+            setBanner(`Undid the ${label} import — ${deleted} position${deleted === 1 ? '' : 's'} removed, ${restored} put back the way ${restored === 1 ? 'it was' : 'they were'}.`)
+            loadAll()
+          }}
+        />
+      )}
       {showNewOption && <OptionForm entities={entities} onClose={() => setShowNewOption(false)} onSaved={afterMutation} />}
       {editOption && <OptionForm entities={entities} initial={editOption} onClose={() => setEditOption(null)} onSaved={afterMutation} />}
       {closeOptionTarget && <CloseOptionDialog position={closeOptionTarget} onClose={() => setCloseOptionTarget(null)} onSaved={afterMutation} />}

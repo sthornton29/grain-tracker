@@ -11,11 +11,12 @@ import {
   MAX_PDF_BYTES,
   PdfTooLargeError,
   uploadPdfToStorage,
+  type ParseImage,
   type SettlementExtraction,
 } from '@/lib/pdf-upload'
-import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { parseDocumentChunked, type FailedRange } from '@/lib/parse-chunked'
 import { mergeSettlements } from '@/lib/parse-merge'
-import { flagSummaryLines, reconcileLines } from '@/lib/settlement-lines'
+import { flagSummaryLines, reconcileLines, settlementCompleteness } from '@/lib/settlement-lines'
 import { imagesToPdf } from '@/lib/image-capture'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
@@ -193,6 +194,14 @@ export default function NewSettlementPage() {
   const [source, setSource] = useState<DocumentSource | null>(null)
   const [aiStage, setAiStage] = useState<string | null>(null)
   const [aiBanner, setAiBanner] = useState<string | null>(null)
+  // Completeness (2026-10-13): the merged extraction so far, the straightened
+  // PDF (a failed range is read again from the SAME file), the page ranges
+  // the parser gave up on, and the statement's own printed figures.
+  const [extraction, setExtraction] = useState<SettlementExtraction | null>(null)
+  const [normalizedFile, setNormalizedFile] = useState<File | null>(null)
+  const [failedRanges, setFailedRanges] = useState<FailedRange[]>([])
+  const [reported, setReported] = useState<{ tickets: number | null; bushels: number | null; gross: number | null }>({ tickets: null, bushels: null, gross: null })
+  const [rereading, setRereading] = useState(false)
   // What's already saved, for the duplicate check (lib/settlement-duplicates):
   // every settlement header and every line's load / ticket.
   const [existingSettlements, setExistingSettlements] = useState<ExistingSettlement[]>([])
@@ -422,67 +431,60 @@ export default function NewSettlementPage() {
     }
   }
 
-  async function onSource(src: DocumentSource) {
-    setErr(null)
-    setAiBanner(null)
-    if (src.kind === 'pdf' && src.file.size > MAX_PDF_BYTES) {
-      setErr('That PDF is larger than 20 MB. Please use a smaller file.')
-      return
+  // The key a line keeps across a re-read: ticket + the block it printed
+  // under (a ticket split across two blocks is two lines, 094).
+  const rowKey = (ticket: string | null | undefined, contract: string | null | undefined) => `${normalizeTicket(ticket)}|${contractNumberKey(contract)}`
+
+  /**
+   * Rows + header fields from an extraction. On the first read every field
+   * is set; on a re-read (failed pages read again and merged) the header
+   * only fills what is still empty, and a row the reviewer already has —
+   * same ticket and block — is KEPT as is (its edits, match override and
+   * sale choice included); only new lines are built.
+   */
+  function applyExtraction(data: SettlementExtraction, mode: 'first' | 'reread') {
+    const extractedLines = Array.isArray(data.line_items) ? data.line_items : []
+    const first = mode === 'first'
+    // Fuzzy-match buyer to existing dropdown.
+    const buyerHit = findBestMatch(data.buyer_name, buyers, (b) => b.name)
+    if (buyerHit && (first || !buyerId)) setBuyerId(buyerHit.id)
+
+    if (data.settlement_date && /^\d{4}-\d{2}-\d{2}$/.test(data.settlement_date) && first) {
+      setSettlementDate(data.settlement_date)
     }
-    setSource(src)
-    setAiStage('Reading document…')
-    try {
-      // Give the user a beat to see the first stage label before it flips.
-      await new Promise((r) => setTimeout(r, 250))
-      setAiStage('Extracting data…')
-      // Chunked parse for long settlement statements: per-chunk retry, failed
-      // pages reported, line items repeated across a batch boundary resolve
-      // once (mergeSettlements — dedupe by ticket number).
-      const { data, warning } = await parseDocumentChunked<SettlementExtraction>(
-        src.kind === 'pdf' ? src.file : src.images,
-        'settlement',
-        { onProgress: setAiStage, merge: mergeSettlements },
-      )
+    if (data.settlement_number != null && (first || !settlementNumber)) setSettlementNumber(String(data.settlement_number))
+    // 086 — the header contract number and the check page's payment facts.
+    const headerContractText = data.contract_number != null ? String(data.contract_number) : (data.contract_summary?.contract_number != null ? String(data.contract_summary.contract_number) : '')
+    if (first || !contractNumber) setContractNumber(headerContractText)
+    if (first || !contractSummary) setContractSummary(data.contract_summary ?? null)
+    const nextPayment = {
+      payment_number: data.payment_number != null ? String(data.payment_number) : '',
+      check_number: data.check_number != null ? String(data.check_number) : '',
+      payment_date: data.payment_date && /^\d{4}-\d{2}-\d{2}$/.test(String(data.payment_date)) ? String(data.payment_date) : '',
+    }
+    setPayment((p) => first ? nextPayment : { payment_number: p.payment_number || nextPayment.payment_number, check_number: p.check_number || nextPayment.check_number, payment_date: p.payment_date || nextPayment.payment_date })
 
-      const extractedLines = Array.isArray(data.line_items) ? data.line_items : []
-      if (extractedLines.length === 0) {
-        setErr(warning ?? 'No records found in this document. The scan may be too blurry or the format may not be readable.')
-        setAiStage(null)
-        return
-      }
-      if (warning) setErr(warning)
-
-      // Fuzzy-match buyer to existing dropdown.
-      const buyerHit = findBestMatch(data.buyer_name, buyers, (b) => b.name)
-      if (buyerHit) setBuyerId(buyerHit.id)
-
-      if (data.settlement_date && /^\d{4}-\d{2}-\d{2}$/.test(data.settlement_date)) {
-        setSettlementDate(data.settlement_date)
-      }
-      if (data.settlement_number != null) setSettlementNumber(String(data.settlement_number))
-      // 086 — the header contract number and the check page's payment facts.
-      setContractNumber(data.contract_number != null ? String(data.contract_number) : (data.contract_summary?.contract_number != null ? String(data.contract_summary.contract_number) : ''))
-      setContractSummary(data.contract_summary ?? null)
-      setPayment({
-        payment_number: data.payment_number != null ? String(data.payment_number) : '',
-        check_number: data.check_number != null ? String(data.check_number) : '',
-        payment_date: data.payment_date && /^\d{4}-\d{2}-\d{2}$/.test(String(data.payment_date)) ? String(data.payment_date) : '',
-      })
-
-      // Belt and suspenders under the prompt: a TOTAL row or a check-stub line
-      // that came back as a "ticket" is flagged and shown excluded. The
-      // payment / check numbers are references too — a "ticket" equal to one
-      // of them is the remittance restated.
-      const refs = [data.settlement_number, data.payment_number, data.check_number].filter((x): x is string => !!x)
-      const guards = extractedLines.map((li, i) => {
-        const g = flagSummaryLines(extractedLines, { settlementNumber: data.settlement_number })[i]
-        if (g.flagged) return g
-        const tk = normalizeTicket(li.ticket_number).replace(/\D+/g, '')
-        return tk && refs.some((r) => normalizeTicket(r).replace(/\D+/g, '') === tk)
-          ? { flagged: true, reason: 'looks like the settlement total — not a load (its number is the payment or check number)' }
-          : g
-      })
-      const nextRows: RowDraft[] = extractedLines.map((li, i) => ({
+    // Belt and suspenders under the prompt: a TOTAL row or a check-stub line
+    // that came back as a "ticket" is flagged and shown excluded. The
+    // payment / check numbers are references too — a "ticket" equal to one
+    // of them is the remittance restated.
+    const refs = [data.settlement_number, data.payment_number, data.check_number].filter((x): x is string => !!x)
+    const guards = extractedLines.map((li, i) => {
+      const g = flagSummaryLines(extractedLines, { settlementNumber: data.settlement_number })[i]
+      if (g.flagged) return g
+      const tk = normalizeTicket(li.ticket_number).replace(/\D+/g, '')
+      return tk && refs.some((r) => normalizeTicket(r).replace(/\D+/g, '') === tk)
+        ? { flagged: true, reason: 'looks like the settlement total — not a load (its number is the payment or check number)' }
+        : g
+    })
+    // Built from the LATEST rows (a functional update): edits made while the
+    // re-read ran are kept too.
+    const build = (prev: RowDraft[]): RowDraft[] => extractedLines.map((li, i) => {
+      const prevByKey = new Map<string, RowDraft>()
+      if (!first) for (const r of prev) prevByKey.set(rowKey(r.ticket_number, r.contract_number), r)
+      const kept = prevByKey.get(rowKey(li.ticket_number, li.contract_number))
+      if (kept) return kept
+      return {
         ticket_number: li.ticket_number != null ? String(li.ticket_number) : '',
         net_bushels: li.net_bushels != null ? String(li.net_bushels) : '',
         gross_revenue: li.gross_revenue != null ? String(li.gross_revenue) : '',
@@ -500,28 +502,82 @@ export default function NewSettlementPage() {
         // 094 — the contract block the line printed under; a statement with
         // no blocks leaves it null and the header contract stands in.
         contract_number: li.contract_number != null ? String(li.contract_number) : null,
-      }))
-      setRows(nextRows)
-      setSaleChoices(new Map())
-      setContractLinks(new Map())
-      setReportedTotal(data.statement_reported_total != null ? String(data.statement_reported_total) : '')
-      const flaggedCount = guards.filter((g) => g.flagged).length
-      const extractedItems = Array.isArray(data.discount_items) ? data.discount_items : []
-      setDiscountRows(extractedItems.map((di) => ({
-        category: coerceDiscountCategory(di.category),
-        description: di.description ?? '',
-        amount: di.amount != null ? String(di.amount) : '',
-        rate_note: di.rate_note ?? '',
-        quantity_basis: di.quantity_basis ?? '',
-        deduction_kind: coerceDeductionKind(di.deduction_kind),
-      })))
-      setAiBanner(
-        `AI extracted ${nextRows.length - flaggedCount} ticket line${nextRows.length - flaggedCount === 1 ? '' : 's'}` +
-        (extractedItems.length > 0 ? ` and ${extractedItems.length} itemized discount${extractedItems.length === 1 ? '' : 's'}` : '') +
-        ' from settlement PDF.' +
-        (flaggedCount > 0 ? ` ${flaggedCount} line${flaggedCount === 1 ? '' : 's'} looked like the settlement total (a TOTAL row or check stub) and ${flaggedCount === 1 ? 'is' : 'are'} left out — tick ${flaggedCount === 1 ? 'it' : 'them'} back in if that's wrong.` : '') +
-        ' Please review before saving.',
+      }
+    })
+    setRows(first ? build([]) : build)
+    if (first) { setSaleChoices(new Map()); setContractLinks(new Map()) }
+    if (first || reportedTotal === '') setReportedTotal(data.statement_reported_total != null ? String(data.statement_reported_total) : '')
+    setReported((p) => ({
+      tickets: data.statement_reported_ticket_count != null ? Number(data.statement_reported_ticket_count) : (first ? null : p.tickets),
+      bushels: data.statement_reported_bushels != null ? Number(data.statement_reported_bushels) : (first ? null : p.bushels),
+      gross: data.statement_reported_gross != null ? Number(data.statement_reported_gross) : (first ? null : p.gross),
+    }))
+    const flaggedCount = guards.filter((g) => g.flagged).length
+    const extractedItems = Array.isArray(data.discount_items) ? data.discount_items : []
+    // Discount items are document-level sums: the merged extraction's set
+    // replaces the AI-built list (a reviewer's own typed items are kept).
+    const aiItems = extractedItems.map((di) => ({
+      category: coerceDiscountCategory(di.category),
+      description: di.description ?? '',
+      amount: di.amount != null ? String(di.amount) : '',
+      rate_note: di.rate_note ?? '',
+      quantity_basis: di.quantity_basis ?? '',
+      deduction_kind: coerceDeductionKind(di.deduction_kind),
+    }))
+    setDiscountRows(first ? aiItems : (ds) => {
+      const aiKey = (d: DiscountDraft) => `${d.category}|${d.description.trim().toLowerCase()}`
+      const keys = new Set(aiItems.map(aiKey))
+      return [...aiItems, ...ds.filter((d) => !keys.has(aiKey(d)))]
+    })
+    const readCount = extractedLines.length - flaggedCount
+    setAiBanner(
+      `AI extracted ${readCount} ticket line${readCount === 1 ? '' : 's'}` +
+      (extractedItems.length > 0 ? ` and ${extractedItems.length} itemized discount${extractedItems.length === 1 ? '' : 's'}` : '') +
+      ' from settlement PDF.' +
+      (flaggedCount > 0 ? ` ${flaggedCount} line${flaggedCount === 1 ? '' : 's'} looked like the settlement total (a TOTAL row or check stub) and ${flaggedCount === 1 ? 'is' : 'are'} left out — tick ${flaggedCount === 1 ? 'it' : 'them'} back in if that's wrong.` : '') +
+      ' Please review before saving.',
+    )
+    return extractedLines.length
+  }
+
+  async function onSource(src: DocumentSource) {
+    setErr(null)
+    setAiBanner(null)
+    if (src.kind === 'pdf' && src.file.size > MAX_PDF_BYTES) {
+      setErr('That PDF is larger than 20 MB. Please use a smaller file.')
+      return
+    }
+    setSource(src)
+    setExtraction(null)
+    setNormalizedFile(src.kind === 'pdf' ? src.file : null)
+    setFailedRanges([])
+    setAiStage('Reading document…')
+    try {
+      // Give the user a beat to see the first stage label before it flips.
+      await new Promise((r) => setTimeout(r, 250))
+      setAiStage('Extracting data…')
+      // Chunked parse for long settlement statements: chunks sized to the
+      // page density, a cut-off chunk split and re-read, failed ranges
+      // reported (and offered again below), line items repeated across a
+      // boundary resolve once (mergeSettlements — dedupe by ticket + block).
+      const result = await parseDocumentChunked<SettlementExtraction>(
+        src.kind === 'pdf' ? src.file : src.images,
+        'settlement',
+        { onProgress: setAiStage, merge: mergeSettlements, onNormalized: setNormalizedFile },
       )
+      const { data } = result
+      setExtraction(data)
+      setFailedRanges(result.failedRanges)
+
+      const lineCount = applyExtraction(data, 'first')
+      if (lineCount === 0) {
+        setAiBanner(null)
+        setErr(result.failedRanges.length > 0
+          ? 'No ticket lines were read yet — use "Read those pages again" below, or add the rows by hand.'
+          : 'No records found in this document. The scan may be too blurry or the format may not be readable.')
+        setAiStage(null)
+        return
+      }
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) {
         setErr(e.message)
@@ -533,13 +589,68 @@ export default function NewSettlementPage() {
     }
   }
 
+  // "Read those pages again": only the failed ranges go back to the parser
+  // (from the same straightened file), and the result merges into what was
+  // read — new lines are added, lines already on the screen are kept.
+  async function rereadFailedPages() {
+    if (!extraction || failedRanges.length === 0 || rereading || aiStage) return
+    const input: File | ParseImage[] | null = source?.kind === 'pdf' ? normalizedFile : source?.kind === 'images' ? source.images : null
+    if (!input) return
+    setRereading(true)
+    setErr(null)
+    try {
+      const result = await parseDocumentChunked<SettlementExtraction>(input, 'settlement', {
+        pages: failedRanges.map(({ from, to }) => ({ from, to })),
+        onProgress: setAiStage,
+        merge: mergeSettlements,
+      })
+      const merged = mergeSettlements([extraction, result.data])
+      setExtraction(merged)
+      setFailedRanges(result.failedRanges)
+      applyExtraction(merged, 'reread')
+    } catch (e: any) {
+      setErr(reportError(e, { action: 'read those pages again', noun: 'document' }))
+    } finally {
+      setRereading(false)
+      setAiStage(null)
+    }
+  }
+
   function discardPdf() {
     setSource(null)
     setAiBanner(null)
     setAiStage(null)
     setRows([])
     setDiscountRows([])
+    setExtraction(null)
+    setNormalizedFile(null)
+    setFailedRanges([])
+    setReported({ tickets: null, bushels: null, gross: null })
   }
+
+  // What the kept lines add up to, against the statement's printed figures
+  // and any page range still unread (lib/settlement-lines).
+  const captured = useMemo(() => {
+    const kept = rows.filter((r) => !r.excluded)
+    return {
+      tickets: kept.length,
+      bushels: kept.reduce((s, r) => s + (num(r.net_bushels) ?? 0), 0),
+      gross: kept.reduce((s, r) => s + (num(r.gross_revenue) ?? 0), 0),
+      net: kept.reduce((s, r) => s + computed(r).netRev, 0),
+    }
+  }, [rows])
+  const completeness = useMemo(() => settlementCompleteness({
+    capturedTickets: captured.tickets,
+    reportedTickets: reported.tickets,
+    capturedBushels: captured.bushels,
+    reportedBushels: reported.bushels,
+    capturedGross: captured.gross,
+    reportedGross: reported.gross,
+    capturedNet: captured.net,
+    reportedNet: num(reportedTotal),
+    failedRanges,
+  }), [captured, reported, reportedTotal, failedRanges])
+  const incomplete = extraction != null && !completeness.ok
 
   function updateRow(i: number, patch: Partial<RowDraft>) {
     setRows((rs) => rs.map((r, j) => (i === j ? { ...r, ...patch } : r)))
@@ -580,6 +691,23 @@ export default function NewSettlementPage() {
         ),
         confirmLabel: 'Save anyway',
         cancelLabel: 'Cancel',
+        danger: true,
+      })
+      if (!ok) return
+    }
+    // Completeness guard: a read that disagrees with the statement's own
+    // count or totals, or still has unread pages, saves only on purpose.
+    if (incomplete) {
+      const ok = await confirm({
+        title: 'Save partial settlement?',
+        body: (
+          <div className="space-y-2">
+            <p>{completeness.text}</p>
+            <p>What is saved now will stand as the whole settlement on the Cash Flow and Contracts pages. Read the missing pages again first, or add the rows by hand.</p>
+          </div>
+        ),
+        confirmLabel: 'Save partial settlement',
+        cancelLabel: 'Go back',
         danger: true,
       })
       if (!ok) return
@@ -849,6 +977,27 @@ export default function NewSettlementPage() {
             {aiBanner}
           </div>
         )}
+        {/* Completeness (lib/settlement-lines): the lines vs the statement's
+            own count and totals, plus any pages the read gave up on. */}
+        {incomplete && (
+          <div className="rounded-lg bg-red-50 border border-red-300 px-3 py-2 text-sm text-red-900 space-y-2" role="alert">
+            <p className="font-semibold">This statement was not read completely.</p>
+            <p>{completeness.text}</p>
+            <div className="flex flex-wrap items-center gap-3">
+              {failedRanges.length > 0 && (normalizedFile || source?.kind === 'images') && (
+                <button
+                  type="button"
+                  onClick={rereadFailedPages}
+                  disabled={rereading || !!aiStage}
+                  className="rounded-lg bg-red-700 hover:bg-red-800 text-white px-4 min-h-11 text-sm font-semibold disabled:opacity-50"
+                >
+                  {rereading ? 'Reading…' : 'Read those pages again'}
+                </button>
+              )}
+              <span className="text-xs">Saving will ask you to confirm a partial settlement.</span>
+            </div>
+          </div>
+        )}
         {/* 086 — header contract + payment facts from the statement / check page. */}
         {(contractNumber || payment.payment_number || payment.check_number || payment.payment_date) && (
           <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">
@@ -1049,6 +1198,19 @@ export default function NewSettlementPage() {
                   {rec.mismatch === true && <span className="font-semibold">— off by {fmtUsd(Math.abs(rec.delta ?? 0), 2)}. Check for a missed or doubled line.</span>}
                   {rec.mismatch === false && <span className="font-semibold">— matches.</span>}
                   {rec.mismatch == null && <span>— enter the statement&rsquo;s total to check the lines add up.</span>}
+                  {(reported.tickets != null || reported.bushels != null || reported.gross != null) && (
+                    <span className="basis-full flex flex-wrap gap-x-3 gap-y-0.5">
+                      {reported.tickets != null && (
+                        <span className={completeness.missingTickets ? 'font-semibold' : ''}>Tickets <span className="tabular-nums">{fmtInt(captured.tickets)}</span> of <span className="tabular-nums">{fmtInt(reported.tickets)}</span> printed</span>
+                      )}
+                      {reported.bushels != null && (
+                        <span className={completeness.bushelsDelta != null && Math.abs(completeness.bushelsDelta) > 1 ? 'font-semibold' : ''}>Bushels <span className="tabular-nums">{fmtNum(captured.bushels, 3)}</span> of <span className="tabular-nums">{fmtNum(reported.bushels, 3)}</span> printed</span>
+                      )}
+                      {reported.gross != null && (
+                        <span className={completeness.grossDelta != null && Math.abs(completeness.grossDelta) > 0.5 ? 'font-semibold' : ''}>Gross <span className="tabular-nums">{fmtUsd(captured.gross, 2)}</span> of <span className="tabular-nums">{fmtUsd(reported.gross, 2)}</span> printed</span>
+                      )}
+                    </span>
+                  )}
                 </div>
               )
             })()}
@@ -1215,6 +1377,7 @@ export default function NewSettlementPage() {
           {!buyerId && <span className="text-xs text-slate-500">Pick a buyer to save.</span>}
           {buyerId && rows.length === 0 && <span className="text-xs text-slate-500">Add at least one line to save.</span>}
           {buyerId && rows.length > 0 && (duplicateHeader || dupVerdict.paid > 0) && <span className="text-xs text-red-700">Saving asks you to confirm — this looks already paid.</span>}
+          {buyerId && incomplete && !(duplicateHeader || dupVerdict.paid > 0) && <span className="text-xs text-red-700">Saving asks you to confirm — the statement was not read completely.</span>}
         </div>
       </div>
       {dialogs}

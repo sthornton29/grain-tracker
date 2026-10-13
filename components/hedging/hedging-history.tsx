@@ -4,14 +4,25 @@
 // first, each expandable to its full detail. Used by the hedging page's
 // History view, each position's detail dialog, and the Hedging Summary
 // report's "Hedging activity" section (report styling via `report`).
+// The History view hands in `groups` so the lines a brokerage statement
+// wrote sit under one header (with its Undo action) — 0095.
 
 import { useState } from 'react'
 import { fmtPnl } from '@/lib/hedging'
 import { fmtMd, type TimelineLine } from '@/lib/hedge-events'
 import { signedTone, toneText, theadCls } from '@/components/reports/report-kit'
 
+export type HistoryGroup = {
+  key: string
+  /** A header row above the group's lines (none → the lines run on plainly). */
+  header?: React.ReactNode
+  lines: TimelineLine[]
+}
+
 type Props = {
   lines: TimelineLine[]
+  /** Optional grouping; when given, `lines` only decides the empty state. */
+  groups?: HistoryGroup[]
   /** Report styling (report-kit header row, no card chrome). */
   report?: boolean
   emptyText?: string
@@ -36,12 +47,42 @@ const KIND_LABEL: Record<string, string> = {
   partial_close: 'Partial close', imported: 'Import', edited: 'Edit', crop_year_changed: 'Crop year', deleted: 'Delete',
 }
 
-export default function HedgingHistory({ lines, report, emptyText, renderAction }: Props) {
+export default function HedgingHistory({ lines, groups, report, emptyText, renderAction }: Props) {
   const [open, setOpen] = useState<Set<string>>(new Set())
   const toggle = (id: string) => setOpen((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
 
   if (lines.length === 0) {
     return <div className={`px-4 py-6 text-sm text-slate-400 ${report ? '' : ''}`}>{emptyText ?? 'No hedging activity yet.'}</div>
+  }
+  const sections: HistoryGroup[] = groups ?? [{ key: 'all', lines }]
+  const colCount = renderAction ? 5 : 4
+
+  const renderLine = (l: TimelineLine) => {
+    const expanded = open.has(l.id)
+    return (
+      <tr key={l.id} className="border-t border-slate-100 align-top">
+        <td className="px-3 py-2 whitespace-nowrap font-mono text-slate-600">{fmtMd(l.date)}</td>
+        <td className="px-3 py-2 whitespace-nowrap">
+          <span className={`text-[11px] rounded-full px-2 py-0.5 ${KIND_CHIP[l.kind] ?? 'bg-slate-200 text-slate-700'}`}>{KIND_LABEL[l.kind] ?? l.kind}</span>
+        </td>
+        <td className="px-3 py-2">
+          <button type="button" onClick={() => toggle(l.id)} className="text-left hover:text-brand-deep min-h-8" aria-expanded={expanded}>
+            <span className="mr-1 inline-block w-3 text-slate-400 no-print">{expanded ? '▾' : '▸'}</span>
+            {l.headline}
+          </button>
+          <span className="text-slate-400"> · {l.sourceLabel}</span>
+          {expanded && (
+            <ul className="mt-1.5 ml-4 space-y-0.5 text-xs text-slate-600 list-disc pl-4">
+              {l.detail.map((d, i) => <li key={i}>{d}</li>)}
+            </ul>
+          )}
+        </td>
+        <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${l.realized == null ? 'text-slate-300' : toneText(signedTone(l.realized))}`}>
+          {l.realized == null ? '—' : fmtPnl(l.realized)}
+        </td>
+        {renderAction && <td className="px-3 py-2 whitespace-nowrap text-right no-print">{renderAction(l)}</td>}
+      </tr>
+    )
   }
 
   return (
@@ -56,42 +97,17 @@ export default function HedgingHistory({ lines, report, emptyText, renderAction 
             {renderAction && <th className="px-3 py-2 no-print" />}
           </tr>
         </thead>
-        <tbody>
-          {lines.map((l) => {
-            const expanded = open.has(l.id)
-            return (
-              <FragmentRows key={l.id}>
-                <tr className="border-t border-slate-100 align-top">
-                  <td className="px-3 py-2 whitespace-nowrap font-mono text-slate-600">{fmtMd(l.date)}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">
-                    <span className={`text-[11px] rounded-full px-2 py-0.5 ${KIND_CHIP[l.kind] ?? 'bg-slate-200 text-slate-700'}`}>{KIND_LABEL[l.kind] ?? l.kind}</span>
-                  </td>
-                  <td className="px-3 py-2">
-                    <button type="button" onClick={() => toggle(l.id)} className="text-left hover:text-brand-deep min-h-8" aria-expanded={expanded}>
-                      <span className="mr-1 inline-block w-3 text-slate-400 no-print">{expanded ? '▾' : '▸'}</span>
-                      {l.headline}
-                    </button>
-                    <span className="text-slate-400"> · {l.sourceLabel}</span>
-                    {expanded && (
-                      <ul className="mt-1.5 ml-4 space-y-0.5 text-xs text-slate-600 list-disc pl-4">
-                        {l.detail.map((d, i) => <li key={i}>{d}</li>)}
-                      </ul>
-                    )}
-                  </td>
-                  <td className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${l.realized == null ? 'text-slate-300' : toneText(signedTone(l.realized))}`}>
-                    {l.realized == null ? '—' : fmtPnl(l.realized)}
-                  </td>
-                  {renderAction && <td className="px-3 py-2 whitespace-nowrap text-right no-print">{renderAction(l)}</td>}
-                </tr>
-              </FragmentRows>
-            )
-          })}
-        </tbody>
+        {sections.map((g) => (
+          <tbody key={g.key} className={g.header ? 'border-t-2 border-slate-200' : undefined}>
+            {g.header && (
+              <tr className="bg-sky-50/60">
+                <td colSpan={colCount} className="px-3 py-2">{g.header}</td>
+              </tr>
+            )}
+            {g.lines.map(renderLine)}
+          </tbody>
+        ))}
       </table>
     </div>
   )
-}
-
-function FragmentRows({ children }: { children: React.ReactNode; key?: string }) {
-  return <>{children}</>
 }

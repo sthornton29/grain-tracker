@@ -150,6 +150,120 @@ export function possiblyClosedFutures<T extends { id: string; status: string; co
   )
 }
 
+// ---------- Closed offset groups vs stored positions ----------
+
+export type ClosedLotMatchInput = {
+  /** YYYY-MM-DD */
+  open_date: string
+  open_price: number
+  contracts: number
+}
+
+export type ClosedLotMatch = {
+  open_trade_date: string
+  /** The matched position's entry (fromDb) or the statement's. */
+  open_price: number
+  num_contracts: number
+  /** The open stored position this lot closes, if any. */
+  matchedOpenId: string | null
+  /** open_price / num_contracts taken from the matched stored position. */
+  fromDb: boolean
+  /** Contracts the matched position holds (a lot closing fewer is a partial close). */
+  heldContracts: number | null
+  /** The lot is already a stored closed row (same open date/price, close date/price). */
+  alreadyImported: boolean
+  closedRowId: string | null
+  crop_year: string
+}
+
+export type StoredPositionForMatch = {
+  id: string
+  status: string
+  commodity: string
+  contract_month: string
+  side: Side
+  num_contracts: number
+  trade_price: number
+  trade_date: string
+  close_price?: number | null
+  close_date?: string | null
+  crop_year?: number | string | null
+}
+
+/**
+ * Match one offset group's opening lots to stored positions — the ONE rule
+ * the review and its tests share. Per lot: already a stored CLOSED row (same
+ * open date, open price within tolerance, same close date and close price) →
+ * alreadyImported; otherwise an OPEN stored position in the same commodity +
+ * month with the same open date (price preferred, not required — the stored
+ * entry is authoritative) → matchedOpenId, with the stored price and size
+ * anchoring the math; a lot closing fewer than held keeps its own count (a
+ * partial close). `usedOpenIds` stops two lots claiming one position.
+ */
+export function matchClosedGroupLots<T extends StoredPositionForMatch>(
+  group: { commodity: string; contract_month: string; close_date: string; close_price: number; lots: readonly ClosedLotMatchInput[] },
+  existing: readonly T[],
+  usedOpenIds: Set<string> = new Set(),
+): { lots: ClosedLotMatch[]; matchedSides: Side[] } {
+  const month = group.contract_month.trim().toUpperCase()
+  const closeDate = normalizeTradeDate(group.close_date)
+  const lots: ClosedLotMatch[] = []
+  const matchedSides: Side[] = []
+  for (const lot of group.lots) {
+    const lotOpenDate = normalizeTradeDate(lot.open_date)
+    const alreadyImportedRow = existing.find(
+      (ex) =>
+        ex.status === 'closed' &&
+        ex.commodity === group.commodity &&
+        ex.contract_month.trim().toUpperCase() === month &&
+        normalizeTradeDate(ex.trade_date) === lotOpenDate &&
+        pricesMatch(Number(ex.trade_price), lot.open_price) &&
+        normalizeTradeDate(ex.close_date) === closeDate &&
+        pricesMatch(ex.close_price == null ? null : Number(ex.close_price), group.close_price),
+    )
+    const alreadyImported = alreadyImportedRow != null
+    let matchedOpenId: string | null = null
+    let fromDb = false
+    let heldContracts: number | null = null
+    let open_price = lot.open_price
+    let num_contracts = lot.contracts
+    let crop_year = ''
+    if (!alreadyImported) {
+      const candidates = existing.filter(
+        (ex) =>
+          ex.status === 'open' &&
+          ex.commodity === group.commodity &&
+          ex.contract_month.trim().toUpperCase() === month &&
+          normalizeTradeDate(ex.trade_date) === lotOpenDate &&
+          !usedOpenIds.has(ex.id),
+      )
+      const match = candidates.find((c) => pricesMatch(Number(c.trade_price), lot.open_price)) ?? candidates[0]
+      if (match) {
+        matchedOpenId = match.id
+        fromDb = true
+        matchedSides.push(match.side)
+        open_price = Number(match.trade_price)
+        heldContracts = match.num_contracts
+        num_contracts = lot.contracts < match.num_contracts ? lot.contracts : match.num_contracts
+        crop_year = match.crop_year != null ? String(match.crop_year) : ''
+        usedOpenIds.add(match.id)
+      }
+    }
+    lots.push({
+      open_trade_date: lot.open_date,
+      open_price,
+      num_contracts,
+      matchedOpenId,
+      fromDb,
+      heldContracts,
+      alreadyImported,
+      closedRowId: alreadyImportedRow?.id ?? null,
+      crop_year,
+    })
+  }
+  return { lots, matchedSides }
+}
+
 // The side of a closed offset group that closes existing DB positions is
 // dictated by those positions — a group that closes short positions IS a short
 // group, whatever the extraction said. When every matched position agrees on

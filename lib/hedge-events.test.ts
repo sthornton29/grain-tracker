@@ -165,3 +165,96 @@ describe('083 ledger wiring — every mutation path appends', () => {
     expect(sql).toMatch(/grant execute on function public\.hedge_execute_roll\(jsonb\) to authenticated/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// 0095: a roll with SEVERAL new-month fills (the 10/12/2026 statement rolled
+// 23 DEC 26 cotton shorts into MAR 27 as 3 @ 83.63, 12 @ 83.64, 3 @ 83.65,
+// 3 @ 83.67, 2 @ 83.68) is ONE line; notes the ledger carries show up.
+// ---------------------------------------------------------------------------
+describe('multi-fill roll (0095) collapses into one line', () => {
+  const imp = { source: 'statement_import' as const, statement_date: '2026-10-12', statement_ref: 'StoneX', commodity: 'Cotton', roll_group_id: 'gc' }
+  const dec10 = ev({ ...imp, id: 'c1', position_id: 'dec10', event_type: 'roll_close', occurred_at: '2026-10-12', contract_month: 'DEC 26', contract_symbol: 'CTZ26', quantity: 10, price: 72.65, close_price: 80.45739, realized_pnl: -39036.96, recorded_at: '2026-10-13T15:00:00Z', after_snapshot: { execution_code: 'SE' } })
+  const dec13 = ev({ ...imp, id: 'c2', position_id: 'dec13', event_type: 'roll_close', occurred_at: '2026-10-12', contract_month: 'DEC 26', contract_symbol: 'CTZ26', quantity: 13, price: 84.4, close_price: 80.45739, realized_pnl: 25626.96, recorded_at: '2026-10-13T15:00:01Z', after_snapshot: { execution_code: 'SE' } })
+  const fills = [[3, 83.63], [12, 83.64], [3, 83.65], [3, 83.67], [2, 83.68]].map(([q, p], i) =>
+    ev({ ...imp, id: `o${i}`, position_id: `mar${i}`, event_type: 'roll_open', occurred_at: '2026-10-12', related_position_id: 'dec10', contract_month: 'MAR 27', contract_symbol: 'CTH27', quantity: q, price: p, recorded_at: `2026-10-13T15:00:0${2 + i}Z`, after_snapshot: { execution_code: 'SE' }, note: 'Save anyway, I’ve checked' }),
+  )
+
+  it('one roll_close pair + five roll_opens in one group = one "Rolled" line with the fills and the spread', () => {
+    const lines = buildHedgeTimeline([dec10, dec13, ...fills])
+    expect(lines).toHaveLength(1)
+    const [line] = lines
+    expect(line.kind).toBe('roll')
+    // Weighted close 80.45739, weighted open 83.647391 → spread +3.190001 ¢/lb ($0.0319).
+    expect(line.headline).toBe('Rolled 23 DEC 26 → MAR 27 cotton in 5 fills, spread +$0.0319 · ($13,410.00) realized')
+    expect(line.realized).toBeCloseTo(-13410, 2)
+    expect(line.positionIds.sort()).toEqual(['dec10', 'dec13', 'mar0', 'mar1', 'mar2', 'mar3', 'mar4'])
+    expect(line.events).toHaveLength(7)
+    expect(line.detail[0]).toBe('Closed DEC 26 @ $0.8046 → ($13,410.00) realized; opened MAR 27 in 5 fills @ $0.8363–$0.8368 (avg $0.8365), spread +$0.0319 (spread order)')
+    expect(line.detail[1]).toBe('Crop year 2026 (inherited by the new leg)')
+    // The override note is shown once, not once per leg.
+    expect(line.detail.filter((d) => d.includes('Save anyway'))).toEqual(['Note: Save anyway, I’ve checked'])
+    expect(line.detail.some((d) => d.startsWith('MAR 27 fill 12 @ $0.8364 leg:'))).toBe(true)
+  })
+
+  it('the single-fill roll line is unchanged by the multi-fill support', () => {
+    const [line] = buildHedgeTimeline([ROLL_CLOSE, ROLL_OPEN])
+    expect(line.headline).toBe('Rolled 14 DEC 26 → MAR 27 corn · ($33,775.00) realized')
+    expect(line.detail[0]).toBe('Closed DEC 26 @ $5.435 → ($33,775.00) realized; opened MAR 27 @ $5.585 (spread order)')
+  })
+
+  it('an undo note rides on the deleted line and in the detail', () => {
+    const del = ev({ id: 'd1', position_id: 'mar1', event_type: 'deleted', occurred_at: '2026-10-14', source: 'manual', statement_date: '2026-10-12', statement_ref: 'StoneX', commodity: 'Cotton', contract_month: 'MAR 27', quantity: 12, price: 83.64, note: 'undid import of StoneX 10/12/2026', recorded_at: '2026-10-14T09:00:00Z' })
+    const [line] = buildHedgeTimeline([del])
+    expect(line.headline).toBe('Deleted short 12 MAR 27 cotton @ $0.8364 (undid import of StoneX 10/12/2026)')
+    expect(line.detail).toContain('Note: undid import of StoneX 10/12/2026')
+    expect(line.sourceLabel).toBe('entered by hand')
+  })
+})
+
+// 0095 replaces the trigger and the roll RPC and adds the undo. The same
+// wiring guarantees hold in the new text: three inserts, every event type,
+// the note setting read, the undo stamping source 'manual', the roll taking
+// several open legs.
+describe('0095 ledger wiring — note setting, multi-open rolls, undo', () => {
+  const sql = readFileSync(join(process.cwd(), 'supabase', 'migrations', '0095_hedge_import_guards.sql'), 'utf8')
+  const fn = sql.slice(sql.indexOf('create or replace function public.hedge_position_event_trigger'), sql.indexOf('-- 2. hedge_execute_roll'))
+
+  it('the trigger still inserts exactly once per DELETE / INSERT / UPDATE and emits every event type', () => {
+    expect(fn).toMatch(/if tg_op = 'DELETE' then/)
+    expect(fn).toMatch(/if tg_op = 'INSERT' then/)
+    expect(fn).toMatch(/-- UPDATE/)
+    for (const t of ['opened', 'closed', 'partial_close', 'roll_close', 'roll_open', 'edited', 'deleted', 'crop_year_changed', 'imported']) {
+      expect(fn, `event type ${t} is never emitted`).toMatch(new RegExp(`'${t}'`))
+    }
+    expect(fn.split(/insert into public\.hedge_position_events/).slice(0, -1).length).toBe(3)
+    expect(fn).toMatch(/if o = n then\s+return NEW; -- nothing changed: no event/)
+  })
+
+  it('the trigger reads the note setting and writes it on every event', () => {
+    expect(fn).toMatch(/gnote text := nullif\(current_setting\('turnrow\.hedge_event_note', true\), ''\)/)
+    // DELETE and INSERT write gnote directly; UPDATE folds it into nt.
+    expect((fn.match(/, gnote\);/g) ?? []).length).toBe(2)
+    expect(fn).toMatch(/nt := case when nt is null then gnote else nt \|\| ' — ' \|\| gnote end/)
+  })
+
+  it('hedge_undo_import exists, is authenticated-only, and stamps source manual with the undo note', () => {
+    const undo = sql.slice(sql.indexOf('create or replace function public.hedge_undo_import'))
+    expect(undo).toMatch(/if auth\.uid\(\) is null then\s+raise exception 'sign in required'/)
+    expect(undo).toMatch(/set_config\('turnrow\.hedge_event_source', 'manual', true\)/)
+    expect(undo).toMatch(/set_config\('turnrow\.hedge_event_note', coalesce\(p_note, 'undid import of '/)
+    expect(undo).toMatch(/these positions changed after the import, so it cannot be undone: %/)
+    expect(undo).toMatch(/using errcode = 'check_violation'/)
+    expect(undo).toMatch(/revoke all on function public\.hedge_undo_import\(date, text, text\) from public, anon/)
+    expect(undo).toMatch(/grant execute on function public\.hedge_undo_import\(date, text, text\) to authenticated/)
+  })
+
+  it('hedge_execute_roll accepts several open legs (`opens` or an `open` array) and links each to the anchor', () => {
+    const roll = sql.slice(sql.indexOf('create or replace function public.hedge_execute_roll'), sql.indexOf('-- 3. hedge_undo_import'))
+    expect(roll).toMatch(/opens := coalesce\(payload -> 'opens', payload -> 'open'\)/)
+    expect(roll).toMatch(/opens := case when jsonb_typeof\(opens\) = 'array' then opens else jsonb_build_array\(opens\) end/)
+    expect(roll).toMatch(/for o in select \* from jsonb_array_elements\(opens\) loop/)
+    expect(roll).toMatch(/'opened_position_ids', to_jsonb\(opened_ids\)/)
+    expect(roll).toMatch(/set_config\('turnrow\.hedge_event_note', coalesce\(gnote, ''\), true\)/)
+    expect(roll).toMatch(/set_config\('turnrow\.hedge_event_source', src, true\)/)
+  })
+})

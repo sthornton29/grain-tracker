@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { flagSummaryLines, reconcileLines, SUMMARY_LINE_REASON } from '@/lib/settlement-lines'
+import { describeRanges, flagSummaryLines, reconcileLines, settlementCompleteness, SUMMARY_LINE_REASON } from '@/lib/settlement-lines'
 import { mergeSettlements } from '@/lib/parse-merge'
 import type { SettlementExtraction } from '@/lib/pdf-upload'
 
@@ -92,6 +92,50 @@ describe('each rule on its own', () => {
       { ticket_number: '3', net_bushels: 1000, gross_revenue: 4500, discounts: 0 },
     ]
     expect(flagSummaryLines(lines, { settlementNumber: '7' }).every((x) => !x.flagged)).toBe(true)
+  })
+})
+
+describe('settlementCompleteness — the review banner and the partial-save guard', () => {
+  const whole = { capturedTickets: 94, reportedTickets: 94, capturedBushels: 99451.424, reportedBushels: 99451.424, capturedGross: 467670.35, reportedGross: 467670.35, capturedNet: 466675.78, reportedNet: 466675.78, failedRanges: [] }
+
+  it('everything agrees: ok, no text', () => {
+    const c = settlementCompleteness(whole)
+    expect(c).toEqual({ ok: true, missingTickets: 0, bushelsDelta: 0, grossDelta: 0, netDelta: 0, text: null })
+  })
+
+  it('13 of 94 after the first chunk was lost: the exact banner copy', () => {
+    const c = settlementCompleteness({ ...whole, capturedTickets: 13, capturedBushels: 13_800.5, capturedGross: 64_897.35, capturedNet: 64_759.35, failedRanges: [{ from: 1, to: 6 }] })
+    expect(c.ok).toBe(false)
+    expect(c.missingTickets).toBe(81)
+    expect(c.text).toBe(
+      'Captured 13 of 94 tickets. Pages 1 to 6 returned no tickets. ' +
+      'The lines add up to 13,801 bu; the statement prints 99,451 bu. ' +
+      'Gross on the lines is $64,897.35; the statement prints $467,670.35. ' +
+      'Net on the lines is $64,759.35; the statement prints $466,675.78.',
+    )
+  })
+
+  it('a failed range alone is enough to block, even when nothing was printed to compare', () => {
+    const c = settlementCompleteness({ capturedTickets: 5, reportedTickets: null, capturedBushels: 0, reportedBushels: null, capturedGross: 0, reportedGross: null, capturedNet: 0, reportedNet: null, failedRanges: [{ from: 8, to: 8 }] })
+    expect(c).toMatchObject({ ok: false, missingTickets: null, bushelsDelta: null, text: 'Page 8 returned no tickets.' })
+  })
+
+  it('more lines than printed is a disagreement too; rounding noise is not', () => {
+    expect(settlementCompleteness({ ...whole, capturedTickets: 95 }).text).toBe('Captured 95 of 94 tickets.')
+    expect(settlementCompleteness({ ...whole, capturedBushels: 99451.9, capturedGross: 467670.6, capturedNet: 466675.4 }).ok).toBe(true)
+    expect(settlementCompleteness({ ...whole, capturedNet: 466_000 }).text).toBe('Net on the lines is $466,000.00; the statement prints $466,675.78.')
+  })
+
+  it('nothing printed and nothing failed: a hand-typed settlement is fine', () => {
+    expect(settlementCompleteness({ capturedTickets: 3, reportedTickets: null, capturedBushels: 10, reportedBushels: null, capturedGross: 10, reportedGross: null, capturedNet: 10, reportedNet: undefined, failedRanges: [] }).ok).toBe(true)
+  })
+
+  it('describeRanges', () => {
+    expect(describeRanges([{ from: 1, to: 6 }])).toBe('Pages 1 to 6')
+    expect(describeRanges([{ from: 8, to: 8 }])).toBe('Page 8')
+    expect(describeRanges([{ from: 1, to: 6 }, { from: 8, to: 8 }])).toBe('Pages 1 to 6 and 8')
+    expect(describeRanges([{ from: 1, to: 2 }, { from: 4, to: 4 }, { from: 7, to: 8 }])).toBe('Pages 1 to 2, 4 and 7 to 8')
+    expect(describeRanges([])).toBe('')
   })
 })
 

@@ -247,3 +247,34 @@ describe('mergeCottonMarketing', () => {
     expect(mergeCottonMarketing([one])).toBe(one)
   })
 })
+
+describe('mergeBrokerage — natural keys (2026-10-13)', () => {
+  const empty: BrokerageStatementExtraction = {
+    statement_date: null, open_positions: [], closed_groups: [], closed_trades: [],
+    open_options: [], closed_options: [], account_summary: null,
+  }
+  it('a closed group straddling a chunk boundary merges its lots instead of dropping the second half', () => {
+    const head = { commodity: 'Cotton', contract_month: 'DEC 26', side: 'short' as const, close_date: '2026-10-12', close_price: 80.45739, statement_reported_total: null, close_execution_code: 'SE' }
+    const merged = mergeBrokerage([
+      { ...empty, closed_groups: [{ ...head, lots: [{ open_date: '2026-03-18', open_price: 72.65, contracts: 10 }] }] },
+      { ...empty, closed_groups: [{ ...head, lots: [{ open_date: '2026-03-18', open_price: 72.65, contracts: 10 }, { open_date: '2026-08-10', open_price: 84.4, contracts: 13 }], statement_reported_total: -13410, statement_reported_contracts: 23, fees: 531.53 }] },
+    ])
+    expect(merged.closed_groups).toHaveLength(1)
+    expect(merged.closed_groups![0].lots).toHaveLength(2)
+    expect(merged.closed_groups![0].statement_reported_total).toBe(-13410)
+    expect(merged.closed_groups![0].statement_reported_contracts).toBe(23)
+    expect(merged.closed_groups![0].fees).toBe(531.53)
+  })
+  it('open rows key on commodity|month|side|date|price|qty|code; subtotals on commodity|month|side; confirmation fills on their full print', () => {
+    const pos = { trade_date: '2026-10-12', side: 'short' as const, num_contracts: 3, commodity: 'Cotton', contract_month: 'MAR 27', trade_price: 83.63, unrealized_pnl: -270, execution_code: 'SE' }
+    const sub = { commodity: 'Cotton', contract_month: 'MAR 27', side: 'short' as const, contracts: 23, close_price: 83.81, open_trade_equity: -1870 }
+    const fill = { trade_date: '2026-10-12', side: 'sell' as const, num_contracts: 3, commodity: 'Cotton', contract_month: 'MAR 27', trade_price: 83.63, execution_code: 'SE' }
+    const merged = mergeBrokerage([
+      { ...empty, open_positions: [pos], open_position_subtotals: [sub], confirmation_trades: [fill] },
+      { ...empty, open_positions: [{ ...pos, unrealized_pnl: -271 }, { ...pos, trade_price: 83.64 }], open_position_subtotals: [{ ...sub, contracts: 24 }], confirmation_trades: [fill, { ...fill, num_contracts: 12 }] },
+    ])
+    expect(merged.open_positions).toHaveLength(2)
+    expect(merged.open_position_subtotals).toHaveLength(1)
+    expect(merged.confirmation_trades).toHaveLength(2)
+  })
+})

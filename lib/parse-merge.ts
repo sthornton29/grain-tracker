@@ -12,6 +12,10 @@
 // tested (lib/parse-merge.test.ts).
 
 import type {
+  BrokerageClosedGroup,
+  BrokerageClosedGroupLot,
+  BrokerageClosingFill,
+  BrokerageOpenPosition,
   BrokerageStatementExtraction,
   ContractExtraction,
   CottonLoadsExtraction,
@@ -28,6 +32,7 @@ import type {
 import type { CottonMarketingExtraction, CottonMarketingExtracted } from '@/lib/cotton-doc-import'
 import { normalizePbi } from '@/lib/cotton-doc-import'
 import { numberKey } from '@/lib/number-key'
+import { normalizeSettlementExtraction } from '@/lib/pdf-upload'
 
 // ---------- generic helpers ----------
 
@@ -92,7 +97,11 @@ export function mergeTickets(parts: TicketsExtraction[]): TicketsExtraction {
   }
 }
 
-export function mergeSettlements(parts: SettlementExtraction[]): SettlementExtraction {
+export function mergeSettlements(rawParts: SettlementExtraction[]): SettlementExtraction {
+  // Each part may still carry the model's nested contract_blocks (nulls
+  // omitted): flatten to the line shape first, so the dedupe keys below see
+  // every line's contract and every key is present.
+  const parts = rawParts.map((p) => normalizeSettlementExtraction(p))
   // Discount items: an EXACT category+description+amount repeat across a
   // chunk boundary is the same printed line seen twice — drop it. Different
   // amounts under the same category+description are per-chunk PARTIAL sums
@@ -135,6 +144,8 @@ export function mergeSettlements(parts: SettlementExtraction[]): SettlementExtra
     statement_reported_total: firstValue(parts, (p) => p.statement_reported_total ?? null),
     statement_reported_bushels: firstValue(parts, (p) => p.statement_reported_bushels ?? null),
     statement_reported_gross: firstValue(parts, (p) => p.statement_reported_gross ?? null),
+    // "No. Tickets: 94" prints once; the completeness guard reads it.
+    statement_reported_ticket_count: firstValue(parts, (p) => p.statement_reported_ticket_count ?? null),
     // The contract summary block prints once (Woodall: the last page).
     contract_summary: firstValue(parts, (p) => p.contract_summary ?? null),
   }
@@ -177,12 +188,53 @@ export function mergeSeedContracts(parts: SeedContractExtraction[]): SeedContrac
 }
 
 export function mergeBrokerage(parts: BrokerageStatementExtraction[]): BrokerageStatementExtraction {
+  // Natural keys (2026-10-13): an open fill is commodity|month|side|date|
+  // price|qty|code; a closed offset group is commodity|month|side|close_date
+  // — a group that straddles a chunk boundary comes back from both chunks
+  // with part of its lots each, so the lots MERGE (deduped on their own
+  // date|price|qty) instead of the second chunk's copy being dropped; a
+  // subtotal line is commodity|month|side. lib/statement-lots does the
+  // tolerant, statement-aware reconciliation afterwards.
+  const px = (v: number | null | undefined) => (v == null ? '' : String(Math.round(Number(v) * 1e6) / 1e6))
+  const openKey = (p: BrokerageOpenPosition) =>
+    `${norm(p.commodity)}|${norm(p.contract_month)}|${norm(p.side)}|${norm(p.trade_date)}|${px(p.trade_price)}|${p.num_contracts ?? ''}|${norm(p.execution_code)}`
+  const groupKey = (g: BrokerageClosedGroup) => `${norm(g.commodity)}|${norm(g.contract_month)}|${norm(g.side)}|${norm(g.close_date)}`
+  const lotKey = (l: BrokerageClosedGroupLot) => `${norm(l.open_date)}|${px(l.open_price)}|${l.contracts ?? ''}`
+  const fillKey = (f: BrokerageClosingFill) => `${norm(f.date)}|${px(f.price)}|${f.contracts ?? ''}`
+
+  const groups = new Map<string, BrokerageClosedGroup>()
+  for (const part of parts) {
+    for (const g of part.closed_groups ?? []) {
+      const key = groupKey(g)
+      const prev = groups.get(key)
+      if (!prev) {
+        groups.set(key, { ...g, lots: [...(g.lots ?? [])], closing_fills: g.closing_fills ? [...g.closing_fills] : g.closing_fills })
+        continue
+      }
+      prev.lots = mergeList([prev.lots ?? [], g.lots ?? []], lotKey)
+      if (g.closing_fills?.length) prev.closing_fills = mergeList([prev.closing_fills ?? [], g.closing_fills], fillKey)
+      prev.close_price = prev.close_price ?? g.close_price
+      prev.statement_reported_total = prev.statement_reported_total ?? g.statement_reported_total
+      prev.statement_reported_contracts = prev.statement_reported_contracts ?? g.statement_reported_contracts
+      prev.fees = prev.fees ?? g.fees
+      prev.close_execution_code = prev.close_execution_code ?? g.close_execution_code
+    }
+  }
+
   return {
     statement_date: firstValue(parts, (p) => p.statement_date),
     broker: firstValue(parts, (p) => p.broker ?? null),
-    open_positions: mergeList(parts.map((p) => p.open_positions ?? [])),
-    closed_groups: mergeList(parts.map((p) => p.closed_groups ?? [])),
+    open_positions: mergeList(parts.map((p) => p.open_positions ?? []), openKey),
+    closed_groups: [...groups.values()],
     closed_trades: mergeList(parts.map((p) => p.closed_trades ?? [])),
+    confirmation_trades: mergeList(
+      parts.map((p) => p.confirmation_trades ?? []),
+      (t) => `${norm(t.commodity)}|${norm(t.contract_month)}|${norm(t.side)}|${norm(t.trade_date)}|${px(t.trade_price)}|${t.num_contracts ?? ''}|${norm(t.execution_code)}`,
+    ),
+    open_position_subtotals: mergeList(
+      parts.map((p) => p.open_position_subtotals ?? []),
+      (s) => `${norm(s.commodity)}|${norm(s.contract_month)}|${norm(s.side)}`,
+    ),
     open_options: mergeList(parts.map((p) => p.open_options ?? [])),
     closed_options: mergeList(parts.map((p) => p.closed_options ?? [])),
     account_summary: firstValue(parts, (p) => p.account_summary),

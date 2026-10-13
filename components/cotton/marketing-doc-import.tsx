@@ -25,7 +25,8 @@ import DocumentCapture, { type DocumentSource } from '@/components/document-capt
 import { BuyerPicker } from '@/components/buyer-location-pickers'
 import EntitySelect from '@/components/entity-select'
 import { resolveUploadEntityId } from '@/lib/crop-insurance'
-import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { DEFAULT_MAX_TOKENS, parseDocumentChunked } from '@/lib/parse-chunked'
+import { planPagesPerBatch } from '@/lib/chunk-plan'
 import { mergeCottonMarketing } from '@/lib/parse-merge'
 import { findBestMatch } from '@/lib/fuzzy'
 import { formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
@@ -102,7 +103,7 @@ export default function MarketingDocImport(props: Props) {
       const { data: r, warning } = await parseDocumentChunked<CottonMarketingExtraction>(
         source.kind === 'pdf' ? source.file : source.images,
         'cotton_marketing_document',
-        { category, onProgress: setStage, merge: mergeCottonMarketing },
+        { category, pagesPerBatch: planPagesPerBatch({ documentType: 'cotton_marketing_document', maxTokens: DEFAULT_MAX_TOKENS }), onProgress: setStage, merge: mergeCottonMarketing },
       )
       if (warning) setErr(warning)
       setResult(r)

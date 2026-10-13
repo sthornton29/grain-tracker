@@ -65,3 +65,55 @@ describe('effectiveEntry — original entry ± cumulative roll spreads', () => {
     expect(lineageChain(MAR, [MAR]).map((p) => p.id)).toEqual(['mar'])
   })
 })
+
+// ---------------------------------------------------------------------------
+// 0095: one roll, SEVERAL new-month fills. The 10/12/2026 statement rolled
+// 23 DEC 26 cotton shorts (10 @ 72.65, 13 @ 84.40, both closed at the
+// 80.45739 average) into MAR 27 as five fills, every fill rolled_from the
+// anchor (the 10-lot) and sharing the roll group. Each MAR lot's sources are
+// the group's CLOSED legs — never its sibling fills — so each reads at
+// weighted DEC entry 79.29130 + (its price − 80.45739), and the
+// contract-weighted effective across the five lots is 82.48130 ¢/lb.
+// ---------------------------------------------------------------------------
+describe('multi-fill roll lineage (cotton, ¢/lb)', () => {
+  const DEC10: LineagePosition = { id: 'dec10', contract_month: 'DEC 26', trade_price: 72.65, trade_date: '2026-03-18', num_contracts: 10, status: 'closed', close_price: 80.45739, roll_group_id: 'gc', rolled_from_position_id: null }
+  const DEC13: LineagePosition = { id: 'dec13', contract_month: 'DEC 26', trade_price: 84.4, trade_date: '2026-08-10', num_contracts: 13, status: 'closed', close_price: 80.45739, roll_group_id: 'gc', rolled_from_position_id: null }
+  const FILLS: LineagePosition[] = ([[3, 83.63], [12, 83.64], [3, 83.65], [3, 83.67], [2, 83.68]] as const).map(([q, p], i) => ({
+    id: `mar${i}`, contract_month: 'MAR 27', trade_price: p, trade_date: '2026-10-12', num_contracts: q, status: 'open', roll_group_id: 'gc', rolled_from_position_id: 'dec10',
+  }))
+  const ALL = [DEC10, DEC13, ...FILLS]
+  const WEIGHTED_DEC = (10 * 72.65 + 13 * 84.4) / 23 // 79.291304…
+
+  it('every fill rolled from the group’s closed legs only — sibling fills never leak in', () => {
+    for (const fill of FILLS) {
+      expect(rolledFromLegs(fill, ALL).map((l) => l.id).sort()).toEqual(['dec10', 'dec13'])
+    }
+    expect(rolledIntoLegs(DEC10, ALL).map((l) => l.id)).toEqual(FILLS.map((f) => f.id))
+  })
+
+  it('each MAR lot = weighted DEC entry 79.29130 + (its price − 80.45739)', () => {
+    for (const fill of FILLS) {
+      const e = effectiveEntry(fill, ALL)
+      expect(e.originalEntry).toBeCloseTo(WEIGHTED_DEC, 5)
+      expect(e.originalMonth).toBe('DEC 26')
+      expect(e.steps).toHaveLength(1)
+      expect(e.steps[0]).toMatchObject({ fromMonth: 'DEC 26', toMonth: 'MAR 27', closePrice: 80.45739, openPrice: Number(fill.trade_price), contracts: 23 })
+      expect(e.effectivePrice).toBeCloseTo(WEIGHTED_DEC + (Number(fill.trade_price) - 80.45739), 5)
+    }
+    expect(effectiveEntry(FILLS[1], ALL).effectivePrice).toBeCloseTo(82.47391, 5)
+  })
+
+  it('contract-weighted effective across the five MAR lots = 82.48130', () => {
+    const q = FILLS.reduce((s, f) => s + Number(f.num_contracts), 0)
+    const weighted = FILLS.reduce((s, f) => s + effectiveEntry(f, ALL).effectivePrice * Number(f.num_contracts), 0) / q
+    expect(q).toBe(23)
+    expect(weighted).toBeCloseTo(82.4813, 4)
+    // = weighted DEC entry + (weighted MAR open 83.647391 − 80.45739) = 79.29130 + 3.19000
+    expect(weighted).toBeCloseTo(WEIGHTED_DEC + 3.19, 4)
+  })
+
+  it('the lineage chain from a DEC leg follows the largest fill forward', () => {
+    expect(lineageChain(DEC10, ALL).map((p) => p.id)).toEqual(['dec10', 'mar1'])
+    expect(lineageChain(FILLS[3], ALL).map((p) => p.id)).toEqual(['dec10', 'mar3'])
+  })
+})

@@ -10,10 +10,10 @@
 // printed under two blocks). Pure pairing is tested in
 // lib/settlement-reread.test.ts; the fetch/parse helpers are browser-only.
 
-import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { parseDocumentChunked, type FailedRange } from '@/lib/parse-chunked'
 import { mergeSettlements } from '@/lib/parse-merge'
 import { flagSummaryLines } from '@/lib/settlement-lines'
-import type { SettlementExtraction, SettlementLineExtraction } from '@/lib/pdf-upload'
+import { normalizeSettlementExtraction, type SettlementExtraction, type SettlementLineExtraction } from '@/lib/pdf-upload'
 import { normalizeTicket } from '@/lib/ticket-matching'
 import { contractNumberKey } from '@/lib/settlement-sales'
 
@@ -96,11 +96,20 @@ export type RereadResult = {
   /** The ticket lines with summary / check-stub rows dropped. */
   lines: SettlementLineExtraction[]
   warning: string | null
+  /** Page ranges the parser gave up on (lib/parse-chunked), if any. */
+  failedRanges: FailedRange[]
 }
 
-/** Re-read a settlement document the way the New Settlement screen reads it. */
+/**
+ * Re-read a settlement document the way the New Settlement screen reads it:
+ * density-sized chunks, a cut-off chunk split and re-read, and the answer's
+ * nested contract_blocks flattened (parseDocument → mergeSettlements both
+ * normalize, so the lines here are the flat shape with contract_number on
+ * every line).
+ */
 export async function rereadSettlementFile(file: File, onProgress?: (label: string) => void): Promise<RereadResult> {
-  const { data, warning } = await parseDocumentChunked<SettlementExtraction>(file, 'settlement', { onProgress, merge: mergeSettlements })
+  const { data: raw, warning, failedRanges } = await parseDocumentChunked<SettlementExtraction>(file, 'settlement', { onProgress, merge: mergeSettlements })
+  const data = normalizeSettlementExtraction(raw)
   const all = Array.isArray(data.line_items) ? data.line_items : []
   const guards = flagSummaryLines(all, { settlementNumber: data.settlement_number })
   const refs = [data.settlement_number, data.payment_number, data.check_number].filter((x): x is string => !!x).map((r) => normalizeTicket(r).replace(/\D+/g, ''))
@@ -109,5 +118,5 @@ export async function rereadSettlementFile(file: File, onProgress?: (label: stri
     const tk = normalizeTicket(li.ticket_number).replace(/\D+/g, '')
     return !(tk && refs.includes(tk))
   })
-  return { extraction: data, lines, warning }
+  return { extraction: data, lines, warning, failedRanges }
 }

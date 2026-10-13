@@ -16,7 +16,8 @@ import {
   type TicketExtraction,
   type TicketsExtraction,
 } from '@/lib/pdf-upload'
-import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { DEFAULT_MAX_TOKENS, parseDocumentChunked } from '@/lib/parse-chunked'
+import { planPagesPerBatch } from '@/lib/chunk-plan'
 import { mergeTickets } from '@/lib/parse-merge'
 import { imagesToPdf } from '@/lib/image-capture'
 import { practiceOf } from '@/lib/yields'
@@ -369,7 +370,7 @@ export default function ScanTicketsPage() {
       const { data, warning } = await parseDocumentChunked<TicketsExtraction>(
         src.kind === 'pdf' ? src.file : src.images,
         'tickets',
-        { onProgress: setReadStage, merge: mergeTickets },
+        { pagesPerBatch: planPagesPerBatch({ documentType: 'tickets', maxTokens: DEFAULT_MAX_TOKENS }), onProgress: setReadStage, merge: mergeTickets },
       )
       const tickets = Array.isArray(data.tickets) ? data.tickets : []
       if (tickets.length === 0) {

@@ -7,7 +7,7 @@
 // The ledger itself is written by the database (a trigger on every futures
 // position change — supabase/083), so nothing here appends; this only reads.
 
-import { fmtCommodityPrice, fmtPnl } from '@/lib/hedging'
+import { fmtCommodityPrice, fmtPnl, roundPrice } from '@/lib/hedging'
 import type { HedgePositionEvent, HedgeEventType } from '@/lib/types'
 
 export type TimelineLine = {
@@ -180,7 +180,7 @@ export function eventHeadline(ev: HedgePositionEvent, opts?: { fromMonth?: strin
       return `Edited ${legText(ev)}${d ? `: ${d}` : ''}${ev.note ? ` (${ev.note})` : ''}`
     }
     case 'deleted':
-      return `Deleted ${legText(ev)} @ ${price(ev.price)}`
+      return `Deleted ${legText(ev)} @ ${price(ev.price)}${ev.note ? ` (${ev.note})` : ''}`
     default:
       return `${eventLabel(ev.event_type)} ${legText(ev)}`
   }
@@ -202,7 +202,7 @@ export function eventDetail(ev: HedgePositionEvent, entityName?: (id: string | n
     const d = diffSummary(ev)
     if (d) lines.push(`Changed: ${d}`)
   }
-  if (ev.note) lines.push(ev.note)
+  if (ev.note) lines.push(`Note: ${ev.note}`)
   lines.push(`Recorded ${fmtRecorded(ev.recorded_at)}${ev.actor_email ? ` by ${ev.actor_email}` : ''} · ${sourceLabel(ev)}`)
   return lines
 }
@@ -233,20 +233,37 @@ export function buildHedgeTimeline(
     const opens = evs.filter((e) => e.event_type === 'roll_open')
     if (closes.length === 0 || opens.length === 0) continue // rendered singly below
     for (const e of evs) consumed.add(e.id)
+    // Several new-month fills in one roll (0095): the 10/12 statement rolled
+    // 23 DEC 26 cotton into MAR 27 as five fills — one line, not five.
+    opens.sort((a, b) => a.recorded_at.localeCompare(b.recorded_at) || a.id.localeCompare(b.id))
     const open = opens[0]
     const contracts = closes.reduce((s, e) => s + (e.quantity ?? 0), 0)
     const realizedSum = closes.reduce((s, e) => s + Number(e.realized_pnl ?? 0), 0)
     const anyRealized = closes.some((e) => e.realized_pnl != null)
     const fromMonth = closes[0].contract_month ?? ''
+    const toMonth = open.contract_month ?? ''
     const spread = closes.some((e) => isSpreadNote(e)) || opens.some((e) => isSpreadNote(e))
-    const closePx = fmtCommodityPrice(open.commodity, closes[0].close_price)
-    const openPx = fmtCommodityPrice(open.commodity, open.price)
-    const headline = `Rolled ${contracts} ${fromMonth} → ${open.contract_month ?? ''} ${shortCommodity(open.commodity)}${anyRealized ? ` · ${fmtPnl(realizedSum)} realized` : ''}`
+    const wClose = weightedPrice(closes, (e) => e.close_price)
+    const wOpen = weightedPrice(opens, (e) => e.price)
+    const rollSpread = wClose != null && wOpen != null ? roundPrice(wOpen - wClose) : null
+    const px = (p: number | null) => fmtCommodityPrice(open.commodity, p)
+    const multi = opens.length > 1
+    const fills = multi ? ` in ${opens.length} fills` : ''
+    const spreadText = rollSpread != null ? `spread ${rollSpread >= 0 ? '+' : '−'}${px(Math.abs(rollSpread))}` : ''
+    const headline = `Rolled ${contracts} ${fromMonth} → ${toMonth} ${shortCommodity(open.commodity)}${fills}${multi && spreadText ? `, ${spreadText}` : ''}${anyRealized ? ` · ${fmtPnl(realizedSum)} realized` : ''}`
+    const openPrices = opens.map((e) => Number(e.price ?? 0)).filter((n) => Number.isFinite(n))
+    const openedText = multi
+      ? `opened ${toMonth}${fills} @ ${px(Math.min(...openPrices))}–${px(Math.max(...openPrices))} (avg ${px(wOpen)})${spreadText ? `, ${spreadText}` : ''}`
+      : `opened ${toMonth} @ ${px(open.price)}`
+    const notes = Array.from(new Set(evs.map((e) => e.note).filter((n): n is string => !!n)))
+    const legLines = (e: HedgePositionEvent, month: string) =>
+      eventDetail(e, opts?.entityName).filter((l) => !l.startsWith('Note: ')).map((l) => `${month} leg: ${l}`)
     const detail = [
-      `Closed ${fromMonth} @ ${closePx}${anyRealized ? ` → ${fmtPnl(realizedSum)} realized` : ''}; opened ${open.contract_month ?? ''} @ ${openPx}${spread ? ' (spread order)' : ''}`,
+      `Closed ${fromMonth} @ ${px(multi ? wClose : closes[0].close_price)}${anyRealized ? ` → ${fmtPnl(realizedSum)} realized` : ''}; ${openedText}${spread ? ' (spread order)' : ''}`,
       ...(open.crop_year != null ? [`Crop year ${open.crop_year} (inherited by the new leg)`] : []),
-      ...closes.flatMap((e) => eventDetail(e, opts?.entityName).map((l) => `${fromMonth} leg: ${l}`)),
-      ...eventDetail(open, opts?.entityName).map((l) => `${open.contract_month ?? ''} leg: ${l}`),
+      ...notes.map((n) => `Note: ${n}`),
+      ...closes.flatMap((e) => legLines(e, fromMonth)),
+      ...opens.flatMap((e) => legLines(e, multi ? `${toMonth} fill ${e.quantity ?? ''} @ ${px(e.price)}` : toMonth)),
     ]
     lines.push({
       id: closes[0].id,
@@ -287,6 +304,20 @@ export function buildHedgeTimeline(
     })
   }
   return lines.sort(byDateDesc)
+}
+
+/** Contract-weighted price across legs (null when none carries one). */
+function weightedPrice(evs: readonly HedgePositionEvent[], pick: (e: HedgePositionEvent) => number | null): number | null {
+  let w = 0
+  let q = 0
+  for (const e of evs) {
+    const p = pick(e)
+    if (p == null) continue
+    const n = e.quantity ?? 0
+    w += Number(p) * n
+    q += n
+  }
+  return q > 0 ? roundPrice(w / q) : null
 }
 
 function isSpreadNote(ev: HedgePositionEvent): boolean {

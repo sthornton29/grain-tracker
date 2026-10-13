@@ -61,9 +61,19 @@ export type RollRequest = {
   closeDate: string
   /** Close-side commission for the whole roll (charged once, on the first leg). */
   fees?: number
+  /** Open-side commission for the whole roll, spread pro-rata (by contracts)
+   *  over the NEW open legs' commission. Legs linked by position id keep theirs. */
+  openFees?: number
   /** One or more closed legs; the FIRST is the lineage anchor and the crop-year / entity source. */
   closedLegs: RollClosedLegInput[]
-  open: RollOpenLegInput
+  /** The one open leg (kept for callers that always roll into a single fill). */
+  open?: RollOpenLegInput
+  /** Every open leg of the roll — the fills that together make up the new
+   *  month (the 10/12 cotton roll opened MAR 27 as five fills). One of
+   *  `open` / `opens` is required; `opens` wins when both are given. */
+  opens?: RollOpenLegInput[]
+  /** Stamped on every ledger row the roll writes (0095: turnrow.hedge_event_note). */
+  note?: string | null
 }
 
 export type RollPayload = Record<string, unknown>
@@ -101,24 +111,50 @@ export function buildRollPayload(req: RollRequest): RollPayload {
   })
   const first = req.closedLegs[0]
   const firstCommodity = first.positionId !== undefined ? first.commodity : first.row.commodity
-  const o = req.open
-  const open: Record<string, unknown> = {}
-  if (o.positionId !== undefined) open.position_id = o.positionId
-  else {
-    const commodity = o.row.commodity ?? firstCommodity
-    open.row = { ...o.row, commodity, contract_symbol: buildContractSymbol(commodity, o.row.contract_month) }
+  const openLegs = req.opens?.length ? req.opens : req.open ? [req.open] : []
+  if (openLegs.length === 0) throw new Error('A roll needs at least one open leg.')
+
+  // Open-side fees land on the NEW legs pro-rata by contracts, to the cent,
+  // with the rounding remainder on the last new leg so the sum is exact.
+  const newLegs = openLegs.filter((o): o is Extract<RollOpenLegInput, { row: unknown }> => o.positionId === undefined)
+  const newContracts = newLegs.reduce((s, o) => s + o.row.num_contracts, 0)
+  const openFees = req.openFees ?? 0
+  const feeShare = new Map<RollOpenLegInput, number>()
+  if (openFees > 0 && newContracts > 0) {
+    let allocated = 0
+    newLegs.forEach((o, i) => {
+      const share = i === newLegs.length - 1
+        ? Math.round((openFees - allocated) * 100) / 100
+        : Math.round((openFees * o.row.num_contracts / newContracts) * 100) / 100
+      allocated = Math.round((allocated + share) * 100) / 100
+      feeShare.set(o, share)
+    })
   }
-  return {
+
+  const opens = openLegs.map((o) => {
+    const leg: Record<string, unknown> = {}
+    if (o.positionId !== undefined) leg.position_id = o.positionId
+    else {
+      const commodity = o.row.commodity ?? firstCommodity
+      const commission = feeShare.has(o) ? Math.round(((o.row.commission ?? 0) + feeShare.get(o)!) * 100) / 100 : o.row.commission
+      leg.row = { ...o.row, ...(commission != null ? { commission } : {}), commodity, contract_symbol: buildContractSymbol(commodity, o.row.contract_month) }
+    }
+    return leg
+  })
+  const payload: RollPayload = {
     source: req.source,
     statement_date: req.statementDate ?? null,
     statement_ref: req.statementRef ?? null,
     execution_code: req.executionCode ?? null,
     close,
-    open,
+    // One leg keeps the 083 object shape; several legs go as the 0095 array.
+    open: opens.length === 1 ? opens[0] : opens,
   }
+  if (req.note) payload.note = req.note
+  return payload
 }
 
-export type RollResult = { roll_group_id: string; closed_position_id: string; opened_position_id: string }
+export type RollResult = { roll_group_id: string; closed_position_id: string; opened_position_id: string; opened_position_ids?: string[] }
 
 /** Turn a database error into what the farmer should read. */
 export function friendlyRollError(message: string | null | undefined): string {

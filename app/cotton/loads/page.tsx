@@ -16,7 +16,8 @@ import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { findBestMatch } from '@/lib/fuzzy'
 import { PdfTooLargeError, type CottonLoadsExtraction, type CottonLoadExtraction } from '@/lib/pdf-upload'
-import { parseDocumentChunked } from '@/lib/parse-chunked'
+import { DEFAULT_MAX_TOKENS, parseDocumentChunked } from '@/lib/parse-chunked'
+import { planPagesPerBatch } from '@/lib/chunk-plan'
 import { mergeCottonLoads } from '@/lib/parse-merge'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import ExportBar from '@/components/export-bar'
@@ -278,7 +279,9 @@ export default function CottonLoadsPage() {
         src.kind === 'pdf' ? src.file : src.images,
         'cotton_weight_ticket',
         {
-          pagesPerBatch: 4, onProgress: setStage, merge: mergeCottonLoads,
+          // One load per page: the density plan allows 6, the page keeps 4
+          // so a re-read after a cut-off stays short.
+          pagesPerBatch: Math.min(4, planPagesPerBatch({ documentType: 'cotton_weight_ticket', maxTokens: DEFAULT_MAX_TOKENS })), onProgress: setStage, merge: mergeCottonLoads,
           rebase: (part, first) => ({ loads: (part.loads ?? []).map((l) => ({ ...l, page: l.page != null && Number.isFinite(Number(l.page)) ? Number(l.page) + first - 1 : null })) }),
         },
       )

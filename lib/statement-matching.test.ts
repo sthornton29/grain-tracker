@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   normalizeTradeDate,
   matchExistingOpenPosition,
+  matchClosedGroupLots,
   resolveClosedGroupSide,
   possiblyClosedFutures,
   type PositionFingerprint,
@@ -206,5 +207,38 @@ describe('9/11 dedupe after the roll repair', () => {
     expect(flagged.map((p) => p.id)).toEqual(['dec-14'])
     const withRollMatch = possiblyClosedFutures(before, { statementOpenKeys: new Set(['Corn|MAR 27']), matchedCloseIds: new Set(['dec-14']), keptOpenIds: new Set(), entityScopeMatches: () => true })
     expect(withRollMatch).toEqual([])
+  })
+})
+
+// ---------- matchClosedGroupLots: the 10/12 DEC 26 cotton group ----------
+describe('matchClosedGroupLots', () => {
+  const group = {
+    commodity: 'Cotton', contract_month: 'DEC 26', close_date: '2026-10-12', close_price: 80.4573913,
+    lots: [{ open_date: '2026-03-18', open_price: 72.65, contracts: 10 }, { open_date: '2026-08-10', open_price: 84.4, contracts: 13 }],
+  }
+  const openDec = [
+    { id: 'dec-10', status: 'open', commodity: 'Cotton', contract_month: 'DEC 26', side: 'short' as const, num_contracts: 10, trade_price: 72.65, trade_date: '2026-03-18', crop_year: 2026 },
+    { id: 'dec-13', status: 'open', commodity: 'Cotton', contract_month: 'DEC 26', side: 'short' as const, num_contracts: 13, trade_price: 84.4, trade_date: '2026-08-10', crop_year: 2026 },
+  ]
+
+  it('each lot closes the open stored position with its open date; the stored entry anchors the math; the sides it closes are returned', () => {
+    const { lots, matchedSides } = matchClosedGroupLots(group, openDec)
+    expect(lots.map((l) => l.matchedOpenId)).toEqual(['dec-10', 'dec-13'])
+    expect(lots.every((l) => l.fromDb && !l.alreadyImported && l.crop_year === '2026')).toBe(true)
+    expect(matchedSides).toEqual(['short', 'short'])
+  })
+
+  it('a lot already stored as a closed row at the same open/close facts is "already imported" (the stored 80.45739 is within tolerance of the exact average)', () => {
+    const closedDec = openDec.map((p) => ({ ...p, status: 'closed', close_price: 80.45739, close_date: '2026-10-12' }))
+    const { lots } = matchClosedGroupLots(group, closedDec)
+    expect(lots.map((l) => l.alreadyImported)).toEqual([true, true])
+    expect(lots.map((l) => l.closedRowId)).toEqual(['dec-10', 'dec-13'])
+    expect(lots.every((l) => l.matchedOpenId == null)).toBe(true)
+  })
+
+  it('a lot closing fewer than held is a partial close; two lots never claim one position', () => {
+    const { lots } = matchClosedGroupLots({ ...group, lots: [{ open_date: '2026-03-18', open_price: 72.65, contracts: 4 }, { open_date: '2026-03-18', open_price: 72.65, contracts: 6 }] }, openDec)
+    expect(lots[0]).toMatchObject({ matchedOpenId: 'dec-10', num_contracts: 4, heldContracts: 10 })
+    expect(lots[1].matchedOpenId).toBeNull()
   })
 })
