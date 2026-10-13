@@ -26,7 +26,7 @@ import { describe, expect, it } from 'vitest'
 // over an account's lifetime at 100k-load scale.
 const GROWING_TABLES = [
   // per event
-  'loads', 'load_splits', 'load_attachments',
+  'loads', 'load_splits', 'load_sales', 'load_attachments',
   'settlements', 'settlement_lines', 'settlement_discount_items',
   'combine_yield_entries', 'bin_transfers', 'bin_inventory_adjustments',
   'gin_receipts', 'gin_receipt_loads', 'cotton_loads', 'cotton_bales',

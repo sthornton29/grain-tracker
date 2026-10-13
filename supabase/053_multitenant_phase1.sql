@@ -147,7 +147,7 @@ begin
     'bins', 'bin_sites', 'bin_inventory_adjustments', 'bin_transfers', 'trucks', 'buyers', 'delivery_locations',
     'landowners', 'entity_counties',
     -- grain flow
-    'loads', 'load_splits', 'load_attachments', 'contracts', 'contract_attachments',
+    'loads', 'load_splits', 'load_sales', 'load_attachments', 'contracts', 'contract_attachments',
     'settlements', 'settlement_lines',
     'settlement_discount_items', 'buyer_discount_schedules', 'buyer_discount_schedule_rules',
     -- hedging

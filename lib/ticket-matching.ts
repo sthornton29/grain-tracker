@@ -83,6 +83,10 @@ export type TicketMatchLine = {
   delivery_date?: string | null
   /** The license plate OR vehicle id as printed ("Green/Tinus"). */
   vehicle_plate?: string | null
+  /** 094: the "Contract Number: X" block the line printed under. The same
+   *  ticket under two different blocks is ONE load split across two sales —
+   *  both lines match it (see matchAllTickets). */
+  contract_number?: string | null
 }
 
 export type TicketMatchContext = {
@@ -380,10 +384,24 @@ export function matchAllTickets(
   ctx: TicketMatchContext = {},
 ): TicketMatchResult[] {
   const used = new Set<string>()
+  // 094: a ticket printed under TWO contract blocks (58 bu finishing the
+  // contract, the rest spot) is one load split across two sales. The second
+  // line reuses the first line's match instead of finding its load claimed.
+  const byTicket = new Map<string, { match: TicketMatch; contract: string }>()
   const fullCtx: TicketMatchContext = { ...ctx, settlement_tickets: ctx.settlement_tickets ?? lines.map((l) => l.ticket_number) }
   return lines.map((line) => {
+    const key = normalizeTicket(line.ticket_number)
+    const contract = (line.contract_number ?? '').trim().toLowerCase()
+    const prior = key ? byTicket.get(key) : undefined
+    if (prior && prior.contract !== contract) {
+      const match: TicketMatch = { ...prior.match, reason: `${prior.match.reason} — the same ticket under a second contract block (a split sale)` }
+      return { status: 'matched', match, candidates: [match] }
+    }
     const r = matchTicket(line, loads, fullCtx, used)
-    if (r.status === 'matched') used.add(r.match.loadId)
+    if (r.status === 'matched') {
+      used.add(r.match.loadId)
+      if (key && !byTicket.has(key)) byTicket.set(key, { match: r.match, contract })
+    }
     return r
   })
 }

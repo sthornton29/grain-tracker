@@ -17,7 +17,7 @@ insert into _tenant_tables values
   ('entities'), ('farms'), ('fields'), ('field_plantings'), ('field_planting_varieties'), ('crops'),
   ('bins'), ('bin_sites'), ('bin_inventory_adjustments'), ('bin_transfers'), ('trucks'), ('buyers'), ('delivery_locations'),
   ('landowners'), ('entity_counties'),
-  ('loads'), ('load_splits'), ('load_attachments'), ('contracts'), ('contract_attachments'),
+  ('loads'), ('load_splits'), ('load_sales'), ('load_attachments'), ('contracts'), ('contract_attachments'),
   ('settlements'), ('settlement_lines'),
   ('settlement_discount_items'), ('buyer_discount_schedules'), ('buyer_discount_schedule_rules'),
   ('futures_positions'), ('options_positions'),

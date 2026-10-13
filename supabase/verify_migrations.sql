@@ -152,13 +152,27 @@ checks(seq, migration, evidence, applied) as (values
   ( 96, '093 colliding bale PBI keys = 0',   'count of (org_id, crop_year, cotton_pbi_key(pbi_number)) groups with > 1 row',
         case when exists (select 1 from fns where f = 'cotton_pbi_key')
              then (xpath('/row/n/text()', query_to_xml('select count(*) as n from (select org_id, crop_year, public.cotton_pbi_key(pbi_number) k from public.cotton_bales where public.cotton_pbi_key(pbi_number) is not null group by 1, 2, 3 having count(*) > 1) c', false, true, '')))[1]::text = '0'
+             else false end),
+  ( 97, '094_load_sales',                    'table load_sales + fn load_sales_set + settlement_lines.sale_type',
+        exists (select 1 from tbls where t = 'load_sales') and exists (select 1 from fns where f = 'load_sales_set')
+        and exists (select 1 from cols where t = 'settlement_lines' and c = 'sale_type')),
+  -- 094 GUARANTEE: every load's sale shares sum to exactly 1 (a load with no rows is unassigned, not broken).
+  ( 98, '094 sale shares sum to 1',          'count of loads whose load_sales shares sum to anything but 1',
+        case when exists (select 1 from tbls where t = 'load_sales')
+             then (xpath('/row/n/text()', query_to_xml('select count(*) as n from (select load_id from public.load_sales group by load_id having abs(sum(share) - 1) > 0.000001) x', false, true, '')))[1]::text = '0'
+             else false end),
+  -- 094 GUARANTEE: the backfill kept every contract's delivered total — each load on a contract has exactly
+  -- one full-share contract row, and loads.contract_id mirrors the allocation on every load.
+  ( 99, '094 backfill matches contract_id',  'loads where contract_id ≠ load_sales_mirror_contract(id) = 0',
+        case when exists (select 1 from fns where f = 'load_sales_mirror_contract')
+             then (xpath('/row/n/text()', query_to_xml('select count(*) as n from public.loads l where l.contract_id is distinct from public.load_sales_mirror_contract(l.id)', false, true, '')))[1]::text = '0'
              else false end)
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 093'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 094'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

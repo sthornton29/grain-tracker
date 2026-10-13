@@ -123,9 +123,12 @@ export function mergeSettlements(parts: SettlementExtraction[]): SettlementExtra
     payment_number: firstValue(parts, (p) => p.payment_number ?? null),
     check_number: firstValue(parts, (p) => p.check_number ?? null),
     payment_date: firstValue(parts, (p) => p.payment_date ?? null),
+    // 094: the same ticket under TWO contract blocks (58 bu finishing a
+    // contract, the rest spot) is a SPLIT, not a boundary repeat — the key
+    // carries the line's contract text, so only a true repeat collapses.
     line_items: mergeList(
       parts.map((p) => p.line_items ?? []),
-      (l) => (l.ticket_number ? norm(l.ticket_number) : null),
+      (l) => (l.ticket_number ? `${norm(l.ticket_number)}|${norm(l.contract_number)}` : null),
     ),
     discount_items: [...byKey.values()],
     // The grand total prints once (last page / check stub): first non-null.

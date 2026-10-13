@@ -475,10 +475,20 @@ export function computeMarketing(args: {
     // and the bushel-weighted average = rawAvgFutures, so the ledger foots.
     const futuresSources: FuturesSource[] = []
     const physByType = new Map<string, { bu: number; w: number }>()
+    // A contract input may name its own source line (the virtual spot
+    // contract: "Spot (5 loads)") instead of grouping under its type.
+    const labelled = new Map<string, { bu: number; w: number }>()
     for (const c of cropContracts) {
       if (c.futures_price == null) continue
-      const key = effectiveContractType({ contract_type: c.contract_type, futures_price: c.futures_price, basis: c.basis })
       const bu = Number(c.contracted_bushels ?? 0)
+      const own = (c as { source_label?: string | null }).source_label
+      if (own) {
+        const g = labelled.get(own) ?? { bu: 0, w: 0 }
+        g.bu += bu; g.w += Number(c.futures_price) * bu
+        labelled.set(own, g)
+        continue
+      }
+      const key = effectiveContractType({ contract_type: c.contract_type, futures_price: c.futures_price, basis: c.basis })
       const g = physByType.get(key) ?? { bu: 0, w: 0 }
       g.bu += bu; g.w += Number(c.futures_price) * bu
       physByType.set(key, g)
@@ -486,6 +496,9 @@ export function computeMarketing(args: {
     for (const key of ['forward', 'hta', 'basis'] as const) {
       const g = physByType.get(key)
       if (g && g.bu > 0) futuresSources.push({ label: `${CONTRACT_TYPE_LABEL[key]} contracts`, bushels: round2(g.bu), avgPrice: round(g.w / g.bu) })
+    }
+    for (const [label, g] of labelled) {
+      if (g.bu > 0) futuresSources.push({ label, bushels: round2(g.bu), avgPrice: round(g.w / g.bu) })
     }
     const hedgeByMonth = new Map<string, { bu: number; w: number }>()
     for (const f of cropFutures) {

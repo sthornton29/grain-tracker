@@ -146,6 +146,7 @@ export const TABLE_DOCS = {
   // grain flow
   loads: ['Every grain load: date, truck, crop, from field/bin, to bin/buyer, weights in POUNDS, moisture, ticket, contract', '/loads'],
   load_splits: ['A load split across fields/crops (each split’s share of the load)', '/loads'],
+  load_sales: ['How each buyer load was sold: sale_type contract / spot / price_later, share of the load (rows sum to 1; bushels = share × the load’s dry bushels), the contract when on one, buyer_net_bushels from the settlement, spot_price + spot_price_source (settlement / entered / estimate) and the estimate’s futures + basis audit trail', '/loads'],
   load_attachments: ['Scale tickets / photos attached to a load', '/loads'],
   combine_yield_entries: ['Combine-monitor totals entered per field × crop (the alternative harvest source)', '/yields'],
   contracts: ['Grain sales contracts: buyer, crop, bushels, pricing (cash / futures + basis), delivery window; contract_kind tells grain vs seed production', '/contracts'],
@@ -285,7 +286,13 @@ export function buildDigest({ tenantTables, tables }) {
 export function loadMigrationFiles(dir = sqlDir) {
   // schema.sql is the original base (001) — the numbered migrations build on it.
   const names = ['schema.sql', ...readdirSync(dir).filter((f) => /^\d{3}_.*\.sql$/.test(f)).sort()]
-  return names.map((f) => ({ name: f, text: readFileSync(join(dir, f), 'utf8') }))
+  const files = names.map((f) => ({ name: f, text: readFileSync(join(dir, f), 'utf8') }))
+  // 0093+ live in supabase/migrations/ (applied with `supabase db push`); they
+  // build on the hand-applied 002–092 and sort after them.
+  const cliDir = join(dir, 'migrations')
+  let cli = []
+  try { cli = readdirSync(cliDir).filter((f) => /^\d{4}_.*\.sql$/.test(f)).sort() } catch { cli = [] }
+  return files.concat(cli.map((f) => ({ name: f, text: readFileSync(join(cliDir, f), 'utf8') })))
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]

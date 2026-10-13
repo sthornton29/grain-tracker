@@ -132,6 +132,12 @@ export type SettlementLineExtraction = {
   /** Special-discount legend codes printed on the line ("2", "2,4"). */
   special_discount_codes?: string | null
   grade_readings?: SettlementGradeReadings | null
+  // 094 — the "Contract Number: X" block this line printed under, per LINE
+  // ("2002960604-10", "SPOT", "S12"); lib/settlement-sales classifySaleText
+  // turns it into sale_type. Absent on older parses (header contract only).
+  contract_number?: string | null
+  /** Set by the review (or an explicit parse): 'contract' | 'spot' | 'price_later'. */
+  sale_type?: string | null
 }
 
 // The statement's Contract / Ticket Summary (Woodall and others): the
