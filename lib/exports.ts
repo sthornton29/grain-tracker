@@ -242,7 +242,7 @@ export function excelNumFmt(fmt?: NumFmt): string | undefined {
     case 'bu2':
     case 'acres2': return '#,##0.00;(#,##0.00)'
     case 'factor': return '0.0000'
-    case 'ratio': return '0.00%;(0.00%)'
+    case 'ratio': return '0.00%;-0.00%'
     case 'usd0': return '$#,##0;($#,##0)'
     case 'usd2':
     case 'price': return '$#,##0.00;($#,##0.00)'
@@ -485,6 +485,16 @@ function withZeroDash(fmt: string | undefined, zeroAsDash: boolean | undefined):
 function excelColWidths(section: ExportSection): number[] {
   const headerLen = (label: string) => Math.max(...label.split(/\s+/).map((w) => w.length), Math.min(label.length, 18))
   const widths = section.columns.map((c) => c.width ?? headerLen(c.label) + 2)
+  // KPI labels and link rows above the header must read in full too.
+  for (const pr of section.prelude ?? []) {
+    if (pr.kind !== 'kpi' && pr.kind !== 'links') continue
+    pr.cells.forEach((cell, i) => {
+      if (section.columns[i]?.width != null) return
+      const { raw, format } = normCell(cell)
+      const len = cellText(raw, format).length
+      if (len + 2 > (widths[i] ?? 0)) widths[i] = len + 2
+    })
+  }
   for (const row of section.rows) {
     row.forEach((cell, i) => {
       if (section.columns[i]?.width != null) return
@@ -589,13 +599,16 @@ function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSectio
     const groupRowVals: string[] = []
     for (const g of section.groups) { groupRowVals.push(g.label); for (let k = 1; k < g.span; k++) groupRowVals.push('') }
     const gr = ws.addRow(groupRowVals)
+    // Two lines normally; three when a one-column group has to wrap a long label.
+    gr.height = section.groups.some((g) => g.span === 1 && g.label.length > 14) ? 45 : 32
     let col = 1
     for (const g of section.groups) {
       for (let k = 0; k < g.span; k++) {
         const cell = gr.getCell(col + k)
         cell.font = fontFor({ bold: true, color: { argb: 'FFFFFFFF' } })
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } }
-        cell.alignment = { horizontal: g.span > 1 ? 'centerContinuous' : 'center', vertical: 'middle' }
+        // A one-column group wraps instead of centering across (nothing to center across).
+        cell.alignment = { horizontal: g.span > 1 ? 'centerContinuous' : 'center', vertical: 'middle', wrapText: g.span === 1 }
         cell.border = { bottom: { style: 'thin', color: { argb: 'FFFFFFFF' } } }
       }
       col += g.span

@@ -174,21 +174,21 @@ describe('audit workbook — the corn fixture (measured basis)', () => {
     near(cd['acres:corn'], 8); near(cd['prod:corn'], 1200); near(cd['yield:corn'], 150)
     near(ci['acres:corn'], 5); near(ci['prod:corn'], 1000); near(ci['yield:corn'], 200)
     near(total['acres:corn'], 41); near(total['prod:corn'], 6810); expect(Number(total['yield:corn'])).toBeCloseTo(166.1, 1)
-    // Summary data starts on row 9 (title, subtitle, filters, one KPI row, contents, blank, group row, header).
+    // Summary data starts on row 16: title, subtitle, filters, three KPI rows, "Contents", five link rows, a blank, the group row, the header.
     expect(formulaTextOf(payload, AUDIT.summary, 3, 'prod:corn')).toBe(
-      `SUMIFS('Field Production'!$T$5:$T$9,'Field Production'!$D$5:$D$9,${esc('A12')},'Field Production'!$E$5:$E$9,${esc('B12')},'Field Production'!$F$5:$F$9,"=Corn",'Field Production'!$I$5:$I$9,${esc('C12')})`,
+      `SUMIFS('Field Production'!$T$5:$T$9,'Field Production'!$D$5:$D$9,${esc('A19')},'Field Production'!$E$5:$E$9,${esc('B19')},'Field Production'!$F$5:$F$9,"=Corn",'Field Production'!$I$5:$I$9,${esc('C19')})`,
     )
-    expect(formulaTextOf(payload, AUDIT.summary, 3, 'yield:corn')).toBe('IFERROR(E12/D12,0)')
-    expect(formulaTextOf(payload, AUDIT.summary, 4, 'acres:corn')).toBe('SUM($D$9:$D$12)')
-    expect(formulaTextOf(payload, AUDIT.summary, 4, 'prod:corn')).toBe('SUM($E$9:$E$12)')
-    expect(formulaTextOf(payload, AUDIT.summary, 4, 'yield:corn')).toBe('IFERROR(E13/D13,0)')
-    // The KPI strip reads the Total row; the Contents row links every tab.
+    expect(formulaTextOf(payload, AUDIT.summary, 3, 'yield:corn')).toBe('IFERROR(E19/D19,0)')
+    expect(formulaTextOf(payload, AUDIT.summary, 4, 'acres:corn')).toBe('SUM($D$16:$D$19)')
+    expect(formulaTextOf(payload, AUDIT.summary, 4, 'prod:corn')).toBe('SUM($E$16:$E$19)')
+    expect(formulaTextOf(payload, AUDIT.summary, 4, 'yield:corn')).toBe('IFERROR(E20/D20,0)')
+    // The KPI rows read the Total row; the Contents rows link every tab.
     const pre = auditSection(payload, AUDIT.summary).prelude!
-    const kpi = pre.find((p) => p.kind === 'kpi')!
-    expect((kpi.cells[1] as { v: number }).v).toBe(41)
-    expect((kpi.cells[3] as { v: number }).v).toBe(6810)
-    const links = pre.find((p) => p.kind === 'links')!
-    expect(links.cells.slice(1).map((c) => (c as { link: string }).link)).toEqual(["#'Summary'!A1", "#'Field Production'!A1", "#'Load Data'!A1", "#'Combine Entries'!A1", "#'Notes'!A1"])
+    const kpis = pre.filter((p) => p.kind === 'kpi')
+    expect(kpis.map((k) => [k.cells[0], (k.cells[1] as { v: number }).v])).toEqual([['Corn certified acres', 41], ['Corn production (bu)', 6810], ['Corn yield (bu/ac)', 6810 / 41]])
+    expect(formulaTextOf(payload, AUDIT.summary, 4, 'prod:corn')).toBe('SUM($E$16:$E$19)')
+    const links = pre.filter((p) => p.kind === 'links')
+    expect(links.map((l) => (l.cells[0] as { link: string }).link)).toEqual(["#'Summary'!A1", "#'Field Production'!A1", "#'Load Data'!A1", "#'Combine Entries'!A1", "#'Notes'!A1"])
     // Each field row links to its first Load Data row.
     const fpField = auditSection(payload, AUDIT.fieldProduction).rows[4][1] as { v: string; link: string }
     expect(fpField).toEqual({ v: 'Home Place', link: "#'Load Data'!A8" })
@@ -270,9 +270,11 @@ describe('audit workbook — the corn fixture (measured basis)', () => {
     const sm = wb.getWorksheet('Summary')
     expect(sm.properties.tabColor.argb).toBe('FF36B449')
     expect(sm.getCell('A1').value).toBe('Turnrow Farm')
-    expect(sm.getCell('E12').value).toMatchObject({ result: 2010 })
-    expect(sm.getCell('E12').numFmt).toBe('#,##0;(#,##0);"–"')
-    expect(sm.getCell('D12').numFmt).toBe('#,##0.00;(#,##0.00);"–"')
+    expect(sm.getCell('E19').value).toMatchObject({ result: 2010 })
+    expect(sm.getCell('E19').numFmt).toBe('#,##0;(#,##0);"–"')
+    expect(sm.getCell('D19').numFmt).toBe('#,##0.00;(#,##0.00);"–"')
+    expect(sm.getCell('A15').value).toBe('County')
+    expect(sm.getRow(14).height).toBe(45)
     const cfSm = sm.conditionalFormattings.find((cf: any) => cf.rules.some((r: any) => r.type === 'cellIs')) // eslint-disable-line @typescript-eslint/no-explicit-any
     expect(cfSm).toBeUndefined() // no check column on Summary
     const notesWs = wb.getWorksheet('Notes')
@@ -345,13 +347,12 @@ describe('audit workbook — balanced to settlements', () => {
     expect(formulaTextOf(payload, AUDIT.fieldProduction, fp.indexOf(home), 'balanced_production')).toBe("T9*'Settlement Balance'!$B$10")
     const smw = rowsOf(payload, AUDIT.summary)
     near(smw[3]['prod:corn'], 1977.533, 2); near(smw[3]['mprod:corn'], 2010); near(smw[4]['prod:corn'], 6700, 6); near(smw[4]['mprod:corn'], 6810)
-    expect(auditSection(payload, AUDIT.summary).groups!.map((g) => g.label)).toEqual(['', 'Certified Acres', 'Production, balanced to settlements (Bu. Or Lbs.)', 'Yield/Acre (Bu. Or Lbs.)', 'Measured production (scale tickets)', 'Measured yield/acre'])
+    expect(auditSection(payload, AUDIT.summary).groups!.map((g) => g.label)).toEqual(['', 'Certified Acres', 'Balanced production', 'Balanced yield/acre', 'Measured production', 'Measured yield/acre'])
     const notes = rowsOf(payload, AUDIT.notes)
     expect(notes.find((r) => r.item === 'Corn: Difference')!.check).toBe('OK')
     expect(notes.find((r) => r.item === 'Production basis')!.value).toBe('Balanced to settlements')
-    const kpi = auditSection(payload, AUDIT.summary).prelude!.find((p) => p.kind === 'kpi')!
-    expect(kpi.cells[6]).toBe('Corn settlement factor')
-    expect((kpi.cells[7] as { v: number }).v).toBeCloseTo(0.983847, 6)
+    const kpi = auditSection(payload, AUDIT.summary).prelude!.find((p) => p.kind === 'kpi' && p.cells[0] === 'Corn settlement factor')!
+    expect((kpi.cells[1] as { v: number }).v).toBeCloseTo(0.983847, 6)
   })
 
   it('not all sold: settled 4,800 + unsettled 1,200 + bins 700 = 6,700 — same factor, same fields, no "equals bushels paid" check', () => {

@@ -625,15 +625,14 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
   ]
   const totalIdx = n
   const basisLabel = balance ? 'Balanced to settlements' : 'Measured (scale tickets)'
-  const kpiRows: PreludeRow[] = crops.map((c) => ({
-    kind: 'kpi',
-    cells: [
-      `${c.name} certified acres`, formula(cell(S.summary, `acres:${c.id}`, totalIdx), 'acres2'),
-      `${c.name} production (${unitOf(c)})`, formula(cell(S.summary, `prod:${c.id}`, totalIdx), fmtOf(c, 'bu')),
-      `${c.name} yield (${unitOf(c)}/ac)`, formula(cell(S.summary, `yield:${c.id}`, totalIdx), 'yield'),
-      ...(balance && factorRowByCrop.has(c.id) ? [`${c.name} settlement factor`, formula(cell(S.balance, 'value', factorRowByCrop.get(c.id)!), 'factor')] : []),
-    ],
-  }))
+  // One KPI per row (label in the wide first column, the value beside it), so
+  // nothing truncates whatever the table's column widths are.
+  const kpiRows: PreludeRow[] = crops.flatMap((c) => [
+    { kind: 'kpi' as const, cells: [`${c.name} certified acres`, formula(cell(S.summary, `acres:${c.id}`, totalIdx), 'acres2')] },
+    { kind: 'kpi' as const, cells: [`${c.name} production (${unitOf(c)})`, formula(cell(S.summary, `prod:${c.id}`, totalIdx), fmtOf(c, 'bu'))] },
+    { kind: 'kpi' as const, cells: [`${c.name} yield (${unitOf(c)}/ac)`, formula(cell(S.summary, `yield:${c.id}`, totalIdx), 'yield')] },
+    ...(balance && factorRowByCrop.has(c.id) ? [{ kind: 'kpi' as const, cells: [`${c.name} settlement factor`, formula(cell(S.balance, 'value', factorRowByCrop.get(c.id)!), 'factor')] }] : []),
+  ])
   const summarySection: ExportSection = {
     key: S.summary,
     title: 'Summary',
@@ -645,16 +644,17 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
       { kind: 'subtitle', cells: ['Crop Insurance Production Report'] },
       { kind: 'text', cells: [`Crop year ${cropYear} · ${input0.cropFilterLabel} · ${input0.entityName || 'All entities'} · Production basis: ${basisLabel} · Generated ${input0.generatedAt.toLocaleString()}`] },
       ...kpiRows,
-      { kind: 'links', cells: [] }, // contents — filled once the sheet names are known
+      { kind: 'text', cells: ['Contents'] },
+      { kind: 'links', cells: [] }, // one link row per tab — filled once the sheet names are known
       { kind: 'blank', cells: [] },
     ],
     columns: sumCols,
     groups: crops.length > 0 ? [
       { label: '', span: 3 },
       { label: 'Certified Acres', span: crops.length },
-      { label: balance ? 'Production, balanced to settlements (Bu. Or Lbs.)' : 'Production (Bu. Or Lbs.)', span: crops.length },
-      { label: 'Yield/Acre (Bu. Or Lbs.)', span: crops.length },
-      ...(balance ? [{ label: 'Measured production (scale tickets)', span: crops.length }, { label: 'Measured yield/acre', span: crops.length }] : []),
+      { label: balance ? 'Balanced production' : 'Production (Bu. Or Lbs.)', span: crops.length },
+      { label: balance ? 'Balanced yield/acre' : 'Yield/Acre (Bu. Or Lbs.)', span: crops.length },
+      ...(balance ? [{ label: 'Measured production', span: crops.length }, { label: 'Measured yield/acre', span: crops.length }] : []),
     ] : undefined,
     rows: [...summaryRows, totalRow],
     rowMeta: [...report.summaryRows.map(() => 'data' as const), 'total'],
@@ -665,7 +665,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     { key: 'date', label: 'Date', format: 'text', note: 'The load\'s date as entered.' },
     { key: 'ticket', label: 'Our ticket #', note: 'The scale ticket number as entered on the load.' },
     { key: 'buyer_ticket', label: 'Buyer ticket #', note: 'The buyer\'s ticket number from the matched settlement line, when matched.' },
-    { key: 'load', label: 'Load', width: 38, note: 'The load\'s id; a link to the load in Turnrow.' },
+    { key: 'load', label: 'Load', width: 14, note: 'The load\'s id; a link to the load in Turnrow.' },
     { key: 'truck', label: 'Truck' },
     { key: 'farm', label: 'Farm', note: 'Field Production matches on this text.' },
     { key: 'field', label: 'Field', note: 'Field Production matches on this text (disambiguated the same way).' },
@@ -896,7 +896,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
       { key: 'date', label: 'Settlement date', format: 'text' },
       { key: 'buyer', label: 'Buyer' },
       { key: 'ticket', label: 'Ticket', note: 'The buyer\'s ticket on the line, else ours.' },
-      { key: 'load', label: 'Load', width: 38 },
+      { key: 'load', label: 'Load', width: 14 },
       { key: 'source', label: 'Load source', note: 'The field the load came from, or the bin it was hauled out of.' },
       { key: 'crop', label: 'Crop' },
       { key: 'crop_year', label: 'Crop year', format: 'text' },
@@ -931,7 +931,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
       { key: 'date', label: 'Date', format: 'text' },
       { key: 'ticket', label: 'Our ticket #' },
       { key: 'buyer', label: 'Buyer' },
-      { key: 'load', label: 'Load', width: 38 },
+      { key: 'load', label: 'Load', width: 14 },
       { key: 'source', label: 'Load source' },
       { key: 'crop', label: 'Crop' },
       { key: 'crop_year', label: 'Crop year', format: 'text' },
@@ -1054,9 +1054,12 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
   // Now that every section exists, resolve the sheet layout once: the
   // Contents links on Summary, the Back links, and each Field Production
   // row's link to its first Load Data row.
+  // The Contents block: one link row per tab (splicing rows in keeps every
+  // later row index one deeper, so the layout is resolved again afterwards).
+  const contentsIdx = summarySection.prelude!.findIndex((p) => p.kind === 'links')
+  const provisional = formulaLayout(payload)
+  summarySection.prelude!.splice(contentsIdx, 1, ...sections.map((s): PreludeRow => ({ kind: 'links', cells: [{ v: s.title ?? '', link: `#${sheetRef(provisional[s.key!].sheetName)}!A1` }] })))
   const layout = formulaLayout(payload)
-  const contents = summarySection.prelude!.find((p) => p.kind === 'links')!
-  contents.cells = ['Contents:', ...sections.map((s) => ({ v: s.title ?? '', link: `#${sheetRef(layout[s.key!].sheetName)}!A1` }))]
   const ld = layout[S.loadData]
   const fpFieldIdx = fpColumns.findIndex((c) => c.key === 'field')
   const firstLoadRowByPlanting = new Map<string, number>()
