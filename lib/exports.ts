@@ -89,8 +89,9 @@ export type ExportColumn = {
   format?: NumFmt
   /** Excel column width override, in characters. */
   width?: number
-  /** Excel: a note on the header cell explaining the column (and, for a
-   *  formula column, the formula in words). */
+  /** What the column means (and, for a formula column, the formula in words).
+   *  NOT written as an Excel comment — comment popups cover the data — a
+   *  report that wants these visible lists them on its own notes sheet. */
   note?: string
   /** Excel: 'check' cells read OK / CHECK and get green / red conditional formats. */
   kind?: 'check'
@@ -426,8 +427,8 @@ const toneArgb = (t: Tone) => 'FF' + TONE_RGB[t].map((n) => n.toString(16).padSt
 //
 // DESIGN DEFAULTS (every export):
 //   * one font family (Calibri 11; titles 16 bold; section heads 12 bold)
-//   * header rows: forest fill, white bold wrapped text, ~30 high, an Excel
-//     note per column when the column carries one
+//   * header rows: forest fill, white bold wrapped text, ~30 high (no Excel
+//     comments on headers — their popups cover the data)
 //   * thin light-gray horizontal rules only; subtotal rows light green + bold;
 //     grand totals bold with a double top border
 //   * banding through a conditional format (=MOD(ROW(),2)=0) so it survives
@@ -628,7 +629,6 @@ function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSectio
     cell.font = fontFor({ bold: true, color: { argb: 'FFFFFFFF' } })
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } }
     cell.alignment = { horizontal: c?.align === 'right' ? 'right' : 'left', vertical: 'middle', wrapText: true }
-    if (c?.note) cell.note = c.note
   })
 
   // Data rows.

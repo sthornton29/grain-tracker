@@ -255,11 +255,15 @@ describe('audit workbook — the corn fixture (measured basis)', () => {
           expect(c.font?.color?.argb ?? 'FF000000').not.toBe('FF0000FF')
         }
         if (c.font?.color?.argb === 'FF0000FF') blue++
-        if (c.note) notes++
+        if (c.note) notes++ // never: comment popups would cover the data
         if (c.font) expect(c.font.name).toBe('Calibri')
       }))
     }
-    expect(formulas).toBeGreaterThan(40); expect(blue).toBeGreaterThan(20); expect(notes).toBeGreaterThan(20)
+    expect(formulas).toBeGreaterThan(40); expect(blue).toBeGreaterThan(20); expect(notes).toBe(0)
+    // The column explanations live on the Notes tab instead.
+    const guide = rowsOf(payload, AUDIT.notes).filter((r) => /^(Load Data|Field Production|Summary) — /.test(String(r.item)))
+    expect(guide.length).toBeGreaterThan(20)
+    expect(guide.some((r) => String(r.item).startsWith('Load Data — Dry bu: Wet bu shrunk to base moisture'))).toBe(true)
     const ld = wb.getWorksheet('Load Data')
     expect(ld.getRow(4).getCell(1).value).toBe('Date')
     expect(ld.getRow(4).getCell(1).fill.fgColor.argb).toBe('FF0B4A24')

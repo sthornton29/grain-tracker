@@ -64,7 +64,7 @@ The Excel export is built for an auditor. Every number on the Summary tab is a l
 
 **To trace a number:** click a Summary cell and read its `SUMIFS`; the criteria name the county, state, crop and practice. Find those rows on Field Production, then click the field name to jump to its loads on Load Data (or match Farm + Field + Crop + Crop Year). Change a load's net pounds or moisture and every total above it recalculates. Two plantings that would read alike (same farm, field, crop and year) get the field name disambiguated — "North 40 (2)" — on every tab, and Notes says so.
 
-**Blue and black:** blue cells are values straight from your Turnrow records — weights, moisture, acres, overrides, entered breakouts, combine entries, gin receipts, settlement lines. Black cells are formulas. Check cells show green for OK and red for CHECK. Every column header carries a note explaining the column; hover it in Excel.
+**Blue and black:** blue cells are values straight from your Turnrow records — weights, moisture, acres, overrides, entered breakouts, combine entries, gin receipts, settlement lines. Black cells are formulas. Check cells show green for OK and red for CHECK. The Notes tab ends with a column guide explaining every column on every tab.
 
 **Why bin loads aren't listed:** production is counted when grain leaves the field. A load hauled out of a bin is the same grain a second time, so listing it would double count. (Bin-out loads do appear on the Settlements tab when balanced, because the buyer paid for them.)
 

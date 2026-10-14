@@ -996,6 +996,12 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
   line('What is not here')
   line('Loads hauled out of a bin are not listed: production is counted when grain leaves the field, so counting a bin load as well would count the same bushels twice. Loads the report leaves out (a different calendar year than the crop year, no planting for the field, no crop year on the load) are listed on the report screen with a link to each load.')
   line('')
+  line('Column guide')
+  for (const sec of [summarySection, balanceSection, fpSection, loadDataSection, combineSection, ginSection, balesSection, settlementsSection, unsettledSection]) {
+    if (!sec) continue
+    for (const c of sec.columns) if (c.note) line(`${sec.title} — ${c.label}: ${c.note}`)
+  }
+  line('')
   line('This export')
   line('Organization', input0.orgName)
   line('Filters', `${cropYear} crop · ${input0.entityName || 'All entities'} · ${input0.cropFilterLabel}`)
