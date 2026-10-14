@@ -23,8 +23,8 @@ describe('exportChrome — turnrow default', () => {
     expect(c.wordmark).toBe('TURNROW')
     expect(c.attributionPrefix).toBe('Turnrow')
     expect(c.logoAssetUrl).toBe('/brand/logo-mark.png')
-    expect(c.excelHeaderArgb).toBe('FF166534')
-    expect(c.pdfHeadFill).toEqual([22, 101, 52])
+    expect(c.excelHeaderArgb).toBe('FF0B4A24')
+    expect(c.pdfHeadFill).toEqual([11, 74, 36])
     expect(exportChrome({ mode: 'turnrow' })).toEqual(c)
   })
 })
@@ -40,8 +40,8 @@ describe('exportChrome — org mode never emits Turnrow assets', () => {
     expect(c.logoAssetUrl).toBe(ORG.mode === 'org' ? ORG.logoUrl : null)
     expect(c.headerLines).toEqual(['1200 Bluff Road', 'Decatur, AL 35601', '(256) 555-0142'])
     // Brand green is chrome-only and must not leak into org documents.
-    expect(c.excelHeaderArgb).not.toBe('FF166534')
-    expect(c.pdfHeadFill).not.toEqual([22, 101, 52])
+    expect(c.excelHeaderArgb).not.toBe('FF0B4A24')
+    expect(c.pdfHeadFill).not.toEqual([11, 74, 36])
     expect(c.wordmarkColor).not.toEqual([11, 74, 36])
   })
 

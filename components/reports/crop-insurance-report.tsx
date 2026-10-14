@@ -44,30 +44,19 @@ import { fetchLoadSales, type LoadSale } from '@/lib/load-sales'
 import { fetchOrgBranding } from '@/lib/branding'
 import { type ExportPayload } from '@/lib/exports'
 import {
-  buildProductionReport, practiceLabel, unitOf,
-  type DetailSheet, type FarmCropCell, type SummaryRow,
+  buildProductionReport, loadIdsOfPlantings, practiceLabel, unitOf, EXCLUDED_LOAD_REASON,
+  type DetailSheet, type ExcludedLoad, type FarmCropCell, type SummaryRow,
 } from '@/lib/production-report'
-import { buildProductionAuditPayload, type AuditCottonReceipt, type AuditLoadRow } from '@/lib/production-audit-workbook'
+import { buildProductionBalance, balanceFactors, factorLabel, BINS_NOTE, type BalanceSettlement, type BalanceSettlementLine } from '@/lib/production-balance'
+import { buildProductionAuditPayload, type AuditCottonReceipt, type AuditLoadRow, type ProductionBasis } from '@/lib/production-audit-workbook'
 import type {
   County, Crop, CropAssumption, Entity, Farm, Field, FieldPlanting, LoadSplit,
 } from '@/lib/types'
 
 // Every load column the audit workbook lists (the engine reads a subset).
-const LOAD_SELECT = 'id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, practice, gross_weight, tare_weight, test_weight, ticket_number, truck_id, truck_label, hauler_truck, to_type, to_bin_id, to_buyer_id'
+const LOAD_SELECT = 'id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, from_bin_id, practice, gross_weight, tare_weight, test_weight, ticket_number, truck_id, truck_label, hauler_truck, to_type, to_bin_id, to_buyer_id'
 
-/** `.in()` on thousands of ids is a long URL — chunk it, paginating each chunk. */
-async function fetchByIds<T>(
-  run: (ids: string[], from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
-  ids: readonly string[],
-): Promise<T[]> {
-  const out: T[] = []
-  for (let i = 0; i < ids.length; i += 500) {
-    const chunk = ids.slice(i, i + 500)
-    const { data } = await fetchAllRows<T>((f, t) => run(chunk, f, t))
-    out.push(...(data ?? []))
-  }
-  return out
-}
+const BASIS_LABEL: Record<ProductionBasis, string> = { measured: 'Measured (scale tickets)', balanced: 'Balanced to settlements' }
 
 export default function CropInsuranceReport() {
   const supabase = useMemo(() => createClient(), [])
@@ -82,6 +71,12 @@ export default function CropInsuranceReport() {
   const [splits, setSplits] = useState<LoadSplit[]>([])
   const [combineEntries, setCombineEntries] = useState<Array<CombineEntryLike & { notes?: string | null }>>([])
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
+  // "Balance to settlements" sources (lib/production-balance): every saved
+  // settlement line and its settlement, plus buyer / bin names for the panel.
+  const [settlementLines, setSettlementLines] = useState<BalanceSettlementLine[]>([])
+  const [settlements, setSettlements] = useState<BalanceSettlement[]>([])
+  const [buyers, setBuyers] = useState<Array<{ id: string; name: string }>>([])
+  const [bins, setBins] = useState<Array<{ id: string; name_or_number: string }>>([])
 
   // Filters persist across visits. The crop year follows the one report rule
   // (lib/report-filters): current year by default, a saved pick is never
@@ -92,6 +87,10 @@ export default function CropInsuranceReport() {
   const [entityId, setEntityId] = usePersistentState('crop-insurance:entityId', '')
   // Optional crop filter — empty means all crops. Multi-select via toggle chips.
   const [cropIds, setCropIds] = usePersistentState<string[]>('crop-insurance:cropIds', [])
+  // Production basis: measured scale tickets (default) or balanced so the
+  // bushels the buyers paid for match the production records. A report
+  // option only — Yields, Marketing, Claims and the partner API stay measured.
+  const [basis, setBasis] = usePersistentState<ProductionBasis>('crop-insurance:basis', 'measured')
   // Gate state for mixed-without-breakout plantings. The user must explicitly
   // resolve this before we generate the report — either fill in the breakout
   // upstream or accept that production rolls into dryland.
@@ -99,7 +98,7 @@ export default function CropInsuranceReport() {
   const [activeTab, setActiveTab] = useState<string>('summary')
   useEffect(() => {
     ;(async () => {
-      const [cr, en, fa, fi, co, pl, lo, sp, ca, ce] = await Promise.all([
+      const [cr, en, fa, fi, co, pl, lo, sp, ca, ce, sl, st, bu, bi] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
         supabase.from('farms').select('*'),
@@ -111,6 +110,10 @@ export default function CropInsuranceReport() {
         supabase.from('crop_assumptions').select('*'),
         // May not exist yet (migration 062): an error leaves data null → [].
         fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date, notes').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('settlement_lines').select('id, settlement_id, load_id, net_bushels, ticket_number, buyer_ticket_number').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_number').order('id').range(f, t)),
+        supabase.from('buyers').select('id, name'),
+        supabase.from('bins').select('id, name_or_number'),
       ])
       setCrops((cr.data as Crop[]) || [])
       setEntities((en.data as Entity[]) || [])
@@ -122,6 +125,10 @@ export default function CropInsuranceReport() {
       setSplits((sp.data as LoadSplit[]) || [])
       setAssumptions((ca.data as CropAssumption[]) || [])
       setCombineEntries((ce.data as Array<CombineEntryLike & { notes?: string | null }>) || [])
+      setSettlementLines((sl.data as BalanceSettlementLine[]) || [])
+      setSettlements((st.data as BalanceSettlement[]) || [])
+      setBuyers((bu.data as Array<{ id: string; name: string }>) || [])
+      setBins((bi.data as Array<{ id: string; name_or_number: string }>) || [])
       setPlantingYears(Array.from(new Set(((pl.data as FieldPlanting[] | null) ?? []).map((p) => p.season_year))))
       setLoading(false)
     })()
@@ -175,15 +182,29 @@ export default function CropInsuranceReport() {
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
 
   // THE engine (lib/production-report.ts): filters → harvest status → gate →
-  // resolved plantings → county × practice sheets → summary.
+  // resolved plantings → county × practice sheets → summary. The balance is
+  // crop-wide across every entity, so it reads an all-entities MEASURED run.
+  const engineInput = useMemo(() => ({
+    cropYear, entityId, cropIds, plantings, fields, farms, counties, crops, loads, splits, combineEntries,
+    assumptions: effAssumptions, cotton: cottonModel, acceptedAsDryland,
+  }), [cropYear, entityId, cropIds, plantings, fields, farms, counties, crops, loads, splits, combineEntries, effAssumptions, cottonModel, acceptedAsDryland])
+  const measuredAll = useMemo(() => buildProductionReport({ ...engineInput, entityId: '' }), [engineInput])
+  const balance = useMemo(() => {
+    if (basis !== 'balanced' || cropYear === '') return null
+    return buildProductionBalance({
+      cropYear, crops, cottonCropIds: cottonModel.cottonCropIds, loads, lines: settlementLines, settlements,
+      measuredByCrop: new Map([...measuredAll.summaryTotals].map(([id, c]) => [id, c.bu])),
+      // aggByKey is keyed `${fieldId}|${cropId}|${year}`; a combine block is the netted remainder posted to its bin.
+      combineRemainders: [...measuredAll.aggByKey.entries()].filter(([, a]) => a.combine).map(([k, a]) => ({ crop_id: k.split('|')[1], crop_year: cropYear, destinationBinId: a.combine!.destinationBinId, remainderBu: a.combine!.remainderBu })),
+      excludeLoadIds: loadIdsOfPlantings(loads, splits, measuredAll.inProgress),
+    })
+  }, [basis, cropYear, crops, cottonModel, loads, splits, settlementLines, settlements, measuredAll])
   const report = useMemo(
-    () => buildProductionReport({
-      cropYear, entityId, cropIds, plantings, fields, farms, counties, crops, loads, splits, combineEntries,
-      assumptions: effAssumptions, cotton: cottonModel, acceptedAsDryland,
-    }),
-    [cropYear, entityId, cropIds, plantings, fields, farms, counties, crops, loads, splits, combineEntries, effAssumptions, cottonModel, acceptedAsDryland],
+    () => buildProductionReport({ ...engineInput, balanceFactorByCrop: balanceFactors(balance) }),
+    [engineInput, balance],
   )
-  const { cropFilterOptions, mixedWithoutBreakout, inProgress, isBlocked, reportCrops, detailSheets, summaryRows, summaryTotals } = report
+  const { cropFilterOptions, mixedWithoutBreakout, inProgress, isBlocked, reportCrops, detailSheets, summaryRows, summaryTotals, excludedLoads } = report
+  const grainBalances = useMemo(() => (balance ? reportCrops.filter((c) => balance.byCrop.has(c.id)).map((c) => balance.byCrop.get(c.id)!) : []), [balance, reportCrops])
 
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings(
@@ -207,7 +228,7 @@ export default function CropInsuranceReport() {
     ? (entities.find((e) => e.id === entityId)?.name ?? '')
     : (viewerAllEntitiesLabel(viewer, entities) ?? '')
   const entityOptions = entityOptionsFor(viewer, entities)
-  const reportTitle = `${entityName ? entityName + ' ' : ''}${cropYear === '' ? '' : cropYear + ' '}Production Report`
+  const reportTitle = `${entityName ? entityName + ' ' : ''}${cropYear === '' ? '' : cropYear + ' '}Production Report${balance ? ' — balanced to settlements' : ''}`
   const cropFilterLabel = cropIds.length === 0 ? 'All crops' : cropIds.map((id) => cropById.get(id)?.name ?? '').filter(Boolean).join(', ')
 
   // Build the shared ExportPayload (PDF / Print): a Summary section (one sheet)
@@ -255,6 +276,22 @@ export default function CropInsuranceReport() {
     summarySection.rowMeta!.push('total')
     sections.push(summarySection)
 
+    // Balanced: the reconciliation panel, printed.
+    if (balance && grainBalances.length > 0) {
+      sections.push({
+        title: 'Settlement balance',
+        columns: [
+          { label: 'Crop' }, { label: 'Measured (bu)', format: 'bu3', align: 'right' }, { label: 'Settled, paid (bu)', format: 'bu3', align: 'right' }, { label: 'Settlements', format: 'int', align: 'right' },
+          { label: 'Delivered, not settled (bu)', format: 'bu3', align: 'right' }, { label: 'Unsettled loads', format: 'int', align: 'right' }, { label: 'Still in bins (bu)', format: 'bu3', align: 'right' },
+          { label: 'Balanced total (bu)', format: 'bu3', align: 'right' }, { label: 'Factor', format: 'factor', align: 'right' }, { label: 'Change', format: 'ratio', align: 'right' }, { label: 'Note' },
+        ],
+        rows: grainBalances.map((b) => [
+          b.cropName, b.measured, b.settled, b.settlementCount, b.unsettled, b.unsettledLoads.length, b.bins, b.balancedTotal, b.factor, b.factor - 1,
+          [b.allPaid ? 'production equals bushels paid' : 'balance will change as settlements arrive', b.warn ? 'check for a missing settlement or load' : '', b.unmatched.lines > 0 ? `${b.unmatched.lines} unmatched settlement line${b.unmatched.lines === 1 ? '' : 's'} (${fmtNum(b.unmatched.bu, 0)} bu) not counted` : ''].filter(Boolean).join('; '),
+        ]),
+      })
+    }
+
     // One detail section (sheet) per county × practice.
     for (const s of detailSheets) {
       const practice = practiceLabel(s.practice)
@@ -277,6 +314,7 @@ export default function CropInsuranceReport() {
         cropYear === '' ? 'All crop years' : `${cropYear} crop`,
         entityName || 'All entities',
         cropFilterLabel,
+        `Production basis: ${BASIS_LABEL[balance ? 'balanced' : 'measured']}`,
       ].join(' · '),
       sections,
     }
@@ -289,9 +327,7 @@ export default function CropInsuranceReport() {
     if (cropYear === '') throw new Error('Pick a crop year first.')
     const yearLoadIds = loads.filter((l) => l.from_type === 'field' && l.crop_year === cropYear).map((l) => l.id)
     const hasCotton = cottonModel.on === true && reportCrops.some((c) => cottonModel.cottonCropIds.has(c.id))
-    const [bu, bi, tr, sales, org, gr, gb, gi] = await Promise.all([
-      supabase.from('buyers').select('id, name'),
-      supabase.from('bins').select('id, name_or_number'),
+    const [tr, sales, org, gr, gb, gi] = await Promise.all([
       supabase.from('trucks').select('id, name_or_number'),
       fetchLoadSales(supabase, { loadIds: yearLoadIds }).catch(() => [] as LoadSale[]),
       fetchOrgBranding(supabase).catch(() => ({ displayName: 'Farm' })),
@@ -303,14 +339,6 @@ export default function CropInsuranceReport() {
         : Promise.resolve({ data: [] as Array<{ id: string; gin_receipt_id: string; pbi_number: string; net_weight_lbs: number }> }),
       hasCotton ? supabase.from('gins').select('id, name') : Promise.resolve({ data: [] as Array<{ id: string; name: string }> }),
     ])
-    const lineIds = Array.from(new Set(sales.map((s) => s.settlement_line_id).filter((x): x is string => !!x)))
-    const settlementLines = await fetchByIds<{ id: string; settlement_id: string; buyer_ticket_number: string | null }>(
-      (ids, f, t) => supabase.from('settlement_lines').select('id, settlement_id, buyer_ticket_number').in('id', ids).order('id').range(f, t), lineIds,
-    )
-    const settlementIds = Array.from(new Set(settlementLines.map((l) => l.settlement_id)))
-    const settlements = await fetchByIds<{ id: string; settlement_number: string | null }>(
-      (ids, f, t) => supabase.from('settlements').select('id, settlement_number').in('id', ids).order('id').range(f, t), settlementIds,
-    )
     return buildProductionAuditPayload({
       report,
       cropYear,
@@ -320,12 +348,14 @@ export default function CropInsuranceReport() {
       generatedAt: new Date(),
       appOrigin: typeof window !== 'undefined' ? window.location.origin : null,
       crops, fields, farms, counties, loads, splits, combineEntries,
-      buyers: (bu.data as Array<{ id: string; name: string }>) ?? [],
-      bins: (bi.data as Array<{ id: string; name_or_number: string }>) ?? [],
+      buyers,
+      bins,
       trucks: (tr.data as Array<{ id: string; name_or_number: string }>) ?? [],
       loadSales: sales,
       settlementLines,
       settlements,
+      basis: balance ? 'balanced' : 'measured',
+      balance,
       cotton: hasCotton
         ? {
             receipts: (gr.data as AuditCottonReceipt[] | null) ?? [],
@@ -351,6 +381,7 @@ export default function CropInsuranceReport() {
     cropYear === '' ? null : cropYearLabel(cropYear),
     entityName || 'All Entities',
     cropIds.length === 0 ? 'All Crops' : cropIds.map((id) => cropById.get(id)?.name ?? '').filter(Boolean).join(', '),
+    BASIS_LABEL[balance ? 'balanced' : 'measured'],
   )
 
   return (
@@ -361,7 +392,7 @@ export default function CropInsuranceReport() {
         actions={canExport ? <ExportBar buildPayload={buildPayload} buildExcelPayload={buildAuditPayload} /> : undefined}
       />
       {/* Filter strip — hidden when printing. */}
-      <ReportFilterBar activeCount={(entityId ? 1 : 0) + (cropIds.length > 0 ? 1 : 0)}>
+      <ReportFilterBar activeCount={(entityId ? 1 : 0) + (cropIds.length > 0 ? 1 : 0) + (basis === 'balanced' ? 1 : 0)}>
         <FilterField label="Crop year">
           <select
             value={cropYear}
@@ -381,6 +412,12 @@ export default function CropInsuranceReport() {
             </select>
           </FilterField>
         )}
+        <FilterField label="Production basis">
+          <select value={basis} onChange={(e) => setBasis(e.target.value as ProductionBasis)} className={selectCls}>
+            <option value="measured">Measured (scale tickets)</option>
+            <option value="balanced">Balanced to settlements</option>
+          </select>
+        </FilterField>
         {cropFilterOptions.length > 0 && (
           <div className="text-sm flex flex-col gap-1">
             <span className="text-slate-500">Crops</span>
@@ -496,6 +533,67 @@ export default function CropInsuranceReport() {
                       className="ml-2 inline-flex items-center min-h-10 px-2 rounded-lg border border-slate-300 bg-white text-brand-deep text-xs font-semibold disabled:opacity-50"
                     >{overrideSavingId === p.id ? 'Saving…' : 'Count anyway'}</button>
                   )}
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
+
+      {/* Balanced to settlements: the reconciliation per grain crop. */}
+      {cropYear !== '' && balance && grainBalances.map((b) => (
+        <div key={b.cropId} className="bg-white border border-slate-200 rounded-xl p-4 space-y-2 no-print">
+          <div className="font-semibold text-slate-800">{b.cropName} — balanced to settlements</div>
+          <dl className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-1 text-sm">
+            <dt className="text-slate-500">Measured (scale tickets)</dt><dd className="tabular-nums text-right md:text-left">{fmtNum(b.measured, 3)} bu</dd>
+            <dt className="text-slate-500">Settled (paid)</dt><dd className="tabular-nums text-right md:text-left">{fmtNum(b.settled, 3)} bu across {b.settlementCount} settlement{b.settlementCount === 1 ? '' : 's'}</dd>
+            <dt className="text-slate-500">Delivered, not settled</dt>
+            <dd className="tabular-nums text-right md:text-left">
+              {fmtNum(b.unsettled, 3)} bu
+              {b.unsettledLoads.length > 0 && (
+                <span className="text-slate-500"> ({b.unsettledLoads.length} load{b.unsettledLoads.length === 1 ? '' : 's'}: {b.unsettledLoads.slice(0, 8).map((x, i) => (
+                  <span key={x.load.id}>{i > 0 ? ', ' : ''}<Link href={`/loads/${x.load.id}`} className="text-brand-deep underline">{x.load.ticket_number || x.load.date}</Link></span>
+                ))}{b.unsettledLoads.length > 8 ? ', …' : ''})</span>
+              )}
+            </dd>
+            <dt className="text-slate-500">Still in bins</dt><dd className="tabular-nums text-right md:text-left">{fmtNum(b.bins, 3)} bu <span className="text-slate-500">({BINS_NOTE})</span></dd>
+            <dt className="text-slate-500">Balanced total</dt><dd className="tabular-nums text-right md:text-left font-semibold">{fmtNum(b.balancedTotal, 3)} bu</dd>
+            <dt className="text-slate-500">Factor</dt><dd className={`tabular-nums text-right md:text-left font-semibold ${b.warn ? 'text-amber-700' : ''}`}>{factorLabel(b.factor)}</dd>
+          </dl>
+          {b.allPaid && <p className="text-sm text-green-800">Nothing is unsettled and the bins are empty: balanced production equals the bushels paid.</p>}
+          {!b.allPaid && b.unsettled > 0 && <p className="text-sm text-slate-600">{fmtNum(b.unsettled, 0)} bu are delivered but not settled; the balance will change as settlements arrive.</p>}
+          {b.warn && <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">The factor is more than 5% from 1. Check for a missing settlement or load.</p>}
+          {b.unmatched.lines > 0 && (
+            <p className="text-sm text-amber-800">
+              {b.unmatched.lines} settlement line{b.unmatched.lines === 1 ? '' : 's'} ({fmtNum(b.unmatched.bu, 0)} bu) {b.unmatched.lines === 1 ? "isn't" : "aren't"} matched to a load and can&apos;t count until matched.{' '}
+              <Link href="/settlements" className="text-brand-deep underline">Open settlements</Link>
+            </p>
+          )}
+        </div>
+      ))}
+      {cropYear !== '' && balance && balance.orphanUnmatched.lines > 0 && (
+        <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 no-print">
+          {balance.orphanUnmatched.lines} settlement line{balance.orphanUnmatched.lines === 1 ? '' : 's'} ({fmtNum(balance.orphanUnmatched.bu, 0)} bu) on settlements with no matched load at all can&apos;t count until matched.{' '}
+          <Link href="/settlements" className="text-brand-deep underline">Open settlements</Link>
+        </p>
+      )}
+
+      {/* Loads of the crop year the report leaves out, with the reason and a link — nothing is hidden. */}
+      {cropYear !== '' && excludedLoads.length > 0 && (
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2 no-print">
+          <div className="font-semibold text-slate-700">
+            {excludedLoads.length} load{excludedLoads.length === 1 ? '' : 's'} for {cropYear} not counted
+          </div>
+          <ul className="text-sm text-slate-600 list-disc ml-6">
+            {(Object.keys(EXCLUDED_LOAD_REASON) as ExcludedLoad['reason'][]).map((reason) => {
+              const group = excludedLoads.filter((x) => x.reason === reason)
+              if (group.length === 0) return null
+              return (
+                <li key={reason}>
+                  <span className="font-medium">{group.length} load{group.length === 1 ? '' : 's'}</span> — {EXCLUDED_LOAD_REASON[reason]}:{' '}
+                  {group.slice(0, 12).map((x, i) => (
+                    <span key={x.loadId}>{i > 0 ? ', ' : ''}<Link href={`/loads/${x.loadId}`} className="text-brand-deep underline">{x.ticket || x.date}</Link> ({x.fieldName}{x.cropName ? `, ${x.cropName}` : ''})</span>
+                  ))}{group.length > 12 ? ', …' : ''}
                 </li>
               )
             })}

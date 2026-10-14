@@ -41,6 +41,8 @@ export type FormulaNode =
   | { t: 'iferror'; x: FormulaNode; fb: FormulaNode }
   | { t: 'abs'; x: FormulaNode }
   | { t: 'bin'; op: BinOp; a: FormulaNode; b: FormulaNode }
+  | { t: 'concat'; args: FormulaNode[] }
+  | { t: 'substitute'; x: FormulaNode; from: string; to: string }
 
 export type RangeNode = Extract<FormulaNode, { t: 'col' | 'rows' }>
 export type BinOp = '+' | '-' | '*' | '/' | '<' | '<=' | '=' | '<>' | '>' | '>='
@@ -69,6 +71,15 @@ export const eq = bin('=')
 export const ne = bin('<>')
 export const gt = bin('>')
 export const ge = bin('>=')
+/** Text concatenation (&). */
+export const concat = (...args: FormulaNode[]): FormulaNode => ({ t: 'concat', args })
+/** SUBSTITUTE(x, from, to) — every occurrence. */
+export const substitute = (x: FormulaNode, from: string, to: string): FormulaNode => ({ t: 'substitute', x, from, to })
+/** An exact-match SUMIFS criterion built from a cell: "=" & the cell's text
+ *  with Excel's wildcard characters escaped (~ → ~~, * → ~*, ? → ~?), so a
+ *  field named "Pivot*" or "<40" matches only itself. */
+export const exactCriterion = (x: FormulaNode): FormulaNode =>
+  concat(str('='), substitute(substitute(substitute(x, '~', '~~'), '*', '~*'), '?', '~?'))
 
 // ---------------------------------------------------------------------------
 // Excel rendering
@@ -155,6 +166,7 @@ function rangeRef(ctx: RenderContext, node: RangeNode): string {
 }
 
 const PRECEDENCE: Record<BinOp, number> = { '*': 3, '/': 3, '+': 2, '-': 2, '<': 1, '<=': 1, '=': 1, '<>': 1, '>': 1, '>=': 1 }
+const CONCAT_PRECEDENCE = 1.5 // & sits between arithmetic and comparison
 
 function render(node: FormulaNode, ctx: RenderContext): string {
   switch (node.t) {
@@ -171,9 +183,16 @@ function render(node: FormulaNode, ctx: RenderContext): string {
     case 'if': return `IF(${render(node.cond, ctx)},${render(node.a, ctx)},${render(node.b, ctx)})`
     case 'iferror': return `IFERROR(${render(node.x, ctx)},${render(node.fb, ctx)})`
     case 'abs': return `ABS(${render(node.x, ctx)})`
+    case 'concat':
+      return node.args.map((a) => {
+        const s = render(a, ctx)
+        return a.t === 'bin' && PRECEDENCE[a.op] <= CONCAT_PRECEDENCE ? `(${s})` : s
+      }).join('&')
+    case 'substitute': return `SUBSTITUTE(${render(node.x, ctx)},${excelString(node.from)},${excelString(node.to)})`
     case 'bin': {
       const wrap = (child: FormulaNode, rightSide: boolean) => {
         const s = render(child, ctx)
+        if (child.t === 'concat') return PRECEDENCE[node.op] > CONCAT_PRECEDENCE ? `(${s})` : s
         if (child.t !== 'bin') return s
         const p = PRECEDENCE[child.op]
         const q = PRECEDENCE[node.op]
@@ -264,6 +283,14 @@ function toNumber(v: Scalar | FormulaError): number {
   return n
 }
 
+/** Text coercion as Excel's & does it: blank → "", numbers as plain digits. */
+function toText(v: Scalar | FormulaError): string {
+  if (v instanceof FormulaError) throw v
+  if (v == null) return ''
+  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
+  return String(v)
+}
+
 function rangeCells(ctx: EvalCtx, node: RangeNode): Array<Scalar | FormulaError> {
   const sec = ctx.data[node.s]
   if (!sec) throw new Error(`evaluate: unknown section "${node.s}"`)
@@ -274,16 +301,36 @@ function rangeCells(ctx: EvalCtx, node: RangeNode): Array<Scalar | FormulaError>
   return out
 }
 
-/** SUMIFS criterion match: numbers numerically, text case-insensitively, blank
- *  criterion matches blank cells. (Only equality criteria are emitted.) */
+/** SUMIFS criterion match, as Excel does it: a number matches numerically; a
+ *  text criterion matches case-insensitively and honors wildcards (* ?) with
+ *  ~ as the escape; a leading "=" means an exact (still wildcard-aware)
+ *  match of the rest; a blank criterion matches blank cells. */
 function criterionMatches(cellV: Scalar | FormulaError, crit: Scalar | FormulaError): boolean {
   if (cellV instanceof FormulaError || crit instanceof FormulaError) return false
   const blank = (v: Scalar) => v == null || v === ''
   if (blank(crit)) return blank(cellV)
   if (typeof crit === 'number') return typeof cellV === 'number' ? cellV === crit : (typeof cellV === 'string' && cellV.trim() !== '' && Number(cellV) === crit)
   if (typeof crit === 'boolean') return cellV === crit
-  if (typeof cellV === 'number') return String(cellV) === String(crit).trim()
-  return typeof cellV === 'string' && cellV.toLowerCase() === String(crit).toLowerCase()
+  let text = String(crit)
+  if (text.startsWith('=')) text = text.slice(1)
+  // "=2026" against a numeric cell compares numerically.
+  if (typeof cellV === 'number') return text.trim() !== '' && !/[*?]/.test(text) && Number(text) === cellV
+  if (typeof cellV !== 'string') return text === ''
+  return wildcardRegex(text).test(cellV)
+}
+
+/** Excel wildcard pattern → RegExp (case-insensitive, whole-cell). */
+function wildcardRegex(pattern: string): RegExp {
+  const escapeRe = (c: string) => c.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  let re = ''
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i]
+    if (ch === '~' && i + 1 < pattern.length) { re += escapeRe(pattern[i + 1]); i++ }
+    else if (ch === '*') re += '.*'
+    else if (ch === '?') re += '.'
+    else re += escapeRe(ch)
+  }
+  return new RegExp(`^${re}$`, 'i')
 }
 
 function evalNode(node: FormulaNode, ctx: EvalCtx): Scalar | FormulaError {
@@ -346,6 +393,8 @@ function evalNode(node: FormulaNode, ctx: EvalCtx): Scalar | FormulaError {
         return x instanceof FormulaError ? evalNode(node.fb, ctx) : x
       }
       case 'abs': return Math.abs(toNumber(evalNode(node.x, ctx)))
+      case 'concat': return node.args.map((a) => toText(evalNode(a, ctx))).join('')
+      case 'substitute': return toText(evalNode(node.x, ctx)).split(node.from).join(node.to)
       case 'bin': {
         const a = evalNode(node.a, ctx)
         const b = evalNode(node.b, ctx)

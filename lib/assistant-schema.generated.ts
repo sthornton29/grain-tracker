@@ -1380,7 +1380,8 @@ export const ASSISTANT_SCHEMA_TABLES: AssistantSchemaTable[] = [
       "source",
       "source_pdf_url",
       "created_at",
-      "rolls"
+      "rolls",
+      "updated_at"
     ],
     "description": "Seed-cotton module loads from the field to the gin (weights in pounds)",
     "help_route": "/cotton"

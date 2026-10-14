@@ -33,6 +33,7 @@ import {
   type CombineEntryLike, type CottonYieldAdapter, type ExpectedYieldAssumption, type FieldCropAgg, type HarvestStatus,
 } from '@/lib/yields'
 import { buildDoubleCropSet } from '@/lib/plantings'
+import { computeBushels } from '@/lib/shrink'
 import { isCottonCrop } from '@/lib/marketing'
 import type { County, Crop, Farm, Field, FieldPlanting, LoadSplit } from '@/lib/types'
 
@@ -41,6 +42,7 @@ export type ProductionLoadRow = {
   id: string
   date: string
   time?: string | null
+  ticket_number?: string | null
   net_weight: number | null
   moisture: number | null
   crop_id: string | null
@@ -80,6 +82,23 @@ export type ProductionReportInput = {
   acceptedAsDryland: boolean
   /** Clock for the harvest-status rules (tests pin it). */
   now?: Date
+  /** "Balanced to settlements" (lib/production-balance): per crop id, the
+   *  factor every planting's measured production is multiplied by. Absent or
+   *  missing crop → measured (factor 1). */
+  balanceFactorByCrop?: ReadonlyMap<string, number> | null
+}
+
+/** A load of the crop year the report leaves out, with the reason — surfaced
+ *  on screen so nothing is hidden. (Bin-sourced loads are not loads of
+ *  production and never appear; in-progress and gated plantings are listed
+ *  separately by planting.) */
+export type ExcludedLoad = {
+  loadId: string
+  date: string
+  ticket: string | null
+  fieldName: string
+  cropName: string
+  reason: 'other_calendar_year' | 'no_planting' | 'no_crop_year' | 'no_bushels' | 'no_acres'
 }
 
 /** How a planting's production was split between practices. */
@@ -95,9 +114,14 @@ export type Resolved = {
   county: County | null
   irrigatedAcres: number
   drylandAcres: number
+  /** Production as reported: measured, or measured × the balance factor. */
   totalBu: number
   irrigatedBu: number
   drylandBu: number
+  /** Measured production (scale tickets / combine / lint), before any balance. */
+  measuredBu: number
+  /** The balance factor applied (1 = measured basis). */
+  balanceFactor: number
   isMixed: boolean
   hasBreakout: boolean
   breakout: BreakoutKind
@@ -152,6 +176,8 @@ export type ProductionReport = {
   detailSheets: DetailSheet[]
   summaryRows: SummaryRow[]
   summaryTotals: Map<string, FarmCropCell>
+  /** Loads of the crop year (in the entity + crop filters) the report leaves out. */
+  excludedLoads: ExcludedLoad[]
 }
 
 export const NO_COUNTY_KEY = '__no_county__'
@@ -237,7 +263,9 @@ export function buildProductionReport(input: ProductionReportInput): ProductionR
       const hasBreakout = p.yield_breakout_entered === true
       const agg = aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`) ?? null
       const isCotton = input.cotton.cottonCropIds.has(p.crop_id) && input.cotton.on === true
-      const totalBu = isCotton ? (input.cotton.yieldFor(p)?.lintLbs ?? 0) : (agg?.dryBu ?? 0)
+      const measuredBu = isCotton ? (input.cotton.yieldFor(p)?.lintLbs ?? 0) : (agg?.dryBu ?? 0)
+      const balanceFactor = isCotton ? 1 : (input.balanceFactorByCrop?.get(p.crop_id) ?? 1)
+      const totalBu = measuredBu * balanceFactor
       // Where the breakout came from: the ORIGINAL planting row says whether
       // the user entered it; withLoadBreakouts set the flag for load-derived ones.
       const original = originalById.get(p.id)
@@ -245,8 +273,8 @@ export function buildProductionReport(input: ProductionReportInput): ProductionR
       let dryBu = 0
       let breakout: BreakoutKind
       if (isMixed && hasBreakout) {
-        irrBu = p.irrigated_bushels != null ? Number(p.irrigated_bushels) : 0
-        dryBu = p.dryland_bushels != null ? Number(p.dryland_bushels) : 0
+        irrBu = (p.irrigated_bushels != null ? Number(p.irrigated_bushels) : 0) * balanceFactor
+        dryBu = (p.dryland_bushels != null ? Number(p.dryland_bushels) : 0) * balanceFactor
         breakout = original?.yield_breakout_entered ? 'entered' : 'loads'
       } else if (isMixed && !hasBreakout) {
         // "Generate as dryland": all production to dryland, acres still split.
@@ -273,6 +301,8 @@ export function buildProductionReport(input: ProductionReportInput): ProductionR
         totalBu,
         irrigatedBu: irrBu,
         drylandBu: dryBu,
+        measuredBu,
+        balanceFactor,
         isMixed,
         hasBreakout,
         breakout,
@@ -352,8 +382,85 @@ export function buildProductionReport(input: ProductionReportInput): ProductionR
     }
   }
 
+  // Loads of the crop year the report leaves out, by reason — the on-screen
+  // notice. Same scope as the report: field-sourced, crop filter, entity filter.
+  const excludedLoads: ExcludedLoad[] = []
+  if (cropYear !== '') {
+    const plantingKeys = new Set(yearPlantings.map((p) => `${p.field_id}|${p.crop_id}`))
+    const resolvedByKey = new Map(resolved.map((r) => [`${r.planting.field_id}|${r.planting.crop_id}`, r]))
+    const entryKeys = new Set(input.combineEntries.filter((e) => e.crop_year === cropYear).map((e) => `${e.field_id}|${e.crop_id}|${e.crop_year}`))
+    const splitsByLoad = new Map<string, LoadSplit[]>()
+    for (const sp of input.splits) { const arr = splitsByLoad.get(sp.load_id); if (arr) arr.push(sp); else splitsByLoad.set(sp.load_id, [sp]) }
+    const inScope = (fieldId: string, cropId: string) => {
+      if (cropIds.length > 0 && !cropIds.includes(cropId)) return false
+      if (!entityId) return true
+      const fld = fieldById.get(fieldId)
+      const farm = fld?.farm_id ? farmById.get(fld.farm_id) : null
+      return farm?.entity_id === entityId
+    }
+    for (const l of input.loads) {
+      if (l.from_type !== 'field') continue
+      const portions: Array<{ fieldId: string; cropId: string; dry: number | null }> = []
+      if (l.from_field_id && l.crop_id) {
+        const crop = cropById.get(l.crop_id)
+        const r = computeBushels({ netWeightLb: l.net_weight, moisturePct: l.moisture, baseMoisturePct: crop?.base_moisture_pct ?? null, baseLbPerBushel: crop?.base_lb_per_bushel ?? null, dryBushelsOverride: l.dry_bushels_override })
+        portions.push({ fieldId: l.from_field_id, cropId: l.crop_id, dry: r.dryBushels })
+      }
+      for (const sp of splitsByLoad.get(l.id) ?? []) portions.push({ fieldId: sp.field_id, cropId: sp.crop_id, dry: sp.dry_bushels == null ? null : Number(sp.dry_bushels) })
+      const dateYr = Number(l.date.slice(0, 4))
+      for (const po of portions) {
+        if (!inScope(po.fieldId, po.cropId)) continue
+        const base = { loadId: l.id, date: l.date, ticket: l.ticket_number ?? null, fieldName: fieldById.get(po.fieldId)?.name_or_number ?? '(No Field)', cropName: cropById.get(po.cropId)?.name ?? '' }
+        if (l.crop_year !== cropYear) {
+          if (l.crop_year == null && dateYr === cropYear) excludedLoads.push({ ...base, reason: 'no_crop_year' })
+          continue
+        }
+        const effYear: number = l.crop_year ?? dateYr
+        const keyYr: number = entryKeys.has(`${po.fieldId}|${po.cropId}|${effYear}`) ? effYear : dateYr
+        if (keyYr !== cropYear) { excludedLoads.push({ ...base, reason: 'other_calendar_year' }); continue }
+        if (!plantingKeys.has(`${po.fieldId}|${po.cropId}`)) { excludedLoads.push({ ...base, reason: 'no_planting' }); continue }
+        const r = resolvedByKey.get(`${po.fieldId}|${po.cropId}`)
+        if (!r) continue // in progress or gated: listed by planting on screen
+        if (!(po.dry != null && po.dry !== 0)) { excludedLoads.push({ ...base, reason: 'no_bushels' }); continue }
+        if (r.irrigatedAcres <= 0 && r.drylandAcres <= 0) excludedLoads.push({ ...base, reason: 'no_acres' })
+      }
+    }
+  }
+
   return {
     yearEntityPlantings, cropFilterOptions, yearPlantings, aggByKey, harvestStatusById,
-    mixedWithoutBreakout, inProgress, isBlocked, resolved, reportCrops, detailSheets, summaryRows, summaryTotals,
+    mixedWithoutBreakout, inProgress, isBlocked, resolved, reportCrops, detailSheets, summaryRows, summaryTotals, excludedLoads,
   }
+}
+
+/** The ids of the field loads (single-field, and the parents of split
+ *  portions) that belong to the given plantings — e.g. the still-harvesting
+ *  plantings the report leaves out, so the settlement balance leaves their
+ *  loads out too. Pure. */
+export function loadIdsOfPlantings(
+  loads: ReadonlyArray<{ id: string; from_type: string | null; from_field_id: string | null; crop_id: string | null; crop_year: number | null }>,
+  splits: ReadonlyArray<{ load_id: string; field_id: string; crop_id: string }>,
+  plantings: ReadonlyArray<{ field_id: string; crop_id: string; season_year: number }>,
+): Set<string> {
+  const keys = new Set(plantings.map((p) => `${p.field_id}|${p.crop_id}|${p.season_year}`))
+  const out = new Set<string>()
+  const loadById = new Map(loads.map((l) => [l.id, l]))
+  for (const l of loads) {
+    if (l.from_type !== 'field' || !l.from_field_id || !l.crop_id) continue
+    if (keys.has(`${l.from_field_id}|${l.crop_id}|${l.crop_year ?? Number(String((l as { date?: string }).date ?? '').slice(0, 4))}`)) out.add(l.id)
+  }
+  for (const s of splits) {
+    const parent = loadById.get(s.load_id)
+    if (!parent) continue
+    if (keys.has(`${s.field_id}|${s.crop_id}|${parent.crop_year ?? ''}`)) out.add(parent.id)
+  }
+  return out
+}
+
+export const EXCLUDED_LOAD_REASON: Record<ExcludedLoad['reason'], string> = {
+  other_calendar_year: 'hauled in a different calendar year than its crop year, so it is credited to that year\'s planting of the field',
+  no_planting: 'no planting for this field and crop in the crop year',
+  no_crop_year: 'no crop year on the load',
+  no_bushels: 'no bushels (missing net weight, or the crop has no pounds per bushel)',
+  no_acres: 'the planting has no certified acres',
 }

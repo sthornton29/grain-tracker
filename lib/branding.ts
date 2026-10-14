@@ -60,8 +60,8 @@ export function exportChrome(branding?: ExportBranding): ExportChrome {
     wordmarkColor: [11, 74, 36], // brand forest
     logoAssetUrl: '/brand/logo-mark.png',
     headerLines: [],
-    excelHeaderArgb: 'FF166534',
-    pdfHeadFill: [22, 101, 52],
+    excelHeaderArgb: 'FF0B4A24', // brand forest
+    pdfHeadFill: [11, 74, 36],
   }
 }
 

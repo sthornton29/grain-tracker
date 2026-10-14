@@ -64,7 +64,11 @@ export type NumFmt =
   | 'price' // $4.93 ($/bu, 2 decimals)
   | 'cents' // a ¢/lb-STORED cotton price displayed as $/lb: 72.65 → $0.7265
   | 'bu' // 45,000 bushels (0 decimals)
+  | 'bu2' // 1,000.00 bushels (2 decimals — audit load rows)
   | 'bu3' // 1,000.000 bushels (3 decimals — audit workbooks)
+  | 'acres2' // 1,250.00 acres (FSA reports acres to hundredths)
+  | 'factor' // 0.9838 (a balance factor, 4 decimals)
+  | 'ratio' // a FRACTION shown as a percent: 0.0162 → 1.62% (Excel 0.00%)
   | 'lbs' // 412,000 lbs (0 decimals, commas)
   | 'acres' // 1,250.0 (1 decimal)
   | 'yield' // 182.5 bu/ac (1 decimal)
@@ -85,7 +89,18 @@ export type ExportColumn = {
   format?: NumFmt
   /** Excel column width override, in characters. */
   width?: number
+  /** Excel: a note on the header cell explaining the column (and, for a
+   *  formula column, the formula in words). */
+  note?: string
+  /** Excel: 'check' cells read OK / CHECK and get green / red conditional formats. */
+  kind?: 'check'
 }
+
+/** Excel-only rows written ABOVE a plain section's header: a title block, a
+ *  KPI strip (label / value pairs on one row), a line of links (`link` cells,
+ *  '#' targets for other sheets), plain text, or a blank spacer. Formula
+ *  cells may refer to other sections by `cell`/`col` (never `self`). */
+export type PreludeRow = { kind: 'title' | 'subtitle' | 'text' | 'kpi' | 'links' | 'blank'; cells: ExportCell[] }
 
 /** A cell is a bare value, or a value plus per-cell format/tone overrides —
  *  or a formula cell (`f`, with `v` its cached result once evaluated), or an
@@ -113,6 +128,12 @@ export type ExportSection = {
   plain?: boolean
   /** Excel (plain sections): one explanatory line above the header. */
   note?: string
+  /** Excel (plain sections): rows above the note/header — title block, KPIs, links. */
+  prelude?: PreludeRow[]
+  /** Excel: the sheet tab color (ARGB). */
+  tabColor?: string
+  /** Excel: how many leading columns stay frozen beside the header row (default 1). */
+  freezeColumns?: number
   columns: ExportColumn[]
   rows: ExportCell[][]
   /** Per-row role, parallel to `rows`. Missing entries default to 'data'. */
@@ -141,6 +162,8 @@ export type ExportPayload = {
   /** Excel: flag the workbook to recalculate every formula when opened (set
    *  automatically whenever a section carries formula cells). */
   fullCalcOnLoad?: boolean
+  /** Excel: document properties, the print footer, and zero-as-dash number formats. */
+  excel?: { title?: string; subject?: string; company?: string; footer?: string; zeroAsDash?: boolean }
   /** PDF orientation; defaults to landscape for wide tables, portrait otherwise. */
   orientation?: 'portrait' | 'landscape'
   /**
@@ -178,6 +201,13 @@ export function formatNumber(value: number, fmt?: NumFmt): string {
       body = group(a, 2, 2); break
     case 'bu3':
       body = group(a, 3, 3); break
+    case 'bu2':
+    case 'acres2':
+      body = group(a, 2, 2); break
+    case 'factor':
+      body = a.toFixed(4); break
+    case 'ratio':
+      body = group(a * 100, 2, 2) + '%'; break
     case 'usd0':
       body = '$' + group(a, 0, 0); break
     case 'usd2':
@@ -209,6 +239,10 @@ export function excelNumFmt(fmt?: NumFmt): string | undefined {
     case 'yield': return '#,##0.0;(#,##0.0)'
     case 'dec2': return '#,##0.00;(#,##0.00)'
     case 'bu3': return '#,##0.000;(#,##0.000)'
+    case 'bu2':
+    case 'acres2': return '#,##0.00;(#,##0.00)'
+    case 'factor': return '0.0000'
+    case 'ratio': return '0.00%;(0.00%)'
     case 'usd0': return '$#,##0;($#,##0)'
     case 'usd2':
     case 'price': return '$#,##0.00;($#,##0.00)'
@@ -229,7 +263,8 @@ function normCell(cell: ExportCell): NormCell {
 
 /** Does any section carry a formula cell? */
 export function payloadHasFormulas(payload: ExportPayload): boolean {
-  return payload.sections.some((s) => s.rows.some((r) => r.some((c) => c != null && typeof c === 'object' && c.f != null)))
+  const has = (c: ExportCell) => c != null && typeof c === 'object' && c.f != null
+  return payload.sections.some((s) => s.rows.some((r) => r.some(has)) || (s.prelude ?? []).some((p) => p.cells.some(has)))
 }
 
 /** Sanitize + de-duplicate worksheet names exactly as the Excel writer does
@@ -263,8 +298,9 @@ function headerRowOf(payload: ExportPayload, section: ExportSection): number {
     const chrome = exportChrome(payload.branding)
     row += 1 + chrome.headerLines.length + (payload.filters ? 1 : 0) + 1 + 1 // title, chrome, filters, generated, blank
     if (section.title) row += 1
-  } else if (section.note) {
-    row += 1
+  } else {
+    row += (section.prelude ?? []).length
+    if (section.note) row += 1
   }
   if (section.groups && section.groups.length > 0) row += 1
   return row + 1
@@ -320,6 +356,14 @@ export function evaluatePayload(payload: ExportPayload): Record<string, Array<Ar
   for (const section of payload.sections) {
     if (!section.key) continue
     const key = section.key
+    for (const pr of section.prelude ?? []) {
+      for (const raw of pr.cells) {
+        const n = normCell(raw)
+        if (!n.f || raw == null || typeof raw !== 'object') continue
+        const v = evaluateFormula(n.f, data, { s: key, r: -1 }, memo)
+        raw.v = v instanceof FormulaError ? null : typeof v === 'boolean' ? (v ? 1 : 0) : v
+      }
+    }
     out[key] = section.rows.map((row, r) => section.columns.map((_, ci) => {
       const raw = row[ci] ?? null
       const n = normCell(raw)
@@ -377,11 +421,29 @@ const toneArgb = (t: Tone) => 'FF' + TONE_RGB[t].map((n) => n.toString(16).padSt
 
 // Header fills now come from exportChrome (lib/branding.ts): Turnrow green
 // by default, a neutral slate in org-branded mode.
-const SUBHEAD_FILL_ARGB = 'FFF1F5F9' // slate-100
-const SUBTOTAL_FILL_ARGB = 'FFF8FAFC' // slate-50
-const TOTAL_FILL_ARGB = 'FFE2E8F0' // slate-200
 
 // ---------- Excel (exceljs — real numbers, number formats, styling) ----------
+//
+// DESIGN DEFAULTS (every export):
+//   * one font family (Calibri 11; titles 16 bold; section heads 12 bold)
+//   * header rows: forest fill, white bold wrapped text, ~30 high, an Excel
+//     note per column when the column carries one
+//   * thin light-gray horizontal rules only; subtotal rows light green + bold;
+//     grand totals bold with a double top border
+//   * banding through a conditional format (=MOD(ROW(),2)=0) so it survives
+//     sorting and filtering; gridlines off on every sheet
+//   * no merged cells inside a table — spanning group headers use Center
+//     Across Selection — so sort and filter always work
+//   * inputs blue, formulas black; check columns green on OK, red on CHECK
+//   * column widths fitted to the longest header or value, capped; freeze the
+//     header row (and the identifying columns a section names)
+//   * print-ready: landscape, fit to one page wide, header rows repeated,
+//     narrow margins, print area, a footer with the page number
+//   * document properties (title / subject / company / created); the first
+//     sheet opens active at A1
+// Report-specific layout (title blocks, KPI strips, contents links, sort
+// orders) is expressed through a section's `prelude` rows and stays in the
+// report's own builder.
 
 function browserDownload(blob: Blob, filename: string): void {
   if (typeof document === 'undefined') return
@@ -398,8 +460,31 @@ function browserDownload(blob: Blob, filename: string): void {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Ws = any
 
+const FONT = 'Calibri'
+const INPUT_FONT_ARGB = 'FF0000FF' // blue — a value straight from a Turnrow record
+const LINK_FONT_ARGB = 'FF256F35' // brand deep green
+const RULE_ARGB = 'FFD9D9D9' // light-gray horizontal rules
+const BAND_ARGB = 'FFF6F8F6' // very light banding
+const SUBTOTAL_FILL_ARGB = 'FFE8F5E9' // light green
+const TOTAL_FILL_ARGB = 'FFF1F5F9' // slate-100
+const SUBHEAD_FILL_ARGB = 'FFF1F5F9'
+const MUTED_ARGB = 'FF64748B'
+const OK_FILL = 'FFC6EFCE'
+const OK_FONT = 'FF006100'
+const CHECK_FILL = 'FFFFC7CE'
+const CHECK_FONT = 'FF9C0006'
+
+/** Zero as an en dash: appended as the format's third section unless it has one. */
+function withZeroDash(fmt: string | undefined, zeroAsDash: boolean | undefined): string | undefined {
+  if (!fmt || !zeroAsDash) return fmt
+  if (fmt.split(';').length >= 3) return fmt
+  return fmt.split(';').length === 1 ? `${fmt};(${fmt});"–"` : `${fmt};"–"`
+}
+
+/** Column widths fitted to the longest header line or formatted value. */
 function excelColWidths(section: ExportSection): number[] {
-  const widths = section.columns.map((c) => c.width ?? c.label.length + 2)
+  const headerLen = (label: string) => Math.max(...label.split(/\s+/).map((w) => w.length), Math.min(label.length, 18))
+  const widths = section.columns.map((c) => c.width ?? headerLen(c.label) + 2)
   for (const row of section.rows) {
     row.forEach((cell, i) => {
       if (section.columns[i]?.width != null) return
@@ -408,134 +493,217 @@ function excelColWidths(section: ExportSection): number[] {
       if (len + 2 > (widths[i] ?? 0)) widths[i] = len + 2
     })
   }
-  return widths.map((w) => Math.min(48, Math.max(10, w)))
+  return widths.map((w) => Math.min(60, Math.max(8, w)))
 }
 
-const INPUT_FONT_ARGB = 'FF0000FF' // blue — a value straight from a Turnrow record
+function fontFor(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return { name: FONT, size: 11, ...extra }
+}
+
+/** Write one cell's value (formula / hyperlink / plain), returning what exceljs got. */
+function cellValueFor(n: NormCell, fmt: NumFmt | undefined, formulaText: string | null): unknown {
+  if (formulaText != null) {
+    const result = n.raw == null ? undefined : typeof n.raw === 'number' && fmt === 'cents' ? n.raw / 100 : n.raw
+    return result === undefined ? { formula: formulaText } : { formula: formulaText, result }
+  }
+  // 'cents' carries ¢/lb-stored cotton prices displayed as $/lb: the REAL
+  // number written to the sheet is the $ value (÷100) so the $ numFmt and
+  // any user math read correctly.
+  const value = typeof n.raw === 'number' ? (fmt === 'cents' ? n.raw / 100 : n.raw) : (n.raw ?? '')
+  if (n.link) return { text: String(value), hyperlink: n.link }
+  return value
+}
+
+function styleCell(xcell: any, n: NormCell, fmt: NumFmt | undefined, zeroAsDash: boolean | undefined, align: 'left' | 'right' | undefined): void { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const numeric = typeof n.raw === 'number' || (n.f != null && fmt != null && fmt !== 'text')
+  if (numeric) {
+    xcell.numFmt = withZeroDash(excelNumFmt(fmt), zeroAsDash)!
+    xcell.alignment = { horizontal: 'right', vertical: 'top' }
+  } else {
+    xcell.alignment = { horizontal: align === 'right' ? 'right' : 'left', vertical: 'top' }
+  }
+  if (n.tone && n.tone !== 'neutral') xcell.font = fontFor({ color: { argb: toneArgb(n.tone) } })
+  else if (n.input) xcell.font = fontFor({ color: { argb: INPUT_FONT_ARGB } })
+  else if (n.link) xcell.font = fontFor({ color: { argb: LINK_FONT_ARGB }, underline: true })
+  else xcell.font = fontFor()
+}
 
 function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSection, opts: { withTitle: boolean; layout?: FormulaLayout }): void {
   const chrome = exportChrome(payload.branding)
+  const zeroAsDash = payload.excel?.zeroAsDash
   const expectedHeaderRow = opts.withTitle || section.plain ? headerRowOf(payload, section) : null
-  if (section.plain && section.note) {
-    ws.addRow([section.note])
-    ws.lastRow.font = { italic: true, color: { argb: 'FF475569' } }
+  const ncols = section.columns.length
+  const formulaCtxAt = (r: number) => ({ layout: opts.layout!, at: { s: section.key!, r } })
+  const requireLayout = () => {
+    if (!opts.layout || !section.key) throw new Error('formula cells need a keyed section and a resolved layout')
   }
-  if (opts.withTitle && !section.plain) {
-    ws.addRow([payload.title])
-    ws.lastRow.font = { bold: true, size: 14 }
-    for (const line of chrome.headerLines) {
-      ws.addRow([line]); ws.lastRow.font = { color: { argb: 'FF64748B' }, size: 10 }
+
+  if (section.plain) {
+    // Report-specific title block / KPI strip / contents links.
+    for (const pr of section.prelude ?? []) {
+      if (pr.kind === 'blank') { ws.addRow([]); continue }
+      const cells = pr.cells.map(normCell)
+      const values = cells.map((n, i) => {
+        const fmt = n.format ?? section.columns[i]?.format
+        let formulaText: string | null = null
+        if (n.f) { requireLayout(); formulaText = toExcelFormula(n.f, formulaCtxAt(-1)) }
+        return cellValueFor(n, fmt, formulaText)
+      })
+      const r = ws.addRow(values)
+      cells.forEach((n, i) => {
+        const xcell = r.getCell(i + 1)
+        const fmt = n.format ?? section.columns[i]?.format
+        styleCell(xcell, n, fmt, zeroAsDash, undefined)
+        if (pr.kind === 'title') xcell.font = fontFor({ size: 16, bold: true, color: { argb: n.link ? LINK_FONT_ARGB : 'FF0B4A24' } })
+        else if (pr.kind === 'subtitle') xcell.font = fontFor({ size: 12, bold: true })
+        else if (pr.kind === 'text') xcell.font = fontFor({ color: { argb: n.link ? LINK_FONT_ARGB : MUTED_ARGB }, underline: !!n.link })
+        else if (pr.kind === 'kpi') xcell.font = i % 2 === 0 ? fontFor({ bold: true, color: { argb: MUTED_ARGB } }) : fontFor({ size: 14, bold: true, color: { argb: n.input ? INPUT_FONT_ARGB : 'FF0B4A24' } })
+        else if (pr.kind === 'links') xcell.font = fontFor({ color: { argb: LINK_FONT_ARGB }, underline: true })
+        if (n.f && n.raw === 0) xcell.model.result = 0
+      })
+      if (pr.kind === 'title') r.height = 24
     }
-    if (payload.filters) { ws.addRow([payload.filters]); ws.lastRow.font = { color: { argb: 'FF64748B' } } }
+    if (section.note) {
+      ws.addRow([section.note])
+      ws.lastRow.font = fontFor({ italic: true, color: { argb: 'FF475569' } })
+    }
+  } else if (opts.withTitle) {
+    ws.addRow([payload.title])
+    ws.lastRow.font = fontFor({ bold: true, size: 16, color: { argb: 'FF0B4A24' } })
+    for (const line of chrome.headerLines) {
+      ws.addRow([line]); ws.lastRow.font = fontFor({ color: { argb: MUTED_ARGB }, size: 10 })
+    }
+    if (payload.filters) { ws.addRow([payload.filters]); ws.lastRow.font = fontFor({ color: { argb: MUTED_ARGB } }) }
     ws.addRow([`${chrome.attributionPrefix} · Generated ${new Date().toLocaleString()}`])
-    ws.lastRow.font = { color: { argb: 'FF94A3B8' }, size: 9 }
+    ws.lastRow.font = fontFor({ color: { argb: 'FF94A3B8' }, size: 9 })
     ws.addRow([])
   }
   if (section.title && !section.plain) {
     ws.addRow([section.title])
-    ws.lastRow.font = { bold: true, size: 12 }
+    ws.lastRow.font = fontFor({ bold: true, size: 12 })
   }
 
-  const ncols = section.columns.length
-
-  // Spanning group header row (merged per group).
+  // Spanning group header row: Center Across Selection, never merged, so the
+  // table below sorts and filters cleanly.
   if (section.groups && section.groups.length > 0) {
     const groupRowVals: string[] = []
     for (const g of section.groups) { groupRowVals.push(g.label); for (let k = 1; k < g.span; k++) groupRowVals.push('') }
     const gr = ws.addRow(groupRowVals)
     let col = 1
     for (const g of section.groups) {
-      if (g.span > 1) ws.mergeCells(gr.number, col, gr.number, col + g.span - 1)
-      const cell = gr.getCell(col)
-      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } }
-      cell.alignment = { horizontal: 'center' }
+      for (let k = 0; k < g.span; k++) {
+        const cell = gr.getCell(col + k)
+        cell.font = fontFor({ bold: true, color: { argb: 'FFFFFFFF' } })
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } }
+        cell.alignment = { horizontal: g.span > 1 ? 'centerContinuous' : 'center', vertical: 'middle' }
+        cell.border = { bottom: { style: 'thin', color: { argb: 'FFFFFFFF' } } }
+      }
       col += g.span
     }
   }
 
-  // Column header row.
+  // Column header row: wrapped, tall, with a note per column when given.
   const headerRow = ws.addRow(section.columns.map((c) => c.label))
   const headerRowNumber = headerRow.number
   if (expectedHeaderRow != null && headerRowNumber !== expectedHeaderRow) {
     throw new Error(`export layout drift: header landed on row ${headerRowNumber}, layout expected ${expectedHeaderRow}`)
   }
+  headerRow.height = 30
   headerRow.eachCell((cell: any, col: number) => {
-    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+    const c = section.columns[col - 1]
+    cell.font = fontFor({ bold: true, color: { argb: 'FFFFFFFF' } })
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } }
-    cell.alignment = { horizontal: section.columns[col - 1]?.align === 'right' ? 'right' : 'left' }
+    cell.alignment = { horizontal: c?.align === 'right' ? 'right' : 'left', vertical: 'middle', wrapText: true }
+    if (c?.note) cell.note = c.note
   })
 
   // Data rows.
+  const firstDataRow = headerRowNumber + 1
   section.rows.forEach((row, ri) => {
     const kind: RowKind = section.rowMeta?.[ri] ?? 'data'
     if (kind === 'subhead') {
       const label = row.map(normCell).find((c) => c.raw != null && c.raw !== '')?.raw ?? ''
       const r = ws.addRow([String(label)])
-      ws.mergeCells(r.number, 1, r.number, ncols)
-      const cell = r.getCell(1)
-      cell.font = { bold: true, color: { argb: 'FF334155' } }
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SUBHEAD_FILL_ARGB } }
+      for (let c = 1; c <= ncols; c++) {
+        const cell = r.getCell(c)
+        cell.font = fontFor({ bold: true, color: { argb: 'FF334155' } })
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SUBHEAD_FILL_ARGB } }
+      }
       return
     }
     const values = row.map((cell, i) => {
-      const { raw, format, f, link } = normCell(cell)
-      const fmt = format ?? section.columns[i]?.format
-      if (f) {
-        // A formula cell: the Excel formula plus its cached result, so viewers
-        // that never recalculate still show the number.
-        if (!opts.layout || !section.key) throw new Error('formula cells need a keyed section and a resolved layout')
-        const formula = toExcelFormula(f, { layout: opts.layout, at: { s: section.key, r: ri } })
-        const result = raw == null ? undefined : typeof raw === 'number' && fmt === 'cents' ? raw / 100 : raw
-        return result === undefined ? { formula } : { formula, result }
-      }
-      // 'cents' carries ¢/lb-stored cotton prices displayed as $/lb: the REAL
-      // number written to the sheet is the $ value (÷100) so the $ numFmt and
-      // any user math read correctly.
-      const value = typeof raw === 'number' ? (fmt === 'cents' ? raw / 100 : raw) : (raw ?? '')
-      if (link) return { text: String(value), hyperlink: link }
-      return value
+      const n = normCell(cell)
+      const fmt = n.format ?? section.columns[i]?.format
+      let formulaText: string | null = null
+      if (n.f) { requireLayout(); formulaText = toExcelFormula(n.f, formulaCtxAt(ri)) }
+      return cellValueFor(n, fmt, formulaText)
     })
     const r = ws.addRow(values)
     row.forEach((cell, i) => {
-      const { raw, format, tone, f, input, link } = normCell(cell)
+      const n = normCell(cell)
       const xcell = r.getCell(i + 1)
-      const fmt = format ?? section.columns[i]?.format
-      const numeric = typeof raw === 'number' || (f != null && fmt != null && fmt !== 'text')
-      if (numeric) {
-        xcell.numFmt = excelNumFmt(fmt)!
-        xcell.alignment = { horizontal: 'right' }
-      } else if (section.columns[i]?.align === 'right') {
-        xcell.alignment = { horizontal: 'right' }
-      }
-      if (tone && tone !== 'neutral') xcell.font = { color: { argb: toneArgb(tone) } }
-      else if (input) xcell.font = { color: { argb: INPUT_FONT_ARGB } }
-      else if (link) xcell.font = { color: { argb: 'FF256F35' }, underline: true }
+      const fmt = n.format ?? section.columns[i]?.format
+      styleCell(xcell, n, fmt, zeroAsDash, section.columns[i]?.align)
+      xcell.border = { bottom: { style: 'thin', color: { argb: RULE_ARGB } } }
       // exceljs drops a falsy cached result (0) when it copies the formula
       // value in; put it back on the live model so the file carries <v>0</v>
       // and a viewer that never recalculates shows 0, not blank.
-      if (f && raw === 0) xcell.model.result = 0
+      if (n.f && n.raw === 0) xcell.model.result = 0
     })
     if (kind === 'total' || kind === 'subtotal') {
-      const fill = kind === 'total' ? TOTAL_FILL_ARGB : SUBTOTAL_FILL_ARGB
-      r.eachCell((c: any) => {
-        c.font = { ...(c.font ?? {}), bold: true }
-        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: fill } }
-        if (kind === 'total') c.border = { top: { style: 'thin', color: { argb: 'FF94A3B8' } } }
-      })
+      for (let c = 1; c <= ncols; c++) {
+        const cell = r.getCell(c)
+        cell.font = { ...(cell.font ?? fontFor()), bold: true }
+        if (kind === 'subtotal') cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SUBTOTAL_FILL_ARGB } }
+        else {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: TOTAL_FILL_ARGB } }
+          cell.border = { top: { style: 'double', color: { argb: 'FF334155' } }, bottom: { style: 'thin', color: { argb: RULE_ARGB } } }
+        }
+      }
     }
   })
+  const lastDataRow = headerRowNumber + Math.max(1, section.rows.length)
 
-  // Column widths + freeze the header row (and the first/label column).
+  // Widths, freeze, gridlines, autofilter, banding and check formats.
   excelColWidths(section).forEach((w, i) => { ws.getColumn(i + 1).width = w })
-  ws.views = [{ state: 'frozen', xSplit: 1, ySplit: headerRowNumber }]
-  // Plain data tables get an autofilter over the header + data rows.
+  ws.views = [{ state: 'frozen', xSplit: section.freezeColumns ?? 1, ySplit: headerRowNumber, showGridLines: false, activeCell: 'A1' }]
   if (section.plain && ncols > 0) {
-    ws.autoFilter = {
-      from: { row: headerRowNumber, column: 1 },
-      to: { row: headerRowNumber + Math.max(1, section.rows.length), column: ncols },
-    }
+    ws.autoFilter = { from: { row: headerRowNumber, column: 1 }, to: { row: lastDataRow, column: ncols } }
   }
+  if (ncols > 0 && section.rows.length > 0) {
+    const dataRef = `A${firstDataRow}:${columnLetters(ncols)}${firstDataRow + section.rows.length - 1}`
+    ws.addConditionalFormatting({
+      ref: dataRef,
+      rules: [{ type: 'expression', formulae: ['MOD(ROW(),2)=0'], style: { fill: { type: 'pattern', pattern: 'solid', bgColor: { argb: BAND_ARGB } } }, priority: 2 }],
+    })
+    section.columns.forEach((c, i) => {
+      if (c.kind !== 'check') return
+      const ref = `${columnLetters(i + 1)}${firstDataRow}:${columnLetters(i + 1)}${firstDataRow + section.rows.length - 1}`
+      ws.addConditionalFormatting({
+        ref,
+        rules: [
+          { type: 'cellIs', operator: 'equal', formulae: ['"OK"'], style: { fill: { type: 'pattern', pattern: 'solid', bgColor: { argb: OK_FILL } }, font: { color: { argb: OK_FONT } } }, priority: 1 },
+          { type: 'cellIs', operator: 'equal', formulae: ['"CHECK"'], style: { fill: { type: 'pattern', pattern: 'solid', bgColor: { argb: CHECK_FILL } }, font: { color: { argb: CHECK_FONT }, bold: true } }, priority: 1 },
+        ],
+      })
+    })
+  }
+
+  // Print-ready.
+  const generated = new Date()
+  const footer = payload.excel?.footer ?? `${chrome.attributionPrefix} · ${payload.title} · generated ${generated.toLocaleDateString()}`
+  ws.pageSetup = {
+    orientation: 'landscape',
+    fitToPage: true,
+    fitToWidth: 1,
+    fitToHeight: 0,
+    paperSize: 1,
+    margins: { left: 0.25, right: 0.25, top: 0.6, bottom: 0.6, header: 0.3, footer: 0.3 },
+    printTitlesRow: `${headerRowNumber}:${headerRowNumber}`,
+    printArea: ncols > 0 ? `A1:${columnLetters(ncols)}${lastDataRow}` : undefined,
+  }
+  ws.headerFooter = { oddFooter: `&L&8${footer}&R&8page &P of &N` }
+  if (section.tabColor) ws.properties.tabColor = { argb: section.tabColor }
 }
 
 /** Build the exceljs Workbook for a payload (exported so tests can inspect the
@@ -546,6 +714,13 @@ export async function buildExcelWorkbook(payload: ExportPayload): Promise<any> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ExcelJS: any = (mod as any).default ?? mod
   const wb = new ExcelJS.Workbook()
+  const chrome = exportChrome(payload.branding)
+  wb.creator = chrome.attributionPrefix
+  wb.title = payload.excel?.title ?? payload.title
+  wb.subject = payload.excel?.subject ?? payload.filters ?? payload.title
+  wb.company = payload.excel?.company ?? chrome.attributionPrefix
+  wb.created = new Date()
+  wb.modified = wb.created
 
   // Excel sheet names must be ≤31 chars, exclude \ / ? * [ ] :, be non-empty, and
   // be UNIQUE within the workbook (case-insensitively) — exceljs throws
@@ -571,25 +746,26 @@ export async function buildExcelWorkbook(payload: ExportPayload): Promise<any> {
   // already render atop every section sheet, so only summary CARDS justify a
   // dedicated cover sheet (a report may also define its own "Summary" section).
   const multi = !payload.singleSheet && payload.sections.length > 1
-  const chrome = exportChrome(payload.branding)
   if (multi && payload.summary?.length) {
     const ws = wb.addWorksheet('Summary')
-    ws.addRow([payload.title]); ws.lastRow.font = { bold: true, size: 14 }
-    for (const line of chrome.headerLines) { ws.addRow([line]); ws.lastRow.font = { color: { argb: 'FF64748B' }, size: 10 } }
-    if (payload.filters) { ws.addRow([payload.filters]); ws.lastRow.font = { color: { argb: 'FF64748B' } } }
-    ws.addRow([`${chrome.attributionPrefix} · Generated ${new Date().toLocaleString()}`]); ws.lastRow.font = { color: { argb: 'FF94A3B8' }, size: 9 }
+    ws.addRow([payload.title]); ws.lastRow.font = fontFor({ bold: true, size: 16, color: { argb: 'FF0B4A24' } })
+    for (const line of chrome.headerLines) { ws.addRow([line]); ws.lastRow.font = fontFor({ color: { argb: MUTED_ARGB }, size: 10 }) }
+    if (payload.filters) { ws.addRow([payload.filters]); ws.lastRow.font = fontFor({ color: { argb: MUTED_ARGB } }) }
+    ws.addRow([`${chrome.attributionPrefix} · Generated ${new Date().toLocaleString()}`]); ws.lastRow.font = fontFor({ color: { argb: 'FF94A3B8' }, size: 9 })
     ws.addRow([])
     if (payload.summary?.length) {
       const hr = ws.addRow(['Metric', 'Value'])
-      hr.eachCell((c: any) => { c.font = { bold: true, color: { argb: 'FFFFFFFF' } }; c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } } })
+      hr.eachCell((c: any) => { c.font = fontFor({ bold: true, color: { argb: 'FFFFFFFF' } }); c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } } })
       for (const card of payload.summary) {
         const r = ws.addRow([card.sub ? `${card.label} (${card.sub})` : card.label, card.value])
+        r.getCell(1).font = fontFor()
+        r.getCell(2).font = fontFor(card.tone && card.tone !== 'neutral' ? { color: { argb: toneArgb(card.tone) } } : {})
         r.getCell(2).alignment = { horizontal: 'right' }
-        if (card.tone && card.tone !== 'neutral') r.getCell(2).font = { color: { argb: toneArgb(card.tone) } }
       }
       ws.getColumn(1).width = 32
       ws.getColumn(2).width = 22
     }
+    ws.views = [{ showGridLines: false }]
   }
 
   if (payload.singleSheet) {
@@ -606,6 +782,8 @@ export async function buildExcelWorkbook(payload: ExportPayload): Promise<any> {
       writeExcelSection(ws, payload, section, { withTitle: true, layout })
     })
   }
+  // The first sheet opens active, at A1.
+  wb.views = [{ x: 0, y: 0, width: 20000, height: 12000, firstSheet: 0, activeTab: 0, visibility: 'visible' }]
   return wb
 }
 
@@ -821,6 +999,8 @@ function csvDecimals(fmt?: NumFmt): number | null {
     case 'dec1': case 'acres': case 'yield': case 'pct1': return 1
     case 'dec2': case 'usd2': case 'price': return 2
     case 'bu3': return 3
+    case 'bu2': case 'acres2': return 2
+    case 'factor': case 'ratio': return 4
     case 'cents': return 4
     default: return null // 'text' and inference pass the raw number through
   }
