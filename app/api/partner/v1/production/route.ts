@@ -122,7 +122,10 @@ export async function GET(req: NextRequest) {
     // their seed cotton loads and carry lint = receipts + the turnout estimate
     // (lint_basis / turnout_pct). Off → null → receipts only, as before. A
     // read error degrades the same way rather than failing the endpoint.
-    const cottonSources = await fetchCottonYieldSources(supabase, { orgId: org, updatedAt: true }).catch(() => null)
+    const cottonSources = await fetchCottonYieldSources(supabase, { orgId: org, updatedAt: true }).catch((e: unknown) => {
+      console.error('[partner] production: cotton yield sources unavailable, cotton plantings fall back to receipts only:', e instanceof Error ? e.message : e)
+      return null
+    })
     const cotton = buildCottonYieldModel({ sources: cottonSources, crops, assumptions: cropAssumptions })
 
     let records: Array<Record<string, unknown>> = buildProductionRecords({

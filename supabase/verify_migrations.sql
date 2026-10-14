@@ -171,7 +171,10 @@ checks(seq, migration, evidence, applied) as (values
   -- the turnrow.hedge_event_note setting (probed in the trigger's source text).
   (100, '0095_hedge_import_guards',           'fn hedge_undo_import + fn hedge_execute_roll + trigger fn reads turnrow.hedge_event_note',
         exists (select 1 from fns where f = 'hedge_undo_import') and exists (select 1 from fns where f = 'hedge_execute_roll')
-        and exists (select 1 from fns where f = 'hedge_position_event_trigger' and pg_get_functiondef(oid) like '%turnrow.hedge_event_note%'))
+        and exists (select 1 from fns where f = 'hedge_position_event_trigger' and pg_get_functiondef(oid) like '%turnrow.hedge_event_note%')),
+  -- 0096 (supabase/migrations/): cotton_loads.updated_at, the column the Farm link's cotton fetch asks for.
+  (101, '0096_cotton_loads_updated_at',       'cotton_loads.updated_at',
+        exists (select 1 from cols where t = 'cotton_loads' and c = 'updated_at'))
 )
 select status, migration, evidence
 from (

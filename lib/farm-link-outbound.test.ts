@@ -64,6 +64,22 @@ describe('shapeMarketingRecord', () => {
     // Never a dollars-per-pound number on a cotton row.
     expect(r.settled_average_price).toBeGreaterThan(1)
   })
+
+  it('carries the expected yield assumption as entered: blended + practice breakouts (null when not broken out), unit by crop, nulls with no row', () => {
+    const r = shapeMarketingRecord({
+      row: mkRow({}), cropYear: 2026, entity: null, settled: null, isFinal: false, asOf: 'x',
+      assumption: { expected_yield: 212, expected_yield_irr: 230, expected_yield_dry: 185, expected_yield_dc_irr: null, expected_yield_dc_dry: null, harvest_complete: false },
+    })
+    expect(r.expected_yield).toEqual({ unit: 'bu_per_ac', blended: 212, irrigated: 230, dryland: 185, double_crop_irrigated: null, double_crop_dryland: null, harvest_complete: false })
+    const cotton = shapeMarketingRecord({
+      row: mkRow({ cropId: 'cotton', cropName: 'Cotton', unit: 'lbs', cottonPhysical: { summary: { soldLbs: 0, soldDollars: 0 }, poolValueDollars: 0, poolEstimated: false, inLoanValueDollars: 0, inLoanFloored: false, unpricedLbs: 0, hedgedUnsoldLbs: 0 } as never }),
+      cropYear: 2026, entity: null, settled: null, isFinal: false, asOf: 'x',
+      assumption: { expected_yield: '1450' as never, expected_yield_irr: 1600, expected_yield_dry: 1200, expected_yield_dc_irr: null, expected_yield_dc_dry: null, harvest_complete: true },
+    })
+    expect(cotton.expected_yield).toEqual({ unit: 'lbs_per_ac', blended: 1450, irrigated: 1600, dryland: 1200, double_crop_irrigated: null, double_crop_dryland: null, harvest_complete: true })
+    const none = shapeMarketingRecord({ row: mkRow({}), cropYear: 2026, entity: null, settled: null, isFinal: false, asOf: 'x' })
+    expect(none.expected_yield).toEqual({ unit: 'bu_per_ac', blended: null, irrigated: null, dryland: null, double_crop_irrigated: null, double_crop_dryland: null, harvest_complete: false })
+  })
 })
 
 describe('shapeProductionRecords', () => {

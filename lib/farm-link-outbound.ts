@@ -35,7 +35,7 @@ import { resolveProgramYearConfig } from '@/lib/program-config'
 import { applyCombineRemainders, applyTransfers, cellFor, cellTotal, type OnHandBag } from '@/lib/bin-inventory'
 import { settlementCheckoffDollars, settlementFeeDollars } from '@/lib/checkoff'
 import type {
-  ArcPlcElection, ArcPlcPayment, ArcPlcPriceData, CountyYieldAssumption, CoveredCommodity, Crop,
+  ArcPlcElection, ArcPlcPayment, ArcPlcPriceData, CountyYieldAssumption, CoveredCommodity, Crop, CropAssumption,
   CropInsuranceEco, CropInsuranceMco, CropInsurancePolicy, CropInsuranceSco, CropInsuranceStax,
   FarmBaseAcres, FieldPlanting, HarvestPriceEstimate, OtherGovernmentPayment, ProgramYearConfig,
 } from '@/lib/types'
@@ -173,7 +173,13 @@ export async function loadProductionPayload(supabase: SupabaseClient, org: strin
 
   // Cotton module (092): cotton plantings classify off their seed cotton
   // loads and report lint = receipts + the turnout estimate. Off → receipts.
-  const cottonSources = await fetchCottonYieldSources(supabase, { orgId: org, updatedAt: true }).catch(() => null)
+  // A failed fetch must never read as "Cotton module off" in silence: before
+  // 0096 the missing cotton_loads.updated_at did exactly that, and every
+  // ginned cotton planting went out unharvested with no yield.
+  const cottonSources = await fetchCottonYieldSources(supabase, { orgId: org, updatedAt: true }).catch((e: unknown) => {
+    console.error('[farm-link] production: cotton yield sources unavailable, cotton plantings fall back to receipts only:', e instanceof Error ? e.message : e)
+    return null
+  })
   const cotton = buildCottonYieldModel({ sources: cottonSources, crops, assumptions })
 
   const partner = buildProductionRecords({
@@ -270,6 +276,36 @@ export type FarmLinkMarketingRecord = {
   basis_notes: string[]
   as_of: string
   updated_at: string
+  /** The crop year's expected yield assumption (the Marketing page's Settings):
+   *  the blended figure and the practice breakouts AS ENTERED (null = not broken
+   *  out). A consumer resolves a practice the way lib/crop-budget does: the
+   *  breakout, else `blended`; a double crop its own pair. Unit follows
+   *  quantity_unit (bu/ac, or lbs of lint/ac). Org-level, so the entity rows
+   *  carry the same block. */
+  expected_yield: FarmLinkExpectedYield
+}
+
+export type FarmLinkExpectedYield = {
+  unit: 'bu_per_ac' | 'lbs_per_ac'
+  blended: number | null
+  irrigated: number | null
+  dryland: number | null
+  double_crop_irrigated: number | null
+  double_crop_dryland: number | null
+  /** The crop-level "harvest complete" flag: once on, the dashboard's yield is actual, not this assumption. */
+  harvest_complete: boolean
+}
+
+type ExpectedYieldSource = Pick<CropAssumption, 'expected_yield' | 'expected_yield_irr' | 'expected_yield_dry' | 'expected_yield_dc_irr' | 'expected_yield_dc_dry' | 'harvest_complete'>
+
+export function expectedYieldBlock(a: ExpectedYieldSource | null | undefined, cotton: boolean): FarmLinkExpectedYield {
+  const n = (v: unknown): number | null => (v == null || v === '' ? null : Number.isFinite(Number(v)) ? Number(v) : null)
+  return {
+    unit: cotton ? 'lbs_per_ac' : 'bu_per_ac',
+    blended: n(a?.expected_yield), irrigated: n(a?.expected_yield_irr), dryland: n(a?.expected_yield_dry),
+    double_crop_irrigated: n(a?.expected_yield_dc_irr), double_crop_dryland: n(a?.expected_yield_dc_dry),
+    harvest_complete: a?.harvest_complete === true,
+  }
 }
 
 export function shapeMarketingRecord(args: {
@@ -279,6 +315,8 @@ export function shapeMarketingRecord(args: {
   settled: { quantity: number; revenue: number; share: number } | null
   isFinal: boolean
   asOf: string
+  /** The crop year's assumption row for the crop (org-level); null when none is set. */
+  assumption?: ExpectedYieldSource | null
 }): FarmLinkMarketingRecord {
   const { row } = args
   const cotton = row.unit === 'lbs'
@@ -333,6 +371,7 @@ export function shapeMarketingRecord(args: {
     basis_notes: notes,
     as_of: args.asOf,
     updated_at: args.asOf,
+    expected_yield: expectedYieldBlock(args.assumption, cotton),
   }
 }
 
@@ -416,10 +455,11 @@ export async function loadMarketingPayload(supabase: SupabaseClient, org: string
   const { production, rows, entityInputs } = inputs
   const [finalCrops, settled] = await Promise.all([loadSalesStatus(supabase, org, year), loadSettledByCrop(supabase, org, year, production.crops)])
   const asOf = new Date().toISOString()
+  const assumptionByCrop = new Map<string, CropAssumption>(inputs.production.assumptions.filter((a) => a.crop_year === year).map((a) => [a.crop_id, a] as const))
   const out: FarmLinkMarketingRecord[] = []
   for (const row of rows) {
     const s = settled.byCrop.get(row.cropId)
-    out.push(shapeMarketingRecord({ row, cropYear: year, entity: null, settled: s ? { ...s, share: 1 } : null, isFinal: finalCrops.has(row.cropId), asOf }))
+    out.push(shapeMarketingRecord({ row, cropYear: year, entity: null, settled: s ? { ...s, share: 1 } : null, isFinal: finalCrops.has(row.cropId), asOf, assumption: assumptionByCrop.get(row.cropId) ?? null }))
   }
   for (const e of farmingEntities(production)) {
     const scope = buildEntityScope({ entityId: e.id, farms: production.farms, fields: production.fields, entities: production.entities })
@@ -430,7 +470,7 @@ export async function loadMarketingPayload(supabase: SupabaseClient, org: string
       const share = attribution.shareForCrop(row.cropId, year)
       out.push(shapeMarketingRecord({
         row, cropYear: year, entity: { id: e.id, name: e.name, farm_uid: idMap.farmUid('entities', e.id) },
-        settled: s ? { ...s, share } : null, isFinal: finalCrops.has(row.cropId), asOf,
+        settled: s ? { ...s, share } : null, isFinal: finalCrops.has(row.cropId), asOf, assumption: assumptionByCrop.get(row.cropId) ?? null,
       }))
     }
   }

@@ -338,6 +338,14 @@ Per crop (whole operation, `entity_id: null`) and per farming entity.
   production, capped at 100; cotton uses sold lint ÷ production.
 - `hedging_realized.net` = closed futures (net of commission) + closed
   options, the figure the dashboard folds into the price.
+- `expected_yield` (2026-10-14) is the crop year's yield assumption as
+  entered on the Marketing page's settings: `{ unit, blended, irrigated,
+  dryland, double_crop_irrigated, double_crop_dryland, harvest_complete }`,
+  `unit` `bu_per_ac` or `lbs_per_ac` (lint), a breakout `null` when not
+  broken out. Resolve a practice the way Grain's budget does: the breakout,
+  else `blended`; a double crop from its own pair. Org-level, so the entity
+  rows carry the same block. `harvest_complete` is the crop-level flag; once
+  on, `total_production` is actual and this block is history.
 - Entity rows are the dashboard with that entity selected: own-name
   positions whole, agent-held / operation-level positions pro rata by the
   entity's acre share of the crop (lib/entity-scope.ts).
