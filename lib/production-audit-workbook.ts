@@ -66,6 +66,8 @@ export type AuditLoadRow = ProductionLoadRow & {
   tare_weight?: number | null
   test_weight?: number | null
   ticket_number?: string | null
+  /** 091: the buyer's full ticket as printed on the matched settlement. */
+  buyer_ticket_number?: string | null
   truck_id?: string | null
   truck_label?: string | null
   hauler_truck?: string | null
@@ -664,7 +666,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
   const ldColumns = colsOf([
     { key: 'date', label: 'Date', format: 'text', note: 'The load\'s date as entered.' },
     { key: 'ticket', label: 'Our ticket #', note: 'The scale ticket number as entered on the load.' },
-    { key: 'buyer_ticket', label: 'Buyer ticket #', note: 'The buyer\'s ticket number from the matched settlement line, when matched.' },
+    { key: 'buyer_ticket', label: 'Buyer ticket #', note: 'The buyer\'s ticket number as printed on the matched settlement, when matched.' },
     { key: 'load', label: 'Load', width: 14, note: 'The load\'s id; a link to the load in Turnrow.' },
     { key: 'truck', label: 'Truck' },
     { key: 'farm', label: 'Farm', note: 'Field Production matches on this text.' },
@@ -722,7 +724,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
       return [
         l.date,
         text(l.ticket_number),
-        text(line?.buyer_ticket_number),
+        text(l.buyer_ticket_number ?? line?.buyer_ticket_number),
         link ? { v: l.id, link } : l.id,
         truckExportLabel({ truck_label: l.truck_label, truck: l.truck_id ? { name_or_number: truckById.get(l.truck_id) ?? '' } : null, hauler_truck: l.hauler_truck }),
         place.farmName,
@@ -908,7 +910,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
         text(x.settlement?.settlement_number),
         x.settlement?.settlement_date ?? '',
         buyerById.get(x.settlement?.buyer_id ?? '') ?? '',
-        x.line.buyer_ticket_number || x.line.ticket_number || x.load.ticket_number || '',
+        x.line.ticket_number || (x.load as AuditLoadRow).buyer_ticket_number || x.load.ticket_number || '',
         link ? { v: x.load.id, link } : x.load.id,
         sourceOf(x.load),
         criteriaText(c.name),

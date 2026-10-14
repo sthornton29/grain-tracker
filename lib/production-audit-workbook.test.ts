@@ -57,7 +57,7 @@ const farms = [farm('f-home', 'Home Place Farm', 'lawrence', '1234'), farm('f-pr
 const fields = [field('home', 'Home Place', 'f-home', 10, 0), field('pruitt', 'Pruitt', 'f-pruitt', 0, 12), field('wheeler', 'Wheeler', 'f-wheeler', 0, 6), field('moore', 'Moore', 'f-moore', 0, 8), field('tweedy', 'Tweedy', 'f-tweedy', 5, 0), field('cedar', 'Cedar Lane', 'f-cedar', 0, 20)]
 const plantings = [planting('p-home', 'home', 10, 0), planting('p-pruitt', 'pruitt', 0, 12), planting('p-wheeler', 'wheeler', 0, 6), planting('p-moore', 'moore', 0, 8), planting('p-tweedy', 'tweedy', 5, 0), planting('p-cedar', 'cedar', 0, 20)]
 const loads: AuditLoadRow[] = [
-  load('l1', '2026-09-15', 'home', 56000, 15.0),
+  load('l1', '2026-09-15', 'home', 56000, 15.0, { buyer_ticket_number: 'B-77' }),
   load('l2', '2026-09-15', 'home', 56560, 15.5),
   load('l3', '2026-09-16', 'pruitt', 61600, 14.0),
   load('l4', '2026-09-16', null, 67200, 15.0), // split 50/50 Pruitt / Moore
@@ -87,7 +87,7 @@ function auditInput(ri: ProductionReportInput, over: Partial<ProductionAuditInpu
     appOrigin: 'https://app.turnrow.farm', crops: ri.crops, fields: ri.fields, farms: ri.farms, counties: ri.counties, loads: ri.loads, splits: ri.splits,
     combineEntries: ri.combineEntries, buyers: [{ id: 'bunge', name: 'Bunge' }], bins: [{ id: 'b1', name_or_number: 'Bin 1' }, { id: 'b2', name_or_number: 'Bin 2' }], trucks: [],
     loadSales: [{ id: 'ls1', load_id: 'l1', sale_type: 'contract', contract_id: 'c1', share: 1, buyer_net_bushels: 999.5, spot_price: null, spot_price_source: null, est_futures_price: null, est_futures_symbol: null, est_basis: null, settlement_line_id: 'line1' }],
-    settlementLines: [{ id: 'line1', settlement_id: 'st1', buyer_ticket_number: 'B-77' }],
+    settlementLines: [{ id: 'line1', settlement_id: 'st1' }],
     settlements: [{ id: 'st1', settlement_number: '0000205995' }],
     cotton: null, cropIds: ri.cropIds, entityId: ri.entityId, ...over,
   }

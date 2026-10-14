@@ -54,7 +54,7 @@ import type {
 } from '@/lib/types'
 
 // Every load column the audit workbook lists (the engine reads a subset).
-const LOAD_SELECT = 'id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, from_bin_id, practice, gross_weight, tare_weight, test_weight, ticket_number, truck_id, truck_label, hauler_truck, to_type, to_bin_id, to_buyer_id'
+const LOAD_SELECT = 'id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, from_bin_id, practice, gross_weight, tare_weight, test_weight, ticket_number, buyer_ticket_number, truck_id, truck_label, hauler_truck, to_type, to_bin_id, to_buyer_id'
 
 const BASIS_LABEL: Record<ProductionBasis, string> = { measured: 'Measured (scale tickets)', balanced: 'Balanced to settlements' }
 
@@ -110,7 +110,7 @@ export default function CropInsuranceReport() {
         supabase.from('crop_assumptions').select('*'),
         // May not exist yet (migration 062): an error leaves data null → [].
         fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date, notes').order('id').range(f, t)),
-        fetchAllRows((f, t) => supabase.from('settlement_lines').select('id, settlement_id, load_id, net_bushels, ticket_number, buyer_ticket_number').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('settlement_lines').select('id, settlement_id, load_id, net_bushels, ticket_number').order('id').range(f, t)),
         fetchAllRows((f, t) => supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_number').order('id').range(f, t)),
         supabase.from('buyers').select('id, name'),
         supabase.from('bins').select('id, name_or_number'),
