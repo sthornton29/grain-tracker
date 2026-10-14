@@ -491,7 +491,8 @@ function excelColWidths(section: ExportSection): number[] {
     pr.cells.forEach((cell, i) => {
       if (section.columns[i]?.width != null) return
       const { raw, format } = normCell(cell)
-      const len = cellText(raw, format).length
+      // KPI values are written at 14 pt bold: allow half again the characters.
+      const len = Math.ceil(cellText(raw, format).length * (pr.kind === 'kpi' && i % 2 === 1 ? 1.6 : 1))
       if (len + 2 > (widths[i] ?? 0)) widths[i] = len + 2
     })
   }

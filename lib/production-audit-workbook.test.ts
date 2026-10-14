@@ -147,7 +147,7 @@ describe('audit workbook — the corn fixture (measured basis)', () => {
     expect(fp.map((r) => [r.field, r.practice])).toEqual([['Moore', 'Dryland'], ['Tweedy', 'Irrigated'], ['Pruitt', 'Dryland'], ['Wheeler', 'Dryland'], ['Home Place', 'Irrigated']])
     expect(fp.every((r) => !('key' in r))).toBe(true)
     const home = fp[4]
-    near(home.scale_bu, 2010); near(home.production, 2010); near(home.yield, 201); expect(home.crop_year).toBe('2026'); expect(home.fsa).toBe('1234')
+    near(home.scale_bu, 2010); near(home.production, 2010); near(home.yield, 201); expect(home.crop_year).toBe(2026); expect(home.fsa).toBe('1234')
     near(fp[2].scale_bu, 1700); near(fp[3].scale_bu, 0); near(fp[3].combine_bu, 900); near(fp[3].production, 900); expect(fp[3].source).toBe('combine monitor')
     near(fp[0].production, 1200); near(fp[1].production, 1000)
     // Home Place is the 5th row: Field Production data starts on row 5 (title, text, back link, header).

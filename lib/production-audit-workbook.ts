@@ -555,7 +555,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
         place.countyLabel,
         place.state,
         cName,
-        String(r.planting.season_year),
+        r.planting.season_year,
         unit,
         pLabel,
         status,
@@ -732,7 +732,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
         place.countyLabel,
         place.state,
         cropName(po.cropId),
-        String(l.crop_year ?? ''),
+        l.crop_year ?? '',
         po.practice ? practiceLabel(po.practice) : '',
         destination,
         input(l.gross_weight ?? null, 'lbs'),
@@ -786,7 +786,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
         place.countyLabel,
         place.state,
         cropName(r.planting.crop_id),
-        String(r.planting.season_year),
+        r.planting.season_year,
         e.entry_date,
         input(Number(e.stated_total_bushels) || 0, 'bu2'),
         input(e.adjustment_bu_per_acre == null ? null : Number(e.adjustment_bu_per_acre), 'dec1'),
@@ -832,7 +832,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     rows: ginRows.map((g) => {
       const place = placeOf(g.r.planting.field_id)
       const practice = g.r.isMixed ? 'Mixed' : g.r.irrigatedAcres > 0 ? 'Irrigated' : 'Dryland'
-      const common = [place.farmName, displayField(g.r.planting), place.countyLabel, place.state, cropName(g.r.planting.crop_id), String(g.r.planting.season_year), practice]
+      const common = [place.farmName, displayField(g.r.planting), place.countyLabel, place.state, cropName(g.r.planting.crop_id), g.r.planting.season_year, practice]
       if (g.receipt) {
         const rc = g.receipt
         const balesHere = baleRows.filter((b) => b.receipt.id === rc.id)
@@ -914,7 +914,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
         link ? { v: x.load.id, link } : x.load.id,
         sourceOf(x.load),
         criteriaText(c.name),
-        String(x.load.crop_year ?? ''),
+        x.load.crop_year ?? '',
         input(x.netBu, 'bu2'),
       ]
     })),
@@ -943,7 +943,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
       const link = loadLink(x.load.id)
       return [
         x.load.date, text(x.load.ticket_number), buyerById.get(x.load.to_buyer_id ?? '') ?? '',
-        link ? { v: x.load.id, link } : x.load.id, sourceOf(x.load), criteriaText(c.name), String(x.load.crop_year ?? ''),
+        link ? { v: x.load.id, link } : x.load.id, sourceOf(x.load), criteriaText(c.name), x.load.crop_year ?? '',
         input(x.dryBu, 'bu2'),
       ]
     })),
