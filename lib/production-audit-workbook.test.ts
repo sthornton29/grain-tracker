@@ -383,12 +383,25 @@ describe('audit workbook — balanced to settlements', () => {
     expect(orphan.orphanUnmatched).toEqual({ lines: 1, bu: 50, settlementIds: ['st3'] })
   })
 
-  it('an entity filter keeps the crop-wide factor: Home Place still shows 1,977.533', () => {
-    const { balance, report } = balancedCase(ALL_SOLD_LINES, [L9], { entityId: 'ent1' })
+  it('an entity filter keeps the crop-wide factor: Home Place still shows 1,977.533, on screen and in the workbook', () => {
+    const { balance, report, payload } = balancedCase(ALL_SOLD_LINES, [L9], { entityId: 'ent1' })
     expect(balance.byCrop.get('corn')!.factor).toBeCloseTo(0.983847, 6)
     expect(report.resolved.map((r) => r.fieldDisplayName)).toEqual(['Home Place', 'Pruitt', 'Wheeler'])
     near(report.resolved[0].totalBu, 1977.533, 2)
     near(report.summaryTotals.get('corn')!.bu, (2010 + 1700 + 900) * balance.byCrop.get('corn')!.factor, 6)
+    // The workbook's balance tab divides by the ALL-entities measured total (a
+    // blue input under an entity filter), never by this entity's share.
+    const bal = rowsOf(payload, AUDIT.balance)
+    const item = (s: string) => bal.find((r) => r.item === s)!
+    near(item('Corn: Measured total, all entities (bu)').value, 6810)
+    near(item('Corn: Factor').value, 0.983847, 6)
+    near(item('Corn: This entity measured production (bu)').value, 4610)
+    near(item('Corn: This entity balanced production (bu)').value, 4610 * 0.9838472834, 2)
+    const fp = rowsOf(payload, AUDIT.fieldProduction)
+    near(fp.find((r) => r.field === 'Home Place')!.balanced_production, 1977.533, 2)
+    const sm = rowsOf(payload, AUDIT.summary)
+    near(sm[sm.length - 1]['prod:corn'], 4610 * 0.9838472834, 2)
+    near(sm[sm.length - 1]['mprod:corn'], 4610)
   })
 
   it('a factor of 1.06 shows the amber warning', () => {

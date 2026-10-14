@@ -188,7 +188,11 @@ export default function CropInsuranceReport() {
     cropYear, entityId, cropIds, plantings, fields, farms, counties, crops, loads, splits, combineEntries,
     assumptions: effAssumptions, cotton: cottonModel, acceptedAsDryland,
   }), [cropYear, entityId, cropIds, plantings, fields, farms, counties, crops, loads, splits, combineEntries, effAssumptions, cottonModel, acceptedAsDryland])
-  const measuredAll = useMemo(() => buildProductionReport({ ...engineInput, entityId: '' }), [engineInput])
+  // The crop-wide MEASURED total behind the balance: every entity, and never
+  // gated — a mixed planting's missing breakout only splits production between
+  // practices, the crop total is the same either way, so the all-entities run
+  // rolls it into dryland rather than blocking the balance for an entity view.
+  const measuredAll = useMemo(() => buildProductionReport({ ...engineInput, entityId: '', acceptedAsDryland: true }), [engineInput])
   const balance = useMemo(() => {
     if (basis !== 'balanced' || cropYear === '') return null
     return buildProductionBalance({
@@ -545,7 +549,7 @@ export default function CropInsuranceReport() {
         <div key={b.cropId} className="bg-white border border-slate-200 rounded-xl p-4 space-y-2 no-print">
           <div className="font-semibold text-slate-800">{b.cropName} — balanced to settlements</div>
           <dl className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-1 text-sm">
-            <dt className="text-slate-500">Measured (scale tickets)</dt><dd className="tabular-nums text-right md:text-left">{fmtNum(b.measured, 3)} bu</dd>
+            <dt className="text-slate-500">Measured, all entities (scale tickets)</dt><dd className="tabular-nums text-right md:text-left">{fmtNum(b.measured, 3)} bu</dd>
             <dt className="text-slate-500">Settled (paid)</dt><dd className="tabular-nums text-right md:text-left">{fmtNum(b.settled, 3)} bu across {b.settlementCount} settlement{b.settlementCount === 1 ? '' : 's'}</dd>
             <dt className="text-slate-500">Delivered, not settled</dt>
             <dd className="tabular-nums text-right md:text-left">
@@ -559,22 +563,38 @@ export default function CropInsuranceReport() {
             <dt className="text-slate-500">Still in bins</dt><dd className="tabular-nums text-right md:text-left">{fmtNum(b.bins, 3)} bu <span className="text-slate-500">({BINS_NOTE})</span></dd>
             <dt className="text-slate-500">Balanced total</dt><dd className="tabular-nums text-right md:text-left font-semibold">{fmtNum(b.balancedTotal, 3)} bu</dd>
             <dt className="text-slate-500">Factor</dt><dd className={`tabular-nums text-right md:text-left font-semibold ${b.warn ? 'text-amber-700' : ''}`}>{factorLabel(b.factor)}</dd>
+            {entityId && (() => {
+              // This entity's share: its measured production × the crop-wide factor.
+              const entityMeasured = report.resolved.filter((r) => r.planting.crop_id === b.cropId).reduce((a, r) => a + r.measuredBu, 0)
+              const entityBalanced = report.summaryTotals.get(b.cropId)?.bu ?? 0
+              return (
+                <>
+                  <dt className="text-slate-500">{entityName}: measured production</dt><dd className="tabular-nums text-right md:text-left">{fmtNum(entityMeasured, 3)} bu</dd>
+                  <dt className="text-slate-500">{entityName}: balanced production</dt><dd className="tabular-nums text-right md:text-left font-semibold">{fmtNum(entityBalanced, 3)} bu <span className="font-normal text-slate-500">(measured × {b.factor.toFixed(4)})</span></dd>
+                </>
+              )
+            })()}
           </dl>
           {b.allPaid && <p className="text-sm text-green-800">Nothing is unsettled and the bins are empty: balanced production equals the bushels paid.</p>}
           {!b.allPaid && b.unsettled > 0 && <p className="text-sm text-slate-600">{fmtNum(b.unsettled, 0)} bu are delivered but not settled; the balance will change as settlements arrive.</p>}
           {b.warn && <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">The factor is more than 5% from 1. Check for a missing settlement or load.</p>}
           {b.unmatched.lines > 0 && (
             <p className="text-sm text-amber-800">
-              {b.unmatched.lines} settlement line{b.unmatched.lines === 1 ? '' : 's'} ({fmtNum(b.unmatched.bu, 0)} bu) {b.unmatched.lines === 1 ? "isn't" : "aren't"} matched to a load and can&apos;t count until matched.{' '}
-              <Link href="/settlements" className="text-brand-deep underline">Open settlements</Link>
+              {b.unmatched.lines} settlement line{b.unmatched.lines === 1 ? '' : 's'} ({fmtNum(b.unmatched.bu, 0)} bu) {b.unmatched.lines === 1 ? "isn't" : "aren't"} matched to a load and can&apos;t count until matched:{' '}
+              {b.unmatched.settlementIds.map((id, i) => (
+                <span key={id}>{i > 0 ? ', ' : ''}<Link href={`/settlements/${id}`} className="text-brand-deep underline">{settlements.find((s) => s.id === id)?.settlement_number || 'settlement'}</Link></span>
+              ))}
             </p>
           )}
         </div>
       ))}
       {cropYear !== '' && balance && balance.orphanUnmatched.lines > 0 && (
         <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 no-print">
-          {balance.orphanUnmatched.lines} settlement line{balance.orphanUnmatched.lines === 1 ? '' : 's'} ({fmtNum(balance.orphanUnmatched.bu, 0)} bu) on settlements with no matched load at all can&apos;t count until matched.{' '}
-          <Link href="/settlements" className="text-brand-deep underline">Open settlements</Link>
+          {balance.orphanUnmatched.lines} settlement line{balance.orphanUnmatched.lines === 1 ? '' : 's'} ({fmtNum(balance.orphanUnmatched.bu, 0)} bu) on settlements with no matched load at all can&apos;t count until matched:{' '}
+          {balance.orphanUnmatched.settlementIds.map((id, i) => {
+            const s = settlements.find((x) => x.id === id)
+            return <span key={id}>{i > 0 ? ', ' : ''}<Link href={`/settlements/${id}`} className="text-brand-deep underline">{s?.settlement_number || 'settlement'}{s?.settlement_date ? ` (${s.settlement_date})` : ''}</Link></span>
+          })}
         </p>
       )}
 

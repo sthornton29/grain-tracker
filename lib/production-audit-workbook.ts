@@ -400,7 +400,11 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
       if (!b) continue
       const r0 = balanceRows.length
       const line = (item: string, value: ExportCell, pct: ExportCell = '', note: string = '') => balanceRows.push([item, value, pct, note])
-      line(`${c.name}: Measured total (bu)`, formula(cell(S.summary, `mprod:${c.id}`, report.summaryRows.length), 'bu3'), '', 'the report\'s production for the crop, all entities, before any balance')
+      // The crop-wide measured total: the Summary's measured total when the
+      // export covers every entity; under an entity filter the Summary holds
+      // only that entity's share, so the all-entities figure is a blue input.
+      if (entityId) line(`${c.name}: Measured total, all entities (bu)`, input(b.measured, 'bu3'), '', `the crop\'s production across every entity, before any balance (this export is filtered to ${input0.entityName || 'one entity'}, so the Summary shows only its share)`)
+      else line(`${c.name}: Measured total (bu)`, formula(cell(S.summary, `mprod:${c.id}`, report.summaryRows.length), 'bu3'), '', 'the report\'s production for the crop, all entities, before any balance')
       line(`${c.name}: Settled (paid) bu`, formula(sumifs(ST('net_bu'), [ST('crop'), literalCriterion(criteriaText(c.name))]), 'bu3'), '', `buyer net bushels on ${b.settledLines.length} settlement line${b.settledLines.length === 1 ? '' : 's'} across ${b.settlementCount} settlement${b.settlementCount === 1 ? '' : 's'} (Settlements tab)`)
       line(`${c.name}: Delivered, not settled (bu)`, formula(sumifs(UN('dry_bu'), [UN('crop'), literalCriterion(criteriaText(c.name))]), 'bu3'), '', `our dry bushels on ${b.unsettledLoads.length} load${b.unsettledLoads.length === 1 ? '' : 's'} delivered to a buyer with no settlement line yet (Unsettled Deliveries tab)`)
       line(`${c.name}: Still in bins (bu)`, input(b.bins, 'bu3'), '', `${BINS_NOTE}: ${b.binsIn.toFixed(2)} in − ${b.binsOut.toFixed(2)} out${b.binsCombine ? ` + ${b.binsCombine.toFixed(2)} combine remainder` : ''}`)
@@ -412,6 +416,10 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
       if (b.allPaid) {
         balanceCheckIdx.push(balanceRows.length)
         line(`${c.name}: Production equals bushels paid`, formula(iff(lt(abs(sub(cell(S.balance, 'value', r0 + 4), cell(S.balance, 'value', r0 + 1))), num(0.5)), str('OK'), str('CHECK'))), '', 'nothing unsettled and the bins empty: balanced production is exactly the bushels paid')
+      }
+      if (entityId) {
+        line(`${c.name}: ${input0.entityName || 'This entity'} measured production (bu)`, formula(cell(S.summary, `mprod:${c.id}`, report.summaryRows.length), 'bu3'), '', 'this entity\'s share of the measured production (the Summary measured total)')
+        line(`${c.name}: ${input0.entityName || 'This entity'} balanced production (bu)`, formula(cell(S.summary, `prod:${c.id}`, report.summaryRows.length), 'bu3'), '', 'this entity\'s measured production × the crop-wide factor (the Summary balanced total)')
       }
       balanceRows.push(['', '', '', ''])
     }
