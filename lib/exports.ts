@@ -21,6 +21,10 @@
 // `.no-print` CSS in app/globals.css.
 
 import { exportChrome, type ExportBranding } from '@/lib/branding'
+import {
+  columnLetters, evaluateFormula, toExcelFormula, FormulaError,
+  type FormulaData, type FormulaLayout, type FormulaNode, type Scalar,
+} from '@/lib/formula'
 
 // ---------- formatting model ----------
 
@@ -38,6 +42,18 @@ import { exportChrome, type ExportBranding } from '@/lib/branding'
 //   moisture .................... 'dec1'
 //   option premium (cents) ...... 'dec2'
 //   percentages ................. 'pct0' / 'pct1'
+//   audit-workbook bushels ...... 'bu3'   (3 dec — load-level dry bushels and the
+//                                          totals that sum them, so a fractional
+//                                          bushel never hides behind a 0-dec format)
+//
+// FORMULA CELLS (lib/formula.ts): a cell may carry `f` (an expression over
+// section/column KEYS) plus `v`, its cached result. Excel writes
+// { formula, result } so viewers that never recalculate (phone previews, mail
+// attachments) still show numbers, and the workbook is flagged to recalculate
+// fully on open. `input: true` marks a value that came straight from a Turnrow
+// record (weights, moisture, acres, overrides) — written in BLUE; formulas stay
+// black. Sections used by formulas carry a `key` and keyed columns; `plain`
+// sections put the header on row 1 (or 2, under a `note`) with an autofilter.
 export type NumFmt =
   | 'text'
   | 'int' // 1,234
@@ -48,6 +64,7 @@ export type NumFmt =
   | 'price' // $4.93 ($/bu, 2 decimals)
   | 'cents' // a ¢/lb-STORED cotton price displayed as $/lb: 72.65 → $0.7265
   | 'bu' // 45,000 bushels (0 decimals)
+  | 'bu3' // 1,000.000 bushels (3 decimals — audit workbooks)
   | 'lbs' // 412,000 lbs (0 decimals, commas)
   | 'acres' // 1,250.0 (1 decimal)
   | 'yield' // 182.5 bu/ac (1 decimal)
@@ -59,6 +76,9 @@ export type Tone = 'favorable' | 'unfavorable' | 'warning' | 'muted' | 'neutral'
 export type ExportColumn = {
   /** Column header text. */
   label: string
+  /** Stable key formulas refer to (lib/formula col/cell/self). Required on
+   *  every column of a section that formulas reference. */
+  key?: string
   align?: 'left' | 'right'
   /** How numeric cells in this column format (PDF string + Excel numFmt). When
    *  omitted, numbers are inferred (thousands separators, up to 2 decimals). */
@@ -67,12 +87,14 @@ export type ExportColumn = {
   width?: number
 }
 
-/** A cell is a bare value, or a value plus per-cell format/tone overrides. */
+/** A cell is a bare value, or a value plus per-cell format/tone overrides —
+ *  or a formula cell (`f`, with `v` its cached result once evaluated), or an
+ *  input cell (`input: true`, blue in Excel). `link` makes the cell a hyperlink. */
 export type ExportCell =
   | string
   | number
   | null
-  | { v: string | number | null; format?: NumFmt; tone?: Tone }
+  | { v: string | number | null; format?: NumFmt; tone?: Tone; f?: FormulaNode; input?: boolean; link?: string }
 
 /** Visual role of a row.
  *  'data'     — normal row.
@@ -84,6 +106,13 @@ export type RowKind = 'data' | 'subhead' | 'subtotal' | 'total'
 export type ExportSection = {
   /** Section label — a heading bar in the PDF and the sheet name in Excel. */
   title?: string
+  /** Stable key formulas refer to this section (sheet) by. */
+  key?: string
+  /** Excel: a plain data table — no title block; the header sits on row 1
+   *  (row 2 under a `note`), frozen, with an autofilter over the data. */
+  plain?: boolean
+  /** Excel (plain sections): one explanatory line above the header. */
+  note?: string
   columns: ExportColumn[]
   rows: ExportCell[][]
   /** Per-row role, parallel to `rows`. Missing entries default to 'data'. */
@@ -109,6 +138,9 @@ export type ExportPayload = {
   filename?: string
   /** Excel: stack every section onto one sheet instead of one sheet per section. */
   singleSheet?: boolean
+  /** Excel: flag the workbook to recalculate every formula when opened (set
+   *  automatically whenever a section carries formula cells). */
+  fullCalcOnLoad?: boolean
   /** PDF orientation; defaults to landscape for wide tables, portrait otherwise. */
   orientation?: 'portrait' | 'landscape'
   /**
@@ -144,6 +176,8 @@ export function formatNumber(value: number, fmt?: NumFmt): string {
       body = group(a, 1, 1); break
     case 'dec2':
       body = group(a, 2, 2); break
+    case 'bu3':
+      body = group(a, 3, 3); break
     case 'usd0':
       body = '$' + group(a, 0, 0); break
     case 'usd2':
@@ -174,6 +208,7 @@ export function excelNumFmt(fmt?: NumFmt): string | undefined {
     case 'acres':
     case 'yield': return '#,##0.0;(#,##0.0)'
     case 'dec2': return '#,##0.00;(#,##0.00)'
+    case 'bu3': return '#,##0.000;(#,##0.000)'
     case 'usd0': return '$#,##0;($#,##0)'
     case 'usd2':
     case 'price': return '$#,##0.00;($#,##0.00)'
@@ -184,10 +219,129 @@ export function excelNumFmt(fmt?: NumFmt): string | undefined {
   }
 }
 
-type NormCell = { raw: string | number | null; format?: NumFmt; tone?: Tone }
+type NormCell = { raw: string | number | null; format?: NumFmt; tone?: Tone; f?: FormulaNode; input?: boolean; link?: string }
 function normCell(cell: ExportCell): NormCell {
-  if (cell != null && typeof cell === 'object') return { raw: cell.v, format: cell.format, tone: cell.tone }
+  if (cell != null && typeof cell === 'object') return { raw: cell.v, format: cell.format, tone: cell.tone, f: cell.f, input: cell.input, link: cell.link }
   return { raw: cell }
+}
+
+// ---------- formula support (lib/formula.ts) ----------
+
+/** Does any section carry a formula cell? */
+export function payloadHasFormulas(payload: ExportPayload): boolean {
+  return payload.sections.some((s) => s.rows.some((r) => r.some((c) => c != null && typeof c === 'object' && c.f != null)))
+}
+
+/** Sanitize + de-duplicate worksheet names exactly as the Excel writer does
+ *  (≤31 chars, no \ / ? * [ ] :, unique case-insensitively). */
+function resolveSheetNames(payload: ExportPayload): string[] {
+  const used = new Set<string>()
+  const take = (desired: string, fallback: string): string => {
+    const base = desired.replace(/[\\/?*[\]:]/g, '-').trim().slice(0, 31) || fallback
+    let name = base
+    for (let n = 2; used.has(name.toLowerCase()); n++) {
+      const suffix = ` (${n})`
+      name = base.slice(0, 31 - suffix.length).trim() + suffix
+    }
+    used.add(name.toLowerCase())
+    return name
+  }
+  const multi = !payload.singleSheet && payload.sections.length > 1
+  if (multi && payload.summary?.length) take('Summary', 'Summary')
+  if (payload.singleSheet) {
+    const one = take(payload.title, 'Report')
+    return payload.sections.map(() => one)
+  }
+  return payload.sections.map((section, i) => take(section.title || `Sheet ${i + 1}`, `Sheet ${i + 1}`))
+}
+
+/** The physical row the section's column header lands on, given how the
+ *  writer lays a sheet out (title block for titled sheets, note/groups). */
+function headerRowOf(payload: ExportPayload, section: ExportSection): number {
+  let row = 0
+  if (!section.plain) {
+    const chrome = exportChrome(payload.branding)
+    row += 1 + chrome.headerLines.length + (payload.filters ? 1 : 0) + 1 + 1 // title, chrome, filters, generated, blank
+    if (section.title) row += 1
+  } else if (section.note) {
+    row += 1
+  }
+  if (section.groups && section.groups.length > 0) row += 1
+  return row + 1
+}
+
+/** Section key → sheet name, first data row, row count, column letters. Only
+ *  keyed sections appear; a formula that refers to an unkeyed section throws
+ *  at render time with the missing key named. */
+export function formulaLayout(payload: ExportPayload): FormulaLayout {
+  if (payload.singleSheet && payloadHasFormulas(payload)) throw new Error('formula cells are not supported on singleSheet exports')
+  const names = resolveSheetNames(payload)
+  const layout: FormulaLayout = {}
+  payload.sections.forEach((section, i) => {
+    if (!section.key) return
+    if (layout[section.key]) throw new Error(`duplicate section key "${section.key}"`)
+    const columns: Record<string, string> = {}
+    section.columns.forEach((c, ci) => { if (c.key) columns[c.key] = columnLetters(ci + 1) })
+    layout[section.key] = {
+      sheetName: names[i],
+      firstRow: headerRowOf(payload, section) + 1,
+      rowCount: section.rows.length,
+      columns,
+    }
+  })
+  return layout
+}
+
+/** The evaluator's view of the payload: keyed sections only, cells as values
+ *  or `{ f }`. A number written under the 'cents' format is NOT divided here —
+ *  formulas see the stored value, as the on-screen math does. */
+export function payloadFormulaData(payload: ExportPayload): FormulaData {
+  const data: FormulaData = {}
+  for (const section of payload.sections) {
+    if (!section.key) continue
+    data[section.key] = {
+      columns: section.columns.map((c, i) => c.key ?? `__col${i}`),
+      rows: section.rows.map((row) => section.columns.map((_, i) => {
+        const n = normCell(row[i] ?? null)
+        return n.f ? { f: n.f, v: n.raw } : n.raw
+      })),
+    }
+  }
+  return data
+}
+
+/** Evaluate every formula cell of the payload IN PLACE (filling each formula
+ *  cell's cached `v`) and return the evaluated grid per section key. A cell
+ *  whose formula errors keeps `v: null` and reports a FormulaError here. */
+export function evaluatePayload(payload: ExportPayload): Record<string, Array<Array<Scalar | FormulaError>>> {
+  const data = payloadFormulaData(payload)
+  const memo = new Map<string, Scalar | FormulaError>()
+  const out: Record<string, Array<Array<Scalar | FormulaError>>> = {}
+  for (const section of payload.sections) {
+    if (!section.key) continue
+    const key = section.key
+    out[key] = section.rows.map((row, r) => section.columns.map((_, ci) => {
+      const raw = row[ci] ?? null
+      const n = normCell(raw)
+      if (!n.f) return n.raw
+      const v = evaluateFormula(n.f, data, { s: key, r }, memo)
+      if (raw != null && typeof raw === 'object') raw.v = v instanceof FormulaError ? null : typeof v === 'boolean' ? (v ? 1 : 0) : v
+      return v
+    }))
+  }
+  return out
+}
+
+/** The Excel formula text a keyed cell will be written with (for tests and
+ *  for anyone reading the workbook's audit trail without opening Excel). */
+export function formulaTextOf(payload: ExportPayload, sectionKey: string, rowIndex: number, colKey: string): string | null {
+  const section = payload.sections.find((s) => s.key === sectionKey)
+  if (!section) throw new Error(`unknown section key "${sectionKey}"`)
+  const ci = section.columns.findIndex((c) => c.key === colKey)
+  if (ci < 0) throw new Error(`unknown column key "${colKey}" in section "${sectionKey}"`)
+  const n = normCell(section.rows[rowIndex]?.[ci] ?? null)
+  if (!n.f) return null
+  return toExcelFormula(n.f, { layout: formulaLayout(payload), at: { s: sectionKey, r: rowIndex } })
 }
 
 // Display string for a cell (PDF + Excel widths + summary). Strings pass through;
@@ -257,9 +411,16 @@ function excelColWidths(section: ExportSection): number[] {
   return widths.map((w) => Math.min(48, Math.max(10, w)))
 }
 
-function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSection, opts: { withTitle: boolean }): void {
+const INPUT_FONT_ARGB = 'FF0000FF' // blue — a value straight from a Turnrow record
+
+function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSection, opts: { withTitle: boolean; layout?: FormulaLayout }): void {
   const chrome = exportChrome(payload.branding)
-  if (opts.withTitle) {
+  const expectedHeaderRow = opts.withTitle || section.plain ? headerRowOf(payload, section) : null
+  if (section.plain && section.note) {
+    ws.addRow([section.note])
+    ws.lastRow.font = { italic: true, color: { argb: 'FF475569' } }
+  }
+  if (opts.withTitle && !section.plain) {
     ws.addRow([payload.title])
     ws.lastRow.font = { bold: true, size: 14 }
     for (const line of chrome.headerLines) {
@@ -270,7 +431,7 @@ function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSectio
     ws.lastRow.font = { color: { argb: 'FF94A3B8' }, size: 9 }
     ws.addRow([])
   }
-  if (section.title) {
+  if (section.title && !section.plain) {
     ws.addRow([section.title])
     ws.lastRow.font = { bold: true, size: 12 }
   }
@@ -296,6 +457,9 @@ function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSectio
   // Column header row.
   const headerRow = ws.addRow(section.columns.map((c) => c.label))
   const headerRowNumber = headerRow.number
+  if (expectedHeaderRow != null && headerRowNumber !== expectedHeaderRow) {
+    throw new Error(`export layout drift: header landed on row ${headerRowNumber}, layout expected ${expectedHeaderRow}`)
+  }
   headerRow.eachCell((cell: any, col: number) => {
     cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: chrome.excelHeaderArgb } }
@@ -315,26 +479,42 @@ function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSectio
       return
     }
     const values = row.map((cell, i) => {
-      const { raw, format } = normCell(cell)
+      const { raw, format, f, link } = normCell(cell)
       const fmt = format ?? section.columns[i]?.format
+      if (f) {
+        // A formula cell: the Excel formula plus its cached result, so viewers
+        // that never recalculate still show the number.
+        if (!opts.layout || !section.key) throw new Error('formula cells need a keyed section and a resolved layout')
+        const formula = toExcelFormula(f, { layout: opts.layout, at: { s: section.key, r: ri } })
+        const result = raw == null ? undefined : typeof raw === 'number' && fmt === 'cents' ? raw / 100 : raw
+        return result === undefined ? { formula } : { formula, result }
+      }
       // 'cents' carries ¢/lb-stored cotton prices displayed as $/lb: the REAL
       // number written to the sheet is the $ value (÷100) so the $ numFmt and
       // any user math read correctly.
-      if (typeof raw === 'number') return fmt === 'cents' ? raw / 100 : raw
-      return raw ?? ''
+      const value = typeof raw === 'number' ? (fmt === 'cents' ? raw / 100 : raw) : (raw ?? '')
+      if (link) return { text: String(value), hyperlink: link }
+      return value
     })
     const r = ws.addRow(values)
     row.forEach((cell, i) => {
-      const { raw, format, tone } = normCell(cell)
+      const { raw, format, tone, f, input, link } = normCell(cell)
       const xcell = r.getCell(i + 1)
       const fmt = format ?? section.columns[i]?.format
-      if (typeof raw === 'number') {
+      const numeric = typeof raw === 'number' || (f != null && fmt != null && fmt !== 'text')
+      if (numeric) {
         xcell.numFmt = excelNumFmt(fmt)!
         xcell.alignment = { horizontal: 'right' }
       } else if (section.columns[i]?.align === 'right') {
         xcell.alignment = { horizontal: 'right' }
       }
       if (tone && tone !== 'neutral') xcell.font = { color: { argb: toneArgb(tone) } }
+      else if (input) xcell.font = { color: { argb: INPUT_FONT_ARGB } }
+      else if (link) xcell.font = { color: { argb: 'FF256F35' }, underline: true }
+      // exceljs drops a falsy cached result (0) when it copies the formula
+      // value in; put it back on the live model so the file carries <v>0</v>
+      // and a viewer that never recalculates shows 0, not blank.
+      if (f && raw === 0) xcell.model.result = 0
     })
     if (kind === 'total' || kind === 'subtotal') {
       const fill = kind === 'total' ? TOTAL_FILL_ARGB : SUBTOTAL_FILL_ARGB
@@ -349,9 +529,19 @@ function writeExcelSection(ws: Ws, payload: ExportPayload, section: ExportSectio
   // Column widths + freeze the header row (and the first/label column).
   excelColWidths(section).forEach((w, i) => { ws.getColumn(i + 1).width = w })
   ws.views = [{ state: 'frozen', xSplit: 1, ySplit: headerRowNumber }]
+  // Plain data tables get an autofilter over the header + data rows.
+  if (section.plain && ncols > 0) {
+    ws.autoFilter = {
+      from: { row: headerRowNumber, column: 1 },
+      to: { row: headerRowNumber + Math.max(1, section.rows.length), column: ncols },
+    }
+  }
 }
 
-export async function exportToExcel(payload: ExportPayload): Promise<void> {
+/** Build the exceljs Workbook for a payload (exported so tests can inspect the
+ *  sheets, formulas and cached results without a browser download). Formula
+ *  cells are evaluated here if their cached result is still missing. */
+export async function buildExcelWorkbook(payload: ExportPayload): Promise<any> { // eslint-disable-line @typescript-eslint/no-explicit-any
   const mod = await import('exceljs')
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const ExcelJS: any = (mod as any).default ?? mod
@@ -359,21 +549,22 @@ export async function exportToExcel(payload: ExportPayload): Promise<void> {
 
   // Excel sheet names must be ≤31 chars, exclude \ / ? * [ ] :, be non-empty, and
   // be UNIQUE within the workbook (case-insensitively) — exceljs throws
-  // "Worksheet name already exists" otherwise. addSheet sanitizes each requested
-  // name and disambiguates collisions with a " (2)" suffix, so a report whose own
-  // section is titled "Summary" (which would collide with the auto Summary sheet)
-  // or whose long section titles truncate to the same 31 chars still exports.
-  const usedSheetNames = new Set<string>()
-  const addSheet = (desired: string, fallback: string): Ws => {
-    const base = desired.replace(/[\\/?*[\]:]/g, '-').trim().slice(0, 31) || fallback
-    let name = base
-    for (let n = 2; usedSheetNames.has(name.toLowerCase()); n++) {
-      const suffix = ` (${n})`
-      name = base.slice(0, 31 - suffix.length).trim() + suffix
-    }
-    usedSheetNames.add(name.toLowerCase())
-    return wb.addWorksheet(name)
+  // "Worksheet name already exists" otherwise. resolveSheetNames sanitizes each
+  // requested name and disambiguates collisions with a " (2)" suffix, so a report
+  // whose own section is titled "Summary" (which would collide with the auto
+  // Summary sheet) or whose long section titles truncate to the same 31 chars
+  // still exports. The same resolution feeds the formula layout, so a
+  // cross-sheet reference always names the sheet that was actually written.
+  const sheetNames = resolveSheetNames(payload)
+  const hasFormulas = payloadHasFormulas(payload)
+  const layout = hasFormulas ? formulaLayout(payload) : undefined
+  if (hasFormulas) {
+    // Cache every formula result (an idempotent pass — the audit builders
+    // already evaluate; a payload built by hand gets its results here).
+    evaluatePayload(payload)
+    wb.calcProperties.fullCalcOnLoad = true
   }
+  if (payload.fullCalcOnLoad) wb.calcProperties.fullCalcOnLoad = true
 
   // Multi-section reports: a Summary sheet first (title/filters/cards), then one
   // sheet per section — matching how the report is organized on screen. Filters
@@ -382,7 +573,7 @@ export async function exportToExcel(payload: ExportPayload): Promise<void> {
   const multi = !payload.singleSheet && payload.sections.length > 1
   const chrome = exportChrome(payload.branding)
   if (multi && payload.summary?.length) {
-    const ws = addSheet('Summary', 'Summary')
+    const ws = wb.addWorksheet('Summary')
     ws.addRow([payload.title]); ws.lastRow.font = { bold: true, size: 14 }
     for (const line of chrome.headerLines) { ws.addRow([line]); ws.lastRow.font = { color: { argb: 'FF64748B' }, size: 10 } }
     if (payload.filters) { ws.addRow([payload.filters]); ws.lastRow.font = { color: { argb: 'FF64748B' } } }
@@ -402,7 +593,7 @@ export async function exportToExcel(payload: ExportPayload): Promise<void> {
   }
 
   if (payload.singleSheet) {
-    const ws = addSheet(payload.title, 'Report')
+    const ws = wb.addWorksheet(sheetNames[0])
     payload.sections.forEach((section, i) => {
       if (i > 0) ws.addRow([])
       writeExcelSection(ws, payload, section, { withTitle: i === 0 })
@@ -411,11 +602,15 @@ export async function exportToExcel(payload: ExportPayload): Promise<void> {
     // sections, so leave the per-section freeze from writeExcelSection (last wins).
   } else {
     payload.sections.forEach((section, i) => {
-      const ws = addSheet(section.title || `Sheet ${i + 1}`, `Sheet ${i + 1}`)
-      writeExcelSection(ws, payload, section, { withTitle: true })
+      const ws = wb.addWorksheet(sheetNames[i])
+      writeExcelSection(ws, payload, section, { withTitle: true, layout })
     })
   }
+  return wb
+}
 
+export async function exportToExcel(payload: ExportPayload): Promise<void> {
+  const wb = await buildExcelWorkbook(payload)
   const buf = await wb.xlsx.writeBuffer()
   browserDownload(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `${payload.filename || defaultFilename(payload.title)}.xlsx`)
 }
@@ -625,6 +820,7 @@ function csvDecimals(fmt?: NumFmt): number | null {
     case 'int': case 'bu': case 'lbs': case 'usd0': case 'pct0': return 0
     case 'dec1': case 'acres': case 'yield': case 'pct1': return 1
     case 'dec2': case 'usd2': case 'price': return 2
+    case 'bu3': return 3
     case 'cents': return 4
     default: return null // 'text' and inference pass the raw number through
   }

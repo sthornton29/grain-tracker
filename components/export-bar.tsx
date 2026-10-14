@@ -10,6 +10,10 @@ type Props = {
   /** Called when the user clicks an export. Recomputes the payload on the
    *  fly so the export reflects current filters without leaking state. */
   buildPayload: () => ExportPayload
+  /** Optional Excel-only builder (may fetch): a report whose Excel export is
+   *  a richer workbook than its PDF — the Crop Insurance Production Report's
+   *  audit workbook — supplies it; PDF / CSV / Print keep using buildPayload. */
+  buildExcelPayload?: () => Promise<ExportPayload> | ExportPayload
   /** Which buttons to show, in order. Defaults to Excel / PDF / Print; a
    *  page whose users want a plain spreadsheet file adds 'csv'. */
   formats?: ExportFormat[]
@@ -23,7 +27,7 @@ const DEFAULT_FORMATS: ExportFormat[] = ['xlsx', 'pdf', 'print']
 const LABEL: Record<ExportFormat, string> = { xlsx: 'Export Excel', pdf: 'Export PDF', csv: 'Export CSV', print: 'Print' }
 
 // Hides itself when printing — no Export/Print/PDF buttons on the printed page.
-export default function ExportBar({ buildPayload, formats = DEFAULT_FORMATS, size = 'md', className }: Props) {
+export default function ExportBar({ buildPayload, buildExcelPayload, formats = DEFAULT_FORMATS, size = 'md', className }: Props) {
   const [busy, setBusy] = useState<null | ExportFormat>(null)
   const [err, setErr] = useState<string | null>(null)
 
@@ -32,10 +36,9 @@ export default function ExportBar({ buildPayload, formats = DEFAULT_FORMATS, siz
     setBusy(kind)
     setErr(null)
     try {
-      const payload = buildPayload()
-      if (kind === 'xlsx') await exportToExcel(payload)
-      else if (kind === 'pdf') await exportToPdf(payload)
-      else await exportToCsv(payload)
+      if (kind === 'xlsx') await exportToExcel(buildExcelPayload ? await buildExcelPayload() : buildPayload())
+      else if (kind === 'pdf') await exportToPdf(buildPayload())
+      else await exportToCsv(buildPayload())
     } catch (e) {
       setErr(reportError(e as Error, { action: 'build this export' }))
     } finally {

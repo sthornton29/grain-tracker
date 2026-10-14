@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import ExcelJS from 'exceljs'
-import { formatNumber, excelNumFmt, defaultFilename, pdfSafe, exportToExcel, type NumFmt, type ExportPayload } from '@/lib/exports'
+import { formatNumber, excelNumFmt, defaultFilename, pdfSafe, exportToExcel, buildExcelWorkbook, evaluatePayload, formulaLayout, formulaTextOf, payloadHasFormulas, buildCsv, type NumFmt, type ExportPayload } from '@/lib/exports'
+import { col, div, iferror, num, self, sumifs } from '@/lib/formula'
 
 // The shared export number formatting is the single source of truth for every
 // report's PDF/Excel. Conventions (hand-verified against the spec):
@@ -233,5 +234,98 @@ describe("'cents' format — ¢-stored cotton prices render $/lb", () => {
     expect(formatNumber(72.65, 'cents')).toBe('$0.7265')
     // Negative (a cotton basis) parenthesizes like every other export number.
     expect(formatNumber(-2.5, 'cents')).toBe('($0.0250)')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Formula cells (lib/formula.ts) through the shared layer: keyed sections,
+// bounded ranges sized to the rows, cached results, blue inputs, autofilter,
+// full recalculation on open. Any report's audit export builds on this.
+// ---------------------------------------------------------------------------
+describe('formula seam — keyed sections render bounded formulas with cached results', () => {
+  const payload = (): ExportPayload => ({
+    title: 'Seam check',
+    sections: [
+      {
+        key: 'totals', title: 'Totals', plain: true,
+        columns: [{ key: 'name', label: 'Name' }, { key: 'bu', label: 'Bushels', format: 'bu3' }, { key: 'yield', label: 'Yield', format: 'yield' }, { key: 'acres', label: 'Acres', format: 'acres' }],
+        rows: [
+          ['Home', { v: null, f: sumifs(col('loads', 'dry'), [col('loads', 'field'), self('name')]) }, { v: null, f: iferror(div(self('bu'), self('acres')), num(0)) }, { v: 10, input: true }],
+          ['Moore', { v: null, f: sumifs(col('loads', 'dry'), [col('loads', 'field'), self('name')]) }, { v: null, f: iferror(div(self('bu'), self('acres')), num(0)) }, { v: 0, input: true }],
+        ],
+      },
+      {
+        key: 'loads', title: 'Load Data', plain: true, note: 'One row per load.',
+        columns: [{ key: 'field', label: 'Field' }, { key: 'net', label: 'Net lbs', format: 'lbs' }, { key: 'dry', label: 'Dry bu', format: 'bu3' }],
+        rows: [
+          ['Home', { v: 56000, input: true }, { v: null, f: div(self('net'), num(56)) }],
+          ['home', { v: 28000, input: true }, { v: null, f: div(self('net'), num(56)) }],
+          ['Moore', { v: 5600, input: true }, { v: null, f: div(self('net'), num(56)) }],
+        ],
+      },
+    ],
+  })
+
+  it('the layout places plain headers on row 1 (row 2 under a note) and sizes ranges to the rows', () => {
+    const p = payload()
+    expect(payloadHasFormulas(p)).toBe(true)
+    const layout = formulaLayout(p)
+    expect(layout.totals).toMatchObject({ sheetName: 'Totals', firstRow: 2, rowCount: 2, columns: { name: 'A', bu: 'B', yield: 'C', acres: 'D' } })
+    expect(layout.loads).toMatchObject({ sheetName: 'Load Data', firstRow: 3, rowCount: 3 })
+    expect(formulaTextOf(p, 'totals', 0, 'bu')).toBe("SUMIFS('Load Data'!$C$3:$C$5,'Load Data'!$A$3:$A$5,A2)")
+    expect(formulaTextOf(p, 'totals', 1, 'yield')).toBe('IFERROR(B3/D3,0)')
+    expect(formulaTextOf(p, 'loads', 2, 'dry')).toBe('B5/56')
+    expect(formulaTextOf(p, 'totals', 0, 'name')).toBeNull()
+  })
+
+  it('evaluatePayload computes every formula and caches the result on the cell', () => {
+    const p = payload()
+    const grid = evaluatePayload(p)
+    expect(grid.loads.map((r) => r[2])).toEqual([1000, 500, 100])
+    expect(grid.totals[0][1]).toBe(1500) // case-insensitive SUMIFS: Home + home
+    expect(grid.totals[0][2]).toBe(150)
+    expect(grid.totals[1][2]).toBe(0) // IFERROR over the 0-acre division
+    expect(p.sections[0].rows[0][1]).toMatchObject({ v: 1500 })
+    expect(p.sections[1].rows[0][2]).toMatchObject({ v: 1000 })
+  })
+
+  it('the workbook writes { formula, result }, blue inputs, an autofilter, and full recalc on open', async () => {
+    const p = payload()
+    const wb = await buildExcelWorkbook(p)
+    expect(wb.calcProperties.fullCalcOnLoad).toBe(true)
+    const totals = wb.getWorksheet('Totals')
+    expect(totals.getCell('B2').value).toEqual({ formula: "SUMIFS('Load Data'!$C$3:$C$5,'Load Data'!$A$3:$A$5,A2)", result: 1500 })
+    expect(totals.getCell('B2').numFmt).toBe('#,##0.000;(#,##0.000)')
+    expect(totals.getCell('D2').font?.color?.argb).toBe('FF0000FF')
+    expect(totals.getCell('B2').font?.color?.argb).toBeUndefined()
+    expect(totals.autoFilter).toEqual({ from: { row: 1, column: 1 }, to: { row: 3, column: 4 } })
+    expect(totals.views[0]).toMatchObject({ state: 'frozen', ySplit: 1 })
+    const loads = wb.getWorksheet('Load Data')
+    expect(loads.getCell('A1').value).toBe('One row per load.')
+    expect(loads.getCell('A2').value).toBe('Field')
+    expect(loads.getCell('C3').value).toEqual({ formula: 'B3/56', result: 1000 })
+  })
+
+  it('a titled (non-plain) section still lines the layout up with the written header row', async () => {
+    const p = payload()
+    p.filters = '2026 crop'
+    p.sections[0].plain = false
+    const wb = await buildExcelWorkbook(p)
+    const layout = formulaLayout(p)
+    const totals = wb.getWorksheet('Totals')
+    expect(totals.getCell(layout.totals.firstRow - 1, 1).value).toBe('Name')
+    expect(totals.getCell(layout.totals.firstRow, 2).value).toMatchObject({ result: 1500 })
+  })
+
+  it('CSV and PDF text paths see the cached value of a formula cell', () => {
+    const p = payload()
+    evaluatePayload(p)
+    const csv = buildCsv({ ...p, sections: [p.sections[0]] })
+    expect(csv.split('\r\n')[1]).toBe('Home,1500.000,150.0,10.0')
+  })
+
+  it("'bu3' formats with three decimals", () => {
+    expect(formatNumber(1000, 'bu3')).toBe('1,000.000')
+    expect(excelNumFmt('bu3')).toBe('#,##0.000;(#,##0.000)')
   })
 })

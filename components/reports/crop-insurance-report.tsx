@@ -6,6 +6,8 @@
 // sheet plus one detail sheet per (county, practice) combination. Acres come
 // from field_plantings.irrigated_acres / dryland_acres; production comes from
 // loads + load_splits with optional per-planting irrigated/dryland breakouts.
+// ALL of the rules live in lib/production-report.ts (buildProductionReport) —
+// this file renders them and builds the exports.
 //
 // Mixed-practice plantings (both irrigated and dryland acres) without a
 // production breakout are gated, but only once their harvest is complete —
@@ -13,14 +15,20 @@
 // so it never blocks the report. Completion uses the same analyzeYields logic
 // as the Yields page. For a gated planting the user either fills in the
 // breakout on the Yields page or chooses to roll the production into dryland.
+// Fields still being harvested are left out of the report (acres and
+// production), listed below the filters with a Count anyway button.
+//
+// Exports: PDF / Print mirror the screen through the shared ExportPayload.
+// Excel is the AUDIT WORKBOOK (lib/production-audit-workbook.ts): every
+// summary number a live formula tracing back to the loads.
 
 import Link from 'next/link'
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
-import { analyzeYields, buildYieldInputs, fieldCropAggregates, harvestStatusOf, withLoadBreakouts, type CombineEntryLike, type HarvestStatus } from '@/lib/yields'
+import { type CombineEntryLike } from '@/lib/yields'
 import { useCottonYields } from '@/lib/use-cotton-yields'
-import { buildDoubleCropSet, cropYearOptionsFromPlantings } from '@/lib/plantings'
+import { cropYearOptionsFromPlantings } from '@/lib/plantings'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { roleCanEditYields } from '@/lib/app-role'
@@ -32,79 +40,33 @@ import ExportBar from '@/components/export-bar'
 import { ConfirmDialog } from '@/components/app-dialog'
 import { reportError } from '@/lib/friendly-error'
 import { useReportCropYear } from '@/lib/report-filters'
-import { isCottonCrop } from '@/lib/marketing'
+import { fetchLoadSales, type LoadSale } from '@/lib/load-sales'
+import { fetchOrgBranding } from '@/lib/branding'
 import { type ExportPayload } from '@/lib/exports'
+import {
+  buildProductionReport, practiceLabel, unitOf,
+  type DetailSheet, type FarmCropCell, type SummaryRow,
+} from '@/lib/production-report'
+import { buildProductionAuditPayload, type AuditCottonReceipt, type AuditLoadRow } from '@/lib/production-audit-workbook'
 import type {
   County, Crop, CropAssumption, Entity, Farm, Field, FieldPlanting, LoadSplit,
 } from '@/lib/types'
 
-type LoadRow = {
-  id: string
-  date: string
-  net_weight: number | null
-  moisture: number | null
-  crop_id: string | null
-  dry_bushels_override: number | null
-  crop_year: number | null
-  from_type: string | null
-  from_field_id: string | null
-}
+// Every load column the audit workbook lists (the engine reads a subset).
+const LOAD_SELECT = 'id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id, practice, gross_weight, tare_weight, test_weight, ticket_number, truck_id, truck_label, hauler_truck, to_type, to_bin_id, to_buyer_id'
 
-type Practice = 'irrigated' | 'dryland'
-
-// One resolved planting with its sheet placement and split bushels.
-type Resolved = {
-  planting: FieldPlanting
-  field: Field | null
-  farm: Farm | null
-  countyId: string | null
-  countyLabel: string
-  irrigatedAcres: number
-  drylandAcres: number
-  totalBu: number
-  irrigatedBu: number
-  drylandBu: number
-  isMixed: boolean
-  hasBreakout: boolean
-  fieldDisplayName: string
-}
-
-// Per-cell aggregate inside a sheet: one farm + one crop.
-type FarmCropCell = {
-  acres: number
-  bu: number
-}
-
-// One detail sheet (county + practice).
-type DetailSheet = {
-  countyId: string | null
-  countyLabel: string
-  practice: Practice
-  sheetName: string
-  // farmId -> { farm, byCropId -> FarmCropCell }
-  farms: Map<string, { farm: Farm | null; farmName: string; fsaNumber: string | null; byCrop: Map<string, FarmCropCell> }>
-}
-
-// Summary row: one (county, practice) line.
-type SummaryRow = {
-  sheetName: string
-  countyId: string | null
-  countyLabel: string
-  practice: Practice
-  byCrop: Map<string, FarmCropCell>
-}
-
-const NO_COUNTY_KEY = '__no_county__'
-const NO_FARM_KEY = '__no_farm__'
-
-function practiceLabel(p: Practice): string {
-  return p === 'irrigated' ? 'Irrigated' : 'Dryland'
-}
-
-// The unit each crop's production and yield columns carry on screen (the
-// export keeps the agent-form "Bu. Or Lbs." wording).
-function unitOf(crop: Crop): 'bu' | 'lbs' {
-  return isCottonCrop(crop.name) ? 'lbs' : 'bu'
+/** `.in()` on thousands of ids is a long URL — chunk it, paginating each chunk. */
+async function fetchByIds<T>(
+  run: (ids: string[], from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+  ids: readonly string[],
+): Promise<T[]> {
+  const out: T[] = []
+  for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500)
+    const { data } = await fetchAllRows<T>((f, t) => run(chunk, f, t))
+    out.push(...(data ?? []))
+  }
+  return out
 }
 
 export default function CropInsuranceReport() {
@@ -116,9 +78,9 @@ export default function CropInsuranceReport() {
   const [fields, setFields] = useState<Field[]>([])
   const [counties, setCounties] = useState<County[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
-  const [loads, setLoads] = useState<LoadRow[]>([])
+  const [loads, setLoads] = useState<AuditLoadRow[]>([])
   const [splits, setSplits] = useState<LoadSplit[]>([])
-  const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
+  const [combineEntries, setCombineEntries] = useState<Array<CombineEntryLike & { notes?: string | null }>>([])
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
 
   // Filters persist across visits. The crop year follows the one report rule
@@ -144,11 +106,11 @@ export default function CropInsuranceReport() {
         supabase.from('fields').select('*'),
         supabase.from('counties').select('*').order('state_code').order('name'),
         supabase.from('field_plantings').select('*'),
-        fetchAllRows((f, t) => supabase.from('loads').select('id, date, time, net_weight, moisture, crop_id, dry_bushels_override, crop_year, from_type, from_field_id').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('loads').select(LOAD_SELECT).order('id').range(f, t)),
         fetchAllRows((f, t) => supabase.from('load_splits').select('*').order('id').range(f, t)),
         supabase.from('crop_assumptions').select('*'),
         // May not exist yet (migration 062): an error leaves data null → [].
-        fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date').order('id').range(f, t)),
+        fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date, notes').order('id').range(f, t)),
       ])
       setCrops((cr.data as Crop[]) || [])
       setEntities((en.data as Entity[]) || [])
@@ -156,10 +118,10 @@ export default function CropInsuranceReport() {
       setFields((fi.data as Field[]) || [])
       setCounties((co.data as County[]) || [])
       setPlantings((pl.data as FieldPlanting[]) || [])
-      setLoads((lo.data as LoadRow[]) || [])
+      setLoads((lo.data as AuditLoadRow[]) || [])
       setSplits((sp.data as LoadSplit[]) || [])
       setAssumptions((ca.data as CropAssumption[]) || [])
-      setCombineEntries((ce.data as CombineEntryLike[]) || [])
+      setCombineEntries((ce.data as Array<CombineEntryLike & { notes?: string | null }>) || [])
       setPlantingYears(Array.from(new Set(((pl.data as FieldPlanting[] | null) ?? []).map((p) => p.season_year))))
       setLoading(false)
     })()
@@ -211,18 +173,17 @@ export default function CropInsuranceReport() {
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
-  const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
-  const countyById = useMemo(() => new Map(counties.map((c) => [c.id, c])), [counties])
 
-  // (fieldId|cropId|year) → { dryBu, lastLoadDate } — same allocation as the
-  // Yields page. lastLoadDate feeds the harvest-completion check below.
-  const aggByKey = useMemo(
-    () => fieldCropAggregates(loads, splits, cropById, {
-      cropYear: cropYear === '' ? null : cropYear,
-      combineEntries,
+  // THE engine (lib/production-report.ts): filters → harvest status → gate →
+  // resolved plantings → county × practice sheets → summary.
+  const report = useMemo(
+    () => buildProductionReport({
+      cropYear, entityId, cropIds, plantings, fields, farms, counties, crops, loads, splits, combineEntries,
+      assumptions: effAssumptions, cotton: cottonModel, acceptedAsDryland,
     }),
-    [loads, splits, cropById, cropYear, combineEntries],
+    [cropYear, entityId, cropIds, plantings, fields, farms, counties, crops, loads, splits, combineEntries, effAssumptions, cottonModel, acceptedAsDryland],
   )
+  const { cropFilterOptions, mixedWithoutBreakout, inProgress, isBlocked, reportCrops, detailSheets, summaryRows, summaryTotals } = report
 
   const cropYearOptions = useMemo(
     () => cropYearOptionsFromPlantings(
@@ -231,255 +192,6 @@ export default function CropInsuranceReport() {
     ),
     [plantings, cropYear],
   )
-
-  // Plantings matching the year + entity filter (before the crop filter). This
-  // drives the crop-filter option list so it only offers crops actually present.
-  const yearEntityPlantings = useMemo(() => {
-    if (cropYear === '') return []
-    return plantings.filter((p) => {
-      if (p.season_year !== cropYear) return false
-      const fld = fieldById.get(p.field_id)
-      const farm = fld?.farm_id ? farmById.get(fld.farm_id) : null
-      if (entityId && farm?.entity_id !== entityId) return false
-      return true
-    })
-  }, [plantings, cropYear, entityId, fieldById, farmById])
-
-  // Crops present in the selected year + entity — the crop-filter options (name
-  // order preserved from the crops query).
-  const cropFilterOptions = useMemo(() => {
-    const ids = new Set(yearEntityPlantings.map((p) => p.crop_id))
-    return crops.filter((c) => ids.has(c.id))
-  }, [yearEntityPlantings, crops])
-
-  // Apply the optional crop filter. Empty selection = all crops. Everything
-  // downstream (gate, resolution, sheets) keys off this filtered list.
-  // withLoadBreakouts materializes the load-derived irrigated/dryland split
-  // onto mixed plantings whose loads are all practice-tagged, so those fields
-  // read as already-allocated here — same as a manual breakout — and never
-  // trip the missing-breakout gate.
-  const yearPlantings = useMemo(
-    () => withLoadBreakouts(
-      cropIds.length === 0 ? yearEntityPlantings : yearEntityPlantings.filter((p) => cropIds.includes(p.crop_id)),
-      aggByKey,
-    ),
-    [yearEntityPlantings, cropIds, aggByKey],
-  )
-
-  // Crop+year combos flagged harvest-complete at the crop level (Marketing
-  // assumptions) — these force every field of that crop to "complete".
-  const cropCompleteKeys = useMemo(() => {
-    const s = new Set<string>()
-    for (const a of effAssumptions) if (a.harvest_complete) s.add(`${a.crop_id}|${a.crop_year}`)
-    return s
-  }, [effAssumptions])
-
-  // Field-level harvest status per planting, by the same rule the Yields page
-  // uses (analyzeYields + the crop-level harvest-complete override). Only
-  // complete fields can need (or block on) a production breakout.
-  const harvestStatusById = useMemo(() => {
-    // Full-season / double-crop cohorts come from EVERY planting (the wheat
-    // that makes a bean field double-cropped is not in the year's crop filter).
-    const doubleCropIds = buildDoubleCropSet(plantings, cropById)
-    const analysis = analyzeYields(
-      buildYieldInputs({ plantings: yearPlantings, aggByKey, assumptions: effAssumptions, cotton: cottonModel.adapter, doubleCropIds }),
-    )
-    const m = new Map<string, HarvestStatus>()
-    for (const p of yearPlantings) m.set(p.id, harvestStatusOf(p, analysis.excluded, cropCompleteKeys))
-    return m
-  }, [plantings, cropById, yearPlantings, aggByKey, cropCompleteKeys, effAssumptions, cottonModel])
-
-  const isMixedNoBreakout = (p: FieldPlanting) =>
-    (Number(p.irrigated_acres) || 0) > 0 && (Number(p.dryland_acres) || 0) > 0 && !p.yield_breakout_entered
-
-  // Mixed-practice plantings missing breakouts whose harvest is complete — these
-  // gate the report. In-progress ones are excluded from the gate and surfaced
-  // separately (mixedStillHarvesting) so a mid-harvest field never blocks it.
-  const mixedWithoutBreakout = useMemo(
-    () => yearPlantings.filter((p) => isMixedNoBreakout(p) && harvestStatusById.get(p.id) === 'complete'),
-    [yearPlantings, harvestStatusById],
-  )
-  const mixedStillHarvesting = useMemo(
-    () => yearPlantings.filter((p) => isMixedNoBreakout(p) && harvestStatusById.get(p.id) === 'in_progress'),
-    [yearPlantings, harvestStatusById],
-  )
-
-  const isBlocked = mixedWithoutBreakout.length > 0 && !acceptedAsDryland
-
-  // Resolve every planting into its sheet placement and split bushels. The
-  // resolution depends on whether the user accepted the "roll into dryland"
-  // option, so this only runs when we're past the gate.
-  const resolved: Resolved[] = useMemo(() => {
-    if (cropYear === '' || isBlocked) return []
-    return yearPlantings.map<Resolved>((p) => {
-      const fld = fieldById.get(p.field_id) ?? null
-      const farm = fld?.farm_id ? (farmById.get(fld.farm_id) ?? null) : null
-      const countyId = fld?.county_id ?? farm?.county_id ?? null
-      const county = countyId ? countyById.get(countyId) : null
-      const countyLabel = county ? `${county.name} County` : '(No County)'
-      const irr = Number(p.irrigated_acres) || 0
-      const dry = Number(p.dryland_acres) || 0
-      const isMixed = irr > 0 && dry > 0
-      const hasBreakout = p.yield_breakout_entered === true
-      // Cotton (module on): lint lbs — receipts + the turnout estimate on
-      // unginned seed cotton; grain: dry bushels from the shared aggregates.
-      const totalBu = cottonModel.cottonCropIds.has(p.crop_id) && cottonModel.on
-        ? (cottonModel.yieldFor(p)?.lintLbs ?? 0)
-        : (aggByKey.get(`${p.field_id}|${p.crop_id}|${p.season_year}`)?.dryBu ?? 0)
-      let irrBu = 0
-      let dryBu = 0
-      if (isMixed && hasBreakout) {
-        irrBu = p.irrigated_bushels != null ? Number(p.irrigated_bushels) : 0
-        dryBu = p.dryland_bushels != null ? Number(p.dryland_bushels) : 0
-      } else if (isMixed && !hasBreakout) {
-        // User chose to roll into dryland — per spec, all production goes
-        // to dryland but acres still split by the planting's columns.
-        irrBu = 0
-        dryBu = totalBu
-      } else if (irr > 0 && dry === 0) {
-        irrBu = totalBu
-      } else {
-        dryBu = totalBu
-      }
-      return {
-        planting: p,
-        field: fld,
-        farm,
-        countyId,
-        countyLabel,
-        irrigatedAcres: irr,
-        drylandAcres: dry,
-        totalBu,
-        irrigatedBu: irrBu,
-        drylandBu: dryBu,
-        isMixed,
-        hasBreakout,
-        fieldDisplayName: fld?.name_or_number ?? '—',
-      }
-    })
-  }, [yearPlantings, fieldById, farmById, countyById, aggByKey, cropYear, isBlocked, cottonModel])
-
-  // Crops that actually appear in the selected year — these drive the
-  // dynamic column set. Sorted by name for stable display.
-  const reportCrops = useMemo<Crop[]>(() => {
-    if (resolved.length === 0) return []
-    const ids = new Set<string>()
-    for (const r of resolved) {
-      if (r.irrigatedAcres > 0 || r.drylandAcres > 0 || r.totalBu > 0) ids.add(r.planting.crop_id)
-    }
-    return crops.filter((c) => ids.has(c.id)).sort((a, b) => a.name.localeCompare(b.name))
-  }, [resolved, crops])
-
-  // Build the per-sheet aggregation.
-  const detailSheets: DetailSheet[] = useMemo(() => {
-    if (resolved.length === 0) return []
-    // (countyId|practice) → DetailSheet
-    const sheets = new Map<string, DetailSheet>()
-
-    function ensureSheet(countyId: string | null, countyLabel: string, practice: Practice): DetailSheet {
-      const key = `${countyId ?? NO_COUNTY_KEY}|${practice}`
-      let s = sheets.get(key)
-      if (!s) {
-        s = {
-          countyId,
-          countyLabel,
-          practice,
-          sheetName: `${countyLabel} ${practiceLabel(practice)}`,
-          farms: new Map(),
-        }
-        sheets.set(key, s)
-      }
-      return s
-    }
-
-    function putCell(sheet: DetailSheet, farm: Farm | null, cropId: string, acres: number, bu: number) {
-      const farmKey = farm?.id ?? NO_FARM_KEY
-      let entry = sheet.farms.get(farmKey)
-      if (!entry) {
-        entry = {
-          farm,
-          farmName: farm?.name ?? '(No Farm)',
-          fsaNumber: farm?.fsa_number ?? null,
-          byCrop: new Map(),
-        }
-        sheet.farms.set(farmKey, entry)
-      }
-      const c = entry.byCrop.get(cropId) ?? { acres: 0, bu: 0 }
-      c.acres += acres
-      c.bu += bu
-      entry.byCrop.set(cropId, c)
-    }
-
-    for (const r of resolved) {
-      // Irrigated half — only if the planting has irrigated acres.
-      if (r.irrigatedAcres > 0) {
-        const sheet = ensureSheet(r.countyId, r.countyLabel, 'irrigated')
-        putCell(sheet, r.farm, r.planting.crop_id, r.irrigatedAcres, r.irrigatedBu)
-      }
-      // Dryland half.
-      if (r.drylandAcres > 0) {
-        const sheet = ensureSheet(r.countyId, r.countyLabel, 'dryland')
-        putCell(sheet, r.farm, r.planting.crop_id, r.drylandAcres, r.drylandBu)
-      }
-    }
-
-    // Drop farm rows with all-zero acres in every crop (shouldn't happen
-    // because we only insert rows with acres > 0, but be defensive).
-    const result: DetailSheet[] = []
-    for (const s of sheets.values()) {
-      const filteredFarms = new Map<string, typeof s.farms extends Map<string, infer V> ? V : never>()
-      for (const [fk, fv] of s.farms) {
-        const anyAcres = [...fv.byCrop.values()].some((c) => c.acres > 0)
-        if (anyAcres) filteredFarms.set(fk, fv)
-      }
-      if (filteredFarms.size > 0) {
-        s.farms = filteredFarms
-        result.push(s)
-      }
-    }
-
-    result.sort((a, b) => {
-      const c = a.countyLabel.localeCompare(b.countyLabel)
-      if (c !== 0) return c
-      return a.practice.localeCompare(b.practice)
-    })
-    return result
-  }, [resolved])
-
-  const summaryRows: SummaryRow[] = useMemo(() => {
-    return detailSheets.map((s) => {
-      const byCrop = new Map<string, FarmCropCell>()
-      for (const farm of s.farms.values()) {
-        for (const [cropId, cell] of farm.byCrop) {
-          const agg = byCrop.get(cropId) ?? { acres: 0, bu: 0 }
-          agg.acres += cell.acres
-          agg.bu += cell.bu
-          byCrop.set(cropId, agg)
-        }
-      }
-      return {
-        sheetName: s.sheetName,
-        countyId: s.countyId,
-        countyLabel: s.countyLabel,
-        practice: s.practice,
-        byCrop,
-      }
-    })
-  }, [detailSheets])
-
-  // Grand totals row for the summary sheet.
-  const summaryTotals = useMemo(() => {
-    const byCrop = new Map<string, FarmCropCell>()
-    for (const r of summaryRows) {
-      for (const [cropId, cell] of r.byCrop) {
-        const agg = byCrop.get(cropId) ?? { acres: 0, bu: 0 }
-        agg.acres += cell.acres
-        agg.bu += cell.bu
-        byCrop.set(cropId, agg)
-      }
-    }
-    return byCrop
-  }, [summaryRows])
 
   // Switch back to summary tab when the available sheet list changes, so we
   // never linger on a tab that no longer exists.
@@ -496,10 +208,12 @@ export default function CropInsuranceReport() {
     : (viewerAllEntitiesLabel(viewer, entities) ?? '')
   const entityOptions = entityOptionsFor(viewer, entities)
   const reportTitle = `${entityName ? entityName + ' ' : ''}${cropYear === '' ? '' : cropYear + ' '}Production Report`
+  const cropFilterLabel = cropIds.length === 0 ? 'All crops' : cropIds.map((id) => cropById.get(id)?.name ?? '').filter(Boolean).join(', ')
 
-  // Build the shared ExportPayload: a Summary section (one sheet) listing each
-  // county × practice with per-crop acres/bu, then one section (sheet) per
-  // county × practice detailing farms. Dynamic crop columns come from reportCrops.
+  // Build the shared ExportPayload (PDF / Print): a Summary section (one sheet)
+  // listing each county × practice with per-crop acres/bu, then one section
+  // (sheet) per county × practice detailing farms. Dynamic crop columns come
+  // from reportCrops.
   function buildPayload(): ExportPayload {
     // Mirror the on-screen grouped layout: three per-crop metric groups —
     // Certified Acres, Production, Yield/Acre — each spanning every crop, with
@@ -562,10 +276,67 @@ export default function CropInsuranceReport() {
       filters: [
         cropYear === '' ? 'All crop years' : `${cropYear} crop`,
         entityName || 'All entities',
-        cropIds.length === 0 ? 'All crops' : cropIds.map((id) => cropById.get(id)?.name ?? '').filter(Boolean).join(', '),
+        cropFilterLabel,
       ].join(' · '),
       sections,
     }
+  }
+
+  // The Excel export: the audit workbook. Fetches the cross-check sources the
+  // screen never needs (buyers, bins, trucks, settlement matches, the gin
+  // receipts and bales behind a cotton crop, the org name) only when clicked.
+  async function buildAuditPayload(): Promise<ExportPayload> {
+    if (cropYear === '') throw new Error('Pick a crop year first.')
+    const yearLoadIds = loads.filter((l) => l.from_type === 'field' && l.crop_year === cropYear).map((l) => l.id)
+    const hasCotton = cottonModel.on === true && reportCrops.some((c) => cottonModel.cottonCropIds.has(c.id))
+    const [bu, bi, tr, sales, org, gr, gb, gi] = await Promise.all([
+      supabase.from('buyers').select('id, name'),
+      supabase.from('bins').select('id, name_or_number'),
+      supabase.from('trucks').select('id, name_or_number'),
+      fetchLoadSales(supabase, { loadIds: yearLoadIds }).catch(() => [] as LoadSale[]),
+      fetchOrgBranding(supabase).catch(() => ({ displayName: 'Farm' })),
+      hasCotton
+        ? fetchAllRows((f, t) => supabase.from('gin_receipts').select('id, gin_id, receipt_number, statement_number, receipt_date, farm_id, field_id, crop_year, modules_count, total_seed_cotton_weight, bales_count, total_bale_weight').eq('crop_year', cropYear).order('id').range(f, t))
+        : Promise.resolve({ data: [] as AuditCottonReceipt[] }),
+      hasCotton
+        ? fetchAllRows((f, t) => supabase.from('cotton_bales').select('id, gin_receipt_id, pbi_number, net_weight_lbs').eq('crop_year', cropYear).order('id').range(f, t))
+        : Promise.resolve({ data: [] as Array<{ id: string; gin_receipt_id: string; pbi_number: string; net_weight_lbs: number }> }),
+      hasCotton ? supabase.from('gins').select('id, name') : Promise.resolve({ data: [] as Array<{ id: string; name: string }> }),
+    ])
+    const lineIds = Array.from(new Set(sales.map((s) => s.settlement_line_id).filter((x): x is string => !!x)))
+    const settlementLines = await fetchByIds<{ id: string; settlement_id: string; buyer_ticket_number: string | null }>(
+      (ids, f, t) => supabase.from('settlement_lines').select('id, settlement_id, buyer_ticket_number').in('id', ids).order('id').range(f, t), lineIds,
+    )
+    const settlementIds = Array.from(new Set(settlementLines.map((l) => l.settlement_id)))
+    const settlements = await fetchByIds<{ id: string; settlement_number: string | null }>(
+      (ids, f, t) => supabase.from('settlements').select('id, settlement_number').in('id', ids).order('id').range(f, t), settlementIds,
+    )
+    return buildProductionAuditPayload({
+      report,
+      cropYear,
+      entityName,
+      cropFilterLabel,
+      orgName: org.displayName,
+      generatedAt: new Date(),
+      appOrigin: typeof window !== 'undefined' ? window.location.origin : null,
+      crops, fields, farms, counties, loads, splits, combineEntries,
+      buyers: (bu.data as Array<{ id: string; name: string }>) ?? [],
+      bins: (bi.data as Array<{ id: string; name_or_number: string }>) ?? [],
+      trucks: (tr.data as Array<{ id: string; name_or_number: string }>) ?? [],
+      loadSales: sales,
+      settlementLines,
+      settlements,
+      cotton: hasCotton
+        ? {
+            receipts: (gr.data as AuditCottonReceipt[] | null) ?? [],
+            bales: (gb.data as Array<{ id: string; gin_receipt_id: string; pbi_number: string; net_weight_lbs: number }> | null) ?? [],
+            gins: (gi.data as Array<{ id: string; name: string }> | null) ?? [],
+            yieldFor: (p) => cottonModel.yieldFor(p),
+          }
+        : null,
+      cropIds,
+      entityId,
+    })
   }
 
   // Hold the report until the viewer scope/overrides resolve too, so a viewer
@@ -587,7 +358,7 @@ export default function CropInsuranceReport() {
       <ReportHeader
         title="Crop Insurance Production Report"
         filterSummary={filterSummary}
-        actions={canExport ? <ExportBar buildPayload={buildPayload} /> : undefined}
+        actions={canExport ? <ExportBar buildPayload={buildPayload} buildExcelPayload={buildAuditPayload} /> : undefined}
       />
       {/* Filter strip — hidden when printing. */}
       <ReportFilterBar activeCount={(entityId ? 1 : 0) + (cropIds.length > 0 ? 1 : 0)}>
@@ -695,22 +466,22 @@ export default function CropInsuranceReport() {
         </div>
       )}
 
-      {/* Still-harvesting mixed fields: excluded from the gate (and not blocking),
-          noted so the user knows why they aren't in the breakout prompt. */}
-      {cropYear !== '' && mixedStillHarvesting.length > 0 && (
+      {/* Still-harvesting fields: left out of the report (acres and production),
+          never blocking it. Count anyway treats a finished field's bushels as final. */}
+      {cropYear !== '' && inProgress.length > 0 && (
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2 no-print">
           <div className="font-semibold text-slate-700">
-            {mixedStillHarvesting.length} mixed-practice field{mixedStillHarvesting.length === 1 ? '' : 's'} still harvesting — excluded
+            {inProgress.length} field{inProgress.length === 1 ? '' : 's'} still harvesting — not included
           </div>
           <p className="text-sm text-slate-600">
-            These have both irrigated and dryland acres but harvest isn&apos;t complete, so they don&apos;t
-            need a breakout yet and won&apos;t block the report. Their production rolls into dryland for now;
-            enter the breakout on the Yields page once harvest finishes. If a field here is actually
-            done, use Count anyway to treat its bushels as final.
+            These fields look partway through harvest, so their acres and bushels are left out of the
+            report until harvest finishes — a half-harvested field would certify a misleading yield.
+            If a field here is actually done, use Count anyway to treat its bushels as final. A mixed
+            irrigated/dryland field will then ask for its breakout on the Yields page.
           </p>
           {overrideErr && <p className="text-sm text-red-700">{overrideErr}</p>}
           <ul className="text-sm text-slate-600 list-disc ml-6">
-            {mixedStillHarvesting.map((p) => {
+            {inProgress.map((p) => {
               const fld = fieldById.get(p.field_id)
               const crop = cropById.get(p.crop_id)
               return (
