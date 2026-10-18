@@ -17,7 +17,13 @@ function score(needle: string, hay: string): number {
   const h = norm(hay)
   if (!n || !h) return 0
   if (n === h) return 1000
+  // The same name with the spaces squeezed out — a gin's export prints
+  // "DRIVEWAYSOUTH" for the field "Driveway South" (2026-10-18).
+  const ns = n.replace(/\s+/g, '')
+  const hs = h.replace(/\s+/g, '')
+  if (ns === hs) return 900
   if (h.includes(n) || n.includes(h)) return 500 + Math.min(n.length, h.length)
+  if (hs.includes(ns) || ns.includes(hs)) return 400 + Math.min(ns.length, hs.length)
   const nt = new Set(tokens(needle))
   const ht = new Set(tokens(hay))
   let overlap = 0

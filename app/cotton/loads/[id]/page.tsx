@@ -314,7 +314,7 @@ export default function CottonLoadDetailPage() {
                   <p key={r.id}>
                     Statement of Ginning <b>{r.receipt_date ? fmtDate(r.receipt_date) : 'undated'}</b>{r.gin_id && ginById.get(r.gin_id) ? ` · ${ginById.get(r.gin_id)!.name}` : ''}
                     {r.bales_count != null ? ` · ${fmtInt(r.bales_count)} bales` : ''}{r.total_seed_cotton_weight != null ? ` · ${fmtInt(r.total_seed_cotton_weight)} lbs seed cotton on the statement` : ''}
-                    {' '}<Link href="/cotton/receipts" className="text-brand-deep underline no-print">Open gin receipts →</Link>
+                    {' '}<Link href={`/cotton/receipts/${r.id}`} className="text-brand-deep underline no-print">Open the statement →</Link>
                   </p>
                 ))}
               </div>

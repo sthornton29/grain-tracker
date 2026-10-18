@@ -20,7 +20,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import type { SupabaseClient } from '@supabase/supabase-js'
+import { insertReceipt, isMissingColumn, updateReceipt, without } from '@/lib/gin-receipt-writes'
 import { reportError } from '@/lib/friendly-error'
 import { useDialogs } from '@/components/use-dialogs'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
@@ -55,22 +55,6 @@ import { scopeToPlanted } from '@/lib/planted-scope'
 
 const lbs = (n: number | null | undefined) => (n == null ? '—' : Number(n).toLocaleString())
 const num = (s: string): number | null => { const n = Number(s); return s.trim() !== '' && Number.isFinite(n) ? n : null }
-
-/** The 093 columns — stripped and retried when the database has not been updated yet (the 090 pattern). */
-const RECEIPT_093_COLUMNS = ['gin_code', 'statement_number', 'printed_farm_number', 'printed_field', 'farm_ytd_modules', 'farm_ytd_seed_cotton_lbs', 'farm_ytd_bales', 'farm_ytd_bale_weight'] as const
-const isMissingColumn = (error: { message?: string } | null | undefined) => !!error?.message && /column|schema/i.test(error.message)
-const without = (row: Record<string, unknown>, cols: ReadonlyArray<string>) => Object.fromEntries(Object.entries(row).filter(([k]) => !cols.includes(k)))
-
-async function insertReceipt(supabase: SupabaseClient, header: Record<string, unknown>) {
-  const first = await supabase.from('gin_receipts').insert(header).select('id').single()
-  if (!first.error || !isMissingColumn(first.error)) return first
-  return supabase.from('gin_receipts').insert(without(header, RECEIPT_093_COLUMNS)).select('id').single()
-}
-async function updateReceipt(supabase: SupabaseClient, id: string, header: Record<string, unknown>) {
-  const first = await supabase.from('gin_receipts').update(header).eq('id', id)
-  if (!first.error || !isMissingColumn(first.error)) return first
-  return supabase.from('gin_receipts').update(without(header, RECEIPT_093_COLUMNS)).eq('id', id)
-}
 
 type FarmFieldSource = 'matched' | 'printed' | 'user' | 'none'
 
@@ -763,10 +747,13 @@ export default function GinReceiptsPage() {
               return (
                 <tr key={r.id} className="border-t border-slate-100">
                   <td className="px-3 py-2">
-                    {sn ? <span className="font-mono">#{sn}</span> : <span className="text-slate-500 text-xs">no number printed</span>}
+                    <Link href={`/cotton/receipts/${r.id}`} className="text-brand-deep underline font-semibold inline-flex items-center min-h-11">
+                      {sn ? <span className="font-mono">#{sn}</span> : <span className="text-xs">Open statement</span>}
+                    </Link>
+                    {!sn && <span className="block text-slate-500 text-xs">no number printed</span>}
                     {receiptGinCode(r) && <span className="block text-xs text-slate-400">gin code {receiptGinCode(r)}</span>}
                   </td>
-                  <td className="px-3 py-2">{r.receipt_date ? fmtDate(r.receipt_date) : '—'}</td>
+                  <td className="px-3 py-2"><Link href={`/cotton/receipts/${r.id}`} className="text-brand-deep underline">{r.receipt_date ? fmtDate(r.receipt_date) : '—'}</Link></td>
                   <td className="px-3 py-2">{r.gin_id ? ginById.get(r.gin_id)?.name ?? '—' : '—'}</td>
                   <td className="px-3 py-2">{r.farm_id ? farmById.get(r.farm_id)?.name ?? '—' : r.printed_farm_number ? `#${r.printed_farm_number}` : '—'}</td>
                   <td className="px-3 py-2">{r.field_id ? fieldById.get(r.field_id)?.name_or_number ?? '—' : r.printed_field ?? '—'}</td>
