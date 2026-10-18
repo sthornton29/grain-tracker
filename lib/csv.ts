@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { landImportBlockedMessage, landManagedByFarm, type FarmLinkRow } from '@/lib/farm-link'
+import { splitCsvRows } from '@/lib/csv-rows'
 
 /** 087: once the Turnrow Farm link manages land, the farms / fields /
  *  plantings (and entities) importers refuse to run for the organization.
@@ -24,35 +25,9 @@ export async function assertLandImportAllowed(supabase: SupabaseClient, tableNam
 export type ParsedCsv = { headers: string[]; rows: string[][] }
 
 export function parseCsv(text: string): ParsedCsv {
-  // Strip BOM if present
-  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1)
-  const rows: string[][] = []
-  let row: string[] = []
-  let field = ''
-  let inQuotes = false
-  let i = 0
-  const len = text.length
-  while (i < len) {
-    const c = text[i]
-    if (inQuotes) {
-      if (c === '"') {
-        if (text[i + 1] === '"') { field += '"'; i += 2; continue }
-        inQuotes = false; i++; continue
-      }
-      field += c; i++; continue
-    }
-    if (c === '"') { inQuotes = true; i++; continue }
-    if (c === ',') { row.push(field); field = ''; i++; continue }
-    if (c === '\r') { i++; continue }
-    if (c === '\n') {
-      row.push(field); field = ''
-      if (row.length > 1 || row[0] !== '') rows.push(row)
-      row = []
-      i++; continue
-    }
-    field += c; i++
-  }
-  if (field !== '' || row.length > 0) { row.push(field); rows.push(row) }
+  // One tokenizer for every CSV (lib/csv-rows); the headered table drops
+  // the fully empty rows it never cared about.
+  const rows = splitCsvRows(text).filter((row) => row.length > 1 || row[0] !== '')
 
   const headers = (rows.shift() ?? []).map((h) => h.trim())
   const dataRows = rows

@@ -6,7 +6,11 @@ import { excelToPdf, isExcelFile } from '@/lib/excel-to-pdf'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
 
 const FILE_ACCEPT = 'application/pdf,image/*,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel'
+const CSV_ACCEPT = '.csv,text/csv'
 const ACCEPTS_LINE = 'Accepts PDF, photos, or Excel (.xlsx/.xls) — spreadsheets are converted automatically.'
+const ACCEPTS_LINE_CSV = 'Accepts PDF, photos, Excel (.xlsx/.xls), or a CSV export — spreadsheets are converted automatically.'
+
+const isCsvFile = (file: File) => /\.csv$/i.test(file.name) || file.type === 'text/csv'
 
 // The input source a parsing screen receives once the user has a document ready:
 // either a single PDF (the original upload path) or one or more compressed photos.
@@ -24,12 +28,19 @@ type Props = {
   stageLabel?: string | null
   /** Label for the desktop "upload" button (default "Upload PDF or Image"). */
   pdfLabel?: string
+  /** When given, a CSV file is accepted and handed here untouched — a surface
+   *  that reads one export format itself (the gin's receipt export) instead
+   *  of sending it through the AI reader. */
+  onCsv?: (file: File) => void
   className?: string
 }
 
 // Capturing multiple pages of one document is normal for tickets and statements,
 // so the camera/library always feed a collection the user reviews before extract.
-export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, className }: Props) {
+export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, onCsv, className }: Props) {
+  const fileAccept = onCsv ? `${FILE_ACCEPT},${CSV_ACCEPT}` : FILE_ACCEPT
+  const acceptsLine = onCsv ? ACCEPTS_LINE_CSV : ACCEPTS_LINE
+  const acceptsShort = onCsv ? 'PDF, photos, Excel, or a CSV export' : 'PDF, photos, or Excel — spreadsheets are converted automatically'
   // Coarse pointer ⇒ phone/tablet ⇒ offer the camera. Desktop gets a plain file
   // picker (capture="environment" is ignored there anyway). Computed after mount
   // to stay SSR-safe.
@@ -88,6 +99,12 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
   }
 
   function handleFile(file: File) {
+    if (onCsv && isCsvFile(file)) {
+      setImages([])
+      setErr(null)
+      onCsv(file)
+      return
+    }
     if (isExcelFile(file)) {
       // Convert the spreadsheet to a PDF so it rides the same pipeline as PDFs.
       setImages([])
@@ -132,12 +149,12 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
   return (
     <Dropzone
       onFiles={onDropFiles}
-      onReject={(rejected) => setErr(rejectMessage(ACCEPTS_LINE, rejected))}
-      accept={FILE_ACCEPT}
+      onReject={(rejected) => setErr(rejectMessage(acceptsLine, rejected))}
+      accept={fileAccept}
       multiple
       disabled={disabled}
       hint="Drop the document here"
-      accepts="PDF, photos, or Excel — spreadsheets are converted automatically"
+      accepts={acceptsShort}
       className={`flex flex-col gap-2 ${className ?? ''}`}
     >
       <div className="flex flex-wrap items-center gap-2">
@@ -230,7 +247,7 @@ export default function DocumentCapture({ onSource, busy, stageLabel, pdfLabel, 
           is ignored on desktop. The library/file pickers omit it. */}
       <input ref={cameraRef} type="file" accept="image/*" capture="environment" onChange={onPhotoPick} className="hidden" />
       <input ref={libraryRef} type="file" accept="image/*" multiple onChange={onPhotoPick} className="hidden" />
-      <input ref={fileRef} type="file" accept={FILE_ACCEPT} onChange={onFilePick} className="hidden" />
+      <input ref={fileRef} type="file" accept={fileAccept} onChange={onFilePick} className="hidden" />
     </Dropzone>
   )
 }

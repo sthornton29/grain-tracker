@@ -11,6 +11,12 @@
 // (gin + farm # + field + date + totals — "Gin 40614" is the gin, not the
 // statement), and the gin's Farm YTD against what Turnrow holds. "Save all"
 // saves each statement as its own receipt.
+//
+// The gin's CSV export (2026-10-18, lib/gin-receipt-csv) rides the same
+// review: it is read here, not by the AI, into the same page shape, and
+// grouped by the same rules. The export prints no gin and no statement
+// date, so each card gets a gin picker (defaulting to the gin of the matched
+// loads) and is dated by the last day its bales were ginned.
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
@@ -21,6 +27,7 @@ import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { findBestMatch } from '@/lib/fuzzy'
 import { PdfTooLargeError, type GinReceiptExtraction } from '@/lib/pdf-upload'
+import { GinReceiptCsvError, parseGinReceiptCsv } from '@/lib/gin-receipt-csv'
 import { DEFAULT_MAX_TOKENS, parseDocumentChunked } from '@/lib/parse-chunked'
 import { planPagesPerBatch } from '@/lib/chunk-plan'
 import { mergeGinReceipts } from '@/lib/parse-merge'
@@ -67,11 +74,17 @@ async function updateReceipt(supabase: SupabaseClient, id: string, header: Recor
 
 type FarmFieldSource = 'matched' | 'printed' | 'user' | 'none'
 
+/** The gin picker's "+ Add a gin…" choice. */
+const NEW_GIN = '__new__'
+
 type StatementReview = {
   s: GinStatement
   farmId: string
   fieldId: string
   farmFieldFrom: FarmFieldSource
+  /** The gin picked on the card when the statement names none (the CSV export). */
+  ginId: string
+  ginFromUser: boolean
   /** Line indexes whose missing load the user wants created. */
   createMissing: Set<number>
   /** Suggestions the user accepted: line index → load id. */
@@ -82,7 +95,7 @@ type StatementReview = {
 }
 
 export default function GinReceiptsPage() {
-  const { confirmText, dialogs } = useDialogs()
+  const { confirmText, promptText, dialogs } = useDialogs()
   const supabase = useMemo(() => createClient(), [])
   const [receipts, setReceipts] = useState<GinReceipt[]>([])
   const [balesByReceipt, setBalesByReceipt] = useState<Map<string, number>>(new Map())
@@ -97,6 +110,10 @@ export default function GinReceiptsPage() {
   const [msg, setMsg] = useState<string | null>(null)
   // AI review
   const [source, setSource] = useState<DocumentSource | null>(null)
+  /** The gin's CSV export being reviewed (its file name), instead of a scanned document. */
+  const [csvName, setCsvName] = useState<string | null>(null)
+  /** Figures in the export that do not add up — shown, never blocking. */
+  const [notes, setNotes] = useState<string[]>([])
   const [stage, setStage] = useState<string | null>(null)
   const [reviews, setReviews] = useState<StatementReview[]>([])
   const [intake, setIntake] = useState<'upload' | 'hand'>('upload')
@@ -151,6 +168,16 @@ export default function GinReceiptsPage() {
   }, [scope])
   const ginById = useMemo(() => new Map(gins.map((g) => [g.id, g])), [gins])
   const receiptById = useMemo(() => new Map(receipts.map((r) => [r.id, r])), [receipts])
+  const loadGinById = useMemo(() => new Map(loads.map((l) => [l.id, l.gin_id])), [loads])
+  /** A statement that names no gin (the CSV export) takes the gin picked on
+   *  its card: name and gin code, so identity, PBI matching and the Farm
+   *  YTD check see the same gin a scanned statement would print. */
+  const statementNamesGin = (s: GinStatement) => !!(s.gin_code || s.gin_name)
+  const effectiveStatement = (rv: StatementReview): GinStatement => {
+    if (statementNamesGin(rv.s) || !rv.ginId) return rv.s
+    const g = ginById.get(rv.ginId)
+    return g ? { ...rv.s, gin_name: g.name, gin_code: g.gin_code ?? null } : rv.s
+  }
   const yearReceipts = receipts.filter((r) => r.crop_year === cropYear)
 
   // How a saved receipt is named everywhere on this page.
@@ -199,7 +226,7 @@ export default function GinReceiptsPage() {
     ytd: ReturnType<typeof farmYtdCheck>
   }
   const derived: Derived[] = useMemo(() => reviews.map((rv, idx) => {
-    const s = rv.s
+    const s = effectiveStatement(rv)
     const year = s.crop_year ?? cropYear
     const classification = classifyStatement(s, savedReceiptLikes, year)
     const thisReceiptId = classification.status !== 'new' ? classification.existingId : null
@@ -221,34 +248,43 @@ export default function GinReceiptsPage() {
         gin_code: receiptGinCode(r), farm_number: receiptFarmNumber(r), receipt_date: r.receipt_date,
         modules_count: r.modules_count, total_seed_cotton_weight: r.total_seed_cotton_weight, bales_count: r.bales_count, total_bale_weight: r.total_bale_weight,
       })),
-      ...reviews.filter((o, j) => j !== idx && classifyStatement(o.s, savedReceiptLikes, o.s.crop_year ?? cropYear).status === 'new').map((o) => ({
-        gin_code: o.s.gin_code, farm_number: o.s.farm_number, receipt_date: o.s.receipt_date,
-        modules_count: o.s.modules_count, total_seed_cotton_weight: o.s.total_seed_cotton_weight, bales_count: o.s.bales_count, total_bale_weight: o.s.total_bale_weight,
+      ...reviews.map((o) => effectiveStatement(o)).filter((o, j) => j !== idx && classifyStatement(o, savedReceiptLikes, o.crop_year ?? cropYear).status === 'new').map((o) => ({
+        gin_code: o.gin_code, farm_number: o.farm_number, receipt_date: o.receipt_date,
+        modules_count: o.modules_count, total_seed_cotton_weight: o.total_seed_cotton_weight, bales_count: o.bales_count, total_bale_weight: o.total_bale_weight,
       })),
     ]
     const ytd = farmYtdCheck(s, others)
     return { year, rows, summary: matchSummary(rows), matchedFarmField, farmFieldNote, classification, baleReview, excluded, includedBales, baleCheck, turnout, ytd }
-  }), [reviews, cropYear, savedReceiptLikes, matchable, onReceipt, receiptIdByLoad, farmById, fieldById, existingBaleLikes, existingBales, receiptById, receipts]) // eslint-disable-line react-hooks/exhaustive-deps
+  }), [reviews, cropYear, savedReceiptLikes, matchable, onReceipt, receiptIdByLoad, farmById, fieldById, existingBaleLikes, existingBales, receiptById, receipts, ginById]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Default the farm/field from the matched loads when they all agree (chip
-  // "from matched loads"); the printed farm # / field is the fallback.
+  // "from matched loads"); the printed farm # / field is the fallback. A
+  // statement that names no gin takes the gin of its matched loads when they
+  // all agree, else the only gin on file — until the user picks one.
   useEffect(() => {
     setReviews((rs) => {
       let changed = false
       const next = rs.map((rv, i) => {
-        if (rv.farmFieldFrom === 'user') return rv
         const d = derived[i]
         if (!d) return rv
-        const mf = d.matchedFarmField
-        if (mf && !d.farmFieldNote && (mf.farmId !== (rv.farmId || null) || mf.fieldId !== (rv.fieldId || null) || rv.farmFieldFrom !== 'matched')) {
-          changed = true
-          return { ...rv, farmId: mf.farmId ?? '', fieldId: mf.fieldId ?? '', farmFieldFrom: 'matched' as const }
+        let out = rv
+        if (rv.farmFieldFrom !== 'user') {
+          const mf = d.matchedFarmField
+          if (mf && !d.farmFieldNote && (mf.farmId !== (rv.farmId || null) || mf.fieldId !== (rv.fieldId || null) || rv.farmFieldFrom !== 'matched')) {
+            changed = true
+            out = { ...out, farmId: mf.farmId ?? '', fieldId: mf.fieldId ?? '', farmFieldFrom: 'matched' as const }
+          }
         }
-        return rv
+        if (!statementNamesGin(rv.s) && !rv.ginFromUser) {
+          const ginIds = new Set(d.rows.filter((r) => r.load).map((r) => loadGinById.get(r.load!.id) ?? null).filter((g): g is string => !!g))
+          const pick = ginIds.size === 1 ? [...ginIds][0] : gins.length === 1 ? gins[0].id : rv.ginId
+          if (pick !== rv.ginId) { changed = true; out = { ...out, ginId: pick } }
+        }
+        return out
       })
       return changed ? next : rs
     })
-  }, [derived])
+  }, [derived, gins, loadGinById]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function ensureGin(s: GinStatement): Promise<string | null> {
     const code = numberKey(s.gin_code)
@@ -268,6 +304,22 @@ export default function GinReceiptsPage() {
     return (ins.data as { id: string }).id
   }
 
+  /** "+ Add a gin…" on a statement's gin picker: name it, save it, pick it. */
+  async function addGinFor(i: number) {
+    const name = (await promptText('Name the gin', '', { title: 'Add a gin', confirmLabel: 'Add gin', numeric: false }))?.trim()
+    if (!name) return
+    const existing = gins.find((g) => g.name.trim().toLowerCase() === name.toLowerCase())
+    let id = existing?.id ?? null
+    if (!id) {
+      const { data, error } = await supabase.from('gins').insert({ name }).select('id').single()
+      if (error || !data) { setErr(reportError(error, { action: 'add the gin', noun: 'gin', name })); return }
+      id = (data as { id: string }).id
+      const { data: fresh } = await supabase.from('gins').select('*').order('name')
+      setGins((fresh as Gin[]) || [])
+    }
+    patchReview(i, { ginId: id, ginFromUser: true })
+  }
+
   function printedFarmField(s: GinStatement): { farmId: string; fieldId: string } {
     const farm = (s.farm_number ? scope.farms.find((f) => numberKey(f.fsa_number) === numberKey(s.farm_number)) : null)
       ?? (s.farm_name ? findBestMatch(s.farm_name, scope.farms, (f) => f.name) : null)
@@ -277,8 +329,40 @@ export default function GinReceiptsPage() {
     return { farmId: farm?.id ?? '', fieldId: field?.id ?? '' }
   }
 
+  /** One review card per statement, farm/field from the printed names, the gin from the card. */
+  function startReviews(statements: GinStatement[]) {
+    setReviews(statements.map((s) => {
+      const printed = printedFarmField(s)
+      return {
+        s, farmId: printed.farmId, fieldId: printed.fieldId, farmFieldFrom: printed.farmId || printed.fieldId ? 'printed' : 'none',
+        ginId: '', ginFromUser: false,
+        createMissing: new Set<number>(), linked: new Map<number, string>(), excludedBales: null, updateReceipt: false,
+      }
+    }))
+  }
+
+  /** The gin's CSV export: read here (no AI), one statement per block. */
+  async function onCsv(file: File) {
+    setErr(null); setMsg(null); setNotes([]); setSource(null); setReviews([]); setCsvName(file.name)
+    setStage('Reading the gin’s export…')
+    try {
+      const { pages, warnings } = parseGinReceiptCsv(await file.text(), { cropYear })
+      const statements = groupStatementPages(pages)
+      if (statements.length === 0) { setErr('No statement could be read from this file.'); setCsvName(null); return }
+      startReviews(statements)
+      setNotes(warnings)
+      const n = statements.length
+      setMsg(`Read ${n} statement${n === 1 ? '' : 's'} from ${file.name}. The export prints no gin and no statement date, so each statement is dated by the last day its bales were ginned${gins.length > 1 ? ' and takes the gin picked on its card' : ''}. Review each, then save.`)
+    } catch (e: any) {
+      setCsvName(null)
+      setErr(e instanceof GinReceiptCsvError ? e.message : reportError(e, { action: 'read this file' }))
+    } finally {
+      setStage(null)
+    }
+  }
+
   async function onSource(src: DocumentSource) {
-    setErr(null); setMsg(null); setSource(src); setReviews([])
+    setErr(null); setMsg(null); setNotes([]); setCsvName(null); setSource(src); setReviews([])
     setStage('Reading the Statement of Ginning…')
     try {
       // Page by page, in chunks; pages rebased to the whole document, merged
@@ -295,13 +379,7 @@ export default function GinReceiptsPage() {
       if (warning) setErr(warning)
       const statements = groupStatementPages(data.pages ?? [])
       if (statements.length === 0) { setErr('No statement could be read from this document.'); return }
-      setReviews(statements.map((s) => {
-        const printed = printedFarmField(s)
-        return {
-          s, farmId: printed.farmId, fieldId: printed.fieldId, farmFieldFrom: printed.farmId || printed.fieldId ? 'printed' : 'none',
-          createMissing: new Set<number>(), linked: new Map<number, string>(), excludedBales: null, updateReceipt: false,
-        }
-      }))
+      startReviews(statements)
       setMsg(`Read ${statements.length} statement${statements.length === 1 ? '' : 's'} from ${data.pages?.length ?? 0} page${(data.pages?.length ?? 0) === 1 ? '' : 's'}. Review each, then save.`)
     } catch (e: any) {
       if (e instanceof PdfTooLargeError) setErr(e.message)
@@ -323,14 +401,14 @@ export default function GinReceiptsPage() {
       for (let i = 0; i < reviews.length; i++) {
         const rv = reviews[i]
         const d = derived[i]
-        const s = rv.s
+        const s = effectiveStatement(rv)
         const name = receiptDisplayName({ gin_name: s.gin_name, gin_code: s.gin_code, receipt_date: s.receipt_date, farm_label: s.farm_number, field_label: s.field, statement_number: s.statement_number })
         if (d.classification.status !== 'new' && !rv.updateReceipt) { skipped.push(name); continue }
         if (d.rows.some((r) => r.status === 'ambiguous')) throw new Error(`${name}: two saved loads share a number. Merge them on Seed Cotton Loads, then re-check.`)
         let receiptId: string | null = null
         let insertedNew = false
         try {
-          const gin_id = await ensureGin(s)
+          const gin_id = (!statementNamesGin(rv.s) && rv.ginId) || await ensureGin(s)
           const year = d.year
           const header: Record<string, unknown> = {
             gin_id, receipt_number: synthesizeReceiptNumber(s), receipt_date: s.receipt_date, crop_year: year,
@@ -400,7 +478,7 @@ export default function GinReceiptsPage() {
         }
       }
       setMsg([...done, ...(skipped.length ? [`Left alone (already saved): ${skipped.join('; ')}`] : [])].join(' · '))
-      setReviews([]); setSource(null); refresh(); fieldYields.refresh()
+      setReviews([]); setSource(null); setCsvName(null); setNotes([]); refresh(); fieldYields.refresh()
     } catch (e: any) {
       setErr(e?.message ?? String(e))
       refresh()
@@ -485,33 +563,60 @@ export default function GinReceiptsPage() {
 
       <SummaryCards cards={summaryCards} />
 
-      <CottonSection title="Add a statement" sub="Upload the gin’s Statement of Ginning — one PDF can hold several — or type one in. Nothing saves until you review it.">
+      <CottonSection title="Add a statement" sub="Upload the gin’s Statement of Ginning — a PDF, photos, or the gin’s CSV export; one file can hold several — or type one in. Nothing saves until you review it.">
         <div className="px-4 pt-2">
           <ViewTabs ariaLabel="How to add a statement" value={intake} onChange={setIntake} tabs={[{ key: 'upload', label: 'Upload a statement' }, { key: 'hand', label: 'Add by hand' }]} />
         </div>
         {intake === 'upload' && (
         <div className="p-4 space-y-3">
-        <DocumentCapture onSource={onSource} busy={stage != null} stageLabel={stage} pdfLabel="Upload Statement PDF or photos" />
+        <DocumentCapture onSource={onSource} onCsv={onCsv} busy={stage != null} stageLabel={stage} pdfLabel="Upload statement PDF, photos, or CSV" />
+        {notes.length > 0 && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 space-y-1" role="status">
+            <div className="font-semibold">Figures in the export that don’t add up — check them against the statement:</div>
+            <ul className="list-disc pl-4 space-y-0.5">{notes.map((n) => <li key={n}>{n}</li>)}</ul>
+          </div>
+        )}
         {reviews.length > 0 && (
           <div className="space-y-4 text-sm">
             {reviews.map((rv, i) => {
-              const s = rv.s
+              const s = effectiveStatement(rv)
               const d = derived[i]
               if (!d) return null
               const flagged = d.baleReview.map((r, k) => ({ ...r, k })).filter((r) => r.flags.length > 0)
               const title = receiptDisplayName({ gin_name: s.gin_name, gin_code: s.gin_code, receipt_date: s.receipt_date, farm_label: s.farm_number, field_label: s.field, statement_number: s.statement_number })
+              const needsGin = !statementNamesGin(rv.s)
               return (
                 <article key={i} className="rounded-xl border border-slate-200 p-3 space-y-3" aria-label={`Statement ${i + 1}: ${title}`}>
                   <div className="flex flex-wrap gap-3 items-end">
                     <div className="flex-1 min-w-[16rem]">
                       <div className="font-semibold">{reviews.length > 1 ? `Statement ${i + 1} of ${reviews.length} · ` : ''}{title}</div>
                       <div className="text-xs text-slate-500">
-                        Pages {s.pages.length === 1 ? s.pages[0] : `${s.pages[0]}–${s.pages[s.pages.length - 1]}`}
+                        {csvName
+                          ? `From the gin’s export${s.receipt_date ? ` · dated ${fmtDate(s.receipt_date)}, the last day its bales were ginned` : ' · no ginning dates in the file'}`
+                          : `Pages ${s.pages.length === 1 ? s.pages[0] : `${s.pages[0]}–${s.pages[s.pages.length - 1]}`}`}
                         {s.gin_code ? ` · gin code ${s.gin_code}` : ''}
                         {s.statement_number ? ` · statement #${s.statement_number}` : ' · no statement number printed (identified by gin, farm, field, date and totals)'}
                         {` · crop year ${d.year}`}
                       </div>
                     </div>
+                    {needsGin && (
+                      <label className="flex flex-col gap-1 text-xs">
+                        <span className="text-slate-500">Gin</span>
+                        <select
+                          value={rv.ginId}
+                          onChange={(e) => {
+                            if (e.target.value === NEW_GIN) { void addGinFor(i); return }
+                            patchReview(i, { ginId: e.target.value, ginFromUser: true })
+                          }}
+                          className={`${inputCls} ${!rv.ginId ? 'border-amber-400' : ''}`}
+                          aria-label={`Gin for statement ${i + 1}`}
+                        >
+                          <option value="">— gin —</option>
+                          {gins.map((g) => <option key={g.id} value={g.id}>{g.name}{g.gin_code ? ` (${g.gin_code})` : ''}</option>)}
+                          <option value={NEW_GIN}>+ Add a gin…</option>
+                        </select>
+                      </label>
+                    )}
                     <label className="flex flex-col gap-1 text-xs">
                       <span className="text-slate-500">Farm</span>
                       <select value={rv.farmId} onChange={(e) => patchReview(i, { farmId: e.target.value, fieldId: '', farmFieldFrom: 'user' })} className={inputCls}>
@@ -597,10 +702,11 @@ export default function GinReceiptsPage() {
               <button onClick={saveAll} disabled={saving || anyAmbiguous || allAlreadySaved} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 py-2 font-semibold disabled:opacity-50">
                 {saving ? 'Saving…' : reviews.length > 1 ? `Save all (${reviews.length} receipts)` : 'Save receipt + bales'}
               </button>
-              <button onClick={() => { setReviews([]); setSource(null) }} className="rounded-lg bg-white border border-slate-300 px-4 py-2">Discard</button>
+              <button onClick={() => { setReviews([]); setSource(null); setCsvName(null); setNotes([]) }} className="rounded-lg bg-white border border-slate-300 px-4 py-2">Discard</button>
               {anyAmbiguous && <span className="text-xs text-red-700">A load number is shared by two saved loads — merge them on Seed Cotton Loads, then re-check.</span>}
-              {allAlreadySaved && !anyAmbiguous && <span className="text-xs text-slate-600">Every statement in this PDF is already saved. Tick &quot;Update that receipt&quot; to change one, or discard.</span>}
+              {allAlreadySaved && !anyAmbiguous && <span className="text-xs text-slate-600">Every statement in this file is already saved. Tick &quot;Update that receipt&quot; to change one, or discard.</span>}
               {source && !anyAmbiguous && !allAlreadySaved && <span className="text-xs text-slate-400">Confirm against the document before saving.</span>}
+              {csvName && !anyAmbiguous && !allAlreadySaved && reviews.some((rv) => !statementNamesGin(rv.s) && !rv.ginId) && <span className="text-xs text-amber-700">Pick the gin on each statement — the export does not name it.</span>}
             </div>
           </div>
         )}
