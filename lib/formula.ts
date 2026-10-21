@@ -530,11 +530,23 @@ function truthy(v: Scalar | FormulaError): boolean {
   throw new FormulaError('#VALUE!')
 }
 
-/** Spreadsheet comparison: two texts compare case-insensitively, otherwise
- *  numerically (blank = 0, FALSE = 0, TRUE = 1). */
+/** Spreadsheet comparison, as Excel does it: two texts compare
+ *  case-insensitively; a blank reads as 0 against a number, "" against text
+ *  and FALSE against a boolean; across types the order is numbers < text <
+ *  booleans and equality is false — so (A1="")=0 is FALSE whatever A1
+ *  holds, and FALSE=0 is FALSE. */
 function compare(op: BinOp, a: Scalar, b: Scalar): boolean {
   let result: number
-  if (typeof a === 'string' && typeof b === 'string') {
+  const blankA = a == null || a === ''
+  const blankB = b == null || b === ''
+  if (typeof a === 'boolean' || typeof b === 'boolean') {
+    // A boolean against a boolean (blank = FALSE): FALSE < TRUE. Against a
+    // number or text: the boolean is greater, never equal.
+    const x = typeof a === 'boolean' ? a : blankA && typeof b === 'boolean' ? false : null
+    const y = typeof b === 'boolean' ? b : blankB && typeof a === 'boolean' ? false : null
+    if (x != null && y != null) result = Number(x) - Number(y)
+    else result = typeof a === 'boolean' ? 1 : -1
+  } else if (typeof a === 'string' && typeof b === 'string') {
     const x = a.toLowerCase()
     const y = b.toLowerCase()
     result = x < y ? -1 : x > y ? 1 : 0

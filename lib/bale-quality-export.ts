@@ -23,7 +23,7 @@
 
 import type { ExportCell, ExportColumn, ExportPayload, ExportSection, NumFmt, PreludeRow, SummaryCard } from './exports'
 import {
-  and, averageifs, cell, col, concat, countif, countifs, div, eq, ge, gt, iferror, iff, le, mul, num, or, round, str, sum, sumifs, sumproduct, type FormulaNode, type RangeNode,
+  and, averageifs, cell, col, concat, countif, countifs, div, eq, ge, gt, iferror, iff, le, mul, ne, num, or, round, str, sum, sumifs, sumproduct, type FormulaNode, type RangeNode,
 } from './formula'
 import { factorText, factorValue, FACTORS, BAND_LABEL, COLOR_GRID_COLUMNS, COLOR_GRID_ROWS, colorGridCode, bandsFor, type FactorKey, type Band } from './cotton-quality'
 import { EVALUATION_LABEL, EXTRANEOUS_RULE_LABEL, specSummaryLine, type ContractQualitySpec } from './cotton-contract-spec'
@@ -287,7 +287,7 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
   const blank = (item: SpecItem) => eq(S(item), str(''))
   const tests = (r: number): Array<{ label: string; ok: FormulaNode }> => {
     const own = (c: string) => cell(SECTION.bales, c, r)
-    const hasReading = (c: string) => eq(eq(own(c), str('')), num(0)) // (cell = "") = 0
+    const hasReading = (c: string) => ne(own(c), str('')) // cell <> "" (never (cell="")=0: Excel does not read FALSE as 0 in a comparison)
     const t: Array<{ label: string; ok: FormulaNode }> = []
     if (hasColors) t.push({ label: 'Color', ok: gt(countif(col(SECTION.spec, 'color'), own('color')), num(0)) })
     t.push({ label: 'Leaf', ok: or(blank('leaf_max'), and(hasReading('leaf'), le(own('leaf'), S('leaf_max')))) })

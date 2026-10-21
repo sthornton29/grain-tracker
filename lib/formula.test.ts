@@ -185,6 +185,15 @@ describe('evaluateFormula — counts, averages, logic and comparison criteria', 
     expect(evaluateFormula(or(eq(cell('spec', 'value', 2), str('')), num(0)), data, at)).toBe(true) // blank threshold = no requirement
     expect(evaluateFormula(or(num(0), num(0)), data, at)).toBe(false)
   })
+  it('a boolean never equals a number in a comparison (Excel: (A1="")=0 is FALSE), so a blank test must be written A1<>""', () => {
+    const d: FormulaData = { s: { columns: ['a'], rows: [[4.4], [null]] } }
+    expect(evaluateFormula(eq(eq(self('a'), str('')), num(0)), d, { s: 's', r: 0 })).toBe(false) // FALSE=0 → FALSE
+    expect(evaluateFormula(eq(eq(self('a'), str('')), num(1)), d, { s: 's', r: 1 })).toBe(false) // TRUE=1 → FALSE
+    expect(evaluateFormula({ t: 'bin', op: '<>', a: self('a'), b: str('') }, d, { s: 's', r: 0 })).toBe(true)
+    expect(evaluateFormula({ t: 'bin', op: '<>', a: self('a'), b: str('') }, d, { s: 's', r: 1 })).toBe(false)
+    expect(evaluateFormula(eq(eq(self('a'), str('')), eq(num(1), num(2))), d, { s: 's', r: 0 })).toBe(true) // FALSE=FALSE
+    expect(evaluateFormula(gt(eq(num(1), num(1)), num(99)), d, { s: 's', r: 0 })).toBe(true) // TRUE > any number
+  })
   it('SUMPRODUCT weights a column by pounds; text and blanks read as 0', () => {
     const wavg = div(sumproduct(col('bales', 'mic'), col('bales', 'lbs')), sumifs(col('bales', 'lbs'), [col('bales', 'mic'), str('<>')]))
     const expected = (4.4 * 500 + 4.0 * 480 + 4.3 * 495 + 3.9 * 470) / (500 + 480 + 495 + 470)
