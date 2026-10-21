@@ -1,7 +1,7 @@
 ---
 page_route: /reports
 title: Reports Overview
-updated: 2026-09-24
+updated: 2026-10-20
 keywords: reports, exports, excel, pdf, print, marketing, revenue, cash flow, insurance, government payments, yields
 ---
 ## What this page is for
@@ -10,7 +10,7 @@ The Reports page is the front door to every report in Turnrow. It shows one card
 
 The groups:
 
-- **How is harvest going** — Season Summary, Yields by Field, Yields by Farm, Yields by Landowner, and (with the Cotton module on) the Bale Quality Summary.
+- **How is harvest going** — Season Summary, Yields by Field, Yields by Farm, Yields by Landowner, and (with the Cotton module on) Bale Quality.
 - **Where do I stand on selling** — the Marketing Dashboard and the Hedging Summary.
 - **What will I make** — Revenue Projections, Income Sensitivity, the Cash Flow Forecast, and the Crop Budget Planner.
 - **Landowners** — the Share Rent Report and Rent Settlement.

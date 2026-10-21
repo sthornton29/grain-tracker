@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-10-21 · version 0.1.0 · build c84327a. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-10-21 · version 0.1.0 · build 08b12c3. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -1405,7 +1405,7 @@ The Reports page is the front door to every report in Turnrow. It shows one card
 
 The groups:
 
-- **How is harvest going** — Season Summary, Yields by Field, Yields by Farm, Yields by Landowner, and (with the Cotton module on) the Bale Quality Summary.
+- **How is harvest going** — Season Summary, Yields by Field, Yields by Farm, Yields by Landowner, and (with the Cotton module on) Bale Quality.
 - **Where do I stand on selling** — the Marketing Dashboard and the Hedging Summary.
 - **What will I make** — Revenue Projections, Income Sensitivity, the Cash Flow Forecast, and the Crop Budget Planner.
 - **Landowners** — the Share Rent Report and Rent Settlement.

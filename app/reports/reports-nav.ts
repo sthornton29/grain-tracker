@@ -56,7 +56,7 @@ export const REPORT_GROUPS: ReportNavGroup[] = [
       { label: 'Yields by Field', href: '/yields', query: 'view=field', external: true, description: 'Dry bushels and yield for every field, with the loads behind each number.' },
       { label: 'Yields by Farm', href: '/yields', query: 'view=farm', external: true, description: 'Yields rolled up by farm, so you can compare farms side by side.' },
       { label: 'Yields by Landowner', href: '/reports/yields-by-landowner', description: 'Each landowner’s production by farm and field, ready to print as a handout.' },
-      { label: 'Bale Quality Summary', href: '/reports/bale-quality', description: 'Cotton bales, lint pounds, loan value, and grade breakdown by field for buyers.' },
+      { label: 'Bale Quality', href: '/reports/bale-quality', description: 'Every classed bale’s HVI results by entity, farm, field, variety or receipt, colored by the loan premium and discount bands — and what portion meets a contract’s quality requirements.' },
     ],
   },
   {
