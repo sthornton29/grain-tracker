@@ -52,7 +52,7 @@ export type BaleQualityExportInput = {
   generatedAt?: Date
 }
 
-const factorFormat = (key: FactorKey): NumFmt => (key === 'loan' ? 'cents' : key === 'mic' ? 'dec2' : FACTORS[key].kind === 'number' ? (FACTORS[key].decimals === 0 ? 'int' : 'dec1') : 'text')
+const factorFormat = (key: FactorKey): NumFmt => (key === 'loan' || key === 'mic' ? 'dec2' : FACTORS[key].kind === 'number' ? (FACTORS[key].decimals === 0 ? 'int' : 'dec1') : 'text')
 
 function factorCellValue(r: BaleRow, key: FactorKey): string | number {
   if (!r.grade) return ''
@@ -141,7 +141,7 @@ export function buildBaleQualityPdfPayload(input0: BaleQualityExportInput): Expo
     const out: ExportCell[] = [r.label, r.bales, r.classed, Math.round(r.lbs)]
     for (const f of factors) {
       const c = r.cells[f]
-      if (FACTORS[f].kind === 'number') out.push(c.average == null ? '' : f === 'loan' ? { v: c.average, format: 'cents' } : n1(c.average, FACTORS[f].decimals))
+      if (FACTORS[f].kind === 'number') out.push(c.average == null ? '' : n1(c.average, FACTORS[f].decimals))
       if (FACTORS[f].banded) out.push(pct(c.classed ? c.premium : null), pct(c.classed ? c.base : null), pct(c.classed ? c.discount : null))
     }
     if (contract) out.push(pct(r.meetsPct))
@@ -183,7 +183,7 @@ export function buildBaleQualityPdfPayload(input0: BaleQualityExportInput): Expo
     columns: baleColumns,
     rows: rows.map((r): ExportCell[] => {
       const out: ExportCell[] = [r.pbi, r.receiptLabel, r.farmName, r.fieldName, r.variety ?? '', r.classDate ?? '']
-      for (const f of factors) out.push(f === 'loan' && r.grade ? { v: factorCellValue(r, f), format: 'cents' } : factorCellValue(r, f))
+      for (const f of factors) out.push(factorCellValue(r, f))
       out.push(Math.round(r.lbs), DISPOSITION_TEXT[r.disposition])
       if (contract) {
         const ev = contract.view.evaluationOf(r.id)
@@ -269,7 +269,7 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
     { key: 'quadrant', label: 'Quad', align: 'right' },
     { key: 'trash', label: 'Trash', align: 'right', format: 'dec1' },
     { key: 'length', label: 'Length', align: 'right', format: 'int' },
-    { key: 'loan', label: 'Loan $/lb', align: 'right', format: 'cents', note: 'Classing loan value, written as $/lb (59.9¢ = $0.5990).' },
+    { key: 'loan', label: 'Loan ¢/lb', align: 'right', format: 'dec2', note: 'Classing loan value in cents per pound (59.90 = 59.9¢), the unit the screen shows.' },
     { key: 'loan_total', label: 'Loan $', align: 'right', format: 'usd2' },
     { key: 'lbs', label: 'Lbs', align: 'right', format: 'lbs' },
     { key: 'disposition', label: 'Disposition' },
@@ -302,7 +302,7 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
     const out: ExportCell[] = [
       input(r.pbi), input(r.receiptLabel), input(r.ginName), input(r.entityName), input(r.farmName), input(r.fsa ?? ''), input(r.fieldName),
       input(r.variety ?? ''), input(r.practice ?? ''), input(r.classDate ?? ''),
-      ...BALE_FACTOR_COLS.map(({ key }) => input(factorCellValue(r, key) as string | number, key === 'loan' ? 'cents' : undefined)),
+      ...BALE_FACTOR_COLS.map(({ key }) => input(factorCellValue(r, key) as string | number)),
       input(r.loanTotal, 'usd2'), input(Math.round(r.lbs), 'lbs'), input(DISPOSITION_TEXT[r.disposition]), input(groupLabelOf(r, groupBy)),
     ]
     if (contract) {
@@ -392,7 +392,7 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
         ? iferror(div(sumproduct(B('loan'), B('lbs')), sumifs(B('lbs'), [B('loan'), str('<>')])), str('—'))
         : iferror(averageifs(B(colKey), [B(colKey), str('<>')]), str('—'))
       const lbsAvg: FormulaNode = iferror(div(sumproduct(B(colKey), B('lbs')), sumifs(B('lbs'), [B(colKey), str('<>')])), str('—'))
-      const avgFmt: NumFmt = f === 'loan' ? 'cents' : f === 'mic' ? 'dec2' : def.decimals === 0 ? 'int' : 'dec1'
+      const avgFmt: NumFmt = f === 'loan' || f === 'mic' ? 'dec2' : def.decimals === 0 ? 'int' : 'dec1'
       push([def.label, f === 'loan' ? 'Average (lbs-weighted — loan value always is)' : 'Average (bale-weighted)', '', formula(classedCount(colKey), 'int'), '', formula(avg, avgFmt), f === 'loan' ? '' : formula(lbsAvg, avgFmt)])
     }
     // Distribution buckets as COUNTIFS. Code factors count exact codes per bucket
@@ -459,7 +459,7 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
     prelude: [
       { kind: 'title', cells: [`Bale Quality — ${cropYear} crop`] },
       { kind: 'subtitle', cells: [input0.filterSummary] },
-      { kind: 'kpi', cells: ['Classed bales', formula(total, 'int'), 'Lint lbs', formula(totalLbs, 'lbs'), 'Avg loan $/lb', formula(iferror(div(sumproduct(B('loan'), B('lbs')), sumifs(B('lbs'), [B('loan'), str('<>')])), num(0)), 'cents')] },
+      { kind: 'kpi', cells: ['Classed bales', formula(total, 'int'), 'Lint lbs', formula(totalLbs, 'lbs'), 'Avg loan ¢/lb', formula(iferror(div(sumproduct(B('loan'), B('lbs')), sumifs(B('lbs'), [B('loan'), str('<>')])), num(0)), 'dec2')] },
       { kind: 'text', cells: [`Price bands: ${bands.source}. Distributions are ${weighting === 'lbs' ? 'lbs' : 'bale'}-weighted; averages are bale-weighted except loan value (always lbs-weighted). Every figure is a formula over the Bales tab.`] },
       { kind: 'blank', cells: [] },
     ],
@@ -481,7 +481,7 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
   ]
   for (const f of factors) {
     if (FACTORS[f].kind !== 'number') continue
-    groupColumns.push({ key: `avg_${f}`, label: `${FACTORS[f].short} avg`, align: 'right', format: f === 'loan' ? 'cents' : f === 'mic' ? 'dec2' : FACTORS[f].decimals === 0 ? 'int' : 'dec1' })
+    groupColumns.push({ key: `avg_${f}`, label: `${FACTORS[f].short} avg`, align: 'right', format: f === 'loan' || f === 'mic' ? 'dec2' : FACTORS[f].decimals === 0 ? 'int' : 'dec1' })
   }
   if (contract) groupColumns.push({ key: 'meets', label: '% meets contract', align: 'right', format: 'ratio' })
   const groupRowsOut: ExportCell[][] = groups.map((g) => {
@@ -494,7 +494,7 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
       const avg = f === 'loan'
         ? iferror(mul(div(sumifs(B('loan_total'), crit), sumifs(B('lbs'), crit, [B('loan'), str('<>')])), num(100)), str('—'))
         : iferror(averageifs(B(colKey), crit, [B(colKey), str('<>')]), str('—'))
-      out.push(formula(avg, f === 'loan' ? 'cents' : f === 'mic' ? 'dec2' : FACTORS[f].decimals === 0 ? 'int' : 'dec1'))
+      out.push(formula(avg, f === 'loan' || f === 'mic' ? 'dec2' : FACTORS[f].decimals === 0 ? 'int' : 'dec1'))
     }
     if (contract) out.push(formula(iferror(div(countifs(crit, [B('result'), str('Meets')]), countifs(crit, [B('eligible'), str('Yes')])), num(0)), 'ratio'))
     return out
@@ -516,7 +516,7 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
         [`Contract Spec tab: ${specSummaryLine(contract.spec)}. Change a blue threshold cell, or add / delete a color code or FSA farm number, and the Bales tab’s Meets spec column and the Summary’s contract counts move. A blank threshold is no requirement.`],
         ['Meets spec tests each factor inclusively at the value written; a bale with a blank reading for a tested factor fails that factor. Not eligible = the bale’s farm is not on the farm list; such bales are left out of the pass rate.'],
       ] : []),
-      ['Column guide — PBI: bale number · FSA #: the farm’s FSA number · Color / Leaf / Staple / Mic / Strength / Uniformity / Ex / Rm / Rd / +b / Quad / Trash / Length: the USDA classing data as imported · Loan $/lb and Loan $: the classing loan value · Lbs: bale net weight from the gin receipt · Disposition: held / in CCC loan / sold / on contract / pool.'],
+      ['Column guide — PBI: bale number · FSA #: the farm’s FSA number · Color / Leaf / Staple / Mic / Strength / Uniformity / Ex / Rm / Rd / +b / Quad / Trash / Length: the USDA classing data as imported · Loan ¢/lb and Loan $: the classing loan value (cents per pound, and the bale’s total) · Lbs: bale net weight from the gin receipt · Disposition: held / in CCC loan / sold / on contract / pool.'],
     ],
   }
 
