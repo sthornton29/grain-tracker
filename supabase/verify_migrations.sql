@@ -174,13 +174,18 @@ checks(seq, migration, evidence, applied) as (values
         and exists (select 1 from fns where f = 'hedge_position_event_trigger' and pg_get_functiondef(oid) like '%turnrow.hedge_event_note%')),
   -- 0096 (supabase/migrations/): cotton_loads.updated_at, the column the Farm link's cotton fetch asks for.
   (101, '0096_cotton_loads_updated_at',       'cotton_loads.updated_at',
-        exists (select 1 from cols where t = 'cotton_loads' and c = 'updated_at'))
+        exists (select 1 from cols where t = 'cotton_loads' and c = 'updated_at')),
+  -- 0097 (supabase/migrations/): a contract's quality requirements, one row per cotton sales contract.
+  (102, '0097_cotton_contract_specs',         'table cotton_contract_specs + unique (contract_id) + org_isolation policy',
+        exists (select 1 from tbls where t = 'cotton_contract_specs')
+        and exists (select 1 from cols where t = 'cotton_contract_specs' and c = 'eligible_fsa_farms')
+        and exists (select 1 from pg_policies where tablename = 'cotton_contract_specs' and policyname = 'cotton_contract_specs_org_isolation'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 095'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 097'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

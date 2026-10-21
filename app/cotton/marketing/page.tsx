@@ -7,7 +7,7 @@
 // $/lb; price inputs accept dollar-style entry (0.7425) and legacy cents
 // (74.25) via the smart-magnitude guard. Weights are lbs of lint.
 
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { reportError } from '@/lib/friendly-error'
 import { useDialogs } from '@/components/use-dialogs'
@@ -17,6 +17,9 @@ import { BuyerPicker } from '@/components/buyer-location-pickers'
 import { formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
 import { CottonPageHeader } from '@/components/cotton/cotton-page-header'
 import MarketingDocImport from '@/components/cotton/marketing-doc-import'
+import ContractSpecPanel from '@/components/cotton/contract-spec-panel'
+import { buildBaleRows, estimatedBalesFromAssumptions, type BaleQualityInputs } from '@/lib/bale-quality-report'
+import { specFromRow, specHasFiberTerms } from '@/lib/cotton-contract-spec'
 import BaleFileAssign from '@/components/cotton/bale-file-assign'
 import EntitySelect from '@/components/entity-select'
 import { defaultEntityId } from '@/lib/entity-default'
@@ -28,8 +31,8 @@ import {
 } from '@/lib/cotton-sales'
 import type {
   AwpWeekly, Buyer, CccLoan, CottonBale, CottonBaleDisposition, CottonBaleGrade,
-  CottonContractType, CottonDisposition, CottonFee, CottonFeeSchedule,
-  CottonLdpRecord, CottonPoolPayment, CottonSalesContract, Entity, Farm, Field, GinReceipt,
+  CottonContractSpec, CottonContractType, CottonDisposition, CottonFee, CottonFeeSchedule,
+  CottonLdpRecord, CottonPoolPayment, CottonSalesContract, CropAssumption, Entity, Farm, Field, GinReceipt,
 } from '@/lib/types'
 
 const inputCls = 'rounded-lg border border-slate-300 px-2 py-1.5 text-sm bg-white'
@@ -77,12 +80,21 @@ export default function CottonMarketingPage() {
   const [fees, setFees] = useState<CottonFee[]>([])
   const [feeSchedule, setFeeSchedule] = useState<CottonFeeSchedule | null>(null)
   const [awp, setAwp] = useState<AwpWeekly[]>([])
+  // 0097: quality requirements per contract, and what the compact contract
+  // view needs to score the year's bales (gins, plantings, varieties, crops).
+  const [specRows, setSpecRows] = useState<CottonContractSpec[]>([])
+  const [gins, setGins] = useState<BaleQualityInputs['gins']>([])
+  const [plantings, setPlantings] = useState<BaleQualityInputs['plantings']>([])
+  const [varieties, setVarieties] = useState<BaleQualityInputs['varieties']>([])
+  const [crops, setCrops] = useState<BaleQualityInputs['crops']>([])
+  const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
+  const [specOpen, setSpecOpen] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
 
   async function refresh() {
-    const [en, by, fa, fi, gr, cb, bg, dp, ct, pp, lo, lb, ld, ldb, fe, fs, aw] = await Promise.all([
+    const [en, by, fa, fi, gr, cb, bg, dp, ct, pp, lo, lb, ld, ldb, fe, fs, aw, sp, gi, pl, va, cr, asm] = await Promise.all([
       supabase.from('entities').select('*').order('name'),
       supabase.from('buyers').select('*').order('name'),
       supabase.from('farms').select('*'),
@@ -100,6 +112,12 @@ export default function CottonMarketingPage() {
       supabase.from('cotton_fees').select('*').eq('crop_year', cropYear).order('fee_date'),
       supabase.from('cotton_fee_schedule').select('*').eq('crop_year', cropYear).maybeSingle(),
       supabase.from('awp_weekly').select('*').order('week_effective', { ascending: false }).limit(30),
+      fetchAllRows((f, t) => supabase.from('cotton_contract_specs').select('*').order('id').range(f, t)),
+      supabase.from('gins').select('id, name'),
+      fetchAllRows((f, t) => supabase.from('field_plantings').select('id, field_id, crop_id, season_year, irrigated_acres, dryland_acres, planted_acres, archived_at').eq('season_year', cropYear).order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('field_planting_varieties').select('planting_id, variety').order('id').range(f, t)),
+      supabase.from('crops').select('id, name'),
+      supabase.from('crop_assumptions').select('*').eq('crop_year', cropYear),
     ])
     if (ct.error?.message.includes('does not exist') || ct.error?.code === '42P01') {
       setErr('This part of Turnrow isn’t available for your account yet — contact support.')
@@ -121,6 +139,12 @@ export default function CottonMarketingPage() {
     setFees((fe.data as CottonFee[]) || [])
     setFeeSchedule((fs.data as CottonFeeSchedule) || null)
     setAwp((aw.data as AwpWeekly[]) || [])
+    setSpecRows((sp.data as CottonContractSpec[]) || [])
+    setGins((gi.data as BaleQualityInputs['gins']) || [])
+    setPlantings((pl.data as BaleQualityInputs['plantings']) || [])
+    setVarieties((va.data as BaleQualityInputs['varieties']) || [])
+    setCrops((cr.data as BaleQualityInputs['crops']) || [])
+    setAssumptions((asm.data as CropAssumption[]) || [])
     setLoaded(true)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [cropYear])
@@ -138,6 +162,14 @@ export default function CottonMarketingPage() {
     cropYear, bales, gradesByBale: gradeByBale, dispositions, contracts, poolPayments, loans, loanBales, ldps, fees,
   }), [cropYear, bales, gradeByBale, dispositions, contracts, poolPayments, loans, loanBales, ldps, fees])
   const summary = useMemo(() => buildCottonPhysicalSummary(inputs), [inputs])
+
+  // 0097: the year's bales through the quality chain, for each contract's compact view.
+  const qualityInputs = useMemo<BaleQualityInputs>(() => ({
+    cropYear, bales, grades, receipts, gins, farms, fields, entities, plantings, crops, varieties, dispositions, loanBales,
+  }), [cropYear, bales, grades, receipts, gins, farms, fields, entities, plantings, crops, varieties, dispositions, loanBales])
+  const baleRows = useMemo(() => buildBaleRows(qualityInputs), [qualityInputs])
+  const appEstimatedBales = useMemo(() => estimatedBalesFromAssumptions(qualityInputs, assumptions), [qualityInputs, assumptions])
+  const specByContract = useMemo(() => new Map(specRows.map((s) => [s.contract_id, specFromRow(s as unknown as Record<string, unknown>)])), [specRows])
 
   const dispByBale = useMemo(() => new Map(dispositions.map((d) => [d.bale_id, d])), [dispositions])
   // Disposition KIND per bale (missing row = held) — the shape the doc-import
@@ -549,6 +581,7 @@ export default function CottonMarketingPage() {
         <MarketingDocImport
           cropYear={cropYear}
           entities={entities}
+          farms={farms}
           buyers={buyers}
           contracts={contracts}
           loans={loans}
@@ -628,8 +661,11 @@ export default function CottonMarketingPage() {
                   const lbsOn = assigned.reduce((s, d) => s + Number(baleById.get(d.bale_id)?.net_weight_lbs ?? 0), 0)
                   const priced = contractPricedCents(c)
                   const pays = poolPayments.filter((p) => p.contract_id === c.id)
+                  const spec = specByContract.get(c.id) ?? null
+                  const hasSpec = spec != null && specHasFiberTerms(spec)
                   return (
-                    <tr key={c.id} className="border-t border-slate-100 align-top">
+                    <Fragment key={c.id}>
+                    <tr className="border-t border-slate-100 align-top">
                       <td className="px-2 py-1.5 whitespace-nowrap">{CONTRACT_TYPE_LABEL[c.contract_type]}</td>
                       <td className="px-2 py-1.5">{c.contract_number ?? '—'}</td>
                       <td className="px-2 py-1.5">{buyerName(c.buyer_id)}</td>
@@ -666,9 +702,28 @@ export default function CottonMarketingPage() {
                           price_cents_per_lb: c.price_cents_per_lb != null ? (Number(c.price_cents_per_lb) / 100).toFixed(4) : '', basis_cents: c.basis_cents != null ? (Number(c.basis_cents) / 100).toFixed(4) : '',
                           futures_month: c.futures_month ?? 'DEC 26', delivery_start: c.delivery_start ?? '', delivery_end: c.delivery_end ?? '', notes: c.notes ?? '',
                         })}>Edit</button>
+                        <button type="button" className={hasSpec ? 'text-sky-800 font-semibold' : 'text-sky-800'} onClick={() => setSpecOpen(specOpen === c.id ? null : c.id)}>
+                          {hasSpec ? 'Quality terms ✓' : 'Quality terms'}
+                        </button>
                         <button type="button" className="text-red-600" onClick={() => deleteContract(c)}>Delete</button>
                       </td>
                     </tr>
+                    {specOpen === c.id && (
+                      <tr className="border-t border-slate-100">
+                        <td colSpan={8} className="px-2 py-2">
+                          <ContractSpecPanel
+                            contract={c}
+                            label={[buyerName(c.buyer_id), c.contract_number ? `#${c.contract_number}` : null].filter((s) => s && s !== '—').join(' ') || 'this contract'}
+                            spec={spec}
+                            farms={farms}
+                            rows={baleRows}
+                            appEstimatedBales={appEstimatedBales}
+                            onSaved={done}
+                          />
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   )
                 })}
               </tbody>

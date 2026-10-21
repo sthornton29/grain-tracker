@@ -45,7 +45,7 @@ const FINANCIAL_TABLES = [
   'farm_base_acres', 'arc_plc_elections', 'arc_plc_payments',
   'other_government_payments', 'payment_limit_config',
   'budget_scenarios', 'budget_lines',
-  'cotton_sales_contracts', 'cotton_pool_payments', 'ccc_loans', 'ccc_loan_bales',
+  'cotton_sales_contracts', 'cotton_contract_specs', 'cotton_pool_payments', 'ccc_loans', 'ccc_loan_bales',
   'cotton_ldp_records', 'cotton_ldp_bales', 'cotton_fees', 'cotton_fee_schedule',
 ]
 

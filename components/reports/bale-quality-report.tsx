@@ -1,213 +1,742 @@
 'use client'
 
-// Bale Quality Summary — the HVI quality package a producer shows buyers:
-// per field (with farm/entity rollups) per crop year — bales, total lint lbs,
-// weighted avg loan ¢/lb, and distributions of the key grades (color grade,
-// staple, mic, strength ranges). Cotton-module report; exports through the
-// shared layer.
+// Bale Quality (2026-10-20) — the HVI quality package a merchant would envy:
+// filter by entity / farm / field / variety / gin / receipt / practice /
+// class date / disposition / contract; group by anything; pick and order
+// the grade factors; bale- or lbs-weighted. KPI strip, one distribution
+// card per factor colored by the crop year's price band, the USDA color
+// grid as a heatmap, a comparison table, and the bale list drill-down.
+// With a contract that carries quality requirements: the headline, the cap
+// tracker, the projection, the Pareto of failing factors and result chips.
+//
+// Every number comes from lib/bale-quality-report.ts (pure); the exports
+// from lib/bale-quality-export.ts through lib/exports.ts.
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import Link from 'next/link'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { usePersistentState } from '@/lib/use-persistent-state'
 import { useReportCropYear, cropYearChoices } from '@/lib/report-filters'
-import { theadCls, grandTotalRowCls, ReportHeader, ReportFilterBar, FilterField, EmptyState, selectCls, fmtInt, cropYearLabel } from '@/components/reports/report-kit'
-import type { ExportPayload, ExportCell } from '@/lib/exports'
-import type { CottonBale, CottonBaleGrade, GinReceipt, Farm, Field, Entity } from '@/lib/types'
+import { useViewerScope, entityOptionsFor } from '@/lib/use-viewer-scope'
+import { exportToExcel, type ExportPayload } from '@/lib/exports'
+import ExportBar from '@/components/export-bar'
+import { fmtDate } from '@/lib/format-date'
+import {
+  EmptyState, ReportHeader, ReportFilterBar, FilterField, SummaryCards, InfoTip, selectCls, inputCls, theadCls, grandTotalRowCls,
+  stickyColCls, stickyColHeadCls, fmtInt, filterSummaryOf, cropYearLabel, toneText, type Tone,
+} from '@/components/reports/report-kit'
+import { ChipMultiSelect, SegmentedChips, type ChipOption } from '@/components/reports/chip-select'
+import { FactorPicker } from '@/components/reports/factor-picker'
+import {
+  BAND_LABEL, COLOR_GRID_COLUMNS, COLOR_GRID_ROWS, FACTORS, FACTOR_PRESETS, bandsFor, bucketOf, colorGridCode, factorText, factorValue,
+  type Band, type FactorKey,
+} from '@/lib/cotton-quality'
+import { EVALUATION_LABEL, specFromRow, specHasFiberTerms, specSummaryLine, type BaleEvaluation, type ContractQualitySpec } from '@/lib/cotton-contract-spec'
+import {
+  activeFilterCount, applyFilters, bandTone, buildBaleRows, cellBand, colorGrid, comparisonRows, contractView, distribution, estimatedBalesFromAssumptions,
+  EMPTY_FILTERS, GROUP_BY_LABEL, groupRows, kpis, occupiedBuckets, NO_VARIETY,
+  type BaleQualityFilters, type BaleQualityInputs, type BaleRow, type ComparisonRow, type ContractView, type Distribution, type GroupBy, type Weighting,
+} from '@/lib/bale-quality-report'
+import { buildBaleQualityPdfPayload, buildBaleQualityWorkbook, buildQualifyingBalesWorkbook, DISPOSITION_TEXT, kpiCards, type BaleQualityExportInput } from '@/lib/bale-quality-export'
+import type { CottonContractSpec, CottonDisposition, CottonSalesContract, CropAssumption } from '@/lib/types'
 
-type Props = {
-  onPayloadChange?: (build: () => ExportPayload) => void
-  /** Rendered in the report header's action slot (the page passes <ExportBar/>). */
-  headerActions?: ReactNode
-}
+type Drill =
+  | { kind: 'bucket'; factor: FactorKey; bucketKey: string; label: string }
+  | { kind: 'color'; code: string; label: string }
+  | { kind: 'pareto'; factor: FactorKey; label: string }
+  | { kind: 'result'; status: BaleEvaluation['status']; label: string }
+  | null
 
-const MIC_RANGES: Array<[string, (m: number) => boolean]> = [
-  ['Mic <3.5 (disc)', (m) => m < 3.5],
-  ['Mic 3.5–4.9', (m) => m >= 3.5 && m <= 4.9],
-  ['Mic >4.9 (disc)', (m) => m > 4.9],
-]
-const STAPLE_RANGES: Array<[string, (s: number) => boolean]> = [
-  ['St <34', (s) => s < 34],
-  ['St 34–36', (s) => s >= 34 && s <= 36],
-  ['St ≥37', (s) => s >= 37],
-]
-const STR_RANGES: Array<[string, (s: number) => boolean]> = [
-  ['Str <28', (s) => s < 28],
-  ['Str 28–30', (s) => s >= 28 && s <= 30],
-  ['Str >30', (s) => s > 30],
-]
+type ContractChoice = { contract: CottonSalesContract; spec: ContractQualitySpec; label: string }
 
-export default function BaleQualityReport({ onPayloadChange, headerActions }: Props) {
+const PRACTICE_OPTIONS: ChipOption[] = [
+  { id: 'dryland', label: 'Dryland' }, { id: 'irrigated', label: 'Irrigated' }, { id: 'mixed', label: 'Mixed' }, { id: 'unknown', label: 'No planting' },
+]
+const DISPOSITION_OPTIONS: ChipOption[] = (Object.keys(DISPOSITION_TEXT) as CottonDisposition[]).map((d) => ({ id: d, label: DISPOSITION_TEXT[d] }))
+const GROUP_OPTIONS = (Object.keys(GROUP_BY_LABEL) as GroupBy[]).map((k) => ({ key: k, label: GROUP_BY_LABEL[k] }))
+
+// Data-semantic colors (never brand green): premium favorable, discount
+// unfavorable, base neutral; non-banded buckets step through one hue.
+const BAND_FILL: Record<Band, string> = { premium: 'bg-green-600', base: 'bg-slate-400', discount: 'bg-red-500' }
+const SEQ_FILL = ['bg-sky-300', 'bg-sky-400', 'bg-sky-500', 'bg-sky-600', 'bg-sky-700', 'bg-sky-800', 'bg-sky-900', 'bg-slate-700']
+const bandBg = (band: Band | null) => (band === 'premium' ? 'bg-green-50' : band === 'discount' ? 'bg-red-50' : '')
+const pct1 = (v: number | null | undefined) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`)
+const avgText = (key: FactorKey, v: number | null) => (v == null ? '—' : key === 'staple' ? v.toFixed(1) : key === 'loan' ? `${v.toFixed(2)}¢` : factorText(key, v))
+
+export default function BaleQualityReport() {
   const supabase = useMemo(() => createClient(), [])
-  const [bales, setBales] = useState<CottonBale[]>([])
-  const [grades, setGrades] = useState<CottonBaleGrade[]>([])
-  const [receipts, setReceipts] = useState<GinReceipt[]>([])
-  const [farms, setFarms] = useState<Farm[]>([])
-  const [fields, setFields] = useState<Field[]>([])
-  const [entities, setEntities] = useState<Entity[]>([])
-  // Crop year: current year by default, persisted (the same key the Cotton
-  // pages use), never overwritten on load (lib/report-filters).
-  const [cropYearValue, setCropYear] = useReportCropYear('cotton:cropYear')
+  const viewer = useViewerScope(supabase)
+  const [loaded, setLoaded] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [inputs, setInputs] = useState<BaleQualityInputs | null>(null)
+  const [contracts, setContracts] = useState<CottonSalesContract[]>([])
+  const [specRows, setSpecRows] = useState<CottonContractSpec[]>([])
+  const [buyers, setBuyers] = useState<Array<{ id: string; name: string }>>([])
+  const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
+  const [allYears, setAllYears] = useState<number[]>([])
+
+  const [cropYearValue, setCropYear] = useReportCropYear('cotton:cropYear', { options: allYears, loaded })
   const cropYear = typeof cropYearValue === 'number' ? cropYearValue : new Date().getFullYear()
-  const yearChoices = useMemo(() => cropYearChoices(bales.map((b) => b.crop_year), cropYear), [bales, cropYear])
+  const [filters, setFilters] = usePersistentState<BaleQualityFilters>('bale-quality:filters', EMPTY_FILTERS)
+  const [groupBy, setGroupBy] = usePersistentState<GroupBy>('bale-quality:groupBy', 'field')
+  const [factors, setFactors] = usePersistentState<FactorKey[]>('bale-quality:factors', FACTOR_PRESETS.loan.factors)
+  const [weighting, setWeighting] = usePersistentState<Weighting>('bale-quality:weighting', 'bales')
+  const [bucketMode, setBucketMode] = usePersistentState<'coarse' | 'fine'>('bale-quality:buckets', 'coarse')
+  const [drill, setDrill] = useState<Drill>(null)
+  const setFilter = useCallback(<K extends keyof BaleQualityFilters>(k: K, v: BaleQualityFilters[K]) => setFilters((f) => ({ ...EMPTY_FILTERS, ...f, [k]: v })), [setFilters])
+
+  // ?contract=<id> pre-selects a contract (the contract page's link).
+  useEffect(() => {
+    try {
+      const id = new URLSearchParams(window.location.search).get('contract')
+      if (id) setFilters((f) => ({ ...EMPTY_FILTERS, ...f, contractId: id }))
+    } catch { /* no window */ }
+  }, [setFilters])
 
   useEffect(() => {
+    let cancelled = false
     ;(async () => {
-      const [b, g, r, f, fl, en] = await Promise.all([
-        fetchAllRows((f, t) => supabase.from('cotton_bales').select('*').order('id').range(f, t)),
-        fetchAllRows((f, t) => supabase.from('cotton_bale_grades').select('*').order('id').range(f, t)),
-        fetchAllRows((f, t) => supabase.from('gin_receipts').select('*').order('id').range(f, t)),
-        supabase.from('farms').select('*'),
-        supabase.from('fields').select('*'),
-        supabase.from('entities').select('*'),
-      ])
-      setBales((b.data as CottonBale[]) || [])
-      setGrades((g.data as CottonBaleGrade[]) || [])
-      setReceipts((r.data as GinReceipt[]) || [])
-      setFarms((f.data as Farm[]) || [])
-      setFields((fl.data as Field[]) || [])
-      setEntities((en.data as Entity[]) || [])
+      setLoaded(false); setLoadError(null)
+      try {
+        const [bales, grades, receipts, gins, farms, fields, entities, plantings, varieties, crops, disp, loanBales, cts, specs, by, asm, years] = await Promise.all([
+          fetchAllRows((f, t) => supabase.from('cotton_bales').select('id, gin_receipt_id, crop_year, pbi_number, net_weight_lbs').eq('crop_year', cropYear).order('id').range(f, t)),
+          fetchAllRows((f, t) => supabase.from('cotton_bale_grades').select('*').order('id').range(f, t)),
+          fetchAllRows((f, t) => supabase.from('gin_receipts').select('id, gin_id, receipt_number, receipt_date, statement_number, gin_code, entity_id, farm_id, field_id, crop_year').eq('crop_year', cropYear).order('id').range(f, t)),
+          supabase.from('gins').select('id, name'),
+          supabase.from('farms').select('id, name, entity_id, fsa_number, archived_at'),
+          supabase.from('fields').select('id, farm_id, name_or_number'),
+          supabase.from('entities').select('id, name'),
+          fetchAllRows((f, t) => supabase.from('field_plantings').select('id, field_id, crop_id, season_year, irrigated_acres, dryland_acres, planted_acres, archived_at').eq('season_year', cropYear).order('id').range(f, t)),
+          fetchAllRows((f, t) => supabase.from('field_planting_varieties').select('planting_id, variety').order('id').range(f, t)),
+          supabase.from('crops').select('id, name'),
+          fetchAllRows((f, t) => supabase.from('cotton_bale_dispositions').select('bale_id, disposition, contract_id, loan_id').order('id').range(f, t)),
+          fetchAllRows((f, t) => supabase.from('ccc_loan_bales').select('bale_id, loan_id').order('id').range(f, t)),
+          fetchAllRows((f, t) => supabase.from('cotton_sales_contracts').select('*').eq('crop_year', cropYear).order('id').range(f, t)),
+          fetchAllRows((f, t) => supabase.from('cotton_contract_specs').select('*').order('id').range(f, t)),
+          supabase.from('buyers').select('id, name'),
+          supabase.from('crop_assumptions').select('*').eq('crop_year', cropYear),
+          supabase.from('cotton_bales').select('crop_year').order('crop_year', { ascending: false }).limit(1000),
+        ])
+        if (cancelled) return
+        const err = [bales, grades, receipts, cts].find((q) => q.error)?.error
+        if (err) { setLoadError('Could not load the bale data — reload the page, or contact support.'); console.error(err) }
+        setInputs({
+          cropYear,
+          bales: (bales.data as BaleQualityInputs['bales']) ?? [],
+          grades: (grades.data as BaleQualityInputs['grades']) ?? [],
+          receipts: (receipts.data as BaleQualityInputs['receipts']) ?? [],
+          gins: (gins.data as BaleQualityInputs['gins']) ?? [],
+          farms: (farms.data as BaleQualityInputs['farms']) ?? [],
+          fields: (fields.data as BaleQualityInputs['fields']) ?? [],
+          entities: (entities.data as BaleQualityInputs['entities']) ?? [],
+          plantings: (plantings.data as BaleQualityInputs['plantings']) ?? [],
+          crops: (crops.data as BaleQualityInputs['crops']) ?? [],
+          varieties: (varieties.data as BaleQualityInputs['varieties']) ?? [],
+          dispositions: (disp.data as BaleQualityInputs['dispositions']) ?? [],
+          loanBales: (loanBales.data as BaleQualityInputs['loanBales']) ?? [],
+        })
+        setContracts((cts.data as CottonSalesContract[]) ?? [])
+        setSpecRows(((specs.data as CottonContractSpec[]) ?? []).filter(Boolean))
+        setBuyers((by.data as Array<{ id: string; name: string }>) ?? [])
+        setAssumptions((asm.data as CropAssumption[]) ?? [])
+        setAllYears(Array.from(new Set((((years.data as Array<{ crop_year: number }>) ?? []).map((r) => r.crop_year)))))
+      } finally {
+        if (!cancelled) setLoaded(true)
+      }
     })()
-  }, [supabase])
+    return () => { cancelled = true }
+  }, [supabase, cropYear])
 
-  const rows = useMemo(() => {
-    const gradeByBale = new Map(grades.map((g) => [g.bale_id, g]))
-    const receiptById = new Map(receipts.map((r) => [r.id, r]))
-    const farmById = new Map(farms.map((f) => [f.id, f]))
-    const fieldById = new Map(fields.map((f) => [f.id, f]))
-    const entityById = new Map(entities.map((e) => [e.id, e]))
-    type Agg = {
-      key: string; entity: string; farm: string; field: string
-      bales: number; lintLbs: number; loanLbs: number; loanValue: number; classed: number
-      colors: Map<string, number>; mic: number[]; staple: number[]; str: number[]
+  const yearChoices = useMemo(() => cropYearChoices(allYears, cropYear), [allYears, cropYear])
+  const rows = useMemo(() => (inputs ? buildBaleRows(inputs) : []), [inputs])
+  const buyerName = useCallback((id: string | null) => buyers.find((b) => b.id === id)?.name ?? null, [buyers])
+
+  // Contracts that carry a quality spec (the only ones the Contract filter offers).
+  const contractChoices = useMemo<ContractChoice[]>(() => {
+    const out: ContractChoice[] = []
+    for (const c of contracts) {
+      const row = specRows.find((s) => s.contract_id === c.id)
+      const spec = specFromRow(row as unknown as Record<string, unknown>)
+      if (!spec || !specHasFiberTerms(spec)) continue
+      const label = [buyerName(c.buyer_id), c.contract_number ? `#${c.contract_number}` : null].filter(Boolean).join(' ') || 'Contract'
+      out.push({ contract: c, spec, label })
     }
-    const byField = new Map<string, Agg>()
-    for (const b of bales.filter((x) => x.crop_year === cropYear)) {
-      const r = receiptById.get(b.gin_receipt_id)
-      const farm = r?.farm_id ? farmById.get(r.farm_id) : null
-      const field = r?.field_id ? fieldById.get(r.field_id) : null
-      const entity = farm?.entity_id ? entityById.get(farm.entity_id) : null
-      const key = `${entity?.name ?? '—'}|${farm?.name ?? '—'}|${field?.name_or_number ?? '—'}`
-      let a = byField.get(key)
-      if (!a) {
-        a = { key, entity: entity?.name ?? '—', farm: farm?.name ?? '—', field: field?.name_or_number ?? '—', bales: 0, lintLbs: 0, loanLbs: 0, loanValue: 0, classed: 0, colors: new Map(), mic: [], staple: [], str: [] }
-        byField.set(key, a)
+    return out
+  }, [contracts, specRows, buyerName])
+  const contractChoice = contractChoices.find((c) => c.contract.id === filters.contractId) ?? null
+
+  // The app's own production estimate, in bales, for the projection fallback.
+  const appEstimatedBales = useMemo(() => (inputs ? estimatedBalesFromAssumptions(inputs, assumptions) : null), [inputs, assumptions])
+
+  const filtered = useMemo(() => applyFilters(rows, filters), [rows, filters])
+  const view: ContractView | null = useMemo(() => (contractChoice ? contractView(filtered, contractChoice.spec, appEstimatedBales) : null), [filtered, contractChoice, appEstimatedBales])
+  const distributions = useMemo(() => Object.fromEntries(factors.map((f) => [f, distribution(filtered, f, cropYear, weighting, FACTORS[f].kind === 'number' && f !== 'loan' ? bucketMode : 'coarse')])) as Record<FactorKey, Distribution>, [filtered, factors, cropYear, weighting, bucketMode])
+  const grid = useMemo(() => colorGrid(filtered, weighting), [filtered, weighting])
+  const groups = useMemo(() => groupRows(filtered, groupBy), [filtered, groupBy])
+  const comparison = useMemo(() => comparisonRows(groups, factors, cropYear, weighting, contractChoice?.spec ?? null), [groups, factors, cropYear, weighting, contractChoice])
+  const k = useMemo(() => kpis(filtered, cropYear), [filtered, cropYear])
+
+  // Filter option lists come from the year's bales, so a chip never offers an empty choice.
+  const entityOptions = useMemo(() => {
+    const seen = new Map<string, string>()
+    for (const r of rows) if (r.entityId) seen.set(r.entityId, r.entityName)
+    const list: ChipOption[] = Array.from(seen, ([id, label]) => ({ id, label })).sort((a, z) => a.label.localeCompare(z.label))
+    return entityOptionsFor(viewer, list)
+  }, [rows, viewer])
+  const farmOptions = useMemo(() => uniq(rows.filter((r) => r.farmId).map((r) => ({ id: r.farmId!, label: r.farmName, hint: r.fsa ? `FSA ${r.fsa}` : undefined }))), [rows])
+  const fieldOptions = useMemo(() => uniq(rows.filter((r) => r.fieldId && (filters.farmIds.length === 0 || filters.farmIds.includes(r.farmId ?? ''))).map((r) => ({ id: r.fieldId!, label: r.fieldName, hint: r.farmName }))), [rows, filters.farmIds])
+  const varietyOptions = useMemo(() => uniq(rows.map((r) => ({ id: r.variety ?? NO_VARIETY, label: r.variety ?? NO_VARIETY }))), [rows])
+  const ginOptions = useMemo(() => uniq(rows.filter((r) => r.ginId).map((r) => ({ id: r.ginId!, label: r.ginName }))), [rows])
+  const receiptOptions = useMemo(() => uniq(rows.map((r) => ({ id: r.receiptId, label: r.receiptLabel, hint: r.farmName }))), [rows])
+
+  const filterSummary = useMemo(() => filterSummaryOf(
+    cropYearLabel(cropYear),
+    filters.entityIds.length ? `${filters.entityIds.length === 1 ? entityOptions.find((e) => e.id === filters.entityIds[0])?.label : `${filters.entityIds.length} entities`}` : 'All entities',
+    filters.farmIds.length ? `${filters.farmIds.length} farm${filters.farmIds.length === 1 ? '' : 's'}` : null,
+    filters.fieldIds.length ? `${filters.fieldIds.length} field${filters.fieldIds.length === 1 ? '' : 's'}` : null,
+    filters.varieties.length ? filters.varieties.join(', ') : null,
+    filters.ginIds.length ? `${filters.ginIds.length} gin${filters.ginIds.length === 1 ? '' : 's'}` : null,
+    filters.receiptIds.length ? `${filters.receiptIds.length} receipt${filters.receiptIds.length === 1 ? '' : 's'}` : null,
+    filters.practices.length ? filters.practices.join(' / ') : null,
+    filters.classFrom || filters.classTo ? `classed ${filters.classFrom ? fmtDate(filters.classFrom) : '…'} – ${filters.classTo ? fmtDate(filters.classTo) : '…'}` : null,
+    filters.dispositions.length ? filters.dispositions.map((d) => DISPOSITION_TEXT[d]).join(' / ') : null,
+    contractChoice ? `Contract ${contractChoice.label}${filters.excludeCommitted ? ' (committed elsewhere excluded)' : ''}` : null,
+    `${weighting === 'lbs' ? 'lbs' : 'bale'}-weighted`,
+  ), [cropYear, filters, entityOptions, contractChoice, weighting])
+
+  const exportInput = useCallback((): BaleQualityExportInput => ({
+    cropYear, rows: filtered, factors, groupBy, weighting, filterSummary,
+    contract: contractChoice && view ? { id: contractChoice.contract.id, label: contractChoice.label, spec: contractChoice.spec, view } : null,
+  }), [cropYear, filtered, factors, groupBy, weighting, filterSummary, contractChoice, view])
+  const buildPayload = useCallback((): ExportPayload => buildBaleQualityPdfPayload(exportInput()), [exportInput])
+  const buildExcel = useCallback((): ExportPayload => buildBaleQualityWorkbook(exportInput()), [exportInput])
+  const [qualifyingBusy, setQualifyingBusy] = useState(false)
+  const exportQualifying = useCallback(async () => {
+    setQualifyingBusy(true)
+    try { await exportToExcel(buildQualifyingBalesWorkbook(exportInput())) } finally { setQualifyingBusy(false) }
+  }, [exportInput])
+
+  // Drill-down rows for the bale list.
+  const drillRows = useMemo(() => {
+    if (!drill) return filtered
+    return filtered.filter((r) => {
+      switch (drill.kind) {
+        case 'bucket': {
+          if (!r.grade) return false
+          const v = factorValue(r.grade, drill.factor)
+          const b = bucketOf(drill.factor, v, cropYear, FACTORS[drill.factor].kind === 'number' && drill.factor !== 'loan' ? bucketMode : 'coarse')
+          if (b) return b.key === drill.bucketKey
+          return (drill.bucketKey === 'ex_none' || drill.bucketKey === 'rm_none') && v == null
+        }
+        case 'color': return r.grade != null && factorValue(r.grade, 'color') === drill.code
+        case 'pareto': { const ev = view?.evaluationOf(r.id); return ev?.status === 'fails' && ev.failures.some((f) => f.factor === drill.factor) }
+        case 'result': return view?.evaluationOf(r.id)?.status === drill.status
       }
-      a.bales += 1
-      a.lintLbs += Number(b.net_weight_lbs)
-      const g = gradeByBale.get(b.id)
-      if (g) {
-        a.classed += 1
-        if (g.loan_value_total != null) { a.loanValue += Number(g.loan_value_total); a.loanLbs += Number(b.net_weight_lbs) }
-        if (g.color_grade) a.colors.set(g.color_grade, (a.colors.get(g.color_grade) ?? 0) + 1)
-        if (g.micronaire != null) a.mic.push(Number(g.micronaire))
-        if (g.staple_32nds != null) a.staple.push(Number(g.staple_32nds))
-        if (g.strength_g_tex != null) a.str.push(Number(g.strength_g_tex))
-      }
-    }
-    return Array.from(byField.values()).sort((a, b) => a.key.localeCompare(b.key))
-  }, [bales, grades, receipts, farms, fields, entities, cropYear])
+    })
+  }, [filtered, drill, cropYear, bucketMode, view])
 
-  const totals = useMemo(() => {
-    const t = { bales: 0, lintLbs: 0, loanLbs: 0, loanValue: 0, classed: 0, colors: new Map<string, number>(), mic: [] as number[], staple: [] as number[], str: [] as number[] }
-    for (const r of rows) {
-      t.bales += r.bales; t.lintLbs += r.lintLbs; t.loanLbs += r.loanLbs; t.loanValue += r.loanValue; t.classed += r.classed
-      for (const [c, n] of r.colors) t.colors.set(c, (t.colors.get(c) ?? 0) + n)
-      t.mic.push(...r.mic); t.staple.push(...r.staple); t.str.push(...r.str)
-    }
-    return t
-  }, [rows])
-
-  const avgLoan = (loanValue: number, loanLbs: number) => (loanLbs > 0 ? (loanValue / loanLbs) * 100 : null)
-  const dist = (values: number[], ranges: Array<[string, (v: number) => boolean]>) =>
-    ranges.map(([label, test]) => `${label}: ${values.filter(test).length}`).join(' · ')
-  const colorDist = (colors: Map<string, number>) =>
-    Array.from(colors.entries()).sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c}×${n}`).join(' ')
-
-  function buildPayload(): ExportPayload {
-    return {
-      title: 'Bale Quality Summary',
-      filters: `Crop year: ${cropYear}`,
-      summary: [
-        { label: 'Bales', value: String(totals.bales) },
-        { label: 'Lint lbs', value: totals.lintLbs.toLocaleString() },
-        { label: 'Avg Loan $/lb', value: (() => { const a = avgLoan(totals.loanValue, totals.loanLbs); return a != null ? `$${(a / 100).toFixed(4)}` : '—' })() },
-      ],
-      sections: [{
-        title: 'Bale Quality by Field',
-        columns: [
-          { label: 'Entity' }, { label: 'Farm' }, { label: 'Field' },
-          { label: 'Bales', align: 'right', format: 'int' }, { label: 'Lint lbs', align: 'right', format: 'int' },
-          { label: 'Classed', align: 'right', format: 'int' }, { label: 'Avg Loan $/lb', align: 'right', format: 'cents' },
-          { label: 'Color Grades' }, { label: 'Staple' }, { label: 'Mic' }, { label: 'Strength' },
-        ],
-        rows: [
-          ...rows.map((r): ExportCell[] => [
-            r.entity, r.farm, r.field, r.bales, Math.round(r.lintLbs), r.classed,
-            avgLoan(r.loanValue, r.loanLbs) ?? '',
-            colorDist(r.colors), dist(r.staple, STAPLE_RANGES), dist(r.mic, MIC_RANGES), dist(r.str, STR_RANGES),
-          ]),
-          ['Total', '', '', totals.bales, Math.round(totals.lintLbs), totals.classed, avgLoan(totals.loanValue, totals.loanLbs) ?? '', colorDist(totals.colors), dist(totals.staple, STAPLE_RANGES), dist(totals.mic, MIC_RANGES), dist(totals.str, STR_RANGES)],
-        ],
-        rowMeta: [...rows.map(() => 'data' as const), 'total'],
-      }],
-    }
-  }
-  useEffect(() => {
-    if (onPayloadChange) onPayloadChange(() => buildPayload())
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, totals, cropYear, onPayloadChange])
+  const cards = useMemo(() => kpiCards(exportInput()), [exportInput])
+  const cottonIsOn = loaded && inputs != null
+  const bands = bandsFor(cropYear)
 
   return (
-    <div className="space-y-3">
-      <ReportHeader title="Bale Quality Summary" filterSummary={cropYearLabel(cropYear)} actions={headerActions} />
-      <ReportFilterBar>
+    <div className="space-y-4">
+      <ReportHeader
+        title="Bale Quality"
+        filterSummary={filterSummary}
+        actions={(
+          <div className="flex flex-wrap gap-2 items-center">
+            <ExportBar buildPayload={buildPayload} buildExcelPayload={buildExcel} />
+            {contractChoice && view && (
+              <button type="button" onClick={() => void exportQualifying()} disabled={qualifyingBusy || view.summary.meets === 0} className="rounded-lg bg-white border border-brand text-brand-deep font-semibold px-3 min-h-11 text-sm disabled:opacity-50">
+                {qualifyingBusy ? 'Exporting…' : `Export qualifying bales (${view.summary.meets.toLocaleString()})`}
+              </button>
+            )}
+          </div>
+        )}
+      />
+
+      <ReportFilterBar activeCount={activeFilterCount(filters)}>
         <FilterField label="Crop year">
           <select value={cropYear} onChange={(e) => setCropYear(Number(e.target.value))} className={selectCls}>
             {yearChoices.map((y) => <option key={y} value={y}>{y}</option>)}
           </select>
         </FilterField>
+        {entityOptions.length > 1 && <ChipMultiSelect label="Entity" options={entityOptions} value={filters.entityIds} onChange={(v) => setFilter('entityIds', v)} inlineUpTo={4} />}
+        <ChipMultiSelect label="Farm" options={farmOptions} value={filters.farmIds} onChange={(v) => setFilter('farmIds', v)} searchable />
+        <ChipMultiSelect label="Field" options={fieldOptions} value={filters.fieldIds} onChange={(v) => setFilter('fieldIds', v)} searchable />
+        <ChipMultiSelect label="Variety" options={varietyOptions} value={filters.varieties} onChange={(v) => setFilter('varieties', v)} inlineUpTo={5} />
+        {ginOptions.length > 1 && <ChipMultiSelect label="Gin" options={ginOptions} value={filters.ginIds} onChange={(v) => setFilter('ginIds', v)} inlineUpTo={4} />}
+        <ChipMultiSelect label="Gin receipt" options={receiptOptions} value={filters.receiptIds} onChange={(v) => setFilter('receiptIds', v)} searchable />
+        <ChipMultiSelect label="Practice" options={PRACTICE_OPTIONS} value={filters.practices} onChange={(v) => setFilter('practices', v as BaleQualityFilters['practices'])} />
+        <FilterField label="Classed from">
+          <input type="date" value={filters.classFrom} onChange={(e) => setFilter('classFrom', e.target.value)} className={inputCls} />
+        </FilterField>
+        <FilterField label="to">
+          <input type="date" value={filters.classTo} onChange={(e) => setFilter('classTo', e.target.value)} className={inputCls} />
+        </FilterField>
+        <ChipMultiSelect label="Disposition" options={DISPOSITION_OPTIONS} value={filters.dispositions} onChange={(v) => setFilter('dispositions', v as CottonDisposition[])} inlineUpTo={5} />
+        <FilterField label="Contract">
+          <select value={contractChoice ? contractChoice.contract.id : ''} onChange={(e) => { setFilter('contractId', e.target.value); setDrill(null) }} className={selectCls}>
+            <option value="">— none —</option>
+            {contractChoices.map((c) => <option key={c.contract.id} value={c.contract.id}>{c.label}</option>)}
+          </select>
+        </FilterField>
+        {contractChoice && (
+          <label className="flex items-center gap-2 text-sm min-h-10 self-end">
+            <input type="checkbox" checked={filters.excludeCommitted} onChange={(e) => setFilter('excludeCommitted', e.target.checked)} className="h-4 w-4 accent-[#36B449]" />
+            Exclude bales committed elsewhere
+            <InfoTip label="?">Leaves out bales already in a CCC loan, sold, pooled, or assigned to another contract. Off by default.</InfoTip>
+          </label>
+        )}
+        {activeFilterCount(filters) > 0 && (
+          <button type="button" onClick={() => { setFilters({ ...EMPTY_FILTERS }); setDrill(null) }} className="text-xs text-slate-500 underline px-2 min-h-10 self-end">Clear filters</button>
+        )}
       </ReportFilterBar>
-      {rows.length === 0 ? (
-        <EmptyState
-          message={`No ${cropYear} bales yet.`}
-          hint="Bales come from gin receipts."
-          linkHref="/cotton/receipts"
-          linkLabel="Add gin receipts"
-        />
+
+      <div className="no-print flex flex-wrap gap-4 items-end">
+        <SegmentedChips label="Group by" options={GROUP_OPTIONS} value={groupBy} onChange={setGroupBy} />
+        <SegmentedChips label="Weighting" options={[{ key: 'bales', label: 'Per bale' }, { key: 'lbs', label: 'Per lb' }]} value={weighting} onChange={setWeighting} />
+        <SegmentedChips label="Buckets" options={[{ key: 'coarse', label: 'Price bands' }, { key: 'fine', label: 'Loan schedule' }]} value={bucketMode} onChange={setBucketMode} />
+        <div className="text-xs text-slate-500 max-w-md self-center">
+          Loan value ¢/lb is always lbs-weighted. Bands: {bands.source}
+          {bands.cropYear !== cropYear && <span className="text-amber-700"> (no {cropYear} schedule entered yet — using {bands.cropYear})</span>}.
+        </div>
+      </div>
+      <div className="no-print">
+        <FactorPicker value={factors} onChange={setFactors} />
+      </div>
+
+      {loadError && <p className="text-sm text-red-700">{loadError}</p>}
+      {!loaded && <p className="text-sm text-slate-400">Loading bales…</p>}
+
+      {cottonIsOn && rows.length === 0 && (
+        <EmptyState message={`No ${cropYear} bales yet.`} hint="Bales come from gin receipts; classing data from the Bales & Grades import." linkHref="/cotton/receipts" linkLabel="Add gin receipts" role={viewer.role} />
+      )}
+      {cottonIsOn && rows.length > 0 && filtered.length === 0 && (
+        <EmptyState message="No bales match these filters." hint="Clear a chip or two." />
+      )}
+
+      {cottonIsOn && filtered.length > 0 && (
+        <>
+          <SummaryCards cards={cards.map((c) => ({ ...c, onClick: c.label.startsWith('Meets') && view ? () => setDrill({ kind: 'result', status: 'meets', label: `Meets ${contractChoice?.label}` }) : undefined }))} />
+          {k.classed === 0 && (
+            <p className="text-sm text-amber-700">None of these {filtered.length.toLocaleString()} bales has classing data yet — import the classing file on <Link href="/cotton/bales" className="underline">Bales &amp; Grades</Link>.</p>
+          )}
+
+          {contractChoice && view && (
+            <ContractPanel choice={contractChoice} view={view} lbsLabel={weighting === 'lbs'} onDrill={setDrill} />
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {factors.map((f) => (
+              <FactorCard key={f} factor={f} d={distributions[f]} weighting={weighting} cropYear={cropYear} onDrill={(bucketKey, label) => setDrill({ kind: 'bucket', factor: f, bucketKey, label: `${FACTORS[f].short} ${label}` })} />
+            ))}
+          </div>
+
+          <ColorGridCard grid={grid} spec={contractChoice?.spec ?? null} weighting={weighting} onDrill={(code, label) => setDrill({ kind: 'color', code, label })} />
+
+          <ComparisonTable rows={comparison.rows} total={comparison.total} factors={factors} groupBy={groupBy} cropYear={cropYear} contractLabel={contractChoice?.label ?? null} weighting={weighting} />
+
+          <BaleList
+            rows={drillRows} allCount={filtered.length} factors={factors} cropYear={cropYear} drill={drill} onClearDrill={() => setDrill(null)}
+            view={view} contractLabel={contractChoice?.label ?? null}
+          />
+        </>
+      )}
+    </div>
+  )
+}
+
+function uniq(list: ChipOption[]): ChipOption[] {
+  const seen = new Map<string, ChipOption>()
+  for (const o of list) if (!seen.has(o.id)) seen.set(o.id, o)
+  return Array.from(seen.values()).sort((a, z) => a.label.localeCompare(z.label))
+}
+
+// ---------------------------------------------------------------------------
+// Factor card: a slim distribution bar colored by price band
+// ---------------------------------------------------------------------------
+
+function FactorCard({ factor, d, weighting, cropYear, onDrill }: { factor: FactorKey; d: Distribution; weighting: Weighting; cropYear: number; onDrill: (bucketKey: string, label: string) => void }) {
+  const def = FACTORS[factor]
+  const occupied = occupiedBuckets(d)
+  const denom = weighting === 'lbs' ? d.classedLbs : d.classed
+  const legend = occupied.slice().sort((a, z) => z.pct - a.pct)
+  void cropYear
+  return (
+    <div className="bg-white rounded-xl shadow p-4 space-y-2">
+      <div className="flex items-baseline justify-between gap-2">
+        <div className="font-semibold">{def.label}</div>
+        {def.kind === 'number' && (
+          <div className="text-right">
+            <div className="text-xl font-bold tabular-nums">{avgText(factor, d.average)}</div>
+            <div className="text-[11px] text-slate-500">
+              {factor === 'loan' ? 'avg, lbs-weighted' : weighting === 'lbs' ? 'avg, lbs-weighted' : 'avg per bale'}
+              {factor !== 'loan' && d.averageOther != null && <> · {weighting === 'lbs' ? 'per bale' : 'lbs-wtd'} {avgText(factor, d.averageOther)}</>}
+            </div>
+          </div>
+        )}
+      </div>
+      {d.classed === 0 ? (
+        <p className="text-xs text-slate-400">No readings for this factor.</p>
       ) : (
-        <div className="bg-white rounded-xl shadow overflow-x-auto">
-          <table className="min-w-full text-sm border-collapse">
-            <thead className={theadCls}>
-              <tr>{['Entity', 'Farm', 'Field', 'Bales', 'Lint lbs', 'Classed', 'Avg Loan $/lb', 'Color Grades', 'Staple', 'Mic', 'Strength'].map((h, i) => <th key={h} className={`${i >= 3 && i <= 6 ? 'text-right' : 'text-left'} px-2 py-1.5 whitespace-nowrap`}>{h}</th>)}</tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr key={r.key} className="border-t border-slate-100">
-                  <td className="px-2 py-1.5">{r.entity}</td>
-                  <td className="px-2 py-1.5">{r.farm}</td>
-                  <td className="px-2 py-1.5 font-semibold">{r.field}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">{r.bales}</td>
-                  <td className="px-2 py-1.5 text-right tabular-nums">{fmtInt(r.lintLbs)}</td>
-                  <td className="px-2 py-1.5 text-right">{r.classed}</td>
-                  <td className="px-2 py-1.5 text-right font-semibold">{(() => { const a = avgLoan(r.loanValue, r.loanLbs); return a != null ? `$${(a / 100).toFixed(4)}` : '—' })()}</td>
-                  <td className="px-2 py-1.5 text-xs">{colorDist(r.colors) || '—'}</td>
-                  <td className="px-2 py-1.5 text-xs whitespace-nowrap">{r.staple.length ? dist(r.staple, STAPLE_RANGES) : '—'}</td>
-                  <td className="px-2 py-1.5 text-xs whitespace-nowrap">{r.mic.length ? dist(r.mic, MIC_RANGES) : '—'}</td>
-                  <td className="px-2 py-1.5 text-xs whitespace-nowrap">{r.str.length ? dist(r.str, STR_RANGES) : '—'}</td>
-                </tr>
-              ))}
-              <tr className={grandTotalRowCls}>
-                <td className="px-2 py-1.5" colSpan={3}>Total</td>
-                <td className="px-2 py-1.5 text-right tabular-nums">{totals.bales}</td>
-                <td className="px-2 py-1.5 text-right tabular-nums">{fmtInt(totals.lintLbs)}</td>
-                <td className="px-2 py-1.5 text-right">{totals.classed}</td>
-                <td className="px-2 py-1.5 text-right">{(() => { const a = avgLoan(totals.loanValue, totals.loanLbs); return a != null ? `$${(a / 100).toFixed(4)}` : '—' })()}</td>
-                <td className="px-2 py-1.5 text-xs" colSpan={4}>{colorDist(totals.colors)}</td>
+        <>
+          <div className="flex h-5 w-full gap-0.5 rounded overflow-hidden" role="img" aria-label={`${def.label} distribution`}>
+            {occupied.map((b, i) => (
+              <button
+                key={b.key}
+                type="button"
+                onClick={() => onDrill(b.key, b.label)}
+                style={{ width: `${Math.max(b.pct * 100, 1.5)}%` }}
+                className={`${b.band ? BAND_FILL[b.band] : SEQ_FILL[Math.min(i, SEQ_FILL.length - 1)]} hover:opacity-80 focus-visible:ring-2 focus-visible:ring-slate-800 rounded-sm`}
+                aria-label={`${b.label}: ${weighting === 'lbs' ? fmtInt(b.lbs) + ' lbs' : b.bales + ' bales'} (${pct1(b.pct)}). Show these bales.`}
+              />
+            ))}
+          </div>
+          {def.banded && (
+            <div className="flex gap-3 text-xs tabular-nums">
+              <span className={toneText('favorable')}>Premium {pct1(d.byBand.premium.pct)}</span>
+              <span className="text-slate-600">Base {pct1(d.byBand.base.pct)}</span>
+              <span className={toneText('unfavorable')}>Discount {pct1(d.byBand.discount.pct)}</span>
+            </div>
+          )}
+          <ul className="text-xs space-y-0.5 max-h-40 overflow-y-auto">
+            {legend.map((b, i) => (
+              <li key={b.key}>
+                <button type="button" onClick={() => onDrill(b.key, b.label)} className="flex items-center gap-2 w-full text-left min-h-7 hover:bg-slate-50 rounded px-1">
+                  <span className={`inline-block h-2.5 w-2.5 rounded-sm ${b.band ? BAND_FILL[b.band] : SEQ_FILL[Math.min(occupied.indexOf(b), SEQ_FILL.length - 1)]}`} aria-hidden="true" />
+                  <span className="flex-1 truncate">{b.label}{b.band ? <span className="text-slate-400"> · {BAND_LABEL[b.band].toLowerCase()}</span> : null}</span>
+                  <span className="tabular-nums text-slate-700">{pct1(b.pct)}</span>
+                  <span className="tabular-nums text-slate-400 w-14 text-right">{weighting === 'lbs' ? fmtInt(b.lbs) : b.bales}</span>
+                </button>
+                {i === legend.length - 1 && denom === 0 ? null : null}
+              </li>
+            ))}
+          </ul>
+          {d.missing > 0 && <p className="text-[11px] text-slate-400">{d.missing} classed bale{d.missing === 1 ? '' : 's'} without a reading.</p>}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Color grid heatmap
+// ---------------------------------------------------------------------------
+
+function ColorGridCard({ grid, spec, weighting, onDrill }: { grid: ReturnType<typeof colorGrid>; spec: ContractQualitySpec | null; weighting: Weighting; onDrill: (code: string, label: string) => void }) {
+  const maxPct = Math.max(0, ...Array.from(grid.cells.values()).map((c) => c.pct))
+  const allowed = spec?.allowed_color_codes?.length ? new Set(spec.allowed_color_codes) : null
+  const hatch = 'repeating-linear-gradient(45deg, transparent 0 4px, rgba(15,23,42,0.10) 4px 6px)'
+  return (
+    <div className="bg-white rounded-xl shadow p-4 space-y-2">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div className="font-semibold">Color grade grid <span className="text-sm font-normal text-slate-500">· {grid.classed.toLocaleString()} classed bales · {weighting === 'lbs' ? '% of lbs' : '% of bales'}</span></div>
+        {allowed && <div className="text-xs text-slate-500">Hatched cells are outside the contract&rsquo;s allowed colors.</div>}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-xs border-collapse">
+          <thead>
+            <tr>
+              <th className="text-left px-2 py-1 text-slate-500 font-medium">Grade</th>
+              {COLOR_GRID_COLUMNS.map((c) => <th key={c.column} className="px-2 py-1 text-slate-500 font-medium text-center">{c.label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {COLOR_GRID_ROWS.map((r) => (
+              <tr key={r.row}>
+                <td className="px-2 py-1 whitespace-nowrap text-slate-700">{r.row} <span className="text-slate-400">{r.symbol}</span></td>
+                {COLOR_GRID_COLUMNS.map((c) => {
+                  const code = colorGridCode(r.row, c.column)
+                  if (!code) return <td key={c.column} className="px-1 py-1"><div className="h-11 rounded bg-slate-50" /></td>
+                  const cellV = grid.cells.get(code)
+                  const outside = allowed ? !allowed.has(code) : false
+                  const alpha = cellV && maxPct > 0 ? 0.12 + 0.7 * (cellV.pct / maxPct) : 0
+                  return (
+                    <td key={c.column} className="px-1 py-1">
+                      <button
+                        type="button"
+                        disabled={!cellV}
+                        onClick={() => cellV && onDrill(code, `Color ${code}`)}
+                        style={{ backgroundImage: outside ? hatch : undefined, backgroundColor: cellV ? `rgba(2, 132, 199, ${alpha})` : undefined }}
+                        className={`w-full min-w-[4.5rem] h-11 rounded border text-left px-1.5 ${cellV ? 'border-sky-200 hover:ring-2 hover:ring-sky-500' : 'border-slate-100 text-slate-300'} ${outside && cellV ? 'border-red-300' : ''}`}
+                        aria-label={cellV ? `${code}: ${cellV.bales} bales, ${pct1(cellV.pct)}${outside ? ', outside the contract' : ''}. Show these bales.` : `${code}: no bales`}
+                      >
+                        <span className="block text-[11px] leading-tight text-slate-700">{code}{outside && cellV ? <span className="text-red-700"> ✕</span> : null}</span>
+                        {cellV && <span className="block text-[11px] leading-tight tabular-nums font-semibold text-slate-900">{cellV.bales.toLocaleString()} · {pct1(cellV.pct)}</span>}
+                      </button>
+                    </td>
+                  )
+                })}
               </tr>
-            </tbody>
-          </table>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Contract panel
+// ---------------------------------------------------------------------------
+
+function ContractPanel({ choice, view, lbsLabel, onDrill }: { choice: ContractChoice; view: ContractView; lbsLabel: boolean; onDrill: (d: Drill) => void }) {
+  const s = view.summary
+  const capPct = s.cap && s.cap > 0 ? Math.min(1, s.meets / s.cap) : null
+  const projPct = s.cap && s.cap > 0 && s.projection ? Math.min(1, s.projection.projected / s.cap) : null
+  const maxPareto = Math.max(1, ...s.pareto.map((p) => p.bales))
+  const schedule = choice.spec.schedule ?? []
+  return (
+    <div className="bg-white rounded-xl shadow p-4 space-y-3 border-l-4 border-sky-600">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <div className="font-semibold text-lg">
+          {s.eligibleClassed > 0
+            ? <>{s.meets.toLocaleString()} of {s.eligibleClassed.toLocaleString()} classed bales from eligible farms meet {choice.label}&rsquo;s spec <span className={toneText(s.passRate != null && s.passRate >= 0.5 ? 'favorable' : 'warning')}>({pct1(s.passRate)})</span> · {fmtInt(s.meetsLbs)} lbs</>
+            : <>No classed bales from eligible farms yet for {choice.label}</>}
+        </div>
+        <div className="text-sm text-slate-600 flex flex-wrap gap-2">
+          {s.passRateLbs != null && <span>{pct1(s.passRateLbs)} by lbs</span>}
+          <button type="button" onClick={() => onDrill({ kind: 'result', status: 'not_eligible', label: 'Not eligible' })} className="underline decoration-dotted min-h-7">{s.notEligible.toLocaleString()} not eligible (farm not on the contract{schedule.length ? '’s schedule' : ''})</button>
+          <button type="button" onClick={() => onDrill({ kind: 'result', status: 'not_classed', label: 'Not classed' })} className="underline decoration-dotted min-h-7">{s.notClassed.toLocaleString()} not yet classed</button>
+        </div>
+      </div>
+      <div className="text-xs text-slate-500">{specSummaryLine(choice.spec)}{choice.spec.eligible_fsa_farms?.length ? ` · ${choice.spec.eligible_fsa_farms.length} eligible FSA farms` : ''}{choice.spec.base_price_cents != null ? ` · ${(choice.spec.base_price_cents / 100).toFixed(2)} $/lb on ${choice.spec.base_grade ?? 'base'}` : ''}</div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <div className="text-sm font-semibold">Cap tracker</div>
+          {s.cap != null ? (
+            <>
+              <div className="relative h-5 rounded bg-slate-100 overflow-hidden" role="img" aria-label={`${s.meets} qualifying bales of a ${s.cap} cap`}>
+                <div className="absolute inset-y-0 left-0 bg-green-600 rounded-r" style={{ width: `${(capPct ?? 0) * 100}%` }} />
+                {projPct != null && <div className="absolute inset-y-0 w-0.5 bg-sky-700" style={{ left: `${projPct * 100}%` }} title="Projected qualifying (estimate)" />}
+              </div>
+              <div className="text-sm tabular-nums"><span className="font-semibold">{s.meets.toLocaleString()}</span> qualifying bales of the <span className="font-semibold">{s.cap.toLocaleString()}</span> cap ({pct1(capPct)})</div>
+            </>
+          ) : <div className="text-sm text-slate-500">The contract carries no bale cap.</div>}
+          {s.projection ? (
+            <div className="text-sm">
+              <span className="font-semibold tabular-nums">{s.projection.projected.toLocaleString()}</span> projected qualifying bales <span className="text-slate-500">— estimate: {pct1(s.passRate)} pass rate × {s.projection.estimatedBales.toLocaleString()} {s.projection.estimateSource === 'contract' ? 'estimated bales on the contract' : 'bales expected by Turnrow (expected lint ÷ 500)'}{s.cap != null ? `, vs the ${s.cap.toLocaleString()} cap` : ''}</span>
+            </div>
+          ) : (
+            <div className="text-xs text-slate-500">No production estimate yet — set a cotton expected yield under Marketing, or enter the estimate on the contract.</div>
+          )}
+        </div>
+        <div className="space-y-2">
+          <div className="text-sm font-semibold flex items-center gap-2">Why bales fail <InfoTip label="?">Bales failing each factor (a bale can fail several). &ldquo;Only this&rdquo; counts the near misses — bales that would meet the spec but for that one factor, the ones worth asking the buyer to take at a discount.</InfoTip></div>
+          {s.pareto.length === 0 ? <div className="text-sm text-slate-500">{s.fails === 0 ? 'Every eligible classed bale meets the spec.' : 'No failures recorded.'}</div> : (
+            <ul className="space-y-1">
+              {s.pareto.map((p) => (
+                <li key={p.factor}>
+                  <button type="button" onClick={() => onDrill({ kind: 'pareto', factor: p.factor, label: `Fails ${FACTORS[p.factor].short}` })} className="w-full text-left min-h-8 hover:bg-slate-50 rounded px-1">
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="w-24 truncate">{FACTORS[p.factor].label}</span>
+                      <span className="flex-1 h-3 bg-slate-100 rounded overflow-hidden"><span className="block h-full bg-red-500 rounded-r" style={{ width: `${(p.bales / maxPareto) * 100}%` }} /></span>
+                      <span className="tabular-nums w-16 text-right"><span className="font-semibold">{p.bales}</span> fail</span>
+                      <span className="tabular-nums w-24 text-right text-slate-500">{p.onlyThis} only this</span>
+                    </div>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {s.singleFactorFails > 0 && <div className="text-xs text-slate-500">{s.singleFactorFails.toLocaleString()} bale{s.singleFactorFails === 1 ? '' : 's'} fail on exactly one factor{lbsLabel ? '' : ''}.</div>}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Comparison table
+// ---------------------------------------------------------------------------
+
+type SortKey = string
+function ComparisonTable({ rows, total, factors, groupBy, cropYear, contractLabel, weighting }: { rows: ComparisonRow[]; total: ComparisonRow; factors: FactorKey[]; groupBy: GroupBy; cropYear: number; contractLabel: string | null; weighting: Weighting }) {
+  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'label', dir: 1 })
+  const columns = useMemo(() => {
+    const cols: Array<{ key: SortKey; label: string; get: (r: ComparisonRow) => number | string | null; tone?: (r: ComparisonRow) => Tone; band?: (r: ComparisonRow) => Band | null; fmt: (v: number | string | null) => string; numeric: boolean }> = [
+      { key: 'label', label: GROUP_BY_LABEL[groupBy], get: (r) => r.label, fmt: (v) => String(v ?? ''), numeric: false },
+      { key: 'bales', label: 'Bales', get: (r) => r.bales, fmt: (v) => fmtInt(v as number), numeric: true },
+      { key: 'classed', label: 'Classed', get: (r) => r.classed, fmt: (v) => fmtInt(v as number), numeric: true },
+      { key: 'lbs', label: 'Lbs', get: (r) => r.lbs, fmt: (v) => fmtInt(v as number), numeric: true },
+    ]
+    for (const f of factors) {
+      const def = FACTORS[f]
+      if (def.kind === 'number') cols.push({ key: `avg:${f}`, label: `${def.short} avg`, get: (r) => r.cells[f]?.average ?? null, band: (r) => cellBand(f, r.cells[f]?.average ?? null, cropYear), fmt: (v) => avgText(f, v as number | null), numeric: true })
+      if (def.banded) {
+        cols.push({ key: `prem:${f}`, label: `${def.short} prem`, get: (r) => (r.cells[f]?.classed ? r.cells[f].premium : null), tone: () => 'favorable', fmt: (v) => pct1(v as number | null), numeric: true })
+        cols.push({ key: `base:${f}`, label: `${def.short} base`, get: (r) => (r.cells[f]?.classed ? r.cells[f].base : null), fmt: (v) => pct1(v as number | null), numeric: true })
+        cols.push({ key: `disc:${f}`, label: `${def.short} disc`, get: (r) => (r.cells[f]?.classed ? r.cells[f].discount : null), tone: (r) => ((r.cells[f]?.discount ?? 0) > 0 ? 'unfavorable' : 'muted'), fmt: (v) => pct1(v as number | null), numeric: true })
+      }
+    }
+    if (contractLabel) cols.push({ key: 'meets', label: '% meets contract', get: (r) => r.meetsPct, tone: (r) => (r.meetsPct == null ? 'muted' : r.meetsPct >= 0.5 ? 'favorable' : 'warning'), fmt: (v) => pct1(v as number | null), numeric: true })
+    return cols
+  }, [factors, groupBy, cropYear, contractLabel])
+  const sorted = useMemo(() => {
+    const c = columns.find((x) => x.key === sort.key) ?? columns[0]
+    return rows.slice().sort((a, z) => {
+      const va = c.get(a), vz = c.get(z)
+      if (va == null && vz == null) return 0
+      if (va == null) return 1
+      if (vz == null) return -1
+      const cmp = typeof va === 'number' && typeof vz === 'number' ? va - vz : String(va).localeCompare(String(vz))
+      return cmp * sort.dir
+    })
+  }, [rows, columns, sort])
+  const onSort = (key: SortKey) => setSort((s) => (s.key === key ? { key, dir: s.dir === 1 ? -1 : 1 } : { key, dir: key === 'label' ? 1 : -1 }))
+  return (
+    <div className="bg-white rounded-xl shadow">
+      <div className="px-4 pt-3 pb-1 font-semibold">By {GROUP_BY_LABEL[groupBy].toLowerCase()} <span className="text-sm font-normal text-slate-500">· {weighting === 'lbs' ? 'lbs-weighted' : 'per bale'} · tap a heading to sort · cells shaded by price band</span></div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm border-collapse">
+          <thead className={theadCls}>
+            <tr>
+              {columns.map((c, i) => (
+                <th key={c.key} className={`${i === 0 ? stickyColHeadCls + ' text-left' : 'text-right'} px-2 py-1.5 whitespace-nowrap`}>
+                  <button type="button" onClick={() => onSort(c.key)} className="min-h-8 font-semibold hover:underline">
+                    {c.label}{sort.key === c.key ? (sort.dir === 1 ? ' ▲' : ' ▼') : ''}
+                  </button>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((r) => (
+              <tr key={r.key} className="border-t border-slate-100">
+                {columns.map((c, i) => {
+                  const v = c.get(r)
+                  const band = c.band ? c.band(r) : null
+                  const tone = c.tone && v != null ? c.tone(r) : 'neutral'
+                  return (
+                    <td key={c.key} className={`${i === 0 ? stickyColCls + ' font-semibold' : 'text-right tabular-nums'} px-2 py-1.5 whitespace-nowrap ${bandBg(band)} ${v == null ? 'text-slate-300' : toneText(tone)}`}>{c.fmt(v)}</td>
+                  )
+                })}
+              </tr>
+            ))}
+            <tr className={grandTotalRowCls}>
+              {columns.map((c, i) => {
+                const v = c.get(total)
+                const band = c.band ? c.band(total) : null
+                return <td key={c.key} className={`${i === 0 ? stickyColCls + ' bg-slate-100' : 'text-right tabular-nums'} px-2 py-1.5 whitespace-nowrap ${bandBg(band)}`}>{c.fmt(v)}</td>
+              })}
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Bale list
+// ---------------------------------------------------------------------------
+
+function BaleList({ rows, allCount, factors, cropYear, drill, onClearDrill, view, contractLabel }: {
+  rows: BaleRow[]; allCount: number; factors: FactorKey[]; cropYear: number; drill: Drill; onClearDrill: () => void; view: ContractView | null; contractLabel: string | null
+}) {
+  const [q, setQ] = useState('')
+  const [sort, setSort] = useState<{ key: string; dir: 1 | -1 }>({ key: 'pbi', dir: 1 })
+  const [showAll, setShowAll] = useState(false)
+  const columns = useMemo(() => {
+    const cols: Array<{ key: string; label: string; get: (r: BaleRow) => number | string | null; render?: (r: BaleRow) => ReactNode; numeric: boolean }> = [
+      { key: 'pbi', label: 'PBI', get: (r) => r.pbi, numeric: false },
+      { key: 'receipt', label: 'Receipt', get: (r) => r.receiptLabel, numeric: false },
+      { key: 'farm', label: 'Farm', get: (r) => r.farmName, numeric: false },
+      { key: 'field', label: 'Field', get: (r) => r.fieldName, numeric: false },
+      { key: 'variety', label: 'Variety', get: (r) => r.variety ?? '', numeric: false },
+      { key: 'classDate', label: 'Class date', get: (r) => r.classDate ?? '', render: (r) => (r.classDate ? fmtDate(r.classDate) : <span className="text-slate-300">—</span>), numeric: false },
+    ]
+    for (const f of factors) {
+      cols.push({
+        key: `f:${f}`, label: FACTORS[f].short, numeric: FACTORS[f].kind === 'number',
+        get: (r) => (r.grade ? factorValue(r.grade, f) : null),
+        render: (r) => {
+          if (!r.grade) return <span className="text-slate-300">—</span>
+          const v = factorValue(r.grade, f)
+          const band = cellBand(f, v, cropYear)
+          return <span className={`${toneText(bandTone(band) === 'muted' ? 'neutral' : bandTone(band))}`}>{f === 'staple' ? (v == null ? '—' : String(v)) : f === 'loan' ? (typeof v === 'number' ? `${v.toFixed(2)}¢` : '—') : factorText(f, v)}</span>
+        },
+      })
+    }
+    cols.push({ key: 'lbs', label: 'Lbs', get: (r) => r.lbs, render: (r) => fmtInt(r.lbs), numeric: true })
+    cols.push({ key: 'disposition', label: 'Disposition', get: (r) => DISPOSITION_TEXT[r.disposition], numeric: false })
+    if (view) {
+      cols.push({
+        key: 'result', label: contractLabel ?? 'Contract', numeric: false,
+        get: (r) => { const ev = view.evaluationOf(r.id); return ev ? EVALUATION_LABEL[ev.status] + (ev.status === 'fails' ? ' ' + ev.failures.map((x) => x.factor).join(',') : '') : '' },
+        render: (r) => <ResultChip ev={view.evaluationOf(r.id)} />,
+      })
+    }
+    return cols
+  }, [factors, cropYear, view, contractLabel])
+  const searched = useMemo(() => {
+    const t = q.trim().toLowerCase()
+    const base = t ? rows.filter((r) => [r.pbi, r.receiptLabel, r.farmName, r.fieldName, r.variety ?? '', r.entityName].some((s) => s.toLowerCase().includes(t))) : rows
+    const c = columns.find((x) => x.key === sort.key) ?? columns[0]
+    return base.slice().sort((a, z) => {
+      const va = c.get(a), vz = c.get(z)
+      if (va == null || va === '') return 1
+      if (vz == null || vz === '') return -1
+      const cmp = typeof va === 'number' && typeof vz === 'number' ? va - vz : String(va).localeCompare(String(vz), undefined, { numeric: true })
+      return cmp * sort.dir
+    })
+  }, [rows, q, columns, sort])
+  const visible = showAll ? searched : searched.slice(0, 100)
+  const onSort = (key: string) => setSort((s) => (s.key === key ? { key, dir: s.dir === 1 ? -1 : 1 } : { key, dir: 1 }))
+  return (
+    <div className="bg-white rounded-xl shadow">
+      <div className="px-4 pt-3 pb-2 flex flex-wrap items-center gap-2">
+        <div className="font-semibold">Bales <span className="text-sm font-normal text-slate-500">· {searched.length.toLocaleString()}{drill ? ` of ${allCount.toLocaleString()}` : ''}</span></div>
+        {drill && (
+          <button type="button" onClick={onClearDrill} className="rounded-full bg-sky-100 text-sky-900 px-3 min-h-9 text-xs font-semibold">Showing: {drill.label} ✕</button>
+        )}
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search PBI, receipt, farm, field, variety…" className={`${inputCls} ml-auto w-72 max-w-full no-print`} aria-label="Search bales" />
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm border-collapse">
+          <thead className={theadCls}>
+            <tr>
+              {columns.map((c, i) => (
+                <th key={c.key} className={`${i === 0 ? stickyColHeadCls + ' text-left' : c.numeric ? 'text-right' : 'text-left'} px-2 py-1.5 whitespace-nowrap`}>
+                  <button type="button" onClick={() => onSort(c.key)} className="min-h-8 font-semibold hover:underline">{c.label}{sort.key === c.key ? (sort.dir === 1 ? ' ▲' : ' ▼') : ''}</button>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {visible.map((r) => (
+              <tr key={r.id} className="border-t border-slate-100">
+                {columns.map((c, i) => (
+                  <td key={c.key} className={`${i === 0 ? stickyColCls + ' font-mono' : c.numeric ? 'text-right tabular-nums' : ''} px-2 py-1.5 whitespace-nowrap`}>
+                    {c.render ? c.render(r) : (c.get(r) == null || c.get(r) === '' ? <span className="text-slate-300">—</span> : String(c.get(r)))}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {searched.length > visible.length && (
+        <div className="px-4 py-2 no-print">
+          <button type="button" onClick={() => setShowAll(true)} className="text-sm text-brand-deep font-semibold underline min-h-10">Show all {searched.length.toLocaleString()} bales</button>
         </div>
       )}
     </div>
+  )
+}
+
+export function ResultChip({ ev }: { ev: BaleEvaluation | undefined }) {
+  if (!ev) return <span className="text-slate-300">—</span>
+  const cls = ev.status === 'meets' ? 'bg-green-100 text-green-800' : ev.status === 'fails' ? 'bg-red-100 text-red-800' : ev.status === 'not_eligible' ? 'bg-slate-100 text-slate-700' : 'bg-amber-100 text-amber-800'
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${cls}`}>{EVALUATION_LABEL[ev.status]}</span>
+      {ev.status === 'fails' && <span className="text-xs text-slate-600">{ev.failures.map((f) => f.text).join(' · ')}</span>}
+      {ev.status === 'not_eligible' && <span className="text-xs text-slate-500">{ev.reason}</span>}
+    </span>
   )
 }

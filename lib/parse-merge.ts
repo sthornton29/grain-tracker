@@ -325,6 +325,22 @@ export function mergeCottonMarketing(parts: CottonMarketingExtraction[]): Cotton
     if (pbiLists.length > 0) {
       ;(merged as Record<string, unknown>).bale_pbis = mergeList(pbiLists.map((l) => l.map((s) => String(s))), (s) => normalizePbi(s) || null)
     }
+    // A sales contract's quality terms can span pages (the clause on page 1,
+    // the farm schedule on page 4): merge the object's scalars across chunks
+    // and concatenate the schedule rows, deduped on the FSA number.
+    const qualityParts = extractedParts
+      .map((e) => (e.quality != null && typeof e.quality === 'object' ? (e.quality as Record<string, unknown>) : null))
+      .filter((q): q is Record<string, unknown> => q != null)
+    if (qualityParts.length > 0) {
+      const quality = mergeScalars(qualityParts)
+      const farmLists = qualityParts
+        .map((q) => (Array.isArray(q.eligible_farms) ? (q.eligible_farms as Array<Record<string, unknown>>) : null))
+        .filter((x): x is Array<Record<string, unknown>> => x != null)
+      if (farmLists.length > 0) {
+        quality.eligible_farms = mergeList(farmLists, (r) => (r.fsa_number == null ? null : String(r.fsa_number).replace(/\D/g, '').replace(/^0+(?=\d)/, '') || null))
+      }
+      ;(merged as Record<string, unknown>).quality = quality
+    }
     extracted = merged as CottonMarketingExtracted
   }
   const confidences = parts.map((p) => p.confidence)

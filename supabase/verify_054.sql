@@ -37,7 +37,7 @@ with tenant(t) as (
     ('other_government_payments'), ('payment_limit_config'),
     ('budget_scenarios'), ('budget_lines'),
     ('gins'), ('cotton_loads'), ('gin_receipts'), ('gin_receipt_loads'), ('cotton_bales'),
-    ('cotton_bale_grades'), ('cotton_sales_contracts'), ('cotton_pool_payments'),
+    ('cotton_bale_grades'), ('cotton_sales_contracts'), ('cotton_contract_specs'), ('cotton_pool_payments'),
     ('ccc_loans'), ('ccc_loan_bales'), ('cotton_ldp_records'), ('cotton_ldp_bales'),
     ('cotton_bale_dispositions'), ('cotton_fees'), ('cotton_fee_schedule'),
     ('user_entity_access'), ('viewer_assumption_overrides'), ('app_settings'), ('user_profiles')
@@ -109,7 +109,7 @@ begin
       'other_government_payments','payment_limit_config',
       'budget_scenarios','budget_lines',
       'gins','cotton_loads','gin_receipts','gin_receipt_loads','cotton_bales',
-      'cotton_bale_grades','cotton_sales_contracts','cotton_pool_payments',
+      'cotton_bale_grades','cotton_sales_contracts','cotton_contract_specs','cotton_pool_payments',
       'ccc_loans','ccc_loan_bales','cotton_ldp_records','cotton_ldp_bales',
       'cotton_bale_dispositions','cotton_fees','cotton_fee_schedule',
       'user_entity_access','viewer_assumption_overrides','app_settings','user_profiles'

@@ -806,7 +806,16 @@ const COTTON_MARKETING_FIELDS: Record<string, string> = {
 - committed_bales (number) or committed_acres (number) — whichever the contract commits
 - price_cents_per_lb (spot/fixed price in ¢/lb, e.g. 74.25 — convert $/lb to ¢/lb by multiplying by 100)
 - basis_cents (on-call basis in ¢/lb, may be negative, e.g. -2.50), futures_month (e.g. "DEC 26")
-- delivery_start, delivery_end (YYYY-MM-DD), notes`,
+- delivery_start, delivery_end (YYYY-MM-DD), notes
+- quality: null when the contract states no fiber-quality requirements; otherwise an object carrying the quality terms AS WRITTEN — copy the wording, never convert it into rules or numbers:
+  { "quality_clause": the full sentence(s) that define acceptable cotton / fiber quality, verbatim;
+    "color": the color grade wording exactly as stated (e.g. "Color 41 and better"); "leaf": the leaf wording; "staple": the staple wording; "micronaire": the micronaire wording (e.g. "micronaire 4.0-4.7"); "strength": the strength wording; "uniformity": the uniformity wording; "extraneous_matter": any extraneous-matter / bark / grass / plastic wording — each null when the contract is silent on it;
+    "eligible_farms": when the contract limits the cotton to listed farms (a schedule or exhibit of FSA farm numbers), one row per farm: [{ "fsa_number": the FSA # as printed (string), "county": county name or null, "planted_acres": number or null, "aph_yield": number or null, "aph_est_bales": number or null, "trendline_est_bales": number or null }] — EVERY row of the schedule, never truncated; null when the contract names no farms;
+    "bale_cap": the maximum number of bales the buyer commits to purchase (number, e.g. 4250), "estimated_bales": the producer's stated estimate of total production in bales (number);
+    "base_grade": the base grade the price is quoted on (e.g. "41-3-37"), "base_price_cents_per_lb": that price in ¢/lb (convert $/lb by ×100);
+    "off_spec_terms": what the contract says about bales outside the specifications, verbatim;
+    "other_deliverables": other stated deliverables (e.g. "rain-fed cotton, from women-owned farms, using regenerative practices");
+    "practice_requirement": wording that makes a growing practice (dryland / rain-fed / irrigated) a CONDITION of acceptance, verbatim; null when a practice is only mentioned descriptively }`,
   pool_payment: `"extracted" fields for pool_payment (a pool advance / progress payment / final settlement notice from a marketing pool):
 - buyer (the pool/coop name), contract_number (the pool contract/account number if shown)
 - payment_type: "initial_advance", "progress", or "final_settlement"

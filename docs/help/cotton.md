@@ -1,7 +1,7 @@
 ---
 page_route: /cotton
 title: Cotton — Loads, Gin Receipts, Bales & Grades
-updated: 2026-10-18
+updated: 2026-10-20
 keywords: cotton, csv export, gin export, gin receipts csv, date ginned, yield, lbs per acre, lint per acre, seed cotton per acre, field yield, farm-wide yield, acres picked, season flow, by field, same truck, remembered truck, more details, seed cotton, module, rolls, leading zeros, 031633, 31633, load number match, gin code, statement number, two statements in one PDF, several statements, Farm YTD, year to date, possibly, link load, merge loads, duplicates blocked, same number, harvest status, ginning status, picked, estimated lint, turnout for estimates, assumed turnout, rounds, number of rounds, handwritten rolls, busted roll, sequence mark, round modules, pounds per roll, average per roll, load detail, ticket photo, module ticket, sort, select, delete loads, export loads, duplicate load, scanned twice, already saved, update available, duplicate bale, PBI repeated, turn on cotton, gin, gin receipt, statement of ginning, bales, HVI, classing, PBI, turnout, yard inventory, gin operator
 ---
 ## What this page is for
@@ -49,6 +49,7 @@ The Cotton tab is where seed cotton gets tracked from the field to the classed b
 - **Why don't I see the Cotton tab at all?** Cotton is turned off for your operation. An owner can turn it on under Settings → Organization; the tab appears after the next page load.
 - **Why is there no entity box on the load form?** A gin login doesn't pick entities — the entity comes from the farm you choose. Owners see the entity box only when the operation has more than one entity.
 - **A classing row didn't match a bale.** Its receipt may not be entered yet — unmatched rows wait visibly and can be matched later.
+- **The class date is blank after an import.** The import reads the date under the usual header names (Date, Class Date, Date Classed, Class Dt…) and date shapes (10/14/2026, 10-14-26, 20261014, 14-OCT-26); a file that prints it another way imports its grades without the date. Re-import the file after an update and the dates fill in.
 
 ## If something looks wrong
 

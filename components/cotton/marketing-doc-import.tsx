@@ -37,9 +37,12 @@ import {
   type CottonMarketingCategory, type CottonMarketingExtraction, type CottonPoolPaymentExtract,
   type EquitySaleExtract, type LdpNoticeExtract, type StorageInvoiceExtract,
 } from '@/lib/cotton-doc-import'
+import ContractSpecEditor from '@/components/cotton/contract-spec-editor'
+import { specRowFor } from '@/components/cotton/contract-spec-panel'
+import { EMPTY_SPEC, rulesFromWording, specHasFiberTerms, type ContractQualitySpec } from '@/lib/cotton-contract-spec'
 import type {
   Buyer, CccLoan, CottonBale, CottonBaleGrade, CottonContractType, CottonDisposition,
-  CottonFee, CottonSalesContract, Entity,
+  CottonFee, CottonSalesContract, Entity, Farm,
 } from '@/lib/types'
 
 const inputCls = 'rounded-lg border border-slate-300 px-2 py-1.5 text-sm bg-white'
@@ -65,6 +68,8 @@ function addMonthsIso(dateIso: string, months: number): string {
 type Props = {
   cropYear: number
   entities: Entity[]
+  /** 0097: Turnrow farms, for matching a contract's farm schedule by FSA number. */
+  farms: Farm[]
   buyers: Buyer[]
   contracts: CottonSalesContract[]
   loans: CccLoan[]
@@ -211,7 +216,7 @@ const fail = (onErr: (e: string) => void) => (e: unknown) => onErr(e instanceof 
 // ---------------------------------------------------------------------------
 // Sales contract
 // ---------------------------------------------------------------------------
-function ContractReview({ supabase, extracted: x, buyers, contracts, entities, cropYear, singleEntityId, onBuyerCreated, onDone, onErr }: PanelProps & { extracted: CottonContractExtract }) {
+function ContractReview({ supabase, extracted: x, buyers, contracts, entities, farms, cropYear, singleEntityId, onBuyerCreated, onDone, onErr }: PanelProps & { extracted: CottonContractExtract }) {
   const matchedBuyer = useMemo(() => findBestMatch(x.buyer, buyers, (b) => b.name), [x.buyer, buyers])
   const [f, setF] = useState(() => ({
     contract_type: (x.contract_type ?? 'fixed_price') as CottonContractType,
@@ -230,6 +235,20 @@ function ContractReview({ supabase, extracted: x, buyers, contracts, entities, c
     notes: str(x.notes),
   }))
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((s) => ({ ...s, [k]: v }))
+
+  // 0097: the contract's quality terms. The reader returns the wording; CODE
+  // turns it into rules (rulesFromWording); the editor shows them for review
+  // and the same Save writes the spec beside the contract.
+  const read = useMemo(() => (x.quality ? rulesFromWording(x.quality) : null), [x.quality])
+  const [spec, setSpec] = useState<ContractQualitySpec | null>(() => (read && specHasFiberTerms(read.spec)
+    ? { ...read.spec, bale_cap: read.spec.bale_cap ?? (x.committed_bales != null ? Number(x.committed_bales) : null) }
+    : null))
+  const [specOpen, setSpecOpen] = useState<boolean>(() => read != null && specHasFiberTerms(read.spec))
+  async function saveSpec(contractId: string) {
+    if (!spec) return
+    const { error } = await supabase.from('cotton_contract_specs').upsert(specRowFor(contractId, spec), { onConflict: 'contract_id' })
+    if (error) throw new Error(error.message)
+  }
 
   // Dedupe on the natural key: an existing contract with the same number
   // (this crop year) is UPDATED in place, never duplicated.
@@ -257,11 +276,13 @@ function ContractReview({ supabase, extracted: x, buyers, contracts, entities, c
         const { error } = await supabase.from('cotton_sales_contracts')
           .update(keepStatus ? { ...payload, pricing_status: existing.pricing_status } : payload).eq('id', existing.id)
         if (error) throw new Error(error.message)
-        await onDone(`Contract ${f.contract_number || ''} updated from the document.`)
+        await saveSpec(existing.id)
+        await onDone(`Contract ${f.contract_number || ''} updated from the document${spec ? ' with its quality requirements' : ''}.`)
       } else {
-        const { error } = await supabase.from('cotton_sales_contracts').insert(payload)
+        const { data: inserted, error } = await supabase.from('cotton_sales_contracts').insert(payload).select('id').single()
         if (error) throw new Error(error.message)
-        await onDone('Contract saved from the document.')
+        if (inserted?.id) await saveSpec(String(inserted.id))
+        await onDone(`Contract saved from the document${spec ? ' with its quality requirements' : ''}.`)
       }
     } catch (e) { fail(onErr)(e) }
   }
@@ -331,7 +352,20 @@ function ContractReview({ supabase, extracted: x, buyers, contracts, entities, c
           <input value={f.notes} onChange={(e) => set('notes', e.target.value)} className={inputCls} />
         </label>
       </div>
-      <button type="button" className={btnCls} onClick={save}>{existing ? 'Update existing contract' : 'Save contract'}</button>
+      <div className="rounded-lg border border-slate-200 p-2 space-y-2">
+        <div className="flex items-center gap-2 flex-wrap text-sm">
+          <span className="font-semibold">Quality requirements</span>
+          {read && specHasFiberTerms(read.spec)
+            ? <span className="text-xs text-green-800">read from the document — check them against the wording</span>
+            : <span className="text-xs text-slate-500">none found in the document</span>}
+          <button type="button" className={btnGray} onClick={() => { if (!spec) setSpec({ ...EMPTY_SPEC, source_clause: x.quality?.quality_clause ?? null, bale_cap: x.committed_bales != null ? Number(x.committed_bales) : null }); setSpecOpen((o) => !o) }}>
+            {specOpen ? 'Hide' : spec ? 'Review' : 'Add quality requirements'}
+          </button>
+          {spec && <button type="button" className="text-xs text-red-700 min-h-10 px-2" onClick={() => { setSpec(null); setSpecOpen(false) }}>Don&rsquo;t save quality terms</button>}
+        </div>
+        {specOpen && spec && <ContractSpecEditor value={spec} onChange={setSpec} farms={farms} notUnderstood={read?.notUnderstood ?? []} clause={x.quality?.quality_clause ?? null} />}
+      </div>
+      <button type="button" className={btnCls} onClick={save}>{existing ? 'Update existing contract' : 'Save contract'}{spec ? ' + quality requirements' : ''}</button>
     </div>
   )
 }

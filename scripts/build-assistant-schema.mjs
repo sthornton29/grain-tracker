@@ -208,6 +208,7 @@ export const TABLE_DOCS = {
   cotton_bales: ['Individual bales (PBI number, net lbs) under a gin receipt', '/cotton'],
   cotton_bale_grades: ['HVI grades per bale (color, leaf, staple, mic, strength…) and the loan value', '/reports/bale-quality'],
   cotton_sales_contracts: ['Cotton lint sales contracts: buyer, crop year, bales contracted, price in ¢/lb, pricing type (fixed / on-call / pool), delivery window', '/cotton/marketing'],
+  cotton_contract_specs: ['A cotton sales contract’s quality requirements (one row per contract): allowed_color_codes (e.g. {11,21,31,41} = “41 and better”), leaf_max, staple_min, mic_min/mic_max, strength_min, uniformity_min, extraneous_rule, eligible_fsa_farms (the contract’s farm schedule by FSA number — a bale from another farm is not eligible), require_dryland, bale_cap, estimated_bales, base_grade + base_price_cents, off_spec_terms, source_clause verbatim; the Bale Quality report scores every classed bale against it', '/reports/bale-quality'],
   cotton_pool_payments: ['Payments received from a marketing pool contract (the pool ledger)', '/cotton/marketing'],
   ccc_loans: ['CCC marketing-assistance loans on bales: loan rate, principal, status, repayment', '/cotton/marketing'],
   ccc_loan_bales: ['Which bales are in a CCC loan (and their equity sale, if any)', '/cotton/marketing'],

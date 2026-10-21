@@ -74,6 +74,21 @@ describe('grade CSV parsing (real-file quirks: preamble, CRLF, blank cells)', ()
   it('errors clearly when no header row exists', () => {
     expect(parseGradeCsv('just,some,noise\r\n1,2,3').error).toContain('Bale #')
   })
+
+  it('reads the class date under the header names and date shapes offices print (2026-10-20)', () => {
+    const csv = (header: string, date: string) => `Bale #,${header},Gr\r\n4661001,${date},31\r\n`
+    expect(parseGradeCsv(csv('Date Classed', '10/14/2026')).rows[0].class_date).toBe('2026-10-14')
+    expect(parseGradeCsv(csv('Class Dt', '10-14-26')).rows[0].class_date).toBe('2026-10-14')
+    expect(parseGradeCsv(csv('Classed Date', '20261014')).rows[0].class_date).toBe('2026-10-14')
+    expect(parseGradeCsv(csv('Date', '2026-10-14 00:00:00')).rows[0].class_date).toBe('2026-10-14')
+    expect(parseGradeCsv(csv('Date', '14-OCT-26')).rows[0].class_date).toBe('2026-10-14')
+    expect(parseGradeCsv(csv('Date', '"Oct 14, 2026"')).rows[0].class_date).toBe('2026-10-14')
+    expect(parseGradeCsv(csv('Date', 'n/a')).rows[0].class_date).toBeNull()
+    expect(parseGradeCsv(csv('Date', '13/45/2026')).rows[0].class_date).toBeNull()
+    const ex = parseGradeCsv('Bale #,Extraneous Matter,Rmks\r\n4661001,11,77\r\n').rows[0]
+    expect(ex.extraneous).toBe('11')
+    expect(ex.remarks).toBe('77')
+  })
 })
 
 describe('bale ↔ grade matching', () => {

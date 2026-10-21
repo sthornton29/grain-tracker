@@ -46,7 +46,8 @@ const HEADER_ALIASES: Record<string, keyof ParsedGradeRow> = {
   'prod': 'producer', 'producer': 'producer',
   'farm': 'farm', 'farm#': 'farm',
   'fieldid': 'field_id_text', 'field': 'field_id_text',
-  'date': 'class_date', 'classdate': 'class_date',
+  'date': 'class_date', 'classdate': 'class_date', 'dateclassed': 'class_date', 'classeddate': 'class_date', 'classingdate': 'class_date',
+  'classdt': 'class_date', 'dtclassed': 'class_date', 'datecls': 'class_date', 'clsdate': 'class_date', 'classified': 'class_date',
   'gr': 'color_grade', 'colorgrade': 'color_grade', 'color': 'color_grade',
   'lf': 'leaf_grade', 'leaf': 'leaf_grade',
   'st': 'staple_32nds', 'staple': 'staple_32nds',
@@ -58,8 +59,8 @@ const HEADER_ALIASES: Record<string, keyof ParsedGradeRow> = {
   'tr': 'trash_pct', 'trash': 'trash_pct',
   'unif': 'uniformity_pct', 'uniformity': 'uniformity_pct',
   'len': 'length_100ths', 'length': 'length_100ths',
-  'ex': 'extraneous',
-  'rm': 'remarks', 'remarks': 'remarks',
+  'ex': 'extraneous', 'extr': 'extraneous', 'extraneous': 'extraneous', 'extraneousmatter': 'extraneous', 'em': 'extraneous',
+  'rm': 'remarks', 'remarks': 'remarks', 'rmk': 'remarks', 'rmks': 'remarks', 'remark': 'remarks',
   'totalvalue': 'loan_value_total', 'value': 'loan_value_total', 'loanvalue': 'loan_value_total',
 }
 
@@ -77,16 +78,31 @@ function parseNum(s: string): number | null {
   return Number.isFinite(n) ? n : null
 }
 
-function parseDateCell(s: string): string | null {
+const MONTHS: Record<string, number> = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 }
+
+/** The classing date, from any shape an office prints: MM/DD/YYYY, MM/DD/YY,
+ *  MM-DD-YYYY, YYYY-MM-DD (with or without a time), YYYYMMDD, DD-MON-YY,
+ *  "Oct 14 2026". Unreadable → null (2026-10-20: the first real import
+ *  saved 609 bales with no class date because its header and date shape
+ *  were not among the two the parser knew). */
+export function parseDateCell(s: string): string | null {
   const t = s.trim()
   if (!t) return null
-  // MM/DD/YYYY or MM/DD/YY (classing offices) → ISO; ISO passes through.
-  const us = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/)
-  if (us) {
-    const y = Number(us[3]) < 100 ? 2000 + Number(us[3]) : Number(us[3])
-    return `${y}-${String(Number(us[1])).padStart(2, '0')}-${String(Number(us[2])).padStart(2, '0')}`
+  const iso = (y: number, m: number, d: number): string | null => {
+    const yy = y < 100 ? 2000 + y : y
+    if (m < 1 || m > 12 || d < 1 || d > 31 || yy < 1990 || yy > 2100) return null
+    return `${yy}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
   }
-  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) return t
+  const us = t.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})(?:\s.*)?$/)
+  if (us) return iso(Number(us[3]), Number(us[1]), Number(us[2]))
+  const isoLike = t.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s].*)?$/)
+  if (isoLike) return iso(Number(isoLike[1]), Number(isoLike[2]), Number(isoLike[3]))
+  const compact = t.match(/^(\d{4})(\d{2})(\d{2})$/)
+  if (compact) return iso(Number(compact[1]), Number(compact[2]), Number(compact[3]))
+  const mon = t.match(/^(\d{1,2})[\s\-]([A-Za-z]{3})[A-Za-z]*[\s\-,]*(\d{2,4})$/)
+  if (mon && MONTHS[mon[2].toLowerCase()]) return iso(Number(mon[3]), MONTHS[mon[2].toLowerCase()], Number(mon[1]))
+  const monFirst = t.match(/^([A-Za-z]{3})[A-Za-z]*\.?\s+(\d{1,2}),?\s+(\d{2,4})$/)
+  if (monFirst && MONTHS[monFirst[1].toLowerCase()]) return iso(Number(monFirst[3]), MONTHS[monFirst[1].toLowerCase()], Number(monFirst[2]))
   return null
 }
 

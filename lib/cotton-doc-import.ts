@@ -12,6 +12,7 @@
 // No I/O — the page passes already-fetched rows in, mirroring lib/cotton-sales.
 
 import type { CottonDisposition } from '@/lib/types'
+import type { QualityTermsExtract } from '@/lib/cotton-contract-spec'
 import { pbiKey, pbiKeys } from '@/lib/number-key'
 
 // ---------- AI extraction categories & shapes ----------
@@ -45,6 +46,9 @@ export type CottonContractExtract = {
   delivery_start: string | null
   delivery_end: string | null
   notes: string | null
+  /** 0097: the contract's quality terms AS WRITTEN (lib/cotton-contract-spec
+   *  rulesFromWording turns them into rules); null when the contract is silent. */
+  quality?: QualityTermsExtract | null
 }
 export type CottonPoolPaymentExtract = {
   buyer: string | null

@@ -170,7 +170,7 @@ begin
     'budget_scenarios', 'budget_lines',
     -- cotton
     'gins', 'cotton_loads', 'gin_receipts', 'gin_receipt_loads', 'cotton_bales',
-    'cotton_bale_grades', 'cotton_sales_contracts', 'cotton_pool_payments',
+    'cotton_bale_grades', 'cotton_sales_contracts', 'cotton_contract_specs', 'cotton_pool_payments',
     'ccc_loans', 'ccc_loan_bales', 'cotton_ldp_records', 'cotton_ldp_bales',
     'cotton_bale_dispositions', 'cotton_fees', 'cotton_fee_schedule',
     -- roles / settings

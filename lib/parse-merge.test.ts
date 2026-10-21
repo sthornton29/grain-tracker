@@ -246,6 +246,30 @@ describe('mergeCottonMarketing', () => {
     const one: CottonMarketingExtraction = { document_category: 'equity_sale', confidence: 'low', extracted: null }
     expect(mergeCottonMarketing([one])).toBe(one)
   })
+
+  it('a sales contract’s quality terms merge across chunks: the clause from page 1, the farm schedule from page 4', () => {
+    const blank = { contract_type: null, buyer: null, contract_number: null, contract_date: null, crop_year: null, committed_bales: null, committed_acres: null, price_cents_per_lb: null, basis_cents: null, futures_month: null, delivery_start: null, delivery_end: null, notes: null }
+    const q = { quality_clause: null, color: null, leaf: null, staple: null, micronaire: null, strength: null, uniformity: null, extraneous_matter: null, eligible_farms: null, bale_cap: null, estimated_bales: null, base_grade: null, base_price_cents_per_lb: null, off_spec_terms: null, other_deliverables: null, practice_requirement: null }
+    const page1: CottonMarketingExtraction = {
+      document_category: 'sales_contract', confidence: 'high',
+      extracted: { ...blank, contract_type: 'fixed_price', buyer: 'VS Service Company, LLC', contract_date: '2026-03-31', crop_year: 2026, committed_bales: 4250, price_cents_per_lb: 86,
+        quality: { ...q, quality_clause: 'Color 41 and better, leaf 3 and better…', color: 'Color 41 and better', leaf: 'leaf 3 and better', bale_cap: 4250, estimated_bales: 6825, base_grade: '41-3-37', base_price_cents_per_lb: 86 } },
+    }
+    const page4: CottonMarketingExtraction = {
+      document_category: 'sales_contract', confidence: 'medium',
+      extracted: { ...blank, quality: { ...q, eligible_farms: [
+        { fsa_number: '252', county: 'Lawrence', planted_acres: 80.6, aph_yield: 1369, aph_est_bales: 221, trendline_est_bales: 201 },
+        { fsa_number: '0252', county: 'Lawrence', planted_acres: 80.6, aph_yield: 1369, aph_est_bales: 221, trendline_est_bales: 201 },
+        { fsa_number: '5824', county: 'Lawrence', planted_acres: 255.6, aph_yield: 1259, aph_est_bales: 644, trendline_est_bales: 636 },
+      ] } },
+    }
+    const merged = mergeCottonMarketing([page1, page4])
+    const quality = (merged.extracted as { quality: { color: string; bale_cap: number; eligible_farms: Array<{ fsa_number: string }> } }).quality
+    expect(quality.color).toBe('Color 41 and better')
+    expect(quality.bale_cap).toBe(4250)
+    expect(quality.eligible_farms.map((f) => f.fsa_number)).toEqual(['252', '5824'])
+    expect(merged.confidence).toBe('medium')
+  })
 })
 
 describe('mergeBrokerage — natural keys (2026-10-13)', () => {

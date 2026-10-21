@@ -15,6 +15,9 @@ import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
 import { buildCottonPhysicalSummary, contractPricedCents, dispositionBoard, type CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { cottonFieldYields, lintTurnoutPct } from '@/lib/cotton'
 import { isCottonCrop } from '@/lib/marketing'
+import { buildBaleRows, contractView, estimatedBalesFromAssumptions, type BaleQualityInputs } from '@/lib/bale-quality-report'
+import { specFromRow, specHasFiberTerms, specSummaryLine } from '@/lib/cotton-contract-spec'
+import { FACTORS } from '@/lib/cotton-quality'
 import { DISCOUNT_CATEGORY_LABELS, coerceDiscountCategory, centsPerBu, sumCheck } from '@/lib/settlement-discounts'
 import { parseLeaseTerms, type SettlementStatement } from '@/lib/rent-settlement'
 import { budgetLineMath, scenarioTotals, isCottonName } from '@/lib/crop-budget'
@@ -37,12 +40,19 @@ const CROPS_SELECT = 'id, name, base_moisture_pct, base_lb_per_bushel, harvest_c
 
 export async function getCottonMarketing(supabase: SupabaseClient, ctx: AssistantContext, input: { crop_year: number; buyer?: string }) {
   const cropYear = num(input.crop_year)
-  const [raw, buyers, bits, crops, plantings] = await Promise.all([
+  const [raw, buyers, bits, crops, plantings, specRows, receipts, gins, farmsFull, varieties, assumptions] = await Promise.all([
     fetchCottonPhysical(supabase, cropYear),
     all<{ id: string; name: string }>(supabase.from('buyers').select('id, name')),
     fetchScopeBits(supabase),
     all<Crop>(supabase.from('crops').select(CROPS_SELECT)),
-    allRows<FieldPlanting>((f, t) => supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres').eq('season_year', cropYear).order('id').range(f, t)),
+    allRows<FieldPlanting>((f, t) => supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, archived_at').eq('season_year', cropYear).order('id').range(f, t)),
+    // 0097: each contract's quality spec, and the chain the Bale Quality report scores bales through.
+    allRows<Record<string, unknown>>((f, t) => supabase.from('cotton_contract_specs').select('*').order('id').range(f, t)),
+    allRows<BaleQualityInputs['receipts'][number]>((f, t) => supabase.from('gin_receipts').select('id, gin_id, receipt_number, receipt_date, statement_number, gin_code, entity_id, farm_id, field_id, crop_year').eq('crop_year', cropYear).order('id').range(f, t)),
+    all<{ id: string; name: string }>(supabase.from('gins').select('id, name')),
+    all<BaleQualityInputs['farms'][number]>(supabase.from('farms').select('id, name, entity_id, fsa_number')),
+    allRows<{ planting_id: string; variety: string }>((f, t) => supabase.from('field_planting_varieties').select('planting_id, variety').order('id').range(f, t)),
+    all<{ crop_id: string; crop_year: number; expected_yield: number | null; expected_yield_irr: number | null; expected_yield_dry: number | null }>(supabase.from('crop_assumptions').select('crop_id, crop_year, expected_yield, expected_yield_irr, expected_yield_dry').eq('crop_year', cropYear)),
   ])
   const buyerName = nameOf(buyers)
   const { inputs } = raw
@@ -56,6 +66,39 @@ export async function getCottonMarketing(supabase: SupabaseClient, ctx: Assistan
   const scope = buildEntityScope({ entityId: '', farms: bits.farms, fields: bits.fields, entities: bits.entities, grantedEntityIds: ctx.grantedEntityIds })
   const attribution = scope.attribution({ plantings, crops })
   const summary: CottonPhysicalSummary | null = ctx.grantedEntityIds ? attribution.cottonSummary(inputs) : (raw.hasData ? buildCottonPhysicalSummary(inputs) : null)
+
+  // 0097: quality-spec results per contract — the Bale Quality report's
+  // contract view (meets / fails / not eligible / not classed, the cap, the
+  // projection and the Pareto of failing factors) over the year's bales.
+  const qualityInputs: BaleQualityInputs = {
+    cropYear, bales: inputs.bales, grades: inputs.gradesByBale.size ? Array.from(inputs.gradesByBale.values()) as unknown as BaleQualityInputs['grades'] : [],
+    receipts, gins, farms: farmsFull, fields: bits.fields, entities: bits.entities, plantings: plantings as unknown as BaleQualityInputs['plantings'], crops, varieties,
+    dispositions: inputs.dispositions, loanBales: inputs.loanBales,
+  }
+  const baleRows = buildBaleRows(qualityInputs)
+  const appEstimatedBales = estimatedBalesFromAssumptions(qualityInputs, assumptions)
+  const specByContract = new Map(specRows.map((s) => [String(s.contract_id), specFromRow(s)]))
+  const qualityFor = (contractId: string) => {
+    const spec = specByContract.get(contractId)
+    if (!spec || !specHasFiberTerms(spec)) return null
+    const s = contractView(baleRows, spec, appEstimatedBales).summary
+    return {
+      requirements: specSummaryLine(spec),
+      allowed_color_codes: spec.allowed_color_codes, leaf_max: spec.leaf_max, staple_min: spec.staple_min, mic_min: spec.mic_min, mic_max: spec.mic_max,
+      strength_min: spec.strength_min, uniformity_min: spec.uniformity_min, extraneous_rule: spec.extraneous_rule,
+      eligible_fsa_farms: spec.eligible_fsa_farms, require_dryland: spec.require_dryland,
+      bale_cap: spec.bale_cap, estimated_bales: spec.estimated_bales, base_grade: spec.base_grade, base_price_cents: spec.base_price_cents,
+      results: {
+        eligible_classed_bales: s.eligibleClassed, meets_spec: s.meets, meets_spec_lbs: r0(s.meetsLbs), fails_spec: s.fails,
+        pass_rate_pct: s.passRate != null ? r2(s.passRate * 100) : null, pass_rate_by_lbs_pct: s.passRateLbs != null ? r2(s.passRateLbs * 100) : null,
+        not_eligible_farm_not_on_contract: s.notEligible, not_yet_classed: s.notClassed,
+        qualifying_vs_cap: s.cap != null ? `${s.meets} of ${s.cap}` : null,
+        projected_qualifying_bales: s.projection ? { projected: s.projection.projected, estimated_bales: s.projection.estimatedBales, estimate_source: s.projection.estimateSource, note: 'estimate = pass rate × estimated bales' } : null,
+        why_bales_fail: s.pareto.map((p) => ({ factor: FACTORS[p.factor].label, bales_failing: p.bales, fails_only_this_factor: p.onlyThis })),
+        bales_failing_exactly_one_factor: s.singleFactorFails,
+      },
+    }
+  }
 
   const contracts = inputs.contracts.filter((c) => matchesBuyer(c.buyer_id)).map((c) => {
     const assigned = inputs.dispositions.filter((d) => d.contract_id === c.id)
@@ -88,6 +131,7 @@ export async function getCottonMarketing(supabase: SupabaseClient, ctx: Assistan
           }
         : null,
       notes: c.notes,
+      quality_spec: qualityFor(c.id),
     }
   })
 
@@ -140,7 +184,7 @@ export async function getCottonMarketing(supabase: SupabaseClient, ctx: Assistan
       : null,
     actual_fees_usd: r2(fees),
     buyers_with_cotton_contracts: Array.from(new Set(inputs.contracts.map((c) => buyerName(c.buyer_id)).filter(Boolean))),
-    note: `Cotton Marketing engine. Prices in ¢/lb (72.65 = $0.7265/lb); bales delivered = bales assigned to the contract on the disposition board; remaining = committed − delivered. ${buyerFilter && contracts.length === 0 ? `No contracts matched "${input.buyer}" — buyers listed in buyers_with_cotton_contracts.` : ''}`,
+    note: `Cotton Marketing engine. Prices in ¢/lb (72.65 = $0.7265/lb); bales delivered = bales assigned to the contract on the disposition board; remaining = committed − delivered. A contract's quality_spec (when it carries quality requirements) scores every classed bale of the crop year: meets / fails / not eligible (farm not on the contract's farm list) / not yet classed, the pass rate, the cap, the projection and why bales fail — the same numbers as the Bale Quality report (/reports/bale-quality) with that contract selected. ${buyerFilter && contracts.length === 0 ? `No contracts matched "${input.buyer}" — buyers listed in buyers_with_cotton_contracts.` : ''}`,
   }
 }
 
@@ -536,7 +580,7 @@ const cropYearProp = { type: 'number' as const, description: 'Crop (harvest) yea
 export const MODULE_TOOLS: Anthropic.Tool[] = [
   {
     name: 'get_cotton_marketing',
-    description: 'Cotton marketing for a crop year — the Cotton → Marketing engine: every cotton sales contract (buyer, bales committed / delivered / remaining, pricing type and status, ¢/lb price or basis + futures, delivery window, pool ledger), CCC loans (status, bales, principal, equity/MLG), LDPs, the bale disposition board (sold / contract / pool / loan / held), and the sold / awaiting-call / pool / in-loan / held summary. Use for ANY cotton contract, buyer, loan, pool, LDP or bale-disposition question (e.g. "how many bales on our Victoria’s Secret contract").',
+    description: 'Cotton marketing for a crop year — the Cotton → Marketing engine: every cotton sales contract (buyer, bales committed / delivered / remaining, pricing type and status, ¢/lb price or basis + futures, delivery window, pool ledger, and its quality_spec results when the contract carries quality requirements: how many classed bales meet the spec, the pass rate, bales not eligible by farm, the cap, the projection and which factors bales fail on), CCC loans (status, bales, principal, equity/MLG), LDPs, the bale disposition board (sold / contract / pool / loan / held), and the sold / awaiting-call / pool / in-loan / held summary. Use for ANY cotton contract, buyer, loan, pool, LDP or bale-disposition question (e.g. "how many bales on our Victoria’s Secret contract").',
     input_schema: { type: 'object', properties: { crop_year: cropYearProp, buyer: { type: 'string', description: 'Optional buyer/merchant name filter' } }, required: ['crop_year'] },
   },
   {

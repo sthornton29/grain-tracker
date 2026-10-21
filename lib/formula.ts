@@ -9,7 +9,10 @@
 // TypeScript against the payload's rows, so a test can prove a workbook's
 // formulas compute the numbers the app shows. The vocabulary is deliberately
 // only what the audit workbooks emit: SUM, SUMIFS, ROUND, IF, IFERROR, ABS,
-// the four arithmetic operators and the comparisons IF needs.
+// the four arithmetic operators and the comparisons IF needs — plus, for the
+// Bale Quality workbook (2026-10-20), COUNTIF, COUNTIFS, AVERAGEIFS, AND, OR
+// and SUMPRODUCT, and criteria text that carries a comparison (">=3.7",
+// "<>", "<26").
 //
 // Builders (all pure):
 //   num(1) / str('Irrigated')              literals
@@ -43,6 +46,12 @@ export type FormulaNode =
   | { t: 'bin'; op: BinOp; a: FormulaNode; b: FormulaNode }
   | { t: 'concat'; args: FormulaNode[] }
   | { t: 'substitute'; x: FormulaNode; from: string; to: string }
+  | { t: 'countif'; range: RangeNode; value: FormulaNode }
+  | { t: 'countifs'; crit: Array<{ range: RangeNode; value: FormulaNode }> }
+  | { t: 'averageifs'; avg: RangeNode; crit: Array<{ range: RangeNode; value: FormulaNode }> }
+  | { t: 'and'; args: FormulaNode[] }
+  | { t: 'or'; args: FormulaNode[] }
+  | { t: 'sumproduct'; ranges: RangeNode[] }
 
 export type RangeNode = Extract<FormulaNode, { t: 'col' | 'rows' }>
 export type BinOp = '+' | '-' | '*' | '/' | '<' | '<=' | '=' | '<>' | '>' | '>='
@@ -75,6 +84,19 @@ export const ge = bin('>=')
 export const concat = (...args: FormulaNode[]): FormulaNode => ({ t: 'concat', args })
 /** SUBSTITUTE(x, from, to) — every occurrence. */
 export const substitute = (x: FormulaNode, from: string, to: string): FormulaNode => ({ t: 'substitute', x, from, to })
+/** COUNTIF(range, criterion) — the criterion may be a number, text, or
+ *  comparison text such as ">=3.7" / "<>" (non-blank). */
+export const countif = (range: RangeNode, value: FormulaNode): FormulaNode => ({ t: 'countif', range, value })
+/** COUNTIFS(range1, crit1, range2, crit2, …). */
+export const countifs = (...crit: Array<[RangeNode, FormulaNode]>): FormulaNode =>
+  ({ t: 'countifs', crit: crit.map(([range, value]) => ({ range, value })) })
+/** AVERAGEIFS(average_range, range1, crit1, …) — #DIV/0! when nothing matches. */
+export const averageifs = (avgRange: RangeNode, ...crit: Array<[RangeNode, FormulaNode]>): FormulaNode =>
+  ({ t: 'averageifs', avg: avgRange, crit: crit.map(([range, value]) => ({ range, value })) })
+export const and = (...args: FormulaNode[]): FormulaNode => ({ t: 'and', args })
+export const or = (...args: FormulaNode[]): FormulaNode => ({ t: 'or', args })
+/** SUMPRODUCT(range1, range2, …) — same-length ranges, text reads as 0. */
+export const sumproduct = (...ranges: RangeNode[]): FormulaNode => ({ t: 'sumproduct', ranges })
 /** An exact-match SUMIFS criterion built from a cell: "=" & the cell's text
  *  with Excel's wildcard characters escaped (~ → ~~, * → ~*, ? → ~?), so a
  *  field named "Pivot*" or "<40" matches only itself. */
@@ -189,6 +211,14 @@ function render(node: FormulaNode, ctx: RenderContext): string {
         return a.t === 'bin' && PRECEDENCE[a.op] <= CONCAT_PRECEDENCE ? `(${s})` : s
       }).join('&')
     case 'substitute': return `SUBSTITUTE(${render(node.x, ctx)},${excelString(node.from)},${excelString(node.to)})`
+    case 'countif': return `COUNTIF(${rangeRef(ctx, node.range)},${render(node.value, ctx)})`
+    case 'countifs':
+      return `COUNTIFS(${node.crit.flatMap((c) => [rangeRef(ctx, c.range), render(c.value, ctx)]).join(',')})`
+    case 'averageifs':
+      return `AVERAGEIFS(${[rangeRef(ctx, node.avg), ...node.crit.flatMap((c) => [rangeRef(ctx, c.range), render(c.value, ctx)])].join(',')})`
+    case 'and': return `AND(${node.args.map((a) => render(a, ctx)).join(',')})`
+    case 'or': return `OR(${node.args.map((a) => render(a, ctx)).join(',')})`
+    case 'sumproduct': return `SUMPRODUCT(${node.ranges.map((r) => rangeRef(ctx, r)).join(',')})`
     case 'bin': {
       const wrap = (child: FormulaNode, rightSide: boolean) => {
         const s = render(child, ctx)
@@ -312,6 +342,26 @@ function criterionMatches(cellV: Scalar | FormulaError, crit: Scalar | FormulaEr
   if (typeof crit === 'number') return typeof cellV === 'number' ? cellV === crit : (typeof cellV === 'string' && cellV.trim() !== '' && Number(cellV) === crit)
   if (typeof crit === 'boolean') return cellV === crit
   let text = String(crit)
+  // A comparison criterion (">=3.7", "<26", "<>", "<>held"): numbers compare
+  // numerically (a text cell never matches a numeric comparison); text
+  // compares case-insensitively; "<>" alone matches any non-blank cell.
+  const cmp = text.match(/^(<>|<=|>=|<|>)(.*)$/)
+  if (cmp) {
+    const op = cmp[1] as BinOp
+    const rhs = cmp[2]
+    if (op === '<>' && rhs === '') return !blank(cellV)
+    const rhsNum = rhs.trim() !== '' && Number.isFinite(Number(rhs)) ? Number(rhs) : null
+    if (rhsNum != null) {
+      if (typeof cellV !== 'number') {
+        const asNum = typeof cellV === 'string' && cellV.trim() !== '' ? Number(cellV) : NaN
+        if (!Number.isFinite(asNum)) return op === '<>' && !blank(cellV)
+        return compare(op, asNum, rhsNum)
+      }
+      return compare(op, cellV, rhsNum)
+    }
+    if (typeof cellV !== 'string') return op === '<>'
+    return compare(op, cellV, rhs)
+  }
   if (text.startsWith('=')) text = text.slice(1)
   // "=2026" against a numeric cell compares numerically.
   if (typeof cellV === 'number') return text.trim() !== '' && !/[*?]/.test(text) && Number(text) === cellV
@@ -395,6 +445,57 @@ function evalNode(node: FormulaNode, ctx: EvalCtx): Scalar | FormulaError {
       case 'abs': return Math.abs(toNumber(evalNode(node.x, ctx)))
       case 'concat': return node.args.map((a) => toText(evalNode(a, ctx))).join('')
       case 'substitute': return toText(evalNode(node.x, ctx)).split(node.from).join(node.to)
+      case 'countif': {
+        const value = evalNode(node.value, ctx)
+        return rangeCells(ctx, node.range).filter((c) => criterionMatches(c, value)).length
+      }
+      case 'countifs': {
+        const crits = node.crit.map((c) => ({ cells: rangeCells(ctx, c.range), value: evalNode(c.value, ctx) }))
+        const n = crits[0]?.cells.length ?? 0
+        for (const c of crits) if (c.cells.length !== n) throw new FormulaError('#VALUE!')
+        let count = 0
+        for (let i = 0; i < n; i++) if (crits.every((c) => criterionMatches(c.cells[i], c.value))) count++
+        return count
+      }
+      case 'averageifs': {
+        const avgs = rangeCells(ctx, node.avg)
+        const crits = node.crit.map((c) => ({ cells: rangeCells(ctx, c.range), value: evalNode(c.value, ctx) }))
+        for (const c of crits) if (c.cells.length !== avgs.length) throw new FormulaError('#VALUE!')
+        let total = 0
+        let count = 0
+        for (let i = 0; i < avgs.length; i++) {
+          if (!crits.every((c) => criterionMatches(c.cells[i], c.value))) continue
+          const v = avgs[i]
+          if (v instanceof FormulaError) throw v
+          if (typeof v === 'number') { total += v; count++ } // AVERAGEIFS skips text / blanks
+        }
+        if (count === 0) throw new FormulaError('#DIV/0!')
+        return total / count
+      }
+      case 'and': {
+        for (const a of node.args) if (!truthy(evalNode(a, ctx))) return false
+        return true
+      }
+      case 'or': {
+        for (const a of node.args) if (truthy(evalNode(a, ctx))) return true
+        return false
+      }
+      case 'sumproduct': {
+        const cols = node.ranges.map((r) => rangeCells(ctx, r))
+        const n = cols[0]?.length ?? 0
+        for (const c of cols) if (c.length !== n) throw new FormulaError('#VALUE!')
+        let total = 0
+        for (let i = 0; i < n; i++) {
+          let p = 1
+          for (const c of cols) {
+            const v = c[i]
+            if (v instanceof FormulaError) throw v
+            p *= typeof v === 'number' ? v : 0 // SUMPRODUCT treats text / blanks as 0
+          }
+          total += p
+        }
+        return total
+      }
       case 'bin': {
         const a = evalNode(node.a, ctx)
         const b = evalNode(node.b, ctx)
@@ -417,6 +518,16 @@ function evalNode(node: FormulaNode, ctx: EvalCtx): Scalar | FormulaError {
     if (e instanceof FormulaError) return e
     throw e
   }
+}
+
+/** Excel truthiness for AND / OR / IF: booleans as they are, numbers ≠ 0,
+ *  blanks false; a text argument is #VALUE!. */
+function truthy(v: Scalar | FormulaError): boolean {
+  if (v instanceof FormulaError) throw v
+  if (typeof v === 'boolean') return v
+  if (v == null || v === '') return false
+  if (typeof v === 'number') return v !== 0
+  throw new FormulaError('#VALUE!')
 }
 
 /** Spreadsheet comparison: two texts compare case-insensitively, otherwise

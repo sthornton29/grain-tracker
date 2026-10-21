@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  abs, add, cell, col, columnLetters, div, eq, evaluateData, evaluateFormula, FormulaError, iferror, iff, le, lt, mul, num,
-  round, rows, self, str, sub, sum, sumifs, toExcelFormula,
+  abs, add, and, averageifs, cell, col, columnLetters, countif, countifs, div, eq, evaluateData, evaluateFormula, FormulaError, ge, gt, iferror, iff, le, lt, mul, num,
+  or, round, rows, self, str, sub, sum, sumifs, sumproduct, toExcelFormula,
   type FormulaData, type FormulaLayout,
 } from '@/lib/formula'
 
@@ -119,5 +119,81 @@ describe('evaluateFormula — spreadsheet semantics', () => {
   it('a circular reference is reported, not looped', () => {
     const d: FormulaData = { s: { columns: ['a', 'b'], rows: [[{ f: self('b') }, { f: self('a') }]] } }
     expect(() => evaluateData(d)).toThrow(/circular/)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Bale Quality workbook vocabulary (2026-10-20): COUNTIF / COUNTIFS /
+// AVERAGEIFS / AND / OR / SUMPRODUCT and comparison criteria.
+// ---------------------------------------------------------------------------
+
+describe('toExcelFormula — COUNTIF / COUNTIFS / AVERAGEIFS / AND / OR / SUMPRODUCT', () => {
+  it('render with bounded ranges and quoted criteria', () => {
+    const at = { s: 'fields', r: 0 }
+    expect(toExcelFormula(countif(col('loads', 'practice'), str('Irrigated')), { layout, at })).toBe("COUNTIF('Load Data'!$E$2:$E$4,\"Irrigated\")")
+    expect(toExcelFormula(countifs([col('loads', 'net'), str('>=3.7')], [col('loads', 'net'), str('<=4.2')]), { layout, at }))
+      .toBe("COUNTIFS('Load Data'!$B$2:$B$4,\">=3.7\",'Load Data'!$B$2:$B$4,\"<=4.2\")")
+    expect(toExcelFormula(averageifs(col('loads', 'net'), [col('loads', 'key'), self('key')]), { layout, at }))
+      .toBe("AVERAGEIFS('Load Data'!$B$2:$B$4,'Load Data'!$A$2:$A$4,A2)")
+    expect(toExcelFormula(and(ge(self('bu'), num(1)), le(self('bu'), num(9))), { layout, at })).toBe('AND(B2>=1,B2<=9)')
+    expect(toExcelFormula(or(eq(self('bu'), str('')), gt(self('bu'), num(0))), { layout, at })).toBe('OR(B2="",B2>0)')
+    expect(toExcelFormula(sumproduct(col('loads', 'net'), col('loads', 'pct')), { layout, at }))
+      .toBe("SUMPRODUCT('Load Data'!$B$2:$B$4,'Load Data'!$C$2:$C$4)")
+  })
+})
+
+describe('evaluateFormula — counts, averages, logic and comparison criteria', () => {
+  const data: FormulaData = {
+    bales: {
+      columns: ['pbi', 'mic', 'color', 'lbs'],
+      rows: [
+        ['1', 4.4, '31', 500],
+        ['2', 4.0, '41', 480],
+        ['3', 4.3, '42', 495],
+        ['4', 3.9, '31', 470],
+        ['5', null, '31', 500], // not classed — blank mic
+      ],
+    },
+    spec: { columns: ['item', 'value', 'color'], rows: [['Mic min', 4.0, '11'], ['Mic max', 4.7, '21'], ['', null, '31'], ['', null, '41']] },
+  }
+  const at = { s: 'spec', r: 0 }
+  it('COUNTIFS with >= / <= criteria counts only numeric cells in range', () => {
+    expect(evaluateFormula(countifs([col('bales', 'mic'), str('>=3.7')], [col('bales', 'mic'), str('<=4.2')]), data, at)).toBe(2)
+    expect(evaluateFormula(countifs([col('bales', 'mic'), str('>=4.3')]), data, at)).toBe(2)
+    expect(evaluateFormula(countifs([col('bales', 'mic'), str('<3.5')]), data, at)).toBe(0)
+  })
+  it('COUNTIF "<>" counts non-blank cells; a text criterion is exact and case-insensitive', () => {
+    expect(evaluateFormula(countif(col('bales', 'mic'), str('<>')), data, at)).toBe(4)
+    expect(evaluateFormula(countif(col('bales', 'pbi'), str('<>')), data, at)).toBe(5)
+    expect(evaluateFormula(countif(col('bales', 'color'), str('31')), data, at)).toBe(3)
+    expect(evaluateFormula(countif(col('spec', 'color'), str('42')), data, at)).toBe(0)
+    expect(evaluateFormula(countif(col('spec', 'color'), str('41')), data, at)).toBe(1)
+  })
+  it('AVERAGEIFS averages the matching numeric cells and errors on no match', () => {
+    const avg = evaluateFormula(averageifs(col('bales', 'mic'), [col('bales', 'color'), str('31')]), data, at)
+    expect(avg).toBeCloseTo((4.4 + 3.9) / 2, 9) // the blank-mic bale is skipped
+    expect(evaluateFormula(averageifs(col('bales', 'mic'), [col('bales', 'mic'), str('<>')]), data, at)).toBeCloseTo(16.6 / 4, 9)
+    const none = evaluateFormula(averageifs(col('bales', 'mic'), [col('bales', 'color'), str('99')]), data, at)
+    expect(none).toBeInstanceOf(FormulaError)
+    expect((none as FormulaError).code).toBe('#DIV/0!')
+  })
+  it('AND / OR short-circuit on booleans and numbers; blank reads false', () => {
+    const micOk = and(ge(cell('bales', 'mic', 0), cell('spec', 'value', 0)), le(cell('bales', 'mic', 0), cell('spec', 'value', 1)))
+    expect(evaluateFormula(micOk, data, at)).toBe(true)
+    const b8 = and(ge(cell('bales', 'mic', 3), cell('spec', 'value', 0)), le(cell('bales', 'mic', 3), cell('spec', 'value', 1)))
+    expect(evaluateFormula(b8, data, at)).toBe(false)
+    expect(evaluateFormula(or(eq(cell('spec', 'value', 2), str('')), num(0)), data, at)).toBe(true) // blank threshold = no requirement
+    expect(evaluateFormula(or(num(0), num(0)), data, at)).toBe(false)
+  })
+  it('SUMPRODUCT weights a column by pounds; text and blanks read as 0', () => {
+    const wavg = div(sumproduct(col('bales', 'mic'), col('bales', 'lbs')), sumifs(col('bales', 'lbs'), [col('bales', 'mic'), str('<>')]))
+    const expected = (4.4 * 500 + 4.0 * 480 + 4.3 * 495 + 3.9 * 470) / (500 + 480 + 495 + 470)
+    expect(evaluateFormula(wavg, data, at)).toBeCloseTo(expected, 9)
+  })
+  it('a membership test built from COUNTIF over a spec column follows the spec cells', () => {
+    const colorOk = gt(countif(col('spec', 'color'), cell('bales', 'color', 2)), num(0))
+    expect(evaluateFormula(colorOk, data, at)).toBe(false) // 42 is not an allowed color
+    const d2: FormulaData = { ...data, spec: { ...data.spec, rows: [...data.spec.rows, ['', null, '42']] } }
+    expect(evaluateFormula(colorOk, d2, at)).toBe(true) // tick 42 → it is
   })
 })

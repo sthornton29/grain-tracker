@@ -1063,6 +1063,34 @@ export type CottonSalesContract = {
   created_at: string
 }
 
+// 0097: a contract's quality requirements (one row per contract). The typed
+// shape with parsing lives in lib/cotton-contract-spec.ts (specFromRow).
+export type CottonContractSpec = {
+  id: string
+  contract_id: string
+  allowed_color_codes: string[] | null
+  leaf_max: number | null
+  staple_min: number | null
+  mic_min: number | null
+  mic_max: number | null
+  strength_min: number | null
+  uniformity_min: number | null
+  extraneous_rule: 'any' | 'none' | 'level1_ok'
+  excluded_remarks: string[] | null
+  eligible_fsa_farms: string[] | null
+  require_dryland: boolean
+  bale_cap: number | null
+  estimated_bales: number | null
+  base_grade: string | null
+  base_price_cents: number | null
+  off_spec_terms: string | null
+  other_terms: string | null
+  source_clause: string | null
+  schedule: unknown
+  created_at: string
+  updated_at: string
+}
+
 export type CottonPoolPayment = {
   id: string
   contract_id: string
