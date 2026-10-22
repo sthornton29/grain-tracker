@@ -5,16 +5,18 @@
 //
 //   header        title, the active filters in plain English, exports
 //   control strip crop year + contract always in reach; every other filter
-//                 and the display choices (weighting, factors) wait in a
-//                 drawer behind "Filters & display"
+//                 and the weighting wait in a drawer behind "Filters &
+//                 display"
 //   KPI strip     classed bales, lint lbs, avg loan value, base-or-better,
 //                 % meets contract
 //   contract      the headline, cap tracker, projection, why bales fail
-//   factor tiles  one slim tile per grade factor; tap one to open its detail
-//                 (histogram at the factor's own precision, contract line,
-//                 averages, spread, fails) — the Color detail carries the
-//                 USDA color grid
-//   comparison    one row per group (Group by lives on the table)
+//   factor tiles  one slim tile per grade factor, all fourteen, always; tap
+//                 one to open its detail (histogram at the factor's own
+//                 precision, contract line, averages, spread, fails) — the
+//                 Color detail carries the USDA color grid
+//   comparison    one row per group (Group by and the Columns preset — which
+//                 factors the table, the bale list and the exports carry —
+//                 live on the table)
 //   bale list     the drill-down target for every tap above
 //
 // Every number comes from lib/bale-quality-report.ts (pure); the exports
@@ -35,9 +37,8 @@ import {
   stickyColCls, stickyColHeadCls, fmtInt, filterSummaryOf, cropYearLabel, toneText, type Tone,
 } from '@/components/reports/report-kit'
 import { ChipMultiSelect, SegmentedChips, type ChipOption } from '@/components/reports/chip-select'
-import { FactorPicker } from '@/components/reports/factor-picker'
 import { FactorTiles, FactorDetailPanel, SectionTitle, avgText, bandBg, pct1 } from '@/components/reports/factor-detail'
-import { FACTORS, FACTOR_PRESETS, bandsFor, factorText, factorValue, type Band, type FactorKey } from '@/lib/cotton-quality'
+import { FACTORS, FACTOR_ORDER, FACTOR_PRESETS, bandsFor, factorText, factorValue, type Band, type FactorKey } from '@/lib/cotton-quality'
 import { EVALUATION_LABEL, specFromRow, specHasFiberTerms, specSummaryLine, type BaleEvaluation, type ContractQualitySpec } from '@/lib/cotton-contract-spec'
 import {
   activeFilterCount, applyFilters, bandTone, buildBaleRows, cellBand, colorGrid, comparisonRows, contractView, estimatedBalesFromAssumptions, factorDetail,
@@ -55,6 +56,8 @@ type Drill =
   | null
 
 type ContractChoice = { contract: CottonSalesContract; spec: ContractQualitySpec; label: string }
+type ColumnPreset = keyof typeof FACTOR_PRESETS
+const COLUMN_OPTIONS = (Object.keys(FACTOR_PRESETS) as ColumnPreset[]).map((k) => ({ key: k, label: FACTOR_PRESETS[k].label }))
 
 const PRACTICE_OPTIONS: ChipOption[] = [
   { id: 'dryland', label: 'Dryland' }, { id: 'irrigated', label: 'Irrigated' }, { id: 'mixed', label: 'Mixed' }, { id: 'unknown', label: 'No planting' },
@@ -78,10 +81,13 @@ export default function BaleQualityReport() {
   const cropYear = typeof cropYearValue === 'number' ? cropYearValue : new Date().getFullYear()
   const [filters, setFilters] = usePersistentState<BaleQualityFilters>('bale-quality:filters', EMPTY_FILTERS)
   const [groupBy, setGroupBy] = usePersistentState<GroupBy>('bale-quality:groupBy', 'field')
-  const [factors, setFactors] = usePersistentState<FactorKey[]>('bale-quality:factors', FACTOR_PRESETS.loan.factors)
+  // Every factor gets a tile; the preset only picks the comparison table's,
+  // the bale list's and the exports' columns.
+  const [columnPreset, setColumnPreset] = usePersistentState<ColumnPreset>('bale-quality:columns', 'loan')
+  const factors = FACTOR_PRESETS[columnPreset]?.factors ?? FACTOR_PRESETS.loan.factors
   const [weighting, setWeighting] = usePersistentState<Weighting>('bale-quality:weighting', 'bales')
   const [selectedFactorRaw, setSelectedFactor] = usePersistentState<FactorKey | null>('bale-quality:factor', null)
-  const selectedFactor = selectedFactorRaw && factors.includes(selectedFactorRaw) ? selectedFactorRaw : null
+  const selectedFactor = selectedFactorRaw && FACTOR_ORDER.includes(selectedFactorRaw) ? selectedFactorRaw : null
   const [drill, setDrill] = useState<Drill>(null)
   const setFilter = useCallback(<K extends keyof BaleQualityFilters>(k: K, v: BaleQualityFilters[K]) => setFilters((f) => ({ ...EMPTY_FILTERS, ...f, [k]: v })), [setFilters])
 
@@ -172,9 +178,9 @@ export default function BaleQualityReport() {
   const view: ContractView | null = useMemo(() => (contractChoice ? contractView(filtered, contractChoice.spec, appEstimatedBales) : null), [filtered, contractChoice, appEstimatedBales])
   const details = useMemo(() => {
     const out: Partial<Record<FactorKey, FactorDetail>> = {}
-    for (const f of factors) out[f] = factorDetail(filtered, f, cropYear, weighting, contractChoice?.spec ?? null, view?.evaluationOf)
+    for (const f of FACTOR_ORDER) out[f] = factorDetail(filtered, f, cropYear, weighting, contractChoice?.spec ?? null, view?.evaluationOf)
     return out
-  }, [filtered, factors, cropYear, weighting, contractChoice, view])
+  }, [filtered, cropYear, weighting, contractChoice, view])
   const grid = useMemo(() => colorGrid(filtered, weighting), [filtered, weighting])
   const groups = useMemo(() => groupRows(filtered, groupBy), [filtered, groupBy])
   const comparison = useMemo(() => comparisonRows(groups, factors, cropYear, weighting, contractChoice?.spec ?? null), [groups, factors, cropYear, weighting, contractChoice])
@@ -306,7 +312,6 @@ export default function BaleQualityReport() {
               {bands.cropYear !== cropYear && <span className="text-amber-700"> (no {cropYear} schedule entered yet — using {bands.cropYear})</span>}.
             </div>
           </div>
-          <FactorPicker value={factors} onChange={setFactors} />
         </div>
       </ReportFilterBar>
 
@@ -338,7 +343,7 @@ export default function BaleQualityReport() {
             <SectionTitle right={<span className="text-xs text-slate-500 no-print">Tap a factor for its distribution{contractChoice ? ' and the contract line' : ''}</span>}>
               Grade factors <span className="text-sm font-normal text-slate-500">· {weighting === 'lbs' ? 'lbs-weighted' : 'per bale'}</span>
             </SectionTitle>
-            <FactorTiles factors={factors} details={details} selected={selectedFactor} onSelect={setSelectedFactor} hasContract={!!contractChoice} />
+            <FactorTiles factors={FACTOR_ORDER} details={details} selected={selectedFactor} onSelect={setSelectedFactor} hasContract={!!contractChoice} />
             {selectedFactor && details[selectedFactor] && (
               <FactorDetailPanel
                 detail={details[selectedFactor]!}
@@ -354,7 +359,11 @@ export default function BaleQualityReport() {
             )}
           </section>
 
-          <ComparisonTable rows={comparison.rows} total={comparison.total} factors={factors} groupBy={groupBy} onGroupBy={setGroupBy} cropYear={cropYear} contractLabel={contractChoice?.label ?? null} weighting={weighting} />
+          <ComparisonTable
+            rows={comparison.rows} total={comparison.total} factors={factors} groupBy={groupBy} onGroupBy={setGroupBy}
+            columnPreset={columnPreset} onColumnPreset={setColumnPreset}
+            cropYear={cropYear} contractLabel={contractChoice?.label ?? null} weighting={weighting}
+          />
 
           <BaleList
             rows={drillRows} allCount={filtered.length} factors={factors} cropYear={cropYear} drill={drill} onClearDrill={() => setDrill(null)}
@@ -457,8 +466,9 @@ function ContractPanel({ choice, view, onDrill, excludeCommitted, onExcludeCommi
 // ---------------------------------------------------------------------------
 
 type SortKey = string
-function ComparisonTable({ rows, total, factors, groupBy, onGroupBy, cropYear, contractLabel, weighting }: {
-  rows: ComparisonRow[]; total: ComparisonRow; factors: FactorKey[]; groupBy: GroupBy; onGroupBy: (g: GroupBy) => void; cropYear: number; contractLabel: string | null; weighting: Weighting
+function ComparisonTable({ rows, total, factors, groupBy, onGroupBy, columnPreset, onColumnPreset, cropYear, contractLabel, weighting }: {
+  rows: ComparisonRow[]; total: ComparisonRow; factors: FactorKey[]; groupBy: GroupBy; onGroupBy: (g: GroupBy) => void
+  columnPreset: ColumnPreset; onColumnPreset: (p: ColumnPreset) => void; cropYear: number; contractLabel: string | null; weighting: Weighting
 }) {
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'label', dir: 1 })
   const columns = useMemo(() => {
@@ -496,7 +506,10 @@ function ComparisonTable({ rows, total, factors, groupBy, onGroupBy, cropYear, c
     <div className="bg-white rounded-xl shadow">
       <div className="px-4 pt-3 pb-2 flex flex-wrap items-center gap-x-4 gap-y-2">
         <div className="font-semibold">By {GROUP_BY_LABEL[groupBy].toLowerCase()} <span className="text-sm font-normal text-slate-500">· {weighting === 'lbs' ? 'lbs-weighted' : 'per bale'} · tap a heading to sort · cells shaded by price band</span></div>
-        <div className="no-print sm:ml-auto"><SegmentedChips options={GROUP_OPTIONS} value={groupBy} onChange={onGroupBy} /></div>
+        <div className="no-print sm:ml-auto flex flex-wrap items-end gap-3">
+          <SegmentedChips label="Group by" options={GROUP_OPTIONS} value={groupBy} onChange={onGroupBy} />
+          <SegmentedChips label="Columns (also the bale list and exports)" options={COLUMN_OPTIONS} value={columnPreset} onChange={onColumnPreset} />
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm border-collapse">
