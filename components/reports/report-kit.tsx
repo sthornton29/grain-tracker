@@ -66,27 +66,43 @@ export function ReportHeader({
 // A single horizontal filter row. On narrow screens (iPad portrait / phone) it
 // collapses behind a "Filters" button with a count badge of active filters.
 export function ReportFilterBar({
-  children, activeCount = 0,
+  children, activeCount = 0, collapsible = false, label = 'Filters', alwaysVisible,
 }: {
   children: ReactNode
   activeCount?: number
+  /** Collapsed at every size (not just phones): the filters open in a drawer
+   *  under the button. The report header's filter summary says what's
+   *  active while the drawer is closed. */
+  collapsible?: boolean
+  /** The toggle's text (e.g. "Filters & display"). */
+  label?: string
+  /** Controls that stay out of the drawer, in the same row as the button
+   *  (the one or two choices a user changes most). */
+  alwaysVisible?: ReactNode
 }) {
   const [open, setOpen] = useState(false)
+  const toggleCls = collapsible ? 'inline-flex' : 'sm:hidden inline-flex'
+  const bodyCls = collapsible
+    ? `${open ? 'flex' : 'hidden'} flex-wrap gap-3 items-end mt-2 rounded-xl border border-slate-200 bg-white p-3`
+    : `${open ? 'flex' : 'hidden'} sm:flex flex-wrap gap-3 items-end mt-2 sm:mt-0`
   return (
     <div className="no-print">
-      {/* Collapsed control — only on small screens. */}
-      <button
-        type="button"
-        onClick={() => setOpen((s) => !s)}
-        className="sm:hidden inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium"
-      >
-        <span>{open ? '▾' : '▸'} Filters</span>
-        {activeCount > 0 && (
-          <span className="rounded-full bg-slate-800 text-white text-xs px-1.5 py-0.5 leading-none">{activeCount}</span>
-        )}
-      </button>
-      {/* Filters: always visible on sm+, toggle on mobile. */}
-      <div className={`${open ? 'flex' : 'hidden'} sm:flex flex-wrap gap-3 items-end mt-2 sm:mt-0`}>
+      <div className="flex flex-wrap items-end gap-3">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((s) => !s)}
+          className={`${toggleCls} items-center gap-2 rounded-lg border bg-white px-3 min-h-11 text-sm font-medium ${open ? 'border-slate-800' : 'border-slate-300'} ${collapsible ? 'self-end' : ''}`}
+        >
+          <span>{open ? '▾' : '▸'} {label}</span>
+          {activeCount > 0 && (
+            <span className="rounded-full bg-slate-800 text-white text-xs px-1.5 py-0.5 leading-none">{activeCount}</span>
+          )}
+        </button>
+        {alwaysVisible}
+      </div>
+      {/* Filters: in a drawer when collapsible; otherwise always visible on sm+, toggle on mobile. */}
+      <div className={bodyCls}>
         {children}
       </div>
     </div>

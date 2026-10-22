@@ -1,13 +1,21 @@
 'use client'
 
-// Bale Quality (2026-10-20) — the HVI quality package a merchant would envy:
-// filter by entity / farm / field / variety / gin / receipt / practice /
-// class date / disposition / contract; group by anything; pick and order
-// the grade factors; bale- or lbs-weighted. KPI strip, one distribution
-// card per factor colored by the crop year's price band, the USDA color
-// grid as a heatmap, a comparison table, and the bale list drill-down.
-// With a contract that carries quality requirements: the headline, the cap
-// tracker, the projection, the Pareto of failing factors and result chips.
+// Bale Quality (2026-10-20, layout 2026-10-21) — the HVI quality package a
+// merchant would envy, laid out so the data leads:
+//
+//   header        title, the active filters in plain English, exports
+//   control strip crop year + contract always in reach; every other filter
+//                 and the display choices (weighting, factors) wait in a
+//                 drawer behind "Filters & display"
+//   KPI strip     classed bales, lint lbs, avg loan value, base-or-better,
+//                 % meets contract
+//   contract      the headline, cap tracker, projection, why bales fail
+//   factor tiles  one slim tile per grade factor; tap one to open its detail
+//                 (histogram at the factor's own precision, contract line,
+//                 averages, spread, fails) — the Color detail carries the
+//                 USDA color grid
+//   comparison    one row per group (Group by lives on the table)
+//   bale list     the drill-down target for every tap above
 //
 // Every number comes from lib/bale-quality-report.ts (pure); the exports
 // from lib/bale-quality-export.ts through lib/exports.ts.
@@ -28,21 +36,19 @@ import {
 } from '@/components/reports/report-kit'
 import { ChipMultiSelect, SegmentedChips, type ChipOption } from '@/components/reports/chip-select'
 import { FactorPicker } from '@/components/reports/factor-picker'
-import {
-  BAND_LABEL, COLOR_GRID_COLUMNS, COLOR_GRID_ROWS, FACTORS, FACTOR_PRESETS, bandsFor, bucketOf, colorGridCode, factorText, factorValue,
-  type Band, type FactorKey,
-} from '@/lib/cotton-quality'
+import { FactorTiles, FactorDetailPanel, SectionTitle, avgText, bandBg, pct1 } from '@/components/reports/factor-detail'
+import { FACTORS, FACTOR_PRESETS, bandsFor, factorText, factorValue, type Band, type FactorKey } from '@/lib/cotton-quality'
 import { EVALUATION_LABEL, specFromRow, specHasFiberTerms, specSummaryLine, type BaleEvaluation, type ContractQualitySpec } from '@/lib/cotton-contract-spec'
 import {
-  activeFilterCount, applyFilters, bandTone, buildBaleRows, cellBand, colorGrid, comparisonRows, contractView, distribution, estimatedBalesFromAssumptions,
-  EMPTY_FILTERS, GROUP_BY_LABEL, groupRows, kpis, occupiedBuckets, NO_VARIETY,
-  type BaleQualityFilters, type BaleQualityInputs, type BaleRow, type ComparisonRow, type ContractView, type Distribution, type GroupBy, type Weighting,
+  activeFilterCount, applyFilters, bandTone, buildBaleRows, cellBand, colorGrid, comparisonRows, contractView, estimatedBalesFromAssumptions, factorDetail,
+  EMPTY_FILTERS, GROUP_BY_LABEL, groupRows, kpis, rowsInBin, NO_VARIETY,
+  type BaleQualityFilters, type BaleQualityInputs, type BaleRow, type ComparisonRow, type ContractView, type FactorBin, type FactorDetail, type GroupBy, type Weighting,
 } from '@/lib/bale-quality-report'
 import { buildBaleQualityPdfPayload, buildBaleQualityWorkbook, buildQualifyingBalesWorkbook, DISPOSITION_TEXT, kpiCards, type BaleQualityExportInput } from '@/lib/bale-quality-export'
 import type { CottonContractSpec, CottonDisposition, CottonSalesContract, CropAssumption } from '@/lib/types'
 
 type Drill =
-  | { kind: 'bucket'; factor: FactorKey; bucketKey: string; label: string }
+  | { kind: 'bin'; factor: FactorKey; min: number | null; max: number | null; code: string | null; label: string }
   | { kind: 'color'; code: string; label: string }
   | { kind: 'pareto'; factor: FactorKey; label: string }
   | { kind: 'result'; status: BaleEvaluation['status']; label: string }
@@ -55,14 +61,6 @@ const PRACTICE_OPTIONS: ChipOption[] = [
 ]
 const DISPOSITION_OPTIONS: ChipOption[] = (Object.keys(DISPOSITION_TEXT) as CottonDisposition[]).map((d) => ({ id: d, label: DISPOSITION_TEXT[d] }))
 const GROUP_OPTIONS = (Object.keys(GROUP_BY_LABEL) as GroupBy[]).map((k) => ({ key: k, label: GROUP_BY_LABEL[k] }))
-
-// Data-semantic colors (never brand green): premium favorable, discount
-// unfavorable, base neutral; non-banded buckets step through one hue.
-const BAND_FILL: Record<Band, string> = { premium: 'bg-green-600', base: 'bg-slate-400', discount: 'bg-red-500' }
-const SEQ_FILL = ['bg-sky-300', 'bg-sky-400', 'bg-sky-500', 'bg-sky-600', 'bg-sky-700', 'bg-sky-800', 'bg-sky-900', 'bg-slate-700']
-const bandBg = (band: Band | null) => (band === 'premium' ? 'bg-green-50' : band === 'discount' ? 'bg-red-50' : '')
-const pct1 = (v: number | null | undefined) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`)
-const avgText = (key: FactorKey, v: number | null) => (v == null ? '—' : key === 'staple' ? v.toFixed(1) : key === 'loan' ? `${v.toFixed(2)}¢` : factorText(key, v))
 
 export default function BaleQualityReport() {
   const supabase = useMemo(() => createClient(), [])
@@ -82,7 +80,8 @@ export default function BaleQualityReport() {
   const [groupBy, setGroupBy] = usePersistentState<GroupBy>('bale-quality:groupBy', 'field')
   const [factors, setFactors] = usePersistentState<FactorKey[]>('bale-quality:factors', FACTOR_PRESETS.loan.factors)
   const [weighting, setWeighting] = usePersistentState<Weighting>('bale-quality:weighting', 'bales')
-  const [bucketMode, setBucketMode] = usePersistentState<'coarse' | 'fine'>('bale-quality:buckets', 'coarse')
+  const [selectedFactorRaw, setSelectedFactor] = usePersistentState<FactorKey | null>('bale-quality:factor', null)
+  const selectedFactor = selectedFactorRaw && factors.includes(selectedFactorRaw) ? selectedFactorRaw : null
   const [drill, setDrill] = useState<Drill>(null)
   const setFilter = useCallback(<K extends keyof BaleQualityFilters>(k: K, v: BaleQualityFilters[K]) => setFilters((f) => ({ ...EMPTY_FILTERS, ...f, [k]: v })), [setFilters])
 
@@ -171,7 +170,11 @@ export default function BaleQualityReport() {
 
   const filtered = useMemo(() => applyFilters(rows, filters), [rows, filters])
   const view: ContractView | null = useMemo(() => (contractChoice ? contractView(filtered, contractChoice.spec, appEstimatedBales) : null), [filtered, contractChoice, appEstimatedBales])
-  const distributions = useMemo(() => Object.fromEntries(factors.map((f) => [f, distribution(filtered, f, cropYear, weighting, FACTORS[f].kind === 'number' && f !== 'loan' ? bucketMode : 'coarse')])) as Record<FactorKey, Distribution>, [filtered, factors, cropYear, weighting, bucketMode])
+  const details = useMemo(() => {
+    const out: Partial<Record<FactorKey, FactorDetail>> = {}
+    for (const f of factors) out[f] = factorDetail(filtered, f, cropYear, weighting, contractChoice?.spec ?? null, view?.evaluationOf)
+    return out
+  }, [filtered, factors, cropYear, weighting, contractChoice, view])
   const grid = useMemo(() => colorGrid(filtered, weighting), [filtered, weighting])
   const groups = useMemo(() => groupRows(filtered, groupBy), [filtered, groupBy])
   const comparison = useMemo(() => comparisonRows(groups, factors, cropYear, weighting, contractChoice?.spec ?? null), [groups, factors, cropYear, weighting, contractChoice])
@@ -220,25 +223,20 @@ export default function BaleQualityReport() {
   // Drill-down rows for the bale list.
   const drillRows = useMemo(() => {
     if (!drill) return filtered
-    return filtered.filter((r) => {
-      switch (drill.kind) {
-        case 'bucket': {
-          if (!r.grade) return false
-          const v = factorValue(r.grade, drill.factor)
-          const b = bucketOf(drill.factor, v, cropYear, FACTORS[drill.factor].kind === 'number' && drill.factor !== 'loan' ? bucketMode : 'coarse')
-          if (b) return b.key === drill.bucketKey
-          return (drill.bucketKey === 'ex_none' || drill.bucketKey === 'rm_none') && v == null
-        }
-        case 'color': return r.grade != null && factorValue(r.grade, 'color') === drill.code
-        case 'pareto': { const ev = view?.evaluationOf(r.id); return ev?.status === 'fails' && ev.failures.some((f) => f.factor === drill.factor) }
-        case 'result': return view?.evaluationOf(r.id)?.status === drill.status
-      }
-    })
-  }, [filtered, drill, cropYear, bucketMode, view])
+    switch (drill.kind) {
+      case 'bin': return rowsInBin(filtered, drill.factor, drill)
+      case 'color': return filtered.filter((r) => r.grade != null && factorValue(r.grade, 'color') === drill.code)
+      case 'pareto': return filtered.filter((r) => { const ev = view?.evaluationOf(r.id); return ev?.status === 'fails' && ev.failures.some((f) => f.factor === drill.factor) })
+      case 'result': return filtered.filter((r) => view?.evaluationOf(r.id)?.status === drill.status)
+    }
+  }, [filtered, drill, view])
 
   const cards = useMemo(() => kpiCards(exportInput()), [exportInput])
   const cottonIsOn = loaded && inputs != null
   const bands = bandsFor(cropYear)
+  // The counted filters leave out the contract itself — it has its own control in the strip.
+  const drawerCount = activeFilterCount({ ...filters, contractId: '', excludeCommitted: false })
+  const drillBin = (f: FactorKey) => (bin: FactorBin) => setDrill({ kind: 'bin', factor: f, min: bin.min, max: bin.max, code: bin.code, label: `${FACTORS[f].short} ${bin.label}` })
 
   return (
     <div className="space-y-4">
@@ -257,56 +255,60 @@ export default function BaleQualityReport() {
         )}
       />
 
-      <ReportFilterBar activeCount={activeFilterCount(filters)}>
-        <FilterField label="Crop year">
-          <select value={cropYear} onChange={(e) => setCropYear(Number(e.target.value))} className={selectCls}>
-            {yearChoices.map((y) => <option key={y} value={y}>{y}</option>)}
-          </select>
-        </FilterField>
-        {entityOptions.length > 1 && <ChipMultiSelect label="Entity" options={entityOptions} value={filters.entityIds} onChange={(v) => setFilter('entityIds', v)} inlineUpTo={4} />}
-        <ChipMultiSelect label="Farm" options={farmOptions} value={filters.farmIds} onChange={(v) => setFilter('farmIds', v)} searchable />
-        <ChipMultiSelect label="Field" options={fieldOptions} value={filters.fieldIds} onChange={(v) => setFilter('fieldIds', v)} searchable />
-        <ChipMultiSelect label="Variety" options={varietyOptions} value={filters.varieties} onChange={(v) => setFilter('varieties', v)} inlineUpTo={5} />
-        {ginOptions.length > 1 && <ChipMultiSelect label="Gin" options={ginOptions} value={filters.ginIds} onChange={(v) => setFilter('ginIds', v)} inlineUpTo={4} />}
-        <ChipMultiSelect label="Gin receipt" options={receiptOptions} value={filters.receiptIds} onChange={(v) => setFilter('receiptIds', v)} searchable />
-        <ChipMultiSelect label="Practice" options={PRACTICE_OPTIONS} value={filters.practices} onChange={(v) => setFilter('practices', v as BaleQualityFilters['practices'])} />
-        <FilterField label="Classed from">
-          <input type="date" value={filters.classFrom} onChange={(e) => setFilter('classFrom', e.target.value)} className={inputCls} />
-        </FilterField>
-        <FilterField label="to">
-          <input type="date" value={filters.classTo} onChange={(e) => setFilter('classTo', e.target.value)} className={inputCls} />
-        </FilterField>
-        <ChipMultiSelect label="Disposition" options={DISPOSITION_OPTIONS} value={filters.dispositions} onChange={(v) => setFilter('dispositions', v as CottonDisposition[])} inlineUpTo={5} />
-        <FilterField label="Contract">
-          <select value={contractChoice ? contractChoice.contract.id : ''} onChange={(e) => { setFilter('contractId', e.target.value); setDrill(null) }} className={selectCls}>
-            <option value="">— none —</option>
-            {contractChoices.map((c) => <option key={c.contract.id} value={c.contract.id}>{c.label}</option>)}
-          </select>
-        </FilterField>
-        {contractChoice && (
-          <label className="flex items-center gap-2 text-sm min-h-10 self-end">
-            <input type="checkbox" checked={filters.excludeCommitted} onChange={(e) => setFilter('excludeCommitted', e.target.checked)} className="h-4 w-4 accent-[#36B449]" />
-            Exclude bales committed elsewhere
-            <InfoTip label="?">Leaves out bales already in a CCC loan, sold, pooled, or assigned to another contract. Off by default.</InfoTip>
-          </label>
+      <ReportFilterBar
+        collapsible
+        label="Filters & display"
+        activeCount={drawerCount}
+        alwaysVisible={(
+          <>
+            <FilterField label="Crop year">
+              <select value={cropYear} onChange={(e) => setCropYear(Number(e.target.value))} className={selectCls}>
+                {yearChoices.map((y) => <option key={y} value={y}>{y}</option>)}
+              </select>
+            </FilterField>
+            <FilterField label="Contract">
+              <select value={contractChoice ? contractChoice.contract.id : ''} onChange={(e) => { setFilter('contractId', e.target.value); setDrill(null) }} className={selectCls}>
+                <option value="">— none —</option>
+                {contractChoices.map((c) => <option key={c.contract.id} value={c.contract.id}>{c.label}</option>)}
+              </select>
+            </FilterField>
+            {drawerCount > 0 && (
+              <button type="button" onClick={() => { setFilters({ ...EMPTY_FILTERS, contractId: filters.contractId }); setDrill(null) }} className="text-xs text-slate-500 underline px-2 min-h-11 self-end">Clear filters</button>
+            )}
+          </>
         )}
-        {activeFilterCount(filters) > 0 && (
-          <button type="button" onClick={() => { setFilters({ ...EMPTY_FILTERS }); setDrill(null) }} className="text-xs text-slate-500 underline px-2 min-h-10 self-end">Clear filters</button>
-        )}
-      </ReportFilterBar>
-
-      <div className="no-print flex flex-wrap gap-4 items-end">
-        <SegmentedChips label="Group by" options={GROUP_OPTIONS} value={groupBy} onChange={setGroupBy} />
-        <SegmentedChips label="Weighting" options={[{ key: 'bales', label: 'Per bale' }, { key: 'lbs', label: 'Per lb' }]} value={weighting} onChange={setWeighting} />
-        <SegmentedChips label="Buckets" options={[{ key: 'coarse', label: 'Price bands' }, { key: 'fine', label: 'Loan schedule' }]} value={bucketMode} onChange={setBucketMode} />
-        <div className="text-xs text-slate-500 max-w-md self-center">
-          Loan value ¢/lb is always lbs-weighted. Bands: {bands.source}
-          {bands.cropYear !== cropYear && <span className="text-amber-700"> (no {cropYear} schedule entered yet — using {bands.cropYear})</span>}.
+      >
+        <div className="w-full space-y-2">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Narrow the bales</div>
+          <div className="flex flex-wrap gap-3 items-end">
+            {entityOptions.length > 1 && <ChipMultiSelect label="Entity" options={entityOptions} value={filters.entityIds} onChange={(v) => setFilter('entityIds', v)} inlineUpTo={4} />}
+            <ChipMultiSelect label="Farm" options={farmOptions} value={filters.farmIds} onChange={(v) => setFilter('farmIds', v)} searchable />
+            <ChipMultiSelect label="Field" options={fieldOptions} value={filters.fieldIds} onChange={(v) => setFilter('fieldIds', v)} searchable />
+            <ChipMultiSelect label="Variety" options={varietyOptions} value={filters.varieties} onChange={(v) => setFilter('varieties', v)} inlineUpTo={5} />
+            {ginOptions.length > 1 && <ChipMultiSelect label="Gin" options={ginOptions} value={filters.ginIds} onChange={(v) => setFilter('ginIds', v)} inlineUpTo={4} />}
+            <ChipMultiSelect label="Gin receipt" options={receiptOptions} value={filters.receiptIds} onChange={(v) => setFilter('receiptIds', v)} searchable />
+            <ChipMultiSelect label="Practice" options={PRACTICE_OPTIONS} value={filters.practices} onChange={(v) => setFilter('practices', v as BaleQualityFilters['practices'])} />
+            <FilterField label="Classed from">
+              <input type="date" value={filters.classFrom} onChange={(e) => setFilter('classFrom', e.target.value)} className={inputCls} />
+            </FilterField>
+            <FilterField label="to">
+              <input type="date" value={filters.classTo} onChange={(e) => setFilter('classTo', e.target.value)} className={inputCls} />
+            </FilterField>
+            <ChipMultiSelect label="Disposition" options={DISPOSITION_OPTIONS} value={filters.dispositions} onChange={(v) => setFilter('dispositions', v as CottonDisposition[])} inlineUpTo={5} />
+          </div>
         </div>
-      </div>
-      <div className="no-print">
-        <FactorPicker value={factors} onChange={setFactors} />
-      </div>
+        <div className="w-full space-y-2 pt-2 border-t border-slate-100">
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Display</div>
+          <div className="flex flex-wrap gap-4 items-end">
+            <SegmentedChips label="Weighting" options={[{ key: 'bales', label: 'Per bale' }, { key: 'lbs', label: 'Per lb' }]} value={weighting} onChange={setWeighting} />
+            <div className="text-xs text-slate-500 max-w-md self-center">
+              Loan value ¢/lb is always lbs-weighted. Price bands: {bands.source}
+              {bands.cropYear !== cropYear && <span className="text-amber-700"> (no {cropYear} schedule entered yet — using {bands.cropYear})</span>}.
+            </div>
+          </div>
+          <FactorPicker value={factors} onChange={setFactors} />
+        </div>
+      </ReportFilterBar>
 
       {loadError && <p className="text-sm text-red-700">{loadError}</p>}
       {!loaded && <p className="text-sm text-slate-400">Loading bales…</p>}
@@ -315,7 +317,7 @@ export default function BaleQualityReport() {
         <EmptyState message={`No ${cropYear} bales yet.`} hint="Bales come from gin receipts; classing data from the Bales & Grades import." linkHref="/cotton/receipts" linkLabel="Add gin receipts" role={viewer.role} />
       )}
       {cottonIsOn && rows.length > 0 && filtered.length === 0 && (
-        <EmptyState message="No bales match these filters." hint="Clear a chip or two." />
+        <EmptyState message="No bales match these filters." hint="Open Filters & display and clear a chip or two." />
       )}
 
       {cottonIsOn && filtered.length > 0 && (
@@ -326,18 +328,33 @@ export default function BaleQualityReport() {
           )}
 
           {contractChoice && view && (
-            <ContractPanel choice={contractChoice} view={view} lbsLabel={weighting === 'lbs'} onDrill={setDrill} />
+            <ContractPanel
+              choice={contractChoice} view={view} onDrill={setDrill}
+              excludeCommitted={filters.excludeCommitted} onExcludeCommitted={(v) => setFilter('excludeCommitted', v)}
+            />
           )}
 
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {factors.map((f) => (
-              <FactorCard key={f} factor={f} d={distributions[f]} weighting={weighting} cropYear={cropYear} onDrill={(bucketKey, label) => setDrill({ kind: 'bucket', factor: f, bucketKey, label: `${FACTORS[f].short} ${label}` })} />
-            ))}
-          </div>
+          <section className="space-y-3">
+            <SectionTitle right={<span className="text-xs text-slate-500 no-print">Tap a factor for its distribution{contractChoice ? ' and the contract line' : ''}</span>}>
+              Grade factors <span className="text-sm font-normal text-slate-500">· {weighting === 'lbs' ? 'lbs-weighted' : 'per bale'}</span>
+            </SectionTitle>
+            <FactorTiles factors={factors} details={details} selected={selectedFactor} onSelect={setSelectedFactor} hasContract={!!contractChoice} />
+            {selectedFactor && details[selectedFactor] && (
+              <FactorDetailPanel
+                detail={details[selectedFactor]!}
+                weighting={weighting}
+                contractLabel={contractChoice?.label ?? null}
+                onDrillBin={drillBin(selectedFactor)}
+                onDrillFails={() => setDrill({ kind: 'pareto', factor: selectedFactor, label: `Fails ${FACTORS[selectedFactor].short}` })}
+                onClose={() => setSelectedFactor(null)}
+                grid={selectedFactor === 'color' ? grid : undefined}
+                spec={contractChoice?.spec ?? null}
+                onDrillColor={(code, label) => setDrill({ kind: 'color', code, label })}
+              />
+            )}
+          </section>
 
-          <ColorGridCard grid={grid} spec={contractChoice?.spec ?? null} weighting={weighting} onDrill={(code, label) => setDrill({ kind: 'color', code, label })} />
-
-          <ComparisonTable rows={comparison.rows} total={comparison.total} factors={factors} groupBy={groupBy} cropYear={cropYear} contractLabel={contractChoice?.label ?? null} weighting={weighting} />
+          <ComparisonTable rows={comparison.rows} total={comparison.total} factors={factors} groupBy={groupBy} onGroupBy={setGroupBy} cropYear={cropYear} contractLabel={contractChoice?.label ?? null} weighting={weighting} />
 
           <BaleList
             rows={drillRows} allCount={filtered.length} factors={factors} cropYear={cropYear} drill={drill} onClearDrill={() => setDrill(null)}
@@ -356,134 +373,12 @@ function uniq(list: ChipOption[]): ChipOption[] {
 }
 
 // ---------------------------------------------------------------------------
-// Factor card: a slim distribution bar colored by price band
-// ---------------------------------------------------------------------------
-
-function FactorCard({ factor, d, weighting, cropYear, onDrill }: { factor: FactorKey; d: Distribution; weighting: Weighting; cropYear: number; onDrill: (bucketKey: string, label: string) => void }) {
-  const def = FACTORS[factor]
-  const occupied = occupiedBuckets(d)
-  const denom = weighting === 'lbs' ? d.classedLbs : d.classed
-  const legend = occupied.slice().sort((a, z) => z.pct - a.pct)
-  void cropYear
-  return (
-    <div className="bg-white rounded-xl shadow p-4 space-y-2">
-      <div className="flex items-baseline justify-between gap-2">
-        <div className="font-semibold">{def.label}</div>
-        {def.kind === 'number' && (
-          <div className="text-right">
-            <div className="text-xl font-bold tabular-nums">{avgText(factor, d.average)}</div>
-            <div className="text-[11px] text-slate-500">
-              {factor === 'loan' ? 'avg, lbs-weighted' : weighting === 'lbs' ? 'avg, lbs-weighted' : 'avg per bale'}
-              {factor !== 'loan' && d.averageOther != null && <> · {weighting === 'lbs' ? 'per bale' : 'lbs-wtd'} {avgText(factor, d.averageOther)}</>}
-            </div>
-          </div>
-        )}
-      </div>
-      {d.classed === 0 ? (
-        <p className="text-xs text-slate-400">No readings for this factor.</p>
-      ) : (
-        <>
-          <div className="flex h-5 w-full gap-0.5 rounded overflow-hidden" role="img" aria-label={`${def.label} distribution`}>
-            {occupied.map((b, i) => (
-              <button
-                key={b.key}
-                type="button"
-                onClick={() => onDrill(b.key, b.label)}
-                style={{ width: `${Math.max(b.pct * 100, 1.5)}%` }}
-                className={`${b.band ? BAND_FILL[b.band] : SEQ_FILL[Math.min(i, SEQ_FILL.length - 1)]} hover:opacity-80 focus-visible:ring-2 focus-visible:ring-slate-800 rounded-sm`}
-                aria-label={`${b.label}: ${weighting === 'lbs' ? fmtInt(b.lbs) + ' lbs' : b.bales + ' bales'} (${pct1(b.pct)}). Show these bales.`}
-              />
-            ))}
-          </div>
-          {def.banded && (
-            <div className="flex gap-3 text-xs tabular-nums">
-              <span className={toneText('favorable')}>Premium {pct1(d.byBand.premium.pct)}</span>
-              <span className="text-slate-600">Base {pct1(d.byBand.base.pct)}</span>
-              <span className={toneText('unfavorable')}>Discount {pct1(d.byBand.discount.pct)}</span>
-            </div>
-          )}
-          <ul className="text-xs space-y-0.5 max-h-40 overflow-y-auto">
-            {legend.map((b, i) => (
-              <li key={b.key}>
-                <button type="button" onClick={() => onDrill(b.key, b.label)} className="flex items-center gap-2 w-full text-left min-h-7 hover:bg-slate-50 rounded px-1">
-                  <span className={`inline-block h-2.5 w-2.5 rounded-sm ${b.band ? BAND_FILL[b.band] : SEQ_FILL[Math.min(occupied.indexOf(b), SEQ_FILL.length - 1)]}`} aria-hidden="true" />
-                  <span className="flex-1 truncate">{b.label}{b.band ? <span className="text-slate-400"> · {BAND_LABEL[b.band].toLowerCase()}</span> : null}</span>
-                  <span className="tabular-nums text-slate-700">{pct1(b.pct)}</span>
-                  <span className="tabular-nums text-slate-400 w-14 text-right">{weighting === 'lbs' ? fmtInt(b.lbs) : b.bales}</span>
-                </button>
-                {i === legend.length - 1 && denom === 0 ? null : null}
-              </li>
-            ))}
-          </ul>
-          {d.missing > 0 && <p className="text-[11px] text-slate-400">{d.missing} classed bale{d.missing === 1 ? '' : 's'} without a reading.</p>}
-        </>
-      )}
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// Color grid heatmap
-// ---------------------------------------------------------------------------
-
-function ColorGridCard({ grid, spec, weighting, onDrill }: { grid: ReturnType<typeof colorGrid>; spec: ContractQualitySpec | null; weighting: Weighting; onDrill: (code: string, label: string) => void }) {
-  const maxPct = Math.max(0, ...Array.from(grid.cells.values()).map((c) => c.pct))
-  const allowed = spec?.allowed_color_codes?.length ? new Set(spec.allowed_color_codes) : null
-  const hatch = 'repeating-linear-gradient(45deg, transparent 0 4px, rgba(15,23,42,0.10) 4px 6px)'
-  return (
-    <div className="bg-white rounded-xl shadow p-4 space-y-2">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div className="font-semibold">Color grade grid <span className="text-sm font-normal text-slate-500">· {grid.classed.toLocaleString()} classed bales · {weighting === 'lbs' ? '% of lbs' : '% of bales'}</span></div>
-        {allowed && <div className="text-xs text-slate-500">Hatched cells are outside the contract&rsquo;s allowed colors.</div>}
-      </div>
-      <div className="overflow-x-auto">
-        <table className="min-w-full text-xs border-collapse">
-          <thead>
-            <tr>
-              <th className="text-left px-2 py-1 text-slate-500 font-medium">Grade</th>
-              {COLOR_GRID_COLUMNS.map((c) => <th key={c.column} className="px-2 py-1 text-slate-500 font-medium text-center">{c.label}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {COLOR_GRID_ROWS.map((r) => (
-              <tr key={r.row}>
-                <td className="px-2 py-1 whitespace-nowrap text-slate-700">{r.row} <span className="text-slate-400">{r.symbol}</span></td>
-                {COLOR_GRID_COLUMNS.map((c) => {
-                  const code = colorGridCode(r.row, c.column)
-                  if (!code) return <td key={c.column} className="px-1 py-1"><div className="h-11 rounded bg-slate-50" /></td>
-                  const cellV = grid.cells.get(code)
-                  const outside = allowed ? !allowed.has(code) : false
-                  const alpha = cellV && maxPct > 0 ? 0.12 + 0.7 * (cellV.pct / maxPct) : 0
-                  return (
-                    <td key={c.column} className="px-1 py-1">
-                      <button
-                        type="button"
-                        disabled={!cellV}
-                        onClick={() => cellV && onDrill(code, `Color ${code}`)}
-                        style={{ backgroundImage: outside ? hatch : undefined, backgroundColor: cellV ? `rgba(2, 132, 199, ${alpha})` : undefined }}
-                        className={`w-full min-w-[4.5rem] h-11 rounded border text-left px-1.5 ${cellV ? 'border-sky-200 hover:ring-2 hover:ring-sky-500' : 'border-slate-100 text-slate-300'} ${outside && cellV ? 'border-red-300' : ''}`}
-                        aria-label={cellV ? `${code}: ${cellV.bales} bales, ${pct1(cellV.pct)}${outside ? ', outside the contract' : ''}. Show these bales.` : `${code}: no bales`}
-                      >
-                        <span className="block text-[11px] leading-tight text-slate-700">{code}{outside && cellV ? <span className="text-red-700"> ✕</span> : null}</span>
-                        {cellV && <span className="block text-[11px] leading-tight tabular-nums font-semibold text-slate-900">{cellV.bales.toLocaleString()} · {pct1(cellV.pct)}</span>}
-                      </button>
-                    </td>
-                  )
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
 // Contract panel
 // ---------------------------------------------------------------------------
 
-function ContractPanel({ choice, view, lbsLabel, onDrill }: { choice: ContractChoice; view: ContractView; lbsLabel: boolean; onDrill: (d: Drill) => void }) {
+function ContractPanel({ choice, view, onDrill, excludeCommitted, onExcludeCommitted }: {
+  choice: ContractChoice; view: ContractView; onDrill: (d: Drill) => void; excludeCommitted: boolean; onExcludeCommitted: (v: boolean) => void
+}) {
   const s = view.summary
   const capPct = s.cap && s.cap > 0 ? Math.min(1, s.meets / s.cap) : null
   const projPct = s.cap && s.cap > 0 && s.projection ? Math.min(1, s.projection.projected / s.cap) : null
@@ -503,7 +398,14 @@ function ContractPanel({ choice, view, lbsLabel, onDrill }: { choice: ContractCh
           <button type="button" onClick={() => onDrill({ kind: 'result', status: 'not_classed', label: 'Not classed' })} className="underline decoration-dotted min-h-7">{s.notClassed.toLocaleString()} not yet classed</button>
         </div>
       </div>
-      <div className="text-xs text-slate-500">{specSummaryLine(choice.spec)}{choice.spec.eligible_fsa_farms?.length ? ` · ${choice.spec.eligible_fsa_farms.length} eligible FSA farms` : ''}{choice.spec.base_price_cents != null ? ` · ${(choice.spec.base_price_cents / 100).toFixed(2)} $/lb on ${choice.spec.base_grade ?? 'base'}` : ''}</div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <div className="text-xs text-slate-500">{specSummaryLine(choice.spec)}{choice.spec.eligible_fsa_farms?.length ? ` · ${choice.spec.eligible_fsa_farms.length} eligible FSA farms` : ''}{choice.spec.base_price_cents != null ? ` · ${(choice.spec.base_price_cents / 100).toFixed(2)} $/lb on ${choice.spec.base_grade ?? 'base'}` : ''}</div>
+        <label className="flex items-center gap-2 text-xs min-h-8 no-print">
+          <input type="checkbox" checked={excludeCommitted} onChange={(e) => onExcludeCommitted(e.target.checked)} className="h-4 w-4 accent-[#36B449]" />
+          Exclude bales committed elsewhere
+          <InfoTip label="?">Leaves out bales already in a CCC loan, sold, pooled, or assigned to another contract. Off by default.</InfoTip>
+        </label>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="space-y-2">
@@ -512,7 +414,7 @@ function ContractPanel({ choice, view, lbsLabel, onDrill }: { choice: ContractCh
             <>
               <div className="relative h-5 rounded bg-slate-100 overflow-hidden" role="img" aria-label={`${s.meets} qualifying bales of a ${s.cap} cap`}>
                 <div className="absolute inset-y-0 left-0 bg-green-600 rounded-r" style={{ width: `${(capPct ?? 0) * 100}%` }} />
-                {projPct != null && <div className="absolute inset-y-0 w-0.5 bg-sky-700" style={{ left: `${projPct * 100}%` }} title="Projected qualifying (estimate)" />}
+                {projPct != null && <div className="absolute inset-y-0 w-0.5 bg-sky-700" style={{ left: `${projPct * 100}%` }} />}
               </div>
               <div className="text-sm tabular-nums"><span className="font-semibold">{s.meets.toLocaleString()}</span> qualifying bales of the <span className="font-semibold">{s.cap.toLocaleString()}</span> cap ({pct1(capPct)})</div>
             </>
@@ -543,7 +445,7 @@ function ContractPanel({ choice, view, lbsLabel, onDrill }: { choice: ContractCh
               ))}
             </ul>
           )}
-          {s.singleFactorFails > 0 && <div className="text-xs text-slate-500">{s.singleFactorFails.toLocaleString()} bale{s.singleFactorFails === 1 ? '' : 's'} fail on exactly one factor{lbsLabel ? '' : ''}.</div>}
+          {s.singleFactorFails > 0 && <div className="text-xs text-slate-500">{s.singleFactorFails.toLocaleString()} bale{s.singleFactorFails === 1 ? '' : 's'} fail on exactly one factor.</div>}
         </div>
       </div>
     </div>
@@ -555,7 +457,9 @@ function ContractPanel({ choice, view, lbsLabel, onDrill }: { choice: ContractCh
 // ---------------------------------------------------------------------------
 
 type SortKey = string
-function ComparisonTable({ rows, total, factors, groupBy, cropYear, contractLabel, weighting }: { rows: ComparisonRow[]; total: ComparisonRow; factors: FactorKey[]; groupBy: GroupBy; cropYear: number; contractLabel: string | null; weighting: Weighting }) {
+function ComparisonTable({ rows, total, factors, groupBy, onGroupBy, cropYear, contractLabel, weighting }: {
+  rows: ComparisonRow[]; total: ComparisonRow; factors: FactorKey[]; groupBy: GroupBy; onGroupBy: (g: GroupBy) => void; cropYear: number; contractLabel: string | null; weighting: Weighting
+}) {
   const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'label', dir: 1 })
   const columns = useMemo(() => {
     const cols: Array<{ key: SortKey; label: string; get: (r: ComparisonRow) => number | string | null; tone?: (r: ComparisonRow) => Tone; band?: (r: ComparisonRow) => Band | null; fmt: (v: number | string | null) => string; numeric: boolean }> = [
@@ -590,7 +494,10 @@ function ComparisonTable({ rows, total, factors, groupBy, cropYear, contractLabe
   const onSort = (key: SortKey) => setSort((s) => (s.key === key ? { key, dir: s.dir === 1 ? -1 : 1 } : { key, dir: key === 'label' ? 1 : -1 }))
   return (
     <div className="bg-white rounded-xl shadow">
-      <div className="px-4 pt-3 pb-1 font-semibold">By {GROUP_BY_LABEL[groupBy].toLowerCase()} <span className="text-sm font-normal text-slate-500">· {weighting === 'lbs' ? 'lbs-weighted' : 'per bale'} · tap a heading to sort · cells shaded by price band</span></div>
+      <div className="px-4 pt-3 pb-2 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="font-semibold">By {GROUP_BY_LABEL[groupBy].toLowerCase()} <span className="text-sm font-normal text-slate-500">· {weighting === 'lbs' ? 'lbs-weighted' : 'per bale'} · tap a heading to sort · cells shaded by price band</span></div>
+        <div className="no-print sm:ml-auto"><SegmentedChips options={GROUP_OPTIONS} value={groupBy} onChange={onGroupBy} /></div>
+      </div>
       <div className="overflow-x-auto">
         <table className="min-w-full text-sm border-collapse">
           <thead className={theadCls}>

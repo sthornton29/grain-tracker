@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
-  applyFilters, buildBaleRows, classWeekOf, colorGrid, comparisonRows, contractView, distribution, EMPTY_FILTERS, factorAverage,
-  groupRows, kpis, varietyOfPlanting, committedElsewhere, type BaleQualityInputs, type BaleRow,
+  applyFilters, buildBaleRows, classWeekOf, colorGrid, comparisonRows, contractView, distribution, EMPTY_FILTERS, factorAverage, factorDetail,
+  groupRows, kpis, rowsInBin, varietyOfPlanting, committedElsewhere, type BaleQualityInputs, type BaleRow,
 } from '@/lib/bale-quality-report'
 import { buildBaleQualityPdfPayload, buildBaleQualityWorkbook, buildQualifyingBalesWorkbook, SECTION, SPEC_ROW, kpiCards } from '@/lib/bale-quality-export'
 import { evaluatePayload, formulaTextOf, payloadHasFormulas, formulaLayout, type ExportPayload } from '@/lib/exports'
@@ -322,5 +322,76 @@ describe('Excel workbook — live formulas prove the app’s numbers', () => {
     expect(grid[SECTION.summary][sRows.findIndex((r) => r[1] === '3.7–4.2')][5]).toBeCloseTo(1455 / 4435, 9)
     const q = buildQualifyingBalesWorkbook({ cropYear: 2026, rows, factors: ['mic'], groupBy: 'overall', weighting: 'bales', filterSummary: 'x', contract: { id: 'VS', label: 'VS&Co', spec: VS_SPEC, view } })
     expect(q.sections[0].rows.map((r) => r[0])).toEqual(['181001', '181002'])
+  })
+})
+
+describe('factor detail — the panel behind a tile', () => {
+  const rows = buildBaleRows(fixture())
+  const view = contractView(rows, VS_SPEC, null)
+
+  it('mic bins at tenths from the lowest to the highest reading, colored by band, with the contract range 4.0–4.7 drawn as allowed', () => {
+    const d = factorDetail(rows, 'mic', 2026, 'bales', VS_SPEC, view.evaluationOf)
+    expect(d.step).toBe(0.1)
+    expect(d.classed).toBe(9)
+    expect(d.bins[0].min).toBeCloseTo(d.min!, 5)
+    expect(d.bins[d.bins.length - 1].min).toBeCloseTo(d.max!, 5)
+    expect(d.bins.reduce((s, b) => s + b.bales, 0)).toBe(9)
+    expect(d.bins.every((b) => Math.abs((b.max! - b.min!) - 0.1) < 1e-6)).toBe(true)
+    expect(d.requirement).toEqual({ min: 4.0, max: 4.7, allowedCodes: null, text: '4.0 – 4.7' })
+    const at = (lo: number) => d.bins.find((b) => Math.abs(b.min! - lo) < 1e-6)
+    expect(at(4.0)?.allowed).toBe(true)
+    expect(at(4.7)?.allowed).toBe(true)
+    expect(at(4.8)?.allowed).toBe(false)
+    expect(at(4.0)?.band).toBe('premium')
+    expect(at(4.3)?.band).toBe('base')
+    expect(d.avgBale).toBeCloseTo(4.33, 2)
+    expect(d.avgLbs).toBeCloseTo(4.34, 2)
+    expect(d.min).toBeLessThanOrEqual(d.median!)
+    expect(d.median).toBeLessThanOrEqual(d.max!)
+  })
+
+  it('counts the bales failing this factor against the contract, and the near misses', () => {
+    const mic = factorDetail(rows, 'mic', 2026, 'bales', VS_SPEC, view.evaluationOf)
+    const pareto = view.summary.pareto.find((p) => p.factor === 'mic')
+    expect(mic.eligibleClassed).toBe(view.summary.eligibleClassed)
+    expect(mic.fails).toBe(pareto?.bales ?? 0)
+    expect(mic.onlyThis).toBe(pareto?.onlyThis ?? 0)
+    const rd = factorDetail(rows, 'rd', 2026, 'bales', VS_SPEC, view.evaluationOf)
+    expect(rd.requirement).toBeNull()
+    expect(rd.fails).toBe(0)
+  })
+
+  it('color lists each code present in grid order, marked allowed by the contract', () => {
+    const d = factorDetail(rows, 'color', 2026, 'bales', VS_SPEC, view.evaluationOf)
+    expect(d.step).toBeNull()
+    expect(d.bins.map((b) => b.code)).toEqual(['21', '31', '32', '41', '42']) // grid order: grade row, then column
+    expect(d.bins.find((b) => b.code === '31')?.bales).toBe(5)
+    expect(d.bins.find((b) => b.code === '31')?.allowed).toBe(true)
+    expect(d.bins.find((b) => b.code === '32')?.allowed).toBe(false)
+    expect(d.requirement?.allowedCodes).toEqual(VS_SPEC.allowed_color_codes)
+    expect(d.bins.reduce((s, b) => s + b.pct, 0)).toBeCloseTo(1, 6)
+  })
+
+  it('without a contract no bin is marked and no requirement is reported', () => {
+    const d = factorDetail(rows, 'strength', 2026, 'lbs', null)
+    expect(d.requirement).toBeNull()
+    expect(d.bins.every((b) => b.allowed == null)).toBe(true)
+    expect(d.step).toBe(0.5)
+    expect(d.bins.reduce((s, b) => s + b.lbs, 0)).toBeCloseTo(d.classedLbs, 6)
+  })
+
+  it('rowsInBin returns exactly the bales a bin holds (the chart drill)', () => {
+    const d = factorDetail(rows, 'mic', 2026, 'bales', null)
+    for (const b of d.bins) expect(rowsInBin(rows, 'mic', b).length).toBe(b.bales)
+    const c = factorDetail(rows, 'color', 2026, 'bales', null)
+    for (const b of c.bins) expect(rowsInBin(rows, 'color', b).length).toBe(b.bales)
+  })
+
+  it('widens the step when the readings would need more than 60 bins', () => {
+    const wide: BaleRow[] = rows.filter((r) => r.grade).map((r, i) => ({ ...r, id: `W${i}`, grade: { ...r.grade!, strength_g_tex: 10 + i * 5 } }))
+    const d = factorDetail(wide, 'strength', 2026, 'bales', null)
+    expect(d.bins.length).toBeLessThanOrEqual(60)
+    expect(d.step).toBeGreaterThan(0.5)
+    expect(d.bins.reduce((s, b) => s + b.bales, 0)).toBe(wide.length)
   })
 })

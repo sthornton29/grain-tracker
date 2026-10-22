@@ -25,7 +25,7 @@
 import { practiceOf } from './yields'
 import { isCottonCrop } from './marketing'
 import {
-  bandOf, baseOrBetterOnLoanFactors, bucketOf, factorBuckets, factorValue, FACTORS,
+  bandOf, baseOrBetterOnLoanFactors, bucketOf, extraneousInfo, factorBuckets, factorText, factorValue, FACTORS, tenths,
   type Band, type Bucket, type FactorKey, type GradeLike,
 } from './cotton-quality'
 import { evaluateBale, summarizeSpec, type BaleEvaluation, type BalePractice, type ContractQualitySpec, type SpecSummary } from './cotton-contract-spec'
@@ -528,4 +528,259 @@ export function bandTone(band: Band | null): 'favorable' | 'neutral' | 'unfavora
 /** The value's band for a cell (null when the factor is not banded). */
 export function cellBand(key: FactorKey, value: number | string | null, cropYear: number): Band | null {
   return FACTORS[key].banded ? bandOf(key, value, cropYear) : null
+}
+
+// ---------------------------------------------------------------------------
+// Factor detail: the panel behind a factor tile (2026-10-21)
+// ---------------------------------------------------------------------------
+//
+// A real histogram of the readings (fine bins at the factor's own precision,
+// colored by price band), the averages both ways, the spread, and — with a
+// contract — that factor's requirement as a line on the chart plus how many
+// bales fail it. Code factors (color, extraneous, remarks, quadrant) list
+// their codes instead, marked allowed / not allowed by the contract.
+
+/** Bin width per numeric factor, in the reading's units. */
+export const BIN_STEP: Partial<Record<FactorKey, number>> = {
+  leaf: 1, staple: 1, mic: 0.1, strength: 0.5, uniformity: 0.5, rd: 1, plus_b: 0.5, trash: 0.5, length: 1, loan: 1,
+}
+const MAX_BINS = 60
+
+export type FactorBin = {
+  key: string
+  label: string
+  /** Numeric bins: inclusive lower edge and exclusive upper edge. */
+  min: number | null
+  max: number | null
+  /** Code bins: the code (null = the None bucket of extraneous / remarks). */
+  code: string | null
+  band: Band | null
+  bales: number
+  lbs: number
+  pct: number
+  /** With a contract: whether readings in this bin satisfy the factor's requirement (null = no requirement). */
+  allowed: boolean | null
+}
+
+export type FactorRequirement = {
+  min: number | null
+  max: number | null
+  /** Code factors: the codes the contract accepts (null when it tests by rule only). */
+  allowedCodes: string[] | null
+  /** Plain words: "4.0 – 4.7", "3 or better", "11 / 21 / 31 / 41". */
+  text: string
+}
+
+export type FactorDetail = {
+  factor: FactorKey
+  bins: FactorBin[]
+  step: number | null
+  classed: number
+  classedLbs: number
+  missing: number
+  /** Per-bale average (loan value: always lbs-weighted). */
+  avgBale: number | null
+  avgLbs: number | null
+  median: number | null
+  min: number | null
+  max: number | null
+  byBand: Distribution['byBand']
+  requirement: FactorRequirement | null
+  /** With a contract: eligible classed bales failing this factor, and those failing only this one. */
+  fails: number
+  onlyThis: number
+  /** Eligible classed bales (the denominator for fails). */
+  eligibleClassed: number
+}
+
+/** The contract's requirement on one factor, or null when it has none. */
+export function factorRequirement(spec: ContractQualitySpec | null, key: FactorKey): FactorRequirement | null {
+  if (!spec) return null
+  const f1 = (n: number) => n.toFixed(1)
+  switch (key) {
+    case 'color': {
+      const codes = (spec.allowed_color_codes ?? []).filter(Boolean)
+      return codes.length ? { min: null, max: null, allowedCodes: codes, text: codes.join(' / ') } : null
+    }
+    case 'leaf': return spec.leaf_max != null ? { min: null, max: spec.leaf_max, allowedCodes: null, text: `${spec.leaf_max} or better` } : null
+    case 'staple': return spec.staple_min != null ? { min: spec.staple_min, max: null, allowedCodes: null, text: `${spec.staple_min} or longer` } : null
+    case 'mic':
+      if (spec.mic_min == null && spec.mic_max == null) return null
+      return {
+        min: spec.mic_min, max: spec.mic_max, allowedCodes: null,
+        text: spec.mic_min != null && spec.mic_max != null ? `${f1(spec.mic_min)} – ${f1(spec.mic_max)}` : spec.mic_min != null ? `${f1(spec.mic_min)} or higher` : `${f1(spec.mic_max!)} or lower`,
+      }
+    case 'strength': return spec.strength_min != null ? { min: spec.strength_min, max: null, allowedCodes: null, text: `${f1(spec.strength_min)} or better` } : null
+    case 'uniformity': return spec.uniformity_min != null ? { min: spec.uniformity_min, max: null, allowedCodes: null, text: `${f1(spec.uniformity_min)} or better` } : null
+    case 'extraneous':
+      return spec.extraneous_rule === 'any' ? null : { min: null, max: null, allowedCodes: null, text: spec.extraneous_rule === 'none' ? 'none allowed' : 'level 1 allowed, level 2 fails' }
+    case 'remarks': {
+      const ex = (spec.excluded_remarks ?? []).filter(Boolean)
+      return ex.length ? { min: null, max: null, allowedCodes: null, text: `remark ${ex.join(' / ')} excluded` } : null
+    }
+    default: return null
+  }
+}
+
+/** Does a reading satisfy the factor's numeric requirement? (null = no requirement.) */
+function numericAllowed(req: FactorRequirement | null, v: number): boolean | null {
+  if (!req || (req.min == null && req.max == null)) return null
+  if (req.min != null && tenths(v) < tenths(req.min)) return false
+  if (req.max != null && tenths(v) > tenths(req.max)) return false
+  return true
+}
+
+/** Does a code satisfy the factor's code requirement? (null = no requirement.) */
+function codeAllowed(key: FactorKey, req: FactorRequirement | null, spec: ContractQualitySpec | null, code: string | null): boolean | null {
+  if (!req || !spec) return null
+  switch (key) {
+    case 'color': return code != null && (req.allowedCodes ?? []).includes(code)
+    case 'extraneous': {
+      if (code == null) return true
+      const info = extraneousInfo(code)
+      if (!info) return true
+      return spec.extraneous_rule === 'level1_ok' ? info.level === 1 : false
+    }
+    case 'remarks': return code == null || !(spec.excluded_remarks ?? []).includes(code)
+    default: return null
+  }
+}
+
+function binLabel(key: FactorKey, lo: number, step: number): string {
+  if (key === 'length') return `${(lo / 100).toFixed(2)}"`
+  if (key === 'loan') return `${lo}¢`
+  if (key === 'leaf' || key === 'staple') return String(lo)
+  return lo.toFixed(step < 1 ? 1 : 0)
+}
+
+/** The code-bin order for a code factor: the chart's own order (color grid
+ *  order, extraneous kinds, remark kinds), occupied codes only, None first
+ *  where the factor has a None bucket. */
+function codeBins(key: FactorKey, cropYear: number, codes: Map<string | null, { bales: number; lbs: number }>, requirement: FactorRequirement | null, spec: ContractQualitySpec | null): FactorBin[] {
+  const bucketKeyOf = (c: string | null): string | null => {
+    if (c == null) return key === 'extraneous' ? 'ex_none' : key === 'remarks' ? 'rm_none' : null
+    return bucketOf(key, c, cropYear)?.key ?? null
+  }
+  const order = factorBuckets(key, cropYear).map((b) => b.key)
+  const rank = (c: string | null) => { const i = order.indexOf(bucketKeyOf(c) ?? ''); return i < 0 ? order.length : i }
+  const entries = Array.from(codes.entries()).sort((a, z) => rank(a[0]) - rank(z[0]) || String(a[0] ?? '').localeCompare(String(z[0] ?? '')))
+  return entries.map(([c, cnt]) => {
+    const bk = bucketKeyOf(c)
+    const bucket = bk ? factorBuckets(key, cropYear).find((b) => b.key === bk) ?? null : null
+    return {
+      key: `${key}_${c ?? 'none'}`, label: c == null ? 'None' : factorText(key, c), min: null, max: null, code: c,
+      band: bucket?.band ?? null, bales: cnt.bales, lbs: cnt.lbs, pct: 0, allowed: codeAllowed(key, requirement, spec, c),
+    }
+  })
+}
+
+export function factorDetail(
+  rows: ReadonlyArray<BaleRow>,
+  key: FactorKey,
+  cropYear: number,
+  weighting: Weighting,
+  spec: ContractQualitySpec | null,
+  evaluationOf?: (baleId: string) => BaleEvaluation | undefined,
+): FactorDetail {
+  const def = FACTORS[key]
+  const requirement = factorRequirement(spec, key)
+  const d = distribution(rows, key, cropYear, weighting)
+
+  // The readings.
+  const nums: Array<{ v: number; lbs: number }> = []
+  const codes = new Map<string | null, { bales: number; lbs: number }>()
+  let classed = 0, classedLbs = 0, missing = 0
+  for (const r of rows) {
+    if (!r.grade) continue
+    const v = factorValue(r.grade, key)
+    if (def.kind === 'number') {
+      if (typeof v !== 'number') { missing++; continue }
+      nums.push({ v, lbs: r.lbs })
+    } else {
+      const code = typeof v === 'string' ? v : null
+      // Extraneous / remarks treat "no code" as a real reading (None); color / quadrant need a code.
+      if (code == null && key !== 'extraneous' && key !== 'remarks') { missing++; continue }
+      const c = codes.get(code) ?? { bales: 0, lbs: 0 }
+      c.bales++; c.lbs += r.lbs
+      codes.set(code, c)
+    }
+    classed++
+    classedLbs += r.lbs
+  }
+  const denom = weighting === 'lbs' ? classedLbs : classed
+
+  let bins: FactorBin[] = []
+  let step: number | null = null
+  if (def.kind === 'number') {
+    step = BIN_STEP[key] ?? 1
+    if (nums.length > 0) {
+      const lo0 = Math.min(...nums.map((n) => n.v)), hi0 = Math.max(...nums.map((n) => n.v))
+      const idx = (v: number, s: number) => Math.floor((v + 1e-9) / s)
+      while ((idx(hi0, step) - idx(lo0, step) + 1) > MAX_BINS) step *= 2
+      const first = idx(lo0, step), last = idx(hi0, step)
+      const byIdx = new Map<number, FactorBin>()
+      for (let i = first; i <= last; i++) {
+        const lo = Math.round(i * step * 1000) / 1000
+        const hi = Math.round((i + 1) * step * 1000) / 1000
+        const bin: FactorBin = {
+          key: `${key}_${i}`, label: binLabel(key, lo, step), min: lo, max: hi, code: null,
+          band: def.banded ? bandOf(key, lo, cropYear) : null, bales: 0, lbs: 0, pct: 0,
+          allowed: numericAllowed(requirement, lo),
+        }
+        byIdx.set(i, bin)
+        bins.push(bin)
+      }
+      for (const n of nums) {
+        const bin = byIdx.get(idx(n.v, step))!
+        bin.bales++
+        bin.lbs += n.lbs
+      }
+    }
+  } else {
+    bins = codeBins(key, cropYear, codes, requirement, spec)
+  }
+  for (const bin of bins) bin.pct = denom > 0 ? (weighting === 'lbs' ? bin.lbs : bin.bales) / denom : 0
+
+  // Spread.
+  const sorted = nums.map((n) => n.v).sort((a, z) => a - z)
+  const median = sorted.length ? (sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2) : null
+
+  // Fails on this factor (with a contract).
+  let fails = 0, onlyThis = 0, eligibleClassed = 0
+  if (spec && evaluationOf) {
+    for (const r of rows) {
+      const ev = evaluationOf(r.id)
+      if (!ev || (ev.status !== 'meets' && ev.status !== 'fails')) continue
+      eligibleClassed++
+      if (ev.status !== 'fails') continue
+      const fs = new Set(ev.failures.map((f) => f.factor))
+      if (!fs.has(key)) continue
+      fails++
+      if (fs.size === 1) onlyThis++
+    }
+  }
+
+  return {
+    factor: key, bins, step, classed, classedLbs, missing,
+    avgBale: factorAverage(rows, key, 'bales'),
+    avgLbs: factorAverage(rows, key, 'lbs'),
+    median, min: sorted.length ? sorted[0] : null, max: sorted.length ? sorted[sorted.length - 1] : null,
+    byBand: d.byBand, requirement, fails, onlyThis, eligibleClassed,
+  }
+}
+
+/** The bales a histogram bin or code bin holds (the drill from the chart). */
+export function rowsInBin(rows: ReadonlyArray<BaleRow>, key: FactorKey, bin: Pick<FactorBin, 'min' | 'max' | 'code'>): BaleRow[] {
+  const def = FACTORS[key]
+  return rows.filter((r) => {
+    if (!r.grade) return false
+    const v = factorValue(r.grade, key)
+    if (def.kind === 'number') {
+      if (typeof v !== 'number') return false
+      if (bin.min != null && v + 1e-9 < bin.min) return false
+      if (bin.max != null && v + 1e-9 >= bin.max) return false
+      return true
+    }
+    return (typeof v === 'string' ? v : null) === bin.code
+  })
 }

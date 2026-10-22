@@ -1,8 +1,8 @@
 ---
 page_route: /reports/bale-quality
 title: Bale Quality
-updated: 2026-10-20
-keywords: cotton, bales, HVI, classing, color grade, leaf, staple, micronaire, mic, strength, uniformity, loan value, premium, discount, price band, loan schedule, color grid, variety, class week, contract, quality requirements, spec, cap, qualifying bales, near miss, Pareto, buyer, merchant, excel formulas
+updated: 2026-10-21
+keywords: cotton, bales, HVI, histogram, distribution, factor tile, filters drawer, classing, color grade, leaf, staple, micronaire, mic, strength, uniformity, loan value, premium, discount, price band, loan schedule, color grid, variety, class week, contract, quality requirements, spec, cap, qualifying bales, near miss, Pareto, buyer, merchant, excel formulas
 ---
 ## What this page is for
 
@@ -12,20 +12,21 @@ For the bales you choose it shows how many are classed, the lint pounds, the ave
 
 ## How to use it
 
-- Pick a **crop year**, then narrow the bales with the filter chips: **entity, farm, field, variety, gin, gin receipt, practice** (dryland / irrigated / mixed), **class date range**, and **disposition** (held, in loan, sold, on contract, pool). Any mix of chips works together; a chip that would offer nothing isn't offered.
-- Choose **Group by**: Overall, Entity, Farm, Field, Variety, Gin, Receipt, or Class week. The comparison table and the Excel By Group tab follow it.
-- Choose the **factors** you want to see. Tap a gray chip to add one, tap a blue chip to remove it, and drag chips (or use the arrows) to reorder. Three presets: **Loan factors** (color, leaf, staple, mic, strength, uniformity, loan value — the default), **Mill specs**, and **Everything** (adds extraneous matter, remarks, Rd, +b, color quadrant, trash and length).
-- Choose the **weighting**: **Per bale** (how a classing recap is read) or **Per lb**. Loan value is always pounds-weighted, whichever you pick.
-- **Buckets**: **Price bands** shows each factor in premium / base / discount bands; **Loan schedule** shows the finer loan-schedule buckets (every tenth of micronaire, strength and uniformity the schedule prices differently).
-- Tap any bar segment, legend line, color-grid cell, Pareto row or KPI card to filter the bale list to those bales. The blue "Showing" chip above the list clears it.
+- The **crop year** and the **contract** sit at the top of the page. Everything else waits behind the **Filters & display** button so the numbers lead; the line under the title always says which filters are on, and **Clear filters** next to the button turns them off.
+- Open **Filters & display** to narrow the bales with chips: **entity, farm, field, variety, gin, gin receipt, practice** (dryland / irrigated / mixed), **class date range**, and **disposition** (held, in loan, sold, on contract, pool). Any mix of chips works together; a chip that would offer nothing isn't offered.
+- The same drawer holds the **Display** choices. **Weighting**: **Per bale** (how a classing recap is read) or **Per lb**; loan value is always pounds-weighted, whichever you pick. **Factors**: tap a gray chip to add one, tap a green chip to remove it, drag chips (or use the arrows) to reorder. Three presets: **Loan factors** (color, leaf, staple, mic, strength, uniformity, loan value — the default), **Mill specs**, and **Everything** (adds extraneous matter, remarks, Rd, +b, color quadrant, trash and length).
+- Each chosen factor gets a slim **tile**: its average (or its most common code), a thin premium / base / discount strip, and — with a contract — how many bales fail that factor. **Tap a tile** to open the factor's detail underneath; tap it again, or the ✕, to close it.
+- **Group by** lives on the comparison table: Overall, Entity, Farm, Field, Variety, Gin, Receipt, or Class week. The table and the Excel By Group tab follow it.
+- Tap any histogram column, code row, color-grid cell, Pareto row, fail line or KPI card to filter the bale list to those bales. The blue "Showing" chip above the list clears it.
 - **Export**: Excel builds a workbook with a Bales tab (every classed bale in the filter), a Summary tab and a By Group tab whose figures are live formulas over the Bales tab, and — with a contract selected — a Contract Spec tab. PDF and Print mirror the screen.
 
 ## What the controls do
 
-- **Contract** — lists only the contracts that carry quality requirements (set under Cotton → Marketing). Selecting one adds the contract view and a "% meets contract" column.
-- **Exclude bales committed elsewhere** — with a contract selected, leaves out bales already in a CCC loan, sold, pooled, or assigned to another contract. Off by default.
-- **Factor cards** — one per selected factor: a slim bar of the bales per bucket (green premium, gray base, red discount; blue steps for factors the schedule doesn't price), the average (and the other weighting's average in small print), and the premium / base / discount shares.
-- **Color grade grid** — the USDA color chart: rows are the grade (1 Good Middling through 7 Good Ordinary, 8 below grade), columns are White, Light Spotted, Spotted, Tinged and Yellow Stained. Darker cells hold more bales. With a contract selected, cells outside its allowed colors are hatched and marked ✕.
+- **Contract** — lists only the contracts that carry quality requirements (set under Cotton → Marketing). Selecting one adds the contract view, a fail count on each factor tile, the contract's requirement on each factor's chart, and a "% meets contract" column.
+- **Exclude bales committed elsewhere** — on the contract panel, leaves out bales already in a CCC loan, sold, pooled, or assigned to another contract. Off by default.
+- **Factor detail** — opens under the tiles when you tap one. For a measured factor (leaf, staple, micronaire, strength, uniformity, Rd, +b, trash, length, loan value) it is a histogram of every reading at the factor's own precision — micronaire by tenths, strength and uniformity by halves, staple by the 32nd — with each column colored by the crop year's price band (green premium, gray base, red discount; blue where the loan schedule doesn't price the factor). The average per bale, the pounds-weighted average, the median and the range sit at the top; the average is drawn as a dashed line. With a contract selected, the requirement is drawn as a solid black line (two lines for a micronaire range), the allowed range is washed green, and a line above the chart says how many eligible bales fail this factor and how many fail only this one. Tap a column to see those bales in the list.
+- For a code factor (color grade, extraneous matter, remarks, color quadrant) the detail lists each code with a bar and its share; with a contract each code is marked ✓ allowed or ✕ fails.
+- **Color grade grid** — inside the Color grade detail: the USDA color chart, rows are the grade (1 Good Middling through 7 Good Ordinary, 8 below grade), columns are White, Light Spotted, Spotted, Tinged and Yellow Stained. Darker cells hold more bales. With a contract selected, cells outside its allowed colors are hatched and marked ✕.
 - **Comparison table** — one row per group with bales, pounds, each factor's average and its premium / base / discount shares, shaded by band; tap a heading to sort; the first column stays put when you scroll sideways on a phone.
 - **Bale list** — every bale with its receipt, farm, field, variety, class date, the selected factors, loan value and disposition; search by PBI, receipt, farm, field or variety; sort by any column. With a contract selected each bale carries a result chip: Meets, Fails (with every failing factor and what it needed), Not eligible, or Not classed.
 - **Export qualifying bales** — with a contract selected, a buyer-friendly Excel of the PBI list and full classing data for the bales that meet the spec: the classing data the contract says you provide.
@@ -34,7 +35,7 @@ For the bales you choose it shows how many are classed, the lint pounds, the ave
 
 - **Headline** — "N of M classed bales from eligible farms meet the spec (P%)", the lint pounds, how many bales are **not eligible** (their farm isn't on the contract's farm list) and how many are **not yet classed**.
 - **Cap tracker** — qualifying bales against the contract's cap, plus **projected qualifying**: the current pass rate × the estimated bales (the contract's own estimate when it has one, otherwise Turnrow's expected lint ÷ 500). It is labeled an estimate because it is one.
-- **Why bales fail** — the factors bales fail on, most common first, with **only this** counts: bales that would meet the spec but for that one factor. Those near misses are the bales worth asking the buyer to take at a discount. Tap a row to see them.
+- **Why bales fail** — the factors bales fail on, most common first, with **only this** counts: bales that would meet the spec but for that one factor. Those near misses are the bales worth asking the buyer to take at a discount. Tap a row to see them, or open that factor's tile to see where the failing readings sit against the contract line.
 
 ## How the numbers work
 
