@@ -38,7 +38,7 @@ import {
 } from '@/components/reports/report-kit'
 import { ChipMultiSelect, SegmentedChips, type ChipOption } from '@/components/reports/chip-select'
 import { FactorTiles, FactorDetailPanel, SectionTitle, avgText, bandBg, pct1 } from '@/components/reports/factor-detail'
-import { FACTORS, FACTOR_ORDER, FACTOR_PRESETS, bandsFor, factorText, factorValue, type Band, type FactorKey } from '@/lib/cotton-quality'
+import { FACTORS, FACTOR_ORDER, FACTOR_PRESETS, bandsFor, factorText, factorValue, loanVsBaseText, loanVsBaseTone, type Band, type FactorKey } from '@/lib/cotton-quality'
 import { EVALUATION_LABEL, specFromRow, specHasFiberTerms, specSummaryLine, type BaleEvaluation, type ContractQualitySpec } from '@/lib/cotton-contract-spec'
 import {
   activeFilterCount, applyFilters, bandTone, buildBaleRows, cellBand, colorGrid, comparisonRows, contractView, estimatedBalesFromAssumptions, factorDetail,
@@ -308,7 +308,7 @@ export default function BaleQualityReport() {
           <div className="flex flex-wrap gap-4 items-end">
             <SegmentedChips label="Weighting" options={[{ key: 'bales', label: 'Per bale' }, { key: 'lbs', label: 'Per lb' }]} value={weighting} onChange={setWeighting} />
             <div className="text-xs text-slate-500 max-w-md self-center">
-              Loan value ¢/lb is always lbs-weighted. Price bands: {bands.source}
+              Loan value is shown above or below the {bands.baseLoanCents.toFixed(2)}¢/lb base loan rate, always lbs-weighted. Price bands: {bands.source}
               {bands.cropYear !== cropYear && <span className="text-amber-700"> (no {cropYear} schedule entered yet — using {bands.cropYear})</span>}.
             </div>
           </div>
@@ -480,7 +480,11 @@ function ComparisonTable({ rows, total, factors, groupBy, onGroupBy, columnPrese
     ]
     for (const f of factors) {
       const def = FACTORS[f]
-      if (def.kind === 'number') cols.push({ key: `avg:${f}`, label: `${def.short} avg`, get: (r) => r.cells[f]?.average ?? null, band: (r) => cellBand(f, r.cells[f]?.average ?? null, cropYear), fmt: (v) => avgText(f, v as number | null), numeric: true })
+      if (def.kind === 'number') cols.push({
+        key: `avg:${f}`, label: f === 'loan' ? 'Loan vs base' : `${def.short} avg`, get: (r) => r.cells[f]?.average ?? null, band: (r) => cellBand(f, r.cells[f]?.average ?? null, cropYear),
+        tone: f === 'loan' ? (r) => loanVsBaseTone(r.cells[f]?.average ?? null, cropYear) : undefined,
+        fmt: (v) => avgText(f, v as number | null, cropYear), numeric: true,
+      })
       if (def.banded) {
         cols.push({ key: `prem:${f}`, label: `${def.short} prem`, get: (r) => (r.cells[f]?.classed ? r.cells[f].premium : null), tone: () => 'favorable', fmt: (v) => pct1(v as number | null), numeric: true })
         cols.push({ key: `base:${f}`, label: `${def.short} base`, get: (r) => (r.cells[f]?.classed ? r.cells[f].base : null), fmt: (v) => pct1(v as number | null), numeric: true })
@@ -541,7 +545,8 @@ function ComparisonTable({ rows, total, factors, groupBy, onGroupBy, columnPrese
               {columns.map((c, i) => {
                 const v = c.get(total)
                 const band = c.band ? c.band(total) : null
-                return <td key={c.key} className={`${i === 0 ? stickyColCls + ' bg-slate-100' : 'text-right tabular-nums'} px-2 py-1.5 whitespace-nowrap ${bandBg(band)}`}>{c.fmt(v)}</td>
+                const tone = c.tone && v != null ? c.tone(total) : 'neutral'
+                return <td key={c.key} className={`${i === 0 ? stickyColCls + ' bg-slate-100' : 'text-right tabular-nums'} px-2 py-1.5 whitespace-nowrap ${bandBg(band)} ${toneText(tone)}`}>{c.fmt(v)}</td>
               })}
             </tr>
           </tbody>
@@ -572,13 +577,14 @@ function BaleList({ rows, allCount, factors, cropYear, drill, onClearDrill, view
     ]
     for (const f of factors) {
       cols.push({
-        key: `f:${f}`, label: FACTORS[f].short, numeric: FACTORS[f].kind === 'number',
+        key: `f:${f}`, label: f === 'loan' ? 'Loan vs base' : FACTORS[f].short, numeric: FACTORS[f].kind === 'number',
         get: (r) => (r.grade ? factorValue(r.grade, f) : null),
         render: (r) => {
           if (!r.grade) return <span className="text-slate-300">—</span>
           const v = factorValue(r.grade, f)
+          if (f === 'loan') return typeof v === 'number' ? <span className={toneText(loanVsBaseTone(v, cropYear))}>{loanVsBaseText(v, cropYear)}</span> : <span className="text-slate-300">—</span>
           const band = cellBand(f, v, cropYear)
-          return <span className={`${toneText(bandTone(band) === 'muted' ? 'neutral' : bandTone(band))}`}>{f === 'staple' ? (v == null ? '—' : String(v)) : f === 'loan' ? (typeof v === 'number' ? `${v.toFixed(2)}¢` : '—') : factorText(f, v)}</span>
+          return <span className={`${toneText(bandTone(band) === 'muted' ? 'neutral' : bandTone(band))}`}>{f === 'staple' ? (v == null ? '—' : String(v)) : factorText(f, v)}</span>
         },
       })
     }

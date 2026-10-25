@@ -16,7 +16,7 @@
 
 import { useMemo, useState, type ReactNode } from 'react'
 import { fmtInt, toneText } from '@/components/reports/report-kit'
-import { BAND_LABEL, COLOR_GRID_COLUMNS, COLOR_GRID_ROWS, FACTORS, colorGridCode, factorText, type Band, type FactorKey } from '@/lib/cotton-quality'
+import { BAND_LABEL, COLOR_GRID_COLUMNS, COLOR_GRID_ROWS, FACTORS, bandsFor, colorGridCode, factorText, loanVsBaseText, loanVsBaseTone, type Band, type FactorKey } from '@/lib/cotton-quality'
 import type { ContractQualitySpec } from '@/lib/cotton-contract-spec'
 import { BIN_STEP, type ColorGridCell, type FactorBin, type FactorDetail, type Weighting } from '@/lib/bale-quality-report'
 
@@ -27,8 +27,12 @@ export const UNBANDED_FILL = 'bg-sky-600'
 export const bandBg = (band: Band | null) => (band === 'premium' ? 'bg-green-50' : band === 'discount' ? 'bg-red-50' : '')
 export const pct1 = (v: number | null | undefined) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`)
 export const pct0 = (v: number | null | undefined) => (v == null ? '—' : `${Math.round(v * 100)}%`)
-/** An average, in the factor's own notation (staple to a tenth, loan in ¢). */
-export const avgText = (key: FactorKey, v: number | null) => (v == null ? '—' : key === 'staple' ? v.toFixed(1) : key === 'loan' ? `${v.toFixed(2)}¢` : key === 'length' ? `${(v / 100).toFixed(2)}"` : factorText(key, v))
+/** An average, in the factor's own notation (staple to a tenth). Loan value
+ *  reads as its premium / discount against the crop year's base loan rate
+ *  when the crop year is given ("+2.35¢", "(1.20¢)"), else the absolute ¢. */
+export const avgText = (key: FactorKey, v: number | null, cropYear?: number) => (v == null ? '—' : key === 'staple' ? v.toFixed(1) : key === 'loan' ? (cropYear != null ? loanVsBaseText(v, cropYear) : `${v.toFixed(2)}¢`) : key === 'length' ? `${(v / 100).toFixed(2)}"` : factorText(key, v))
+/** The base loan rate line: "base 55.00¢/lb". */
+export const baseLoanText = (cropYear: number) => `base ${bandsFor(cropYear).baseLoanCents.toFixed(2)}¢/lb`
 
 const fillOf = (b: FactorBin) => (b.band ? BAND_FILL[b.band] : UNBANDED_FILL)
 
@@ -51,8 +55,9 @@ export function FactorTiles({ factors, details, selected, onSelect, hasContract 
         const def = FACTORS[f]
         const active = selected === f
         const top = d.bins.slice().sort((a, z) => z.pct - a.pct)[0]
-        const value = def.kind === 'number' ? avgText(f, d.avgBale) : top ? top.label : '—'
-        const sub = def.kind === 'number' ? (f === 'loan' ? 'avg ¢/lb' : 'average') : top ? `${pct0(top.pct)} share` : 'no readings'
+        const value = def.kind === 'number' ? avgText(f, d.avgBale, d.cropYear) : top ? top.label : '—'
+        const sub = def.kind === 'number' ? (f === 'loan' ? (d.avgBale != null ? `vs base · avg ${d.avgBale.toFixed(2)}¢` : 'vs base loan rate') : 'average') : top ? `${pct0(top.pct)} share` : 'no readings'
+        const valueTone = f === 'loan' ? loanVsBaseTone(d.avgBale, d.cropYear) : null
         const failTone = d.fails === 0 ? 'favorable' : d.fails / Math.max(1, d.eligibleClassed) > 0.25 ? 'unfavorable' : 'warning'
         return (
           <button
@@ -64,7 +69,7 @@ export function FactorTiles({ factors, details, selected, onSelect, hasContract 
             className={`min-w-0 text-left rounded-xl bg-white p-3 min-h-11 shadow-sm border-2 transition-colors ${active ? 'border-brand shadow' : 'border-transparent hover:border-slate-200'}`}
           >
             <div className="text-xs text-slate-500 truncate">{def.short}</div>
-            <div className="text-xl font-bold text-slate-900 leading-tight mt-0.5 truncate">{value}</div>
+            <div className={`text-xl font-bold leading-tight mt-0.5 truncate tabular-nums ${valueTone && valueTone !== 'neutral' ? toneText(valueTone) : 'text-slate-900'}`}>{value}</div>
             <div className="text-[11px] text-slate-500 truncate">
               {sub}
               {hasContract && d.requirement && (
@@ -120,10 +125,11 @@ export function FactorDetailPanel({ detail, weighting, contractLabel, onDrillBin
         </div>
         {def.kind === 'number' && detail.classed > 0 && (
           <dl className="flex flex-wrap gap-x-4 gap-y-1 text-sm tabular-nums">
-            <Stat label={f === 'loan' ? 'Avg (lbs-wtd)' : 'Avg per bale'} value={avgText(f, f === 'loan' ? detail.avgLbs : detail.avgBale)} big />
+            <Stat label={f === 'loan' ? 'Avg vs base (lbs-wtd)' : 'Avg per bale'} value={avgText(f, f === 'loan' ? detail.avgLbs : detail.avgBale, detail.cropYear)} tone={f === 'loan' ? loanVsBaseTone(detail.avgLbs, detail.cropYear) : undefined} big />
             {f !== 'loan' && <Stat label="Lbs-weighted" value={avgText(f, detail.avgLbs)} />}
-            <Stat label="Median" value={avgText(f, detail.median)} />
-            <Stat label="Range" value={`${avgText(f, detail.min)} – ${avgText(f, detail.max)}`} />
+            <Stat label="Median" value={avgText(f, detail.median, detail.cropYear)} />
+            <Stat label="Range" value={`${avgText(f, detail.min, detail.cropYear)} – ${avgText(f, detail.max, detail.cropYear)}`} />
+            {f === 'loan' && detail.avgLbs != null && <Stat label="Avg loan value" value={`${detail.avgLbs.toFixed(2)}¢ · ${baseLoanText(detail.cropYear)}`} muted />}
           </dl>
         )}
         <button type="button" onClick={onClose} aria-label="Close detail" className="min-h-11 min-w-11 rounded-lg text-slate-500 hover:bg-slate-100 text-lg">✕</button>
@@ -154,11 +160,11 @@ export function FactorDetailPanel({ detail, weighting, contractLabel, onDrillBin
   )
 }
 
-function Stat({ label, value, big }: { label: string; value: string; big?: boolean }) {
+function Stat({ label, value, big, tone, muted }: { label: string; value: string; big?: boolean; tone?: 'favorable' | 'unfavorable' | 'neutral'; muted?: boolean }) {
   return (
     <div>
       <dt className="text-[11px] text-slate-500 uppercase tracking-wide">{label}</dt>
-      <dd className={`${big ? 'text-xl font-bold' : 'font-semibold'} text-slate-900 leading-tight`}>{value}</dd>
+      <dd className={`${big ? 'text-xl font-bold' : muted ? 'font-normal' : 'font-semibold'} ${tone && tone !== 'neutral' ? toneText(tone) : muted ? 'text-slate-500' : 'text-slate-900'} leading-tight`}>{value}</dd>
     </div>
   )
 }
@@ -190,6 +196,9 @@ function Histogram({ detail, unit, onDrillBin, contractLabel }: { detail: Factor
   const reqMin = req?.min ?? null
   const reqMax = req?.max ?? null
   const avg = f === 'loan' ? detail.avgLbs : detail.avgBale
+  // Loan value: the base loan rate as a line, so above / below base reads at a glance.
+  const baseLoan = f === 'loan' ? bandsFor(detail.cropYear).baseLoanCents : null
+  const showBase = baseLoan != null && baseLoan >= axisLo && baseLoan <= axisHi
   // The allowed wash: from the min (or the axis start) to the max (or the axis end).
   const washFrom = reqMin != null ? x(reqMin) : 0
   const washTo = reqMax != null ? x(reqMax + (detail.step ?? 0)) : 100
@@ -232,7 +241,8 @@ function Histogram({ detail, unit, onDrillBin, contractLabel }: { detail: Factor
         {/* Reference lines */}
         {reqMin != null && <RefLine at={x(reqMin)} label={`${contractLabel ?? 'Contract'} min ${req!.min != null ? avgText(f, reqMin) : ''}`} kind="contract" />}
         {reqMax != null && <RefLine at={x(reqMax + (detail.step ?? 0))} label={`${contractLabel ?? 'Contract'} max ${avgText(f, reqMax)}`} kind="contract" align="right" />}
-        {avg != null && <RefLine at={x(avg + (detail.step ?? 0) / 2)} label={`avg ${avgText(f, avg)}`} kind="avg" align={reqMin != null && Math.abs(x(avg) - x(reqMin)) < 12 ? 'right' : 'left'} low />}
+        {showBase && <RefLine at={x(baseLoan!)} label={baseLoanText(detail.cropYear)} kind="base" align={avg != null && avg < baseLoan! ? 'left' : 'right'} />}
+        {avg != null && <RefLine at={x(avg + (detail.step ?? 0) / 2)} label={`avg ${avgText(f, avg, detail.cropYear)}`} kind="avg" align={reqMin != null && Math.abs(x(avg) - x(reqMin)) < 12 ? 'right' : 'left'} low />}
         </div>
         {/* Tooltip */}
         {h && (
@@ -247,14 +257,14 @@ function Histogram({ detail, unit, onDrillBin, contractLabel }: { detail: Factor
           <div key={b.key} className="flex-1 min-w-[3px] text-center overflow-visible whitespace-nowrap">{i % labelEvery === 0 ? b.label : ''}</div>
         ))}
       </div>
-      <Legend bands={bandOrder} contract={req != null && (reqMin != null || reqMax != null)} avg={avg != null} unbanded={!FACTORS[f].banded} />
+      <Legend bands={bandOrder} contract={req != null && (reqMin != null || reqMax != null)} avg={avg != null} unbanded={!FACTORS[f].banded} base={showBase} />
     </div>
   )
 }
 
-function RefLine({ at, label, kind, align = 'left', low }: { at: number; label: string; kind: 'contract' | 'avg'; align?: 'left' | 'right'; low?: boolean }) {
-  const line = kind === 'contract' ? 'border-l-2 border-slate-900' : 'border-l-2 border-dashed border-sky-700'
-  const pill = kind === 'contract' ? 'bg-slate-900 text-white' : 'bg-sky-50 text-sky-900 border border-sky-200'
+function RefLine({ at, label, kind, align = 'left', low }: { at: number; label: string; kind: 'contract' | 'avg' | 'base'; align?: 'left' | 'right'; low?: boolean }) {
+  const line = kind === 'contract' ? 'border-l-2 border-slate-900' : kind === 'base' ? 'border-l-2 border-slate-500' : 'border-l-2 border-dashed border-sky-700'
+  const pill = kind === 'contract' ? 'bg-slate-900 text-white' : kind === 'base' ? 'bg-slate-100 text-slate-700 border border-slate-300' : 'bg-sky-50 text-sky-900 border border-sky-200'
   return (
     <div className={`absolute inset-y-0 ${line} pointer-events-none`} style={{ left: `${at}%` }} aria-hidden="true">
       <span className={`absolute ${low ? 'top-6' : 'top-0'} ${align === 'right' ? 'right-1' : 'left-1'} whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] font-semibold ${pill}`}>{label}</span>
@@ -262,13 +272,14 @@ function RefLine({ at, label, kind, align = 'left', low }: { at: number; label: 
   )
 }
 
-function Legend({ bands, contract, avg, unbanded }: { bands: Band[]; contract: boolean; avg: boolean; unbanded: boolean }) {
+function Legend({ bands, contract, avg, unbanded, base }: { bands: Band[]; contract: boolean; avg: boolean; unbanded: boolean; base?: boolean }) {
   return (
     <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600 pt-1">
       {bands.map((b) => <span key={b} className="inline-flex items-center gap-1"><span className={`inline-block h-2.5 w-2.5 rounded-sm ${BAND_FILL[b]}`} aria-hidden="true" />{BAND_LABEL[b]}</span>)}
       {unbanded && <span className="inline-flex items-center gap-1"><span className={`inline-block h-2.5 w-2.5 rounded-sm ${UNBANDED_FILL}`} aria-hidden="true" />Readings (the loan schedule does not price this factor)</span>}
       {contract && <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-0.5 bg-slate-900" aria-hidden="true" />Contract requirement <span className="inline-block h-2.5 w-4 bg-green-500/10 border border-green-200 rounded-sm ml-1" aria-hidden="true" /> allowed range</span>}
       {avg && <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-0 border-l-2 border-dashed border-sky-700" aria-hidden="true" />Average</span>}
+      {base && <span className="inline-flex items-center gap-1"><span className="inline-block h-3 w-0.5 bg-slate-500" aria-hidden="true" />Base loan rate (the bars read above / below it)</span>}
     </div>
   )
 }

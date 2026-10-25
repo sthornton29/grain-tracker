@@ -25,7 +25,7 @@
 import { practiceOf } from './yields'
 import { isCottonCrop } from './marketing'
 import {
-  bandOf, baseOrBetterOnLoanFactors, bucketOf, extraneousInfo, factorBuckets, factorText, factorValue, FACTORS, tenths,
+  bandOf, baseOrBetterOnLoanFactors, bucketOf, extraneousInfo, factorBuckets, factorText, factorValue, FACTORS, loanVsBase, tenths,
   type Band, type Bucket, type FactorKey, type GradeLike,
 } from './cotton-quality'
 import { evaluateBale, summarizeSpec, type BaleEvaluation, type BalePractice, type ContractQualitySpec, type SpecSummary } from './cotton-contract-spec'
@@ -573,6 +573,8 @@ export type FactorRequirement = {
 
 export type FactorDetail = {
   factor: FactorKey
+  /** The crop year read (loan value is shown against its base loan rate). */
+  cropYear: number
   bins: FactorBin[]
   step: number | null
   classed: number
@@ -646,9 +648,13 @@ function codeAllowed(key: FactorKey, req: FactorRequirement | null, spec: Contra
   }
 }
 
-function binLabel(key: FactorKey, lo: number, step: number): string {
+function binLabel(key: FactorKey, lo: number, step: number, cropYear: number): string {
   if (key === 'length') return `${(lo / 100).toFixed(2)}"`
-  if (key === 'loan') return `${lo}¢`
+  if (key === 'loan') {
+    // Against the base loan rate: +2¢ above, (3¢) below.
+    const d = Math.round(loanVsBase(lo, cropYear))
+    return d > 0 ? `+${d}¢` : d < 0 ? `(${-d}¢)` : '0¢'
+  }
   if (key === 'leaf' || key === 'staple') return String(lo)
   return lo.toFixed(step < 1 ? 1 : 0)
 }
@@ -723,7 +729,7 @@ export function factorDetail(
         const lo = Math.round(i * step * 1000) / 1000
         const hi = Math.round((i + 1) * step * 1000) / 1000
         const bin: FactorBin = {
-          key: `${key}_${i}`, label: binLabel(key, lo, step), min: lo, max: hi, code: null,
+          key: `${key}_${i}`, label: binLabel(key, lo, step, cropYear), min: lo, max: hi, code: null,
           band: def.banded ? bandOf(key, lo, cropYear) : null, bales: 0, lbs: 0, pct: 0,
           allowed: numericAllowed(requirement, lo),
         }
@@ -761,7 +767,7 @@ export function factorDetail(
   }
 
   return {
-    factor: key, bins, step, classed, classedLbs, missing,
+    factor: key, cropYear, bins, step, classed, classedLbs, missing,
     avgBale: factorAverage(rows, key, 'bales'),
     avgLbs: factorAverage(rows, key, 'lbs'),
     median, min: sorted.length ? sorted[0] : null, max: sorted.length ? sorted[sorted.length - 1] : null,

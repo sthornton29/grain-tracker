@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   bandOf, bandsFor, baseOrBetterOnLoanFactors, bucketOf, coarseBuckets, colorCodesAndBetter, colorGradeInfo, colorGridCode,
-  colorQuadrant, extraneousInfo, factorBuckets, factorText, factorValue, lengthCategory, loanPoints, PRICE_BANDS, remarksInfo,
+  colorQuadrant, extraneousInfo, factorBuckets, factorText, factorValue, lengthCategory, loanPoints, loanVsBase, loanVsBaseText, loanVsBaseTone, PRICE_BANDS, remarksInfo,
   stapleInches, strengthCategory, uniformityCategory, COLOR_GRID_ROWS, COLOR_GRID_COLUMNS, type GradeLike,
 } from '@/lib/cotton-quality'
 
@@ -166,6 +166,20 @@ describe('2026 price bands (FSA loan schedule, page 3)', () => {
   })
 })
 
+describe('loan value against the base loan rate', () => {
+  it('2026 reads against the 55¢ OBBBA base; above is +, below in parentheses', () => {
+    expect(bandsFor(2026).baseLoanCents).toBe(55)
+    expect(loanVsBase(57.35, 2026)).toBe(2.35)
+    expect(loanVsBaseText(57.35, 2026)).toBe('+2.35¢')
+    expect(loanVsBaseText(53.8, 2026)).toBe('(1.20¢)')
+    expect(loanVsBaseText(55, 2026)).toBe('0.00¢')
+    expect(loanVsBaseText(null, 2026)).toBe('—')
+    expect(loanVsBaseTone(57.35, 2026)).toBe('favorable')
+    expect(loanVsBaseTone(53.8, 2026)).toBe('unfavorable')
+    expect(loanVsBaseTone(55, 2026)).toBe('neutral')
+  })
+})
+
 describe('factors', () => {
   it('reads every factor off a classing row and formats it', () => {
     const g = grade()
@@ -189,7 +203,10 @@ describe('factors', () => {
   it('non-banded factors distribute over descriptive ranges with no band', () => {
     expect(bucketOf('length', 113, 2026)).toMatchObject({ label: 'Long (1.11–1.26")', band: null })
     expect(bucketOf('rd', 77.7, 2026)?.label).toBe('75–79.9')
-    expect(bucketOf('loan', 59.9, 2026)?.label).toBe('55–59.99¢')
+    expect(bucketOf('loan', 59.9, 2026)?.label).toBe('Base to 5¢ over')
+    expect(bucketOf('loan', 54.99, 2026)?.label).toBe('Up to 5¢ under base')
+    expect(bucketOf('loan', 49.99, 2026)?.label).toBe('More than 5¢ under base')
+    expect(bucketOf('loan', 60, 2026)?.label).toBe('5¢ or more over base')
     expect(bucketOf('remarks', '77', 2026)?.label).toBe('Repacked')
   })
 })

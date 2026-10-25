@@ -209,7 +209,10 @@ describe('contract view and comparison rows', () => {
   it('the KPI cards and the PDF payload carry the contract headline', () => {
     const input = { cropYear: 2026, rows, factors: ['color', 'mic', 'strength', 'uniformity', 'loan'] as const, groupBy: 'farm' as const, weighting: 'bales' as const, filterSummary: '2026 Crop Year · All entities', contract: { id: 'VS', label: 'VS&Co', spec: VS_SPEC, view } }
     const cards = kpiCards({ ...input, factors: [...input.factors] })
-    expect(cards.map((c) => c.label)).toEqual(['Bales classed', 'Lint lbs', 'Avg loan value', 'Base or better', 'Meets VS&Co'])
+    expect(cards.map((c) => c.label)).toEqual(['Bales classed', 'Lint lbs', 'Avg loan vs base', 'Base or better', 'Meets VS&Co'])
+    // Loan value reads against the 55¢ base loan rate: 58¢ lbs-weighted → +3.00¢.
+    expect(cards[2]).toMatchObject({ value: '+3.00¢', tone: 'favorable' })
+    expect(cards[2].sub).toContain('58.00¢ vs 55.00¢/lb base')
     expect(cards[4].value).toBe('25.0%')
     const pdf = buildBaleQualityPdfPayload({ ...input, factors: [...input.factors] })
     expect(pdf.sections.map((s) => s.title)).toEqual(['Factor distributions', 'Color grade grid (bales · % of classed)', 'By farm', 'Contract: VS&Co', 'Bales'])
@@ -272,7 +275,8 @@ describe('Excel workbook — live formulas prove the app’s numbers', () => {
     expect(row('Color grade', '31 M')[3]).toBe(5)
     expect(row('Leaf grade', 'Leaf 2')[3]).toBe(4)
     expect(row('Staple (32nds)', '38')[3]).toBe(5)
-    expect(row('Loan value (¢/lb)', 'Average (lbs-weighted — loan value always is)')[5]).toBeCloseTo(58, 6)
+    expect(row('Loan value (¢/lb)', 'Average loan value (lbs-weighted — loan value always is)')[5]).toBeCloseTo(58, 6)
+    expect(row('Loan value (¢/lb)', 'Average vs the 55.00¢ base loan rate (lbs-weighted)')[5]).toBeCloseTo(3, 6)
     // The By Group tab: AVERAGEIFS per farm and % meets.
     const groups = grid[SECTION.groups]
     const gRows = p.sections.find((s) => s.key === SECTION.groups)!.rows

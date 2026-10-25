@@ -1,8 +1,8 @@
 ---
 page_route: /reports/bale-quality
 title: Bale Quality
-updated: 2026-10-21
-keywords: cotton, bales, HVI, histogram, distribution, factor tile, filters drawer, classing, color grade, leaf, staple, micronaire, mic, strength, uniformity, loan value, premium, discount, price band, loan schedule, color grid, variety, class week, contract, quality requirements, spec, cap, qualifying bales, near miss, Pareto, buyer, merchant, excel formulas
+updated: 2026-10-25
+keywords: cotton, bales, HVI, base loan rate, above base, below base, histogram, distribution, factor tile, filters drawer, classing, color grade, leaf, staple, micronaire, mic, strength, uniformity, loan value, premium, discount, price band, loan schedule, color grid, variety, class week, contract, quality requirements, spec, cap, qualifying bales, near miss, Pareto, buyer, merchant, excel formulas
 ---
 ## What this page is for
 
@@ -44,6 +44,7 @@ For the bales you choose it shows how many are classed, the lint pounds, the ave
 - **Price bands** come from the crop year's CCC loan premium and discount schedule (for 2026: micronaire 3.7–4.2 premium, 3.5–3.6 and 4.3–4.9 base, 3.4 and under or 5.0 and over discount; strength 29.0 and up premium, 26.0–28.9 base, under 26.0 discount; uniformity 82.0 and up premium, 80.0–81.9 base, under 80.0 discount; color, leaf and staple better than, at, or worse than the loan base 41-4-34). Readings compare at tenths, as USDA reports them. A crop year without its own schedule uses the newest one on file and says so.
 - **Base or better** on the KPI strip counts bales at base or premium on every loan factor at once.
 - **Averages** are per bale unless you pick Per lb; loan value in cents per pound is always pounds-weighted, so it matches a CCC loan calculation.
+- **Loan value is shown above or below the base loan rate** (55¢ a pound for 2026) rather than as the full number: **+2.35¢** in green means the bale (or the average) is worth 2.35¢ a pound more than a base-grade bale in the loan, and **(1.20¢)** in red means 1.20¢ under. The factor detail still shows the average loan value itself next to the base rate, and its histogram draws a line at the base. In the Excel workbook the Bales tab keeps the classing loan value and adds a **Loan vs base** column beside it.
 - **Meets spec**: every threshold is inclusive at the value written (staple 37 meets "37 and longer"; mic 4.7 meets "4.0–4.7"). A classed bale missing a reading the contract tests fails that factor. "Color 41 and better" means the white grades 11, 21, 31 and 41 — a light spotted 42 or 32 fails unless the contract's grid ticks it.
 - In the Excel workbook the Summary and By Group tabs are formulas (COUNTIFS, AVERAGEIFS, SUMPRODUCT) over the Bales tab, and the Bales tab's Meets spec column reads the Contract Spec tab's blue threshold cells — change a threshold, add or remove a color code or an FSA farm number, and the counts move.
 

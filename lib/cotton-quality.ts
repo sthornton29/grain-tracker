@@ -258,6 +258,11 @@ export type CropYearBands = {
   source: string
   /** The loan base grade the color / leaf / staple bands are relative to. */
   loanBase: { color: string; leaf: number; staple: number }
+  /** The base loan rate, ¢/lb — what a base-grade bale (the loanBase with
+   *  base mic / strength / uniformity) is worth in the loan. Each classing
+   *  loan value is this plus or minus the schedule's premiums and discounts,
+   *  so the report reads loan value as the difference from it. */
+  baseLoanCents: number
   /** Finer loan buckets (distribution charts); the coarse bands derive from these. */
   mic: Bucket[]
   strength: Bucket[]
@@ -274,6 +279,8 @@ export const PRICE_BANDS: Record<number, CropYearBands> = {
     cropYear: 2026,
     source: '2026-Crop Upland Cotton Schedule of Premiums and Discounts (USDA FSA, May 2026)',
     loanBase: { color: '41', leaf: 4, staple: 34 },
+    // OBBBA national upland loan rate, 2026 crop on (app/cotton/marketing's default too).
+    baseLoanCents: 55,
     mic: [
       b('mic_le24', '2.4 & lower', null, 2.4, 'discount', -1785),
       b('mic_25_26', '2.5–2.6', 2.5, 2.6, 'discount', -1310),
@@ -333,6 +340,26 @@ export function bandsFor(cropYear: number): CropYearBands {
   const before = years.filter((y) => y <= cropYear)
   const pick = before.length ? before[before.length - 1] : years[years.length - 1]
   return PRICE_BANDS[pick]
+}
+
+/** A loan value's premium (+) or discount (−) against the crop year's base
+ *  loan rate, ¢/lb, rounded to hundredths. */
+export function loanVsBase(cents: number, cropYear: number): number {
+  return Math.round((cents - bandsFor(cropYear).baseLoanCents) * 100) / 100
+}
+
+/** "+2.35¢" above base, "(1.20¢)" below (financial parentheses), "0.00¢" at base. */
+export function loanVsBaseText(cents: number | null | undefined, cropYear: number): string {
+  if (cents == null || !Number.isFinite(cents)) return '—'
+  const d = loanVsBase(cents, cropYear)
+  return d > 0 ? `+${d.toFixed(2)}¢` : d < 0 ? `(${Math.abs(d).toFixed(2)}¢)` : '0.00¢'
+}
+
+/** Favorable above base, unfavorable below. */
+export function loanVsBaseTone(cents: number | null | undefined, cropYear: number): 'favorable' | 'unfavorable' | 'neutral' {
+  if (cents == null || !Number.isFinite(cents)) return 'neutral'
+  const d = loanVsBase(cents, cropYear)
+  return d > 0 ? 'favorable' : d < 0 ? 'unfavorable' : 'neutral'
 }
 
 /** Readings compare at tenths (USDA precision). */
@@ -548,13 +575,16 @@ export function factorBuckets(key: FactorKey, cropYear: number, mode: 'coarse' |
         { key: 'len_long', label: 'Long (1.11–1.26")', min: 111, max: 126, band: null },
         { key: 'len_xl', label: 'Extra Long (> 1.26")', min: 127, max: null, band: null },
       ]
-    case 'loan':
+    case 'loan': {
+      // Read against the base loan rate; bounds stay in ¢/lb (the classing unit).
+      const L = bands.baseLoanCents
       return [
-        { key: 'loan_lt50', label: '< 50¢', min: null, max: 49.99, band: null },
-        { key: 'loan_50', label: '50–54.99¢', min: 50, max: 54.99, band: null },
-        { key: 'loan_55', label: '55–59.99¢', min: 55, max: 59.99, band: null },
-        { key: 'loan_60', label: '60¢+', min: 60, max: null, band: null },
+        { key: 'loan_under5', label: 'More than 5¢ under base', min: null, max: L - 5.01, band: null },
+        { key: 'loan_under', label: 'Up to 5¢ under base', min: L - 5, max: L - 0.01, band: null },
+        { key: 'loan_over', label: 'Base to 5¢ over', min: L, max: L + 4.99, band: null },
+        { key: 'loan_over5', label: '5¢ or more over base', min: L + 5, max: null, band: null },
       ]
+    }
   }
 }
 
