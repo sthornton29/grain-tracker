@@ -6,13 +6,17 @@
 // a bale by PBI number. Unmatched rows (receipt not entered yet) stay visible
 // with a "no matching bale" flag and import later; NetWt cross-checks the
 // bale's receipt weight (>1% flagged). Standard preview → confirm → save.
+// The list sorts by PBI # or by harvest date — the picked dates of the seed
+// cotton loads on the bale's gin receipt (lib/bale-quality-report
+// harvestSpanOf, the same span the Bale Quality report groups by).
 
 import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { parseGradeCsv, type ParsedGradeRow } from '@/lib/cotton-grades'
-import { matchGradesToBales } from '@/lib/cotton'
+import { cottonLoadDate, matchGradesToBales } from '@/lib/cotton'
+import { harvestSpanOf } from '@/lib/bale-quality-report'
 import type { CottonBale, CottonBaleGrade, GinReceipt, Farm, Field } from '@/lib/types'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
 import { reportError } from '@/lib/friendly-error'
@@ -29,6 +33,9 @@ export default function CottonBalesPage() {
   const [receipts, setReceipts] = useState<GinReceipt[]>([])
   const [farms, setFarms] = useState<Farm[]>([])
   const [fields, setFields] = useState<Field[]>([])
+  const [receiptLoads, setReceiptLoads] = useState<Array<{ receipt_id: string; cotton_load_id: string }>>([])
+  const [loadDates, setLoadDates] = useState<Array<{ id: string; picked_date: string | null; delivered_date: string | null }>>([])
+  const [sort, setSort] = usePersistentState<{ key: 'pbi' | 'harvest'; dir: 1 | -1 }>('cotton:bales:sort', { key: 'pbi', dir: 1 })
   const [cropYear, setCropYear] = usePersistentState<number>('cotton:cropYear', new Date().getFullYear())
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
@@ -36,22 +43,44 @@ export default function CottonBalesPage() {
   const [saving, setSaving] = useState(false)
 
   async function refresh() {
-    const [b, g, r, f, fl] = await Promise.all([
+    const [b, g, r, f, fl, rl, ld] = await Promise.all([
       fetchAllRows((f, t) => supabase.from('cotton_bales').select('*').order('pbi_number').order('id').range(f, t)),
       fetchAllRows((f, t) => supabase.from('cotton_bale_grades').select('*').order('id').range(f, t)),
       fetchAllRows((f, t) => supabase.from('gin_receipts').select('*').order('id').range(f, t)),
       supabase.from('farms').select('*'),
       supabase.from('fields').select('*'),
+      fetchAllRows((f, t) => supabase.from('gin_receipt_loads').select('receipt_id, cotton_load_id').order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('cotton_loads').select('id, picked_date, delivered_date').order('id').range(f, t)),
     ])
     setBales((b.data as CottonBale[]) || [])
     setGrades((g.data as CottonBaleGrade[]) || [])
     setReceipts((r.data as GinReceipt[]) || [])
     setFarms((f.data as Farm[]) || [])
     setFields((fl.data as Field[]) || [])
+    setReceiptLoads((rl.data as Array<{ receipt_id: string; cotton_load_id: string }>) || [])
+    setLoadDates((ld.data as Array<{ id: string; picked_date: string | null; delivered_date: string | null }>) || [])
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
-  const yearBales = useMemo(() => bales.filter((b) => b.crop_year === cropYear), [bales, cropYear])
+  // Each receipt's harvest span, from its loads' ticket dates.
+  const harvestByReceipt = useMemo(() => {
+    const dateOf = new Map(loadDates.map((l) => [l.id, cottonLoadDate(l)]))
+    const dates = new Map<string, Array<string | null>>()
+    for (const k of receiptLoads) dates.set(k.receipt_id, [...(dates.get(k.receipt_id) ?? []), dateOf.get(k.cotton_load_id) ?? null])
+    return new Map([...dates].map(([id, ds]) => [id, harvestSpanOf(ds)]))
+  }, [receiptLoads, loadDates])
+  const yearBales = useMemo(() => {
+    const ys = bales.filter((b) => b.crop_year === cropYear)
+    if (sort.key === 'pbi') return sort.dir === 1 ? ys : [...ys].reverse()
+    const key = (b: CottonBale) => { const h = harvestByReceipt.get(b.gin_receipt_id); return h?.from ? `${h.from}|${h.to}` : null }
+    // Undated bales stay last either way; PBI order within a day.
+    return [...ys].sort((a, z) => {
+      const ka = key(a), kz = key(z)
+      if (ka == null || kz == null) return ka == null && kz == null ? 0 : ka == null ? 1 : -1
+      return (ka < kz ? -1 : ka > kz ? 1 : 0) * sort.dir || a.pbi_number.localeCompare(z.pbi_number, undefined, { numeric: true })
+    })
+  }, [bales, cropYear, sort, harvestByReceipt])
+  const toggleSort = (key: 'pbi' | 'harvest') => setSort((s) => (s.key === key ? { key, dir: s.dir === 1 ? -1 : 1 } : { key, dir: 1 }))
   const gradeByBale = useMemo(() => new Map(grades.map((g) => [g.bale_id, g])), [grades])
   const receiptById = useMemo(() => new Map(receipts.map((r) => [r.id, r])), [receipts])
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
@@ -207,7 +236,16 @@ export default function CottonBalesPage() {
       <CottonSection title="Bales" sub={`${cropYear} crop · ${fmtInt(yearBales.length)} bales · ${fmtInt(gradedCount)} classed`}>
         <div className="overflow-x-auto">
         <table className="min-w-full text-sm">
-          <thead className={theadCls}><tr>{['PBI #', 'Farm', 'Field', 'Net lbs', 'Gr', 'Lf', 'St', 'Mic', 'Str', 'Cgr', 'Loan $/lb', 'Loan $'].map((h, k) => <th key={h} className={`${k === 3 || k >= 10 ? 'text-right' : 'text-left'} px-3 py-2 whitespace-nowrap`}>{h}</th>)}</tr></thead>
+          <thead className={theadCls}><tr>{['PBI #', 'Farm', 'Field', 'Harvested', 'Net lbs', 'Gr', 'Lf', 'St', 'Mic', 'Str', 'Cgr', 'Loan $/lb', 'Loan $'].map((h, k) => {
+            const sortKey = h === 'PBI #' ? 'pbi' : h === 'Harvested' ? 'harvest' : null
+            return (
+              <th key={h} aria-sort={sortKey && sort.key === sortKey ? (sort.dir === 1 ? 'ascending' : 'descending') : undefined} className={`${k === 4 || k >= 11 ? 'text-right' : 'text-left'} px-3 py-2 whitespace-nowrap`}>
+                {sortKey ? (
+                  <button type="button" onClick={() => toggleSort(sortKey)} className="min-h-11 font-semibold hover:underline">{h}{sort.key === sortKey ? (sort.dir === 1 ? ' ▲' : ' ▼') : ''}</button>
+                ) : h}
+              </th>
+            )
+          })}</tr></thead>
           <tbody>
             {yearBales.map((b) => {
               const g = gradeByBale.get(b.id)
@@ -217,6 +255,7 @@ export default function CottonBalesPage() {
                   <td className="px-3 py-1.5 font-mono font-semibold text-slate-900">{b.pbi_number}{!g && <span className="ml-2 inline-block rounded-full bg-slate-100 text-slate-500 text-[10px] font-medium px-1.5 py-0.5 align-middle">not classed</span>}</td>
                   <td className="px-3 py-1.5">{r?.farm_id ? farmById.get(r.farm_id)?.name ?? '—' : '—'}</td>
                   <td className="px-3 py-1.5">{r?.field_id ? fieldById.get(r.field_id)?.name_or_number ?? '—' : '—'}</td>
+                  <td className="px-3 py-1.5 whitespace-nowrap">{harvestByReceipt.get(b.gin_receipt_id)?.from ? harvestByReceipt.get(b.gin_receipt_id)!.label : '—'}</td>
                   <td className="px-3 py-1.5 text-right tabular-nums">{fmtInt(Number(b.net_weight_lbs))}</td>
                   <td className="px-3 py-1.5">{g?.color_grade ?? '—'}</td>
                   <td className="px-3 py-1.5">{g?.leaf_grade ?? '—'}</td>

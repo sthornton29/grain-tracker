@@ -1,8 +1,8 @@
 ---
 page_route: /reports/yields-by-landowner
 title: Yields by Landowner
-updated: 2026-09-24
-keywords: landowner, yields, production, farm, field, bushels, landlord report, splits
+updated: 2026-10-25
+keywords: landowner, yields, production, farm, field, bushels, landlord report, splits, cotton, turnout, cotton, turnout
 ---
 ## What this page is for
 
@@ -13,6 +13,8 @@ This report shows production and yields organized by landowner. If you farm grou
 - The report opens on the current crop year (or the year you last picked). It groups everything by landowner, then by farm, then by field.
 - Narrow with the **crop**, **entity**, or **landowner** filters — picking one landowner gives you a clean page for that owner alone.
 - Use the **Excel**, **PDF**, or **Print** buttons to produce a copy to hand or email to the landowner. The export mirrors the screen. The "Owned / No Landowner" group is left off the printed handout, and off the page entirely for a landowner signed in with read-only access.
+- With Cotton turned on and a crop year picked, the **turnout for estimates** sits under the filters — the lint percentage Turnrow uses for seed cotton that is picked but not ginned yet. It is the same figure the Yields page and Marketing use: change it here and it changes there too.
+- With Cotton turned on and a crop year picked, the **turnout for estimates** sits under the filters — the lint percentage Turnrow uses for seed cotton that is picked but not ginned yet. It is the same figure the Yields page and Marketing use: change it here and it changes there too.
 - Your filter choices are remembered, so the report opens the same way next time. The same view lives on the Yields page under the **By landowner** tab, where it follows that page's filter row.
 
 ## What the controls do

@@ -104,7 +104,7 @@ export default function BaleQualityReport() {
     ;(async () => {
       setLoaded(false); setLoadError(null)
       try {
-        const [bales, grades, receipts, gins, farms, fields, entities, plantings, varieties, crops, disp, loanBales, cts, specs, by, asm, years] = await Promise.all([
+        const [bales, grades, receipts, gins, farms, fields, entities, plantings, varieties, crops, disp, loanBales, cts, specs, by, asm, years, receiptLoads, loads] = await Promise.all([
           fetchAllRows((f, t) => supabase.from('cotton_bales').select('id, gin_receipt_id, crop_year, pbi_number, net_weight_lbs').eq('crop_year', cropYear).order('id').range(f, t)),
           fetchAllRows((f, t) => supabase.from('cotton_bale_grades').select('*').order('id').range(f, t)),
           fetchAllRows((f, t) => supabase.from('gin_receipts').select('id, gin_id, receipt_number, receipt_date, statement_number, gin_code, entity_id, farm_id, field_id, crop_year').eq('crop_year', cropYear).order('id').range(f, t)),
@@ -122,6 +122,9 @@ export default function BaleQualityReport() {
           supabase.from('buyers').select('id, name'),
           supabase.from('crop_assumptions').select('*').eq('crop_year', cropYear),
           supabase.from('cotton_bales').select('crop_year').order('crop_year', { ascending: false }).limit(1000),
+          // The harvest date: each receipt's seed cotton loads and their ticket dates.
+          fetchAllRows((f, t) => supabase.from('gin_receipt_loads').select('receipt_id, cotton_load_id').order('id').range(f, t)),
+          fetchAllRows((f, t) => supabase.from('cotton_loads').select('id, picked_date, delivered_date').eq('crop_year', cropYear).order('id').range(f, t)),
         ])
         if (cancelled) return
         const err = [bales, grades, receipts, cts].find((q) => q.error)?.error
@@ -140,6 +143,8 @@ export default function BaleQualityReport() {
           varieties: (varieties.data as BaleQualityInputs['varieties']) ?? [],
           dispositions: (disp.data as BaleQualityInputs['dispositions']) ?? [],
           loanBales: (loanBales.data as BaleQualityInputs['loanBales']) ?? [],
+          receiptLoads: (receiptLoads.data as BaleQualityInputs['receiptLoads']) ?? [],
+          loads: (loads.data as BaleQualityInputs['loads']) ?? [],
         })
         setContracts((cts.data as CottonSalesContract[]) ?? [])
         setSpecRows(((specs.data as CottonContractSpec[]) ?? []).filter(Boolean))
@@ -208,6 +213,7 @@ export default function BaleQualityReport() {
     filters.ginIds.length ? `${filters.ginIds.length} gin${filters.ginIds.length === 1 ? '' : 's'}` : null,
     filters.receiptIds.length ? `${filters.receiptIds.length} receipt${filters.receiptIds.length === 1 ? '' : 's'}` : null,
     filters.practices.length ? filters.practices.join(' / ') : null,
+    filters.harvestFrom || filters.harvestTo ? `harvested ${filters.harvestFrom ? fmtDate(filters.harvestFrom) : '…'} – ${filters.harvestTo ? fmtDate(filters.harvestTo) : '…'}` : null,
     filters.classFrom || filters.classTo ? `classed ${filters.classFrom ? fmtDate(filters.classFrom) : '…'} – ${filters.classTo ? fmtDate(filters.classTo) : '…'}` : null,
     filters.dispositions.length ? filters.dispositions.map((d) => DISPOSITION_TEXT[d]).join(' / ') : null,
     contractChoice ? `Contract ${contractChoice.label}${filters.excludeCommitted ? ' (committed elsewhere excluded)' : ''}` : null,
@@ -294,6 +300,12 @@ export default function BaleQualityReport() {
             {ginOptions.length > 1 && <ChipMultiSelect label="Gin" options={ginOptions} value={filters.ginIds} onChange={(v) => setFilter('ginIds', v)} inlineUpTo={4} />}
             <ChipMultiSelect label="Gin receipt" options={receiptOptions} value={filters.receiptIds} onChange={(v) => setFilter('receiptIds', v)} searchable />
             <ChipMultiSelect label="Practice" options={PRACTICE_OPTIONS} value={filters.practices} onChange={(v) => setFilter('practices', v as BaleQualityFilters['practices'])} />
+            <FilterField label="Harvested from">
+              <input type="date" value={filters.harvestFrom ?? ''} onChange={(e) => setFilter('harvestFrom', e.target.value)} className={inputCls} />
+            </FilterField>
+            <FilterField label="to">
+              <input type="date" value={filters.harvestTo ?? ''} onChange={(e) => setFilter('harvestTo', e.target.value)} className={inputCls} />
+            </FilterField>
             <FilterField label="Classed from">
               <input type="date" value={filters.classFrom} onChange={(e) => setFilter('classFrom', e.target.value)} className={inputCls} />
             </FilterField>
@@ -573,6 +585,7 @@ function BaleList({ rows, allCount, factors, cropYear, drill, onClearDrill, view
       { key: 'farm', label: 'Farm', get: (r) => r.farmName, numeric: false },
       { key: 'field', label: 'Field', get: (r) => r.fieldName, numeric: false },
       { key: 'variety', label: 'Variety', get: (r) => r.variety ?? '', numeric: false },
+      { key: 'harvest', label: 'Harvested', get: (r) => (r.harvestFrom ? `${r.harvestFrom}|${r.harvestTo}` : ''), render: (r) => (r.harvestFrom ? r.harvestLabel : <span className="text-slate-300">—</span>), numeric: false },
       { key: 'classDate', label: 'Class date', get: (r) => r.classDate ?? '', render: (r) => (r.classDate ? fmtDate(r.classDate) : <span className="text-slate-300">—</span>), numeric: false },
     ]
     for (const f of factors) {

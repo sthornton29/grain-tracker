@@ -16,6 +16,7 @@ import ExportBar from '@/components/export-bar'
 import { ConfirmDialog } from '@/components/app-dialog'
 import { fmtInt, fmtPct } from '@/components/reports/report-kit'
 import { CottonPageHeader, YieldFigure } from '@/components/cotton/cotton-page-header'
+import CottonLoadDocument from '@/components/cotton/cotton-load-document'
 import { useCottonFieldYields } from '@/lib/use-cotton-field-yields'
 import { perAcre } from '@/lib/cotton-field-yields'
 import { lintTurnoutPct } from '@/lib/cotton'
@@ -429,6 +430,8 @@ export default function GinReceiptDetailPage() {
           {r.notes && (
             <Section title="Notes"><p className="px-4 py-3 text-sm whitespace-pre-wrap">{r.notes}</p></Section>
           )}
+
+          <CottonLoadDocument kind="receipt" loadId={r.id} loadNumber={statementNumber ?? r.receipt_number} currentUrl={r.source_pdf_url} onChanged={refresh} />
         </>
       )}
 

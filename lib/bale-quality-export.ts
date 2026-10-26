@@ -187,7 +187,7 @@ export function buildBaleQualityPdfPayload(input0: BaleQualityExportInput): Expo
 
   // Bale list.
   const baleColumns: ExportColumn[] = [
-    { label: 'PBI' }, { label: 'Receipt' }, { label: 'Farm' }, { label: 'Field' }, { label: 'Variety' }, { label: 'Class date' },
+    { label: 'PBI' }, { label: 'Receipt' }, { label: 'Farm' }, { label: 'Field' }, { label: 'Variety' }, { label: 'Harvested' }, { label: 'Class date' },
     ...factors.map((f): ExportColumn => ({ label: factorLabel(f), align: FACTORS[f].kind === 'number' ? 'right' : 'left', format: factorFormat(f) })),
     { label: 'Lbs', align: 'right', format: 'lbs' }, { label: 'Disposition' },
   ]
@@ -196,7 +196,7 @@ export function buildBaleQualityPdfPayload(input0: BaleQualityExportInput): Expo
     title: 'Bales',
     columns: baleColumns,
     rows: rows.map((r): ExportCell[] => {
-      const out: ExportCell[] = [r.pbi, r.receiptLabel, r.farmName, r.fieldName, r.variety ?? '', r.classDate ?? '']
+      const out: ExportCell[] = [r.pbi, r.receiptLabel, r.farmName, r.fieldName, r.variety ?? '', r.harvestFrom ? r.harvestLabel : '', r.classDate ?? '']
       for (const f of factors) out.push(factorShownValue(r, f, cropYear))
       out.push(Math.round(r.lbs), DISPOSITION_TEXT[r.disposition])
       if (contract) {
@@ -269,6 +269,8 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
     { key: 'field', label: 'Field' },
     { key: 'variety', label: 'Variety' },
     { key: 'practice', label: 'Practice' },
+    { key: 'harvest_from', label: 'Harvested from', note: 'First picked date on the seed cotton load tickets linked to the bale’s gin receipt.' },
+    { key: 'harvest_to', label: 'Harvested to', note: 'Last picked date on those tickets — the same day as “from” when the receipt’s loads were all picked one day.' },
     { key: 'class_date', label: 'Class date' },
     { key: 'color', label: 'Color', align: 'right' },
     { key: 'leaf', label: 'Leaf', align: 'right', format: 'int' },
@@ -316,7 +318,7 @@ export function buildBaleQualityWorkbook(input0: BaleQualityExportInput): Export
   const baleRows: ExportCell[][] = rows.map((r, i) => {
     const out: ExportCell[] = [
       input(r.pbi), input(r.receiptLabel), input(r.ginName), input(r.entityName), input(r.farmName), input(r.fsa ?? ''), input(r.fieldName),
-      input(r.variety ?? ''), input(r.practice ?? ''), input(r.classDate ?? ''),
+      input(r.variety ?? ''), input(r.practice ?? ''), input(r.harvestFrom ?? ''), input(r.harvestTo ?? ''), input(r.classDate ?? ''),
       ...BALE_FACTOR_COLS.map(({ key }) => input(factorCellValue(r, key) as string | number)),
       formula(iff(ne(cell(SECTION.bales, 'loan', i), str('')), sub(cell(SECTION.bales, 'loan', i), num(bands.baseLoanCents)), str('')), 'dec2'),
       input(r.loanTotal, 'usd2'), input(Math.round(r.lbs), 'lbs'), input(DISPOSITION_TEXT[r.disposition]), input(groupLabelOf(r, groupBy)),
@@ -563,6 +565,7 @@ function groupLabelOf(r: BaleRow, by: GroupBy): string {
     case 'variety': return r.variety ?? 'No variety'
     case 'gin': return r.ginName
     case 'receipt': return r.receiptLabel
+    case 'harvest': return r.harvestLabel
     case 'week': return r.classWeek
   }
 }

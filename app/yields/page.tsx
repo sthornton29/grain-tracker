@@ -1,7 +1,9 @@
 'use client'
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
-import CottonYieldsSection, { cottonSectionExport, type CottonSectionRow, type CottonTurnoutLine } from '@/components/reports/cotton-yields-section'
+import CottonYieldsSection, { cottonSectionExport, type CottonSectionRow } from '@/components/reports/cotton-yields-section'
+import { TurnoutLines, cottonTurnoutLines, type CottonTurnoutLine } from '@/components/reports/turnout-control'
+import { saveTurnoutAssumption } from '@/lib/turnout-save'
 import { createClient } from '@/lib/supabase/client'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
@@ -972,40 +974,30 @@ export default function YieldsPage() {
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cottonOn, visibleCotton, cottonModel, yieldAnalysis, excludedFields, cropCompleteKeys, fieldById, farmById, cropById])
-  // The turnout line(s) in the cotton table header — per cotton crop present,
-  // for the selected crop year only (a crop × year assumption).
+  // The turnout line(s) — per cotton crop present, for the selected crop
+  // year only (a crop × year assumption). Every view shows them: the cotton
+  // table's header carries them where it shows; the farm / entity / variety
+  // / landowner views get them above their table (turnoutStripShown).
   const cottonTurnouts = useMemo<CottonTurnoutLine[]>(() => {
     if (!cottonOn || year === '') return []
-    const ids = [...new Set(visibleCotton.map((p) => p.crop_id))]
-    return ids.map((id) => ({
-      cropId: id,
-      cropName: cropById.get(id)?.name ?? 'Cotton',
+    return cottonTurnoutLines({
+      cropIds: visibleCotton.map((p) => p.crop_id),
+      cropName: (id) => cropById.get(id)?.name ?? 'Cotton',
       year,
-      turnout: cottonModel.turnoutFor(id, year),
-      manualPct: (() => { const a = effAssumptions.find((x) => x.crop_id === id && x.crop_year === year); return a?.assumed_turnout_pct != null ? Number(a.assumed_turnout_pct) : null })(),
-    }))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+      turnoutFor: cottonModel.turnoutFor,
+      assumptions: effAssumptions,
+    })
   }, [cottonOn, year, visibleCotton, cottonModel, cropById, effAssumptions])
+  // Mirrors the two CottonYieldsSection renders below that take `turnouts`.
+  const cottonHeaderShowsTurnout = (view === 'field' && !!cottonFilter) || (!cottonFilter && view !== 'landowner' && (cottonRows.length > 0 || cottonYields.loading))
   const [turnoutErr, setTurnoutErr] = useState<string | null>(null)
-  // Save the manual turnout for crop × year: owners write the shared row
-  // (a minimal upsert — defaults fill the rest), viewers a private override.
+  // Save the manual turnout for crop × year (lib/turnout-save — the same
+  // write the Yields by Landowner report makes).
   async function saveTurnout(cid: string, yr: number, v: number | null) {
     setTurnoutErr(null)
-    if (viewer.isViewer) {
-      const base = assumptions.find((a) => a.crop_id === cid && a.crop_year === yr) ?? null
-      const baseVal = base?.assumed_turnout_pct != null ? Number(base.assumed_turnout_pct) : null
-      if (v === baseVal) await viewerA.resetOverride({ scope: 'crop', cropId: cid, cropYear: yr, field: 'assumed_turnout_pct' })
-      else await viewerA.saveOverride({ scope: 'crop', cropId: cid, cropYear: yr, field: 'assumed_turnout_pct', value: v, base })
-      return
-    }
-    if (!canEdit) return
-    const existing = assumptions.find((a) => a.crop_id === cid && a.crop_year === yr)
-    const { error } = existing
-      ? await supabase.from('crop_assumptions').update({ assumed_turnout_pct: v, updated_at: new Date().toISOString() }).eq('id', existing.id)
-      : await supabase.from('crop_assumptions').insert({ crop_id: cid, crop_year: yr, assumed_turnout_pct: v })
-    if (error) { setTurnoutErr(reportError(error, { action: 'save the turnout' })); return }
-    const ca = await supabase.from('crop_assumptions').select('*')
-    setAssumptions((ca.data as CropAssumption[]) || [])
+    const res = await saveTurnoutAssumption(supabase, { cropId: cid, cropYear: yr, value: v, assumptions, isViewer: viewer.isViewer, canEdit, viewerA })
+    if (res.error) { setTurnoutErr(reportError(res.error, { action: 'save the turnout' })); return }
+    if (res.assumptions) setAssumptions(res.assumptions)
   }
 
   // Multi-variety plantings in the current filter — but only once their field's
@@ -1598,6 +1590,11 @@ export default function YieldsPage() {
 
       {overrideErr && <p className="text-sm text-red-600 no-print">{overrideErr}</p>}
       {turnoutErr && <p className="text-sm text-red-600 no-print">{turnoutErr}</p>}
+      {/* The turnout behind the cotton estimates, on the views whose table
+          does not already carry it in a cotton header. */}
+      {cottonTurnouts.length > 0 && !cottonHeaderShowsTurnout && (
+        <TurnoutLines lines={cottonTurnouts} onSave={canEdit || viewer.isViewer ? saveTurnout : undefined} />
+      )}
       {cottonOn && !cottonFilter && cottonSkipped > 0 && view === 'field' && (
         <p className="text-xs text-slate-500 no-print">
           {cottonSkipped} cotton planting{cottonSkipped === 1 ? '' : 's'} not shown here — cotton yields are pounds of lint, in the Cotton table below.
@@ -1626,7 +1623,7 @@ export default function YieldsPage() {
       ) : view === 'landowner' ? (
         <YieldsByLandowner
           onPayloadChange={handleLandownerPayload}
-          controlled={{ cropYear: year, cropId, entityId, cropping: showCropping ? croppingFilter : 'all' }}
+          controlled={{ cropYear: year, cropId, entityId, cropping: showCropping ? croppingFilter : 'all', assumptions: effAssumptions }}
         />
       ) : view === 'variety' ? (
         <div className="space-y-4">

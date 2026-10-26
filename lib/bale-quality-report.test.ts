@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   applyFilters, buildBaleRows, classWeekOf, colorGrid, comparisonRows, contractView, distribution, EMPTY_FILTERS, factorAverage, factorDetail,
-  groupRows, kpis, rowsInBin, varietyOfPlanting, committedElsewhere, type BaleQualityInputs, type BaleRow,
+  groupRows, harvestSpanOf, kpis, rowsInBin, varietyOfPlanting, committedElsewhere, type BaleQualityInputs, type BaleRow,
 } from '@/lib/bale-quality-report'
 import { buildBaleQualityPdfPayload, buildBaleQualityWorkbook, buildQualifyingBalesWorkbook, SECTION, SPEC_ROW, kpiCards } from '@/lib/bale-quality-export'
 import { evaluatePayload, formulaTextOf, payloadHasFormulas, formulaLayout, type ExportPayload } from '@/lib/exports'
@@ -397,5 +397,39 @@ describe('factor detail — the panel behind a tile', () => {
     expect(d.bins.length).toBeLessThanOrEqual(60)
     expect(d.step).toBeGreaterThan(0.5)
     expect(d.bins.reduce((s, b) => s + b.bales, 0)).toBe(wide.length)
+  })
+})
+
+describe('harvest date — the receipt’s seed cotton load tickets', () => {
+  const withLoads = (): BaleQualityInputs => ({
+    ...fixture(),
+    receiptLoads: [
+      { receipt_id: 'R1', cotton_load_id: 'L1' }, { receipt_id: 'R1', cotton_load_id: 'L2' },
+      { receipt_id: 'R2', cotton_load_id: 'L3' }, { receipt_id: 'R2', cotton_load_id: 'L4' }, { receipt_id: 'R2', cotton_load_id: 'L5' },
+    ],
+    loads: [
+      { id: 'L1', picked_date: '2026-10-03', delivered_date: '2026-10-04' },
+      { id: 'L2', picked_date: '2026-10-03', delivered_date: '2026-10-05' },
+      { id: 'L3', picked_date: '2026-10-07', delivered_date: null },
+      { id: 'L4', picked_date: null, delivered_date: '2026-10-05' }, // no picked date: delivered stands in
+      { id: 'L5', picked_date: null, delivered_date: null },
+    ],
+  })
+  it('one day when every load was picked that day; a span when they were not; undated receipts say so', () => {
+    expect(harvestSpanOf([])).toEqual({ from: null, to: null, label: 'No harvest date' })
+    expect(harvestSpanOf(['2026-10-07', null, '2026-10-05'])).toEqual({ from: '2026-10-05', to: '2026-10-07', label: 'Oct 5 – Oct 7' })
+    const rows = buildBaleRows(withLoads())
+    expect(byId(rows, 'B1')).toMatchObject({ harvestFrom: '2026-10-03', harvestTo: '2026-10-03', harvestLabel: 'Oct 3' })
+    expect(byId(rows, 'B5')).toMatchObject({ harvestFrom: '2026-10-05', harvestTo: '2026-10-07', harvestLabel: 'Oct 5 – Oct 7' })
+    expect(byId(rows, 'B9')).toMatchObject({ harvestFrom: null, harvestTo: null, harvestLabel: 'No harvest date' })
+    // Without the load inputs every bale is undated (callers that do not read loads).
+    expect(byId(rowsOf(), 'B1').harvestLabel).toBe('No harvest date')
+  })
+  it('groups by harvest date in date order, undated last; the range filter keeps overlapping spans', () => {
+    const rows = buildBaleRows(withLoads())
+    const groups = groupRows(rows, 'harvest')
+    expect(groups.map((x) => [x.label, x.rows.length])).toEqual([['Oct 3', 4], ['Oct 5 – Oct 7', 5], ['No harvest date', 1]])
+    expect(applyFilters(rows, { ...EMPTY_FILTERS, harvestFrom: '2026-10-06' }).map((r) => r.id).sort()).toEqual(['B10', 'B5', 'B6', 'B7', 'B8'])
+    expect(applyFilters(rows, { ...EMPTY_FILTERS, harvestTo: '2026-10-03' }).every((r) => r.receiptId === 'R1')).toBe(true)
   })
 })

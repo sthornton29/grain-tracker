@@ -33,7 +33,7 @@ import { planPagesPerBatch } from '@/lib/chunk-plan'
 import { mergeGinReceipts } from '@/lib/parse-merge'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import { reconcileBaleCount, lintTurnoutPct } from '@/lib/cotton'
-import { rollsNum } from '@/lib/cotton-load-writes'
+import { documentsForLoads, rollsNum, uploadReceiptDocument } from '@/lib/cotton-load-writes'
 import { pbiReview } from '@/lib/cotton-load-review'
 import { numberKey, pbiKeys } from '@/lib/number-key'
 import {
@@ -381,7 +381,13 @@ export default function GinReceiptsPage() {
     setSaving(true); setErr(null)
     const done: string[] = []
     const skipped: string[] = []
+    const noDoc: string[] = []
     try {
+      // Each statement keeps its own page(s) of the upload as its document
+      // (the whole upload when the pages are not known). A CSV export has
+      // no document to keep.
+      const docs = source ? await documentsForLoads(source, reviews.map((rv) => rv.s.pages), setStage, 'statement').catch(() => null) : null
+      setStage(null)
       for (let i = 0; i < reviews.length; i++) {
         const rv = reviews[i]
         const d = derived[i]
@@ -405,6 +411,16 @@ export default function GinReceiptsPage() {
             gin_code: s.gin_code, statement_number: s.statement_number, printed_farm_number: s.farm_number, printed_field: s.field,
             farm_ytd_modules: s.farm_ytd?.modules ?? null, farm_ytd_seed_cotton_lbs: s.farm_ytd?.seed_cotton_lbs ?? null,
             farm_ytd_bales: s.farm_ytd?.bales ?? null, farm_ytd_bale_weight: s.farm_ytd?.bale_weight ?? null,
+          }
+          if (source) {
+            // Its own upload (never shared between receipts, so removing one
+            // receipt's document never takes another's). A failed upload
+            // keeps the receipt and says so — the document can be added on
+            // the receipt's page.
+            const doc = docs?.[i] ?? null
+            const url = doc ? await uploadReceiptDocument(supabase, doc).catch(() => null) : null
+            if (url) header.source_pdf_url = url
+            else noDoc.push(name)
           }
           let alreadyLinked = new Set<string>()
           if (d.classification.status !== 'new') {
@@ -461,13 +477,13 @@ export default function GinReceiptsPage() {
           throw new Error(`${name}: ${reportError(e, { action: 'save the statement', noun: 'gin receipt' })} That statement was not kept.${done.length ? ` Already saved: ${done.join('; ')}.` : ''}`)
         }
       }
-      setMsg([...done, ...(skipped.length ? [`Left alone (already saved): ${skipped.join('; ')}`] : [])].join(' · '))
+      setMsg([...done, ...(skipped.length ? [`Left alone (already saved): ${skipped.join('; ')}`] : []), ...(noDoc.length ? [`The statement document could not be attached to ${noDoc.join('; ')} — open the receipt to add it`] : [])].join(' · '))
       setReviews([]); setSource(null); setCsvName(null); setNotes([]); refresh(); fieldYields.refresh()
     } catch (e: any) {
       setErr(e?.message ?? String(e))
       refresh()
     } finally {
-      setSaving(false)
+      setSaving(false); setStage(null)
     }
   }
 

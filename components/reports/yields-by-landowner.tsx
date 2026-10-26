@@ -10,6 +10,12 @@ import { usePersistentState } from '@/lib/use-persistent-state'
 import { useReportCropYear } from '@/lib/report-filters'
 import { useViewerScope, entityOptionsFor, viewerAllEntitiesLabel } from '@/lib/use-viewer-scope'
 import { roleAllowsPath } from '@/lib/route-guard'
+import { roleCanEditYields } from '@/lib/app-role'
+import { useViewerAssumptions } from '@/lib/use-viewer-assumptions'
+import { resolveCropAssumptions } from '@/lib/viewer-assumptions'
+import { saveTurnoutAssumption } from '@/lib/turnout-save'
+import { reportError } from '@/lib/friendly-error'
+import { TurnoutLines, cottonTurnoutLines } from '@/components/reports/turnout-control'
 import { fieldCropAggregates, analyzeYields, buildYieldInputs, type CombineEntryLike } from '@/lib/yields'
 import { useCottonYields } from '@/lib/use-cotton-yields'
 import { isCottonCrop } from '@/lib/marketing'
@@ -83,7 +89,12 @@ type Props = {
   /** Embedded on the Yields page: the crop year / crop / entity come from the
    *  page's ONE filter strip; this component then shows only its landowner
    *  pick and no header of its own. */
-  controlled?: { cropYear: number | ''; cropId: string; entityId: string; cropping?: CroppingFilter }
+  controlled?: {
+    cropYear: number | ''; cropId: string; entityId: string; cropping?: CroppingFilter
+    /** The Yields page's resolved assumptions (viewer overrides applied) — its
+     *  turnout edits then show here at once. The page shows the turnout. */
+    assumptions?: CropAssumption[]
+  }
 }
 
 export default function YieldsByLandowner({ onPayloadChange, headerActions, controlled }: Props) {
@@ -169,7 +180,12 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
   // Cotton module (092): cotton plantings classify off their seed cotton loads
   // and roll up in LINT lbs (receipts + the turnout estimate on unginned seed
   // cotton); grain stays in dry bushels. Inert when the module is off.
-  const cottonYields = useCottonYields(supabase, { crops, assumptions })
+  // Viewers (052) see their private overrides — the turnout among them —
+  // exactly as on the Yields page; embedded, the page's own rows win.
+  const viewerA = useViewerAssumptions(supabase, viewer)
+  const ownResolved = useMemo(() => resolveCropAssumptions(assumptions, viewerA.overrides).rows, [assumptions, viewerA.overrides])
+  const effAssumptions = controlled?.assumptions ?? ownResolved
+  const cottonYields = useCottonYields(supabase, { crops, assumptions: effAssumptions })
   const cottonModel = cottonYields.model
   const cottonOn = cottonYields.on === true
   const isCottonId = (id: string) => cottonOn && cottonModel.cottonCropIds.has(id)
@@ -249,8 +265,30 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
   // Drop unharvested / in-progress fields from the rolled-up numbers and the
   // average-yield header (per crop, over the filtered plantings).
   const yieldAnalysis = useMemo(() => {
-    return analyzeYields(buildYieldInputs({ plantings: filteredPlantings, aggByKey, assumptions, cotton: cottonModel.adapter, doubleCropIds }))
-  }, [filteredPlantings, aggByKey, assumptions, cottonModel, doubleCropIds])
+    return analyzeYields(buildYieldInputs({ plantings: filteredPlantings, aggByKey, assumptions: effAssumptions, cotton: cottonModel.adapter, doubleCropIds }))
+  }, [filteredPlantings, aggByKey, effAssumptions, cottonModel, doubleCropIds])
+
+  // Standalone, the report shows (and saves) the cotton turnout itself —
+  // the same crop × year figure the Yields page and Marketing use.
+  const turnoutLines = useMemo(() => {
+    if (controlled || !cottonOn || cropYear === '') return []
+    return cottonTurnoutLines({
+      cropIds: filteredPlantings.filter((p) => isCottonId(p.crop_id)).map((p) => p.crop_id),
+      cropName: (id) => cropById.get(id)?.name ?? 'Cotton',
+      year: cropYear,
+      turnoutFor: cottonModel.turnoutFor,
+      assumptions: effAssumptions,
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [controlled, cottonOn, cropYear, filteredPlantings, cottonModel, cropById, effAssumptions])
+  const canEditTurnout = roleCanEditYields(viewer.role) || viewer.isViewer
+  const [turnoutErr, setTurnoutErr] = useState<string | null>(null)
+  async function saveTurnout(cid: string, yr: number, v: number | null) {
+    setTurnoutErr(null)
+    const res = await saveTurnoutAssumption(supabase, { cropId: cid, cropYear: yr, value: v, assumptions, isViewer: viewer.isViewer, canEdit: roleCanEditYields(viewer.role), viewerA })
+    if (res.error) { setTurnoutErr(reportError(res.error, { action: 'save the turnout' })); return }
+    if (res.assumptions) setAssumptions(res.assumptions)
+  }
 
   // Build per-landowner aggregation.
   const groups = useMemo<LandownerGroup[]>(() => {
@@ -473,6 +511,8 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
             )}
             {landownerSelect}
           </ReportFilterBar>
+          <TurnoutLines lines={turnoutLines} onSave={canEditTurnout ? saveTurnout : undefined} />
+          {turnoutErr && <p className="text-sm text-red-600 no-print">{turnoutErr}</p>}
         </>
       )}
 

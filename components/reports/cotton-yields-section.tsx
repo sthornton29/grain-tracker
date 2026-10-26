@@ -19,13 +19,14 @@
 // loads and its gin receipts, with totals that equal the row.
 
 import { Fragment, useState } from 'react'
-import TurnoutControl from '@/components/reports/turnout-control'
+import { TurnoutLines, type CottonTurnoutLine } from '@/components/reports/turnout-control'
 import { InfoTip, fmtNum, fmtInt, theadCls, grandTotalRowCls } from '@/components/reports/report-kit'
 import { fmtDateShort } from '@/lib/format-date'
 import { formatCottonPrice } from '@/lib/hedging'
 import { buildCottonFieldDetail } from '@/lib/yield-detail'
-import { GINNING_STATUS_LABEL, type CottonPlantingYield, type TurnoutResolution } from '@/lib/cotton'
+import { GINNING_STATUS_LABEL, type CottonPlantingYield } from '@/lib/cotton'
 import type { CottonYieldModel } from '@/lib/cotton-yield-sources'
+import { compareLoadNumbers } from '@/lib/cotton-loads'
 import type { ExclusionReason, HarvestStatus } from '@/lib/yields'
 import type { ExportColumn, ExportSection } from '@/lib/exports'
 
@@ -48,13 +49,7 @@ export type CottonSectionRow = {
   noBaseline: boolean
 }
 
-export type CottonTurnoutLine = {
-  cropId: string
-  cropName: string
-  year: number
-  turnout: TurnoutResolution
-  manualPct: number | null
-}
+export type { CottonTurnoutLine }
 
 const lbs = (n: number | null | undefined) => (n == null ? '—' : fmtInt(Math.round(n)))
 
@@ -114,7 +109,7 @@ export function CottonRowDetail({ r, model, allowLoadLinks, onCountAnyway, onUnd
     <div className="text-xs text-slate-500">Counted as finished — no other picked fields and no yield estimate to compare against yet.</div>
   ) : null
   if (!src) return statusNote
-  const loads = [...model.loadsFor(r.fieldId, r.year)].sort((a, b) => ((a.picked_date ?? a.delivered_date ?? '') < (b.picked_date ?? b.delivered_date ?? '') ? -1 : 1))
+  const loads = [...model.loadsFor(r.fieldId, r.year)].sort((a, b) => compareLoadNumbers(a.load_number, b.load_number))
   const receipts = [...model.receiptsFor(r.fieldId, r.year)].sort((a, b) => ((a.receipt_date ?? '') < (b.receipt_date ?? '') ? -1 : 1))
   const ginName = new Map(src.gins.map((g) => [g.id, g.name]))
   const receiptNo = new Map(src.receipts.map((x) => [x.id, x.receipt_number]))
@@ -215,7 +210,7 @@ export function CottonRowDetail({ r, model, allowLoadLinks, onCountAnyway, onUnd
                 return (
                   <tr key={x.id} className="border-t border-slate-100">
                     <td className="px-3 py-1.5 font-medium">
-                      {x.receipt_number}
+                      {allowLoadLinks ? <a href={`/cotton/receipts/${x.id}`} className="text-brand-deep hover:underline">{x.receipt_number}</a> : x.receipt_number}
                     </td>
                     <td className="px-3 py-1.5 whitespace-nowrap">{x.receipt_date ? fmtDateShort(x.receipt_date) : '—'}</td>
                     <td className="px-3 py-1.5">{x.gin_id ? ginName.get(x.gin_id) ?? '' : ''}</td>
@@ -434,19 +429,7 @@ export default function CottonYieldsSection({
         {title}
         {subtitle && <span className="ml-2 text-sm font-normal text-slate-500">{subtitle}</span>}
       </h2>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 no-print">
-        {turnouts.map((tl) => (
-          <span key={`${tl.cropId}|${tl.year}`} className="inline-flex items-center gap-1.5 flex-wrap">
-            {turnouts.length > 1 && <span className="text-xs text-slate-500">{tl.cropName} {tl.year}:</span>}
-            <TurnoutControl
-              turnout={tl.turnout}
-              manualPct={tl.manualPct}
-              onSave={onSaveTurnout ? (v) => onSaveTurnout(tl.cropId, tl.year, v) : undefined}
-              compact
-            />
-          </span>
-        ))}
-      </div>
+      <TurnoutLines lines={turnouts} onSave={onSaveTurnout} />
     </div>
   )
 

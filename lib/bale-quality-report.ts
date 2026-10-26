@@ -4,11 +4,12 @@
 //   buildBaleRows   bale → gin receipt → farm / field / entity / gin → the
 //                   field's cotton planting (practice, variety) → classing
 //                   row → disposition (held / loan / sold / contract / pool)
+//                   → harvest date (the receipt's seed cotton loads)
 //   applyFilters    the multi-select chips (entity, farm, field, variety,
 //                   gin, receipt, practice, class-date range, disposition)
 //                   plus the contract's "exclude bales committed elsewhere"
 //   groupRows       Overall / Entity / Farm / Field / Variety / Gin /
-//                   Receipt / Class week
+//                   Receipt / Harvest date / Class week
 //   distribution    % of bales (or lbs) per bucket, colored by price band
 //   average         bale-weighted (how a classing recap reads) or
 //                   lbs-weighted; loan ¢/lb is ALWAYS lbs-weighted
@@ -21,8 +22,14 @@
 // multi-variety planting reads "Mixed (A / B)". Never a guessed split.
 // Practice: the planting's irrigated / dryland acres (pure → that practice;
 // both → mixed; no planting → unknown).
+// Harvest date (2026-10-25): the picked date on the seed cotton load tickets
+// (delivered when no picked date — lib/cotton cottonLoadDate) of the loads
+// linked to the bale's gin receipt. A statement's bale list never says which
+// module a bale came from, so a receipt whose loads span several days gives
+// its bales that span ("Oct 3 – Oct 5"), never a guessed single day.
 
 import { practiceOf } from './yields'
+import { cottonLoadDate } from './cotton'
 import { isCottonCrop } from './marketing'
 import {
   bandOf, baseOrBetterOnLoanFactors, bucketOf, extraneousInfo, factorBuckets, factorText, factorValue, FACTORS, loanVsBase, tenths,
@@ -51,6 +58,10 @@ export type BaleQualityInputs = {
   varieties: ReadonlyArray<{ planting_id: string; variety: string }>
   dispositions: ReadonlyArray<{ bale_id: string; disposition: CottonDisposition; contract_id: string | null; loan_id: string | null }>
   loanBales: ReadonlyArray<{ bale_id: string; loan_id: string }>
+  /** gin_receipt_loads — the receipt's seed cotton loads (harvest date). */
+  receiptLoads?: ReadonlyArray<{ receipt_id: string; cotton_load_id: string }>
+  /** cotton_loads — only the dates are read. */
+  loads?: ReadonlyArray<{ id: string; picked_date: string | null; delivered_date: string | null }>
 }
 
 export type BaleRow = {
@@ -74,6 +85,11 @@ export type BaleRow = {
   varietyMixed: boolean
   classDate: string | null
   classWeek: string
+  /** First / last harvest day of the receipt's loads; null when none is dated. */
+  harvestFrom: string | null
+  harvestTo: string | null
+  /** "Oct 3", "Oct 3 – Oct 5", or NO_HARVEST_DATE. */
+  harvestLabel: string
   grade: GradeLike | null
   loanTotal: number | null
   disposition: CottonDisposition
@@ -83,6 +99,7 @@ export type BaleRow = {
 
 export const NO_VARIETY = 'No variety'
 export const NO_CLASS_DATE = 'No class date'
+export const NO_HARVEST_DATE = 'No harvest date'
 
 const num = (v: number | string | null | undefined): number => {
   const n = Number(v)
@@ -100,6 +117,20 @@ export function classWeekOf(iso: string | null): { key: string; label: string } 
   const key = d.toISOString().slice(0, 10)
   const label = `Week of ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })}`
   return { key, label }
+}
+
+const shortDay = (iso: string) => {
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!m) return iso
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
+}
+
+/** The harvest span a receipt's load dates give its bales. */
+export function harvestSpanOf(dates: ReadonlyArray<string | null>): { from: string | null; to: string | null; label: string } {
+  const ds = dates.filter((d): d is string => !!d).map((d) => d.slice(0, 10)).sort()
+  if (ds.length === 0) return { from: null, to: null, label: NO_HARVEST_DATE }
+  const from = ds[0], to = ds[ds.length - 1]
+  return { from, to, label: from === to ? shortDay(from) : `${shortDay(from)} – ${shortDay(to)}` }
 }
 
 /** The variety a field's cotton planting gives its bales. */
@@ -133,6 +164,20 @@ export function buildBaleRows(input: BaleQualityInputs): BaleRow[] {
   }
   const dispByBale = new Map(input.dispositions.map((d) => [d.bale_id, d]))
   const loanByBale = new Map(input.loanBales.map((l) => [l.bale_id, l.loan_id]))
+  const loadDate = new Map((input.loads ?? []).map((l) => [l.id, cottonLoadDate(l)]))
+  const datesByReceipt = new Map<string, Array<string | null>>()
+  for (const link of input.receiptLoads ?? []) {
+    const d = loadDate.get(link.cotton_load_id) ?? null
+    const arr = datesByReceipt.get(link.receipt_id)
+    if (arr) arr.push(d)
+    else datesByReceipt.set(link.receipt_id, [d])
+  }
+  const spanByReceipt = new Map<string, ReturnType<typeof harvestSpanOf>>()
+  const spanOf = (receiptId: string) => {
+    let s = spanByReceipt.get(receiptId)
+    if (!s) { s = harvestSpanOf(datesByReceipt.get(receiptId) ?? []); spanByReceipt.set(receiptId, s) }
+    return s
+  }
 
   const rows: BaleRow[] = []
   for (const b of input.bales) {
@@ -152,6 +197,7 @@ export function buildBaleRows(input: BaleQualityInputs): BaleRow[] {
     const disposition: CottonDisposition = disp?.disposition ?? (loanId ? 'ccc_loan' : 'held')
     const ginName = gin?.name ?? (r?.gin_code ? `Gin ${r.gin_code}` : 'No gin')
     const week = classWeekOf(g?.class_date ?? null)
+    const harvest = spanOf(b.gin_receipt_id)
     rows.push({
       id: b.id,
       pbi: b.pbi_number,
@@ -173,6 +219,9 @@ export function buildBaleRows(input: BaleQualityInputs): BaleRow[] {
       varietyMixed: variety.mixed,
       classDate: g?.class_date ?? null,
       classWeek: week.label,
+      harvestFrom: harvest.from,
+      harvestTo: harvest.to,
+      harvestLabel: harvest.label,
       grade: g,
       loanTotal: g?.loan_value_total != null && g.loan_value_total !== '' ? num(g.loan_value_total) : null,
       disposition,
@@ -209,6 +258,9 @@ export type BaleQualityFilters = {
   practices: Array<'irrigated' | 'dryland' | 'mixed' | 'unknown'>
   classFrom: string
   classTo: string
+  /** Harvest date range — a bale whose receipt's harvest span overlaps it. */
+  harvestFrom?: string
+  harvestTo?: string
   dispositions: CottonDisposition[]
   /** The selected contract (one with a quality spec), '' = none. */
   contractId: string
@@ -218,12 +270,12 @@ export type BaleQualityFilters = {
 
 export const EMPTY_FILTERS: BaleQualityFilters = {
   entityIds: [], farmIds: [], fieldIds: [], varieties: [], ginIds: [], receiptIds: [], practices: [],
-  classFrom: '', classTo: '', dispositions: [], contractId: '', excludeCommitted: false,
+  classFrom: '', classTo: '', harvestFrom: '', harvestTo: '', dispositions: [], contractId: '', excludeCommitted: false,
 }
 
 export function activeFilterCount(f: BaleQualityFilters): number {
   return [f.entityIds, f.farmIds, f.fieldIds, f.varieties, f.ginIds, f.receiptIds, f.practices, f.dispositions].filter((a) => a.length > 0).length
-    + (f.classFrom || f.classTo ? 1 : 0) + (f.contractId ? 1 : 0) + (f.contractId && f.excludeCommitted ? 1 : 0)
+    + (f.classFrom || f.classTo ? 1 : 0) + (f.harvestFrom || f.harvestTo ? 1 : 0) + (f.contractId ? 1 : 0) + (f.contractId && f.excludeCommitted ? 1 : 0)
 }
 
 /** A bale committed somewhere other than the selected contract. */
@@ -245,6 +297,8 @@ export function applyFilters(rows: ReadonlyArray<BaleRow>, f: BaleQualityFilters
     if (f.practices.length > 0 && !f.practices.includes(r.practice ?? 'unknown')) return false
     if (f.classFrom && (!r.classDate || r.classDate < f.classFrom)) return false
     if (f.classTo && (!r.classDate || r.classDate > f.classTo)) return false
+    if (f.harvestFrom && (!r.harvestTo || r.harvestTo < f.harvestFrom)) return false
+    if (f.harvestTo && (!r.harvestFrom || r.harvestFrom > f.harvestTo)) return false
     if (f.dispositions.length > 0 && !f.dispositions.includes(r.disposition)) return false
     if (f.contractId && f.excludeCommitted && committedElsewhere(r, f.contractId)) return false
     return true
@@ -255,9 +309,9 @@ export function applyFilters(rows: ReadonlyArray<BaleRow>, f: BaleQualityFilters
 // Grouping
 // ---------------------------------------------------------------------------
 
-export type GroupBy = 'overall' | 'entity' | 'farm' | 'field' | 'variety' | 'gin' | 'receipt' | 'week'
+export type GroupBy = 'overall' | 'entity' | 'farm' | 'field' | 'variety' | 'gin' | 'receipt' | 'harvest' | 'week'
 export const GROUP_BY_LABEL: Record<GroupBy, string> = {
-  overall: 'Overall', entity: 'Entity', farm: 'Farm', field: 'Field', variety: 'Variety', gin: 'Gin', receipt: 'Receipt', week: 'Class week',
+  overall: 'Overall', entity: 'Entity', farm: 'Farm', field: 'Field', variety: 'Variety', gin: 'Gin', receipt: 'Receipt', harvest: 'Harvest date', week: 'Class week',
 }
 
 /** The group a bale belongs to under a grouping; `last` sends the "none"
@@ -271,6 +325,7 @@ export function groupKeyOf(r: BaleRow, by: GroupBy): { key: string; label: strin
     case 'variety': return { key: r.variety ?? NO_VARIETY, label: r.variety ?? NO_VARIETY, sort: r.variety ?? '', last: r.variety == null }
     case 'gin': return { key: r.ginId ?? 'none', label: r.ginName, sort: r.ginName, last: r.ginId == null }
     case 'receipt': return { key: r.receiptId, label: r.receiptLabel, sort: `${r.receiptDate ?? '9999'}|${r.receiptLabel}`, last: false }
+    case 'harvest': return { key: r.harvestLabel, label: r.harvestLabel, sort: `${r.harvestFrom ?? ''}|${r.harvestTo ?? ''}`, last: r.harvestFrom == null }
     case 'week': return { key: r.classWeek, label: r.classWeek, sort: classWeekOf(r.classDate).key, last: r.classDate == null }
   }
 }

@@ -11,6 +11,7 @@ import { normalizePdfFile } from '@/lib/orientation'
 import type { DocumentSource } from '@/components/document-capture'
 
 export const COTTON_DOC_PREFIX = 'cotton-loads'
+export const GIN_RECEIPT_DOC_PREFIX = 'gin-receipts'
 
 /** A whole count of rolls, or null when blank / not a number. */
 export function rollsNum(s: string | number | null | undefined): number | null {
@@ -39,13 +40,13 @@ export async function updateCottonLoad(supabase: SupabaseClient, id: string, pat
 }
 
 /** Turn a picked file (PDF or photo) into the one PDF a load stores. */
-export async function fileToLoadDocument(file: File, baseName: string): Promise<File> {
+export async function fileToLoadDocument(file: File, baseName: string, badFileMessage = 'Use a PDF or a photo of the ticket.'): Promise<File> {
   if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) {
     if (file.size > MAX_PDF_BYTES) throw new Error('That PDF is larger than 20 MB. Please use a smaller file.')
     return file
   }
   if (file.type.startsWith('image/')) return imagesToPdf([await compressImage(file)], baseName)
-  throw new Error('Use a PDF or a photo of the ticket.')
+  throw new Error(badFileMessage)
 }
 
 export async function uploadLoadDocument(supabase: SupabaseClient, file: File): Promise<string> {
@@ -53,20 +54,26 @@ export async function uploadLoadDocument(supabase: SupabaseClient, file: File): 
   return publicUrl
 }
 
+/** A gin receipt's Statement of Ginning (the upload's own page(s), or one attached later). */
+export async function uploadReceiptDocument(supabase: SupabaseClient, file: File): Promise<string> {
+  const { publicUrl } = await uploadFileToStorage(supabase, file, GIN_RECEIPT_DOC_PREFIX, 'application/pdf')
+  return publicUrl
+}
+
 /** The document each review row keeps: its own page(s) of the module list
  *  — the page it was read from, plus a duplicate scan's page — when every
  *  row knows its pages and they exist in the document; otherwise the whole
  *  document on every row. One File per row, in row order. */
-export async function documentsForLoads(source: DocumentSource, pagesPerRow: ReadonlyArray<ReadonlyArray<number>>, onProgress?: (label: string) => void): Promise<Array<File | null>> {
+export async function documentsForLoads(source: DocumentSource, pagesPerRow: ReadonlyArray<ReadonlyArray<number>>, onProgress?: (label: string) => void, noun = 'ticket'): Promise<Array<File | null>> {
   if (pagesPerRow.length === 0) return []
   let whole: File
   let pageCount: number
   if (source.kind === 'pdf') {
-    onProgress?.('Preparing ticket pages…')
+    onProgress?.(`Preparing ${noun} pages…`)
     whole = (await normalizePdfFile(source.file)).file
     pageCount = await getPdfPageCount(whole).catch(() => 0)
   } else {
-    onProgress?.('Preparing ticket photos…')
+    onProgress?.(`Preparing ${noun} photos…`)
     whole = await imagesToPdf(source.images, 'module-list')
     pageCount = source.images.length
   }

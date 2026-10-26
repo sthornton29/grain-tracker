@@ -101,8 +101,9 @@ export default function CottonLoadsPage() {
   const [isGin, setIsGin] = useState(false)
   // List state — filters, sort, selection (grain Loads page conventions).
   const [filters, setFilters] = useState<CottonLoadFilters>(EMPTY_COTTON_FILTERS)
-  const [sortKey, setSortKey] = useState<CottonSortKey>('delivered')
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  // Cotton loads list by load # (Stuart, 2026-10-25) — the order the tickets run.
+  const [sortKey, setSortKey] = useState<CottonSortKey>('load')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [deleteAsk, setDeleteAsk] = useState(false)
   const [deleting, setDeleting] = useState(false)

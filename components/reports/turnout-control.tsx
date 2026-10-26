@@ -1,7 +1,10 @@
 'use client'
 
 // The lint turnout behind picked-but-unginned estimates (092) — one control
-// for the Yields cotton section header and the Marketing assumptions panel.
+// for the Yields cotton section header, every other Yields view (farm,
+// entity, variety, landowner — TurnoutLines), the Yields by Landowner report
+// and the Marketing assumptions panel. All of them read and write the same
+// crop × crop year assumption, so a change on one shows on the others.
 // Shows the RESOLVED turnout with its source ("41.5% from your ginned
 // cotton", "40% assumed" in amber), and lets an owner type a manual figure
 // for the crop × crop year (blank = back to the automatic tiers). Viewers get
@@ -11,6 +14,60 @@
 import { useEffect, useState } from 'react'
 import { InfoTip } from '@/components/reports/report-kit'
 import type { TurnoutResolution } from '@/lib/cotton'
+
+/** One cotton crop × crop year's turnout, as a Yields view shows it. */
+export type CottonTurnoutLine = {
+  cropId: string
+  cropName: string
+  year: number
+  turnout: TurnoutResolution
+  manualPct: number | null
+}
+
+/** The turnout line per cotton crop in view, for one crop year (a crop × year assumption). */
+export function cottonTurnoutLines(args: {
+  cropIds: Iterable<string>
+  cropName: (id: string) => string
+  year: number
+  turnoutFor: (cropId: string, year: number) => TurnoutResolution
+  assumptions: ReadonlyArray<{ crop_id: string; crop_year: number; assumed_turnout_pct?: number | string | null }>
+}): CottonTurnoutLine[] {
+  return [...new Set(args.cropIds)].map((id) => {
+    const a = args.assumptions.find((x) => x.crop_id === id && x.crop_year === args.year)
+    return {
+      cropId: id,
+      cropName: args.cropName(id),
+      year: args.year,
+      turnout: args.turnoutFor(id, args.year),
+      manualPct: a?.assumed_turnout_pct != null ? Number(a.assumed_turnout_pct) : null,
+    }
+  })
+}
+
+/** The turnout control(s) for a set of lines — one per cotton crop, labeled when there are several. */
+export function TurnoutLines({ lines, onSave, className = '' }: {
+  lines: readonly CottonTurnoutLine[]
+  /** Save a manual turnout for a crop × year (null clears). Absent = read-only. */
+  onSave?: (cropId: string, year: number, v: number | null) => void
+  className?: string
+}) {
+  if (lines.length === 0) return null
+  return (
+    <div className={`flex flex-wrap items-center gap-x-4 gap-y-1 no-print ${className}`}>
+      {lines.map((tl) => (
+        <span key={`${tl.cropId}|${tl.year}`} className="inline-flex items-center gap-1.5 flex-wrap">
+          {lines.length > 1 && <span className="text-xs text-slate-500">{tl.cropName} {tl.year}:</span>}
+          <TurnoutControl
+            turnout={tl.turnout}
+            manualPct={tl.manualPct}
+            onSave={onSave ? (v) => onSave(tl.cropId, tl.year, v) : undefined}
+            compact
+          />
+        </span>
+      ))}
+    </div>
+  )
+}
 
 export function turnoutExplanation(t: TurnoutResolution): string {
   switch (t.source) {

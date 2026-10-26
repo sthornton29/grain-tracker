@@ -113,7 +113,7 @@ export type CottonSortContext = {
 }
 
 /** Natural order for load numbers: "M-9" before "M-10", plain digits numeric. */
-function compareLoadNumbers(a: string, b: string): number {
+export function compareLoadNumbers(a: string, b: string): number {
   return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
 }
 
