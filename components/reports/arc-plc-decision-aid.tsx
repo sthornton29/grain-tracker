@@ -40,6 +40,10 @@ import {
 import { ConfirmDialog, NoticeDialog } from '@/components/app-dialog'
 import { reportError } from '@/lib/friendly-error'
 import { useReportCropYear } from '@/lib/report-filters'
+import {
+  TOSS_UP_BAND_PER_ACRE, farmVerdict, arcTriggerPrice, compareProgramTotals,
+  arcMissingText, recommendationText, notCountedText, type Favors,
+} from '@/lib/arc-plc-aid'
 
 type Props = {
   onPayloadChange?: (build: () => ExportPayload) => void
@@ -47,9 +51,9 @@ type Props = {
   headerActions?: ReactNode
 }
 
-// A per-acre PLC-vs-ARC difference inside this band is a toss-up — too close
-// for the projection's precision to call.
-export const TOSS_UP_BAND_PER_ACRE = 2
+// The comparison rules (toss-up band, partial totals, trigger prices, the
+// shared wording) live in lib/arc-plc-aid.ts.
+export { TOSS_UP_BAND_PER_ACRE }
 
 export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Props) {
   const supabase = useMemo(() => createClient(), [])
@@ -182,7 +186,19 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
     plcNet: number | null
     arcNet: number | null
     election: ArcPlcElectionType
-    favors: 'PLC' | 'ARC' | null
+    // The same toss-up band as the by-crop verdict: inside it the two
+    // programs are too close to call (that includes "neither pays").
+    favors: Favors
+    // Why the ARC-CO side has no number — the two causes need different
+    // fixes (a price vs a county benchmark row), so they are named apart.
+    hasMya: boolean
+    hasBenchmark: boolean
+    // MYA prices below which each program starts paying (PLC: the effective
+    // reference price; ARC-CO: the guarantee spread over the expected county
+    // yield, null without county figures). Answers "both are $0 — so what
+    // would it take?"
+    plcTriggerPrice: number
+    arcTriggerPrice: number | null
   }
   const rows: Row[] = useMemo(() => {
     if (cropYear === '') return []
@@ -216,8 +232,15 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
         const arc = computeCommodityPayment({ ...shared, election: 'ARC_CO' })
         const plcNet = plc.computable ? plc.net : null
         const arcNet = arc.computable ? arc.net : null
-        const favors: 'PLC' | 'ARC' | null = plcNet != null && arcNet != null ? (plcNet >= arcNet ? 'PLC' : 'ARC') : plcNet != null ? 'PLC' : arcNet != null ? 'ARC' : null
-        return { base: b, commodity, farmName: farmById.get(b.farm_id)?.name ?? '—', county, plc, arc, plcNet, arcNet, election: electionFor(b.farm_id, b.commodity_id), favors }
+        const favors = farmVerdict(plcNet, arcNet, Number(b.base_acres))
+        const hasBenchmark = benchmark?.benchmark_price != null && benchmark?.benchmark_yield != null
+        return {
+          base: b, commodity, farmName: farmById.get(b.farm_id)?.name ?? '—', county, plc, arc, plcNet, arcNet,
+          election: electionFor(b.farm_id, b.commodity_id), favors,
+          hasMya: plc.myaPrice != null, hasBenchmark,
+          plcTriggerPrice: plc.effectiveReferencePrice,
+          arcTriggerPrice: arc.arcDetail ? arcTriggerPrice(arc.arcDetail.guarantee, arc.arcDetail.actualCountyYield) : null,
+        }
       })
       .filter((r): r is Row => r != null)
       .sort((a, b) => a.farmName.localeCompare(b.farmName) || a.commodity.name.localeCompare(b.commodity.name))
@@ -244,15 +267,12 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
   // ARC-CO" per crop (each side summed from the same per-farm engine rows —
   // county benchmarks/yields still apply per farm underneath). Derived from
   // `rows`, so the What-If MYA slider and entity filter flow through live.
-  type CropSummaryRow = {
+  // compareProgramTotals (lib/arc-plc-aid) supplies the totals, the verdict,
+  // the not-counted farms by cause, and the highest ARC-CO trigger price.
+  type CropSummaryRow = ReturnType<typeof compareProgramTotals> & {
     commodity: CoveredCommodity
     farms: number
     baseAcres: number
-    plcTotal: number | null
-    arcTotal: number | null
-    diffPerAcre: number | null // ARC − PLC, per base acre
-    verdict: 'PLC' | 'ARC' | 'TOSS' | null
-    flatCount: number
     plcElected: number
     arcElected: number
     myaState: MyaState
@@ -267,12 +287,10 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
         const cropRows = rows.filter((r) => r.base.commodity_id === c.id)
         if (cropRows.length === 0) return null
         const baseTotal = cropRows.reduce((s, r) => s + Number(r.base.base_acres), 0)
-        const plcTotal = cropRows.every((r) => r.plcNet != null) ? cropRows.reduce((s, r) => s + (r.plcNet ?? 0), 0) : null
-        const arcTotal = cropRows.every((r) => r.arcNet != null) ? cropRows.reduce((s, r) => s + (r.arcNet ?? 0), 0) : null
-        const diffPerAcre = plcTotal != null && arcTotal != null && baseTotal > 0 ? (arcTotal - plcTotal) / baseTotal : null
-        const verdict = diffPerAcre == null ? null
-          : Math.abs(diffPerAcre) < TOSS_UP_BAND_PER_ACRE ? 'TOSS' as const
-          : diffPerAcre > 0 ? 'ARC' as const : 'PLC' as const
+        const totals = compareProgramTotals(cropRows.map((r) => ({
+          baseAcres: Number(r.base.base_acres), plcNet: r.plcNet, arcNet: r.arcNet,
+          hasMya: r.hasMya, hasBenchmark: r.hasBenchmark, arcTriggerPrice: r.arcTriggerPrice,
+        })))
         const stored = priceData.find((p) => p.commodity_id === c.id && p.crop_year === cropYear) ?? null
         const res = resolveMyaPrice({ commodityName: c.name, priceData: stored, liveEstimate: liveMya.get(c.id) ?? null })
         const myaPrice = res.price != null ? res.price * (1 + myaPct / 100) : null
@@ -282,8 +300,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
           commodity: c,
           farms: cropRows.length,
           baseAcres: baseTotal,
-          plcTotal, arcTotal, diffPerAcre, verdict,
-          flatCount: cropRows.filter((r) => r.arc.arcMethod === 'flat').length,
+          ...totals,
           plcElected: cropRows.filter((r) => r.election === 'PLC').length,
           arcElected: cropRows.filter((r) => r.election === 'ARC_CO').length,
           myaState: res.state, myaPrice, effRef, spread,
@@ -345,32 +362,36 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
         title: 'Program Comparison by Crop',
         columns: [
           { label: 'Commodity' }, { label: 'Farms', align: 'right', format: 'int' }, { label: 'Base Acres', align: 'right', format: 'int' },
-          { label: 'MYA', align: 'right', format: 'price' }, { label: 'Eff. Ref Price', align: 'right', format: 'price' }, { label: 'PLC Spread', align: 'right', format: 'price' },
           { label: 'All PLC', align: 'right', format: 'usd0' }, { label: 'All ARC-CO', align: 'right', format: 'usd0' }, { label: 'Diff $/ac', align: 'right', format: 'dec2' },
-          { label: 'Verdict' }, { label: 'On Flat Est.', align: 'right', format: 'int' },
+          { label: 'Verdict' }, { label: 'Farms Not Counted' },
+          { label: 'MYA', align: 'right', format: 'price' }, { label: 'Eff. Ref Price', align: 'right', format: 'price' }, { label: 'PLC Spread', align: 'right', format: 'price' },
+          { label: 'ARC-CO Pays Below', align: 'right', format: 'price' },
         ],
         rows: cropSummary.map((s) => [
           s.commodity.name, s.farms, Math.round(s.baseAcres),
-          s.myaPrice != null ? s.myaPrice : '', s.effRef, s.spread != null ? s.spread : '',
           s.plcTotal != null ? Math.round(s.plcTotal) : '', s.arcTotal != null ? Math.round(s.arcTotal) : '',
           s.diffPerAcre != null ? s.diffPerAcre : '',
           {
             v: s.verdict === 'PLC' ? 'Favors PLC' : s.verdict === 'ARC' ? 'Favors ARC-CO' : s.verdict === 'TOSS' ? 'Toss-up' : 'needs the marketing-year price',
             tone: (s.verdict === 'PLC' || s.verdict === 'ARC' ? 'favorable' : s.verdict === 'TOSS' ? 'neutral' : 'warning') as 'favorable' | 'neutral' | 'warning',
           },
-          s.flatCount > 0 ? s.flatCount : '',
+          notCountedText(s),
+          s.myaPrice != null ? s.myaPrice : '', s.effRef, s.spread != null ? s.spread : '',
+          s.arcTriggerHigh != null ? s.arcTriggerHigh : '',
         ]),
       }, {
         title: 'Projected Payments by Farm × Commodity',
         columns: [
           { label: 'Farm' }, { label: 'Commodity' }, { label: 'County' }, { label: 'Base Acres', align: 'right', format: 'int' }, { label: 'PLC Yield', align: 'right', format: 'yield' },
           { label: 'PLC Projected', align: 'right', format: 'usd0' }, { label: 'ARC-CO Projected', align: 'right', format: 'usd0' }, { label: 'ARC Basis' }, { label: 'Recommendation' }, { label: 'Current Election' },
+          { label: 'PLC Pays Below', align: 'right', format: 'price' }, { label: 'ARC-CO Pays Below', align: 'right', format: 'price' },
         ],
         rows: rows.map((r) => [
           r.farmName, r.commodity.name, r.county ?? '', Math.round(r.base.base_acres), Number(r.base.plc_yield),
           r.plcNet != null ? Math.round(r.plcNet) : '', r.arcNet != null ? Math.round(r.arcNet) : '',
-          r.arc.arcMethod === 'engine' ? (r.arc.arcDetail?.capped ? 'County figures (capped)' : 'County figures') : r.arc.computable ? 'Flat $/acre estimate' : '',
-          r.favors === 'PLC' ? 'Favors PLC' : r.favors === 'ARC' ? 'Favors ARC-CO' : '—', ELECTION_LABEL[r.election],
+          r.arc.arcMethod === 'engine' ? (r.arc.arcDetail?.capped ? 'County figures (capped)' : 'County figures') : r.arc.computable ? 'Flat $/acre estimate' : arcMissingText(r),
+          recommendationText(r), ELECTION_LABEL[r.election],
+          r.plcTriggerPrice, r.arcTriggerPrice != null ? r.arcTriggerPrice : '',
         ]),
       }],
     }
@@ -450,6 +471,26 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
               regardless of your election — the comparison below shows which side that will likely be.</>
             )}
           </div>
+          {cropYear === 2026 && (
+            <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-900 no-print">
+              <strong>2026 needs a real election.</strong> The 2026 election and enrollment window runs{' '}
+              <strong>September 16 – December 11, 2026</strong> (online at fsa.usda.gov/arc-plc or at the county office). Every
+              producer with a base-acre interest on a farm must agree, commodity by commodity. A farm with no 2026 election is
+              defaulted to its 2025 election <strong>and gets no 2026 payment</strong>. The election you make for 2026 carries
+              through 2031 unless you change it in a later year. Base acres added for 2026 (the one-time allocation) are part
+              of this election — update them under Settings → Government Payments if your FSA notice changed them.
+            </div>
+          )}
+          {cropYear >= 2026 && (
+            <div className="rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-600 no-print">
+              Prices: USDA&apos;s monthly projection (the WASDE season-average price, and FSA&apos;s projected marketing-year average
+              for seed cotton and peanuts) is the best read on the marketing-year price until months are published — type it
+              as the <b>WASDE midpoint</b> under each commodity&apos;s Details below. The futures-implied blend can sit well away
+              from it early in the year. ARC-CO pays on the <b>county</b> yield by practice (irrigated and non-irrigated
+              counties have separate benchmarks) — the county figures here are one practice; ask the county office which
+              applies to each farm.
+            </div>
+          )}
 
           {/* By-crop program comparison — the headline: what happens if EVERY
               farm elects the same program, per commodity. */}
@@ -465,8 +506,11 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
                 <table className="min-w-full text-sm border-collapse">
                   <thead className={theadCls}>
                     <tr>
-                      {['Commodity', 'Base Acres', 'MYA', 'Eff. Ref', 'PLC Spread', 'All PLC', 'All ARC-CO', 'Diff $/ac', 'Verdict', ''].map((h, i) => (
-                        <th key={i} className={`${i >= 1 && i <= 7 ? 'text-right' : 'text-left'} px-2 py-1 whitespace-nowrap`}>{h}</th>
+                      {/* The answer first (totals, verdict, buttons); the price
+                          inputs behind it trail to the right, where a narrow
+                          screen can scroll for them. */}
+                      {['Commodity', 'Base Acres', 'All PLC', 'All ARC-CO', 'Diff $/ac', 'Verdict', '', 'MYA', 'Eff. Ref', 'PLC Spread', 'ARC-CO Pays Below'].map((h, i) => (
+                        <th key={i} className={`${(i >= 1 && i <= 4) || i >= 7 ? 'text-right' : 'text-left'} px-2 py-1 whitespace-nowrap`}>{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -480,23 +524,36 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
                           </div>
                         </td>
                         <td className={numCell}>{fmtInt(s.baseAcres)}</td>
-                        <td className={`${numCell} whitespace-nowrap`}>
-                          {s.myaPrice != null ? fmtUsd(s.myaPrice, 2) : '—'} {myaChip(s.myaState)}
-                        </td>
-                        <td className={numCell}>{fmtUsd(s.effRef, 2)}</td>
-                        <td className={`${numCell} ${s.spread != null && s.spread > 0 ? toneText('favorable') : ''}`}>{s.spread != null ? fmtUsd(s.spread, 2) : '—'}</td>
                         <td className={`${numCell}`}>{s.plcTotal != null ? fmtUsd(s.plcTotal) : <span className={toneText('warning')}>needs the marketing-year price</span>}</td>
-                        <td className={`${numCell}`}>{s.arcTotal != null ? fmtUsd(s.arcTotal) : <span className={toneText('warning')}>needs the marketing-year price</span>}</td>
+                        <td className={`${numCell} whitespace-nowrap`}>
+                          {s.arcTotal != null ? fmtUsd(s.arcTotal) : (
+                            <span className={toneText('warning')}>{s.arcNoBenchmark > 0 && s.arcNoMya === 0 ? 'no county benchmark' : 'needs the marketing-year price'}</span>
+                          )}
+                          {s.arcTotal != null && s.arcNoBenchmark > 0 && (
+                            <InfoTip label={`${s.arcNoBenchmark} farm${s.arcNoBenchmark === 1 ? '' : 's'} not counted`} tone="warning" className="ml-1">
+                              {s.arcNoBenchmark === 1 ? 'This farm has' : 'These farms have'} no ARC-CO benchmark row for {s.commodity.name} in
+                              {' '}{s.arcNoBenchmark === 1 ? 'its' : 'their'} county, so {s.arcNoBenchmark === 1 ? 'it is' : 'they are'} left out of the ARC-CO
+                              total and the verdict. Add the county row under Settings → Government Payments → ARC-CO Benchmarks (FSA lookup).
+                            </InfoTip>
+                          )}
+                        </td>
                         <td className={`${numCell}`}>{s.diffPerAcre != null ? `${s.diffPerAcre > 0 ? '+' : ''}${s.diffPerAcre.toFixed(2)}` : '—'}</td>
                         <td className="px-2 py-1 whitespace-nowrap">
                           {s.verdict === 'PLC' && <span className="text-xs rounded-full bg-sky-100 text-sky-800 px-2 py-0.5 font-semibold">Favors PLC</span>}
                           {s.verdict === 'ARC' && <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5 font-semibold">Favors ARC-CO</span>}
-                          {s.verdict === 'TOSS' && <InfoTip label="Toss-up" tone="muted">Within ${TOSS_UP_BAND_PER_ACRE} per base acre — too close to call.</InfoTip>}
-                          {s.verdict == null && <span className="text-xs text-slate-400">—</span>}
-                          {s.flatCount > 0 && (
-                            <InfoTip label={`${s.flatCount} on a flat estimate`} tone="warning" className="ml-1">
-                              These farms have no county benchmark row yet, so their ARC-CO side uses your flat dollars-per-acre estimate.
+                          {s.verdict === 'TOSS' && s.plcTotal === 0 && s.arcTotal === 0 && (
+                            <InfoTip label="Neither pays" tone="muted">
+                              At this price and your county yield expectation neither program pays. PLC starts paying once the marketing-year
+                              price drops below {fmtUsd(s.effRef, 2)}{s.arcTriggerHigh != null ? `; ARC-CO starts paying below ${fmtUsd(s.arcTriggerHigh, 2)} on the most exposed farm` : ''}.
+                              Which one pays first depends on where the price lands — slide the What-If below.
                             </InfoTip>
+                          )}
+                          {s.verdict === 'TOSS' && !(s.plcTotal === 0 && s.arcTotal === 0) && (
+                            <InfoTip label="Toss-up" tone="muted">Within ${TOSS_UP_BAND_PER_ACRE} per base acre — too close to call.</InfoTip>
+                          )}
+                          {s.verdict == null && <span className="text-xs text-slate-400">—</span>}
+                          {s.comparedFarms > 0 && s.comparedFarms < s.farms && (
+                            <span className="ml-1 text-[10px] text-slate-500">({s.comparedFarms} of {s.farms} farms)</span>
                           )}
                         </td>
                         <td className="px-2 py-1 no-print whitespace-nowrap">
@@ -516,6 +573,20 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
                               className={`px-2 min-h-10 border-l border-slate-300 disabled:opacity-40 ${s.verdict === 'ARC' ? 'bg-brand hover:bg-brand-deep text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
                             >All ARC-CO</button>
                           </span>
+                        </td>
+                        <td className={`${numCell} whitespace-nowrap`}>
+                          {s.myaPrice != null ? fmtUsd(s.myaPrice, 2) : '—'} {myaChip(s.myaState)}
+                        </td>
+                        <td className={numCell}>{fmtUsd(s.effRef, 2)}</td>
+                        <td className={`${numCell} ${s.spread != null && s.spread > 0 ? toneText('favorable') : ''}`}>{s.spread != null ? fmtUsd(s.spread, 2) : '—'}</td>
+                        <td className={`${numCell} whitespace-nowrap`}>
+                          {s.arcTriggerHigh != null ? (
+                            <InfoTip label={fmtUsd(s.arcTriggerHigh, 2)} tone="neutral">
+                              The marketing-year price below which ARC-CO starts paying on the most exposed farm, at your county yield
+                              expectation (the 90% guarantee divided by the expected county yield). PLC starts paying below the effective
+                              reference price.
+                            </InfoTip>
+                          ) : '—'}
                         </td>
                       </tr>
                     ))}
@@ -588,7 +659,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
                       <td className={numCell}>{Number(r.base.plc_yield)}</td>
                       <td className={`${numCell} ${r.favors === 'PLC' ? `bg-green-50 font-semibold ${toneText('favorable')}` : ''}`}>{r.plcNet != null ? fmtUsd(r.plcNet) : <span className={toneText('warning')}>needs the marketing-year price</span>}</td>
                       <td className={`${numCell} ${r.favors === 'ARC' ? `bg-green-50 font-semibold ${toneText('favorable')}` : ''}`}>
-                        {r.arcNet != null ? fmtUsd(r.arcNet) : <span className={toneText('warning')}>{r.arc.arcMethod === 'flat' ? 'enter rate or benchmark' : 'needs the marketing-year price'}</span>}
+                        {r.arcNet != null ? fmtUsd(r.arcNet) : <span className={toneText('warning')}>{arcMissingText(r)}</span>}
                         {r.arc.arcMethod === 'engine' && r.arc.arcDetail?.capped && (
                           <span className="ml-1 text-[10px] rounded-full bg-violet-100 text-violet-800 px-1.5 py-0.5 whitespace-nowrap align-middle">capped at {Math.round((r.arc.arcDetail.capPct) * 100)}%</span>
                         )}
@@ -604,6 +675,7 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
                       <td className="px-2 py-1 whitespace-nowrap">
                         {r.favors === 'PLC' ? <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">Favors PLC</span>
                           : r.favors === 'ARC' ? <span className="text-xs rounded-full bg-green-100 text-green-800 px-2 py-0.5">Favors ARC-CO</span>
+                          : r.favors === 'TOSS' ? <span className="text-xs rounded-full bg-slate-100 text-slate-600 px-2 py-0.5">{recommendationText(r)}</span>
                           : <span className={toneText('muted')}>—</span>}
                       </td>
                       <td className="px-2 py-1"><span className="text-xs rounded-full bg-slate-200 text-slate-700 px-2 py-0.5">{ELECTION_LABEL[r.election]}</span></td>
@@ -643,6 +715,14 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
                                   {r.arcNet != null ? <> = <b>{fmtUsd(r.arcNet)}</b></> : null}. Add benchmark data in Settings for the real county-revenue calc.
                                 </>
                               )}
+                            </div>
+                            <div className="sm:col-span-2 pt-1 border-t border-slate-200">
+                              <b>What it would take:</b> PLC starts paying once the marketing-year price falls below{' '}
+                              <b>{fmtUsd(r.plcTriggerPrice, 2)}</b> (the effective reference price).
+                              {r.arcTriggerPrice != null ? (
+                                <> ARC-CO starts paying below <b>{fmtUsd(r.arcTriggerPrice, 2)}</b> at your expected county yield of{' '}
+                                {r.arc.arcDetail?.actualCountyYield} — or at a lower county yield for the same price.</>
+                              ) : ' ARC-CO needs county figures to say where it starts paying.'}
                             </div>
                           </div>
                         </td>

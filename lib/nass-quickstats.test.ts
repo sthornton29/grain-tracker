@@ -53,6 +53,11 @@ describe('nassSeriesFor', () => {
     expect(nassSeriesFor('Grain Sorghum', 'bushel')).toMatchObject({ params: { commodity_desc: 'SORGHUM' }, lbPerBushel: 56 })
     expect(nassSeriesFor('Peanuts', 'pound')).toMatchObject({ params: { commodity_desc: 'PEANUTS' }, target: 'dollars_per_lb' })
     expect(nassSeriesFor('Canola', 'bushel')).toMatchObject({ lbPerBushel: 50 })
+    // Canola is configured as a POUND commodity (reference price $/lb), so its
+    // NASS $/CWT price must land in $/lb, never $/bu (2026-10-28: a $13/bu
+    // canola "MYA" sat against a $0.20/lb reference price).
+    expect(nassSeriesFor('Canola', 'pound')).toMatchObject({ params: { commodity_desc: 'CANOLA' }, target: 'dollars_per_lb' })
+    expect(nassSeriesFor('Canola', 'pound')).not.toHaveProperty('lbPerBushel')
     // Sunflowers: NASS names the commodity SUNFLOWER (singular, $/CWT).
     expect(nassSeriesFor('Sunflowers', 'pound')).toMatchObject({ params: { commodity_desc: 'SUNFLOWER' }, target: 'dollars_per_lb' })
     // Unknown commodities try their name with the configured storage unit

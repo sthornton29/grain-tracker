@@ -113,7 +113,16 @@ export function nassSeriesFor(commodityName: string, unit: 'bushel' | 'pound'): 
     // NASS reports sorghum in $/CWT; program math runs in $/bu at 56 lb/bu.
     return { params: { commodity_desc: 'SORGHUM' }, target: 'dollars_per_bushel', lbPerBushel: 56 }
   }
-  if (s === 'canola') return { params: { commodity_desc: 'CANOLA' }, target: 'dollars_per_bushel', lbPerBushel: 50 }
+  if (s === 'canola') {
+    // NASS publishes canola in $/CWT. The program math runs in the commodity's
+    // configured unit: $/lb when it is a pound commodity (the FSA "other
+    // oilseeds" reference price and loan rate are per pound), $/bu at 50 lb/bu
+    // otherwise. Storing $/bu against a $/lb reference price made every canola
+    // MYA ~50× the reference price and PLC permanently $0.
+    return unit === 'pound'
+      ? { params: { commodity_desc: 'CANOLA' }, target: 'dollars_per_lb' }
+      : { params: { commodity_desc: 'CANOLA' }, target: 'dollars_per_bushel', lbPerBushel: 50 }
+  }
   if (s === 'peanuts') return { params: { commodity_desc: 'PEANUTS' }, target: 'dollars_per_lb' }
   if (s.includes('sunflower')) {
     // NASS says SUNFLOWER (singular), published in $/CWT; the all-types
