@@ -22,6 +22,9 @@ describe('farmVerdict', () => {
     expect(farmVerdict(404, null, 31)).toBe('PLC')
     expect(farmVerdict(null, 122, 31)).toBe('ARC')
     expect(farmVerdict(null, null, 31)).toBeNull()
+    // a $0 against an unknown side is no recommendation (canola: PLC $0, no county row)
+    expect(farmVerdict(0, null, 2)).toBeNull()
+    expect(farmVerdict(null, 0, 2)).toBeNull()
   })
 })
 

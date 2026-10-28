@@ -18,8 +18,10 @@ export function farmVerdict(plcNet: number | null, arcNet: number | null, baseAc
     if (baseAcres <= 0 && arcNet === plcNet) return 'TOSS'
     return plcNet > arcNet ? 'PLC' : 'ARC'
   }
-  if (plcNet != null) return 'PLC'
-  if (arcNet != null) return 'ARC'
+  // One side unknown: the known side "wins" only if it actually pays — a
+  // $0 against an unknown is no recommendation at all.
+  if (plcNet != null) return plcNet > 0 ? 'PLC' : null
+  if (arcNet != null) return arcNet > 0 ? 'ARC' : null
   return null
 }
 
