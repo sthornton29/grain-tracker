@@ -179,13 +179,19 @@ checks(seq, migration, evidence, applied) as (values
   (102, '0097_cotton_contract_specs',         'table cotton_contract_specs + unique (contract_id) + org_isolation policy',
         exists (select 1 from tbls where t = 'cotton_contract_specs')
         and exists (select 1 from cols where t = 'cotton_contract_specs' and c = 'eligible_fsa_farms')
-        and exists (select 1 from pg_policies where tablename = 'cotton_contract_specs' and policyname = 'cotton_contract_specs_org_isolation'))
+        and exists (select 1 from pg_policies where tablename = 'cotton_contract_specs' and policyname = 'cotton_contract_specs_org_isolation')),
+  -- 0098 (supabase/migrations/): data only — the OBBBA parameters the 2026 election test found stale
+  -- (probed on the values it sets: sunflowers a pound commodity at the other-oilseeds reference price,
+  -- seed cotton's $0.30 effective-price floor).
+  (103, '0098_arc_plc_2026_parameters',       'covered_commodities: Sunflowers unit=pound @ 0.2375, Seed Cotton loan 0.30',
+        exists (select 1 from public.covered_commodities where name = 'Sunflowers' and unit = 'pound' and statutory_reference_price = 0.2375)
+        and exists (select 1 from public.covered_commodities where name = 'Seed Cotton' and national_loan_rate = 0.30))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 097'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 098'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence
