@@ -8,6 +8,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/client'
+import type { FsaPaymentStatementExtraction } from '@/lib/fsa-payment-statement'
 import { getOrgId } from '@/lib/org'
 import type { CottonMarketingCategory, CottonMarketingExtraction } from '@/lib/cotton-doc-import'
 
@@ -76,7 +77,7 @@ export function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement' | 'discount_schedule' | 'seed_contract'
+export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement' | 'discount_schedule' | 'seed_contract' | 'fsa_payment_statement' | 'page_orientation'
 
 // Seed grower agreement extraction (077): the signature page (brand, contract
 // #, acres, bu/ac, estimated quantity, elevator, grower entity) AND the
@@ -644,6 +645,14 @@ export type FsaBaseAcresExtraction = {
   farms: FsaFarmExtraction[]
 }
 
+// 0099: the FSA Payment Statement reader's shape lives with its pure half.
+export type { FsaPaymentStatementExtraction } from '@/lib/fsa-payment-statement'
+
+// Page-orientation pre-pass (lib/orientation): one verdict per page image.
+export type PageOrientationExtraction = {
+  pages: Array<{ page: number | null; orientation: 'upright' | 'upside_down' | 'rotated_cw' | 'rotated_ccw' | 'blank' | null }> | null
+}
+
 // A compressed photo page ready for the API. lib/image-capture.ts' CapturedImage
 // structurally satisfies this, so callers can pass captured images directly.
 export type ParseImage = { base64: string; mediaType: string }
@@ -669,11 +678,13 @@ export async function parseDocument(input: File | ParseImage[], documentType: 'c
 export async function parseDocument(input: File | ParseImage[], documentType: 'lease_agreement', opts?: ParseOptions): Promise<LeaseAgreementExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'discount_schedule', opts?: ParseOptions): Promise<DiscountScheduleExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'seed_contract', opts?: ParseOptions): Promise<SeedContractExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'fsa_payment_statement', opts?: ParseOptions): Promise<FsaPaymentStatementExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'page_orientation', opts?: ParseOptions): Promise<PageOrientationExtraction>
 export async function parseDocument(
   input: File | ParseImage[],
   documentType: DocumentType,
   opts?: ParseOptions,
-): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonLoadsExtraction | GinReceiptExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction | SeedContractExtraction> {
+): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonLoadsExtraction | GinReceiptExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction | SeedContractExtraction | FsaPaymentStatementExtraction | PageOrientationExtraction> {
   // Build the request body. Photos are compressed small enough to inline as
   // base64. A PDF, however, is uploaded to storage first and sent as a URL:
   // Vercel rejects serverless request bodies over 4.5 MB with a 413, well below
@@ -738,7 +749,7 @@ export async function parseDocument(
     // Settlements come back nested (contract_blocks, nulls omitted) and are
     // flattened HERE — the one place — so every caller sees the flat shape.
     const data = documentType === 'settlement' ? normalizeSettlementExtraction(body.data) : body.data
-    return data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction | SeedContractExtraction
+    return data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction | SeedContractExtraction | FsaPaymentStatementExtraction | PageOrientationExtraction
   } finally {
     cleanup?.()
   }

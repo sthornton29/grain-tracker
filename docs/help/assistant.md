@@ -1,7 +1,7 @@
 ---
 page_route: /assistant
 title: Ask Turnrow
-updated: 2026-10-08
+updated: 2026-10-28
 keywords: assistant, ask turnrow, AI, questions, chat, data, numbers, average price, yields, bins, unsold, privacy, who can see, tables, formatting, links, how-to chat
 ---
 ## What this is for
@@ -29,7 +29,7 @@ What it covers, module by module:
 - **Hedging** — open and closed positions, rolls and effective prices, and the full history trail.
 - **Bins** — what is on hand, bin-to-bin transfers, adjustments.
 - **Loads** — recent loads with weights, moisture and bushels; buyer discount schedules and what each buyer's discounting really cost.
-- **Insurance and government** — policy estimates, ARC/PLC and other payment projections.
+- **Insurance and government** — policy estimates, ARC/PLC projections and what the FSA payment statements say was received (with the variance and its cause), the statements themselves, and calendar-year totals per payee.
 - **Leases and rent** — lease terms and recorded rent settlements per landowner; **budgets** — crop budget scenarios with revenue, profit and breakevens; dryer and freight settings.
 - **Cash flow**, entities, farms, fields, landowners, buyers, users and settings.
 

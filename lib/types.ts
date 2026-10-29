@@ -840,6 +840,82 @@ export type OtherGovernmentPayment = {
   payment_status: 'projected' | 'confirmed' | 'received'
   notes: string | null
   created_at: string
+  /** 0099: the FSA Payment Statement block this payment was recorded from (non-ARC/PLC programs). */
+  fsa_payment_line_id?: string | null
+}
+
+// ---------- Program-year payees + FSA payment statements (0099) ----------
+
+// The entity PAID for a farm's government payments in one program year. No
+// row = the farm's current entity; lib/program-payee.ts payeeEntityFor is the
+// one rule every consumer reads through.
+export type FarmProgramPayee = {
+  id: string
+  farm_id: string
+  program_year: number
+  entity_id: string
+  note: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type FsaProgramCode = 'PLC' | 'ARC_CO' | 'ARC_IC' | 'OTHER'
+
+// A USDA/FSA Payment Statement as received (the national layout).
+export type FsaPaymentStatement = {
+  id: string
+  statement_date: string
+  office_name: string | null
+  office_address: string | null
+  office_phone: string | null
+  payee_name: string
+  payee_address: string | null
+  payee_entity_id: string | null
+  gross_payment: number
+  deductions: number
+  net_payment: number
+  document_url: string | null
+  document_path: string | null
+  page_count: number | null
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+// One payment block of a statement (one FSA Payment ID).
+export type FsaPaymentLine = {
+  id: string
+  statement_id: string
+  fsa_payment_id: string
+  transaction_control_number: string | null
+  program_code: FsaProgramCode
+  program_name_raw: string
+  program_year: number | null
+  farm_id: string | null
+  fsa_farm_number: string | null
+  gross_payment: number
+  deductions: number
+  deduction_detail: Array<{ description: string; amount: number }> | null
+  net_payment: number
+  payment_method: string | null
+  bank_name: string | null
+  /** The last four digits printed on the statement — never more. */
+  account_last4: string | null
+  payment_date: string | null
+  sequester_pct: number | null
+  notes: string | null
+  page_number: number | null
+  created_at: string
+}
+
+// The "Crop and Payment Amount Detail" rows of a block.
+export type FsaPaymentCropAmount = {
+  id: string
+  line_id: string
+  commodity_id: string | null
+  raw_crop: string
+  amount: number
+  created_at: string
 }
 
 // payment_limit_config is deprecated (041): eligible persons live on

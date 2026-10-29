@@ -1,7 +1,7 @@
 ---
 page_route: /settings/entities
 title: Entities
-updated: 2026-09-24
+updated: 2026-10-28
 keywords: entities, entity, LLC, partnership, counties, payment limit persons, marketing agent, farming entity, single entity, delete entity
 ---
 ## What this page is for
@@ -12,6 +12,7 @@ Entities are the companies and people that farm — an LLC, a partnership, you a
 
 - **Add an entity** with its name, the counties it operates in (at least one — farms pick their county from this list), and its FSA eligible-persons count.
 - **Edit** a row to change any of that; **Delete** removes an entity nothing depends on. An entity with loads recorded against it can't be deleted — rename it instead.
+- **Archive** an entity that no longer operates (a past payee, for example): it keeps its years on every report and stays pickable as a program-year payee, but drops out of the entity pickers for new records. Archived entities sit in a list at the bottom of the page with a **Restore** button.
 - The upload card at the top reads entity names out of any document (FSA records, a lease) alongside anything else it finds worth filing.
 
 ## What the controls do

@@ -2,38 +2,43 @@
 
 // The season at a glance for seed cotton (2026-10-12): one strip of pounds
 // moving from the field, across the gin yard, into bales — ginned (done) on
-// the left, still on the yard (waiting) on the right — with the yard broken
-// out by field underneath so the operator can see which field's modules are
-// still sitting out. Replaces the KPI cards + the separate Yard Inventory
-// card on the Loads page: one panel, one truth, tap a segment to filter.
+// the left, still on the yard (waiting) on the right — with every cotton
+// field underneath on ONE shared pounds axis (components/cotton/field-bars:
+// ginned / on the yard / a ghost out to the field's expectation) so the
+// operator can see which field's modules are still sitting out and how far
+// each field is from what it should make. Replaces the KPI cards + the
+// separate Yard Inventory card on the Loads page: one panel, one truth, tap a
+// segment or a field row to filter.
 
 import { StackedBar, fmtInt, fmtPct } from '@/components/reports/report-kit'
 import { YieldFigure } from '@/components/cotton/cotton-page-header'
+import { FieldBars, type FieldBarLabel } from '@/components/cotton/field-bars'
 import type { SeasonFlow as SeasonFlowData } from '@/lib/cotton-loads'
 import type { CottonFarmYield } from '@/lib/cotton-field-yields'
-import type { CottonPlantingYield } from '@/lib/cotton'
+import type { FieldBarRow } from '@/lib/cotton-by-field'
 
 export function SeasonFlow({
-  flow, cropYear, fieldLabel, onPick, farm, fieldYield, acresFor,
+  flow, cropYear, fieldLabel, onPick, farm, bars, onPickField, activeFieldId,
 }: {
   flow: SeasonFlowData
   cropYear: number
-  /** "Lamon Farm · Pivot" for a field id; null = loads with no field. */
-  fieldLabel: (fieldId: string | null) => string
+  /** Field name + farm (muted) for a field id; null = loads with no field. */
+  fieldLabel: (fieldId: string | null) => FieldBarLabel
   /** Tap "ginned" / "on the yard" to filter the list below. */
   onPick?: (status: 'yard' | 'ginned') => void
   /** Farm-wide yields (lib/use-cotton-field-yields) — seed cotton and lint per picked acre. */
   farm?: CottonFarmYield | null
-  /** The field's yield figures this crop year (the Yields page's numbers), null without a cotton planting. */
-  fieldYield?: (fieldId: string | null) => CottonPlantingYield | null
-  acresFor?: (fieldId: string | null) => number | null
+  /** The by-field rows on their shared axis (lib/cotton-by-field buildFieldBars). */
+  bars?: { rows: FieldBarRow[]; axisMax: number } | null
+  /** Tap a field row to filter the list below to that field. */
+  onPickField?: (fieldId: string | null) => void
+  activeFieldId?: string | null
 }) {
   const total = flow.netLbs
   const yardPct = total > 0 ? (flow.yardLbs / total) * 100 : 0
   const ginnedPct = total > 0 ? (flow.ginnedLbs / total) * 100 : 0
-  const biggest = Math.max(1, ...flow.fields.map((f) => f.netLbs))
 
-  if (flow.loads === 0) {
+  if (flow.loads === 0 && !(bars && bars.rows.length > 0)) {
     return (
       <section className="bg-white rounded-xl shadow p-5">
         <div className="text-xs text-slate-500 uppercase tracking-wide">{cropYear} seed cotton</div>
@@ -85,44 +90,9 @@ export function SeasonFlow({
         </div>
       </div>
 
-      {flow.fields.length > 0 && (
+      {bars && bars.rows.length > 0 && (
         <div className="border-t border-slate-100 pt-3">
-          <div className="text-xs text-slate-500 uppercase tracking-wide mb-2">By field</div>
-          <ul className="space-y-1.5">
-            {flow.fields.map((f) => {
-              const w = Math.max(2, Math.round((f.netLbs / biggest) * 100))
-              const gw = f.netLbs > 0 ? (f.ginnedLbs / f.netLbs) * 100 : 0
-              const y = fieldYield?.(f.fieldId) ?? null
-              const acres = acresFor?.(f.fieldId) ?? null
-              return (
-                <li key={f.fieldId ?? 'none'} className="grid grid-cols-[minmax(0,11rem)_1fr_auto] sm:grid-cols-[minmax(0,16rem)_1fr_auto_auto] items-center gap-3 text-sm">
-                  <span className="truncate text-slate-800">
-                    {fieldLabel(f.fieldId)}
-                    {acres != null && <span className="ml-1 text-xs text-slate-400">{fmtInt(acres)} ac</span>}
-                  </span>
-                  <span className="relative h-3 rounded bg-slate-100 overflow-hidden" aria-hidden>
-                    <span className="absolute inset-y-0 left-0 flex rounded overflow-hidden" style={{ width: `${w}%` }}>
-                      <span className="bg-green-600" style={{ width: `${gw}%` }} />
-                      <span className="bg-amber-400 flex-1" />
-                    </span>
-                  </span>
-                  <span className="tabular-nums text-right whitespace-nowrap">
-                    {f.yardLbs > 0
-                      ? <><span className="font-semibold text-amber-700">{fmtInt(f.yardLbs)}</span> <span className="text-slate-500">lbs on the yard{f.yardRolls > 0 ? ` · ${fmtInt(f.yardRolls)} rolls` : ''}</span></>
-                      : <span className="text-green-700">all ginned · {fmtInt(f.netLbs)} lbs</span>}
-                  </span>
-                  <span className="hidden sm:inline-flex items-baseline gap-3 justify-end text-right whitespace-nowrap min-w-[13rem]">
-                    {y && acres ? (
-                      <>
-                        <YieldFigure perAcre={y.seedPerAcre} unit="seed lbs/ac" />
-                        <YieldFigure perAcre={y.lintPerAcre} basis={y.lintBasis} turnoutLabel={y.turnout.label} unit="lint lbs/ac" />
-                      </>
-                    ) : f.fieldId ? <span className="text-xs text-slate-400">no cotton planting on file</span> : null}
-                  </span>
-                </li>
-              )
-            })}
-          </ul>
+          <FieldBars rows={bars.rows} axisMax={bars.axisMax} labelFor={fieldLabel} onPick={onPickField} activeFieldId={activeFieldId} />
         </div>
       )}
     </section>

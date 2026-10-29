@@ -6,6 +6,9 @@ import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { computeBushels } from '@/lib/shrink'
 import { marketingCropYearOptions } from '@/lib/crop-years'
 import { projectPayments, expectedArcPlcDate, programYearFor, paymentAttributionYear } from '@/lib/government-payments'
+import { fetchGovernmentActuals, EMPTY_GOVERNMENT_ACTUALS, type GovernmentActuals } from '@/lib/fsa-actuals-fetch'
+import { receivedArcPlc, mergeProjectedWithReceived } from '@/lib/fsa-actuals'
+import { indexPayees, farmsAsPayees } from '@/lib/program-payee'
 import { projectInsuranceIndemnities, actualYieldByCropFromLoads, type LiveHarvest } from '@/lib/crop-insurance'
 import { fieldCropAggregates, withLoadBreakouts, type CombineEntryLike } from '@/lib/yields'
 import { cottonCashFlowEvents, type CottonCashEvent } from '@/lib/cotton-sales'
@@ -127,6 +130,8 @@ export default function CashFlowPage() {
   const [commodities, setCommodities] = useState<CoveredCommodity[]>([])
   const [baseAcres, setBaseAcres] = useState<FarmBaseAcres[]>([])
   const [elections, setElections] = useState<ArcPlcElection[]>([])
+  // 0099: payees per program year + the FSA statement actuals (received ARC/PLC).
+  const [govActuals, setGovActuals] = useState<GovernmentActuals>(EMPTY_GOVERNMENT_ACTUALS)
   const [arcPriceData, setArcPriceData] = useState<ArcPlcPriceData[]>([])
   const [arcPayments, setArcPayments] = useState<ArcPlcPayment[]>([])
   const [otherPayments, setOtherPayments] = useState<OtherGovernmentPayment[]>([])
@@ -245,7 +250,7 @@ export default function CashFlowPage() {
         // How each buyer load was sold (094) — a database before 094 reads as none.
         fetchLoadSales(supabase).catch(() => [] as LoadSale[]),
       ])
-      const [ca, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp, ce] = await Promise.all([
+      const [ca, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp, ce, ga] = await Promise.all([
         supabase.from('crop_assumptions').select('*'),
         fetchAllRows((f, t) => supabase.from('crop_insurance_policies').select('*').order('id').range(f, t)),
         supabase.from('crop_insurance_sco').select('*'),
@@ -260,6 +265,7 @@ export default function CashFlowPage() {
         fetchAllRows((f, t) => supabase.from('other_government_payments').select('*').order('id').range(f, t)),
         // May not exist yet (migration 062): an error leaves data null → [].
         fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date').order('id').range(f, t)),
+        fetchGovernmentActuals(supabase),
       ])
       setContracts((ct.data as Contract[]) || [])
       setLoads(ld)
@@ -282,6 +288,7 @@ export default function CashFlowPage() {
       setCommodities((cc.data as CoveredCommodity[]) || [])
       setBaseAcres((ba.data as FarmBaseAcres[]) || [])
       setElections((el.data as ArcPlcElection[]) || [])
+      setGovActuals(ga)
       setArcPriceData((apd.data as ArcPlcPriceData[]) || [])
       setArcPayments((apay.data as ArcPlcPayment[]) || [])
       setOtherPayments((ogp.data as OtherGovernmentPayment[]) || [])
@@ -625,25 +632,45 @@ export default function CashFlowPage() {
     // shows the program-year-Y−1 payment arriving in fall Y — the same
     // attribution Revenue Projections and Income Sensitivity use, so each
     // program year's payment appears in exactly one crop year everywhere.
-    const programYears = cropYear !== '' ? [programYearFor(cropYear)] : Array.from(new Set(elections.map((e) => e.crop_year)))
+    // 0099: the entity is the PROGRAM year's payee (lib/program-payee), and a
+    // farm × commodity the FSA statements have paid counts ONCE — the actual,
+    // in the month of its ACH date — while the unpaid keep their projection
+    // in October of program year + 1 (lib/fsa-actuals, one seam).
+    const payeeIdx = indexPayees(govActuals.payees)
+    const receivedMap = receivedArcPlc({ lines: govActuals.lines, cropAmounts: govActuals.cropAmounts })
+    const programYears = cropYear !== '' ? [programYearFor(cropYear)] : Array.from(new Set([...elections.map((e) => e.crop_year), ...[...receivedMap.values()].map((r) => r.programYear)]))
     for (const yr of programYears) {
       if (!cropId) {
+        const yearScope = buildEntityScope({ entityId, farms: farmsAsPayees(farms, yr, payeeIdx), fields, entities, grantedEntityIds: viewer.grantedIds })
         const projected = projectPayments({ cropYear: yr, baseAcres, commodities, elections, priceData: arcPriceData, payments: arcPayments })
+        const rows = mergeProjectedWithReceived({ programYear: yr, projected, received: receivedMap, sequesterPct: resolveProgramYearConfig(yr, programConfigs).sequestrationPct })
         const m = monthKey(new Date(expectedArcPlcDate(yr) + 'T00:00:00'))
-        let net = 0
-        for (const p of projected) {
-          if (!scope.farmInEntity(p.farmId)) continue
-          net += p.result.net
-          if (p.result.net !== 0) {
+        for (const r of rows) {
+          if (!yearScope.farmInEntity(r.farmId)) continue
+          const commodityName = commodities.find((c) => c.id === r.commodityId)?.name ?? 'Commodity'
+          if (r.received != null && r.receivedDetail) {
+            for (const l of r.receivedDetail.lines) {
+              const lm = l.paymentDate ? monthKey(new Date(l.paymentDate + 'T00:00:00')) : m
+              ensure(lm).arcPlc += l.amount
+              details.push({
+                kind: 'arcPlc', month: lm, amount: l.amount, status: 'received',
+                label: `${farmName(r.farmId)} · ${commodityName}`,
+                sub: `${l.program === 'ARC_CO' ? 'ARC-CO' : l.program === 'ARC_IC' ? 'ARC-IC' : 'PLC'} · FSA Payment ID ${l.fsaPaymentId} · ${yr} program year, paid ${l.paymentDate ? fmtDate(l.paymentDate) : 'date unknown'}`,
+                href: '/reports/government-payments',
+              })
+            }
+            continue
+          }
+          if (r.projection && r.projected !== 0) {
+            ensure(m).arcPlc += r.projected
             details.push({
-              kind: 'arcPlc', month: m, amount: p.result.net, status: 'projected',
-              label: `${farmName(p.farmId)} · ${commodities.find((c) => c.id === p.commodityId)?.name ?? 'Commodity'}`,
-              sub: `${p.election} · ${fmtInt(p.baseAcres)} base acres · ${yr} program year, paid Oct ${yr + 1}`,
+              kind: 'arcPlc', month: m, amount: r.projected, status: 'projected',
+              label: `${farmName(r.farmId)} · ${commodityName}`,
+              sub: `${r.projection.election} · ${fmtInt(r.projection.baseAcres)} base acres · ${yr} program year, paid Oct ${yr + 1}`,
               href: '/reports/government-payments',
             })
           }
         }
-        if (net !== 0) ensure(m).arcPlc += net
       }
     }
 
@@ -710,7 +737,7 @@ export default function CashFlowPage() {
     }
 
     return { buckets, details }
-  }, [cropYear, cropId, scope, elections, baseAcres, commodities, arcPriceData, arcPayments, scopedPolicies, scos, ecos, harvestEstimates, effAssumptions, plantings, loads, splits, combineEntries, cropById, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments, farms, entities])
+  }, [cropYear, cropId, scope, elections, baseAcres, commodities, arcPriceData, arcPayments, scopedPolicies, scos, ecos, harvestEstimates, effAssumptions, plantings, loads, splits, combineEntries, cropById, crops, liveHarvestByYear, programConfigs, insuranceMonth, otherPayments, farms, entities, govActuals, entityId, fields, viewer.grantedIds])
   const safetyNet = safetyFlow.buckets
 
   // Seed production contracts (077): the staged-payment events — 80% base at

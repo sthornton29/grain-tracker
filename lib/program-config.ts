@@ -26,6 +26,15 @@ export const DEFAULT_ERP_CAP_PCT = 1.15
 export const DEFAULT_PAYMENT_FACTOR = 0.85 // ARC-CO and PLC base-acre factor
 export const DEFAULT_ARC_IC_PAYMENT_FACTOR = 0.65
 
+// OBBBA transition rule: for the 2025 program year ONLY, FSA paid every farm
+// × covered commodity the HIGHER of its PLC and ARC-CO payment regardless of
+// the election on file (USDA, Oct 7 2026 — the October 2026 payments). From
+// 2026 the election governs again. projectPayments reads this.
+export const HIGHER_OF_PROGRAM_YEARS: ReadonlySet<number> = new Set([2025])
+export function paysHigherOf(programYear: number): boolean {
+  return HIGHER_OF_PROGRAM_YEARS.has(programYear)
+}
+
 export function defaultArcGuaranteePct(cropYear: number): number {
   return cropYear >= OBBBA_FIRST_YEAR ? 0.9 : 0.86
 }

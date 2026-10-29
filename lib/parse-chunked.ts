@@ -23,7 +23,7 @@
 // so lib/parse-chunked.test.ts scripts the model.
 
 import { getPdfPageCount, slicePdfPages } from '@/lib/pdf-split'
-import { normalizePdfFile } from '@/lib/orientation'
+import { normalizePdfFile, type NormalizeFileOptions, type OrientationDetector } from '@/lib/orientation'
 import {
   parseDocument,
   ParseTimeoutError,
@@ -96,8 +96,14 @@ export type ChunkedParseOptions<T, M> = {
   /** The first read hands back the straightened PDF so a later `pages`
    *  re-read slices the same file. */
   onNormalized?: (file: File) => void
+  /** 0099: which way each page's CONTENT faces (duplex scans store every
+   *  even page upside down with no /Rotate flag). Default: ask the model
+   *  through the 'page_orientation' pre-pass — scans only (a PDF with a text
+   *  layer skips it). Pass a detector to script it, or null to turn it off. */
+  detectOrientation?: OrientationDetector | null
   // ---- test hooks: script the model and the PDF without pdf-lib / pdf.js ----
   parse?: ChunkParseFn
+  renderThumbnails?: NormalizeFileOptions['render']
   pageCount?: (file: File) => Promise<number>
   slice?: (file: File, from: number, to: number) => Promise<File>
   textRows?: (file: File) => Promise<string[][] | null>
@@ -123,6 +129,11 @@ const NOUN: Partial<Record<DocumentType, string>> = {
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now())
 
+/** The production pre-pass: the page thumbnails go to the extraction route
+ *  as photos under the 'page_orientation' prompt (one short answer). */
+const defaultOrientationDetector: OrientationDetector = (images) =>
+  parseDocument(images.map((i) => ({ base64: i.base64, mediaType: i.mediaType })), 'page_orientation', { maxTokens: 1024, pageCount: images.length })
+
 export async function parseDocumentChunked<T, M = T>(
   source: File | ParseImage[],
   documentType: DocumentType,
@@ -145,10 +156,21 @@ export async function parseDocumentChunked<T, M = T>(
     getInput = async (r) => source.slice(r.from - 1, r.to)
   } else {
     let pdfFile = source
+    // The text layer is read once: it sizes the chunks (density plan) AND
+    // says whether the content-orientation pre-pass is needed (scans only).
+    const textRowsOf = opts.textRows ?? pdfPageTextRows
+    let textRows: string[][] | null | undefined
+    const readTextRows = async () => {
+      if (textRows === undefined) textRows = await textRowsOf(source).catch(() => null)
+      return textRows
+    }
     if (!opts.pages) {
-      // Orientation first (086): pages a scanner stored sideways are baked
-      // upright before anything is counted, split, or sent.
-      const normalized = await normalizePdfFile(source)
+      // Orientation first (086 / 0099): pages a scanner stored sideways —
+      // by flag or by content — are baked upright before anything is
+      // counted, split, or sent.
+      const detect = opts.detectOrientation === undefined ? defaultOrientationDetector : opts.detectOrientation
+      const hasTextLayer = detect ? (await readTextRows()) != null : null
+      const normalized = await normalizePdfFile(source, { detect, hasTextLayer, onProgress: opts.onProgress, render: opts.renderThumbnails })
       pdfFile = normalized.file
       if (normalized.changed) opts.onProgress?.('Straightening pages…')
       opts.onNormalized?.(pdfFile)
@@ -166,7 +188,7 @@ export async function parseDocumentChunked<T, M = T>(
       return p
     }
     if (opts.pagesPerBatch == null && countRowsForType(documentType, []) != null) {
-      const rows = await (opts.textRows ?? pdfPageTextRows)(whole).catch(() => null)
+      const rows = await readTextRows()
       if (rows) rowsByPage = rows.map((lines) => countRowsForType(documentType, lines) ?? 0)
     }
   }

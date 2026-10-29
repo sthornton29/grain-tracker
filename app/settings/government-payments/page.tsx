@@ -24,10 +24,11 @@ import {
   resolveProgramYearConfig,
 } from '@/lib/program-config'
 import FsaBaseAcresImport from '@/components/government/fsa-base-acres-import'
+import ProgramPayeeGrid from '@/components/government/program-payee-grid'
 import type {
   Farm, Entity, Crop, County, FieldPlanting, CoveredCommodity, FarmBaseAcres, ArcPlcElection,
   ArcPlcPriceData, ArcPlcPayment, OtherGovernmentPayment, ArcPlcElectionType,
-  ProgramYearConfig, ArcBenchmarkData,
+  ProgramYearConfig, ArcBenchmarkData, FarmProgramPayee,
 } from '@/lib/types'
 
 const num = (s: string): number | null => {
@@ -54,6 +55,7 @@ export default function GovernmentPaymentsSettingsPage() {
   const [programConfigs, setProgramConfigs] = useState<ProgramYearConfig[]>([])
   const [counties, setCounties] = useState<County[]>([])
   const [benchmarks, setBenchmarks] = useState<ArcBenchmarkData[]>([])
+  const [payees, setPayees] = useState<FarmProgramPayee[]>([])
   const [cropYear, setCropYear] = useState<number>(new Date().getFullYear())
   const [entityFilter, setEntityFilter] = usePersistentState('gov-pay-settings:entity', '')
   const [err, setErr] = useState<string | null>(null)
@@ -61,7 +63,7 @@ export default function GovernmentPaymentsSettingsPage() {
   const [open, setOpen] = useState<string>('base')
 
   async function refresh() {
-    const [fa, en, cr, pl, cc, ba, el, pd, pay, op, pc, co, bm] = await Promise.all([
+    const [fa, en, cr, pl, cc, ba, el, pd, pay, op, pc, co, bm, pp] = await Promise.all([
       supabase.from('farms').select('*').order('name'),
       supabase.from('entities').select('*').order('name'),
       supabase.from('crops').select('*').order('name'),
@@ -75,6 +77,7 @@ export default function GovernmentPaymentsSettingsPage() {
       supabase.from('program_year_config').select('*').order('crop_year', { ascending: false }),
       fetchAllCounties(supabase),
       supabase.from('arc_benchmark_data').select('*'),
+      fetchAllRows((f, t) => supabase.from('farm_program_payees').select('*').order('id').range(f, t)),
     ])
     setFarms((fa.data as Farm[]) || [])
     setEntities((en.data as Entity[]) || [])
@@ -89,6 +92,7 @@ export default function GovernmentPaymentsSettingsPage() {
     setProgramConfigs((pc.data as ProgramYearConfig[]) || [])
     setCounties(co || [])
     setBenchmarks((bm.data as ArcBenchmarkData[]) || [])
+    setPayees((pp.data as FarmProgramPayee[]) || [])
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
@@ -101,7 +105,7 @@ export default function GovernmentPaymentsSettingsPage() {
     const y = Number(new URLSearchParams(window.location.search).get('year'))
     if (Number.isInteger(y) && y > 2000 && y < 2100) setCropYear(y)
     const h = window.location.hash.replace('#', '')
-    if (!['base', 'elect', 'price', 'bench', 'arc', 'limit', 'program', 'other'].includes(h)) return
+    if (!['base', 'elect', 'price', 'bench', 'arc', 'limit', 'payee', 'program', 'other'].includes(h)) return
     setOpen(h)
     requestAnimationFrame(() => document.getElementById(h)?.scrollIntoView({ block: 'start' }))
   }, [])
@@ -125,6 +129,13 @@ export default function GovernmentPaymentsSettingsPage() {
     set.add(cropYear); set.add(new Date().getFullYear())
     return [...set].sort((a, b) => b - a)
   }, [programConfigs, cropYear])
+  // Payee grid columns: the program years in play — the selected year, the
+  // current year and its neighbours, every year with a payee row or an election.
+  const payeeYears = useMemo(() => {
+    const now = new Date().getFullYear()
+    const set = new Set<number>([cropYear, now - 1, now, now + 1, ...payees.map((p) => p.program_year), ...elections.map((e) => e.crop_year)])
+    return [...set].sort((a, b) => b - a)
+  }, [cropYear, payees, elections])
   const priceFor = (commodityId: string) => priceData.find((p) => p.commodity_id === commodityId && p.crop_year === cropYear) ?? null
   const electionFor = (farmId: string, commodityId: string | null): ArcPlcElectionType =>
     commodityId == null ? 'PLC' : elections.find((e) => e.farm_id === farmId && e.commodity_id === commodityId && e.crop_year === cropYear)?.election ?? 'PLC'
@@ -539,6 +550,11 @@ export default function GovernmentPaymentsSettingsPage() {
             </tbody>
           </table>
         </div>
+      </Section>
+
+      {/* Payee by program year (0099) */}
+      <Section id="payee" title="Payee by program year" open={open === 'payee'} onToggle={() => setOpen(open === 'payee' ? '' : 'payee')}>
+        <ProgramPayeeGrid farms={entityFilter ? farms.filter((f) => f.entity_id === entityFilter || payees.some((p) => p.farm_id === f.id && p.entity_id === entityFilter)) : farms} entities={entities} payees={payees} years={payeeYears} onChanged={refresh} />
       </Section>
 
       {/* Program parameters (per-year constants) */}

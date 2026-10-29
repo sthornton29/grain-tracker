@@ -701,7 +701,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
   ]
 }`
 
-type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement' | 'discount_schedule' | 'seed_contract'
+type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement' | 'discount_schedule' | 'seed_contract' | 'fsa_payment_statement' | 'page_orientation'
 
 // Full lease-terms extraction for the Rent Settlement report — deeper than
 // the settings-document lease read (which only lifts share % / cash rent
@@ -876,6 +876,63 @@ Respond ONLY in JSON, no other text, no markdown fences:
   ]),
 )
 
+// 0099: USDA/FSA Payment Statement — the national layout printed by the FSA
+// National Office for every FSA program. Blocks straddle pages and duplex
+// scans invert every even page (lib/orientation straightens them first, but
+// the model is told anyway). The model reports BLOCKS in page order with the
+// fragment flags lib/fsa-payment-statement stitchBlocks joins on.
+const FSA_PAYMENT_STATEMENT_PROMPT = `This is a USDA Farm Service Agency (FSA) PAYMENT STATEMENT ("Payment Statement — Retain for Tax Purposes"), the national layout printed by the USDA/FSA National Office for every FSA program (ARC/PLC, CRP, ELAP, LFP, disaster and emergency programs, loan programs…). You may be given only SOME of a statement's pages. Pages may be scanned upside down or sideways — read each page in whichever orientation its text runs. A trailing blank page carries nothing.
+
+LAYOUT
+- Header (page 1 only): the county FSA office name, address and phone (top left), the payee name and mailing address, "Statement Date: M/D/YYYY", and a PAYMENT SUMMARY box (Gross Payment, Deductions, Net Payment).
+- Then PAYMENT DETAIL: a series of PAYMENT BLOCKS. Each block has a shaded title bar with the PROGRAM TITLE (e.g. "PRICE LOSS COVERAGE", "AGRICULTURAL RISK COVERAGE PROG - COUNTY") and "FSA Payment ID: 103001783" at its right; then "Farm number: 5563" (absent for programs not tied to a farm), "Transaction control number: 661126714", Gross Payment, Deductions (sometimes itemized), Net Payment, and the payment method line ("ACH sent to MARTIN FARM at PNC BANK, NATIONAL ASSOCIATION account ending in 2036 on/about 10/15/2026" or a check line); then NOTES: "Program Year: 2025, Program Name: Price Loss Coverage Program, Farm Number: 5563", "Crop and Payment Amount Detail:" followed by crop amounts ("SEED COTTON : $8,624.00 , WHEAT : $733.00" — possibly wrapped over two lines), a sequester sentence ("…have been reduced by 5.7 percent due to sequester-related reductions"), and appeal-rights text.
+- A block's header can sit at the BOTTOM of one page with its Notes at the TOP of the next page. Notes can also run on past the page break (boilerplate only).
+
+REPORT THE DOCUMENT BLOCK BY BLOCK, IN PAGE ORDER. For every block or fragment on the pages you were given:
+- page: the 1-based page (within the pages you were given) the block or fragment STARTS on.
+- If the block's title bar / FSA Payment ID / amounts are on these pages: header_present true and fill program_title, fsa_payment_id, farm_number (digits as printed, null when there is none), transaction_control_number, gross, deductions, deduction_detail (itemized deductions as [{description, amount}], [] when none), net, payment_method ("ACH" or "Check"), bank_name, account_last4 (ONLY the last four digits printed after "account ending in" — never any other part of an account number), payment_date (the "on/about" date).
+- If the block's NOTES are on these pages: notes_present true and fill notes: { program_year, program_name, farm_number, crop_amounts: [{crop, amount}] (one per crop, amounts as numbers), sequester_pct (the printed percent, e.g. 5.7; null when no sequester sentence), text (the Notes text as printed) }.
+- A Notes section at the top of a page whose header is NOT on these pages: report it as its own item with header_present false, fsa_payment_id null, and the notes filled — the app joins it to its header.
+- A header whose Notes are NOT on these pages (the block ends at the bottom of the last page): notes_present false, notes null.
+- Appeal-rights boilerplate continuing from a previous page with no new facts: do not report it.
+Also report pages: one entry per page you were given, with header_count = how many block TITLE BARS (with an FSA Payment ID) the page shows (0 for a blank or notes-only page).
+
+Copy every number exactly as printed; never invent, round, or balance figures — the app checks that crop amounts sum to each gross, that gross minus deductions equals net, and that the blocks sum to the statement net. Use null for anything not printed.
+
+Respond ONLY in JSON with no other text, no markdown backticks:
+{
+  "office_name": "string or null", "office_address": "string or null", "office_phone": "string or null",
+  "payee_name": "string or null", "payee_address": "string or null",
+  "statement_date": "YYYY-MM-DD or null",
+  "summary": { "gross": number or null, "deductions": number or null, "net": number or null } or null,
+  "pages": [ { "page": 1, "header_count": 2 } ],
+  "blocks": [
+    {
+      "page": 1,
+      "program_title": "string or null", "fsa_payment_id": "string or null", "farm_number": "string or null",
+      "transaction_control_number": "string or null",
+      "gross": number or null, "deductions": number or null, "deduction_detail": [ { "description": "string", "amount": number } ],
+      "net": number or null,
+      "payment_method": "string or null", "bank_name": "string or null", "account_last4": "string or null", "payment_date": "YYYY-MM-DD or null",
+      "notes": { "program_year": number or null, "program_name": "string or null", "farm_number": "string or null",
+                 "crop_amounts": [ { "crop": "string", "amount": number } ], "sequester_pct": number or null, "text": "string or null" } or null,
+      "header_present": true, "notes_present": true
+    }
+  ]
+}`
+
+// The orientation pre-pass (lib/orientation detectContentOrientation): one
+// small image per page, one verdict each. Cheap (a few hundred tokens) and
+// reliable where pixel heuristics on scanned text were not.
+const PAGE_ORIENTATION_PROMPT = `Each image is one page of a scanned document, in order. For each image say how its printed text is oriented:
+- "upright": the text reads normally.
+- "upside_down": the page is rotated 180 degrees (the text is upside down).
+- "rotated_cw": the page content is turned 90 degrees clockwise (lines of text run top-to-bottom and the tops of the letters point right).
+- "rotated_ccw": the page content is turned 90 degrees counter-clockwise (the tops of the letters point left).
+- "blank": no readable text.
+Judge each page on its own. Respond ONLY in JSON with no other text, no markdown backticks:
+{ "pages": [ { "page": 1, "orientation": "upright" } ] }`
+
 const PROMPTS: Record<DocumentType, string> = {
   settlement: SETTLEMENT_PROMPT,
   tickets: TICKETS_PROMPT,
@@ -890,6 +947,8 @@ const PROMPTS: Record<DocumentType, string> = {
   lease_agreement: LEASE_AGREEMENT_PROMPT,
   discount_schedule: DISCOUNT_SCHEDULE_PROMPT,
   seed_contract: SEED_CONTRACT_PROMPT,
+  fsa_payment_statement: FSA_PAYMENT_STATEMENT_PROMPT,
+  page_orientation: PAGE_ORIENTATION_PROMPT,
 }
 
 type ParseBody = {

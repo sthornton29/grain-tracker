@@ -45,8 +45,9 @@ export default function EntitiesPage() {
       supabase.from('entity_counties').select('*'),
     ])
     if (en.error) { setErr(reportError(en.error, { action: 'load your entities', noun: 'entity' })); return }
-    // Archived by the Turnrow Farm link (087) → out of the list.
-    setRows(((en.data as Entity[]) || []).filter((r) => !r.archived_at))
+    // Archived — by the Turnrow Farm link (087) or here (0099: a historical
+    // payee) — sits in its own list below; pickers for new records skip it.
+    setRows(((en.data as Entity[]) || []))
     setCounties((co.data as County[]) || [])
     setEntityCounties((ec.data as EntityCounty[]) || [])
   }
@@ -111,6 +112,12 @@ export default function EntitiesPage() {
       setErr(reportError(e as Error, { action: 'save the entity’s counties', noun: 'county' })); return
     }
     setForm(empty); setFormCountyIds(new Set()); setErr(null); refresh()
+  }
+
+  async function setArchived(e: Entity, archived: boolean) {
+    const { error } = await supabase.from('entities').update({ archived_at: archived ? new Date().toISOString() : null }).eq('id', e.id)
+    if (error) { setErr(reportError(error, { action: archived ? 'archive the entity' : 'restore the entity', noun: 'entity', name: e.name })); return }
+    setErr(null); refresh()
   }
 
   async function save(id: string) {
@@ -264,8 +271,8 @@ export default function EntitiesPage() {
       {err && <p className="text-sm text-red-600">{err}</p>}
 
       <ul className="bg-white rounded-xl shadow divide-y">
-        {rows.length === 0 && <li className="px-4 py-6 text-center text-slate-500">{managed ? 'No entities yet — they arrive from Turnrow Farm on its next update.' : 'No entities yet — add the first one above, or upload your FSA farm records.'}</li>}
-        {rows.map((e) => {
+        {rows.filter((r) => !r.archived_at).length === 0 && <li className="px-4 py-6 text-center text-slate-500">{managed ? 'No entities yet — they arrive from Turnrow Farm on its next update.' : 'No entities yet — add the first one above, or upload your FSA farm records.'}</li>}
+        {rows.filter((r) => !r.archived_at).map((e) => {
           const ids = entityCountyIds.get(e.id) ?? []
           return (
             <li key={e.id} className="px-4 py-3">
@@ -343,6 +350,7 @@ export default function EntitiesPage() {
                     </div>
                   </div>
                   <button type="button" onClick={() => startEdit(e)} className={`${btnCls} text-brand-deep`}>{canEdit(e) ? 'Edit' : 'Counties & limits'}</button>
+                  {canEdit(e) && <button type="button" onClick={() => setArchived(e, true)} className={`${btnCls} text-slate-600`} title="Keeps the entity on past years' reports but takes it out of the pickers for new records">Archive</button>}
                   {canEdit(e) && <button type="button" onClick={() => remove(e)} className={`${btnCls} text-red-600`}>Delete</button>}
                 </div>
               )}
@@ -350,6 +358,24 @@ export default function EntitiesPage() {
           )
         })}
       </ul>
+
+      {rows.some((r) => r.archived_at) && (
+        <details className="bg-white rounded-xl shadow px-4 py-3">
+          <summary className="cursor-pointer text-sm font-semibold text-slate-700 min-h-11 flex items-center">
+            Archived entities ({rows.filter((r) => r.archived_at).length}) — still on their years&apos; reports, out of the pickers for new records
+          </summary>
+          <ul className="divide-y mt-2">
+            {rows.filter((r) => r.archived_at).map((e) => (
+              <li key={e.id} className="py-2 flex items-center gap-3 flex-wrap">
+                <span className="flex-1 font-semibold text-slate-600">{e.name}</span>
+                <span className="text-sm text-slate-500">Payment limit: {e.payment_limit_persons ?? 1} person{(e.payment_limit_persons ?? 1) === 1 ? '' : 's'}</span>
+                <button type="button" onClick={() => startEdit(e)} className={`${btnCls} text-brand-deep`}>Counties &amp; limits</button>
+                {canEdit(e) && <button type="button" onClick={() => setArchived(e, false)} className={`${btnCls} text-slate-700`}>Restore</button>}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
       {dialogs}
     </div>
   )

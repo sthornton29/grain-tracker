@@ -24,9 +24,9 @@ import { defaultEntityId } from '@/lib/entity-default'
  * "Entity" caption over nothing.
  */
 export default function EntitySelect({
-  entities, value, onChange, className, placeholder = '— entity —', showWhenSingle = false, label,
+  entities: allEntities, value, onChange, className, placeholder = '— entity —', showWhenSingle = false, label,
 }: {
-  entities: ReadonlyArray<{ id: string; name: string }>
+  entities: ReadonlyArray<{ id: string; name: string; archived_at?: string | null }>
   value: string
   onChange: (id: string) => void
   className?: string
@@ -36,6 +36,9 @@ export default function EntitySelect({
   /** Visible label text above the select. */
   label?: string
 }) {
+  // Archived entities (a historical payee, a Turnrow Farm archive) are out
+  // of the picker for NEW records; an existing record keeps the one it has.
+  const entities = allEntities.filter((e) => !e.archived_at || e.id === value)
   const auto = defaultEntityId(entities)
 
   // Auto-assign only when nothing is chosen yet — an existing record's value

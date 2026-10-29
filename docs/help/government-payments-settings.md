@@ -1,8 +1,8 @@
 ---
 page_route: /settings/government-payments
 title: Government Payments
-updated: 2026-09-24
-keywords: base acres, PLC yield, elections, MYA, WASDE, benchmark, ARC-CO, program year, payment limit, sequestration, FSA import
+updated: 2026-10-28
+keywords: base acres, PLC yield, elections, MYA, WASDE, benchmark, ARC-CO, program year, payment limit, sequestration, FSA import, payee, payee by program year, who was paid, historical entity, archived entity
 ---
 ## What this page is for
 
@@ -15,12 +15,14 @@ This page holds the data that drives every ARC/PLC projection: your farms' base 
 - Enter or look up **MYA prices** per commodity and month. The **USDA lookup** pulls real published prices received by farmers; fetched months appear beside anything you typed, and already-entered months start unchecked so nothing is overwritten without your say-so. A WASDE midpoint can stand in before months publish, and a published final locks the row. If the lookup comes up empty, an AI lookup is offered as a clearly labeled fallback.
 - Enter **ARC-CO benchmarks** — the FSA benchmark price and county yield per commodity and county. The county picker starts with your own counties and can open to any state and county.
 - Review **Program Parameters** per year: the SCO trigger, the per-person payment limit, the sequestration percentage, and payment factors.
+- Set **Payee by program year** when a farm's payments for a program year went to a different entity than the one the farm carries today — a change of operating entity, for example. The grid is farms by program years; each cell is the entity paid that year, blank meaning the farm's own entity. Tick farms and use "Set program year … payee to …" to set a whole year at once. The Payment Tracker, Cash Flow, Revenue Projections, Income Sensitivity, Ask Turnrow and the payment-limit status all follow this grid, year by year.
 
 ## What the controls do
 
 - **FSA lookup** (on a benchmark row) — reads the county benchmark yield straight from FSA's published "ARC-County Benchmark Yields and Revenues" workbook, with an irrigated/non-irrigated choice when the county publishes both. If nothing is found, you can borrow from a nearby county in the same state or a prior year — borrowed values save to your own county's row with the borrowing noted, and amber chips show before you confirm.
 - **Payment limits** — shown read-only here. The eligible-persons count is set per entity under Settings, Entities; the cap is persons times the per-person limit for the program year.
 - **ARC flat rates** — a fallback flat per-acre estimate used only for counties without benchmark data; reports label it "flat est.".
+- **Payee by program year** — a historical payee that no longer operates can be **archived** under Settings, Entities: it stays pickable here and keeps its years on the reports, but drops out of the entity pickers for new records.
 
 ## How the numbers work
 
@@ -33,6 +35,7 @@ This page holds the data that drives every ARC/PLC projection: your farms' base 
 - **Which year do I enter benchmarks under?** The program year the reports are computing. If a report warns that benchmarks exist only for other years, use its link — it lands here preset to the right one.
 - **My county's name exists in two states.** Benchmarks are stored against the specific county and state ("County, ST"), so pick carefully in the county picker.
 - **The FSA import shows a merged line — is that right?** Yes — the same farm and commodity appeared on multiple lines of the document, and they were summed with an acre-weighted PLC yield. Expand the note to see the pieces.
+- **Which entity do the 2025 payments belong to?** Whoever was paid for program year 2025 — set it on the Payee by program year grid (or accept the notice when you upload the FSA payment statement). Program year 2026 stays on the farms' current entities unless you set it too.
 
 ## If something looks wrong
 

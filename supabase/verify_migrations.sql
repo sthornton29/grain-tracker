@@ -185,13 +185,22 @@ checks(seq, migration, evidence, applied) as (values
   -- seed cotton's $0.30 effective-price floor).
   (103, '0098_arc_plc_2026_parameters',       'covered_commodities: Sunflowers unit=pound @ 0.2375, Seed Cotton loan 0.30',
         exists (select 1 from public.covered_commodities where name = 'Sunflowers' and unit = 'pound' and statutory_reference_price = 0.2375)
-        and exists (select 1 from public.covered_commodities where name = 'Seed Cotton' and national_loan_rate = 0.30))
+        and exists (select 1 from public.covered_commodities where name = 'Seed Cotton' and national_loan_rate = 0.30)),
+  -- 0099 (supabase/migrations/): program-year payees + FSA payment statements (statement / lines / crop
+  -- amounts), the other_government_payments link column, and the per-org FSA Payment ID uniqueness.
+  (104, '0099_fsa_payment_statements',       'tables farm_program_payees + fsa_payment_statements + fsa_payment_lines + fsa_payment_crop_amounts, other_government_payments.fsa_payment_line_id, org_isolation policies',
+        exists (select 1 from tbls where t = 'farm_program_payees') and exists (select 1 from tbls where t = 'fsa_payment_statements')
+        and exists (select 1 from tbls where t = 'fsa_payment_lines') and exists (select 1 from tbls where t = 'fsa_payment_crop_amounts')
+        and exists (select 1 from cols where t = 'other_government_payments' and c = 'fsa_payment_line_id')
+        and exists (select 1 from cols where t = 'fsa_payment_lines' and c = 'account_last4')
+        and exists (select 1 from pg_policies where tablename = 'fsa_payment_lines' and policyname = 'fsa_payment_lines_org_isolation')
+        and exists (select 1 from pg_policies where tablename = 'farm_program_payees' and policyname = 'farm_program_payees_org_isolation'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 098'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 099'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

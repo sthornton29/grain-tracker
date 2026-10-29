@@ -46,6 +46,9 @@ import { harvestContractSymbol, countyAssumptionFor, isAreaPlan } from '@/lib/cr
 import { cropToHedgeCommodity } from '@/lib/contracts'
 import { quantityFor, formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
 import { projectPayments, applyMyaResolution, programYearFor, otherPaymentsInRevenueYear } from '@/lib/government-payments'
+import { fetchGovernmentActuals, EMPTY_GOVERNMENT_ACTUALS, type GovernmentActuals } from '@/lib/fsa-actuals-fetch'
+import { receivedArcPlc, mergeProjectedWithReceived } from '@/lib/fsa-actuals'
+import { indexPayees, farmsAsPayees } from '@/lib/program-payee'
 import { resolveProgramYearConfig, programConfigNotice } from '@/lib/program-config'
 import {
   axisValues, defaultPriceStep, defaultYieldStep, closestIndex, insurancePriceToAxisUnits,
@@ -177,6 +180,8 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
   // assumptions and axis defaults flow down; acres/positions/policies narrow.
   const [entities, setEntities] = useState<Entity[]>([])
   const [farms, setFarms] = useState<Array<{ id: string; entity_id: string | null }>>([])
+  // 0099: payees per program year + the FSA statement actuals.
+  const [govActuals, setGovActuals] = useState<GovernmentActuals>(EMPTY_GOVERNMENT_ACTUALS)
   const [fields, setFields] = useState<Array<{ id: string; farm_id: string | null }>>([])
   // 045: STAX/MCO endorsements + the shared county-yield assumptions.
   const [staxes, setStaxes] = useState<CropInsuranceStax[]>([])
@@ -246,7 +251,7 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
 
   useEffect(() => {
     ;(async () => {
-      const [cr, pl, ct, fp, op, ca, ld, sp, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp, en, fa, fi, ce, ls] = await Promise.all([
+      const [cr, pl, ct, fp, op, ca, ld, sp, po, sc, ec, hpe, pgc, cc, ba, el, apd, apay, ogp, en, fa, fi, ce, ls, ga] = await Promise.all([
         supabase.from('crops').select('*').order('name'),
         supabase.from('field_plantings').select('*'),
         supabase.from('contracts').select('*'),
@@ -273,8 +278,10 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
         fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date').order('id').range(f, t)),
         // How each buyer load was sold (094) — a database before 094 reads as none.
         fetchLoadSales(supabase).catch(() => [] as LoadSale[]),
+        fetchGovernmentActuals(supabase),
       ])
       setLoadSales(ls)
+      setGovActuals(ga)
       setEntities((en.data as Entity[]) || [])
       setFarms((fa.data as Array<{ id: string; entity_id: string | null }>) || [])
       setFields((fi.data as Array<{ id: string; farm_id: string | null }>) || [])
@@ -530,13 +537,18 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
     const effPrice = applyMyaResolution({ cropYear: programYear, commodities, priceData: arcPriceData, liveEstimates: new Map() })
     // Entity filter: only the entity's farms' ARC/PLC and its other payments,
     // re-spread over just the entity's planted acres.
+    // 0099: the entity filter follows the PROGRAM year's payee, and a paid
+    // farm × commodity counts its actual once (lib/fsa-actuals).
+    const payeeIdx = indexPayees(govActuals.payees)
+    const yearScope = buildEntityScope({ entityId, farms: farmsAsPayees(farms, programYear, payeeIdx), fields, entities, grantedEntityIds: viewer.grantedIds })
     const projected = projectPayments({ cropYear: programYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments, sequestrationPct: payCfg.sequestrationPct })
-      .filter((p) => scope.farmInEntity(p.farmId))
-    const totalArcPlc = projected.reduce((s, p) => s + p.result.net, 0)
+    const totalArcPlc = mergeProjectedWithReceived({ programYear, projected, received: receivedArcPlc({ lines: govActuals.lines, cropAmounts: govActuals.cropAmounts }), sequesterPct: payCfg.sequestrationPct })
+      .filter((r) => yearScope.farmInEntity(r.farmId))
+      .reduce((s, r) => s + r.effective, 0)
     const totalOther = otherPaymentsInRevenueYear(scope.otherPayments(otherPayments), cropYear).reduce((s, o) => s + Number(o.amount), 0)
     const totalAcres = yearPlantings.reduce((s, p) => s + Number(p.planted_acres ?? 0), 0)
     return flatGovPerAcre(totalArcPlc + totalOther, totalAcres)
-  }, [cropYear, commodities, arcPriceData, baseAcres, elections, arcPayments, otherPayments, yearPlantings, programConfigs, scope])
+  }, [cropYear, commodities, arcPriceData, baseAcres, elections, arcPayments, otherPayments, yearPlantings, programConfigs, scope, govActuals, entityId, farms, fields, entities, viewer.grantedIds])
 
   // ---- Per-crop views: inputs, axes, and the computed grid ----
   const cropViews: CropView[] = useMemo(() => {

@@ -65,6 +65,8 @@ export type SeasonFlowField = {
   yardLbs: number
   ginnedLbs: number
   yardRolls: number
+  /** Every roll counted on the field's loads (ginned or not). */
+  rolls: number
 }
 
 export type SeasonFlow = RollsSummary & {
@@ -89,9 +91,10 @@ export function seasonFlow(loads: ReadonlyArray<Pick<CottonLoadRow, 'id' | 'fiel
     if (isGinned) ginnedLbs += net
     else { yardLbs += net; yardRolls += rolls }
     const key = l.field_id ?? null
-    const f = byField.get(key) ?? { fieldId: key, loads: 0, netLbs: 0, yardLbs: 0, ginnedLbs: 0, yardRolls: 0 }
+    const f = byField.get(key) ?? { fieldId: key, loads: 0, netLbs: 0, yardLbs: 0, ginnedLbs: 0, yardRolls: 0, rolls: 0 }
     f.loads += 1
     f.netLbs += net
+    f.rolls += rolls
     if (isGinned) f.ginnedLbs += net
     else { f.yardLbs += net; f.yardRolls += rolls }
     byField.set(key, f)

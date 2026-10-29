@@ -30,6 +30,7 @@ import type { LintBasis } from '@/lib/cotton'
 import { computeBushels } from '@/lib/shrink'
 import { actualYieldByCropFromLoads, projectInsuranceIndemnities, type ProjectedPolicy } from '@/lib/crop-insurance'
 import { applyMyaResolution, otherPaymentsInRevenueYear, programYearFor, projectPayments, type ProjectedPayment } from '@/lib/government-payments'
+import { farmsAsPayees, indexPayees } from '@/lib/program-payee'
 import { computeRevenueProjections, cropsWithInsuranceInCost, type GovtProceeds, type InsuranceProceeds } from '@/lib/revenue-projections'
 import { resolveProgramYearConfig } from '@/lib/program-config'
 import { applyCombineRemainders, applyTransfers, cellFor, cellTotal, type OnHandBag } from '@/lib/bin-inventory'
@@ -522,6 +523,8 @@ type IncomeBundle = {
   splits: Array<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number | null }>
   combineEntries: CombineEntryLike[]
   farms: Array<{ id: string; fsa_number: string | null; entity_id: string | null }>
+  /** 0099: the payee per farm × program year (a database before 0099 reads as none). */
+  payees: Array<{ farm_id: string; program_year: number; entity_id: string }>
 }
 
 async function loadIncomeBundle(supabase: SupabaseClient, org: string, year: number): Promise<IncomeBundle> {
@@ -532,7 +535,7 @@ async function loadIncomeBundle(supabase: SupabaseClient, org: string, year: num
       return b.order('id').range(f, t)
     })
   const tolerant = <T,>(p: Promise<T[]>) => p.catch(() => [] as T[])
-  const [policies, scos, ecos, staxes, mcos, estimates, countyAssumptions, baseAcres, elections, arcPayments, otherPayments, loads, splits, combineEntries, farms] = await Promise.all([
+  const [policies, scos, ecos, staxes, mcos, estimates, countyAssumptions, baseAcres, elections, arcPayments, otherPayments, loads, splits, combineEntries, farms, payees] = await Promise.all([
     q<CropInsurancePolicy>('crop_insurance_policies', '*', (b) => b.eq('crop_year', year)),
     tolerant(q<CropInsuranceSco>('crop_insurance_sco', '*')),
     tolerant(q<CropInsuranceEco>('crop_insurance_eco', '*')),
@@ -548,6 +551,7 @@ async function loadIncomeBundle(supabase: SupabaseClient, org: string, year: num
     q<IncomeBundle['splits'][number]>('load_splits', 'load_id, field_id, crop_id, dry_bushels'),
     tolerant(q<CombineEntryLike>('combine_yield_entries', 'id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date', (b) => b.eq('crop_year', year))),
     q<IncomeBundle['farms'][number]>('farms', 'id, fsa_number, entity_id'),
+    tolerant(q<IncomeBundle['payees'][number]>('farm_program_payees', 'farm_id, program_year, entity_id')),
   ])
   // Global reference tables (no org_id).
   const [commodities, priceData, programConfigs] = await Promise.all([
@@ -555,7 +559,7 @@ async function loadIncomeBundle(supabase: SupabaseClient, org: string, year: num
     fetchAll<ArcPlcPriceData>((f, t) => supabase.from('arc_plc_price_data').select('*').order('id').range(f, t)),
     fetchAll<ProgramYearConfig>((f, t) => supabase.from('program_year_config').select('*').order('crop_year').range(f, t)),
   ])
-  return { policies, scos, ecos, staxes, mcos, estimates, programConfigs, countyAssumptions, commodities, baseAcres, elections, priceData, arcPayments, otherPayments, loads, splits, combineEntries, farms }
+  return { policies, scos, ecos, staxes, mcos, estimates, programConfigs, countyAssumptions, commodities, baseAcres, elections, priceData, arcPayments, otherPayments, loads, splits, combineEntries, farms, payees }
 }
 
 export function shapeIncomeRecords(args: {
@@ -675,7 +679,10 @@ export async function loadIncomePayload(supabase: SupabaseClient, org: string, y
       cur.premium += p.comp.premiumPaid
       insuranceByCrop.set(p.policy.crop_id, cur)
     }
-    const projectedPayments = allProjectedPayments.filter((p) => scope.farmInEntity(p.farmId))
+    // 0099: an entity's ARC/PLC is what it is PAID for the program year (the
+    // payee rows), not what its farms carry today.
+    const payeeScope = buildEntityScope({ entityId: entity?.id ?? '', farms: farmsAsPayees(production.farms, programYear, indexPayees(bundle.payees)), fields: production.fields, entities: production.entities })
+    const projectedPayments = allProjectedPayments.filter((p) => payeeScope.farmInEntity(p.farmId))
     const otherPayments = otherPaymentsInRevenueYear(scope.otherPayments(bundle.otherPayments), year)
     return shapeIncomeRecords({
       cropYear: year, rows: mrows, scopedContracts: attribution.contracts(entityInputs.contracts),

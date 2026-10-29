@@ -26,6 +26,7 @@ import { Disclosure, EmptyState, ReportFilterBar, ViewTabs, theadCls, fmtInt } f
 import { CottonPageHeader, CottonSection, GinnedPill } from '@/components/cotton/cotton-page-header'
 import { SeasonFlow } from '@/components/cotton/season-flow'
 import { useCottonFieldYields } from '@/lib/use-cotton-field-yields'
+import { buildFieldBars } from '@/lib/cotton-by-field'
 import {
   EMPTY_COTTON_FILTERS, filterCottonLoads, lbsPerRoll, rollsSummary, seasonFlow, sortCottonLoads,
   type CottonLoadFilters, type CottonSortContext, type CottonSortKey,
@@ -187,6 +188,16 @@ export default function CottonLoadsPage() {
 
   // The season at a glance: ginned vs on the yard, rolls waiting, by field.
   const flow = useMemo(() => seasonFlow(yearLoads, (id) => ginnedIds.has(id)), [yearLoads, ginnedIds])
+  // The by-field bars: every field with loads or a cotton planting this crop
+  // year on one shared pounds axis, each with its expected seed cotton
+  // (acres × expected lint ÷ turnout — the Yields page's seams).
+  const fieldBars = useMemo(() => buildFieldBars({
+    flowFields: flow.fields,
+    planted: fieldYields.rows.map((r) => {
+      const e = fieldYields.expectedSeedLbsFor(r.fieldId)
+      return { fieldId: r.fieldId, acres: r.acres, expectedSeedLbs: e.lbs, expectationNote: e.note }
+    }),
+  }), [flow.fields, fieldYields])
   // What the filters show (the list footer).
   const shownRolls = useMemo(() => rollsSummary(sorted), [sorted])
 
@@ -476,10 +487,10 @@ export default function CottonLoadsPage() {
   }, [loads, cropYear])
 
   const fieldLabel = (fieldId: string | null) => {
-    if (!fieldId) return 'No field on the ticket'
+    if (!fieldId) return { name: 'No field on the ticket', farm: null }
     const f = fieldById.get(fieldId)
     const farm = f?.farm_id ? farmById.get(f.farm_id) : null
-    return [farm?.name, f?.name_or_number ?? '—'].filter(Boolean).join(' · ')
+    return { name: f?.name_or_number ?? '—', farm: farm?.name ?? null }
   }
 
   const nothingYet = !loading && yearLoads.length === 0
@@ -504,8 +515,14 @@ export default function CottonLoadsPage() {
         fieldLabel={fieldLabel}
         onPick={(status) => setFilters({ ...filters, status: filters.status === status ? '' : status })}
         farm={fieldYields.farm}
-        fieldYield={fieldYields.yieldFor}
-        acresFor={fieldYields.acresFor}
+        bars={fieldBars}
+        activeFieldId={filters.fieldId || null}
+        onPickField={(fieldId) => {
+          // Tap a field row → the list shows just that field (a second tap clears it).
+          if (!fieldId || filters.fieldId === fieldId) { setFilters({ ...filters, fieldId: '' }); return }
+          const farmId = fieldById.get(fieldId)?.farm_id ?? ''
+          setFilters({ ...filters, fieldId, farmId: farmId || filters.farmId })
+        }}
       />
 
       {/* Intake — one card, two ways in. */}

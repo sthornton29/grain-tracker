@@ -185,6 +185,10 @@ export const TABLE_DOCS = {
   arc_plc_payments: ['ARC/PLC payments received per farm × commodity × program year', '/settings/government-payments'],
   other_government_payments: ['Other USDA payments (disaster, CFAP, etc.) by entity/farm/crop', '/settings/government-payments'],
   payment_limit_config: ['Payment-limit settings per program year', '/settings/government-payments'],
+  farm_program_payees: ['The entity PAID for a farm in one program year (ARC/PLC program year N is paid October N+1) — an explicit row wins over farms.entity_id for that year; no row = the farm’s current entity', '/settings/government-payments'],
+  fsa_payment_statements: ['USDA/FSA Payment Statements as received: statement_date, county office, payee_name + payee_entity_id, gross / deductions / net, the stored PDF (document_url)', '/reports/government-payments'],
+  fsa_payment_lines: ['One payment block of an FSA Payment Statement: fsa_payment_id (unique), program_code PLC / ARC_CO / ARC_IC / OTHER + program_name_raw, program_year, farm_id (matched by fsa_farm_number), gross / deductions / net, payment_date (the ACH date — the RECEIVED date), sequester_pct, bank_name + account_last4', '/reports/government-payments'],
+  fsa_payment_crop_amounts: ['The crop amounts inside a payment block (SEED COTTON $8,624 …): line_id, commodity_id, raw_crop, amount — for PLC / ARC_CO lines this is the ACTUAL ARC/PLC payment per farm × commodity × program year', '/reports/government-payments'],
   // budget, leases, freight, drying
   budget_scenarios: ['Crop budget planner scenarios (a named plan for a year)', '/reports/crop-budget'],
   budget_lines: ['The crop lines inside a budget scenario: acres, yield, price, cost per acre', '/reports/crop-budget'],

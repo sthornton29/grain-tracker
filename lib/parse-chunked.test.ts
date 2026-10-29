@@ -48,6 +48,39 @@ async function run(total: number, script: Script, extra: Record<string, unknown>
   return { ...res, calls }
 }
 
+describe('content orientation pre-pass (0099)', () => {
+  it('a scan whose pages 2, 4 and 6 are upside down is straightened first and extracts identically to the upright version', async () => {
+    // The detector is scripted (no pdf.js); the PDF is the fake file, so the
+    // normalization step (pdf-lib) leaves it untouched — what the test pins
+    // is the pipeline: no text layer → detector asked once per batch →
+    // the same chunk plan, the same calls, the same merged data as the
+    // upright run, and the verdicts handed to the normalizer.
+    const detectorCalls: number[] = []
+    const detector = async (images: Array<{ base64: string }>) => {
+      detectorCalls.push(images.length)
+      return { pages: images.map((_, i) => ({ page: i + 1, orientation: (i + 1) % 2 === 0 ? 'upside_down' : 'upright' })) }
+    }
+    const labels: string[] = []
+    const thumbs = async () => Array.from({ length: 6 }, (_, i) => ({ base64: `p${i + 1}`, mediaType: 'image/jpeg' }))
+    const rotated = await run(6, (r) => pagesOf(r), { pagesPerBatch: 3, detectOrientation: detector, renderThumbnails: thumbs, onProgress: (l: string) => labels.push(l) })
+    const upright = await run(6, (r) => pagesOf(r), { pagesPerBatch: 3, detectOrientation: null, renderThumbnails: thumbs })
+    expect(rotated.data).toEqual(upright.data)
+    expect(rotated.data.items).toEqual([1, 2, 3, 4, 5, 6])
+    expect(log(rotated.attempts)).toEqual(log(upright.attempts))
+    expect(labels[0]).toBe('Checking which way the pages face…')
+    // One detector call for the six thumbnails (one per 20-page batch).
+    expect(detectorCalls).toEqual([6])
+  })
+  it('a PDF with a text layer skips the pre-pass entirely', async () => {
+    let asked = 0
+    const detector = async () => { asked += 1; return { pages: [] } }
+    const labels: string[] = []
+    await run(4, (r) => pagesOf(r), { pagesPerBatch: 4, detectOrientation: detector, textRows: async () => [['a'], ['b'], ['c'], ['d']], onProgress: (l: string) => labels.push(l) })
+    expect(asked).toBe(0)
+    expect(labels).not.toContain('Checking which way the pages face…')
+  })
+})
+
 describe('classifyParseError', () => {
   it('TOO_LONG and TIMEOUT split; anything else is a plain error', () => {
     expect(classifyParseError(new ParseTooLongError())).toBe('too_long')

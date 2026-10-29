@@ -59,6 +59,9 @@ import { applyCombineRemainders, applyTransfers, cellFor, cellTotal, type OnHand
 import { truckExportLabel } from '@/lib/trucks'
 import { validateAssistantSql } from '@/lib/assistant-sql'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { farmsAsPayees, indexPayees } from '@/lib/program-payee'
+import { receivedArcPlc, mergeProjectedWithReceived, receivedKpis, calendarYearTotals, RECEIVED_STATUS_LABEL, VARIANCE_CAUSE_LABEL } from '@/lib/fsa-actuals'
+import { PROGRAM_CODE_LABEL } from '@/lib/fsa-payment-statement'
 import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
 import { buildCottonYieldModel, fetchCottonYieldSources } from '@/lib/cotton-yield-sources'
 import type { CottonProductionLike } from '@/lib/marketing'
@@ -830,12 +833,23 @@ async function getInsuranceEstimates(supabase: SupabaseClient, ctx: AssistantCon
   }
 }
 
+// 0099: the four actuals tables, tolerant of a database before the migration.
+async function fetchGovActuals(supabase: SupabaseClient) {
+  const safe = async <T,>(p: Promise<T[]>) => p.catch(() => [] as T[])
+  const [payees, statements, lines, cropAmounts] = await Promise.all([
+    safe(allRows<import('@/lib/types').FarmProgramPayee>((f, t) => supabase.from('farm_program_payees').select('*').order('id').range(f, t))),
+    safe(allRows<import('@/lib/types').FsaPaymentStatement>((f, t) => supabase.from('fsa_payment_statements').select('*').order('statement_date', { ascending: false }).order('id').range(f, t))),
+    safe(allRows<import('@/lib/types').FsaPaymentLine>((f, t) => supabase.from('fsa_payment_lines').select('*').order('id').range(f, t))),
+    safe(allRows<import('@/lib/types').FsaPaymentCropAmount>((f, t) => supabase.from('fsa_payment_crop_amounts').select('*').order('id').range(f, t))),
+  ])
+  return { payees, statements, lines, cropAmounts }
+}
+
 async function getGovernmentPayments(supabase: SupabaseClient, ctx: AssistantContext, input: { year: number; year_basis?: 'revenue' | 'program' }) {
   const programYear = (input.year_basis ?? 'revenue') === 'revenue' ? programYearFor(input.year) : input.year
   const revenueYear = programYear + 1
   const bits = await fetchScopeBits(supabase)
-  const scope = buildEntityScope({ entityId: '', farms: bits.farms, fields: bits.fields, entities: bits.entities, grantedEntityIds: ctx.grantedEntityIds })
-  const [commodities, baseAcres, elections, priceData, arcPayments, otherPayments, benchmarks, farms] = await Promise.all([
+  const [commodities, baseAcres, elections, priceData, arcPayments, otherPayments, benchmarks, farms, configs, actuals] = await Promise.all([
     all<import('@/lib/types').CoveredCommodity>(supabase.from('covered_commodities').select('*')),
     all<import('@/lib/types').FarmBaseAcres>(supabase.from('farm_base_acres').select('*')),
     all<import('@/lib/types').ArcPlcElection>(supabase.from('arc_plc_elections').select('*')),
@@ -844,29 +858,90 @@ async function getGovernmentPayments(supabase: SupabaseClient, ctx: AssistantCon
     allRows<import('@/lib/types').OtherGovernmentPayment>((f, t) => supabase.from('other_government_payments').select('*').order('id').range(f, t)),
     all<import('@/lib/types').ArcBenchmarkData>(supabase.from('arc_benchmark_data').select('*')),
     all<{ id: string; name: string; county_id: string | null }>(supabase.from('farms').select('id, name, county_id')),
+    all<import('@/lib/types').ProgramYearConfig>(supabase.from('program_year_config').select('*')),
+    fetchGovActuals(supabase),
   ])
+  // 0099: the entity is the PROGRAM year's payee (explicit row, else the farm's entity).
+  const payeeIdx = indexPayees(actuals.payees)
+  const scope = buildEntityScope({ entityId: '', farms: farmsAsPayees(bits.farms, programYear, payeeIdx), fields: bits.fields, entities: bits.entities, grantedEntityIds: ctx.grantedEntityIds })
+  const cfg = resolveProgramYearConfig(programYear, configs)
   const effPrice = applyMyaResolution({ cropYear: programYear, commodities, priceData, liveEstimates: new Map() })
-  const projected = projectPayments({ cropYear: programYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments, benchmarks, farms })
-    .filter((p) => scope.farmInEntity(p.farmId))
+  const projected = projectPayments({ cropYear: programYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments, benchmarks, farms, sequestrationPct: cfg.sequestrationPct, paymentFactor: cfg.paymentFactor, arcGuaranteePct: cfg.arcGuaranteePct, arcPaymentCapPct: cfg.arcPaymentCapPct })
+  const rows = mergeProjectedWithReceived({ programYear, projected, received: receivedArcPlc({ lines: actuals.lines, cropAmounts: actuals.cropAmounts }), sequesterPct: cfg.sequestrationPct, paymentFactor: cfg.paymentFactor })
+    .filter((r) => scope.farmInEntity(r.farmId))
+  const kpis = receivedKpis(rows)
   const farmName = new Map(farms.map((f) => [f.id, f.name]))
+  const payeeName = new Map(farmsAsPayees(bits.farms, programYear, payeeIdx).map((f) => [f.id, f.entity_id ? bits.entities.find((e) => e.id === f.entity_id)?.name ?? null : null]))
   const commodityName = new Map(commodities.map((c) => [c.id, c.name]))
   const yearOther = otherPaymentsInRevenueYear(scope.otherPayments(otherPayments), revenueYear)
+  const yearStatements = actuals.statements.filter((s) => actuals.lines.some((l) => l.statement_id === s.id && l.program_year === programYear))
   return {
     program_year: programYear,
     paid_in_crop_year: revenueYear,
     expected_payment_date: expectedArcPlcDate(programYear),
-    arc_plc: projected.map((p) => ({
-      farm: farmName.get(p.farmId) ?? p.farmId,
-      commodity: commodityName.get(p.commodityId) ?? p.commodityId,
-      election: p.election,
-      base_acres: r0(num(p.baseAcres)),
-      gross_usd: r0(p.result.gross),
-      net_usd: r0(p.result.net),
-      computable: p.result.computable,
+    higher_of_rule: programYear === 2025 ? 'For program year 2025 FSA paid the HIGHER of PLC and ARC-CO per farm × commodity regardless of the election; the projection does the same.' : null,
+    arc_plc: rows.map((r) => ({
+      farm: farmName.get(r.farmId) ?? r.farmId,
+      payee_entity: payeeName.get(r.farmId) ?? null,
+      commodity: commodityName.get(r.commodityId) ?? r.commodityId,
+      projected_under: r.projectedProgram,
+      paid_under: r.paidProgram ? PROGRAM_CODE_LABEL[r.paidProgram] : null,
+      base_acres: r0(num(r.baseAcres)),
+      projected_net_usd: r0(r.projected),
+      received_usd: r.received == null ? null : r0(r.received),
+      variance_usd: r.variance == null ? null : r0(r.variance),
+      status: RECEIVED_STATUS_LABEL[r.status],
+      variance_cause: r.cause ? VARIANCE_CAUSE_LABEL[r.cause] : null,
+      implied_rate: r.implied ? { program: r.implied.program, implied: r.implied.implied, projected: r.implied.projected, basis: r.implied.program === 'PLC' ? '$ per unit (bu or lb)' : '$ per base acre' } : null,
+      payment_dates: r.paymentDates,
     })),
-    arc_plc_total_net_usd: r0(projected.reduce((s, p) => s + p.result.net, 0)),
+    arc_plc_total_projected_usd: r0(kpis.projected),
+    arc_plc_total_received_usd: r0(kpis.received),
+    arc_plc_variance_usd: r0(kpis.variance),
+    pct_of_projected_received: kpis.pctOfProjectedReceived == null ? null : Math.round(kpis.pctOfProjectedReceived * 1000) / 10,
+    variance_by_cause_usd: Object.fromEntries(Object.entries(kpis.byCause).map(([k, v]) => [VARIANCE_CAUSE_LABEL[k as keyof typeof kpis.byCause], r0(v)])),
+    fsa_statements_for_program_year: yearStatements.map((s) => ({ statement_date: s.statement_date, payee: s.payee_name, net_usd: r2(num(s.net_payment)) })),
     other_usda_payments_in_year_usd: r0(yearOther.reduce((s, o) => s + num(o.amount), 0)),
-    note: 'ARC/PLC for a program year is paid the following October. Projections use stored MYA prices.',
+    note: 'ARC/PLC for a program year is paid the following October. Projections use stored MYA prices; Received comes from the FSA payment statements uploaded to the Payment Tracker; the entity per farm is the program year\'s payee.',
+  }
+}
+
+async function getFsaPaymentStatements(supabase: SupabaseClient, ctx: AssistantContext, input: { program_year?: number; calendar_year?: number }) {
+  const bits = await fetchScopeBits(supabase)
+  const [actuals, commodities] = await Promise.all([fetchGovActuals(supabase), all<import('@/lib/types').CoveredCommodity>(supabase.from('covered_commodities').select('*'))])
+  const farmName = new Map(bits.farms.map((f) => [f.id, f.name]))
+  const entityName = new Map(bits.entities.map((e) => [e.id, e.name]))
+  const commodityName = new Map(commodities.map((c) => [c.id, c.name]))
+  // A viewer sees the statements RLS lets through; the grant set narrows further to its entities' farms.
+  const grants = ctx.grantedEntityIds ? new Set(ctx.grantedEntityIds) : null
+  const payeeIdx = indexPayees(actuals.payees)
+  const lineVisible = (l: import('@/lib/types').FsaPaymentLine) => {
+    if (!grants) return true
+    const farm = bits.farms.find((f) => f.id === l.farm_id)
+    const payee = farm && l.program_year != null ? farmsAsPayees([farm], l.program_year, payeeIdx)[0]?.entity_id : null
+    const stmt = actuals.statements.find((s) => s.id === l.statement_id)
+    return (payee != null && grants.has(payee)) || (stmt?.payee_entity_id != null && grants.has(stmt.payee_entity_id))
+  }
+  const lines = actuals.lines.filter(lineVisible).filter((l) => (input.program_year == null || l.program_year === input.program_year) && (input.calendar_year == null || (l.payment_date ?? '').startsWith(String(input.calendar_year))))
+  const cropsByLine = new Map<string, import('@/lib/types').FsaPaymentCropAmount[]>()
+  for (const c of actuals.cropAmounts) { const g = cropsByLine.get(c.line_id) ?? []; g.push(c); cropsByLine.set(c.line_id, g) }
+  const stmtIds = new Set(lines.map((l) => l.statement_id))
+  const statements = actuals.statements.filter((s) => stmtIds.has(s.id))
+  return {
+    statements: statements.map((s) => ({
+      statement_date: s.statement_date, office: s.office_name, payee: s.payee_entity_id ? entityName.get(s.payee_entity_id) ?? s.payee_name : s.payee_name,
+      gross_usd: r2(num(s.gross_payment)), deductions_usd: r2(num(s.deductions)), net_usd: r2(num(s.net_payment)), pages: s.page_count,
+      lines: lines.filter((l) => l.statement_id === s.id).map((l) => ({
+        fsa_payment_id: l.fsa_payment_id, program: PROGRAM_CODE_LABEL[l.program_code], program_title: l.program_name_raw, program_year: l.program_year,
+        farm: l.farm_id ? farmName.get(l.farm_id) ?? null : null, fsa_farm_number: l.fsa_farm_number,
+        gross_usd: r2(num(l.gross_payment)), deductions_usd: r2(num(l.deductions)), net_usd: r2(num(l.net_payment)),
+        payment_date: l.payment_date, payment_method: l.payment_method, sequester_pct: l.sequester_pct == null ? null : num(l.sequester_pct),
+        crops: (cropsByLine.get(l.id) ?? []).map((c) => ({ commodity: c.commodity_id ? commodityName.get(c.commodity_id) ?? c.raw_crop : c.raw_crop, amount_usd: r2(num(c.amount)) })),
+      })),
+    })),
+    total_net_usd: r2(lines.reduce((s, l) => s + num(l.net_payment), 0)),
+    calendar_year_totals_by_payee: calendarYearTotals({ statements: actuals.statements, lines: actuals.lines.filter(lineVisible) }).map((t) => ({ year: t.year, payee: t.payeeEntityId ? entityName.get(t.payeeEntityId) ?? t.payeeName : t.payeeName, net_usd: r2(t.net), lines: t.lines })),
+    note: 'FSA payment statements as uploaded to the Payment Tracker. ARC/PLC crop amounts are the received payment per farm × commodity × program year (compare with get_government_payments); the calendar-year totals are for 1099-G reconciliation.',
   }
 }
 
@@ -1386,6 +1461,7 @@ const IMPLS: Record<string, ToolImpl> = {
   get_hedging_positions: getHedgingPositions as ToolImpl,
   get_insurance_estimates: getInsuranceEstimates as ToolImpl,
   get_government_payments: getGovernmentPayments as ToolImpl,
+  get_fsa_payment_statements: getFsaPaymentStatements as ToolImpl,
   get_cash_flow: getCashFlow as ToolImpl,
   get_loads: getLoads as ToolImpl,
   get_bin_inventory: getBinInventory as ToolImpl,
@@ -1439,8 +1515,13 @@ export const ASSISTANT_TOOLS: Anthropic.Tool[] = [
   },
   {
     name: 'get_government_payments',
-    description: 'ARC/PLC projections per farm × commodity plus other USDA payments. Pass the crop year money arrives in (year_basis "revenue", default) or the program year itself.',
+    description: 'ARC/PLC per farm × commodity for a program year: the projection, what the FSA payment statements say was RECEIVED, the variance and its cause (rate / acres-yield / sequester / program), the implied payment rate, the status (paid / not yet paid / paid with no projection / projected but not on any statement), the 2025 higher-of rule, plus other USDA payments. The entity per farm is the program year\'s PAYEE. Pass the crop year money arrives in (year_basis "revenue", default) or the program year itself.',
     input_schema: { type: 'object', properties: { year: { type: 'number' }, year_basis: { type: 'string', enum: ['revenue', 'program'] } }, required: ['year'] },
+  },
+  {
+    name: 'get_fsa_payment_statements',
+    description: 'The USDA/FSA Payment Statements uploaded to the Payment Tracker: each statement (date, office, payee, gross / net) with its payment lines (FSA Payment ID, program, program year, farm, net, ACH date, sequester) and crop amounts, plus calendar-year totals per payee for 1099-G reconciliation. Filter by program year or by the calendar year the money arrived in.',
+    input_schema: { type: 'object', properties: { program_year: { type: 'number' }, calendar_year: { type: 'number', description: 'The year the payments were received (ACH date)' } } },
   },
   {
     name: 'get_cash_flow',
@@ -1515,7 +1596,7 @@ export function toolNamesForRole(role: AppRole): string[] {
     // settlements, bin transfers and budgets are whole-operation → hidden.
     return [
       'get_marketing_summary', 'get_yields', 'get_revenue_projection', 'get_contracts', 'get_hedging_positions', 'get_insurance_estimates',
-      'get_government_payments', 'get_loads', 'get_buyer_discount_schedule', 'get_buyer_discount_history',
+      'get_government_payments', 'get_fsa_payment_statements', 'get_loads', 'get_buyer_discount_schedule', 'get_buyer_discount_history',
       'get_cotton_marketing', 'get_cotton_production', 'get_seed_contracts', 'get_rent_settlements', 'get_combine_entries',
       'query_data',
     ]
@@ -1554,6 +1635,7 @@ export function toolStatusLabel(name: string): string {
     get_hedging_positions: 'Checking your hedge positions…',
     get_insurance_estimates: 'Checking your crop insurance…',
     get_government_payments: 'Checking your government payments…',
+    get_fsa_payment_statements: 'Reading your FSA payment statements…',
     get_cash_flow: 'Building your cash flow…',
     get_loads: 'Looking through your loads…',
     get_bin_inventory: 'Checking your bins…',

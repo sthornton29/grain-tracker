@@ -621,6 +621,50 @@ describe('projectPayments', () => {
 })
 
 // Sanity: documented constant matches the engine's default factor.
+describe('projectPayments — the 2025 higher-of rule (OBBBA transition year)', () => {
+  // Program year 2025 pays the HIGHER of PLC and ARC-CO per farm × commodity
+  // regardless of the election (USDA, Oct 7 2026). 2026 goes back to the election.
+  const corn = commodity({ id: 'corn', name: 'Corn', statutory_reference_price: 4.10, national_loan_rate: 2.42 })
+  const base = [baseAcresRow({ commodity_id: 'corn', base_acres: 1000, plc_yield: 130 })]
+  const bench = [benchmarkRow({ crop_year: 2025, benchmark_price: 5.03, benchmark_yield: 200, county: 'Washington' })]
+  const farms = [{ id: 'farm-1', county: 'Washington' }]
+  const run = (year: number, election: 'PLC' | 'ARC_CO', mya: number) => projectPayments({
+    cropYear: year, baseAcres: base, commodities: [corn],
+    elections: [electionRow({ commodity_id: 'corn', crop_year: year, election })],
+    priceData: [priceData({ commodity_id: 'corn', crop_year: year, mya_price_estimate: mya, source: 'barchart' })],
+    payments: [], benchmarks: bench.map((b) => ({ ...b, crop_year: year })), farms,
+    arcGuaranteePct: 0.90, arcPaymentCapPct: 0.12,
+  })[0]
+
+  it('2025, PLC elected but ARC-CO pays more (MYA 4.20: PLC $0 vs ARC-CO 52,588.14) → paid under ARC-CO, both sides reported', () => {
+    const p = run(2025, 'PLC', 4.20)
+    expect(p.electedProgram).toBe('PLC')
+    expect(p.election).toBe('ARC_CO')
+    expect(p.result.net).toBeCloseTo(52588.14, 2)
+    expect(p.higherOf).toEqual({ plc: 0, arcCo: expect.closeTo(52588.14, 2) })
+  })
+  it('2025, ARC-CO elected but PLC pays more (MYA 3.00: PLC rate 1.10 × 130 × 1000 × 0.85 × 0.946 = 114,986.30) → paid under PLC', () => {
+    const p = run(2025, 'ARC_CO', 3.00)
+    expect(p.election).toBe('PLC')
+    expect(p.result.net).toBeCloseTo(114986.30, 2)
+    expect(p.higherOf?.plc).toBeCloseTo(114986.30, 2)
+  })
+  it('2026 follows the election even when the other program would pay more', () => {
+    const p = run(2026, 'PLC', 4.20)
+    expect(p.election).toBe('PLC')
+    expect(p.result.net).toBe(0)
+    expect(p.higherOf).toBeNull()
+  })
+  it('a side that cannot be computed never wins: no county benchmark → the PLC side stands with arcCo null', () => {
+    const p = projectPayments({
+      cropYear: 2025, baseAcres: base, commodities: [corn], elections: [],
+      priceData: [priceData({ commodity_id: 'corn', crop_year: 2025, mya_price_estimate: 3.00 })], payments: [], benchmarks: [], farms,
+    })[0]
+    expect(p.election).toBe('PLC')
+    expect(p.higherOf).toEqual({ plc: expect.closeTo(114986.30, 2), arcCo: null })
+  })
+})
+
 describe('PAYMENT_FACTOR / default sequestration constants', () => {
   it('match the documented values', () => {
     expect(PAYMENT_FACTOR).toBe(0.85)

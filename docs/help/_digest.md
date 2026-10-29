@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-10-28 · version 0.1.0 · build 991caf3. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-10-29 · version 0.1.0 · build 9b318da. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -46,7 +46,7 @@ What it covers, module by module:
 - **Hedging** — open and closed positions, rolls and effective prices, and the full history trail.
 - **Bins** — what is on hand, bin-to-bin transfers, adjustments.
 - **Loads** — recent loads with weights, moisture and bushels; buyer discount schedules and what each buyer's discounting really cost.
-- **Insurance and government** — policy estimates, ARC/PLC and other payment projections.
+- **Insurance and government** — policy estimates, ARC/PLC projections and what the FSA payment statements say was received (with the variance and its cause), the statements themselves, and calendar-year totals per payee.
 - **Leases and rent** — lease terms and recorded rent settlements per landowner; **budgets** — crop budget scenarios with revenue, profit and breakevens; dryer and freight settings.
 - **Cash flow**, entities, farms, fields, landowners, buyers, users and settings.
 
@@ -262,7 +262,7 @@ The Cotton tab is where seed cotton gets tracked from the field to the classed b
 - **Duplicates are caught before they save, whatever the leading zeros.** Every place cotton compares a load number — the module list review, the hand-entry form, the gin receipt's load table — ignores leading zeros and stray tick marks, and the database itself refuses a second load whose number is the same once zeros are ignored (031633 and 31633 can never both be saved for one crop year). In a scan, the same load number on two pages becomes one review row with an "appears twice in this scan (pages 2 and 7)" chip — the first page is its ticket, the second rides along — and two pages that disagree on weight turn red for a look. Against what is already saved, a row is **Already saved** (unticked, with a link), **Update available** (the scan has different weights, dates or rolls — the changes are listed, ticked to apply), or new; the footer counts "X already saved · Y updates · Z new" and only new numbers insert. On the hand-entry form, typing a saved load number shows "Load 031627 is already saved (9/29, 29,860 lbs). Open it?" and the save is blocked unless you tick **Update that load**. On a gin receipt, a bale number repeated in the list or already on another receipt this crop year is named and left out by default (tick to keep), and a receipt number already saved is **Already saved** or **Update available** — nothing is ever saved twice.
 - **The load list** works like the grain Loads page: search (load number, farm, field, gin), filters for farm, field, gin, status (on the yard / ginned), and delivered dates. Loads open sorted by **load number**, and every cotton list of loads (a gin receipt's loads, a field's loads on the Yields page) runs in load-number order too; tap a column heading to sort another way (load numbers sort naturally, blanks stay last); tick loads to export the selection or **Delete selected** — loads already on a gin receipt are never deleted, the confirmation says how many will be kept. **Export** (Excel, PDF, CSV, print) covers the filtered list with the rolls and pounds-per-roll totals.
 - **Tap a load** to open its own page: logistics, weights, rolls and pounds per roll, the gin receipt it landed on, notes, and the scanned ticket for that load (view, replace, remove). **Edit** changes any field in place; **Delete** removes it unless it is on a receipt; **Export / Print** makes a one-page record.
-- **By field** (under the season bar) — each field's pounds as a bar, ginned in green and on-the-yard in amber, with the pounds and rolls still waiting on the right, and its **yield** on the far right: seed cotton lbs per acre and lint lbs per acre over the field's planted cotton acres (the acres come from the field's planting in Settings → Plantings; a field without one says so). A field reads "all ginned" once every load is on a receipt.
+- **By field** (under the season bar) — one row for every cotton field this crop year: the fields with loads and the ones planted but not started. Every bar sits on **one shared scale** (the pounds axis is printed above the bars, 0 to the biggest field), so bars compare honestly: a big field half done is a long bar half filled, a small finished field a short solid bar. Green is seed cotton already ginned, amber is still on the yard, and the **faint dashed outline** is what the field is expected to make — its planted acres times the expected lint yield from Marketing → Edit Assumptions, divided by the turnout shown on the Yields page. A bar that runs past the outline made more than expected; a small dark tick marks where the expectation sits. A field with no outline has no expectation on file yet — tap its ⓘ to see why. The figure on the right reads "212,400 lb · 78% ginned" (or "not started"), and each row carries a chip: **Not started**, **Picking** (modules still coming off the field, nothing ginned yet), **On the yard** (picked, waiting on the gin) or **All ginned**. Rows start in that order — yard first, then picking, all ginned, not started — biggest first within each; the **Status / Name / Pounds / % of expected** chips re-sort them. **Tap a row** to show just that field's loads in the list below (tap again to clear), and tap the ⓘ for the field's acres, loads, rolls, ginned and yard pounds, expected pounds and percent of expected. Per-acre yields are on the Yields page.
 - **Yields everywhere a field or the farm appears.** The season bar's stat row shows the farm-wide seed cotton and lint per acre over the acres that have cotton off them so far (an unpicked field is not a zero); the load's own page shows its field's yield; Gin Receipts shows lint per acre as a card and a "Field lint / ac" column per statement, and the review card quotes what that statement alone makes per acre on the field beside the field's total to date. Lint is **est.** or **part est.** until the gin receipt arrives (tap the chip for the turnout behind it), exactly as on the Yields page — these are the same numbers.
 
 ## How the numbers work
@@ -393,12 +393,14 @@ This page holds the data that drives every ARC/PLC projection: your farms' base 
 - Enter or look up **MYA prices** per commodity and month. The **USDA lookup** pulls real published prices received by farmers; fetched months appear beside anything you typed, and already-entered months start unchecked so nothing is overwritten without your say-so. A WASDE midpoint can stand in before months publish, and a published final locks the row. If the lookup comes up empty, an AI lookup is offered as a clearly labeled fallback.
 - Enter **ARC-CO benchmarks** — the FSA benchmark price and county yield per commodity and county. The county picker starts with your own counties and can open to any state and county.
 - Review **Program Parameters** per year: the SCO trigger, the per-person payment limit, the sequestration percentage, and payment factors.
+- Set **Payee by program year** when a farm's payments for a program year went to a different entity than the one the farm carries today — a change of operating entity, for example. The grid is farms by program years; each cell is the entity paid that year, blank meaning the farm's own entity. Tick farms and use "Set program year … payee to …" to set a whole year at once. The Payment Tracker, Cash Flow, Revenue Projections, Income Sensitivity, Ask Turnrow and the payment-limit status all follow this grid, year by year.
 
 ## What the controls do
 
 - **FSA lookup** (on a benchmark row) — reads the county benchmark yield straight from FSA's published "ARC-County Benchmark Yields and Revenues" workbook, with an irrigated/non-irrigated choice when the county publishes both. If nothing is found, you can borrow from a nearby county in the same state or a prior year — borrowed values save to your own county's row with the borrowing noted, and amber chips show before you confirm.
 - **Payment limits** — shown read-only here. The eligible-persons count is set per entity under Settings, Entities; the cap is persons times the per-person limit for the program year.
 - **ARC flat rates** — a fallback flat per-acre estimate used only for counties without benchmark data; reports label it "flat est.".
+- **Payee by program year** — a historical payee that no longer operates can be **archived** under Settings, Entities: it stays pickable here and keeps its years on the reports, but drops out of the entity pickers for new records.
 
 ## How the numbers work
 
@@ -411,6 +413,7 @@ This page holds the data that drives every ARC/PLC projection: your farms' base 
 - **Which year do I enter benchmarks under?** The program year the reports are computing. If a report warns that benchmarks exist only for other years, use its link — it lands here preset to the right one.
 - **My county's name exists in two states.** Benchmarks are stored against the specific county and state ("County, ST"), so pick carefully in the county picker.
 - **The FSA import shows a merged line — is that right?** Yes — the same farm and commodity appeared on multiple lines of the document, and they were summed with an acre-weighted PLC yield. Expand the note to see the pieces.
+- **Which entity do the 2025 payments belong to?** Whoever was paid for program year 2025 — set it on the Payee by program year grid (or accept the notice when you upload the FSA payment statement). Program year 2026 stays on the farms' current entities unless you set it too.
 
 ## If something looks wrong
 
@@ -973,7 +976,7 @@ Elevator lines vary wildly, and everyone knows which houses make you sit. The de
 
 ## What this page is for
 
-The Payment Tracker projects your ARC/PLC and other USDA payments, shows when the money actually arrives, and tracks each entity against its FSA payment limit. It answers three questions: how much is coming, when does it land, and does any entity bump its limit.
+The Payment Tracker projects your ARC/PLC and other USDA payments, records what FSA actually paid from the payment statements you upload, shows when the money arrives, and tracks each entity against its FSA payment limit. It answers four questions: how much is coming, how much has come in and how it compares, when does it land, and does any entity bump its limit.
 
 ## How to use it
 
@@ -981,7 +984,9 @@ The Payment Tracker projects your ARC/PLC and other USDA payments, shows when th
 - Below, each farm's breakdown shows the commodity, election, and projected payment, with a drill-down into the drivers.
 - Check the **Payment Limit Status** table to see each entity's persons-times-limit cap and where the projections stand against it.
 - Review the **MYA Prices panel** — every projection rides on these prices, and you control where they come from.
-- Export to **Excel** or **PDF**; the export includes the matrix, the election column, and the payment limit table.
+- Use the **Upload FSA payment statement** tab when a statement arrives from the county office. Drop the PDF (or photos of it); every payment block is read, checked, and shown by farm for you to confirm. Once saved, the statement's ARC/PLC amounts become the **Received** figures everywhere, and a **Statements** tab lists every statement with a link to its own page and the PDF.
+- Switch **Projected | Received | Both** above the tables. The KPI strip shows projected, received, the variance in dollars and percent, the share of the projection received so far, and the date of the last statement.
+- Export to **Excel** or **PDF**; the export mirrors the view you chose (projected, received or both), and once a statement is on file the Excel workbook adds Statements, Lines and Crop Amounts tabs plus a Received vs Projected tab whose Received column is a live SUMIFS over the crop amounts.
 
 ## What the controls do
 
@@ -989,6 +994,11 @@ The Payment Tracker projects your ARC/PLC and other USDA payments, shows when th
 - **Check your setup** — when something is off in your setup (benchmarks entered under another program year, older payment entries whose year needs a look, a missing program parameter), the notices fold into one **Check your setup (N)** panel under the filters. Tap it to read them.
 - **MYA Prices panel** — per commodity: an Auto/Manual toggle, inline manual entry, and a **Look up USDA prices** button that pulls real published monthly prices received by farmers. Fetched months appear beside anything you've already entered; nothing you typed is overwritten without your confirmation. A published final price locks the row. If the lookup finds nothing, an AI lookup is offered as a clearly labeled fallback.
 - **ARC-CO settings** button — jumps to Settings, Government Payments with the right program year already selected.
+- **Upload FSA payment statement** — the statement's header (office, payee, date, gross, deductions, net) and four checks: crop amounts add up to each block's gross, gross minus deductions equals net, the blocks add up to the statement's net, and every block on the pages was read. Lines are grouped by FSA farm; a farm number Turnrow does not have is flagged and can be matched to a farm or kept as the raw number. The payee is matched to an entity (or added as a new one). Upside-down pages from a duplex scan and blocks that run from the bottom of one page onto the next are handled for you. A statement already on file saves nothing new — each FSA Payment ID is recorded once.
+- **Payee notice** — when the statement paid an entity that is not the one Turnrow has for those farms and that program year (for example, the 2025 program year paid to the entity that operated the farms in 2025), the review says so and offers one click to set that program year's payee on every farm on the statement. See Settings, Government Payments, Payee by program year.
+- **Sequestration notice** — when the statement's sequester percentage differs from the program year's parameter, the review offers to update the parameter.
+- **Statements tab** — every statement with its date, payee, gross and net, line count, program years and a PDF link; tap a date to open the statement's own page (lines by farm and program, crop amounts, checks, the implied rate behind each crop amount, and Delete). Below the list, **FSA payments received by calendar year** totals each payee's lines by the year the money arrived — the figure to reconcile against the 1099-G.
+- **Detail** (per farm) — the calculation behind each projection and, once paid, the received amount, the variance, the implied rate beside the projected rate, and what the variance is attributed to.
 
 ## How the numbers work
 
@@ -996,13 +1006,21 @@ The Payment Tracker projects your ARC/PLC and other USDA payments, shows when th
 - **PLC** pays the gap between the effective reference price and the MYA; **ARC-CO** pays on county revenue against its benchmark guarantee — the same math as the Decision Aid, so the two pages agree.
 - **Payment limits**: each entity's cap is its number of FSA-eligible persons (set once in Settings, Entities) times the program year's per-person limit. The status table shows the multiplication and colors entities approaching or over their cap.
 - **Seed cotton** is one commodity with one price: the lookup fetches the lint price (cents per pound) and the cottonseed price (dollars per ton) and blends them at configurable shares, showing you the composition before you confirm.
-- Payments tied to a farm roll up through the farm's entity; other payments attribute to their entity, with a "no entity" row so the totals always reconcile.
+- Payments tied to a farm roll up through the **payee for that program year** — the entity set under Settings, Government Payments, Payee by program year, or the farm's own entity when none is set — so a program year earned under a previous operator lands on the right entity. Other payments attribute to their entity, with a "no entity" row so the totals always reconcile.
+- **Received** is the crop amount printed on the FSA payment statement for that farm and crop. Where a line is paid, the received figure replaces the projection in every total, Cash Flow (in the month of the ACH date), Revenue Projections and Income Sensitivity — nothing is counted twice. Lines not yet paid keep their projection.
+- **Line status**: Paid; Not yet paid (no statement for the program year yet); Paid with no projection (a farm or crop with no base acres on file); Projected but not on any statement yet (statements came in and this line was not on them).
+- **Implied rate**: for a paid PLC line, the actual divided by (1 − sequester) × 0.85 × base acres × PLC yield gives the payment rate per bushel or pound FSA actually used; for ARC-CO, the actual divided by (1 − sequester) × 0.85 × base acres gives the rate per base acre. Both sit beside the projected rate.
+- **Variance cause**: the difference is attributed to the **program** when the other program paid, to the **sequester** when the statement's percentage alone explains it, to **acres / yield** when the implied rate is more than the program could pay on your base data (so FSA's base acres or yield differ), and otherwise to the **rate** — the price or county revenue came in different from the projection.
+- **Program year 2025 pays the higher of PLC and ARC-CO** on every farm and crop regardless of the election. The projection applies that rule for 2025 (the detail shows both sides and which one pays); from 2026 the election governs again.
 
 ## Common questions
 
 - **Why do the two year views show different totals?** They frame the same payments differently — cash-arrival year vs FSA program year. Use payment year for cash planning, program year for FSA reconciliation.
 - **Why did a projection change?** MYA prices update as months publish and as futures move; a confirmed final locks it down.
 - **What's the amber note on an old entry?** An other-payment entry looks like it was recorded under the old year convention — open it and confirm its dates.
+- **The statement paid a different entity than the report shows.** Set the program-year payee: accept the notice on the upload review, or use Settings, Government Payments, Payee by program year. The matrix, the payment limits and the entity filter follow it for that year only.
+- **A farm on the statement is not in Turnrow.** Its lines save with the raw FSA number and show as "Paid with no projection"; add the farm under Settings, Farms and match the line on a later upload, or leave it.
+- **I uploaded the same statement twice.** Nothing was saved the second time — every FSA Payment ID is recorded once, and the review says "already recorded".
 
 ## If something looks wrong
 
@@ -1681,6 +1699,7 @@ Entities are the companies and people that farm — an LLC, a partnership, you a
 
 - **Add an entity** with its name, the counties it operates in (at least one — farms pick their county from this list), and its FSA eligible-persons count.
 - **Edit** a row to change any of that; **Delete** removes an entity nothing depends on. An entity with loads recorded against it can't be deleted — rename it instead.
+- **Archive** an entity that no longer operates (a past payee, for example): it keeps its years on every report and stays pickable as a program-year payee, but drops out of the entity pickers for new records. Archived entities sit in a list at the bottom of the page with a **Restore** button.
 - The upload card at the top reads entity names out of any document (FSA records, a lease) alongside anything else it finds worth filing.
 
 ## What the controls do

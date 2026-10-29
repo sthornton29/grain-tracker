@@ -42,6 +42,8 @@ export const DENSITY: Partial<Record<DocumentType, DensityProfile>> = {
   brokerage_statement: { tokensPerItem: 130, perPage: 0, fixed: 300, defaultRowsPerPage: 20 },
   cotton_weight_ticket: { tokensPerItem: 150, perPage: 0, fixed: 0, defaultRowsPerPage: 1 },
   tickets: { tokensPerItem: 120, perPage: 0, fixed: 0, defaultRowsPerPage: 4 },
+  // fsa_payment_statement: a block is ~360 tokens with its Notes text; about three blocks to a page.
+  fsa_payment_statement: { tokensPerItem: 360, perPage: 60, fixed: 250, defaultRowsPerPage: 3 },
 }
 
 // Types with no measured profile (contracts, leases, insurance summaries…)

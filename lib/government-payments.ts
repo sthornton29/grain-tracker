@@ -13,6 +13,7 @@ import {
   defaultArcPaymentCapPct,
   defaultErpOlympicFactor,
   OBBBA_FIRST_YEAR,
+  paysHigherOf,
 } from '@/lib/program-config'
 import type {
   ArcBenchmarkData, ArcPlcElection, ArcPlcElectionType, ArcPlcPayment, ArcPlcPriceData,
@@ -602,11 +603,19 @@ export function computeCommodityPayment(args: {
 export type ProjectedPayment = {
   farmId: string
   commodityId: string
+  /** The program the projection PAYS under: the election on file, or — in a
+   *  higher-of program year (2025) — whichever of PLC / ARC-CO pays more. */
   election: ArcPlcElectionType
+  /** The election actually on file (PLC when no row). Differs from
+   *  `election` only when the higher-of rule picked the other program. */
+  electedProgram: ArcPlcElectionType
   baseAcres: number
   plcYield: number
   arcRatePerAcre: number | null
   result: CommodityPaymentResult
+  /** Higher-of years only: both sides' net, so the Tracker can show what the
+   *  rule chose and why (null = the side was not computable). */
+  higherOf: { plc: number | null; arcCo: number | null } | null
 }
 
 // Project every farm × commodity base-acre record for a crop year, resolving
@@ -657,8 +666,9 @@ export function projectPayments(args: {
           benchmarks: args.benchmarks,
         })
       : null
-    const result = computeCommodityPayment({
-      commodity, baseAcres: Number(b.base_acres), plcYield: Number(b.plc_yield), election, priceData: pd, arcRatePerAcre: arcRate,
+    const compute = (el: ArcPlcElectionType) => computeCommodityPayment({
+      commodity, baseAcres: Number(b.base_acres), plcYield: Number(b.plc_yield), election: el, priceData: pd,
+      arcRatePerAcre: el !== 'PLC' && payRow ? Number(payRow.payment_rate_per_unit) : null,
       benchmark,
       sequestrationPct: args.sequestrationPct,
       paymentFactor: args.paymentFactor,
@@ -666,7 +676,26 @@ export function projectPayments(args: {
       arcPaymentCapPct: args.arcPaymentCapPct,
       arcIcPaymentFactor: args.arcIcPaymentFactor,
     })
-    out.push({ farmId: b.farm_id, commodityId: b.commodity_id, election, baseAcres: Number(b.base_acres), plcYield: Number(b.plc_yield), arcRatePerAcre: arcRate, result })
+    let paidUnder = election
+    let result = compute(election)
+    let higherOf: ProjectedPayment['higherOf'] = null
+    if (paysHigherOf(args.cropYear) && election !== 'ARC_IC') {
+      // 2025 pays the HIGHER of PLC and ARC-CO per farm × commodity whatever
+      // the election. Both sides are computed; a side that cannot be computed
+      // (no MYA, no county benchmark and no flat rate) cannot win, so the
+      // election stands when the other side is unknown.
+      const plc = election === 'PLC' ? result : compute('PLC')
+      const arc = election === 'ARC_CO' ? result : compute('ARC_CO')
+      higherOf = { plc: plc.computable ? plc.net : null, arcCo: arc.computable ? arc.net : null }
+      if (plc.computable && arc.computable) {
+        if (arc.net > plc.net) { paidUnder = 'ARC_CO'; result = arc } else { paidUnder = 'PLC'; result = plc }
+      } else if (plc.computable) { paidUnder = 'PLC'; result = plc }
+      else if (arc.computable) { paidUnder = 'ARC_CO'; result = arc }
+    }
+    out.push({
+      farmId: b.farm_id, commodityId: b.commodity_id, election: paidUnder, electedProgram: election,
+      baseAcres: Number(b.base_acres), plcYield: Number(b.plc_yield), arcRatePerAcre: arcRate, result, higherOf,
+    })
   }
   return out
 }
