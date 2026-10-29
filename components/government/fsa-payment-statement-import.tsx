@@ -11,11 +11,11 @@
 // year's parameter). Nothing saves until Save; a line whose FSA Payment ID is
 // already on file is "already recorded" and never duplicated.
 
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { reportError } from '@/lib/friendly-error'
 import { parseDocumentChunked } from '@/lib/parse-chunked'
-import { PdfTooLargeError, uploadFileToStorage } from '@/lib/pdf-upload'
+import { PdfTooLargeError, deleteStorageObject, uploadFileToStorage } from '@/lib/pdf-upload'
 import { imagesToPdf } from '@/lib/image-capture'
 import { getPdfPageCount } from '@/lib/pdf-split'
 import {
@@ -61,6 +61,8 @@ export default function FsaPaymentStatementImport({ farms, entities, commodities
   const [createPayee, setCreatePayee] = useState(false)
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)
+  // A second Save while one is in flight (or a replayed click) must not run twice.
+  const savingRef = useRef(false)
 
   const existingIds = useMemo(() => new Set(existingLines.map((l) => l.fsa_payment_id)), [existingLines])
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
@@ -188,7 +190,8 @@ export default function FsaPaymentStatementImport({ farms, entities, commodities
   }
 
   async function saveAll() {
-    if (!extraction) return
+    if (!extraction || savingRef.current) return
+    savingRef.current = true
     setSaving(true); setErr(null)
     try {
       let entityId = payeeEntityId || null
@@ -197,7 +200,18 @@ export default function FsaPaymentStatementImport({ farms, entities, commodities
         if (error || !data) throw error ?? new Error('Could not add the entity')
         entityId = (data as { id: string }).id
       }
-      const plan = planStatementSave({ extraction, reviews, payeeEntityId: entityId, pageCount })
+      // Ask the database which FSA Payment IDs are on file NOW — the list the
+      // page loaded with can be stale (this statement saved moments ago), and a
+      // statement row must never be written for lines that then collide.
+      const ids = reviews.map((r) => r.block.fsa_payment_id).filter((x): x is string => !!x)
+      const onFile = ids.length > 0
+        ? await supabase.from('fsa_payment_lines').select('fsa_payment_id').in('fsa_payment_id', ids)
+        : { data: [] as Array<{ fsa_payment_id: string }>, error: null }
+      if (onFile.error) throw onFile.error
+      const onFileIds = new Set(((onFile.data ?? []) as Array<{ fsa_payment_id: string }>).map((r) => r.fsa_payment_id))
+      const fresh = reviews.map((r) => (!r.alreadyRecorded && r.block.fsa_payment_id && onFileIds.has(r.block.fsa_payment_id) ? { ...r, alreadyRecorded: true, include: false } : r))
+      if (fresh.some((r, i) => r !== reviews[i])) setReviews(fresh)
+      const plan = planStatementSave({ extraction, reviews: fresh, payeeEntityId: entityId, pageCount })
       if (plan.blockers.length > 0) { setErr(plan.blockers.join(' ')); return }
       if (plan.lines.length === 0) {
         setBanner(plan.alreadyRecorded.length > 0 ? 'Every payment on this statement is already recorded — nothing new to save.' : 'Nothing is ticked to save.')
@@ -223,7 +237,12 @@ export default function FsaPaymentStatementImport({ farms, entities, commodities
       const { data: inserted, error: lnErr } = await supabase.from('fsa_payment_lines')
         .insert(plan.lines.map((l) => ({ ...l.row, statement_id: statementId })))
         .select('id, fsa_payment_id')
-      if (lnErr || !inserted) throw lnErr ?? new Error('Could not save the payment lines')
+      if (lnErr || !inserted) {
+        // No statement without its lines: take the header row (and its PDF) back out.
+        await supabase.from('fsa_payment_statements').delete().eq('id', statementId)
+        if (documentPath) await deleteStorageObject(supabase, documentPath).catch(() => undefined)
+        throw lnErr ?? new Error('Could not save the payment lines')
+      }
       const idByPayment = new Map((inserted as Array<{ id: string; fsa_payment_id: string }>).map((r) => [r.fsa_payment_id, r.id]))
       const cropRows = plan.lines.flatMap((l) => {
         const lineId = idByPayment.get(l.row.fsa_payment_id)
@@ -247,6 +266,7 @@ export default function FsaPaymentStatementImport({ farms, entities, commodities
     } catch (e) {
       setErr(reportError(e as Error, { action: 'save the statement', noun: 'statement' }))
     } finally {
+      savingRef.current = false
       setSaving(false)
     }
   }

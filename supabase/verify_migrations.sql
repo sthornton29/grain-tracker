@@ -194,13 +194,19 @@ checks(seq, migration, evidence, applied) as (values
         and exists (select 1 from cols where t = 'other_government_payments' and c = 'fsa_payment_line_id')
         and exists (select 1 from cols where t = 'fsa_payment_lines' and c = 'account_last4')
         and exists (select 1 from pg_policies where tablename = 'fsa_payment_lines' and policyname = 'fsa_payment_lines_org_isolation')
-        and exists (select 1 from pg_policies where tablename = 'farm_program_payees' and policyname = 'farm_program_payees_org_isolation'))
+        and exists (select 1 from pg_policies where tablename = 'farm_program_payees' and policyname = 'farm_program_payees_org_isolation')),
+  -- 0100 (supabase/migrations/): the viewer-scope policy cycle between the FSA statements and lines
+  -- broken by the security-definer helper viewer_fsa_statement_ids().
+  (105, '0100_fsa_viewer_scope_recursion',   'function viewer_fsa_statement_ids(); fsa_payment_statements_viewer_scope rewritten through it',
+        exists (select 1 from fns where f = 'viewer_fsa_statement_ids')
+        and exists (select 1 from pg_policies where tablename = 'fsa_payment_statements' and policyname = 'fsa_payment_statements_viewer_scope'
+                    and qual like '%viewer_fsa_statement_ids%'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 099'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 100'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

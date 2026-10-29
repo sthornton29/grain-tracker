@@ -64,6 +64,8 @@ const BOUNDED_MARKERS = [
   ".eq('loan_id'", ".in('loan_id'",
   ".eq('ldp_id'", ".in('ldp_id'",
   ".eq('gin_receipt_id'", ".in('gin_receipt_id'",
+  // the FSA Payment IDs printed on one statement (a few dozen at most)
+  ".in('fsa_payment_id'",
   ".eq('field_id'", ".in('field_id'",
   ".eq('ticket_number'", ".ilike('ticket_number'",
 ]
