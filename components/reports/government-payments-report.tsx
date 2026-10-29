@@ -51,7 +51,7 @@ import { fmtPrice } from '@/lib/hedging'
 import { fmtDate } from '@/lib/format-date'
 import {
   SummaryCards, EmptyState, ReportHeader, ReportFilterBar, FilterField, Disclosure, InfoTip, ViewTabs,
-  theadCls, grandTotalRowCls, stickyColCls, stickyColHeadCls, selectCls, toneText, fmtUsd, fmtInt, fmtPct, filterSummaryOf,
+  theadCls, grandTotalRowCls, stickyColCls, stickyColHeadCls, selectCls, toneText, fmtUsd, fmtInt, fmtNum, fmtPct, filterSummaryOf,
   type SummaryCardData, type Tone,
 } from '@/components/reports/report-kit'
 import { formatNumber, type ExportPayload, type ExportCell, type ExportColumn, type ExportSection, type NumFmt } from '@/lib/exports'
@@ -74,6 +74,11 @@ type Tab = 'tracker' | 'statements' | 'upload'
 const input = (v: number | string | null, format?: NumFmt): ExportCell => ({ v, input: true, format })
 const formula = (f: FormulaNode, format?: NumFmt): ExportCell => ({ v: null, f, format })
 const SECTION = { statements: 'statements', lines: 'lines', crops: 'crops', rvp: 'rvp' } as const
+
+/** The acres the implied rate ran on: the farm's base, × the producer's share on a share-rent farm. */
+function acresText(v: ReceivedVsProjected): string {
+  return v.producerShare !== 1 ? `${fmtInt(v.baseAcres)} ac × ${Math.round(v.producerShare * 100)}% share` : `${fmtInt(v.baseAcres)} ac`
+}
 
 function varianceTone(v: number | null | undefined): Tone {
   if (v == null) return 'muted'
@@ -233,6 +238,8 @@ export default function GovernmentPaymentsReport({ onPayloadChange, headerAction
       id: f.id,
       county: f.county_id ? (countyById.get(f.county_id)?.name ?? null) : null,
       county_id: f.county_id ?? null,
+      is_share_rent: f.is_share_rent,
+      landlord_share_percentage: f.landlord_share_percentage,
     })),
     [farms, countyById],
   )
@@ -278,9 +285,10 @@ export default function GovernmentPaymentsReport({ onPayloadChange, headerAction
     return mergeProjectedWithReceived({
       programYear, projected, received, sequesterPct: programCfg.sequestrationPct, paymentFactor: programCfg.paymentFactor,
       maxPlcRateByCommodity: maxPlc,
+      countyByFarm: new Map(farms.map((f) => [f.id, f.county_id ?? null])),
       statementsExist: actuals.lines.some((l) => l.program_year === programYear && l.program_code !== 'OTHER'),
     })
-  }, [programYear, projected, received, programCfg, commodities, effectivePriceData, actuals.lines])
+  }, [programYear, projected, received, programCfg, commodities, effectivePriceData, actuals.lines, farms])
   const rvpByKey = useMemo(() => new Map(rvpRows.map((r) => [`${r.farmId}|${r.commodityId}`, r])), [rvpRows])
   const anyReceived = useMemo(() => rvpRows.some((r) => r.received != null), [rvpRows])
   // Statements that pay the program year in view, newest first.
@@ -1034,7 +1042,7 @@ export default function GovernmentPaymentsReport({ onPayloadChange, headerAction
                               <div className={`text-[10px] ${toneText(varianceTone(v.variance))}`}>{v.variance != null && v.variance >= 0 ? '+' : ''}{fmtUsd(v.variance)} vs {fmtUsd(v.projected)} projected</div>
                             )}
                             <div className="text-[10px] text-slate-500">
-                              {p ? `${fmtInt(p.baseAcres)} ac · ` : ''}{program}
+                              {p ? `${fmtInt(p.baseAcres)} ac${p.producerShare !== 1 ? ` × ${Math.round(p.producerShare * 100)}% share` : ''} · ` : ''}{program}
                               {p && p.higherOf && p.election !== p.electedProgram && (
                                 <InfoTip label="higher-of" tone="neutral" className="ml-1">Elected {ELECTION_LABEL[p.electedProgram]}, but program year {programYear} pays the higher program: PLC {fmtUsd(p.higherOf.plc)} vs ARC-CO {fmtUsd(p.higherOf.arcCo)}.</InfoTip>
                               )}
@@ -1244,6 +1252,9 @@ function FarmDetail({ farmRow, commodityById, otherForFarm, crops, programCfg, s
                     <Line label={`${ELECTION_LABEL[p.electedProgram]} elected · higher-of year: PLC ${fmtUsd(p.higherOf.plc)} vs ARC-CO ${fmtUsd(p.higherOf.arcCo)}`} value={`pays ${ELECTION_LABEL[p.election]}`} />
                   )}
                   <Line label="Base acres" value={fmtInt(p.baseAcres)} />
+                  {p.producerShare !== 1 && (
+                    <Line label={`Producer share (share-rent farm, landlord keeps ${Math.round((1 - p.producerShare) * 100)}%)`} value={`${Math.round(p.producerShare * 100)}% → pays on ${fmtNum(p.baseAcres * p.producerShare, 1)} ac`} />
+                  )}
                   <Line label="Effective reference price" value={fmtPrice(p.result.effectiveReferencePrice)} />
                   {p.election === 'PLC' ? (
                     <>
@@ -1277,10 +1288,16 @@ function FarmDetail({ farmRow, commodityById, otherForFarm, crops, programCfg, s
                   {v.implied && (
                     <>
                       <Line
-                        label={v.implied.program === 'PLC' ? `Implied PLC rate = ${fmtUsd(v.received, 2)} ÷ ((1 − ${(v.implied.sequesterPct * 100).toFixed(1)}%) × ${factor} × ${fmtInt(v.baseAcres)} ac × ${v.plcYield} ${unitLabel}/ac = ${fmtInt(v.implied.denominator)})` : `Implied ARC rate per base acre = ${fmtUsd(v.received, 2)} ÷ ((1 − ${(v.implied.sequesterPct * 100).toFixed(1)}%) × ${factor} × ${fmtInt(v.baseAcres)} ac = ${v.implied.denominator.toFixed(2)})`}
+                        label={v.implied.program === 'PLC' ? `Implied PLC rate = ${fmtUsd(v.received, 2)} ÷ ((1 − ${(v.implied.sequesterPct * 100).toFixed(1)}%) × ${factor} × ${acresText(v)} × ${v.plcYield} ${unitLabel}/ac = ${fmtInt(v.implied.denominator)})` : `Implied ARC rate per base acre = ${fmtUsd(v.received, 2)} ÷ ((1 − ${(v.implied.sequesterPct * 100).toFixed(1)}%) × ${factor} × ${acresText(v)} = ${v.implied.denominator.toFixed(2)})`}
                         value={v.implied.program === 'PLC' ? `$${v.implied.implied.toFixed(4)}/${unitLabel}` : `$${v.implied.implied.toFixed(2)}/ac`}
                       />
                       <Line label="Projected rate on the same basis" value={v.implied.projected != null ? (v.implied.program === 'PLC' ? `$${v.implied.projected.toFixed(4)}/${unitLabel}` : `$${v.implied.projected.toFixed(2)}/ac`) : `projected under ${v.projectedProgram ? ELECTION_LABEL[v.projectedProgram] : '—'}`} />
+                      {v.implied.statementRate != null && (
+                        <Line label="Rate FSA paid the other farms on the statements" value={v.implied.program === 'PLC' ? `$${v.implied.statementRate.toFixed(4)}/${unitLabel}` : `$${v.implied.statementRate.toFixed(2)}/ac`} />
+                      )}
+                      {v.shareOfFarmPaid != null && v.cause === 'ACRES_YIELD' && (
+                        <Line label="Paid, as a share of what this farm's base data would pay at that rate" value={fmtPct(v.shareOfFarmPaid * 100, 1)} tone="warning" />
+                      )}
                     </>
                   )}
                   {v.cause && <Line label="Variance attributed to" value={VARIANCE_CAUSE_LABEL[v.cause]} tone={v.cause === 'PROGRAM' ? 'warning' : 'neutral'} />}

@@ -24,7 +24,7 @@ import EntityFilter from '@/components/entity-filter'
 import MyaPricePanel from '@/components/reports/mya-price-panel'
 import CountyYieldExpectation from '@/components/government/county-yield-expectation'
 import {
-  applyMyaResolution, computeCommodityPayment, resolveArcBenchmark, ELECTION_LABEL,
+  applyMyaResolution, computeCommodityPayment, resolveArcBenchmark, producerShareFor, ELECTION_LABEL,
   resolveMyaPrice, effectiveReferencePrice, MYA_STATE_LABEL,
   type CommodityPaymentResult, type MyaState,
 } from '@/lib/government-payments'
@@ -217,7 +217,8 @@ export default function ArcPlcDecisionAid({ onPayloadChange, headerActions }: Pr
         const county = countyRec ? `${countyRec.name}, ${countyRec.state_code}` : null
         const shared = {
           commodity,
-          baseAcres: Number(b.base_acres),
+          // The producer's share of the farm's payment — the same rule as the Tracker.
+          baseAcres: Number(b.base_acres) * producerShareFor(farmById.get(b.farm_id)),
           plcYield: Number(b.plc_yield),
           priceData: priceFor(b.commodity_id!),
           arcRatePerAcre: arcRate(b.farm_id, b.commodity_id),

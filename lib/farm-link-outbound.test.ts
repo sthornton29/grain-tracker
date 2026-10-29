@@ -127,7 +127,7 @@ describe('shapeIncomeRecords', () => {
       settledShareForCrop: () => 1,
       checkoff: new Map([['corn', 40]]), fees: new Map([['corn', 12.5]]),
       insuranceByCrop: new Map([['corn', { netPnl: -3000, totalIndemnity: 2000, premium: 5000 }]]),
-      projectedPayments: [{ farmId: 'farm-1', commodityId: 'cc-corn', election: 'PLC', electedProgram: 'PLC', baseAcres: 200, plcYield: 150, arcRatePerAcre: null, higherOf: null, result: { net: 8000 } as never }],
+      projectedPayments: [{ farmId: 'farm-1', commodityId: 'cc-corn', election: 'PLC', electedProgram: 'PLC', baseAcres: 200, plcYield: 150, producerShare: 1, arcRatePerAcre: null, higherOf: null, result: { net: 8000 } as never }],
       otherPayments: [
         { id: 'o1', entity_id: null, program_name: 'ELAP', crop_year: 2026, crop_id: null, farm_id: null, amount: 1000, payment_date: null, payment_status: 'received', notes: null, created_at: 'x' },
         { id: 'o2', entity_id: null, program_name: 'Seed cost share', crop_year: 2026, crop_id: 'soy', farm_id: 'farm-1', amount: 500, payment_date: null, payment_status: 'received', notes: null, created_at: 'x' },

@@ -156,8 +156,8 @@ export async function loadProductionPayload(supabase: SupabaseClient, org: strin
       supabase.from('gin_receipts').select('id, field_id, crop_year, total_bale_weight, updated_at').eq('org_id', org).eq('crop_year', year).order('id').range(f, t)),
     fetchAll<{ id: string; farm_id: string | null; name_or_number: string; total_acres: number | string | null; irrigated_acres: number | string | null; dryland_acres: number | string | null; updated_at: string | null }>((f, t) =>
       supabase.from('fields').select('id, farm_id, name_or_number, total_acres, irrigated_acres, dryland_acres, updated_at').eq('org_id', org).order('id').range(f, t)),
-    fetchAll<{ id: string; name: string; fsa_number: string | null; entity_id: string | null; updated_at: string | null }>((f, t) =>
-      supabase.from('farms').select('id, name, fsa_number, entity_id, updated_at').eq('org_id', org).order('id').range(f, t)),
+    fetchAll<{ id: string; name: string; fsa_number: string | null; entity_id: string | null; updated_at: string | null; is_share_rent?: boolean | null; landlord_share_percentage?: number | string | null }>((f, t) =>
+      supabase.from('farms').select('id, name, fsa_number, entity_id, updated_at, is_share_rent, landlord_share_percentage').eq('org_id', org).order('id').range(f, t)),
     fetchAll<{ id: string; name: string; entity_role: string | null; updated_at: string | null }>((f, t) =>
       supabase.from('entities').select('id, name, entity_role, updated_at').eq('org_id', org).order('id').range(f, t)),
     fetchAll<Crop>((f, t) => supabase.from('crops').select('*').eq('org_id', org).order('id').range(f, t)),
@@ -522,7 +522,7 @@ type IncomeBundle = {
   loads: Array<{ id: string; date: string; time?: string | null; crop_id: string | null; crop_year: number | null; from_type: string | null; from_field_id: string | null; net_weight: number | null; moisture: number | null; dry_bushels_override: number | null }>
   splits: Array<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number | null }>
   combineEntries: CombineEntryLike[]
-  farms: Array<{ id: string; fsa_number: string | null; entity_id: string | null }>
+  farms: Array<{ id: string; fsa_number: string | null; entity_id: string | null; is_share_rent?: boolean | null; landlord_share_percentage?: number | string | null }>
   /** 0099: the payee per farm × program year (a database before 0099 reads as none). */
   payees: Array<{ farm_id: string; program_year: number; entity_id: string }>
 }
@@ -660,7 +660,7 @@ export async function loadIncomePayload(supabase: SupabaseClient, org: string, y
   const scoTrigger = resolveProgramYearConfig(year, bundle.programConfigs).scoTrigger
   const programYear = programYearFor(year)
   const effPrice = applyMyaResolution({ cropYear: programYear, commodities: bundle.commodities, priceData: bundle.priceData, liveEstimates: new Map() })
-  const allProjectedPayments = projectPayments({ cropYear: programYear, baseAcres: bundle.baseAcres, commodities: bundle.commodities, elections: bundle.elections, priceData: effPrice, payments: bundle.arcPayments })
+  const allProjectedPayments = projectPayments({ cropYear: programYear, baseAcres: bundle.baseAcres, commodities: bundle.commodities, elections: bundle.elections, priceData: effPrice, payments: bundle.arcPayments, farms: bundle.farms })
 
   const build = (entity: { id: string; name: string } | null, mrows: readonly MarketingRow[]) => {
     const scope = buildEntityScope({ entityId: entity?.id ?? '', farms: production.farms, fields: production.fields, entities: production.entities })

@@ -1,7 +1,7 @@
 ---
 page_route: /settings/farms
 title: Farms
-updated: 2026-09-24
+updated: 2026-10-29
 keywords: farms, FSA farm number, county, landowner, share rent, landlord share percentage, archive farm, delete farm, import farms, spreadsheet
 ---
 ## What this page is for
@@ -16,7 +16,7 @@ A farm here is an FSA farm: a name, the entity that operates it, its county, its
 
 ## What the controls do
 
-- **Share rent / Landlord share %** — mark the farm share rent and enter the landowner's percentage of production (0–100). The Share Rent Report and rent statements use it.
+- **Share rent / Landlord share %** — mark the farm share rent and enter the landowner's percentage of production (0–100). The Share Rent Report and rent statements use it, and the Government Payment Tracker (with Cash Flow, Revenue Projections, Income Sensitivity and the ARC/PLC Decision Aid) projects your share of that farm's ARC/PLC payment — FSA pays each producer their share.
 - **Search** and the **Name ↑/↓** sort narrow long lists.
 - **Spreadsheet import** — entity and landowner match by name against what already exists (import those first); counties match by name plus two-letter state together, so the state column is required whenever a county is given. Share rent comes in as yes/no with the landlord percent. If you have one entity, leave the entity column out and it's filled in for you.
 

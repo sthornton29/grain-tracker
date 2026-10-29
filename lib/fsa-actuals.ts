@@ -98,7 +98,7 @@ export type VarianceCause = 'RATE' | 'ACRES_YIELD' | 'SEQUESTER' | 'PROGRAM'
 
 export const VARIANCE_CAUSE_LABEL: Record<VarianceCause, string> = {
   RATE: 'Rate (price / county revenue)',
-  ACRES_YIELD: 'Acres / yield (base data)',
+  ACRES_YIELD: 'Acres / yield / share (base data)',
   SEQUESTER: 'Sequester',
   PROGRAM: 'Program (which program paid)',
 }
@@ -109,7 +109,11 @@ export type ImpliedRate = {
   implied: number
   /** The projection's rate on the same basis (null when the projection was under the other program). */
   projected: number | null
-  /** The denominator the actual was divided by. */
+  /** The rate FSA paid the OTHER farms on the statements for the same
+   *  commodity and program (dollar-weighted median; ARC per county, since
+   *  county revenue sets the ARC rate). Null when this is the only such line. */
+  statementRate: number | null
+  /** The denominator the actual was divided by (on the producer's share of the base). */
   denominator: number
   sequesterPct: number
 }
@@ -133,8 +137,14 @@ export type ReceivedVsProjected = {
   cause: VarianceCause | null
   /** What goes into every revenue view: the actual once paid, else the projection. */
   effective: number
+  /** The farm's base acres on file; the projection and the implied rate run on baseAcres × producerShare. */
   baseAcres: number
   plcYield: number
+  producerShare: number
+  /** Paid: the actual ÷ what the farm would pay at the statement rate. Below
+   *  1 by more than rounding, FSA paid on fewer acres / a lower yield / a
+   *  smaller share than the base data says; null without a statement rate. */
+  shareOfFarmPaid: number | null
   projection: ProjectedPayment | null
   receivedDetail: ReceivedPayment | null
 }
@@ -151,6 +161,7 @@ export function impliedRate(args: {
   sequesterPct: number
   paymentFactor?: number
   projectedRate?: number | null
+  statementRate?: number | null
 }): ImpliedRate | null {
   const pf = args.paymentFactor ?? PAYMENT_FACTOR
   const base = (1 - args.sequesterPct) * (args.program === 'ARC_IC' ? 0.65 : pf) * args.baseAcres
@@ -160,6 +171,7 @@ export function impliedRate(args: {
     program: args.program,
     implied: round4(args.actual / denominator),
     projected: args.projectedRate ?? null,
+    statementRate: args.statementRate ?? null,
     denominator: round2(denominator),
     sequesterPct: args.sequesterPct,
   }
@@ -172,6 +184,13 @@ export function impliedRate(args: {
  * on file — it separates "not yet paid" (no statement yet) from "projected
  * but not on any statement" (statements came in and this one was not on
  * them).
+ *
+ * Two passes. The first works out, per commodity × program (× county for
+ * ARC), the rate FSA actually paid — the dollar-weighted median of the
+ * implied rates across the paid farms. The second lays each actual over its
+ * projection and attributes the variance against that statement rate: a farm
+ * paid the statement rate on fewer dollars than its base data says was paid
+ * on fewer acres / a lower yield / a smaller share, not a different price.
  */
 export function mergeProjectedWithReceived(args: {
   programYear: number
@@ -181,11 +200,49 @@ export function mergeProjectedWithReceived(args: {
   sequesterPct: number
   paymentFactor?: number
   /** Optional: the max PLC rate per commodity (ERP − loan floor) and the
-   *  ARC-CO cap per farm × commodity, for the ACRES / YIELD call. */
+   *  ARC-CO cap per farm × commodity, for the ACRES / YIELD call when no
+   *  statement rate exists. */
   maxPlcRateByCommodity?: ReadonlyMap<string, number>
+  /** Farm → county key, so ARC rates are only compared within a county. */
+  countyByFarm?: ReadonlyMap<string, string | null>
   statementsExist?: boolean
 }): ReceivedVsProjected[] {
   const statementsExist = args.statementsExist ?? [...args.received.values()].some((r) => r.programYear === args.programYear)
+
+  // Pass 1: the implied rate of every paid line, grouped for the statement rate.
+  const impliedByKey = new Map<string, ImpliedRate | null>()
+  const groups = new Map<string, Array<{ value: number; weight: number }>>()
+  const groupKeyOf = (p: ProjectedPayment, program: 'PLC' | 'ARC_CO' | 'ARC_IC') => {
+    if (program === 'PLC') return `${p.commodityId}|PLC`
+    const county = args.countyByFarm?.get(p.farmId) ?? null
+    return `${p.commodityId}|${program}|${county ?? `farm:${p.farmId}`}`
+  }
+  for (const p of args.projected) {
+    const k = key(p.farmId, p.commodityId, args.programYear)
+    const r = args.received.get(k)
+    const paidProgram = r?.programs[0] ?? null
+    if (!r || !paidProgram) continue
+    const implied = impliedRate({
+      program: paidProgram, actual: r.amount, baseAcres: p.baseAcres * p.producerShare, plcYield: p.plcYield,
+      sequesterPct: r.sequesterPct ?? args.sequesterPct, paymentFactor: args.paymentFactor,
+      projectedRate: paidProgram === p.election ? p.result.paymentRatePerUnit : null,
+    })
+    impliedByKey.set(k, implied)
+    if (implied) {
+      const g = groupKeyOf(p, paidProgram)
+      const list = groups.get(g) ?? []
+      list.push({ value: implied.implied, weight: r.amount })
+      groups.set(g, list)
+    }
+  }
+  const statementRateByGroup = new Map<string, number>()
+  for (const [g, list] of groups) {
+    if (list.length < 2) continue
+    const m = weightedMedian(list)
+    if (m != null) statementRateByGroup.set(g, m)
+  }
+
+  // Pass 2: the rows.
   const out: ReceivedVsProjected[] = []
   const seen = new Set<string>()
   for (const p of args.projected) {
@@ -199,19 +256,17 @@ export function mergeProjectedWithReceived(args: {
         projected: projectedNet, received: null, variance: null, variancePct: null,
         status: statementsExist ? 'projected_not_on_statement' : 'not_yet_paid',
         projectedProgram: p.election, paidProgram: null, paymentDates: [], implied: null, cause: null,
-        effective: projectedNet, baseAcres: p.baseAcres, plcYield: p.plcYield, projection: p, receivedDetail: null,
+        effective: projectedNet, baseAcres: p.baseAcres, plcYield: p.plcYield, producerShare: p.producerShare,
+        shareOfFarmPaid: null, projection: p, receivedDetail: null,
       })
       continue
     }
     const paidProgram = r.programs[0] ?? null
-    const seq = r.sequesterPct ?? args.sequesterPct
-    const implied = paidProgram
-      ? impliedRate({
-          program: paidProgram, actual: r.amount, baseAcres: p.baseAcres, plcYield: p.plcYield, sequesterPct: seq,
-          paymentFactor: args.paymentFactor,
-          projectedRate: paidProgram === p.election ? p.result.paymentRatePerUnit : null,
-        })
-      : null
+    const base = impliedByKey.get(k) ?? null
+    const statementRate = base && paidProgram ? statementRateByGroup.get(groupKeyOf(p, paidProgram)) ?? null : null
+    const implied: ImpliedRate | null = base ? { ...base, statementRate } : null
+    const expectedAtStatementRate = implied && statementRate != null ? implied.denominator * statementRate : null
+    const shareOfFarmPaid = expectedAtStatementRate != null && expectedAtStatementRate > 0 ? round4(r.amount / expectedAtStatementRate) : null
     const variance = round2(r.amount - projectedNet)
     out.push({
       farmId: p.farmId, commodityId: p.commodityId, programYear: args.programYear,
@@ -219,12 +274,13 @@ export function mergeProjectedWithReceived(args: {
       variancePct: projectedNet !== 0 ? variance / projectedNet : null,
       status: 'paid', projectedProgram: p.election, paidProgram, paymentDates: r.paymentDates, implied,
       cause: attributeVariance({
-        variance, projectedNet, projectedProgram: p.election, paidProgram,
+        variance, projectedNet, received: r.amount, projectedProgram: p.election, paidProgram,
         projectedSequester: args.sequesterPct, statementSequester: r.sequesterPct,
         implied, maxPlcRate: args.maxPlcRateByCommodity?.get(p.commodityId) ?? null,
         arcCap: p.result.arcDetail?.maxRatePerAcre ?? null,
       }),
-      effective: r.amount, baseAcres: p.baseAcres, plcYield: p.plcYield, projection: p, receivedDetail: r,
+      effective: r.amount, baseAcres: p.baseAcres, plcYield: p.plcYield, producerShare: p.producerShare,
+      shareOfFarmPaid, projection: p, receivedDetail: r,
     })
   }
   for (const [k, r] of args.received) {
@@ -234,16 +290,32 @@ export function mergeProjectedWithReceived(args: {
       projected: 0, received: r.amount, variance: r.amount, variancePct: null,
       status: 'paid_no_projection', projectedProgram: null, paidProgram: r.programs[0] ?? null,
       paymentDates: r.paymentDates, implied: null, cause: null,
-      effective: r.amount, baseAcres: 0, plcYield: 0, projection: null, receivedDetail: r,
+      effective: r.amount, baseAcres: 0, plcYield: 0, producerShare: 1, shareOfFarmPaid: null, projection: null, receivedDetail: r,
     })
   }
   return out
+}
+
+/** The value at which half the weight (dollars) sits below — robust to a few
+ *  farms paid on a different share or base. */
+export function weightedMedian(items: ReadonlyArray<{ value: number; weight: number }>): number | null {
+  const xs = items.filter((i) => i.weight > 0 && Number.isFinite(i.value)).sort((a, b) => a.value - b.value)
+  if (xs.length === 0) return null
+  const total = xs.reduce((s, i) => s + i.weight, 0)
+  let cum = 0
+  for (const i of xs) {
+    cum += i.weight
+    if (cum >= total / 2) return i.value
+  }
+  return xs[xs.length - 1].value
 }
 
 /** Why an actual differs from its projection — one cause, in precedence order. */
 export function attributeVariance(args: {
   variance: number
   projectedNet: number
+  /** The actual, for the statement-rate test (optional: older callers). */
+  received?: number | null
   projectedProgram: ArcPlcElectionType
   paidProgram: 'PLC' | 'ARC_CO' | 'ARC_IC' | null
   projectedSequester: number
@@ -261,6 +333,15 @@ export function attributeVariance(args: {
     if (Math.abs(args.projectedNet + args.variance - atStatementSequester) < 1) return 'SEQUESTER'
   }
   if (args.implied) {
+    // The statement rate is what FSA paid the other farms for this commodity
+    // and program. Paid that rate on this farm's base data (within whole-
+    // dollar rounding and 2%), the variance is the rate; paid noticeably more
+    // or less, FSA's acres / yield / share for this producer differ from ours.
+    if (args.implied.statementRate != null && args.received != null) {
+      const expected = args.implied.denominator * args.implied.statementRate
+      if (Math.abs(args.received - expected) > Math.max(1, 0.02 * expected)) return 'ACRES_YIELD'
+      return 'RATE'
+    }
     if (args.implied.program === 'PLC' && args.maxPlcRate != null && args.implied.implied > args.maxPlcRate + 1e-6) return 'ACRES_YIELD'
     if (args.implied.program === 'ARC_CO' && args.arcCap != null && args.implied.implied > args.arcCap + 0.01) return 'ACRES_YIELD'
   }

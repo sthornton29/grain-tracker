@@ -179,7 +179,7 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
   // Entity filter (shared scoping — see lib/entity-scope.ts). Operation-wide
   // assumptions and axis defaults flow down; acres/positions/policies narrow.
   const [entities, setEntities] = useState<Entity[]>([])
-  const [farms, setFarms] = useState<Array<{ id: string; entity_id: string | null }>>([])
+  const [farms, setFarms] = useState<Array<{ id: string; entity_id: string | null; is_share_rent?: boolean | null; landlord_share_percentage?: number | string | null }>>([])
   // 0099: payees per program year + the FSA statement actuals.
   const [govActuals, setGovActuals] = useState<GovernmentActuals>(EMPTY_GOVERNMENT_ACTUALS)
   const [fields, setFields] = useState<Array<{ id: string; farm_id: string | null }>>([])
@@ -272,7 +272,7 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
         fetchAllRows((f, t) => supabase.from('arc_plc_payments').select('*').order('id').range(f, t)),
         fetchAllRows((f, t) => supabase.from('other_government_payments').select('*').order('id').range(f, t)),
         supabase.from('entities').select('*').order('name'),
-        supabase.from('farms').select('id, entity_id'),
+        supabase.from('farms').select('id, entity_id, is_share_rent, landlord_share_percentage'),
         supabase.from('fields').select('id, farm_id'),
         // May not exist yet (migration 062): an error leaves data null → [].
         fetchAllRows((f, t) => supabase.from('combine_yield_entries').select('id, field_id, crop_id, crop_year, stated_total_bushels, adjusted_total_bushels, adjustment_bu_per_acre, destination_bin_id, harvest_complete, entry_date').order('id').range(f, t)),
@@ -541,7 +541,7 @@ export default function IncomeSensitivityReport({ onPayloadChange, headerActions
     // farm × commodity counts its actual once (lib/fsa-actuals).
     const payeeIdx = indexPayees(govActuals.payees)
     const yearScope = buildEntityScope({ entityId, farms: farmsAsPayees(farms, programYear, payeeIdx), fields, entities, grantedEntityIds: viewer.grantedIds })
-    const projected = projectPayments({ cropYear: programYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments, sequestrationPct: payCfg.sequestrationPct })
+    const projected = projectPayments({ cropYear: programYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments, farms, sequestrationPct: payCfg.sequestrationPct })
     const totalArcPlc = mergeProjectedWithReceived({ programYear, projected, received: receivedArcPlc({ lines: govActuals.lines, cropAmounts: govActuals.cropAmounts }), sequesterPct: payCfg.sequestrationPct })
       .filter((r) => yearScope.farmInEntity(r.farmId))
       .reduce((s, r) => s + r.effective, 0)

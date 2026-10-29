@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-10-29 · version 0.1.0 · build 9b318da. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-10-29 · version 0.1.0 · build ac21316. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -998,7 +998,7 @@ The Payment Tracker projects your ARC/PLC and other USDA payments, records what 
 - **Payee notice** — when the statement paid an entity that is not the one Turnrow has for those farms and that program year (for example, the 2025 program year paid to the entity that operated the farms in 2025), the review says so and offers one click to set that program year's payee on every farm on the statement. See Settings, Government Payments, Payee by program year.
 - **Sequestration notice** — when the statement's sequester percentage differs from the program year's parameter, the review offers to update the parameter.
 - **Statements tab** — every statement with its date, payee, gross and net, line count, program years and a PDF link; tap a date to open the statement's own page (lines by farm and program, crop amounts, checks, the implied rate behind each crop amount, and Delete). Below the list, **FSA payments received by calendar year** totals each payee's lines by the year the money arrived — the figure to reconcile against the 1099-G.
-- **Detail** (per farm) — the calculation behind each projection and, once paid, the received amount, the variance, the implied rate beside the projected rate, and what the variance is attributed to.
+- **Detail** (per farm) — the calculation behind each projection (including the producer share on a share-rent farm) and, once paid, the received amount, the variance, the implied rate beside the projected rate and beside the rate FSA paid the other farms on the statements, and what the variance is attributed to.
 
 ## How the numbers work
 
@@ -1007,10 +1007,11 @@ The Payment Tracker projects your ARC/PLC and other USDA payments, records what 
 - **Payment limits**: each entity's cap is its number of FSA-eligible persons (set once in Settings, Entities) times the program year's per-person limit. The status table shows the multiplication and colors entities approaching or over their cap.
 - **Seed cotton** is one commodity with one price: the lookup fetches the lint price (cents per pound) and the cottonseed price (dollars per ton) and blends them at configurable shares, showing you the composition before you confirm.
 - Payments tied to a farm roll up through the **payee for that program year** — the entity set under Settings, Government Payments, Payee by program year, or the farm's own entity when none is set — so a program year earned under a previous operator lands on the right entity. Other payments attribute to their entity, with a "no entity" row so the totals always reconcile.
+- **Producer share**: FSA pays each producer their share of a farm's payment. On a farm marked share rent under Settings, Farms, the projection is the farm's payment times your share (100% minus the landlord's percentage); cash-rent farms project the whole payment. The per-farm rows show "× 75% share" beside the base acres when a share applies.
 - **Received** is the crop amount printed on the FSA payment statement for that farm and crop. Where a line is paid, the received figure replaces the projection in every total, Cash Flow (in the month of the ACH date), Revenue Projections and Income Sensitivity — nothing is counted twice. Lines not yet paid keep their projection.
 - **Line status**: Paid; Not yet paid (no statement for the program year yet); Paid with no projection (a farm or crop with no base acres on file); Projected but not on any statement yet (statements came in and this line was not on them).
 - **Implied rate**: for a paid PLC line, the actual divided by (1 − sequester) × 0.85 × base acres × PLC yield gives the payment rate per bushel or pound FSA actually used; for ARC-CO, the actual divided by (1 − sequester) × 0.85 × base acres gives the rate per base acre. Both sit beside the projected rate.
-- **Variance cause**: the difference is attributed to the **program** when the other program paid, to the **sequester** when the statement's percentage alone explains it, to **acres / yield** when the implied rate is more than the program could pay on your base data (so FSA's base acres or yield differ), and otherwise to the **rate** — the price or county revenue came in different from the projection.
+- **Variance cause**: the difference is attributed to the **program** when the other program paid, to the **sequester** when the statement's percentage alone explains it, to **acres / yield / share** when the farm was paid noticeably more or less than its base data would earn at the rate FSA paid the other farms on the statements (so FSA's base acres, yield or your share of that farm differ from what Turnrow has), and otherwise to the **rate** — the price or county revenue came in different from the projection. The statement rate is the rate the paid farms cluster on for that crop and program (ARC-CO within a county); with only one paid farm the test falls back to the most the program could pay.
 - **Program year 2025 pays the higher of PLC and ARC-CO** on every farm and crop regardless of the election. The projection applies that rule for 2025 (the detail shows both sides and which one pays); from 2026 the election governs again.
 
 ## Common questions
@@ -1021,6 +1022,7 @@ The Payment Tracker projects your ARC/PLC and other USDA payments, records what 
 - **The statement paid a different entity than the report shows.** Set the program-year payee: accept the notice on the upload review, or use Settings, Government Payments, Payee by program year. The matrix, the payment limits and the entity filter follow it for that year only.
 - **A farm on the statement is not in Turnrow.** Its lines save with the raw FSA number and show as "Paid with no projection"; add the farm under Settings, Farms and match the line on a later upload, or leave it.
 - **I uploaded the same statement twice.** Nothing was saved the second time — every FSA Payment ID is recorded once, and the review says "already recorded".
+- **A farm was paid less than projected but the rate looks right.** Open its detail: if the variance is attributed to acres / yield / share and the "paid as a share" line reads 75% or 50%, FSA paid you a share of that farm's payment. If the farm is share rent, mark it so under Settings, Farms with the landlord's percentage and the projection will follow; otherwise FSA's base acres or yield for your share of the farm differ from the base acres on file — compare them against your FSA-156EZ.
 
 ## If something looks wrong
 
@@ -1794,7 +1796,7 @@ A farm here is an FSA farm: a name, the entity that operates it, its county, its
 
 ## What the controls do
 
-- **Share rent / Landlord share %** — mark the farm share rent and enter the landowner's percentage of production (0–100). The Share Rent Report and rent statements use it.
+- **Share rent / Landlord share %** — mark the farm share rent and enter the landowner's percentage of production (0–100). The Share Rent Report and rent statements use it, and the Government Payment Tracker (with Cash Flow, Revenue Projections, Income Sensitivity and the ARC/PLC Decision Aid) projects your share of that farm's ARC/PLC payment — FSA pays each producer their share.
 - **Search** and the **Name ↑/↓** sort narrow long lists.
 - **Spreadsheet import** — entity and landowner match by name against what already exists (import those first); counties match by name plus two-letter state together, so the state column is required whenever a county is given. Share rent comes in as yes/no with the landlord percent. If you have one entity, leave the entity column out and it's filled in for you.
 

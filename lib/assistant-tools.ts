@@ -124,6 +124,8 @@ type MarketingBundle = {
   rows: MarketingRow[]
   totals: ReturnType<typeof aggregateMarketing>
   scope: ReturnType<typeof buildEntityScope>
+  /** The farm rows (with the share-rent fields the projection needs). */
+  farms: ScopeBits['farms']
   scopedContracts: Contract[]
   crops: Crop[]
   entityNote: string | null
@@ -236,7 +238,7 @@ async function loadMarketingBundle(
     cottonPhysicalByCrop: cottonPhysical,
     seedCommitmentsByCrop,
   })
-  return { rows, totals: aggregateMarketing(rows), scope, scopedContracts, crops, entityNote: note, seedCommitmentsByCrop: seedCommitmentsByCrop ?? new Map(), seedBundles, assumptions }
+  return { rows, totals: aggregateMarketing(rows), scope, farms: bits.farms, scopedContracts, crops, entityNote: note, seedCommitmentsByCrop: seedCommitmentsByCrop ?? new Map(), seedBundles, assumptions }
 }
 
 // ---------- seed production contracts (077) ----------
@@ -525,7 +527,7 @@ async function getRevenueProjection(supabase: SupabaseClient, ctx: AssistantCont
   // Government per crop, allocated by acres — the report's recipe.
   const programYear = programYearFor(cropYear)
   const effPrice = applyMyaResolution({ cropYear: programYear, commodities, priceData, liveEstimates: new Map() })
-  const projectedPayments = projectPayments({ cropYear: programYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments })
+  const projectedPayments = projectPayments({ cropYear: programYear, baseAcres, commodities, elections, priceData: effPrice, payments: arcPayments, farms: b.farms })
     .filter((p) => b.scope.farmInEntity(p.farmId))
   const totalArcPlc = projectedPayments.reduce((s, p) => s + p.result.net, 0)
   const yearOther = otherPaymentsInRevenueYear(b.scope.otherPayments(otherPayments), cropYear)
@@ -857,7 +859,7 @@ async function getGovernmentPayments(supabase: SupabaseClient, ctx: AssistantCon
     allRows<import('@/lib/types').ArcPlcPayment>((f, t) => supabase.from('arc_plc_payments').select('*').order('id').range(f, t)),
     allRows<import('@/lib/types').OtherGovernmentPayment>((f, t) => supabase.from('other_government_payments').select('*').order('id').range(f, t)),
     all<import('@/lib/types').ArcBenchmarkData>(supabase.from('arc_benchmark_data').select('*')),
-    all<{ id: string; name: string; county_id: string | null }>(supabase.from('farms').select('id, name, county_id')),
+    all<{ id: string; name: string; county_id: string | null; is_share_rent?: boolean | null; landlord_share_percentage?: number | string | null }>(supabase.from('farms').select('id, name, county_id, is_share_rent, landlord_share_percentage')),
     all<import('@/lib/types').ProgramYearConfig>(supabase.from('program_year_config').select('*')),
     fetchGovActuals(supabase),
   ])

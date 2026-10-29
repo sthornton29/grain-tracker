@@ -598,6 +598,24 @@ export function computeCommodityPayment(args: {
   }
 }
 
+// ---------- Producer share ----------
+
+// FSA pays each producer THEIR share of a farm's payment. On a share-rent
+// farm the landlord takes landlord_share_percentage of the crop — and of the
+// program payment — so the producer's projection is the farm's payment ×
+// (1 − that share). Cash-rent farms (and farms with no share on file) pay
+// the producer 100%. One helper, used by projectPayments and the Decision
+// Aid, so every projection agrees.
+export type FarmShareLike = { is_share_rent?: boolean | null; landlord_share_percentage?: number | string | null }
+
+export function producerShareFor(farm: FarmShareLike | null | undefined): number {
+  if (!farm?.is_share_rent) return 1
+  const pct = Number(farm.landlord_share_percentage)
+  if (!Number.isFinite(pct) || pct <= 0) return 1
+  if (pct >= 100) return 0
+  return round6(1 - pct / 100)
+}
+
 // ---------- Whole-operation projection ----------
 
 export type ProjectedPayment = {
@@ -609,8 +627,13 @@ export type ProjectedPayment = {
   /** The election actually on file (PLC when no row). Differs from
    *  `election` only when the higher-of rule picked the other program. */
   electedProgram: ArcPlcElectionType
+  /** The farm's base acres on file (the whole farm). The payment is projected
+   *  on baseAcres × producerShare. */
   baseAcres: number
   plcYield: number
+  /** The producer's share of the farm's payment (producerShareFor): 1 on a
+   *  cash-rent farm, 1 − the landlord's share on a share-rent farm. */
+  producerShare: number
   arcRatePerAcre: number | null
   result: CommodityPaymentResult
   /** Higher-of years only: both sides' net, so the Tracker can show what the
@@ -635,7 +658,7 @@ export function projectPayments(args: {
   // county_id disambiguates same-named counties across states; the name is the
   // fallback for legacy benchmark rows that predate county_id.
   benchmarks?: ArcBenchmarkData[]
-  farms?: Array<{ id: string; county?: string | null; county_id?: string | null }>
+  farms?: Array<{ id: string; county?: string | null; county_id?: string | null } & FarmShareLike>
   // Per-year parameters (from program_year_config). Defaults to built-ins
   // when omitted.
   sequestrationPct?: number
@@ -647,6 +670,7 @@ export function projectPayments(args: {
   const commodityById = new Map(args.commodities.map((c) => [c.id, c]))
   const countyByFarm = new Map((args.farms ?? []).map((f) => [f.id, f.county ?? null]))
   const countyIdByFarm = new Map((args.farms ?? []).map((f) => [f.id, f.county_id ?? null]))
+  const shareByFarm = new Map((args.farms ?? []).map((f) => [f.id, producerShareFor(f)]))
   const out: ProjectedPayment[] = []
   for (const b of args.baseAcres) {
     // Unassigned (generic) base never generates a payment.
@@ -666,8 +690,11 @@ export function projectPayments(args: {
           benchmarks: args.benchmarks,
         })
       : null
+    // The producer's share of the farm's payment (share-rent farms pay the
+    // landlord their share); the yield and the rates are the farm's.
+    const share = shareByFarm.get(b.farm_id) ?? 1
     const compute = (el: ArcPlcElectionType) => computeCommodityPayment({
-      commodity, baseAcres: Number(b.base_acres), plcYield: Number(b.plc_yield), election: el, priceData: pd,
+      commodity, baseAcres: Number(b.base_acres) * share, plcYield: Number(b.plc_yield), election: el, priceData: pd,
       arcRatePerAcre: el !== 'PLC' && payRow ? Number(payRow.payment_rate_per_unit) : null,
       benchmark,
       sequestrationPct: args.sequestrationPct,
@@ -694,7 +721,7 @@ export function projectPayments(args: {
     }
     out.push({
       farmId: b.farm_id, commodityId: b.commodity_id, election: paidUnder, electedProgram: election,
-      baseAcres: Number(b.base_acres), plcYield: Number(b.plc_yield), arcRatePerAcre: arcRate, result, higherOf,
+      baseAcres: Number(b.base_acres), plcYield: Number(b.plc_yield), producerShare: share, arcRatePerAcre: arcRate, result, higherOf,
     })
   }
   return out

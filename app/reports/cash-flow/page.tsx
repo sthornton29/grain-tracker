@@ -87,7 +87,7 @@ const LINE_SELECT_094 = 'load_id, ticket_number, net_bushels, net_revenue, settl
 const LINE_SELECT_PRE_094 = 'load_id, ticket_number, net_bushels, net_revenue, settlement_id'
 
 type SettlementRow = { id: string; settlement_date: string; settlement_number: string | null; buyer_id: string | null }
-type FarmRow = { id: string; entity_id: string | null; name: string }
+type FarmRow = { id: string; entity_id: string | null; name: string; is_share_rent?: boolean | null; landlord_share_percentage?: number | string | null }
 
 function monthKey(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
@@ -244,7 +244,7 @@ export default function CashFlowPage() {
         supabase.from('crops').select('*'),
         supabase.from('buyers').select('*').order('name'),
         supabase.from('entities').select('*').order('name'),
-        supabase.from('farms').select('id, entity_id, name'),
+        supabase.from('farms').select('id, entity_id, name, is_share_rent, landlord_share_percentage'),
         supabase.from('fields').select('id, farm_id'),
         fetchAllRows((f, t) => supabase.from('field_plantings').select('*').order('id').range(f, t)),
         // How each buyer load was sold (094) — a database before 094 reads as none.
@@ -642,7 +642,7 @@ export default function CashFlowPage() {
     for (const yr of programYears) {
       if (!cropId) {
         const yearScope = buildEntityScope({ entityId, farms: farmsAsPayees(farms, yr, payeeIdx), fields, entities, grantedEntityIds: viewer.grantedIds })
-        const projected = projectPayments({ cropYear: yr, baseAcres, commodities, elections, priceData: arcPriceData, payments: arcPayments })
+        const projected = projectPayments({ cropYear: yr, baseAcres, commodities, elections, priceData: arcPriceData, payments: arcPayments, farms })
         const rows = mergeProjectedWithReceived({ programYear: yr, projected, received: receivedMap, sequesterPct: resolveProgramYearConfig(yr, programConfigs).sequestrationPct })
         const m = monthKey(new Date(expectedArcPlcDate(yr) + 'T00:00:00'))
         for (const r of rows) {

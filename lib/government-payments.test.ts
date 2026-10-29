@@ -10,6 +10,7 @@ import {
 } from '@/lib/government-payments'
 import { flatGovPerAcre } from '@/lib/income-sensitivity'
 import { DEFAULT_SEQUESTRATION_PCT } from '@/lib/program-config'
+import { producerShareFor } from '@/lib/government-payments'
 import type {
   ArcBenchmarkData, ArcPlcElection, ArcPlcPayment, ArcPlcPriceData, CoveredCommodity, FarmBaseAcres,
 } from '@/lib/types'
@@ -951,5 +952,46 @@ describe('payment-year attribution (program year N pays in crop year N+1)', () =
         expect(Number(expectedArcPlcDate(py).slice(0, 4))).toBe(revenueCropYearFor(py))
       }
     })
+  })
+})
+
+// ---------- Producer share (share-rent farms) ----------
+//
+// FSA pays each producer THEIR share of the farm's payment. A 75/25 share-rent
+// farm pays the producer 75% of what the whole farm earns; the Tracker used to
+// project 100% and then call the missing 25% a rate miss.
+describe('producerShareFor + projectPayments on a share-rent farm', () => {
+  it('1 on cash rent or no share; 1 − landlord % on share rent; clamps', () => {
+    expect(producerShareFor(null)).toBe(1)
+    expect(producerShareFor({ is_share_rent: false, landlord_share_percentage: 25 })).toBe(1)
+    expect(producerShareFor({ is_share_rent: true, landlord_share_percentage: null })).toBe(1)
+    expect(producerShareFor({ is_share_rent: true, landlord_share_percentage: 25 })).toBe(0.75)
+    expect(producerShareFor({ is_share_rent: true, landlord_share_percentage: '33.333333' })).toBeCloseTo(0.666667, 6)
+    expect(producerShareFor({ is_share_rent: true, landlord_share_percentage: 100 })).toBe(0)
+    expect(producerShareFor({ is_share_rent: true, landlord_share_percentage: -5 })).toBe(1)
+  })
+
+  it('a 25% landlord share scales the projected payment to 75%; the farm with no share is unchanged; no farms passed = 100%', () => {
+    const corn = commodity({ id: 'corn', statutory_reference_price: 4.10, national_loan_rate: 2.20 })
+    const base = [
+      baseAcresRow({ id: 'b1', farm_id: 'share', commodity_id: 'corn', base_acres: 100, plc_yield: 130 }),
+      baseAcresRow({ id: 'b2', farm_id: 'cash', commodity_id: 'corn', base_acres: 100, plc_yield: 130 }),
+    ]
+    const args = { cropYear: 2026, baseAcres: base, commodities: [corn], elections: [], priceData: [priceData({ commodity_id: 'corn', crop_year: 2026, mya_price_estimate: 3.50 })], payments: [] }
+    const farms = [
+      { id: 'share', is_share_rent: true, landlord_share_percentage: 25 },
+      { id: 'cash', is_share_rent: false, landlord_share_percentage: null },
+    ]
+    const withShare = projectPayments({ ...args, farms })
+    const without = projectPayments(args)
+    const s = withShare.find((p) => p.farmId === 'share')!
+    const c = withShare.find((p) => p.farmId === 'cash')!
+    expect(s.producerShare).toBe(0.75)
+    expect(c.producerShare).toBe(1)
+    // The base acres on the row stay the farm's; the payment runs on 75 ac.
+    expect(s.baseAcres).toBe(100)
+    expect(s.result.net).toBeCloseTo(c.result.net * 0.75, 1)
+    expect(c.result.net).toBeCloseTo(without.find((p) => p.farmId === 'cash')!.result.net, 2)
+    expect(without.every((p) => p.producerShare === 1)).toBe(true)
   })
 })

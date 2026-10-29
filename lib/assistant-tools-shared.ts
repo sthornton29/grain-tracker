@@ -42,14 +42,14 @@ export const r2 = (v: number) => Math.round(v * 100) / 100
 
 export type ScopeBits = {
   entities: Array<{ id: string; name: string; entity_role: string | null }>
-  farms: Array<{ id: string; name: string; entity_id: string | null; landowner_id: string | null }>
+  farms: Array<{ id: string; name: string; entity_id: string | null; landowner_id: string | null; is_share_rent?: boolean | null; landlord_share_percentage?: number | string | null }>
   fields: Array<{ id: string; farm_id: string | null; name_or_number: string }>
 }
 
 export async function fetchScopeBits(supabase: SupabaseClient): Promise<ScopeBits> {
   const [entities, farms, fields] = await Promise.all([
     all<ScopeBits['entities'][number]>(supabase.from('entities').select('id, name, entity_role').order('name')),
-    all<ScopeBits['farms'][number]>(supabase.from('farms').select('id, name, entity_id, landowner_id')),
+    all<ScopeBits['farms'][number]>(supabase.from('farms').select('id, name, entity_id, landowner_id, is_share_rent, landlord_share_percentage')),
     all<ScopeBits['fields'][number]>(supabase.from('fields').select('id, farm_id, name_or_number')),
   ])
   return { entities, farms, fields }

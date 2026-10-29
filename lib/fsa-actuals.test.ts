@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  attributeVariance, calendarYearTotals, impliedRate, mergeProjectedWithReceived, receivedArcPlc, receivedKpis,
+  attributeVariance, calendarYearTotals, impliedRate, mergeProjectedWithReceived, receivedArcPlc, receivedKpis, weightedMedian,
   type ReceivedLineLike,
 } from './fsa-actuals'
 import type { ProjectedPayment } from './government-payments'
@@ -16,7 +16,7 @@ import type { ProjectedPayment } from './government-payments'
 
 function projection(over: Partial<ProjectedPayment> & { farmId: string; commodityId: string }, net: number, rate: number, election: ProjectedPayment['election'] = 'PLC'): ProjectedPayment {
   return {
-    election, electedProgram: election, baseAcres: 300, plcYield: 2000, arcRatePerAcre: null, higherOf: null,
+    election, electedProgram: election, baseAcres: 300, plcYield: 2000, producerShare: 1, arcRatePerAcre: null, higherOf: null,
     result: { election, effectiveReferencePrice: 0.42, myaPrice: 0.31, effectivePrice: 0.31, paymentRatePerUnit: rate, grossPerAcre: rate * 2000, gross: net / (0.85 * 0.943), net, computable: true, arcMethod: null, arcDetail: null },
     ...over,
   }
@@ -101,7 +101,7 @@ describe('receivedArcPlc + mergeProjectedWithReceived', () => {
   it('a sequester difference that closes the gap is SEQUESTER; an impossible PLC rate is ACRES / YIELD', () => {
     // Projected at 5.4%, paid at 5.7%: 1000 × 0.943 / 0.946 = 996.83.
     expect(attributeVariance({ variance: -3.17, projectedNet: 1000, projectedProgram: 'PLC', paidProgram: 'PLC', projectedSequester: 0.054, statementSequester: 0.057, implied: null, maxPlcRate: null, arcCap: null })).toBe('SEQUESTER')
-    expect(attributeVariance({ variance: 500, projectedNet: 1000, projectedProgram: 'PLC', paidProgram: 'PLC', projectedSequester: 0.057, statementSequester: 0.057, implied: { program: 'PLC', implied: 0.2, projected: 0.12, denominator: 1, sequesterPct: 0.057 }, maxPlcRate: 0.12, arcCap: null })).toBe('ACRES_YIELD')
+    expect(attributeVariance({ variance: 500, projectedNet: 1000, projectedProgram: 'PLC', paidProgram: 'PLC', projectedSequester: 0.057, statementSequester: 0.057, implied: { program: 'PLC', implied: 0.2, projected: 0.12, statementRate: null, denominator: 1, sequesterPct: 0.057 }, maxPlcRate: 0.12, arcCap: null })).toBe('ACRES_YIELD')
     expect(attributeVariance({ variance: 0.2, projectedNet: 1000, projectedProgram: 'PLC', paidProgram: 'PLC', projectedSequester: 0.057, statementSequester: 0.057, implied: null, maxPlcRate: null, arcCap: null })).toBeNull()
   })
 
@@ -118,6 +118,97 @@ describe('receivedArcPlc + mergeProjectedWithReceived', () => {
     expect(k.paidRows).toBe(3)
     expect(k.unpaidRows).toBe(1)
     expect(k.byCause.RATE).toBeCloseTo(-5125.6, 2)
+  })
+})
+
+// The statement rate. FIXTURE farms (not the real numbers): four seed cotton
+// PLC farms projected at $0.0802/lb (ERP 0.42 − MYA 0.3398) and paid at
+// FSA's $0.0792. Three were paid on their full base; the fourth is a 75/25
+// share-rent farm paid 75% of its payment.
+//   full payment at 0.0792 on 100 ac × 2,000 lb = 0.943 × 0.85 × 200,000 × 0.0792 = 12,696.72
+describe('statement rate and the share / acres call', () => {
+  const den = (acres: number, yld: number) => 0.943 * 0.85 * acres * yld
+  const farms = [
+    { id: 'f1', acres: 100, yld: 2000, share: 1 },
+    { id: 'f2', acres: 300, yld: 2500, share: 1 },
+    { id: 'f3', acres: 50, yld: 1800, share: 1 },
+    { id: 'f4', acres: 120, yld: 2200, share: 0.75 },
+  ]
+  const projected = farms.map((f) => projection(
+    { farmId: f.id, commodityId: 'seed-cotton', baseAcres: f.acres, plcYield: f.yld, producerShare: f.share },
+    Math.round(den(f.acres * f.share, f.yld) * 0.0802 * 100) / 100, 0.0802,
+  ))
+  const lines = farms.map((f) => line({ id: `l-${f.id}`, farm_id: f.id }))
+  const crops = farms.map((f) => ({ line_id: `l-${f.id}`, commodity_id: 'seed-cotton', amount: Math.round(den(f.acres, f.yld) * 0.0792 * (f.id === 'f4' ? 0.75 : 1)) }))
+  const received = receivedArcPlc({ lines, cropAmounts: crops })
+
+  it('the share-rent farm projects on its producer share and is paid the statement rate: RATE, not share', () => {
+    const rows = mergeProjectedWithReceived({ programYear: 2025, projected, received, sequesterPct: 0.057 })
+    const f4 = rows.find((r) => r.farmId === 'f4')!
+    expect(f4.producerShare).toBe(0.75)
+    expect(f4.implied?.implied).toBeCloseTo(0.0792, 4)
+    expect(f4.implied?.statementRate).toBeCloseTo(0.0792, 4)
+    expect(f4.shareOfFarmPaid).toBeCloseTo(1, 2)
+    expect(f4.cause).toBe('RATE')
+    for (const r of rows) expect(r.cause).toBe('RATE')
+    const k = receivedKpis(rows)
+    expect(k.byCause.ACRES_YIELD).toBe(0)
+    expect(k.byCause.RATE).toBeCloseTo(k.variance, 2)
+  })
+
+  it('a farm paid a fraction of what its base data would pay at the statement rate is ACRES / YIELD / SHARE, and the full-share farms stay RATE', () => {
+    // The same farm projected on 100% (no share on file): it was still paid 75%.
+    const noShare = projected.map((p) => p.farmId === 'f4'
+      ? projection({ farmId: 'f4', commodityId: 'seed-cotton', baseAcres: 120, plcYield: 2200, producerShare: 1 }, Math.round(den(120, 2200) * 0.0802 * 100) / 100, 0.0802)
+      : p)
+    const rows = mergeProjectedWithReceived({ programYear: 2025, projected: noShare, received, sequesterPct: 0.057 })
+    const f4 = rows.find((r) => r.farmId === 'f4')!
+    expect(f4.implied?.implied).toBeCloseTo(0.0594, 4)
+    expect(f4.implied?.statementRate).toBeCloseTo(0.0792, 4)
+    expect(f4.shareOfFarmPaid).toBeCloseTo(0.75, 2)
+    expect(f4.cause).toBe('ACRES_YIELD')
+    expect(rows.filter((r) => r.farmId !== 'f4').every((r) => r.cause === 'RATE')).toBe(true)
+    // The by-cause totals: the full-share farms' small price miss is RATE; the whole f4 gap is ACRES_YIELD.
+    const k = receivedKpis(rows)
+    expect(k.byCause.ACRES_YIELD).toBeCloseTo(f4.variance!, 2)
+    expect(k.byCause.RATE).toBeLessThan(0)
+    expect(Math.abs(k.byCause.RATE)).toBeLessThan(Math.abs(k.byCause.ACRES_YIELD))
+  })
+
+  it('a lone line has no statement rate and falls back to the ERP − loan test', () => {
+    const one = [projected[0]]
+    const rows = mergeProjectedWithReceived({ programYear: 2025, projected: one, received, sequesterPct: 0.057, maxPlcRateByCommodity: new Map([['seed-cotton', 0.12]]) })
+    expect(rows[0].implied?.statementRate).toBeNull()
+    expect(rows[0].shareOfFarmPaid).toBeNull()
+    expect(rows[0].cause).toBe('RATE')
+  })
+
+  it('ARC-CO rates are only compared within a county', () => {
+    const arcProj = (farmId: string, acres: number) => projection({ farmId, commodityId: 'corn', baseAcres: acres, plcYield: 150, producerShare: 1 }, 0, 0, 'ARC_CO')
+    const arcLines = [line({ id: 'a1', farm_id: 'c1', program_code: 'ARC_CO' }), line({ id: 'a2', farm_id: 'c2', program_code: 'ARC_CO' }), line({ id: 'a3', farm_id: 'c3', program_code: 'ARC_CO' })]
+    // c1 and c2 share a county and a $60/ac rate; c3 sits in another county at $30/ac.
+    const arcCrops = [
+      { line_id: 'a1', commodity_id: 'corn', amount: Math.round(0.943 * 0.85 * 100 * 60) },
+      { line_id: 'a2', commodity_id: 'corn', amount: Math.round(0.943 * 0.85 * 200 * 60) },
+      { line_id: 'a3', commodity_id: 'corn', amount: Math.round(0.943 * 0.85 * 100 * 30) },
+    ]
+    const rec = receivedArcPlc({ lines: arcLines, cropAmounts: arcCrops })
+    const county = new Map([['c1', 'A'], ['c2', 'A'], ['c3', 'B']])
+    const rows = mergeProjectedWithReceived({ programYear: 2025, projected: [arcProj('c1', 100), arcProj('c2', 200), arcProj('c3', 100)], received: rec, sequesterPct: 0.057, countyByFarm: county })
+    expect(rows.find((r) => r.farmId === 'c1')!.implied?.statementRate).toBeCloseTo(60, 0)
+    expect(rows.find((r) => r.farmId === 'c3')!.implied?.statementRate).toBeNull()
+    // Without counties, every farm is its own group — no statement rate.
+    const alone = mergeProjectedWithReceived({ programYear: 2025, projected: [arcProj('c1', 100), arcProj('c2', 200), arcProj('c3', 100)], received: rec, sequesterPct: 0.057 })
+    expect(alone.every((r) => r.implied?.statementRate == null)).toBe(true)
+  })
+
+  it('weightedMedian: the value where half the dollars sit below', () => {
+    expect(weightedMedian([])).toBeNull()
+    expect(weightedMedian([{ value: 5, weight: 1 }])).toBe(5)
+    // $900 at 0.0792 and $100 at 0.0594 → 0.0792; equal dollars → the lower of the two.
+    expect(weightedMedian([{ value: 0.0594, weight: 100 }, { value: 0.0792, weight: 900 }])).toBe(0.0792)
+    expect(weightedMedian([{ value: 1, weight: 50 }, { value: 2, weight: 50 }])).toBe(1)
+    expect(weightedMedian([{ value: 3, weight: 0 }, { value: 7, weight: 1 }])).toBe(7)
   })
 })
 
