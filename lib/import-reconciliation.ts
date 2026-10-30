@@ -149,6 +149,43 @@ export type ProjectionPosition = {
   trade_price: number
   trade_date: string
   status: string
+  entity_id?: string | null
+}
+
+/**
+ * Every stored position this statement's rows point at: open rows matched
+ * automatically or paired by hand, and the positions its closed lots (roll
+ * legs included) close.
+ */
+export function statementReferencedIds(args: {
+  opens: readonly Pick<PlanOpenRow, 'existingId' | 'manualMatchId'>[]
+  lots: readonly Pick<PlanClosedLot, 'matchedOpenId'>[]
+}): Set<string> {
+  const ids = new Set<string>()
+  for (const o of args.opens) {
+    if (o.existingId) ids.add(o.existingId)
+    if (o.manualMatchId) ids.add(o.manualMatchId)
+  }
+  for (const l of args.lots) if (l.matchedOpenId) ids.add(l.matchedOpenId)
+  return ids
+}
+
+/**
+ * The stored positions the gate projects. The account-entity scope keeps a
+ * position held in ANOTHER account out of the comparison — but a position's
+ * entity is an attribution tag (lib/entity-scope), not proof of which
+ * brokerage account holds it. A position this very statement lists — matched
+ * by one of its open rows, paired by hand, or closed by one of its lots — is
+ * in this account whatever it is tagged, so it always counts. Without this
+ * the 10/29 StoneX statement blocked on "MAR 27 Corn short 26, Turnrow would
+ * have 12": the 14-lot was stored, open and already matched, but tagged with
+ * an entity while the import's account entity was "none".
+ */
+export function scopeGatePositions<P extends { id: string; entity_id?: string | null }>(
+  positions: readonly P[],
+  args: { inScope: (entityId: string | null) => boolean; referencedIds: ReadonlySet<string> },
+): P[] {
+  return positions.filter((p) => args.referencedIds.has(p.id) || args.inScope(p.entity_id ?? null))
 }
 
 export type ProjectedLot = {

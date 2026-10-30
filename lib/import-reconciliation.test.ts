@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildSavePlan, assertSavePlan, projectOpenPositions, reconcileWithStatement, type PlanClosedLot, type PlanOpenRow, type ProjectionPosition } from '@/lib/import-reconciliation'
+import { buildSavePlan, assertSavePlan, projectOpenPositions, reconcileWithStatement, scopeGatePositions, statementReferencedIds, type PlanClosedLot, type PlanOpenRow, type ProjectionPosition } from '@/lib/import-reconciliation'
 import type { RollCandidate } from '@/lib/roll-detection'
 import type { StatementSubtotal } from '@/lib/statement-lots'
 
@@ -158,5 +158,73 @@ describe('reconcileWithStatement', () => {
     expect(unchecked.ote.ok).toBeNull()
     expect(unchecked.realized.ok).toBeNull()
     expect(unchecked.level).toBe('ok')
+  })
+})
+
+describe('scopeGatePositions', () => {
+  // The 10/29 StoneX statement: 26 MAR 27 corn (14 + 12) and 8 JUL 27 wheat
+  // (4 × 2), every one stored, open and matched — but the 14-lot and two of
+  // the wheat lots were tagged with an entity while the account entity was
+  // "none". The gate blocked on "short 26 … Turnrow would have 12".
+  const stored = (id: string, commodity: string, month: string, n: number, price: number, date: string, entity_id: string | null): ProjectionPosition => ({
+    id, commodity, contract_month: month, side: 'short', num_contracts: n, trade_price: price, trade_date: date, status: 'open', entity_id,
+  })
+  const positions = [
+    stored('corn-14', 'Corn', 'MAR 27', 14, 5.585, '2026-09-03', 'turnrow'),
+    stored('corn-12', 'Corn', 'MAR 27', 12, 5.4825, '2026-09-11', null),
+    stored('wheat-a', 'Chicago Wheat', 'JUL 27', 2, 7.0025, '2026-04-29', 'turnrow'),
+    stored('wheat-b', 'Chicago Wheat', 'JUL 27', 2, 7.1875, '2026-05-19', 'turnrow'),
+    stored('wheat-c', 'Chicago Wheat', 'JUL 27', 2, 6.99, '2026-07-15', null),
+    stored('wheat-d', 'Chicago Wheat', 'JUL 27', 2, 7.31, '2026-07-23', null),
+    stored('soy-nov', 'Soybeans', 'NOV 26', 2, 12.035, '2026-05-19', 'turnrow'),
+    stored('other-account', 'Corn', 'MAR 27', 5, 5.6, '2026-09-20', 'elsewhere'),
+  ]
+  const matched = (key: string, id: string, over: Partial<PlanOpenRow>) => openRow(key, { existing: true, existingId: id, include: false, ...over })
+  const opens = [
+    matched('o0', 'corn-14', { commodity: 'Corn', num_contracts: 14, trade_price: 5.585, trade_date: '2026-09-03' }),
+    matched('o1', 'corn-12', { commodity: 'Corn', num_contracts: 12, trade_price: 5.4825, trade_date: '2026-09-11' }),
+    matched('o2', 'wheat-a', { commodity: 'Chicago Wheat', contract_month: 'JUL 27', num_contracts: 2, trade_price: 7.0025, trade_date: '2026-04-29' }),
+    matched('o3', 'wheat-b', { commodity: 'Chicago Wheat', contract_month: 'JUL 27', num_contracts: 2, trade_price: 7.1875, trade_date: '2026-05-19' }),
+    matched('o4', 'wheat-c', { commodity: 'Chicago Wheat', contract_month: 'JUL 27', num_contracts: 2, trade_price: 6.99, trade_date: '2026-07-15' }),
+    matched('o5', 'wheat-d', { commodity: 'Chicago Wheat', contract_month: 'JUL 27', num_contracts: 2, trade_price: 7.31, trade_date: '2026-07-23' }),
+    openRow('o6', { commodity: 'Soybeans', contract_month: 'JAN 27', num_contracts: 2, trade_price: 12.3825, trade_date: '2026-10-29' }),
+  ]
+  // The NOV 26 → JAN 27 roll: its closed lot closes the entity-tagged NOV 26 position.
+  const lots = [lotRow('g0l0', 'g0', { commodity: 'Soybeans', contract_month: 'NOV 26', open_trade_date: '2026-05-19', open_price: 12.035, num_contracts: 2, close_trade_date: '2026-10-29', close_price: 12.245, realized_pnl: -2100, matchedOpenId: 'soy-nov', heldContracts: 2 })]
+  const rolls = [roll({ closedKey: 'g0', openKey: 'o6', openKeys: ['o6'], commodity: 'Soybeans', fromMonth: 'NOV 26', toMonth: 'JAN 27', date: '2026-10-29', closedContracts: 2, openContracts: 2, closePrice: 12.245, openPrice: 12.3825 })]
+  const subtotals: StatementSubtotal[] = [
+    { key: 'Corn|MAR 27|short', commodity: 'Corn', contract_month: 'MAR 27', side: 'short', contracts: 26, close_price: 4.6475, open_trade_equity: 115725 },
+    { key: 'Soybeans|JAN 27|short', commodity: 'Soybeans', contract_month: 'JAN 27', side: 'short', contracts: 2, close_price: 12.3475, open_trade_equity: 350 },
+    { key: 'Chicago Wheat|JUL 27|short', commodity: 'Chicago Wheat', contract_month: 'JUL 27', side: 'short', contracts: 8, close_price: 6.275, open_trade_equity: 33900 },
+  ]
+  // Account entity "none": only untagged positions are in scope on their own.
+  const inScope = (e: string | null) => e == null
+
+  it('collects every stored position the statement rows point at', () => {
+    const ids = statementReferencedIds({ opens: [...opens, openRow('x', { manualMatchId: 'paired' })], lots })
+    expect([...ids].sort()).toEqual(['corn-12', 'corn-14', 'paired', 'soy-nov', 'wheat-a', 'wheat-b', 'wheat-c', 'wheat-d'])
+  })
+
+  it('a position the statement lists counts whatever entity it carries; another account’s position still does not', () => {
+    const scoped = scopeGatePositions(positions, { inScope, referencedIds: statementReferencedIds({ opens, lots }) })
+    expect(scoped.map((p) => p.id)).not.toContain('other-account')
+    expect(scoped).toHaveLength(7)
+    const plan = buildSavePlan({ opens, lots, rolls, isRollOn: () => true })
+    const projected = projectOpenPositions(scoped, plan)
+    // Open trade equity at the statement's closes: corn 115,725 + soy 350 + wheat 33,900 (the cotton is not on this test's statement).
+    const gate = reconcileWithStatement({ projected, subtotals, closesRealized: -2100, grossProfitLoss: -2100, openTradeEquity: 149975 })
+    expect(gate.countMismatches).toEqual([])
+    expect(gate.ote.projected).toBe(149975)
+    expect(gate.level).toBe('ok')
+  })
+
+  it('the old strict entity filter is exactly the false block', () => {
+    const scoped = positions.filter((p) => inScope(p.entity_id ?? null))
+    const plan = buildSavePlan({ opens, lots, rolls, isRollOn: () => true })
+    const gate = reconcileWithStatement({ projected: projectOpenPositions(scoped, plan), subtotals, closesRealized: -2100, grossProfitLoss: -2100, openTradeEquity: null })
+    expect(gate.countMismatches.map((m) => m.message)).toEqual([
+      'Statement shows MAR 27 Corn short 26. After this import Turnrow would have 12.',
+      'Statement shows JUL 27 Chicago Wheat short 8. After this import Turnrow would have 4.',
+    ])
   })
 })

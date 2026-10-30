@@ -19,7 +19,7 @@ import {
 import { parseDocumentChunked } from '@/lib/parse-chunked'
 import { mergeBrokerage } from '@/lib/parse-merge'
 import { reconcileStatementLots, type ReconciledStatement, type StatementLot, type StatementClosedGroup } from '@/lib/statement-lots'
-import { buildSavePlan, projectOpenPositions, reconcileWithStatement } from '@/lib/import-reconciliation'
+import { buildSavePlan, projectOpenPositions, reconcileWithStatement, scopeGatePositions, statementReferencedIds } from '@/lib/import-reconciliation'
 import {
   buildContractSymbol,
   normalizeCommodity,
@@ -661,7 +661,13 @@ export default function StatementImport({ entities, existingPositions, existingO
   // it holds (its "*" subtotals), open trade equity at the statement's closes
   // and the day's realized total. A contract count that would not match
   // blocks the save unless the reviewer ticks "Save anyway, I've checked".
-  const scopedPositions = existingPositions.filter((p) => entityScopeMatches(p.entity_id ?? null))
+  // Scoped to the account entity — plus every stored position this statement
+  // itself lists (matched, hand-paired or closed by one of its lots): the
+  // statement proves those are in this account whatever entity they carry.
+  const scopedPositions = scopeGatePositions(existingPositions, {
+    inScope: entityScopeMatches,
+    referencedIds: statementReferencedIds({ opens: planOpens, lots: planLots }),
+  })
   const projected = projectOpenPositions(scopedPositions, plan)
   // The statement's gross P&L covers every close it lists — already-imported
   // ones included — so the realized check sums all of the groups' lots.
