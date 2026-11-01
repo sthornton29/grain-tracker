@@ -336,15 +336,15 @@ export function allocationToInput(a: SaleAllocation): LoadSaleInput {
 
 /** The distinct unresolved contract texts across the review, keyed for the
  *  "Link to contract" select (one pick covers every line printing it). */
-export function unresolvedContractTexts(groups: ReadonlyArray<SaleReviewGroup>): Array<{ key: string; text: string; lineCount: number }> {
-  const out = new Map<string, { key: string; text: string; lineCount: number }>()
+export function unresolvedContractTexts(groups: ReadonlyArray<SaleReviewGroup>): Array<{ key: string; text: string; lineCount: number; lineIndexes: number[] }> {
+  const out = new Map<string, { key: string; text: string; lineCount: number; lineIndexes: number[] }>()
   for (const g of groups) {
     for (const l of g.lines) {
       if (l.sale_type !== 'contract' || l.contract_id || !l.contract_number_text) continue
       const key = contractNumberKey(l.contract_number_text)
       const cur = out.get(key)
-      if (cur) cur.lineCount += 1
-      else out.set(key, { key, text: l.contract_number_text, lineCount: 1 })
+      if (cur) { cur.lineCount += 1; cur.lineIndexes.push(l.index) }
+      else out.set(key, { key, text: l.contract_number_text, lineCount: 1, lineIndexes: [l.index] })
     }
   }
   return [...out.values()]

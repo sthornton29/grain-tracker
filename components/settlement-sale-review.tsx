@@ -73,7 +73,7 @@ export default function SettlementSaleReview(p: SaleReviewProps) {
       {unresolved.length > 0 && (
         <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 space-y-2" role="alert">
           <p className="font-semibold">{unresolved.length === 1 ? 'A contract number on this statement isn’t on file' : `${unresolved.length} contract numbers on this statement aren’t on file`} for {p.buyerName || 'this buyer'}.</p>
-          <p className="text-xs">Link each one to the contract it is, or create the contract. Until then the loads under it keep their current sale.</p>
+          <p className="text-xs">Link each one to the contract it is, create the contract, or mark it spot if the statement says it was a spot sale. Until then the loads under it keep their current sale.</p>
           <ul className="space-y-2">
             {unresolved.map((u) => (
               <li key={u.key} className="flex flex-wrap items-center gap-2">
@@ -89,6 +89,7 @@ export default function SettlementSaleReview(p: SaleReviewProps) {
                   {sortedContracts.map((c) => <option key={c.id} value={c.id}>{contractLabel(c)}</option>)}
                 </select>
                 <Link href={p.newContractHref} target="_blank" rel="noreferrer" className="inline-flex items-center min-h-11 px-2 text-sm underline text-brand-deep">Create contract ↗</Link>
+                <button type="button" onClick={() => p.onConfirmSpot(u.lineIndexes)} className="rounded-lg bg-white border border-amber-400 px-3 min-h-11 text-sm font-semibold">It’s spot</button>
               </li>
             ))}
           </ul>

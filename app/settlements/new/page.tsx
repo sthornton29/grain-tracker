@@ -16,7 +16,7 @@ import {
 } from '@/lib/pdf-upload'
 import { parseDocumentChunked, type FailedRange } from '@/lib/parse-chunked'
 import { mergeSettlements } from '@/lib/parse-merge'
-import { flagSummaryLines, reconcileLines, settlementCompleteness } from '@/lib/settlement-lines'
+import { flagSummaryLines, partialTickets, reconcileLines, settlementCompleteness, unreadContracts } from '@/lib/settlement-lines'
 import { imagesToPdf } from '@/lib/image-capture'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
 import SourcePreview from '@/components/source-preview'
@@ -502,6 +502,8 @@ export default function NewSettlementPage() {
         // 094 — the contract block the line printed under; a statement with
         // no blocks leaves it null and the header contract stands in.
         contract_number: li.contract_number != null ? String(li.contract_number) : null,
+        // The statement's printed Type ("97266  Spot"), when it prints one.
+        sale_type: li.sale_type === 'spot' || li.sale_type === 'price_later' || li.sale_type === 'contract' ? li.sale_type : null,
       }
     })
     setRows(first ? build([]) : build)
@@ -634,6 +636,7 @@ export default function NewSettlementPage() {
     const kept = rows.filter((r) => !r.excluded)
     return {
       tickets: kept.length,
+      distinctTickets: new Set(kept.map((r) => normalizeTicket(r.ticket_number)).filter(Boolean)).size,
       bushels: kept.reduce((s, r) => s + (num(r.net_bushels) ?? 0), 0),
       gross: kept.reduce((s, r) => s + (num(r.gross_revenue) ?? 0), 0),
       net: kept.reduce((s, r) => s + computed(r).netRev, 0),
@@ -649,7 +652,17 @@ export default function NewSettlementPage() {
     capturedNet: captured.net,
     reportedNet: num(reportedTotal),
     failedRanges,
-  }), [captured, reported, reportedTotal, failedRanges])
+    capturedDistinctTickets: captured.distinctTickets,
+    // Two checks that don't lean on a total the model read: a matched load
+    // paid well short of what it hauled, and a contract in the statement's
+    // own table with nothing read under it.
+    partialTickets: partialTickets(keptRows.map(({ r, i }) => {
+      const load = matchFor(i).load
+      return { ticket_number: r.ticket_number.trim() || null, net_bushels: num(r.net_bushels), loadId: load?.id ?? null, loadBushels: load ? dryBuOf(load) : null }
+    })),
+    unreadContracts: unreadContracts(extraction?.contract_types, keptRows.map(({ r }) => ({ contract_number: r.contract_number }))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [captured, reported, reportedTotal, failedRanges, keptRows, matchResults, extraction])
   const incomplete = extraction != null && !completeness.ok
 
   function updateRow(i: number, patch: Partial<RowDraft>) {

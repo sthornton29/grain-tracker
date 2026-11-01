@@ -19,6 +19,7 @@
 // INCLUDED lines' total against the statement's captured grand total.
 
 import { fmtInt, fmtUsd } from '@/components/reports/report-format'
+import { contractNumberKey } from '@/lib/settlement-sales'
 
 export type SettlementLineLike = {
   ticket_number: string | null | undefined
@@ -130,6 +131,53 @@ export type CompletenessInput = {
   capturedNet: number
   reportedNet: number | null | undefined
   failedRanges: ReadonlyArray<{ from: number; to: number }>
+  /** Distinct ticket numbers among the lines: a split truck is two lines but
+   *  one ticket, and a statement may print either count. */
+  capturedDistinctTickets?: number
+  /** Matched loads the statement pays only part of (partialTickets). */
+  partialTickets?: ReadonlyArray<PartialTicket>
+  /** Contracts the statement lists with no lines read (unreadContracts). */
+  unreadContracts?: ReadonlyArray<string>
+}
+
+export type PartialTicket = { ticket: string | null; paidBushels: number; loadBushels: number }
+
+/** Below this share of our bushels a ticket is short, not just shrink: across
+ *  every saved settlement a whole ticket never paid under 96%. */
+export const PARTIAL_TICKET_SHARE = 0.9
+
+/**
+ * Matched loads whose lines pay clearly less than the load hauled. This does
+ * not rely on the model reading any total, so it still catches a contract
+ * block that was never read when the totals were read from the wrong block.
+ */
+export function partialTickets(lines: ReadonlyArray<{ ticket_number: string | null | undefined; net_bushels: number | string | null | undefined; loadId: string | null | undefined; loadBushels: number | null | undefined }>): PartialTicket[] {
+  const byLoad = new Map<string, PartialTicket>()
+  for (const l of lines) {
+    if (!l.loadId) continue
+    const cur = byLoad.get(l.loadId) ?? { ticket: l.ticket_number ?? null, paidBushels: 0, loadBushels: Number(l.loadBushels ?? 0) || 0 }
+    cur.paidBushels += n(l.net_bushels)
+    byLoad.set(l.loadId, cur)
+  }
+  return [...byLoad.values()].filter((p) => p.loadBushels > 0 && p.paidBushels < p.loadBushels * PARTIAL_TICKET_SHARE)
+}
+
+/**
+ * Contracts the statement's own table lists, with bushels settled, that no
+ * read line sits under. A row that settled nothing on this sheet doesn't count.
+ */
+export function unreadContracts(
+  types: ReadonlyArray<{ contract_number?: string | null; settled_bushels?: number | null }> | null | undefined,
+  lines: ReadonlyArray<{ contract_number?: string | null }>,
+): string[] {
+  const read = new Set(lines.map((l) => contractNumberKey(l.contract_number)).filter(Boolean))
+  const out: string[] = []
+  for (const t of types ?? []) {
+    const key = contractNumberKey(t.contract_number)
+    if (!key || read.has(key) || t.settled_bushels === 0) continue
+    out.push(String(t.contract_number).trim())
+  }
+  return out
 }
 
 export type Completeness = {
@@ -165,7 +213,8 @@ export function settlementCompleteness(input: CompletenessInput): Completeness {
   const reportedBushels = reportedNum(input.reportedBushels)
   const reportedGross = reportedNum(input.reportedGross)
   const reportedNet = reportedNum(input.reportedNet)
-  const missingTickets = reportedTickets != null ? Math.round(reportedTickets) - input.capturedTickets : null
+  const printedCount = reportedTickets != null ? Math.round(reportedTickets) : null
+  const missingTickets = printedCount == null ? null : printedCount === input.capturedDistinctTickets ? 0 : printedCount - input.capturedTickets
   const bushelsDelta = reportedBushels != null ? input.capturedBushels - reportedBushels : null
   const grossDelta = reportedGross != null ? input.capturedGross - reportedGross : null
   const netDelta = reportedNet != null ? input.capturedNet - reportedNet : null
@@ -180,6 +229,10 @@ export function settlementCompleteness(input: CompletenessInput): Completeness {
   }
   if (netDelta != null && reportedNet != null && dollarsOff(netDelta, reportedNet)) {
     sentences.push(`Net on the lines is ${fmtUsd(input.capturedNet, 2)}; the statement prints ${fmtUsd(reportedNet, 2)}.`)
+  }
+  for (const c of input.unreadContracts ?? []) sentences.push(`The statement lists contract ${c}, but no tickets were read under it.`)
+  for (const p of input.partialTickets ?? []) {
+    sentences.push(`Ticket ${p.ticket ?? 'with no number'} pays ${fmtInt(p.paidBushels)} bu of the ${fmtInt(p.loadBushels)} bu on our load. The rest may be under another contract on this statement.`)
   }
   return {
     ok: sentences.length === 0,

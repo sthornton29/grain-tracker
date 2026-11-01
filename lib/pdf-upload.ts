@@ -11,6 +11,7 @@ import { createClient } from '@/lib/supabase/client'
 import type { FsaPaymentStatementExtraction } from '@/lib/fsa-payment-statement'
 import { getOrgId } from '@/lib/org'
 import type { CottonMarketingCategory, CottonMarketingExtraction } from '@/lib/cotton-doc-import'
+import { classifySaleText, contractNumberKey } from '@/lib/settlement-sales'
 
 export const MAX_PDF_BYTES = 20 * 1024 * 1024
 export const PDF_BUCKET = 'documents'
@@ -222,6 +223,37 @@ export type SettlementExtraction = {
    *  line_items by normalizeSettlementExtraction, so after parseDocument the
    *  blocks carry only their constants. */
   contract_blocks?: SettlementContractBlockExtraction[] | null
+  /** Each contract's printed Type ("93118 Flat", "97266 Spot"). Absent when
+   *  the statement prints none. Applied to the lines by applyContractTypes. */
+  contract_types?: SettlementContractType[] | null
+}
+
+// One row of a statement's contract table: a real number in the contract
+// position whose Type says how the bushels were sold.
+export type SettlementContractType = {
+  contract_number?: string | null
+  type?: string | null
+  settled_bushels?: number | null
+}
+
+/**
+ * Lines under a contract whose printed Type is spot or price-later take that
+ * sale type: Woodall prints "97266  Spot", and the number alone reads as a
+ * contract that isn't on file. Flat / Basis / HTA leave the line alone, and a
+ * sale type already on the line wins.
+ */
+export function applyContractTypes<L extends SettlementLineExtraction>(lines: ReadonlyArray<L>, types: ReadonlyArray<SettlementContractType> | null | undefined): L[] {
+  const kinds = new Map<string, string>()
+  for (const t of types ?? []) {
+    const key = contractNumberKey(t?.contract_number)
+    const kind = classifySaleText(t?.type).sale_type
+    if (key && kind !== 'contract') kinds.set(key, kind)
+  }
+  if (kinds.size === 0) return [...lines]
+  return lines.map((l) => {
+    const kind = kinds.get(contractNumberKey(l.contract_number))
+    return kind && l.sale_type == null ? { ...l, sale_type: kind } : l
+  })
 }
 
 // One "Contract Number: X" block of the statement — the facts constant
@@ -246,6 +278,18 @@ const SETTLEMENT_DOC_KEYS = [
 ] as const
 
 /**
+ * When two readings of a ticket are the same line: same ticket, contract,
+ * bushels and dollars. Null for a line with no ticket (always kept). The one
+ * dedupe key for the read and for the merge across chunks.
+ */
+export function settlementLineKey(l: { ticket_number?: unknown; contract_number?: unknown; net_bushels?: unknown; gross_revenue?: unknown }): string | null {
+  const text = (v: unknown) => (v == null ? '' : String(v).trim().toLowerCase())
+  const amount = (v: unknown) => (v == null || v === '' ? '' : String(Number(v)))
+  if (text(l.ticket_number) === '') return null
+  return `${text(l.ticket_number)}|${text(l.contract_number)}|${amount(l.net_bushels)}|${amount(l.gross_revenue)}`
+}
+
+/**
  * The settlement answer in the shape the rest of the app reads: the model
  * now nests line_items under contract_blocks and OMITS null keys (half the
  * output tokens of the old flat shape). This flattens the blocks back into
@@ -257,7 +301,6 @@ const SETTLEMENT_DOC_KEYS = [
  */
 export function normalizeSettlementExtraction(raw: unknown): SettlementExtraction {
   const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
-  const norm = (v: unknown) => (v == null ? '' : String(v).trim().toLowerCase())
   const blocks = Array.isArray(r.contract_blocks) ? (r.contract_blocks as Array<SettlementContractBlockExtraction | null>) : []
   const lines: SettlementLineExtraction[] = []
   const seen = new Set<string>()
@@ -277,8 +320,10 @@ export function normalizeSettlementExtraction(raw: unknown): SettlementExtractio
     }
     if (l.sale_type != null) out.sale_type = l.sale_type
     // A ticket printed under TWO blocks (094) is two lines; the same ticket
-    // under the same block twice in one answer is a double read.
-    const key = out.ticket_number != null && String(out.ticket_number).trim() !== '' ? `${norm(out.ticket_number)}|${norm(out.contract_number)}` : null
+    // under the same block twice in one answer is a double read. A repeat
+    // has the same amounts too: different bushels or dollars are a split,
+    // even if the contract text came back missing.
+    const key = settlementLineKey(out)
     if (key) {
       if (seen.has(key)) return
       seen.add(key)
@@ -295,7 +340,9 @@ export function normalizeSettlementExtraction(raw: unknown): SettlementExtractio
   // The header contract is the first block's when the header printed none.
   const firstBlock = blocks.find((b) => b?.contract_number != null && String(b.contract_number).trim() !== '')
   if (out.contract_number == null && firstBlock) out.contract_number = String(firstBlock.contract_number)
-  out.line_items = lines
+  const contractTypes = Array.isArray(r.contract_types) ? (r.contract_types as SettlementContractType[]).filter((t) => t && typeof t === 'object') : []
+  out.line_items = applyContractTypes(lines, contractTypes)
+  if (contractTypes.length > 0) out.contract_types = contractTypes
   out.discount_items = Array.isArray(r.discount_items) ? r.discount_items : []
   if (blocks.length > 0) {
     out.contract_blocks = blocks

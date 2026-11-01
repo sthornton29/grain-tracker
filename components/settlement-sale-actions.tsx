@@ -116,7 +116,7 @@ export default function SettlementSaleActions({
         gross_revenue: li.gross_revenue,
         discounts: li.discounts ?? null,
         contract_number: li.contract_number != null ? String(li.contract_number) : headerContractNumber,
-        sale_type: null,
+        sale_type: li.sale_type ?? null,
       }))
       for (const id of pairing.unpairedSavedIds) { const s = savedById.get(id); if (s) next.push(fromSaved(s)) }
       setWorking(next)

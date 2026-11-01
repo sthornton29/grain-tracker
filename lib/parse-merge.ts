@@ -32,7 +32,8 @@ import type {
 import type { CottonMarketingExtraction, CottonMarketingExtracted } from '@/lib/cotton-doc-import'
 import { normalizePbi } from '@/lib/cotton-doc-import'
 import { numberKey } from '@/lib/number-key'
-import { normalizeSettlementExtraction } from '@/lib/pdf-upload'
+import { applyContractTypes, normalizeSettlementExtraction, settlementLineKey } from '@/lib/pdf-upload'
+import { contractNumberKey } from '@/lib/settlement-sales'
 
 // ---------- generic helpers ----------
 
@@ -123,7 +124,11 @@ export function mergeSettlements(rawParts: SettlementExtraction[]): SettlementEx
       prev.quantity_basis = prev.quantity_basis ?? i.quantity_basis
     }
   }
+  // The contract table can print on page 1 and the block it describes in a
+  // later chunk, so the types are applied again across the whole document.
+  const contractTypes = mergeList(parts.map((p) => p.contract_types ?? []), (t) => contractNumberKey(t.contract_number) || null)
   return {
+    ...(contractTypes.length > 0 ? { contract_types: contractTypes } : {}),
     buyer_name: firstValue(parts, (p) => p.buyer_name),
     settlement_date: firstValue(parts, (p) => p.settlement_date),
     settlement_number: firstValue(parts, (p) => p.settlement_number),
@@ -134,11 +139,8 @@ export function mergeSettlements(rawParts: SettlementExtraction[]): SettlementEx
     payment_date: firstValue(parts, (p) => p.payment_date ?? null),
     // 094: the same ticket under TWO contract blocks (58 bu finishing a
     // contract, the rest spot) is a SPLIT, not a boundary repeat — the key
-    // carries the line's contract text, so only a true repeat collapses.
-    line_items: mergeList(
-      parts.map((p) => p.line_items ?? []),
-      (l) => (l.ticket_number ? `${norm(l.ticket_number)}|${norm(l.contract_number)}` : null),
-    ),
+    // carries the contract and the amounts, so only a true repeat collapses.
+    line_items: applyContractTypes(mergeList(parts.map((p) => p.line_items ?? []), settlementLineKey), contractTypes),
     discount_items: [...byKey.values()],
     // The grand total prints once (last page / check stub): first non-null.
     statement_reported_total: firstValue(parts, (p) => p.statement_reported_total ?? null),

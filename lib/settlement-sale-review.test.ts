@@ -154,7 +154,7 @@ describe('unknown contract numbers and "S12"', () => {
     const groups = buildSaleReview({ lines, loadIdForLine: (i) => `L${i + 1}`, oursByLoad: oursK, contracts: [K] })
     expect(groups[0].unresolved).toEqual(['ZZ-1'])
     expect(groups[0].theirs).toEqual([])
-    expect(unresolvedContractTexts(groups)).toEqual([{ key: 'ZZ-1', text: 'ZZ-1', lineCount: 2 }])
+    expect(unresolvedContractTexts(groups)).toEqual([{ key: 'ZZ-1', text: 'ZZ-1', lineCount: 2, lineIndexes: [0, 1] }])
     const plan = buildApplyPlan(groups)
     expect(plan.blockedLoadIds).toEqual(['L1', 'L2'])
     expect(plan.loadWrites.map((w) => w.loadId)).toEqual(['L3'])
