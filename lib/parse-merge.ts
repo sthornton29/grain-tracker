@@ -34,6 +34,7 @@ import { normalizePbi } from '@/lib/cotton-doc-import'
 import { numberKey } from '@/lib/number-key'
 import { applyContractTypes, normalizeSettlementExtraction, settlementLineKey } from '@/lib/pdf-upload'
 import { contractNumberKey } from '@/lib/settlement-sales'
+import { flagSummaryLines } from '@/lib/settlement-lines'
 
 // ---------- generic helpers ----------
 
@@ -98,6 +99,32 @@ export function mergeTickets(parts: TicketsExtraction[]): TicketsExtraction {
   }
 }
 
+/**
+ * A long statement's checkoff can come back twice: each chunk's running sum of
+ * the ticket column, and the Deduction Summary's total under other wording
+ * (Woodall 77232: $1,402.66 beside the true $994.57). Checkoff prints once per
+ * statement, so when the amounts don't add up to what the lines deducted but
+ * ONE of them does, that one is the checkoff. Anything else stays as read and
+ * the review's sum check flags it.
+ */
+export function reconcileCheckoffItems(
+  items: SettlementDiscountItemExtraction[],
+  lines: SettlementExtraction['line_items'],
+  settlementNumber: string | null,
+): SettlementDiscountItemExtraction[] {
+  const isCheckoff = (i: SettlementDiscountItemExtraction) => norm(i.category) === 'checkoff' && (norm(i.deduction_kind) || 'price') === 'price'
+  const checkoff = items.filter(isCheckoff)
+  if (checkoff.length < 2) return items
+  const guards = flagSummaryLines(lines, { settlementNumber })
+  const deducted = lines.reduce((s, l, i) => (guards[i].flagged ? s : s + (Number(l.discounts) || 0)), 0)
+  const others = items.filter((i) => !isCheckoff(i) && (norm(i.deduction_kind) || 'price') === 'price').reduce((s, i) => s + (Number(i.amount) || 0), 0)
+  const target = deducted - others
+  const near = (x: number) => Math.abs(x - target) <= 1
+  if (target <= 0 || near(checkoff.reduce((s, i) => s + (Number(i.amount) || 0), 0))) return items
+  const hit = checkoff.find((i) => near(Number(i.amount) || 0))
+  return hit ? items.filter((i) => !isCheckoff(i) || i === hit) : items
+}
+
 export function mergeSettlements(rawParts: SettlementExtraction[]): SettlementExtraction {
   // Each part may still carry the model's nested contract_blocks (nulls
   // omitted): flatten to the line shape first, so the dedupe keys below see
@@ -112,8 +139,16 @@ export function mergeSettlements(rawParts: SettlementExtraction[]): SettlementEx
     parts.map((p) => p.discount_items ?? []),
     (i) => `${norm(i.deduction_kind) || 'price'}|${norm(i.category)}|${norm(i.description)}|${i.amount ?? ''}`,
   )
+  // The contract table can print on page 1 and the block it describes in a
+  // later chunk, so the types are applied again across the whole document.
+  const contractTypes = mergeList(parts.map((p) => p.contract_types ?? []), (t) => contractNumberKey(t.contract_number) || null)
+  // 094: the same ticket under TWO contract blocks (58 bu finishing a
+  // contract, the rest spot) is a SPLIT, not a boundary repeat — the key
+  // carries the contract and the amounts, so only a true repeat collapses.
+  const lineItems = applyContractTypes(mergeList(parts.map((p) => p.line_items ?? []), settlementLineKey), contractTypes)
+  const settlementNumber = firstValue(parts, (p) => p.settlement_number)
   const byKey = new Map<string, SettlementDiscountItemExtraction>()
-  for (const i of deduped) {
+  for (const i of reconcileCheckoffItems(deduped, lineItems, settlementNumber)) {
     const key = `${norm(i.deduction_kind) || 'price'}|${norm(i.category)}|${norm(i.description)}`
     const prev = byKey.get(key)
     if (!prev) {
@@ -124,23 +159,17 @@ export function mergeSettlements(rawParts: SettlementExtraction[]): SettlementEx
       prev.quantity_basis = prev.quantity_basis ?? i.quantity_basis
     }
   }
-  // The contract table can print on page 1 and the block it describes in a
-  // later chunk, so the types are applied again across the whole document.
-  const contractTypes = mergeList(parts.map((p) => p.contract_types ?? []), (t) => contractNumberKey(t.contract_number) || null)
   return {
     ...(contractTypes.length > 0 ? { contract_types: contractTypes } : {}),
     buyer_name: firstValue(parts, (p) => p.buyer_name),
     settlement_date: firstValue(parts, (p) => p.settlement_date),
-    settlement_number: firstValue(parts, (p) => p.settlement_number),
+    settlement_number: settlementNumber,
     // 086: header contract + the remittance page's payment facts print once.
     contract_number: firstValue(parts, (p) => p.contract_number ?? null),
     payment_number: firstValue(parts, (p) => p.payment_number ?? null),
     check_number: firstValue(parts, (p) => p.check_number ?? null),
     payment_date: firstValue(parts, (p) => p.payment_date ?? null),
-    // 094: the same ticket under TWO contract blocks (58 bu finishing a
-    // contract, the rest spot) is a SPLIT, not a boundary repeat — the key
-    // carries the contract and the amounts, so only a true repeat collapses.
-    line_items: applyContractTypes(mergeList(parts.map((p) => p.line_items ?? []), settlementLineKey), contractTypes),
+    line_items: lineItems,
     discount_items: [...byKey.values()],
     // The grand total prints once (last page / check stub): first non-null.
     statement_reported_total: firstValue(parts, (p) => p.statement_reported_total ?? null),

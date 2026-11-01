@@ -309,6 +309,47 @@ describe('Woodall 77232 — a TIMEOUT on a chunk is split, not failed', () => {
   })
 })
 
+describe('Woodall 77232 — the checkoff prints once', () => {
+  const part = (from: number, to: number, items: Array<{ description: string; amount: number }>) =>
+    normalizeSettlementExtraction({ ...answerFor(from, to), discount_items: items.map((i) => ({ category: 'checkoff', deduction_kind: 'price', ...i })) })
+  const SUMMARY = { description: 'Checkoff\\SPARC — Alabama Dept of Agriculture', amount: CHECKOFF }
+
+  it('running sums under other wording beside the Deduction Summary total: only the total stays', () => {
+    const merged = mergeSettlements([
+      part(1, 4, [{ description: 'LB Checkoff\\SPARC', amount: 700.33 }]),
+      part(5, 8, [{ description: 'LB Checkoff\\SPARC', amount: 702.33 }, SUMMARY]),
+    ])
+    expect(merged.discount_items).toEqual([expect.objectContaining({ description: SUMMARY.description, amount: CHECKOFF })])
+  })
+
+  it('running sums alone still add up to one item', () => {
+    const first = r2(onPages(1, 4).reduce((s, t) => s + t.checkoff, 0))
+    const merged = mergeSettlements([
+      part(1, 4, [{ description: 'LB Checkoff\\SPARC', amount: first }]),
+      part(5, 8, [{ description: 'LB Checkoff\\SPARC', amount: r2(CHECKOFF - first) }]),
+    ])
+    expect(merged.discount_items).toHaveLength(1)
+    expect(merged.discount_items![0].amount).toBeCloseTo(CHECKOFF, 2)
+  })
+
+  it('nothing reconciles: both stay as read, for the review to flag', () => {
+    const merged = mergeSettlements([part(1, 8, [{ description: 'LB Checkoff\\SPARC', amount: 1402.66 }, { description: 'State checkoff', amount: 2000 }])])
+    expect(merged.discount_items).toHaveLength(2)
+  })
+
+  it('a quality discount beside the checkoff is left out of the checkoff target and kept', () => {
+    const merged = mergeSettlements([normalizeSettlementExtraction({
+      contract_blocks: [{ contract_number: '1', line_items: [{ ticket_number: 'A', net_bushels: 1000, gross_revenue: 5000, discounts: 60 }, { ticket_number: 'B', net_bushels: 1000, gross_revenue: 5000, discounts: 60 }] }],
+      discount_items: [
+        { category: 'drying', description: 'Drying', deduction_kind: 'price', amount: 100 },
+        { category: 'checkoff', description: 'LB Checkoff', deduction_kind: 'price', amount: 33 },
+        { category: 'checkoff', description: 'Checkoff total', deduction_kind: 'price', amount: 20 },
+      ],
+    })])
+    expect(merged.discount_items!.map((i) => i.description)).toEqual(['Drying', 'Checkoff total'])
+  })
+})
+
 describe('Woodall 77232 — the nested shape through normalize + merge', () => {
   it('normalizeSettlementExtraction flattens blocks, carries the contract down, fills nulls, keeps block constants', () => {
     const n = normalizeSettlementExtraction(answerFor(1, 2))
