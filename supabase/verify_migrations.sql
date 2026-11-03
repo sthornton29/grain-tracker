@@ -200,13 +200,19 @@ checks(seq, migration, evidence, applied) as (values
   (105, '0100_fsa_viewer_scope_recursion',   'function viewer_fsa_statement_ids(); fsa_payment_statements_viewer_scope rewritten through it',
         exists (select 1 from fns where f = 'viewer_fsa_statement_ids')
         and exists (select 1 from pg_policies where tablename = 'fsa_payment_statements' and policyname = 'fsa_payment_statements_viewer_scope'
-                    and qual like '%viewer_fsa_statement_ids%'))
+                    and qual like '%viewer_fsa_statement_ids%')),
+  -- 0101 (supabase/migrations/): the agent's trigger yield report per unit + the policy's approved yield.
+  (106, '0101_insurance_trigger_yields',     'table insurance_trigger_yields, crop_insurance_policies.approved_yield, org_isolation policy',
+        exists (select 1 from tbls where t = 'insurance_trigger_yields')
+        and exists (select 1 from cols where t = 'crop_insurance_policies' and c = 'approved_yield')
+        and exists (select 1 from cols where t = 'insurance_trigger_yields' and c = 'landowner_id')
+        and exists (select 1 from pg_policies where tablename = 'insurance_trigger_yields' and policyname = 'insurance_trigger_yields_org_isolation'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 100'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 101'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

@@ -87,6 +87,7 @@ export const REPORT_GROUPS: ReportNavGroup[] = [
     reports: [
       { label: 'Crop Insurance Production Report', href: '/reports/crop-insurance', description: 'Production by county and practice in the layout your crop insurance agent expects.' },
       { label: 'Crop Insurance Claims Monitor', href: '/reports/crop-insurance-claims', description: 'What each policy would pay at today’s yields and prices, after premium.' },
+      { label: 'Claim Check', href: '/reports/insurance-claim-check', description: 'Each insurance unit’s harvested yield against its trigger yield, with a reply for your agent’s trigger yield email.' },
       { label: 'Bundled Settlement Statements', href: '/reports/settlement-pdfs', description: 'Every buyer settlement for a crop and year in one file, for a production audit.' },
       { label: 'ARC/PLC Decision Aid', href: '/reports/arc-plc-decision-aid', description: 'Compare what ARC and PLC would pay per farm and pick your election.' },
       { label: 'Government Payment Tracker', href: '/reports/government-payments', description: 'Expected ARC/PLC and other USDA payments by farm, with payment limits per entity.' },

@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-11-01 · version 0.1.0 · build 1f7813b. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-11-03 · version 0.1.0 · build 4b512fe. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -323,6 +323,7 @@ This is where your crop insurance policies live. Enter each policy once — plan
 ## How the numbers work
 
 - APH, coverage level, projected price, and acres entered here are exactly what the Claims Monitor multiplies through — a wrong APH here means a wrong estimate everywhere.
+- **Approved yield** is optional. It's the yield your guarantee is actually figured on — your APH after any yield adjustments, trend adjustment, or yield exclusions — and it's usually printed on your agent's schedule or trigger yield report. When it's filled in, every guarantee uses it instead of the APH. The Claim Check report can fill it in from your agent's trigger yield report with one tap.
 - Cotton insurance prices are **dollars per pound** (for example 0.68), not cents. Entering cents produces absurdly large estimated indemnities, and the Claims Monitor will flag it.
 
 ## Common questions
@@ -744,6 +745,50 @@ When a **seed production contract** is in the year, a **Seed (net)** column and 
 
 If projected revenue is missing for a contract, check that it has a delivery window and is not marked complete. If received money is in the wrong month, check the settlement's date. If the insurance line seems off, review your policies and yields on the Claims Monitor, since this page uses the same estimate. Otherwise, contact support.
 
+# Claim Check  (page: /reports/insurance-claim-check)
+
+## What this page is for
+
+After harvest your crop insurance agent may send a **trigger yield report** and ask whether you need any claims opened. Claim Check answers that for every insurance unit — each insured, county, crop, and irrigated or dryland practice — by putting your harvested yield so far next to that unit's trigger yield. It also points out where your agent's numbers and Turnrow's don't match, and writes a reply you can paste into an email.
+
+## How to use it
+
+- Pick the **crop year** (and an entity, if you only want one).
+- Tap **Read your agent's trigger yield report** and upload the PDF your agent sent. Turnrow reads each unit's trigger yield, acres, APH, and approved yield. Check that each insured is matched to the right entity — or to a landowner, when a landlord insures their own share — then save. When your agent sends an updated or later report (soybeans in December, for example), read it the same way; it replaces only the crops it covers.
+- Each row is one unit. **Below trigger** means the yield so far is under the trigger — talk to your agent about opening a claim. **Close to trigger** means within 10% above it. Units still being harvested say **not final**.
+- Tap a unit to see the fields behind it and anything that needs checking.
+- Tap **Write reply to your agent**. Units below their trigger are already marked "ask to open"; change any box in the table. Add your agent's first name and how you sign, edit the text if you like, then **Copy reply** and paste it into your email.
+
+## What the numbers mean
+
+- **Yield so far** counts only fields that are finished harvesting. A field still being harvested adds its acres to "Harvested ... of ... ac" only once it's done, so a half-cut field never pulls the yield down. It's the same production your Crop Insurance Production Report shows.
+- **Cotton** yields are lint pounds: your gin receipts, plus an estimate for cotton picked but not ginned yet ("part estimated").
+- **Trigger** comes from your agent's report when you've read one ("agent's report"). Otherwise Turnrow figures it from your policy ("from your policy"): your approved yield (or APH, if no approved yield is entered) times your coverage level. For Revenue Protection, if the harvest price is below the projected price, the trigger rises by projected ÷ harvest price.
+- **Margin** is yield so far minus the trigger. A number in parentheses is below the trigger.
+- **Landowner rows** are a landlord who insures their own share: the same yield per acre as your fields, on the landlord's share of the acres.
+- **County-based coverage** — ECO, SCO, ARP, AYP, STAX — pays on the county's results, so it never needs a claim opened and doesn't appear as a unit here.
+
+## Things it checks for you
+
+- Acres on the agent's report that don't match your policy or your planted fields.
+- An approved yield on the agent's report that isn't on your policy yet — tap **Use your agent's** figure to save it. Your guarantees on the Claims Monitor and other reports are then figured on it.
+- An APH or coverage level that doesn't match your policy.
+- A county trigger (ECO or SCO) printed higher than the expected county yield — worth asking your agent about.
+- Planted fields with no policy for that entity, crop, county, and practice — often a field set to the wrong entity.
+- A field with both irrigated and dryland acres but no split of its production yet. Both practices then use the field's average yield; enter the split on the Yields page for an exact figure.
+
+## Common questions
+
+- **Does Turnrow open the claim?** No. Turnrow gives you the numbers and the reply; your agent opens the claim and your adjuster makes the final call.
+- **Why is a unit "not final" when the combine is done?** A field counts as finished by the same rules as the Yields page. If one is still marked as harvesting, finish it there (or use Count anyway).
+- **The agent's acres are different from mine.** The agent reports what's on your acreage report. Ask which fields are on the unit, and check each field's entity, county, and practice in Settings.
+
+## If something looks wrong
+
+- If the report reader matched an insured, crop, or county wrong, fix it on the review screen before saving, or read the report again.
+- If a yield looks off, open the unit and check its fields on the Yields page.
+- Otherwise, contact support.
+
 # Crop Budget Planner  (page: /reports/crop-budget)
 
 ## What this page is for
@@ -1137,6 +1182,8 @@ The Claims Monitor estimates what each of your crop insurance policies would pay
 - **Harvest price**: a colored chip beside every price says exactly where it came from — the same chips as the Price Discovery table in Settings — and a small ↻ pulls the latest from RMA for that crop without touching anything else. Overrides live in Settings (the "Price details & overrides" link); the label beside the price says exactly where it came from, and it upgrades as the season progresses — a futures estimate (est.) before the discovery window opens, RMA's own running average once the window is live (RMA discovery, with the day of the window), and (RMA final) the moment RMA publishes. A price you entered by hand shows (final); if RMA later publishes a different final, a notice shows both numbers and lets you keep yours — nothing is replaced silently.
 - **County pieces**: SCO, ECO, STAX, MCO, ARP, and AYP pay based on estimated county results, not your farm's. ARP and AYP rows are labeled "county-triggered — farm yield not used" because your own yield genuinely does not matter to them.
 - Indemnities are shown net of premium, so the number is what you'd actually expect to collect.
+- **Approved yield**: when a policy has an approved yield entered (from your agent's schedule or trigger yield report), its guarantee is figured on that instead of the APH. The calculation panel shows both.
+- **Does a unit need a claim opened?** That question — each unit's yield against its trigger yield, and a reply for your agent — is on the **Claim Check** report.
 - **Stacking warnings** appear when endorsement combinations need agent review (for example ECO alongside STAX). These are warnings only — your agent is the authority.
 
 ## Common questions

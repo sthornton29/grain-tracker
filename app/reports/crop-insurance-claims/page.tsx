@@ -19,6 +19,11 @@ export default function CropInsuranceClaimsPage() {
         you paid. For price and yield what-ifs, use the{' '}
         <Link href="/reports/income-sensitivity" className="text-brand-deep underline">Income Sensitivity report →</Link>
       </p>
+      <p className="text-sm text-slate-600 no-print max-w-3xl">
+        Agent asking whether you need a claim opened? The{' '}
+        <Link href="/reports/insurance-claim-check" className="text-brand-deep underline">Claim Check →</Link>{' '}
+        compares each unit’s harvested yield with its trigger yield and writes the reply.
+      </p>
     </div>
   )
 }

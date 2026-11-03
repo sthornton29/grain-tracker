@@ -1,8 +1,8 @@
 ---
 page_route: /settings/crop-insurance
 title: Crop Insurance
-updated: 2026-09-24
-keywords: crop insurance, policy, MPCI, RP, YP, ARP, AYP, SCO, ECO, STAX, MCO, APH, projected price, coverage check, practice, county yield, attestation
+updated: 2026-11-03
+keywords: crop insurance, policy, MPCI, RP, YP, ARP, AYP, SCO, ECO, STAX, MCO, APH, approved yield, projected price, coverage check, practice, county yield, attestation
 ---
 ## What this page is for
 
@@ -34,6 +34,7 @@ This is where your crop insurance policies live. Enter each policy once — plan
 ## How the numbers work
 
 - APH, coverage level, projected price, and acres entered here are exactly what the Claims Monitor multiplies through — a wrong APH here means a wrong estimate everywhere.
+- **Approved yield** is optional. It's the yield your guarantee is actually figured on — your APH after any yield adjustments, trend adjustment, or yield exclusions — and it's usually printed on your agent's schedule or trigger yield report. When it's filled in, every guarantee uses it instead of the APH. The Claim Check report can fill it in from your agent's trigger yield report with one tap.
 - Cotton insurance prices are **dollars per pound** (for example 0.68), not cents. Entering cents produces absurdly large estimated indemnities, and the Claims Monitor will flag it.
 
 ## Common questions

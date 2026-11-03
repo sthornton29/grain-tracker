@@ -33,6 +33,10 @@ export type PolicyFormState = {
   coverage_level: string // decimal, e.g. '0.80'
   unit_structure: UnitStructure
   aph_yield: string
+  // 0101: the agent's approved yield. Optional on purpose — a form built from
+  // a document import leaves it undefined so an update never clears the value
+  // on file; the edit form always carries it ('' clears).
+  approved_yield?: string
   projected_price: string
   harvest_price: string
   volatility_factor: string
@@ -150,6 +154,7 @@ export function policyToForm(p: CropInsurancePolicy, sco?: CropInsuranceSco | nu
     coverage_level: numStr(p.coverage_level) || '0.80',
     unit_structure: p.unit_structure,
     aph_yield: numStr(p.aph_yield),
+    approved_yield: numStr(p.approved_yield ?? null),
     projected_price: numStr(p.projected_price),
     harvest_price: numStr(p.harvest_price),
     volatility_factor: numStr(p.volatility_factor),
@@ -218,6 +223,7 @@ export function policyFormToPayloads(form: PolicyFormState, source: 'manual' | '
     coverage_level: num(form.coverage_level) ?? 0.8,
     unit_structure: form.unit_structure,
     aph_yield: num(form.aph_yield) ?? 0,
+    ...(form.approved_yield !== undefined ? { approved_yield: num(form.approved_yield) } : {}),
     projected_price: num(form.projected_price) ?? 0,
     harvest_price: num(form.harvest_price),
     volatility_factor: num(form.volatility_factor),
@@ -450,6 +456,13 @@ export function PolicyFields({
           <span className={spanCls}>APH yield ({yieldUnit}) *</span>
           <input type="number" step="0.1" min="0" inputMode="decimal" value={value.aph_yield} onChange={(e) => set('aph_yield', e.target.value)} className={inputCls} />
         </label>
+        {value.plan_type !== 'ARP' && value.plan_type !== 'AYP' && (
+          <label className={labelCls}>
+            <span className={spanCls}>Approved yield ({yieldUnit})</span>
+            <input type="number" step="0.1" min="0" inputMode="decimal" value={value.approved_yield ?? ''} onChange={(e) => set('approved_yield', e.target.value)} className={inputCls} />
+            <span className="text-xs text-slate-500">From your agent&apos;s schedule or trigger yield report. Your guarantee is figured on it when it&apos;s filled in.</span>
+          </label>
+        )}
         <label className={labelCls}>
           <span className={spanCls}>Projected price ({priceUnit}) *</span>
           <input type="number" step="0.01" min="0" inputMode="decimal" value={value.projected_price} onChange={(e) => set('projected_price', e.target.value)} className={inputCls} />

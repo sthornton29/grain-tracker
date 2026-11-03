@@ -27,6 +27,17 @@ export function isAreaPlan(t: PlanType): boolean {
   return AREA_PLAN_TYPES.includes(t)
 }
 
+// The yield a policy's guarantee is figured on (0101): the agent's APPROVED
+// yield when one is on file (APH after yield adjustments, trend and yield
+// exclusions — usually above the plain APH), else the APH. Every guarantee
+// (revenue, production, trigger yield) reads through this; the APH itself
+// stays the farm's yield history (budgets, expected-yield fallbacks).
+export function guaranteeYieldOf(p: { aph_yield: number | string | null; approved_yield?: number | string | null }): number {
+  const approved = Number(p.approved_yield)
+  if (p.approved_yield != null && Number.isFinite(approved) && approved > 0) return approved
+  return Number(p.aph_yield) || 0
+}
+
 export const UNIT_STRUCTURES = ['enterprise', 'basic', 'optional'] as const
 export type UnitStructure = (typeof UNIT_STRUCTURES)[number]
 
@@ -1440,7 +1451,7 @@ export function projectInsuranceIndemnities(args: {
     const base: PolicyInputs = {
       planType: p.plan_type,
       coverageLevel: Number(p.coverage_level),
-      aphYield: Number(p.aph_yield),
+      aphYield: guaranteeYieldOf(p),
       projectedPrice: Number(p.projected_price),
       harvestPrice,
       insuredAcres: Number(p.insured_acres),

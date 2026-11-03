@@ -180,6 +180,7 @@ export const TABLE_DOCS = {
   crop_insurance_eco: ['ECO endorsement on a policy', '/settings/crop-insurance'],
   crop_insurance_stax: ['STAX endorsement (cotton) on a policy', '/settings/crop-insurance'],
   crop_insurance_mco: ['MCO margin endorsement on a policy', '/settings/crop-insurance'],
+  insurance_trigger_yields: ['The agent’s Trigger Yield Summary Report, one row per insurance unit: insured (entity_id, or landowner_id for a landlord insuring their own share), crop, county, practice, reported_acres, aph_yield, approved_yield, trigger_yield (the RP/YP farm trigger — harvested yield below it means talk to the agent about a claim), expected_county_yield, eco/sco trigger yields', '/reports/insurance-claim-check'],
   farm_base_acres: ['FSA base acres and PLC yield per farm × covered commodity', '/settings/government-payments'],
   arc_plc_elections: ['ARC / PLC election per farm × commodity', '/settings/government-payments'],
   arc_plc_payments: ['ARC/PLC payments received per farm × commodity × program year', '/settings/government-payments'],

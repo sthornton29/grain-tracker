@@ -78,7 +78,7 @@ export function fileToBase64(file: File): Promise<string> {
   })
 }
 
-export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement' | 'discount_schedule' | 'seed_contract' | 'fsa_payment_statement' | 'page_orientation'
+export type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'insurance_trigger_report' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement' | 'discount_schedule' | 'seed_contract' | 'fsa_payment_statement' | 'page_orientation'
 
 // Seed grower agreement extraction (077): the signature page (brand, contract
 // #, acres, bu/ac, estimated quantity, elevator, grower entity) AND the
@@ -671,6 +671,34 @@ export type CropInsuranceExtraction = {
   policies: CropInsurancePolicyExtraction[]
 }
 
+// An agent's Trigger Yield Summary Report (0101): one unit per page with figures.
+export type InsuranceTriggerUnitExtraction = {
+  page: number | null
+  insured_name: string | null
+  county: string | null
+  state: string | null
+  crop: string | null
+  practice: 'irrigated' | 'non_irrigated' | null
+  unit_label: string | null
+  plan_type: 'RP' | 'RP_HPE' | 'YP' | null
+  trigger_yield: number | null
+  aph_yield: number | null
+  approved_yield: number | null
+  acres: number | null
+  expected_county_yield: number | null
+  eco_trigger_yield: number | null
+  sco_trigger_yield: number | null
+  spring_price: number | null
+  fall_price: number | null
+}
+
+export type InsuranceTriggerReportExtraction = {
+  report_date: string | null
+  agency: string | null
+  crop_year: number | null
+  units: InsuranceTriggerUnitExtraction[]
+}
+
 export type FsaCommodityExtraction = {
   commodity_name: string | null
   base_acres: number | null
@@ -718,6 +746,7 @@ export async function parseDocument(input: File | ParseImage[], documentType: 'b
 export async function parseDocument(input: File | ParseImage[], documentType: 'contract', opts?: ParseOptions): Promise<ContractExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'settings_document', opts?: ParseOptions): Promise<RawSettingsExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'crop_insurance_policy', opts?: ParseOptions): Promise<CropInsuranceExtraction>
+export async function parseDocument(input: File | ParseImage[], documentType: 'insurance_trigger_report', opts?: ParseOptions): Promise<InsuranceTriggerReportExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'fsa_base_acres', opts?: ParseOptions): Promise<FsaBaseAcresExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'cotton_weight_ticket', opts?: ParseOptions): Promise<CottonLoadsExtraction>
 export async function parseDocument(input: File | ParseImage[], documentType: 'gin_receipt', opts?: ParseOptions): Promise<GinReceiptExtraction>
@@ -731,7 +760,7 @@ export async function parseDocument(
   input: File | ParseImage[],
   documentType: DocumentType,
   opts?: ParseOptions,
-): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonLoadsExtraction | GinReceiptExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction | SeedContractExtraction | FsaPaymentStatementExtraction | PageOrientationExtraction> {
+): Promise<SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | InsuranceTriggerReportExtraction | FsaBaseAcresExtraction | CottonLoadsExtraction | GinReceiptExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction | SeedContractExtraction | FsaPaymentStatementExtraction | PageOrientationExtraction> {
   // Build the request body. Photos are compressed small enough to inline as
   // base64. A PDF, however, is uploaded to storage first and sent as a URL:
   // Vercel rejects serverless request bodies over 4.5 MB with a 413, well below
@@ -796,7 +825,7 @@ export async function parseDocument(
     // Settlements come back nested (contract_blocks, nulls omitted) and are
     // flattened HERE — the one place — so every caller sees the flat shape.
     const data = documentType === 'settlement' ? normalizeSettlementExtraction(body.data) : body.data
-    return data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | FsaBaseAcresExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction | SeedContractExtraction | FsaPaymentStatementExtraction | PageOrientationExtraction
+    return data as SettlementExtraction | TicketsExtraction | BrokerageStatementExtraction | ContractExtraction | RawSettingsExtraction | CropInsuranceExtraction | InsuranceTriggerReportExtraction | FsaBaseAcresExtraction | CottonMarketingExtraction | LeaseAgreementExtraction | DiscountScheduleExtraction | SeedContractExtraction | FsaPaymentStatementExtraction | PageOrientationExtraction
   } finally {
     cleanup?.()
   }

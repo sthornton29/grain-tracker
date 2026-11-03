@@ -32,7 +32,7 @@ import { buildDoubleCropSet } from '@/lib/plantings'
 import { quoteMapFromWire, type Quote } from '@/lib/quotes'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import {
-  computePolicy, harvestContractLabel, policyPremium, resolveHarvestPriceByCrop,
+  computePolicy, harvestContractLabel, policyPremium, resolveHarvestPriceByCrop, guaranteeYieldOf,
   type PolicyInputs, type ScoConfig, type EcoConfig,
 } from '@/lib/crop-insurance'
 import { formatCottonPrice } from '@/lib/hedging'
@@ -514,7 +514,7 @@ export default function RevenueProjectionsReport({ onPayloadChange, headerAction
       const base: PolicyInputs = {
         planType: p.plan_type,
         coverageLevel: Number(p.coverage_level),
-        aphYield: Number(p.aph_yield),
+        aphYield: guaranteeYieldOf(p),
         projectedPrice: Number(p.projected_price),
         harvestPrice: harvest,
         insuredAcres: Number(p.insured_acres),

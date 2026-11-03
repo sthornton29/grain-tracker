@@ -26,7 +26,7 @@ import type { CottonPhysicalSummary } from '@/lib/cotton-sales'
 import type { SeedCropCommitment } from '@/lib/seed-contracts'
 import {
   computePolicy, policyPremium, scoConfigFrom, ecoConfigFrom, staxConfigFrom, mcoConfigFrom,
-  centsToInsuranceDollars,
+  centsToInsuranceDollars, guaranteeYieldOf,
   type PolicyInputs, type Practice, type CountyAssumptionLike,
 } from '@/lib/crop-insurance'
 import { cropToHedgeCommodity } from '@/lib/contracts'
@@ -371,7 +371,7 @@ export function computeScenarioCell(
     const base: PolicyInputs = {
       planType: p.plan_type,
       coverageLevel: Number(p.coverage_level),
-      aphYield: Number(p.aph_yield),
+      aphYield: guaranteeYieldOf(p),
       projectedPrice: Number(p.projected_price),
       harvestPrice: insuranceHarvestPrice,
       insuredAcres: Number(p.insured_acres),

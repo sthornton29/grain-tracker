@@ -1,7 +1,7 @@
 ---
 page_route: /reports/crop-insurance-claims
 title: Crop Insurance Claims Monitor
-updated: 2026-09-24
+updated: 2026-11-03
 keywords: claims, indemnity, RP, RP-HPE, YP, SCO, ECO, STAX, MCO, ARP, AYP, harvest price, county yield, premium, APH
 ---
 ## What this page is for
@@ -28,6 +28,8 @@ The Claims Monitor estimates what each of your crop insurance policies would pay
 - **Harvest price**: a colored chip beside every price says exactly where it came from — the same chips as the Price Discovery table in Settings — and a small ↻ pulls the latest from RMA for that crop without touching anything else. Overrides live in Settings (the "Price details & overrides" link); the label beside the price says exactly where it came from, and it upgrades as the season progresses — a futures estimate (est.) before the discovery window opens, RMA's own running average once the window is live (RMA discovery, with the day of the window), and (RMA final) the moment RMA publishes. A price you entered by hand shows (final); if RMA later publishes a different final, a notice shows both numbers and lets you keep yours — nothing is replaced silently.
 - **County pieces**: SCO, ECO, STAX, MCO, ARP, and AYP pay based on estimated county results, not your farm's. ARP and AYP rows are labeled "county-triggered — farm yield not used" because your own yield genuinely does not matter to them.
 - Indemnities are shown net of premium, so the number is what you'd actually expect to collect.
+- **Approved yield**: when a policy has an approved yield entered (from your agent's schedule or trigger yield report), its guarantee is figured on that instead of the APH. The calculation panel shows both.
+- **Does a unit need a claim opened?** That question — each unit's yield against its trigger yield, and a reply for your agent — is on the **Claim Check** report.
 - **Stacking warnings** appear when endorsement combinations need agent review (for example ECO alongside STAX). These are warnings only — your agent is the authority.
 
 ## Common questions

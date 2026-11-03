@@ -633,6 +633,10 @@ export type CropInsurancePolicy = {
   coverage_level: number
   unit_structure: 'enterprise' | 'basic' | 'optional'
   aph_yield: number
+  // 0101: the agent's APPROVED yield (APH after yield adjustments / trend /
+  // exclusions). When set, every guarantee is figured on it instead of the
+  // APH — lib/crop-insurance guaranteeYieldOf is the one rule.
+  approved_yield?: number | null
   projected_price: number
   harvest_price: number | null
   volatility_factor: number | null

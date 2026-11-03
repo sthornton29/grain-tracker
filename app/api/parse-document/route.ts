@@ -663,6 +663,57 @@ Respond ONLY in JSON with no other text, no markdown backticks:
   ]
 }`
 
+const INSURANCE_TRIGGER_REPORT_PROMPT = `This is a crop insurance agent's TRIGGER YIELD report (often titled "Trigger Yield Summary Report", "based on current prices and acres reported"). Each page covers ONE insured × county × crop × practice: a county-products block (ECO / SCO / ARP / AYP trigger yields, acres, expected county yield) and an individual-plan block (RP / RP-HPE / YP trigger yield, APH, approved yield) for a unit ("Enterprise Unit Totals", "BU-0002 Totals" …). A page may show only the heading with no figures (that crop/practice has no data yet) — skip such a page entirely.
+
+The page header prints the INSURED's name and address (top center) and the AGENT's name and contact (top right, under "Agent Information") — the insured is NOT the agent.
+
+Read each page's heading "County - CROP - PRACTICE" (e.g. "Lawrence - CORN - NON IRR", "Colbert - COTTON - IRRIGATED"): practice NON IRR / NIRR / Non-Irrigated / Dryland = "non_irrigated"; IRR / IRRIGATED = "irrigated". The heading text may wrap onto a second line.
+
+For each page WITH figures extract:
+- insured_name (as printed at the top of the page)
+- county, state (state from the insured's address only when the page does not print one), crop (as printed, e.g. "CORN", "COTTON"), practice
+- unit_label (e.g. "Enterprise Unit", "BU-0002")
+- plan_type of the individual plan: "RP", "RP_HPE" or "YP"
+- trigger_yield: the individual plan's trigger yield (the number on the RP / YP line)
+- aph_yield and approved_yield (the APH and Approved Yield columns of the individual block)
+- acres (the acres printed for the unit / practice)
+- expected_county_yield (the Expected County Yield column)
+- eco_trigger_yield and sco_trigger_yield (the ECO / SCO lines' trigger yields; null when the product is not listed). Copy each number EXACTLY as printed, even if it looks unusual.
+- spring_price and fall_price (the Spring Price / Fall Price in dollars — cotton in dollars per pound, e.g. 0.69)
+- page (1-based)
+
+Also report once: report_date (the "Generated on" date, YYYY-MM-DD), agency (the agent's company if printed, else the agent's name), crop_year (if printed; else null).
+
+Use null for anything not printed — NEVER guess a number.
+
+Respond ONLY in JSON with no other text, no markdown backticks:
+{
+  "report_date": "YYYY-MM-DD or null",
+  "agency": "string or null",
+  "crop_year": number or null,
+  "units": [
+    {
+      "page": number,
+      "insured_name": "string",
+      "county": "string",
+      "state": "string or null",
+      "crop": "string",
+      "practice": "irrigated or non_irrigated",
+      "unit_label": "string or null",
+      "plan_type": "RP or RP_HPE or YP",
+      "trigger_yield": number,
+      "aph_yield": number or null,
+      "approved_yield": number or null,
+      "acres": number or null,
+      "expected_county_yield": number or null,
+      "eco_trigger_yield": number or null,
+      "sco_trigger_yield": number or null,
+      "spring_price": number or null,
+      "fall_price": number or null
+    }
+  ]
+}`
+
 const FSA_BASE_ACRES_PROMPT = `This is an FSA document — either a Form 156EZ (Farm Record), a Base and Yield Notice, or a Base Allocation Summary from the USDA Farm Service Agency. Extract all farm base acre and yield information.
 
 For each farm found in the document, extract:
@@ -703,7 +754,7 @@ Respond ONLY in JSON with no other text, no markdown backticks:
   ]
 }`
 
-type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement' | 'discount_schedule' | 'seed_contract' | 'fsa_payment_statement' | 'page_orientation'
+type DocumentType = 'settlement' | 'tickets' | 'brokerage_statement' | 'contract' | 'settings_document' | 'crop_insurance_policy' | 'insurance_trigger_report' | 'fsa_base_acres' | 'cotton_weight_ticket' | 'gin_receipt' | 'cotton_marketing_document' | 'lease_agreement' | 'discount_schedule' | 'seed_contract' | 'fsa_payment_statement' | 'page_orientation'
 
 // Full lease-terms extraction for the Rent Settlement report — deeper than
 // the settings-document lease read (which only lifts share % / cash rent
@@ -942,6 +993,7 @@ const PROMPTS: Record<DocumentType, string> = {
   contract: CONTRACT_PROMPT,
   settings_document: SETTINGS_DOCUMENT_PROMPT,
   crop_insurance_policy: CROP_INSURANCE_POLICY_PROMPT,
+  insurance_trigger_report: INSURANCE_TRIGGER_REPORT_PROMPT,
   fsa_base_acres: FSA_BASE_ACRES_PROMPT,
   cotton_weight_ticket: COTTON_TICKET_PROMPT,
   gin_receipt: GIN_RECEIPT_PROMPT,

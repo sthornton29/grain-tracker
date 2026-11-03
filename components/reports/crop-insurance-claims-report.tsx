@@ -21,7 +21,7 @@ import { formatNumber, type ExportPayload } from '@/lib/exports'
 import {
   sensitivityTable, harvestContractLabel,
   projectInsuranceIndemnities, resolveHarvestPriceByCrop, actualYieldByCropFromLoads,
-  countyAssumptionFor, practiceActualYieldByCrop,
+  countyAssumptionFor, practiceActualYieldByCrop, guaranteeYieldOf,
   PLAN_TYPE_SHORT, PRACTICE_LABEL, isAreaPlan, stackingWarnings, staxArcPlcWarning,
   type PolicyInputs, type ScoConfig, type EcoConfig, type PolicyComputation,
   type LiveHarvest, type Practice,
@@ -475,7 +475,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange, headerActio
       const audit = auditPolicyIndemnities({
         planType: p.plan_type,
         coverageLevel: Number(p.coverage_level),
-        aphYield: Number(p.aph_yield),
+        aphYield: guaranteeYieldOf(p),
         projectedPrice: Number(p.projected_price),
         harvestPrice: c.base.harvestPrice,
         insuredAcres: Number(p.insured_acres),
@@ -508,7 +508,7 @@ export default function CropInsuranceClaimsReport({ onPayloadChange, headerActio
       })
       const invariants = auditInvariants({
         planType: p.plan_type,
-        aphYield: Number(p.aph_yield),
+        aphYield: guaranteeYieldOf(p),
         actualYield: c.assumedYield,
         projectedPrice: Number(p.projected_price),
         harvestPrice: c.base.harvestPrice,
@@ -1127,6 +1127,9 @@ function PolicyDetail({
         <div>
           <div className="font-semibold mb-1">Inputs</div>
           <Line label="APH yield" value={`${Number(p.aph_yield).toFixed(1)} bu/ac`} />
+          {p.approved_yield != null && Number(p.approved_yield) > 0 && (
+            <Line label="Approved yield (guarantee)" value={`${Number(p.approved_yield).toFixed(1)} bu/ac`} />
+          )}
           <Line label="Coverage level" value={`${Math.round(cov * 100)}%`} />
           <Line label="Projected price" value={fmtPrice(p.projected_price)} />
           <Line label={`Harvest price${harvest?.isFinal ? ' (final)' : ' (est.)'}`} value={fmtPrice(harvest?.price ?? 0)} />
@@ -1139,7 +1142,7 @@ function PolicyDetail({
           {p.plan_type === 'YP' ? (
             <>
               <Line label="Production guarantee" value={`${fmtInt(comp.base.productionGuaranteeBu ?? 0)} bu`} />
-              <Line label="= APH × coverage × acres" value={`${Number(p.aph_yield).toFixed(1)} × ${cov} × ${fmtNum(Number(p.insured_acres), 1)}`} />
+              <Line label="= yield × coverage × acres" value={`${guaranteeYieldOf(p).toFixed(1)} × ${cov} × ${fmtNum(Number(p.insured_acres), 1)}`} />
               <Line label="Actual production" value={`${fmtInt(comp.base.actualProductionBu ?? 0)} bu`} />
               <Line label="Shortfall" value={`${fmtInt(comp.base.indemnityBushels ?? 0)} bu`} />
               <Line label="× MAX(proj, harvest)" value={fmtPrice(comp.base.guaranteePrice)} />
@@ -1148,7 +1151,7 @@ function PolicyDetail({
           ) : (
             <>
               <Line label="Revenue guarantee" value={usd2(comp.base.revenueGuarantee)} />
-              <Line label="= APH × cov × g.price × acres" value={`${Number(p.aph_yield).toFixed(1)} × ${cov} × ${fmtPrice(comp.base.guaranteePrice)} × ${fmtNum(Number(p.insured_acres), 1)}`} />
+              <Line label="= yield × cov × g.price × acres" value={`${guaranteeYieldOf(p).toFixed(1)} × ${cov} × ${fmtPrice(comp.base.guaranteePrice)} × ${fmtNum(Number(p.insured_acres), 1)}`} />
               <Line label="Expected revenue" value={usd2(comp.base.expectedRevenue)} />
               <Line label="= assumed yld × harvest × acres" value={`${assumedYield.toFixed(1)} × ${fmtPrice(harvest?.price ?? 0)} × ${fmtNum(Number(p.insured_acres), 1)}`} />
               <Line label="Base indemnity = MAX(0, guar − exp)" value={usd2(comp.base.indemnity)} />

@@ -23,6 +23,7 @@ import type {
   DiscountScheduleExtraction,
   FsaBaseAcresExtraction,
   GinReceiptExtraction,
+  InsuranceTriggerReportExtraction,
   LeaseAgreementExtraction,
   SeedContractExtraction,
   SettlementDiscountItemExtraction,
@@ -276,6 +277,17 @@ export function mergeCropInsurance(parts: CropInsuranceExtraction[]): CropInsura
   // The review screen dedupes again on the policy natural key; here we only
   // drop exact boundary repeats.
   return { policies: mergeList(parts.map((p) => p.policies ?? [])) }
+}
+
+export function mergeInsuranceTriggerReport(parts: InsuranceTriggerReportExtraction[]): InsuranceTriggerReportExtraction {
+  // One unit per page; a boundary repeat is the same page read twice.
+  const first = (k: 'report_date' | 'agency' | 'crop_year') => parts.map((p) => p[k]).find((v) => v != null) ?? null
+  return {
+    report_date: first('report_date') as string | null,
+    agency: first('agency') as string | null,
+    crop_year: first('crop_year') as number | null,
+    units: mergeList(parts.map((p) => p.units ?? [])),
+  }
 }
 
 export function mergeFsaBaseAcres(parts: FsaBaseAcresExtraction[]): FsaBaseAcresExtraction {

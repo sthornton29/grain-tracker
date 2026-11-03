@@ -39,6 +39,7 @@ const GROWING_TABLES = [
   'futures_positions', 'options_positions', 'hedge_position_events',
   'crop_insurance_policies', 'crop_insurance_deletions', 'arc_plc_payments', 'other_government_payments',
   'farm_program_payees', 'fsa_payment_statements', 'fsa_payment_lines', 'fsa_payment_crop_amounts',
+  'insurance_trigger_yields',
   'cotton_sales_contracts', 'cotton_contract_specs', 'cotton_pool_payments', 'cotton_fees',
   'ccc_loans', 'cotton_ldp_records',
   'seed_contract_details', 'seed_contract_premiums', 'seed_pricing_elections',

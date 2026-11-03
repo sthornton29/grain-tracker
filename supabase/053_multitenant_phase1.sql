@@ -167,6 +167,7 @@ begin
     'farm_base_acres', 'arc_plc_elections', 'arc_plc_payments',
     'other_government_payments', 'payment_limit_config',
     'farm_program_payees', 'fsa_payment_statements', 'fsa_payment_lines', 'fsa_payment_crop_amounts',
+    'insurance_trigger_yields',
     -- budget
     'budget_scenarios', 'budget_lines',
     -- cotton
