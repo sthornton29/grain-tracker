@@ -37,6 +37,8 @@ import {
 } from './cotton-quality'
 import { evaluateBale, summarizeSpec, type BaleEvaluation, type BalePractice, type ContractQualitySpec, type SpecSummary } from './cotton-contract-spec'
 import type { CottonDisposition } from './types'
+import { analyzeYields, buildYieldInputs, isHarvestComplete, type ExpectedYieldAssumption } from './yields'
+import type { CottonYieldModel } from './cotton-yield-sources'
 
 // ---------------------------------------------------------------------------
 // Inputs
@@ -540,8 +542,8 @@ export type ContractView = {
   evaluationOf: (baleId: string) => BaleEvaluation | undefined
 }
 
-export function contractView(rows: ReadonlyArray<BaleRow>, spec: ContractQualitySpec, appEstimatedBales: number | null): ContractView {
-  const summary = summarizeSpec(spec, rows.map((r) => ({ id: r.id, lbs: r.lbs, ...specBaleOf(r) })), { appEstimatedBales })
+export function contractView(rows: ReadonlyArray<BaleRow>, spec: ContractQualitySpec, appEstimatedBales: number | null, pickedEstimatedBales: number | null = null): ContractView {
+  const summary = summarizeSpec(spec, rows.map((r) => ({ id: r.id, lbs: r.lbs, ...specBaleOf(r) })), { appEstimatedBales, pickedEstimatedBales })
   return { summary, evaluationOf: (id) => summary.evaluations.get(id) }
 }
 
@@ -573,6 +575,63 @@ export function estimatedBalesFromAssumptions(
     lint += irr + dry > 0 ? irr * yIrr + dry * yDry : planted * yAll
   }
   return balesFromLint(lint)
+}
+
+/** The projection's bale estimate from the crop as it is coming off
+ *  (Stuart, 2026-11-03): the average lint lbs/ac on the fields whose
+ *  harvest is COMPLETE, extrapolated to every cotton acre planted, ÷ the
+ *  average bale weight to date. Completion is the Yields page's own rule
+ *  (analyzeYields through the cotton adapter + the crop-level flag), so a
+ *  half-picked field never drags the average down. Null until a field is
+ *  complete, a bale is on file, or with the cotton module off. */
+export type PickedBaleEstimate = {
+  bales: number
+  lintPerAcre: number
+  countedAcres: number
+  countedFields: number
+  totalAcres: number
+  avgBaleLbs: number
+  balesToDate: number
+}
+
+export function estimatedBalesFromPicked(args: {
+  cropYear: number
+  plantings: ReadonlyArray<{ id: string; field_id: string; crop_id: string; season_year: number; planted_acres?: number | string | null; irrigated_acres?: number | string | null; dryland_acres?: number | string | null; yield_include_override?: boolean | null; archived_at?: string | null }>
+  assumptions: ReadonlyArray<ExpectedYieldAssumption & { harvest_complete?: boolean | null }>
+  cotton: Pick<CottonYieldModel, 'on' | 'adapter' | 'cottonCropIds' | 'yieldFor'>
+  bales: ReadonlyArray<{ crop_year: number; net_weight_lbs: number | string }>
+  now?: Date
+}): PickedBaleEstimate | null {
+  if (!args.cotton.on || !args.cotton.adapter) return null
+  const acresOf = (p: (typeof args.plantings)[number]) => num(p.planted_acres) || num(p.irrigated_acres) + num(p.dryland_acres)
+  const cotton = args.plantings
+    .filter((p) => !p.archived_at && p.season_year === args.cropYear && args.cotton.cottonCropIds.has(p.crop_id))
+    .map((p) => ({ ...p, planted_acres: acresOf(p) }))
+  if (cotton.length === 0) return null
+  const analysis = analyzeYields(buildYieldInputs({ plantings: cotton, aggByKey: new Map(), assumptions: args.assumptions, cotton: args.cotton.adapter }), undefined, args.now)
+  const cropCompleteKeys = new Set(args.assumptions.filter((a) => a.harvest_complete).map((a) => `${a.crop_id}|${a.crop_year}`))
+  let totalAcres = 0, countedAcres = 0, countedFields = 0, countedLint = 0
+  for (const p of cotton) {
+    totalAcres += p.planted_acres
+    if (!isHarvestComplete(p, analysis.excluded, cropCompleteKeys)) continue
+    const y = args.cotton.yieldFor(p)
+    if (!y) continue
+    countedAcres += p.planted_acres
+    countedLint += y.lintLbs
+    countedFields++
+  }
+  let baleLbs = 0, balesToDate = 0
+  for (const b of args.bales) {
+    if (b.crop_year !== args.cropYear) continue
+    const w = num(b.net_weight_lbs)
+    if (w <= 0) continue
+    baleLbs += w
+    balesToDate++
+  }
+  if (countedAcres <= 0 || countedLint <= 0 || balesToDate === 0 || totalAcres <= 0) return null
+  const lintPerAcre = countedLint / countedAcres
+  const avgBaleLbs = baleLbs / balesToDate
+  return { bales: Math.round((lintPerAcre * totalAcres) / avgBaleLbs), lintPerAcre, countedAcres, countedFields, totalAcres, avgBaleLbs, balesToDate }
 }
 
 /** Band → the on-screen tone (data-semantic colors, never brand green). */

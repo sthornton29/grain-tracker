@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   applyFilters, buildBaleRows, classWeekOf, colorGrid, comparisonRows, contractView, distribution, EMPTY_FILTERS, factorAverage, factorDetail,
-  groupRows, harvestSpanOf, kpis, rowsInBin, varietyOfPlanting, committedElsewhere, type BaleQualityInputs, type BaleRow,
+  groupRows, harvestSpanOf, kpis, rowsInBin, varietyOfPlanting, committedElsewhere, estimatedBalesFromPicked, type BaleQualityInputs, type BaleRow,
 } from '@/lib/bale-quality-report'
 import { buildBaleQualityPdfPayload, buildBaleQualityWorkbook, buildQualifyingBalesWorkbook, SECTION, SPEC_ROW, kpiCards } from '@/lib/bale-quality-export'
 import { evaluatePayload, formulaTextOf, payloadHasFormulas, formulaLayout, type ExportPayload } from '@/lib/exports'
@@ -431,5 +431,54 @@ describe('harvest date — the receipt’s seed cotton load tickets', () => {
     expect(groups.map((x) => [x.label, x.rows.length])).toEqual([['Oct 3', 4], ['Oct 5 – Oct 7', 5], ['No harvest date', 1]])
     expect(applyFilters(rows, { ...EMPTY_FILTERS, harvestFrom: '2026-10-06' }).map((r) => r.id).sort()).toEqual(['B10', 'B5', 'B6', 'B7', 'B8'])
     expect(applyFilters(rows, { ...EMPTY_FILTERS, harvestTo: '2026-10-03' }).every((r) => r.receiptId === 'R1')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The projection's picked-yield estimate (Stuart, 2026-11-03): complete
+// fields' lint/ac × every cotton acre ÷ the average bale to date.
+// ---------------------------------------------------------------------------
+
+describe('estimatedBalesFromPicked', () => {
+  const agg = new Map([
+    ['fA', { dryBu: 250_000, lastLoadDate: '2026-10-20' }],
+    ['fB', { dryBu: 25_000, lastLoadDate: '2026-11-01' }],
+  ])
+  const lint = new Map([['fA', 100_000], ['fB', 10_000]])
+  const cotton = {
+    on: true,
+    cottonCropIds: new Set(['cot']),
+    adapter: { isCottonCrop: (id: string) => id === 'cot', aggFor: (p: { field_id: string }) => agg.get(p.field_id), turnoutFor: () => 0.4 },
+    yieldFor: (p: { field_id: string }) => ({ lintLbs: lint.get(p.field_id) ?? 0 }) as unknown as ReturnType<NonNullable<Parameters<typeof estimatedBalesFromPicked>[0]['cotton']['yieldFor']>>,
+  }
+  const plantings = [
+    // Done (count anyway): 1,000 lbs/ac.
+    { id: 'pA', field_id: 'fA', crop_id: 'cot', season_year: 2026, planted_acres: 100, yield_include_override: true },
+    // The field the picker is in — held in progress, its partial 200 lbs/ac never drags the average.
+    { id: 'pB', field_id: 'fB', crop_id: 'cot', season_year: 2026, planted_acres: 50 },
+    // Not picked yet — still in the acres extrapolated to.
+    { id: 'pC', field_id: 'fC', crop_id: 'cot', season_year: 2026, planted_acres: 50 },
+    { id: 'pX', field_id: 'fX', crop_id: 'corn', season_year: 2026, planted_acres: 500 },
+  ]
+  const bales = [{ crop_year: 2026, net_weight_lbs: 490 }, { crop_year: 2026, net_weight_lbs: '510' }, { crop_year: 2025, net_weight_lbs: 300 }]
+  const now = new Date('2026-11-03T12:00:00Z')
+
+  it('extrapolates the complete fields to every cotton acre at the average bale', () => {
+    const e = estimatedBalesFromPicked({ cropYear: 2026, plantings, assumptions: [], cotton, bales, now })!
+    expect(e).toMatchObject({ lintPerAcre: 1000, countedAcres: 100, countedFields: 1, totalAcres: 200, avgBaleLbs: 500, balesToDate: 2, bales: 400 })
+  })
+
+  it('wins over the contract\'s typed estimate in the projection', () => {
+    const rows = buildBaleRows(fixture())
+    const s = contractView(rows, VS_SPEC, null, 400).summary
+    expect(s.projection?.estimateSource).toBe('picked')
+    expect(s.projection?.estimatedBales).toBe(400)
+  })
+
+  it('is null with nothing complete, no bales, or the module off', () => {
+    const open = plantings.map((p) => ({ ...p, yield_include_override: null }))
+    expect(estimatedBalesFromPicked({ cropYear: 2026, plantings: open.filter((p) => p.id !== 'pA'), assumptions: [], cotton, bales, now })).toBeNull()
+    expect(estimatedBalesFromPicked({ cropYear: 2026, plantings, assumptions: [], cotton, bales: [], now })).toBeNull()
+    expect(estimatedBalesFromPicked({ cropYear: 2026, plantings, assumptions: [], cotton: { ...cotton, on: false, adapter: null }, bales, now })).toBeNull()
   })
 })

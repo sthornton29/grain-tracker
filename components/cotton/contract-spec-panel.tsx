@@ -54,8 +54,8 @@ export async function readQualityTerms(source: DocumentSource, onProgress?: (s: 
 }
 
 /** The compact contract view: headline, cap tracker, link to the report. */
-export function ContractSpecSummary({ contractId, label, spec, rows, appEstimatedBales }: { contractId: string; label: string; spec: ContractQualitySpec; rows: ReadonlyArray<BaleRow>; appEstimatedBales: number | null }) {
-  const view = useMemo(() => contractView(rows, spec, appEstimatedBales), [rows, spec, appEstimatedBales])
+export function ContractSpecSummary({ contractId, label, spec, rows, appEstimatedBales, pickedEstimatedBales = null }: { contractId: string; label: string; spec: ContractQualitySpec; rows: ReadonlyArray<BaleRow>; appEstimatedBales: number | null; pickedEstimatedBales?: number | null }) {
+  const view = useMemo(() => contractView(rows, spec, appEstimatedBales, pickedEstimatedBales), [rows, spec, appEstimatedBales, pickedEstimatedBales])
   const s = view.summary
   const capPct = s.cap && s.cap > 0 ? Math.min(1, s.meets / s.cap) : null
   return (
@@ -81,13 +81,15 @@ export function ContractSpecSummary({ contractId, label, spec, rows, appEstimate
   )
 }
 
-export default function ContractSpecPanel({ contract, label, spec, farms, rows, appEstimatedBales, onSaved }: {
+export default function ContractSpecPanel({ contract, label, spec, farms, rows, appEstimatedBales, pickedEstimatedBales = null, onSaved }: {
   contract: CottonSalesContract
   label: string
   spec: ContractQualitySpec | null
   farms: ReadonlyArray<FarmOption>
   rows: ReadonlyArray<BaleRow>
   appEstimatedBales: number | null
+  /** The crop as it is coming off — lib/bale-quality-report estimatedBalesFromPicked. */
+  pickedEstimatedBales?: number | null
   onSaved: (msg: string) => Promise<void> | void
 }) {
   const supabase = useMemo(() => createClient(), [])
@@ -181,7 +183,7 @@ export default function ContractSpecPanel({ contract, label, spec, farms, rows, 
 
       {mode === 'view' && (
         hasSpec
-          ? <ContractSpecSummary contractId={contract.id} label={label} spec={spec!} rows={rows} appEstimatedBales={appEstimatedBales} />
+          ? <ContractSpecSummary contractId={contract.id} label={label} spec={spec!} rows={rows} appEstimatedBales={appEstimatedBales} pickedEstimatedBales={pickedEstimatedBales} />
           : <p className="text-sm text-slate-500">No quality requirements on this contract. Add them by hand, or read them from the contract document — every classed bale is then scored against them on the Bale Quality report.</p>
       )}
 

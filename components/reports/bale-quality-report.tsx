@@ -25,6 +25,7 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createClient } from '@/lib/supabase/client'
+import { useCottonYields } from '@/lib/use-cotton-yields'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
 import { useReportCropYear, cropYearChoices } from '@/lib/report-filters'
@@ -41,9 +42,9 @@ import { FactorTiles, FactorDetailPanel, SectionTitle, avgText, bandBg, pct1 } f
 import { FACTORS, FACTOR_ORDER, FACTOR_PRESETS, bandsFor, factorText, factorValue, loanVsBaseText, loanVsBaseTone, type Band, type FactorKey } from '@/lib/cotton-quality'
 import { EVALUATION_LABEL, specFromRow, specHasFiberTerms, specSummaryLine, type BaleEvaluation, type ContractQualitySpec } from '@/lib/cotton-contract-spec'
 import {
-  activeFilterCount, applyFilters, bandTone, buildBaleRows, cellBand, colorGrid, comparisonRows, contractView, estimatedBalesFromAssumptions, factorDetail,
+  activeFilterCount, applyFilters, bandTone, buildBaleRows, cellBand, colorGrid, comparisonRows, contractView, estimatedBalesFromAssumptions, estimatedBalesFromPicked, factorDetail,
   EMPTY_FILTERS, GROUP_BY_LABEL, groupRows, kpis, rowsInBin, NO_VARIETY,
-  type BaleQualityFilters, type BaleQualityInputs, type BaleRow, type ComparisonRow, type ContractView, type FactorBin, type FactorDetail, type GroupBy, type Weighting,
+  type BaleQualityFilters, type BaleQualityInputs, type PickedBaleEstimate, type BaleRow, type ComparisonRow, type ContractView, type FactorBin, type FactorDetail, type GroupBy, type Weighting,
 } from '@/lib/bale-quality-report'
 import { buildBaleQualityPdfPayload, buildBaleQualityWorkbook, buildQualifyingBalesWorkbook, DISPOSITION_TEXT, kpiCards, type BaleQualityExportInput } from '@/lib/bale-quality-export'
 import type { CottonContractSpec, CottonDisposition, CottonSalesContract, CropAssumption } from '@/lib/types'
@@ -112,7 +113,7 @@ export default function BaleQualityReport() {
           supabase.from('farms').select('id, name, entity_id, fsa_number, archived_at'),
           supabase.from('fields').select('id, farm_id, name_or_number'),
           supabase.from('entities').select('id, name'),
-          fetchAllRows((f, t) => supabase.from('field_plantings').select('id, field_id, crop_id, season_year, irrigated_acres, dryland_acres, planted_acres, archived_at').eq('season_year', cropYear).order('id').range(f, t)),
+          fetchAllRows((f, t) => supabase.from('field_plantings').select('id, field_id, crop_id, season_year, irrigated_acres, dryland_acres, planted_acres, yield_include_override, archived_at').eq('season_year', cropYear).order('id').range(f, t)),
           fetchAllRows((f, t) => supabase.from('field_planting_varieties').select('planting_id, variety').order('id').range(f, t)),
           supabase.from('crops').select('id, name'),
           fetchAllRows((f, t) => supabase.from('cotton_bale_dispositions').select('bale_id, disposition, contract_id, loan_id').order('id').range(f, t)),
@@ -178,9 +179,16 @@ export default function BaleQualityReport() {
 
   // The app's own production estimate, in bales, for the projection fallback.
   const appEstimatedBales = useMemo(() => (inputs ? estimatedBalesFromAssumptions(inputs, assumptions) : null), [inputs, assumptions])
+  // The projection's primary estimate (2026-11-03): the crop as it is coming
+  // off — complete fields' lint/ac × every cotton acre ÷ the average bale to date.
+  const cropsForYield = useMemo(() => inputs?.crops ?? [], [inputs])
+  const cottonYields = useCottonYields(supabase, { crops: cropsForYield, assumptions })
+  const picked: PickedBaleEstimate | null = useMemo(() => (inputs
+    ? estimatedBalesFromPicked({ cropYear, plantings: inputs.plantings, assumptions, cotton: cottonYields.model, bales: inputs.bales })
+    : null), [inputs, cropYear, assumptions, cottonYields.model])
 
   const filtered = useMemo(() => applyFilters(rows, filters), [rows, filters])
-  const view: ContractView | null = useMemo(() => (contractChoice ? contractView(filtered, contractChoice.spec, appEstimatedBales) : null), [filtered, contractChoice, appEstimatedBales])
+  const view: ContractView | null = useMemo(() => (contractChoice ? contractView(filtered, contractChoice.spec, appEstimatedBales, picked?.bales ?? null) : null), [filtered, contractChoice, appEstimatedBales, picked])
   const details = useMemo(() => {
     const out: Partial<Record<FactorKey, FactorDetail>> = {}
     for (const f of FACTOR_ORDER) out[f] = factorDetail(filtered, f, cropYear, weighting, contractChoice?.spec ?? null, view?.evaluationOf)
@@ -346,7 +354,7 @@ export default function BaleQualityReport() {
 
           {contractChoice && view && (
             <ContractPanel
-              choice={contractChoice} view={view} onDrill={setDrill}
+              choice={contractChoice} view={view} picked={picked} onDrill={setDrill}
               excludeCommitted={filters.excludeCommitted} onExcludeCommitted={(v) => setFilter('excludeCommitted', v)}
             />
           )}
@@ -397,8 +405,8 @@ function uniq(list: ChipOption[]): ChipOption[] {
 // Contract panel
 // ---------------------------------------------------------------------------
 
-function ContractPanel({ choice, view, onDrill, excludeCommitted, onExcludeCommitted }: {
-  choice: ContractChoice; view: ContractView; onDrill: (d: Drill) => void; excludeCommitted: boolean; onExcludeCommitted: (v: boolean) => void
+function ContractPanel({ choice, view, picked, onDrill, excludeCommitted, onExcludeCommitted }: {
+  choice: ContractChoice; view: ContractView; picked: PickedBaleEstimate | null; onDrill: (d: Drill) => void; excludeCommitted: boolean; onExcludeCommitted: (v: boolean) => void
 }) {
   const s = view.summary
   const capPct = s.cap && s.cap > 0 ? Math.min(1, s.meets / s.cap) : null
@@ -442,7 +450,9 @@ function ContractPanel({ choice, view, onDrill, excludeCommitted, onExcludeCommi
           ) : <div className="text-sm text-slate-500">The contract carries no bale cap.</div>}
           {s.projection ? (
             <div className="text-sm">
-              <span className="font-semibold tabular-nums">{s.projection.projected.toLocaleString()}</span> projected qualifying bales <span className="text-slate-500">— estimate: {pct1(s.passRate)} pass rate × {s.projection.estimatedBales.toLocaleString()} {s.projection.estimateSource === 'contract' ? 'estimated bales on the contract' : 'bales expected by Turnrow (expected lint ÷ 500)'}{s.cap != null ? `, vs the ${s.cap.toLocaleString()} cap` : ''}</span>
+              <span className="font-semibold tabular-nums">{s.projection.projected.toLocaleString()}</span> projected qualifying bales <span className="text-slate-500">— estimate: {pct1(s.passRate)} pass rate × {s.projection.estimatedBales.toLocaleString()} {s.projection.estimateSource === 'picked' && picked
+                ? <>projected bales ({Math.round(picked.lintPerAcre).toLocaleString()} lbs/ac on the {Math.round(picked.countedAcres).toLocaleString()} acres picked × {Math.round(picked.totalAcres).toLocaleString()} cotton acres ÷ {Math.round(picked.avgBaleLbs).toLocaleString()} lb average bale)</>
+                : s.projection.estimateSource === 'contract' ? 'estimated bales on the contract' : 'bales expected by Turnrow (expected lint ÷ 500)'}{s.cap != null ? `, vs the ${s.cap.toLocaleString()} cap` : ''}</span>
             </div>
           ) : (
             <div className="text-xs text-slate-500">No production estimate yet — set a cotton expected yield under Marketing, or enter the estimate on the contract.</div>

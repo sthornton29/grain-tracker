@@ -202,15 +202,19 @@ export type SpecSummary = {
   /** Bales failing exactly one factor. */
   singleFactorFails: number
   cap: number | null
-  /** Pass rate × the estimate (the contract's, else the app's), rounded. */
-  projection: { estimatedBales: number; estimateSource: 'contract' | 'app'; projected: number } | null
+  /** Pass rate × the estimate, rounded. The estimate is the crop as it is
+   *  coming off ('picked': complete fields' lint/ac × every cotton acre ÷
+   *  the average bale to date — lib/bale-quality-report estimatedBalesFromPicked,
+   *  Stuart 2026-11-03), else the contract's typed estimate, else the app's
+   *  assumption. */
+  projection: { estimatedBales: number; estimateSource: 'picked' | 'contract' | 'app'; projected: number } | null
   evaluations: Map<string, BaleEvaluation>
 }
 
 export function summarizeSpec(
   spec: ContractQualitySpec,
   bales: ReadonlyArray<SpecSummaryBale>,
-  opts: { appEstimatedBales?: number | null } = {},
+  opts: { appEstimatedBales?: number | null; pickedEstimatedBales?: number | null } = {},
 ): SpecSummary {
   const evaluations = new Map<string, BaleEvaluation>()
   let eligibleClassed = 0, eligibleClassedLbs = 0, meets = 0, meetsLbs = 0, fails = 0, notEligible = 0, notClassed = 0
@@ -237,7 +241,8 @@ export function summarizeSpec(
   const pareto = Array.from(byFactor.entries()).map(([factor, r]) => ({ factor, ...r })).sort((a, z) => z.bales - a.bales || a.factor.localeCompare(z.factor))
   const passRate = eligibleClassed > 0 ? meets / eligibleClassed : null
   const passRateLbs = eligibleClassedLbs > 0 ? meetsLbs / eligibleClassedLbs : null
-  const estimate = spec.estimated_bales != null ? { estimatedBales: spec.estimated_bales, estimateSource: 'contract' as const }
+  const estimate = opts.pickedEstimatedBales != null && opts.pickedEstimatedBales > 0 ? { estimatedBales: Math.round(opts.pickedEstimatedBales), estimateSource: 'picked' as const }
+    : spec.estimated_bales != null ? { estimatedBales: spec.estimated_bales, estimateSource: 'contract' as const }
     : opts.appEstimatedBales != null && opts.appEstimatedBales > 0 ? { estimatedBales: Math.round(opts.appEstimatedBales), estimateSource: 'app' as const } : null
   const projection = estimate && passRate != null ? { ...estimate, projected: Math.round(passRate * estimate.estimatedBales) } : null
   return { eligibleClassed, eligibleClassedLbs, meets, meetsLbs, fails, notEligible, notClassed, passRate, passRateLbs, pareto, singleFactorFails, cap: spec.bale_cap, projection, evaluations }

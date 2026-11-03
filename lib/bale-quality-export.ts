@@ -179,7 +179,7 @@ export function buildBaleQualityPdfPayload(input0: BaleQualityExportInput): Expo
       ['Not eligible (farm not on the contract)', s.notEligible],
       ['Not yet classed', s.notClassed],
       ['Cap', s.cap != null ? `${s.meets.toLocaleString()} qualifying of ${s.cap.toLocaleString()}` : 'none'],
-      ['Projected qualifying (estimate)', s.projection ? `${s.projection.projected.toLocaleString()} = ${(s.passRate! * 100).toFixed(1)}% × ${s.projection.estimatedBales.toLocaleString()} ${s.projection.estimateSource === 'contract' ? "(the contract's estimate)" : "(the app's expected production)"}` : 'no production estimate'],
+      ['Projected qualifying (estimate)', s.projection ? `${s.projection.projected.toLocaleString()} = ${(s.passRate! * 100).toFixed(1)}% × ${s.projection.estimatedBales.toLocaleString()} ${s.projection.estimateSource === 'picked' ? '(projected from the yield picked so far ÷ the average bale)' : s.projection.estimateSource === 'contract' ? "(the contract's estimate)" : "(the app's expected production)"}` : 'no production estimate'],
       ...s.pareto.map((p): ExportCell[] => [`Fails ${FACTORS[p.factor].label}`, `${p.bales} bales · ${p.onlyThis} fail only this factor`]),
     ]
     sections.push({ title: `Contract: ${contract.label}`, columns: [{ label: 'Item' }, { label: 'Value' }], rows: lines })

@@ -18,7 +18,8 @@ import { formatCottonPrice, parseCottonPriceInput } from '@/lib/hedging'
 import { CottonPageHeader } from '@/components/cotton/cotton-page-header'
 import MarketingDocImport from '@/components/cotton/marketing-doc-import'
 import ContractSpecPanel from '@/components/cotton/contract-spec-panel'
-import { buildBaleRows, estimatedBalesFromAssumptions, type BaleQualityInputs } from '@/lib/bale-quality-report'
+import { buildBaleRows, estimatedBalesFromAssumptions, estimatedBalesFromPicked, type BaleQualityInputs } from '@/lib/bale-quality-report'
+import { useCottonYields } from '@/lib/use-cotton-yields'
 import { specFromRow, specHasFiberTerms } from '@/lib/cotton-contract-spec'
 import BaleFileAssign from '@/components/cotton/bale-file-assign'
 import EntitySelect from '@/components/entity-select'
@@ -114,7 +115,7 @@ export default function CottonMarketingPage() {
       supabase.from('awp_weekly').select('*').order('week_effective', { ascending: false }).limit(30),
       fetchAllRows((f, t) => supabase.from('cotton_contract_specs').select('*').order('id').range(f, t)),
       supabase.from('gins').select('id, name'),
-      fetchAllRows((f, t) => supabase.from('field_plantings').select('id, field_id, crop_id, season_year, irrigated_acres, dryland_acres, planted_acres, archived_at').eq('season_year', cropYear).order('id').range(f, t)),
+      fetchAllRows((f, t) => supabase.from('field_plantings').select('id, field_id, crop_id, season_year, irrigated_acres, dryland_acres, planted_acres, yield_include_override, archived_at').eq('season_year', cropYear).order('id').range(f, t)),
       fetchAllRows((f, t) => supabase.from('field_planting_varieties').select('planting_id, variety').order('id').range(f, t)),
       supabase.from('crops').select('id, name'),
       supabase.from('crop_assumptions').select('*').eq('crop_year', cropYear),
@@ -169,6 +170,8 @@ export default function CottonMarketingPage() {
   }), [cropYear, bales, grades, receipts, gins, farms, fields, entities, plantings, crops, varieties, dispositions, loanBales])
   const baleRows = useMemo(() => buildBaleRows(qualityInputs), [qualityInputs])
   const appEstimatedBales = useMemo(() => estimatedBalesFromAssumptions(qualityInputs, assumptions), [qualityInputs, assumptions])
+  const cottonYields = useCottonYields(supabase, { crops, assumptions })
+  const pickedEstimatedBales = useMemo(() => estimatedBalesFromPicked({ cropYear, plantings, assumptions, cotton: cottonYields.model, bales })?.bales ?? null, [cropYear, plantings, assumptions, cottonYields.model, bales])
   const specByContract = useMemo(() => new Map(specRows.map((s) => [s.contract_id, specFromRow(s as unknown as Record<string, unknown>)])), [specRows])
 
   const dispByBale = useMemo(() => new Map(dispositions.map((d) => [d.bale_id, d])), [dispositions])
@@ -718,6 +721,7 @@ export default function CottonMarketingPage() {
                             farms={farms}
                             rows={baleRows}
                             appEstimatedBales={appEstimatedBales}
+                            pickedEstimatedBales={pickedEstimatedBales}
                             onSaved={done}
                           />
                         </td>

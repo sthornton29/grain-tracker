@@ -35,7 +35,7 @@ For the bales you choose it shows how many are classed, the lint pounds, the ave
 ## The contract view
 
 - **Headline** — "N of M classed bales from eligible farms meet the spec (P%)", the lint pounds, how many bales are **not eligible** (their farm isn't on the contract's farm list) and how many are **not yet classed**.
-- **Cap tracker** — qualifying bales against the contract's cap, plus **projected qualifying**: the current pass rate × the estimated bales (the contract's own estimate when it has one, otherwise Turnrow's expected lint ÷ 500). It is labeled an estimate because it is one.
+- **Cap tracker** — qualifying bales against the contract's cap, plus **projected qualifying**: the current pass rate × your projected bales. Projected bales are your crop as it is coming off: the average lint pounds per acre on the fields you've finished picking, spread over every cotton acre you planted, divided by your average bale weight so far. A field still being picked doesn't count toward the average until it's done, so a half-picked field never pulls it down. Before any field is finished, the contract's own bale estimate is used, otherwise Turnrow's expected lint ÷ 500. It is labeled an estimate because it is one.
 - **Why bales fail** — the factors bales fail on, most common first, with **only this** counts: bales that would meet the spec but for that one factor. Those near misses are the bales worth asking the buyer to take at a discount. Tap a row to see them, or open that factor's tile to see where the failing readings sit against the contract line.
 
 ## How the numbers work

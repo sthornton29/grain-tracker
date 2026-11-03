@@ -15,7 +15,8 @@ import { fetchCottonPhysical } from '@/lib/cotton-physical-fetch'
 import { buildCottonPhysicalSummary, contractPricedCents, dispositionBoard, type CottonPhysicalSummary } from '@/lib/cotton-sales'
 import { cottonFieldYields, lintTurnoutPct } from '@/lib/cotton'
 import { isCottonCrop } from '@/lib/marketing'
-import { buildBaleRows, contractView, estimatedBalesFromAssumptions, type BaleQualityInputs } from '@/lib/bale-quality-report'
+import { buildBaleRows, contractView, estimatedBalesFromAssumptions, estimatedBalesFromPicked, type BaleQualityInputs } from '@/lib/bale-quality-report'
+import { buildCottonYieldModel, fetchCottonYieldSources } from '@/lib/cotton-yield-sources'
 import { specFromRow, specHasFiberTerms, specSummaryLine } from '@/lib/cotton-contract-spec'
 import { FACTORS } from '@/lib/cotton-quality'
 import { DISCOUNT_CATEGORY_LABELS, coerceDiscountCategory, centsPerBu, sumCheck } from '@/lib/settlement-discounts'
@@ -40,19 +41,21 @@ const CROPS_SELECT = 'id, name, base_moisture_pct, base_lb_per_bushel, harvest_c
 
 export async function getCottonMarketing(supabase: SupabaseClient, ctx: AssistantContext, input: { crop_year: number; buyer?: string }) {
   const cropYear = num(input.crop_year)
-  const [raw, buyers, bits, crops, plantings, specRows, receipts, gins, farmsFull, varieties, assumptions] = await Promise.all([
+  const [raw, buyers, bits, crops, plantings, specRows, receipts, gins, farmsFull, varieties, assumptions, cottonSources] = await Promise.all([
     fetchCottonPhysical(supabase, cropYear),
     all<{ id: string; name: string }>(supabase.from('buyers').select('id, name')),
     fetchScopeBits(supabase),
     all<Crop>(supabase.from('crops').select(CROPS_SELECT)),
-    allRows<FieldPlanting>((f, t) => supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, archived_at').eq('season_year', cropYear).order('id').range(f, t)),
+    allRows<FieldPlanting>((f, t) => supabase.from('field_plantings').select('id, field_id, crop_id, season_year, planted_acres, irrigated_acres, dryland_acres, yield_include_override, archived_at').eq('season_year', cropYear).order('id').range(f, t)),
     // 0097: each contract's quality spec, and the chain the Bale Quality report scores bales through.
     allRows<Record<string, unknown>>((f, t) => supabase.from('cotton_contract_specs').select('*').order('id').range(f, t)),
     allRows<BaleQualityInputs['receipts'][number]>((f, t) => supabase.from('gin_receipts').select('id, gin_id, receipt_number, receipt_date, statement_number, gin_code, entity_id, farm_id, field_id, crop_year').eq('crop_year', cropYear).order('id').range(f, t)),
     all<{ id: string; name: string }>(supabase.from('gins').select('id, name')),
     all<BaleQualityInputs['farms'][number]>(supabase.from('farms').select('id, name, entity_id, fsa_number')),
     allRows<{ planting_id: string; variety: string }>((f, t) => supabase.from('field_planting_varieties').select('planting_id, variety').order('id').range(f, t)),
-    all<{ crop_id: string; crop_year: number; expected_yield: number | null; expected_yield_irr: number | null; expected_yield_dry: number | null }>(supabase.from('crop_assumptions').select('crop_id, crop_year, expected_yield, expected_yield_irr, expected_yield_dry').eq('crop_year', cropYear)),
+    all<{ crop_id: string; crop_year: number; expected_yield: number | null; expected_yield_irr: number | null; expected_yield_dry: number | null; harvest_complete?: boolean | null; assumed_turnout_pct?: number | null }>(supabase.from('crop_assumptions').select('*').eq('crop_year', cropYear)),
+    // The projection's picked-yield estimate needs the cotton yield model; a read error degrades to the other estimates.
+    fetchCottonYieldSources(supabase).catch(() => null),
   ])
   const buyerName = nameOf(buyers)
   const { inputs } = raw
@@ -77,11 +80,12 @@ export async function getCottonMarketing(supabase: SupabaseClient, ctx: Assistan
   }
   const baleRows = buildBaleRows(qualityInputs)
   const appEstimatedBales = estimatedBalesFromAssumptions(qualityInputs, assumptions)
+  const pickedEstimate = estimatedBalesFromPicked({ cropYear, plantings, assumptions, cotton: buildCottonYieldModel({ sources: cottonSources, crops, assumptions }), bales: inputs.bales })
   const specByContract = new Map(specRows.map((s) => [String(s.contract_id), specFromRow(s)]))
   const qualityFor = (contractId: string) => {
     const spec = specByContract.get(contractId)
     if (!spec || !specHasFiberTerms(spec)) return null
-    const s = contractView(baleRows, spec, appEstimatedBales).summary
+    const s = contractView(baleRows, spec, appEstimatedBales, pickedEstimate?.bales ?? null).summary
     return {
       requirements: specSummaryLine(spec),
       allowed_color_codes: spec.allowed_color_codes, leaf_max: spec.leaf_max, staple_min: spec.staple_min, mic_min: spec.mic_min, mic_max: spec.mic_max,
@@ -93,7 +97,7 @@ export async function getCottonMarketing(supabase: SupabaseClient, ctx: Assistan
         pass_rate_pct: s.passRate != null ? r2(s.passRate * 100) : null, pass_rate_by_lbs_pct: s.passRateLbs != null ? r2(s.passRateLbs * 100) : null,
         not_eligible_farm_not_on_contract: s.notEligible, not_yet_classed: s.notClassed,
         qualifying_vs_cap: s.cap != null ? `${s.meets} of ${s.cap}` : null,
-        projected_qualifying_bales: s.projection ? { projected: s.projection.projected, estimated_bales: s.projection.estimatedBales, estimate_source: s.projection.estimateSource, note: 'estimate = pass rate × estimated bales' } : null,
+        projected_qualifying_bales: s.projection ? { projected: s.projection.projected, estimated_bales: s.projection.estimatedBales, estimate_source: s.projection.estimateSource, note: 'estimate = pass rate × estimated bales; picked = complete fields lint lbs/ac × every cotton acre ÷ the average bale weight to date', ...(s.projection.estimateSource === 'picked' && pickedEstimate ? { picked_lint_lbs_per_acre: r0(pickedEstimate.lintPerAcre), picked_acres: r0(pickedEstimate.countedAcres), total_cotton_acres: r0(pickedEstimate.totalAcres), avg_bale_lbs: r0(pickedEstimate.avgBaleLbs) } : {}) } : null,
         why_bales_fail: s.pareto.map((p) => ({ factor: FACTORS[p.factor].label, bales_failing: p.bales, fails_only_this_factor: p.onlyThis })),
         bales_failing_exactly_one_factor: s.singleFactorFails,
       },
