@@ -3,7 +3,8 @@
 // middleware only wires it to the session.
 //
 //   owner      — everything.
-//   gin        — Cotton intake only (not /cotton/marketing) + logout + doc parsing.
+//   gin        — Cotton intake only (not /cotton/marketing, not
+//                /cotton/trust-protocol) + logout + doc parsing.
 //   viewer     — read-only stakeholder: the home tiles, Yields, every /reports
 //                page, logout, and the read-only price/market API routes the
 //                report pages call. Everything else redirects to roleHome.
@@ -50,7 +51,7 @@ export function roleAllowsPath(role: AppRole, pathname: string): boolean {
   if (HELP_PATHS.some((p) => startsAt(pathname, p))) return true
   if (role === 'gin') {
     return (
-      (startsAt(pathname, '/cotton') && !startsAt(pathname, '/cotton/marketing')) ||
+      (startsAt(pathname, '/cotton') && !startsAt(pathname, '/cotton/marketing') && !startsAt(pathname, '/cotton/trust-protocol')) ||
       startsAt(pathname, '/api/parse-document')
     )
   }

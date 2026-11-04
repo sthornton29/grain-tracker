@@ -49,6 +49,7 @@ const FINANCIAL_TABLES = [
   'budget_scenarios', 'budget_lines',
   'cotton_sales_contracts', 'cotton_contract_specs', 'cotton_pool_payments', 'ccc_loans', 'ccc_loan_bales',
   'cotton_ldp_records', 'cotton_ldp_bales', 'cotton_fees', 'cotton_fee_schedule',
+  'ctp_settings', 'ctp_bale_uploads', 'ctp_bale_registrations',
 ]
 
 describe('agronomist RLS shape (061)', () => {

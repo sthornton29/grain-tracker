@@ -206,13 +206,22 @@ checks(seq, migration, evidence, applied) as (values
         exists (select 1 from tbls where t = 'insurance_trigger_yields')
         and exists (select 1 from cols where t = 'crop_insurance_policies' and c = 'approved_yield')
         and exists (select 1 from cols where t = 'insurance_trigger_yields' and c = 'landowner_id')
-        and exists (select 1 from pg_policies where tablename = 'insurance_trigger_yields' and policyname = 'insurance_trigger_yields_org_isolation'))
+        and exists (select 1 from pg_policies where tablename = 'insurance_trigger_yields' and policyname = 'insurance_trigger_yields_org_isolation')),
+  -- 0102 (supabase/migrations/): U.S. Cotton Trust Protocol bale registration — the producer ID on entities,
+  -- the org's API key + Regen program (ctp_settings), the upload log and the per-bale registration state.
+  (107, '0102_cotton_trust_protocol',       'entities.ctp_protocol_id, tables ctp_settings / ctp_bale_uploads / ctp_bale_registrations, org_isolation policies',
+        exists (select 1 from cols where t = 'entities' and c = 'ctp_protocol_id')
+        and exists (select 1 from tbls where t = 'ctp_settings')
+        and exists (select 1 from tbls where t = 'ctp_bale_uploads')
+        and exists (select 1 from tbls where t = 'ctp_bale_registrations')
+        and exists (select 1 from pg_policies where tablename = 'ctp_settings' and policyname = 'ctp_settings_org_isolation')
+        and exists (select 1 from pg_policies where tablename = 'ctp_bale_registrations' and policyname = 'ctp_bale_registrations_org_isolation'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 101'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 102'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

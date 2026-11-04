@@ -14,6 +14,9 @@ export type Entity = {
   // only here); archived_at = the link archived it (never deleted).
   managed_by?: 'turnrow_farm' | null
   archived_at?: string | null
+  /** 0102: the U.S. Cotton Trust Protocol producer ID (8 characters) this
+   *  entity enrolled under; null = not enrolled / not entered yet. */
+  ctp_protocol_id?: string | null
 }
 export type Landowner = {
   id: string
@@ -1089,6 +1092,59 @@ export type CottonBale = {
   pbi_number: string
   net_weight_lbs: number
   created_at: string
+}
+
+// ---------- U.S. Cotton Trust Protocol (0102) ----------
+
+/** The client-readable part of the org's Trust Protocol connection (the
+ *  key itself is a server-only column). */
+export type CtpSettings = {
+  org_id: string
+  api_key_hint: string | null
+  regen_program: string | null
+  updated_at: string
+}
+
+export type CtpAction = 'register' | 'correct' | 'remove'
+
+/** One call to the Protocol's bale API and its answer. */
+export type CtpBaleUpload = {
+  id: string
+  crop_year: number
+  action: CtpAction
+  uploaded_by: string | null
+  uploaded_at: string
+  bale_count: number
+  regen_program: string | null
+  http_status: number | null
+  ctp_upload_id: number | null
+  ctp_bale_count: number | null
+  has_errors: boolean | null
+  error: string | null
+}
+
+/** ONE row per bale sent to (or found registered with) the Protocol. */
+export type CtpBaleRegistration = {
+  id: string
+  bale_id: string
+  upload_id: string | null
+  crop_year: number
+  action: CtpAction | 'inquiry'
+  gin_code: string
+  gin_tag: string
+  protocol_id: string | null
+  weight: number | null
+  regen_program: string | null
+  sent_at: string | null
+  registration_status: string | null
+  shipment_status: string | null
+  ctp_weight: number | null
+  ctp_protocol_id: string | null
+  ctp_regen_program: string | null
+  ctp_upload_date: string | null
+  inquiry_error: string | null
+  checked_at: string | null
+  updated_at: string
 }
 
 export type CottonBaleGrade = {

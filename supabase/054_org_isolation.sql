@@ -71,6 +71,7 @@ begin
     'cotton_bale_grades', 'cotton_sales_contracts', 'cotton_contract_specs', 'cotton_pool_payments',
     'ccc_loans', 'ccc_loan_bales', 'cotton_ldp_records', 'cotton_ldp_bales',
     'cotton_bale_dispositions', 'cotton_fees', 'cotton_fee_schedule',
+    'ctp_settings', 'ctp_bale_uploads', 'ctp_bale_registrations',
     'user_entity_access', 'viewer_assumption_overrides', 'app_settings', 'user_profiles'
   ] loop
     -- A table created by a LATER migration (087's link tables, 088's crop

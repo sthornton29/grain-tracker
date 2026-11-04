@@ -1,12 +1,12 @@
 ---
 page_route: /cotton
 title: Cotton — Loads, Gin Receipts, Bales & Grades
-updated: 2026-10-28
+updated: 2026-11-04
 keywords: cotton, csv export, gin export, gin receipts csv, date ginned, yield, lbs per acre, lint per acre, seed cotton per acre, field yield, farm-wide yield, acres picked, season flow, by field, same truck, remembered truck, more details, seed cotton, module, rolls, leading zeros, 031633, 31633, load number match, gin code, statement number, two statements in one PDF, several statements, Farm YTD, year to date, possibly, link load, merge loads, duplicates blocked, same number, harvest status, ginning status, picked, estimated lint, turnout for estimates, assumed turnout, rounds, number of rounds, handwritten rolls, busted roll, sequence mark, round modules, pounds per roll, average per roll, load detail, ticket photo, module ticket, sort, select, delete loads, export loads, duplicate load, scanned twice, already saved, update available, duplicate bale, PBI repeated, turn on cotton, gin, gin receipt, statement of ginning, bales, HVI, classing, PBI, turnout, yard inventory, gin operator
 ---
 ## What this page is for
 
-The Cotton tab is where seed cotton gets tracked from the field to the classed bale. Its left rail follows the cotton's own route: **Seed Cotton Loads** (modules off the field and the gin yard), **Gin Receipts** (the gin's Statements of Ginning), **Bales & Grades** (PBI tags and HVI classing), and **Marketing**. Every page opens the same way — the crop year at the top right, the way in (upload or by hand) in one card with two tabs, and the list below. A user with the **gin operator role** sees only the three intake pages — nothing else in the operation.
+The Cotton tab is where seed cotton gets tracked from the field to the classed bale. Its left rail follows the cotton's own route: **Seed Cotton Loads** (modules off the field and the gin yard), **Gin Receipts** (the gin's Statements of Ginning), **Bales & Grades** (PBI tags and HVI classing), **Marketing**, and **Trust Protocol** (registering bales with the U.S. Cotton Trust Protocol as U.S. Regen — its own help topic). Every page opens the same way — the crop year at the top right, the way in (upload or by hand) in one card with two tabs, and the list below. A user with the **gin operator role** sees only the three intake pages — nothing else in the operation.
 
 ## How to use it
 
@@ -45,7 +45,7 @@ The Cotton tab is where seed cotton gets tracked from the field to the classed b
 
 - **Why is the average per roll blank?** No load in that crop year has a roll count yet. Add rolls on the loads (tap the Rolls figure in the list) and the average appears; loads without a count are left out of the average, and the card says how many.
 - **A load shows the whole module list instead of its own page.** The upload read a different number of loads than the document has pages, so it couldn't tell which page was which. Open the load and use **Replace** on the ticket to attach the right page.
-- **Why can't the gin operator see Marketing?** The Marketing page is owner-only by design — gin logins get the three intake pages and nothing more.
+- **Why can't the gin operator see Marketing or Trust Protocol?** Those two pages are owner-only by design — gin logins get the three intake pages and nothing more.
 - **Why don't I see the Cotton tab at all?** Cotton is turned off for your operation. An owner can turn it on under Settings → Organization; the tab appears after the next page load.
 - **Why is there no entity box on the load form?** A gin login doesn't pick entities — the entity comes from the farm you choose. Owners see the entity box only when the operation has more than one entity.
 - **A classing row didn't match a bale.** Its receipt may not be entered yet — unmatched rows wait visibly and can be matched later.

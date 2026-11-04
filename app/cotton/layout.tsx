@@ -5,7 +5,9 @@
 // the field to the sale: Seed Cotton Loads (modules off the field, the gin
 // yard), Gin Receipts (the gin's statements), Bales & Grades (PBI tags and
 // classing), Marketing (contracts, loans, LDP — producer-only: hidden for gin
-// operators; the middleware also blocks the route and 044 RLS the data).
+// operators; the middleware also blocks the route and 044 RLS the data), and
+// Trust Protocol (0102: registering bales with the U.S. Cotton Trust Protocol
+// — producer-only the same way).
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
@@ -17,6 +19,7 @@ const COTTON_PAGES: Array<{ href: string; label: string; sub: string; ownerOnly?
   { href: '/cotton/receipts', label: 'Gin Receipts', sub: 'Statements of Ginning' },
   { href: '/cotton/bales', label: 'Bales & Grades', sub: 'PBI tags · HVI classing' },
   { href: '/cotton/marketing', label: 'Marketing', sub: 'Contracts · CCC loans · LDP', ownerOnly: true },
+  { href: '/cotton/trust-protocol', label: 'Trust Protocol', sub: 'Register bales · U.S. Regen', ownerOnly: true },
 ]
 
 export default function CottonLayout({ children }: { children: React.ReactNode }) {

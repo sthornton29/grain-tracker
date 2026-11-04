@@ -222,6 +222,9 @@ export const TABLE_DOCS = {
   cotton_bale_dispositions: ['Where each bale went: sold on a contract / in a loan / in a pool / held (the disposition board)', '/cotton/marketing'],
   cotton_fees: ['Cotton fees accrued or paid (warehouse storage, checkoff, classing…)', '/cotton/marketing'],
   cotton_fee_schedule: ['Your fee rates (storage per bale-month, checkoff…)', '/cotton/marketing'],
+  ctp_settings: ['U.S. Cotton Trust Protocol connection per organization: regen_program (the Regen program code stamped on sent bales) and api_key_hint (the saved key’s last four characters — the key itself is never readable)', '/cotton/trust-protocol'],
+  ctp_bale_uploads: ['One row per batch of bales sent to the U.S. Cotton Trust Protocol: action register / correct / remove, uploaded_at, bale_count, regen_program, and the Protocol’s answer (ctp_upload_id, has_errors, error, ctp_bale_count)', '/cotton/trust-protocol'],
+  ctp_bale_registrations: ['ONE row per cotton bale (bale_id) sent to or found registered with the U.S. Cotton Trust Protocol: gin_code, gin_tag, protocol_id (the producer’s Protocol ID), weight, regen_program as sent, sent_at, and the status the Protocol last reported (registration_status, shipment_status, ctp_regen_program, checked_at, inquiry_error). No row = the bale has not been sent', '/cotton/trust-protocol'],
 }
 
 export const REFERENCE_DOCS = {

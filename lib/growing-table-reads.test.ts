@@ -31,6 +31,7 @@ const GROWING_TABLES = [
   'combine_yield_entries', 'bin_transfers', 'bin_inventory_adjustments',
   'gin_receipts', 'gin_receipt_loads', 'cotton_loads', 'cotton_bales',
   'cotton_bale_grades', 'cotton_bale_dispositions',
+  'ctp_bale_registrations', 'ctp_bale_uploads',
   'ccc_loan_bales', 'cotton_ldp_bales',
   'harvest_price_estimates', // grows daily during every discovery window
   // per year, unbounded over an account's lifetime

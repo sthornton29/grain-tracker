@@ -17,6 +17,8 @@ describe('roleAllowsPath', () => {
     expect(roleAllowsPath('gin', '/cotton/loads')).toBe(true)
     expect(roleAllowsPath('gin', '/cotton')).toBe(true)
     expect(roleAllowsPath('gin', '/cotton/marketing')).toBe(false)
+    expect(roleAllowsPath('gin', '/cotton/trust-protocol')).toBe(false)
+    expect(roleAllowsPath('gin', '/api/ctp/upload')).toBe(false)
     expect(roleAllowsPath('gin', '/logout')).toBe(true)
     expect(roleAllowsPath('gin', '/api/parse-document')).toBe(true)
     for (const p of ['/', '/loads', '/reports', '/yields', '/settings']) {
