@@ -8,7 +8,8 @@ import { coerceAppRole } from '../app-role'
 // their own; nothing under it is reachable without the token. /api/farm-link
 // (087, the Turnrow Farm link) is the same shape: bearer flt_ tokens.
 // /api/ops (2026-11-08, the shared read-only ops API: the Morning Brief and
-// Turnrow Farm's Assignments) checks OPS_TOKEN itself.
+// Turnrow Farm's Assignments) checks OPS_TOKEN itself; /api/ops/actions
+// (2026-11-09, the fixes a person approves in Farm) checks OPS_WRITE_TOKEN.
 const PUBLIC_PATHS = ['/login', '/auth/callback', '/reset-password', '/offline', '/api/partner', '/api/farm-link', '/api/ops']
 
 export async function updateSession(request: NextRequest) {

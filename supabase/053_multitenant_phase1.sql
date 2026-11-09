@@ -176,6 +176,8 @@ begin
     'ccc_loans', 'ccc_loan_bales', 'cotton_ldp_records', 'cotton_ldp_bales',
     'cotton_bale_dispositions', 'cotton_fees', 'cotton_fee_schedule',
     'ctp_settings', 'ctp_bale_uploads', 'ctp_bale_registrations',
+    -- ops (0103)
+    'ops_action_log',
     -- roles / settings
     'user_entity_access', 'viewer_assumption_overrides', 'app_settings'
   ] loop

@@ -43,6 +43,7 @@ with tenant(t) as (
     ('ccc_loans'), ('ccc_loan_bales'), ('cotton_ldp_records'), ('cotton_ldp_bales'),
     ('cotton_bale_dispositions'), ('cotton_fees'), ('cotton_fee_schedule'),
     ('ctp_settings'), ('ctp_bale_uploads'), ('ctp_bale_registrations'),
+    ('ops_action_log'),
     ('user_entity_access'), ('viewer_assumption_overrides'), ('app_settings'), ('user_profiles')
 )
 select tenant.t as table_missing_or_misconfigured, 'no _org_isolation restrictive policy' as problem
@@ -118,6 +119,7 @@ begin
       'ccc_loans','ccc_loan_bales','cotton_ldp_records','cotton_ldp_bales',
       'cotton_bale_dispositions','cotton_fees','cotton_fee_schedule',
       'ctp_settings','ctp_bale_uploads','ctp_bale_registrations',
+      'ops_action_log',
       'user_entity_access','viewer_assumption_overrides','app_settings','user_profiles'
     ]) as u(x)
   loop

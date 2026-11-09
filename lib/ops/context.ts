@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createServiceClient } from '@/lib/partner-api-server'
-import { checkOpsAuth, orgFilter } from './auth'
+import { checkOpsAuth, checkOpsWriteAuth, orgFilter, type OpsAuthResult } from './auth'
 
 export const OPS_HEADERS = { 'Cache-Control': 'no-store' }
 
@@ -15,7 +15,16 @@ export function opsJson(body: unknown, status = 200): NextResponse {
 }
 
 export async function opsContext(req: NextRequest): Promise<{ supabase: SupabaseClient; orgId: string } | NextResponse> {
-  const auth = checkOpsAuth(req.headers.get('authorization'))
+  return contextFor(checkOpsAuth(req.headers.get('authorization')))
+}
+
+/** The ops actions (docs/OPS_ACTIONS.md): the same organization, behind the
+ *  WRITE token. */
+export async function opsWriteContext(req: NextRequest): Promise<{ supabase: SupabaseClient; orgId: string } | NextResponse> {
+  return contextFor(checkOpsWriteAuth(req.headers.get('authorization')))
+}
+
+async function contextFor(auth: OpsAuthResult): Promise<{ supabase: SupabaseClient; orgId: string } | NextResponse> {
   if (!auth.ok) return opsJson({ error: auth.error }, auth.status)
   const supabase = createServiceClient()
   if (!supabase) return opsJson({ error: 'SUPABASE_SERVICE_ROLE_KEY is not configured on the server.' }, 500)

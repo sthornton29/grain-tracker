@@ -26,6 +26,21 @@ export function checkOpsAuth(header: string | null | undefined, env: Record<stri
   return match ? { ok: true } : { ok: false, status: 401, error: 'That token is not accepted.' }
 }
 
+/** The write half (2026-11-09; turnrow-farm docs/OPS_ACTIONS.md): the ops
+ *  actions take ONLY OPS_WRITE_TOKEN (or OPS_WRITE_TOKEN_NEXT). The read
+ *  token never opens them, even if someone set the two to the same value. */
+export function checkOpsWriteAuth(header: string | null | undefined, env: Record<string, string | undefined> = process.env): OpsAuthResult {
+  const reads = [env.OPS_TOKEN, env.OPS_TOKEN_NEXT].map((t) => (t ?? '').trim()).filter(Boolean)
+  const accepted = [env.OPS_WRITE_TOKEN, env.OPS_WRITE_TOKEN_NEXT].map((t) => (t ?? '').trim()).filter((t) => t && !reads.includes(t))
+  if (!accepted.length) return { ok: false, status: 503, error: 'Ops actions are not configured.' }
+  const token = bearerOf(header)
+  if (!token) return { ok: false, status: 401, error: 'A bearer token is needed.' }
+  const got = digest(token)
+  let match = false
+  for (const t of accepted) if (timingSafeEqual(got, digest(t))) match = true
+  return match ? { ok: true } : { ok: false, status: 401, error: 'That token is not accepted.' }
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** OPS_ORG names the one organization served: its id, or its slug

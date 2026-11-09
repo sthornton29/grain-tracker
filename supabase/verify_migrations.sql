@@ -215,13 +215,18 @@ checks(seq, migration, evidence, applied) as (values
         and exists (select 1 from tbls where t = 'ctp_bale_uploads')
         and exists (select 1 from tbls where t = 'ctp_bale_registrations')
         and exists (select 1 from pg_policies where tablename = 'ctp_settings' and policyname = 'ctp_settings_org_isolation')
-        and exists (select 1 from pg_policies where tablename = 'ctp_bale_registrations' and policyname = 'ctp_bale_registrations_org_isolation'))
+        and exists (select 1 from pg_policies where tablename = 'ctp_bale_registrations' and policyname = 'ctp_bale_registrations_org_isolation')),
+  -- 0103 (supabase/migrations/): the ops actions log (turnrow-farm docs/OPS_ACTIONS.md): one row per apply call from Turnrow Farm.
+  (108, '0103_ops_action_log',              'table ops_action_log, its applied-key unique index, org_isolation policy',
+        exists (select 1 from tbls where t = 'ops_action_log')
+        and exists (select 1 from pg_indexes where tablename = 'ops_action_log' and indexname = 'ops_action_log_applied_key')
+        and exists (select 1 from pg_policies where tablename = 'ops_action_log' and policyname = 'ops_action_log_org_isolation'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 102'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 103'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence
