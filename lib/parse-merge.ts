@@ -256,6 +256,9 @@ export function mergeBrokerage(parts: BrokerageStatementExtraction[]): Brokerage
   return {
     statement_date: firstValue(parts, (p) => p.statement_date),
     broker: firstValue(parts, (p) => p.broker ?? null),
+    // The import scopes its checks and stamps every lot by this (0104) —
+    // dropping it here left every lot unstamped on the first live import.
+    account_number: firstValue(parts, (p) => p.account_number ?? null),
     open_positions: mergeList(parts.map((p) => p.open_positions ?? []), openKey),
     closed_groups: [...groups.values()],
     closed_trades: mergeList(parts.map((p) => p.closed_trades ?? [])),

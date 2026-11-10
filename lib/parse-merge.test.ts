@@ -186,6 +186,10 @@ describe('mergeBrokerage', () => {
     const merged = mergeBrokerage([{ ...empty }, { ...empty, account_summary: summary }])
     expect(merged.account_summary).toEqual(summary)
   })
+  it('keeps the account number the import scopes and stamps by', () => {
+    expect(mergeBrokerage([{ ...empty, account_number: '490JP046' }]).account_number).toBe('490JP046')
+    expect(mergeBrokerage([{ ...empty }, { ...empty, account_number: '490JP046' }]).account_number).toBe('490JP046')
+  })
 })
 
 describe('mergeCropInsurance / mergeFsaBaseAcres', () => {
