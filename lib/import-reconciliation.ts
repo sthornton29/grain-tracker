@@ -150,6 +150,7 @@ export type ProjectionPosition = {
   trade_date: string
   status: string
   entity_id?: string | null
+  broker_account?: string | null
 }
 
 /**
@@ -170,22 +171,84 @@ export function statementReferencedIds(args: {
   return ids
 }
 
+/** "490 JP-046" and "490JP046" are the same account. Null when blank. */
+export function normalizeBrokerAccount(account: string | null | undefined): string | null {
+  const s = (account ?? '').replace(/[\s-]/g, '').toUpperCase()
+  return s === '' ? null : s
+}
+
 /**
- * The stored positions the gate projects. The account-entity scope keeps a
- * position held in ANOTHER account out of the comparison — but a position's
- * entity is an attribution tag (lib/entity-scope), not proof of which
- * brokerage account holds it. A position this very statement lists — matched
- * by one of its open rows, paired by hand, or closed by one of its lots — is
- * in this account whatever it is tagged, so it always counts. Without this
- * the 10/29 StoneX statement blocked on "MAR 27 Corn short 26, Turnrow would
- * have 12": the 14-lot was stored, open and already matched, but tagged with
- * an entity while the import's account entity was "none".
+ * Is this stored lot in the brokerage account this statement covers?
+ *
+ * Decided by the ACCOUNT NUMBER the statement prints (stamped on every lot an
+ * import writes or matches, 0104) — never by the lot's entity. The entity is
+ * an attribution tag (lib/entity-scope), not the account: on 10/31 the 10/30
+ * StoneX import (account entity "none") left the NOV 26 soybean short out of
+ * the gate AND out of "possibly closed" because it was tagged entity Turnrow —
+ * its 10/29 roll to JAN 27 was never recorded and nothing warned (2 short
+ * became 4). Unknown is never proof a lot lives elsewhere: a lot with no
+ * account recorded, or a statement that prints none, counts. Only a lot
+ * stamped with a DIFFERENT account is left out.
  */
-export function scopeGatePositions<P extends { id: string; entity_id?: string | null }>(
+export function inStatementAccount(
+  position: { broker_account?: string | null },
+  statementAccount: string | null | undefined,
+): boolean {
+  const mine = normalizeBrokerAccount(position.broker_account)
+  const theirs = normalizeBrokerAccount(statementAccount)
+  return mine == null || theirs == null || mine === theirs
+}
+
+/**
+ * The stored positions the gate projects: every lot in this statement's
+ * account (inStatementAccount), plus every stored position this very
+ * statement lists — matched by one of its open rows, paired by hand, or
+ * closed by one of its lots — whatever account it was stamped with (the
+ * statement proves where it is).
+ */
+export function scopeGatePositions<P extends { id: string; broker_account?: string | null }>(
   positions: readonly P[],
-  args: { inScope: (entityId: string | null) => boolean; referencedIds: ReadonlySet<string> },
+  args: { statementAccount: string | null | undefined; referencedIds: ReadonlySet<string> },
 ): P[] {
-  return positions.filter((p) => args.referencedIds.has(p.id) || args.inScope(p.entity_id ?? null))
+  return positions.filter((p) => args.referencedIds.has(p.id) || inStatementAccount(p, args.statementAccount))
+}
+
+export type MissedStatementDay = {
+  /** YYYY-MM-DD — the earlier trading day this statement shows a fill from. */
+  date: string
+  /** "short 2 JAN 27 Soybeans @ $12.3825 on 10/29 — from this statement" */
+  rows: string[]
+  /** One of the fills carried the spread code: a roll's other half is on that day's statement. */
+  spread: boolean
+}
+
+/**
+ * Fills this import would ADD that traded before the statement's own date.
+ * A daily statement only prints the day's confirmations and purchase & sale,
+ * so a new lot from an earlier day means that day's statement was never
+ * imported — whatever closed that day (a roll's old month, its fees, its
+ * realized P&L) is missing. The 10/30 StoneX statement showed JAN 27
+ * soybeans traded 10/29 "SE"; the 10/29 statement, with the NOV 26 close,
+ * was never saved. Skipped on a first import (nothing stored yet: every lot
+ * is old by nature).
+ */
+export function missedStatementDays(args: {
+  newOpens: readonly Pick<PlanOpenRow, 'trade_date' | 'execution_code' | 'commodity' | 'contract_month' | 'side' | 'num_contracts' | 'trade_price'>[]
+  statementDate: string | null | undefined
+  hasStoredPositions: boolean
+}): MissedStatementDay[] {
+  const sd = args.statementDate ?? null
+  if (!sd || !args.hasStoredPositions) return []
+  const byDate = new Map<string, MissedStatementDay>()
+  for (const o of args.newOpens) {
+    if (!o.trade_date || o.trade_date >= sd) continue
+    const day = byDate.get(o.trade_date) ?? { date: o.trade_date, rows: [], spread: false }
+    day.rows.push(describeLot({ side: o.side, contracts: o.num_contracts, contract_month: o.contract_month, commodity: o.commodity, trade_price: o.trade_price, trade_date: o.trade_date }, 'statement'))
+    const code = (o.execution_code ?? '').replace(/\s/g, '').toUpperCase()
+    if (code === 'S' || code === 'SE' || code === 'ES') day.spread = true
+    byDate.set(o.trade_date, day)
+  }
+  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date))
 }
 
 export type ProjectedLot = {

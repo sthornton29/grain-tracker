@@ -196,16 +196,16 @@ describe('9/11 dedupe after the roll repair', () => {
       statementOpenKeys: new Set(['Corn|MAR 27']),
       matchedCloseIds: new Set(),
       keptOpenIds: new Set(),
-      entityScopeMatches: () => true,
+      inAccount: () => true,
     })
     expect(flagged).toEqual([])
   })
 
   it('before the repair the still-open DEC 26 WAS flagged — and a roll’s closed leg matched on the 9/03 statement is not', () => {
     const before: DbRow[] = [{ ...AFTER_REPAIR[0], status: 'open' }, AFTER_REPAIR[1]]
-    const flagged = possiblyClosedFutures(before, { statementOpenKeys: new Set(['Corn|MAR 27']), matchedCloseIds: new Set(), keptOpenIds: new Set(), entityScopeMatches: () => true })
+    const flagged = possiblyClosedFutures(before, { statementOpenKeys: new Set(['Corn|MAR 27']), matchedCloseIds: new Set(), keptOpenIds: new Set(), inAccount: () => true })
     expect(flagged.map((p) => p.id)).toEqual(['dec-14'])
-    const withRollMatch = possiblyClosedFutures(before, { statementOpenKeys: new Set(['Corn|MAR 27']), matchedCloseIds: new Set(['dec-14']), keptOpenIds: new Set(), entityScopeMatches: () => true })
+    const withRollMatch = possiblyClosedFutures(before, { statementOpenKeys: new Set(['Corn|MAR 27']), matchedCloseIds: new Set(['dec-14']), keptOpenIds: new Set(), inAccount: () => true })
     expect(withRollMatch).toEqual([])
   })
 })

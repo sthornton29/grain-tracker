@@ -225,6 +225,7 @@ export const TABLE_DOCS = {
   ctp_settings: ['U.S. Cotton Trust Protocol connection per organization: regen_program (the Regen program code stamped on sent bales) and api_key_hint (the saved key’s last four characters — the key itself is never readable)', '/cotton/trust-protocol'],
   ctp_bale_uploads: ['One row per batch of bales sent to the U.S. Cotton Trust Protocol: action register / correct / remove, uploaded_at, bale_count, regen_program, and the Protocol’s answer (ctp_upload_id, has_errors, error, ctp_bale_count)', '/cotton/trust-protocol'],
   ctp_bale_registrations: ['ONE row per cotton bale (bale_id) sent to or found registered with the U.S. Cotton Trust Protocol: gin_code, gin_tag, protocol_id (the producer’s Protocol ID), weight, regen_program as sent, sent_at, and the status the Protocol last reported (registration_status, shipment_status, ctp_regen_program, checked_at, inquiry_error). No row = the bale has not been sent', '/cotton/trust-protocol'],
+  ops_action_log: ['One row per fix applied from Turnrow Farm (approved there, written here): action, params, outcome applied / stale / refused / failed, who approved it, what was written or why not', '/settings'],
 }
 
 export const REFERENCE_DOCS = {

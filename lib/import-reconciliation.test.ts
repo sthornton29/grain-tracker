@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { buildSavePlan, assertSavePlan, projectOpenPositions, reconcileWithStatement, scopeGatePositions, statementReferencedIds, type PlanClosedLot, type PlanOpenRow, type ProjectionPosition } from '@/lib/import-reconciliation'
+import { buildSavePlan, assertSavePlan, inStatementAccount, missedStatementDays, normalizeBrokerAccount, projectOpenPositions, reconcileWithStatement, scopeGatePositions, statementReferencedIds, type PlanClosedLot, type PlanOpenRow, type ProjectionPosition } from '@/lib/import-reconciliation'
 import type { RollCandidate } from '@/lib/roll-detection'
 import type { StatementSubtotal } from '@/lib/statement-lots'
 
@@ -166,8 +166,8 @@ describe('scopeGatePositions', () => {
   // (4 × 2), every one stored, open and matched — but the 14-lot and two of
   // the wheat lots were tagged with an entity while the account entity was
   // "none". The gate blocked on "short 26 … Turnrow would have 12".
-  const stored = (id: string, commodity: string, month: string, n: number, price: number, date: string, entity_id: string | null): ProjectionPosition => ({
-    id, commodity, contract_month: month, side: 'short', num_contracts: n, trade_price: price, trade_date: date, status: 'open', entity_id,
+  const stored = (id: string, commodity: string, month: string, n: number, price: number, date: string, entity_id: string | null, broker_account: string | null = null): ProjectionPosition => ({
+    id, commodity, contract_month: month, side: 'short', num_contracts: n, trade_price: price, trade_date: date, status: 'open', entity_id, broker_account,
   })
   const positions = [
     stored('corn-14', 'Corn', 'MAR 27', 14, 5.585, '2026-09-03', 'turnrow'),
@@ -177,7 +177,7 @@ describe('scopeGatePositions', () => {
     stored('wheat-c', 'Chicago Wheat', 'JUL 27', 2, 6.99, '2026-07-15', null),
     stored('wheat-d', 'Chicago Wheat', 'JUL 27', 2, 7.31, '2026-07-23', null),
     stored('soy-nov', 'Soybeans', 'NOV 26', 2, 12.035, '2026-05-19', 'turnrow'),
-    stored('other-account', 'Corn', 'MAR 27', 5, 5.6, '2026-09-20', 'elsewhere'),
+    stored('other-account', 'Corn', 'MAR 27', 5, 5.6, '2026-09-20', 'elsewhere', '777XY001'),
   ]
   const matched = (key: string, id: string, over: Partial<PlanOpenRow>) => openRow(key, { existing: true, existingId: id, include: false, ...over })
   const opens = [
@@ -197,8 +197,9 @@ describe('scopeGatePositions', () => {
     { key: 'Soybeans|JAN 27|short', commodity: 'Soybeans', contract_month: 'JAN 27', side: 'short', contracts: 2, close_price: 12.3475, open_trade_equity: 350 },
     { key: 'Chicago Wheat|JUL 27|short', commodity: 'Chicago Wheat', contract_month: 'JUL 27', side: 'short', contracts: 8, close_price: 6.275, open_trade_equity: 33900 },
   ]
-  // Account entity "none": only untagged positions are in scope on their own.
+  // The pre-0104 rule: account entity "none" → only untagged positions in scope.
   const inScope = (e: string | null) => e == null
+  const statementAccount = '490JP046'
 
   it('collects every stored position the statement rows point at', () => {
     const ids = statementReferencedIds({ opens: [...opens, openRow('x', { manualMatchId: 'paired' })], lots })
@@ -206,7 +207,7 @@ describe('scopeGatePositions', () => {
   })
 
   it('a position the statement lists counts whatever entity it carries; another account’s position still does not', () => {
-    const scoped = scopeGatePositions(positions, { inScope, referencedIds: statementReferencedIds({ opens, lots }) })
+    const scoped = scopeGatePositions(positions, { statementAccount, referencedIds: statementReferencedIds({ opens, lots }) })
     expect(scoped.map((p) => p.id)).not.toContain('other-account')
     expect(scoped).toHaveLength(7)
     const plan = buildSavePlan({ opens, lots, rolls, isRollOn: () => true })
@@ -226,5 +227,63 @@ describe('scopeGatePositions', () => {
       'Statement shows MAR 27 Corn short 26. After this import Turnrow would have 12.',
       'Statement shows JUL 27 Chicago Wheat short 8. After this import Turnrow would have 4.',
     ])
+  })
+})
+
+describe('the 10/30 StoneX import — the roll whose close was on a skipped statement', () => {
+  // 10/29: NOV 26 soybeans 2 @ 12.035 bought back at 12.245 (SE), JAN 27 2
+  // sold at 12.3825 (SE). That statement was never saved. 10/30 (imported
+  // 10/31, account entity "none") lists only JAN 27 traded 10/29. The NOV 26
+  // lot was tagged entity Turnrow, so the entity scope dropped it from the
+  // gate and from "possibly closed": the app ended at 4 short against 2.
+  const soyNov: ProjectionPosition = { id: 'soy-nov', commodity: 'Soybeans', contract_month: 'NOV 26', side: 'short', num_contracts: 2, trade_price: 12.035, trade_date: '2026-05-19', status: 'open', entity_id: 'turnrow' }
+  const corn: ProjectionPosition = { id: 'corn-12', commodity: 'Corn', contract_month: 'MAR 27', side: 'short', num_contracts: 12, trade_price: 5.4825, trade_date: '2026-09-11', status: 'open', entity_id: null }
+  const positions = [soyNov, corn]
+  const opens = [
+    openRow('o0', { commodity: 'Corn', num_contracts: 12, trade_price: 5.4825, trade_date: '2026-09-11', existing: true, existingId: 'corn-12', include: false }),
+    openRow('o1', { commodity: 'Soybeans', contract_month: 'JAN 27', num_contracts: 2, trade_price: 12.3825, trade_date: '2026-10-29', execution_code: 'SE' }),
+  ]
+  const subtotals: StatementSubtotal[] = [
+    { key: 'Corn|MAR 27|short', commodity: 'Corn', contract_month: 'MAR 27', side: 'short', contracts: 12, close_price: 4.61, open_trade_equity: 52350 },
+    { key: 'Soybeans|JAN 27|short', commodity: 'Soybeans', contract_month: 'JAN 27', side: 'short', contracts: 2, close_price: 12.3425, open_trade_equity: 400 },
+  ]
+  const plan = buildSavePlan({ opens, lots: [], rolls: [], isRollOn: () => true })
+  const referencedIds = statementReferencedIds({ opens, lots: [] })
+
+  it('the old entity scope passed the import silently', () => {
+    const scoped = positions.filter((p) => referencedIds.has(p.id) || (p.entity_id ?? null) === null)
+    const gate = reconcileWithStatement({ projected: projectOpenPositions(scoped, plan), subtotals, closesRealized: 0, grossProfitLoss: null, openTradeEquity: 52750 })
+    expect(gate.level).toBe('ok')
+  })
+
+  it('the account rule keeps the entity-tagged NOV 26 lot in the count and blocks', () => {
+    const scoped = scopeGatePositions(positions, { statementAccount: '490JP046', referencedIds })
+    expect(scoped.map((p) => p.id)).toContain('soy-nov')
+    const gate = reconcileWithStatement({ projected: projectOpenPositions(scoped, plan), subtotals, closesRealized: 0, grossProfitLoss: null, openTradeEquity: 52750 })
+    expect(gate.level).toBe('block')
+    expect(gate.countMismatches.map((m) => m.message)).toEqual(['Statement shows NOV 26 Soybeans short 0. After this import Turnrow would have 2.'])
+  })
+
+  it('names the skipped 10/29 statement and flags the spread', () => {
+    const days = missedStatementDays({ newOpens: plan.newOpens, statementDate: '2026-10-30', hasStoredPositions: true })
+    expect(days).toHaveLength(1)
+    expect(days[0].date).toBe('2026-10-29')
+    expect(days[0].spread).toBe(true)
+    expect(days[0].rows[0]).toContain('JAN 27 Soybeans')
+    // A same-day fill or a first-ever import never warns.
+    expect(missedStatementDays({ newOpens: plan.newOpens, statementDate: '2026-10-29', hasStoredPositions: true })).toEqual([])
+    expect(missedStatementDays({ newOpens: plan.newOpens, statementDate: '2026-10-30', hasStoredPositions: false })).toEqual([])
+  })
+})
+
+describe('inStatementAccount', () => {
+  it('only a lot stamped with a DIFFERENT account is left out', () => {
+    expect(inStatementAccount({ broker_account: null }, '490JP046')).toBe(true)
+    expect(inStatementAccount({ broker_account: '490JP046' }, '490JP046')).toBe(true)
+    expect(inStatementAccount({ broker_account: '490 jp-046' }, '490JP046')).toBe(true)
+    expect(inStatementAccount({ broker_account: '777XY001' }, '490JP046')).toBe(false)
+    // A statement that prints no account cannot exclude anything.
+    expect(inStatementAccount({ broker_account: '777XY001' }, null)).toBe(true)
+    expect(normalizeBrokerAccount('  ')).toBeNull()
   })
 })

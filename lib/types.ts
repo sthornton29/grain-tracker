@@ -549,6 +549,9 @@ export type FuturesPosition = {
   // The brokerage statement that last touched this row (import or close).
   import_statement_date?: string | null
   import_statement_ref?: string | null
+  // 0104 — the account number the statement printed (e.g. "490JP046").
+  // Null = not known: counts in every statement's reconciliation.
+  broker_account?: string | null
 }
 
 // 083 — one row per mutation of a futures position (append-only ledger).
@@ -618,6 +621,8 @@ export type OptionPosition = {
   notes: string | null
   source: 'manual' | 'statement_import'
   created_at: string
+  // 0104 — the statement's account number; null = not known.
+  broker_account?: string | null
 }
 
 export type CropInsurancePolicy = {

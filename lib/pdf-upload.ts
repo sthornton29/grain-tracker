@@ -529,6 +529,9 @@ export type BrokerageStatementExtraction = {
   // The issuing firm as printed ('StoneX', 'R.J. O'Brien'…) — the history
   // trail cites "from StoneX statement 9/03".
   broker?: string | null
+  // The account number printed in the header ("ACCOUNT NUMBER: 490JP046").
+  // Tells the reconciliation which stored lots this statement covers (0104).
+  account_number?: string | null
   open_positions: BrokerageOpenPosition[]
   // Closed trades now arrive grouped: one entry per offset group with per-lot
   // opening facts. closed_trades is the legacy shape, still accepted as a

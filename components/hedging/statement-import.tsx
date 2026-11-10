@@ -4,7 +4,7 @@ import { useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { Modal } from './position-form'
 import EntitySelect from '@/components/entity-select'
-import { defaultEntityId } from '@/lib/entity-default'
+import { fmtDateShort } from '@/lib/format-date'
 import ClosePositionDialog from './close-position-dialog'
 import CloseOptionDialog from './close-option-dialog'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
@@ -19,7 +19,7 @@ import {
 import { parseDocumentChunked } from '@/lib/parse-chunked'
 import { mergeBrokerage } from '@/lib/parse-merge'
 import { reconcileStatementLots, type ReconciledStatement, type StatementLot, type StatementClosedGroup } from '@/lib/statement-lots'
-import { buildSavePlan, projectOpenPositions, reconcileWithStatement, scopeGatePositions, statementReferencedIds } from '@/lib/import-reconciliation'
+import { buildSavePlan, inStatementAccount, missedStatementDays, normalizeBrokerAccount, projectOpenPositions, reconcileWithStatement, scopeGatePositions, statementReferencedIds } from '@/lib/import-reconciliation'
 import {
   buildContractSymbol,
   normalizeCommodity,
@@ -600,13 +600,12 @@ export default function StatementImport({ entities, existingPositions, existingO
   // the statement explicitly closes (a matched closed trade) is already handled by
   // the import flow above and excluded here. Nothing is auto-closed — the user
   // confirms each through the real close workflow or keeps it open.
-  const importEntity = importEntityId || null
-  // Single-entity operation: the account entity is auto-assigned, and every
-  // position — including legacy ones saved with no entity — belongs to the
-  // same account universe, so the possibly-closed comparison spans them all.
-  // Multi-entity: scope strictly to the selected account entity as before.
-  const entityScopeMatches = (rowEntity: string | null) =>
-    defaultEntityId(entities) != null || (rowEntity ?? null) === importEntity
+  // Which stored lots this statement covers is decided by the ACCOUNT NUMBER
+  // it prints (lib/import-reconciliation inStatementAccount), never by the
+  // entity: the entity is attribution, and scoping by it hid the rolled-away
+  // NOV 26 soybeans from the 10/30 import (2 short became 4, no warning).
+  const statementAccount = normalizeBrokerAccount(extraction?.account_number)
+  const inAccount = (p: { broker_account?: string | null }) => inStatementAccount(p, statementAccount)
   const statementOpenKeys = useMemo(() => {
     const s = new Set<string>()
     for (const p of extraction?.open_positions ?? []) {
@@ -635,21 +634,21 @@ export default function StatementImport({ entities, existingPositions, existingO
   )
   const possiblyClosedFuturesList = useMemo(
     () =>
-      extraction == null ? [] : possiblyClosedFutures(existingPositions, { statementOpenKeys, matchedCloseIds, keptOpenIds, entityScopeMatches }),
+      extraction == null ? [] : possiblyClosedFutures(existingPositions, { statementOpenKeys, matchedCloseIds, keptOpenIds, inAccount }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [extraction, existingPositions, importEntity, entities, keptOpenIds, matchedCloseIds, statementOpenKeys],
+    [extraction, existingPositions, statementAccount, keptOpenIds, matchedCloseIds, statementOpenKeys],
   )
   const possiblyClosedOptions = useMemo(
     () =>
       extraction == null ? [] : existingOptions.filter(
         (o) =>
           o.status === 'open' &&
-          entityScopeMatches(o.entity_id ?? null) &&
+          inAccount(o) &&
           !keptOpenIds.has(o.id) &&
           !statementOptionKeys.has(`${o.commodity}|${o.option_type}|${up(o.underlying_contract_month)}|${o.strike_price.toFixed(4)}`),
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [extraction, existingOptions, importEntity, entities, keptOpenIds, statementOptionKeys],
+    [extraction, existingOptions, statementAccount, keptOpenIds, statementOptionKeys],
   )
   const possiblyClosedCount = possiblyClosedFuturesList.length + possiblyClosedOptions.length
   function keepOpen(id: string) {
@@ -661,12 +660,17 @@ export default function StatementImport({ entities, existingPositions, existingO
   // it holds (its "*" subtotals), open trade equity at the statement's closes
   // and the day's realized total. A contract count that would not match
   // blocks the save unless the reviewer ticks "Save anyway, I've checked".
-  // Scoped to the account entity — plus every stored position this statement
-  // itself lists (matched, hand-paired or closed by one of its lots): the
-  // statement proves those are in this account whatever entity they carry.
-  const scopedPositions = scopeGatePositions(existingPositions, {
-    inScope: entityScopeMatches,
-    referencedIds: statementReferencedIds({ opens: planOpens, lots: planLots }),
+  // Scoped to the statement's account (every lot with no account recorded
+  // counts) — plus every stored position this statement itself lists
+  // (matched, hand-paired or closed by one of its lots).
+  const referencedIds = statementReferencedIds({ opens: planOpens, lots: planLots })
+  const scopedPositions = scopeGatePositions(existingPositions, { statementAccount, referencedIds })
+  // New fills dated before this statement: that day's statement was skipped,
+  // and whatever closed that day (a roll's old month) is not in Turnrow.
+  const missedDays = missedStatementDays({
+    newOpens: [...plan.newOpens, ...plan.rolls.flatMap((r) => r.opens.filter((o) => !o.existingId && !o.manualMatchId))],
+    statementDate: normalizeTradeDate(extraction?.statement_date) ?? null,
+    hasStoredPositions: existingPositions.length > 0,
   })
   const projected = projectOpenPositions(scopedPositions, plan)
   // The statement's gross P&L covers every close it lists — already-imported
@@ -742,6 +746,10 @@ export default function StatementImport({ entities, existingPositions, existingO
     // Rolls first — each one is a single database transaction (close + every
     // open leg + linkage, crop year inherited, ledger events appended by the
     // database). Every fill of the new month is an open leg of the same roll.
+    // Every lot this import writes or matches is stamped with the statement's
+    // account number at the end (0104) — the next statement's gate then knows
+    // which account holds it. The ledger ignores that stamp.
+    const stampIds: string[] = [...referencedIds]
     let rolledCount = 0
     for (const r of plan.rolls) {
       const c = r.candidate
@@ -770,7 +778,7 @@ export default function StatementImport({ entities, existingPositions, existingO
           : { row: { contract_month: openRow.contract_month, num_contracts: openRow.num_contracts, trade_price: openRow.trade_price, trade_date: normalizeTradeDate(openRow.trade_date) ?? openRow.trade_date, commission: 0, execution_code: openRow.execution_code ?? undefined } }
       })
       const newRollOpens = r.opens.filter((o) => !o.existingId && !o.manualMatchId)
-      const { error } = await executeRoll(supabase, {
+      const { data: rollResult, error } = await executeRoll(supabase, {
         source: 'statement_import',
         statementDate,
         statementRef,
@@ -789,6 +797,7 @@ export default function StatementImport({ entities, existingPositions, existingO
         onChanged?.()
         return
       }
+      if (rollResult) stampIds.push(rollResult.closed_position_id, ...(rollResult.opened_position_ids ?? [rollResult.opened_position_id]))
       rolledCount++
     }
 
@@ -834,8 +843,9 @@ export default function StatementImport({ entities, existingPositions, existingO
     ]
 
     if (inserts.length > 0) {
-      const { error } = await supabase.from('futures_positions').insert(inserts)
+      const { data: inserted, error } = await supabase.from('futures_positions').insert(inserts).select('id')
       if (error) { setSaving(false); setErr(reportError(error, { action: 'save the imported positions', noun: 'position' })); return }
+      for (const row of inserted ?? []) stampIds.push((row as { id: string }).id)
     }
 
     const optionInserts = [
@@ -855,6 +865,7 @@ export default function StatementImport({ entities, existingPositions, existingO
         commission: 0,
         notes: null,
         source: 'statement_import' as const,
+        broker_account: statementAccount,
       })),
       ...newClosedOptions.map((r) => ({
         entity_id: importEntityId || null,
@@ -875,6 +886,7 @@ export default function StatementImport({ entities, existingPositions, existingO
         commission: 0,
         notes: null,
         source: 'statement_import' as const,
+        broker_account: statementAccount,
       })),
     ]
     if (optionInserts.length > 0) {
@@ -910,6 +922,7 @@ export default function StatementImport({ entities, existingPositions, existingO
           partial_close_of: held.id,
           import_statement_date: statementDate,
           import_statement_ref: statementRef,
+          broker_account: statementAccount,
         })
         if (ins.error) { setSaving(false); setErr(reportError(ins.error, { action: 'close part of a matched position', noun: 'position' }) + ' Everything before it was saved.'); return }
         const upd = await supabase
@@ -935,6 +948,14 @@ export default function StatementImport({ entities, existingPositions, existingO
         .eq('id', r.matchedOpenId!)
       if (error) { setSaving(false); setErr(reportError(error, { action: 'close a matched position', noun: 'position' }) + ' Everything before it was saved.'); return }
       closedCount++
+    }
+
+    // Stamp the account on every lot this statement wrote or matched that has
+    // none yet. Bookkeeping only: a failure here never fails the import.
+    const toStamp = [...new Set(stampIds.filter(Boolean))]
+    if (statementAccount && toStamp.length > 0) {
+      const { error } = await supabase.from('futures_positions').update({ broker_account: statementAccount }).in('id', toStamp).is('broker_account', null)
+      if (error) console.warn('[statement-import] could not record the brokerage account on the imported lots', error)
     }
 
     setSaving(false)
@@ -1028,6 +1049,26 @@ export default function StatementImport({ entities, existingPositions, existingO
               <ul className="mt-1 list-disc pl-5 space-y-0.5 text-xs">
                 {reconciled.warnings.map((w, i) => <li key={i}>{w}</li>)}
               </ul>
+            </div>
+          )}
+
+          {/* A fill from an earlier day = that day's statement was skipped. */}
+          {missedDays.length > 0 && (
+            <div className="rounded-lg border-2 border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 space-y-1.5">
+              <div className="font-semibold">
+                Import the {missedDays.map((d) => fmtDateShort(d.date)).join(', ')} statement{missedDays.length === 1 ? '' : 's'} first
+              </div>
+              <p>
+                This statement shows trades made on {missedDays.length === 1 ? 'an earlier day' : 'earlier days'}. A daily statement only lists the
+                day’s own closes, so anything closed that day is not in Turnrow yet, and neither are that day’s fees.
+                {missedDays.some((d) => d.spread) && ' These are spread trades — usually a roll — so the month you rolled out of would still show as open.'}
+              </p>
+              <ul className="list-disc pl-5 text-xs text-amber-800">
+                {missedDays.flatMap((d) => d.rows).map((r, i) => <li key={i}>{r}</li>)}
+              </ul>
+              <p className="text-xs text-amber-800">
+                Close this window, import {missedDays.length === 1 ? 'that statement' : 'those statements'} in date order, then come back to this one.
+              </p>
             </div>
           )}
 
@@ -1488,8 +1529,8 @@ export default function StatementImport({ entities, existingPositions, existingO
                   A position you hold open that isn’t on the latest statement has likely been closed. This is a separate step
                   from the new positions above. Choose <b>Close this position</b> to record it through the normal close
                   workflow (you enter the actual close price &amp; date — nothing is auto-closed), or <b>Keep open</b> if it’s
-                  on a different account or this statement was partial. Comparison is scoped to the account entity selected
-                  above{importEntity ? '' : ' (none — comparing positions with no entity)'}.
+                  in a different brokerage account or this statement was partial. Every open position counts here unless an
+                  earlier statement showed it in a different account{statementAccount ? ` than this one (${statementAccount})` : ''}.
                 </p>
               </div>
               <div className="overflow-x-auto">

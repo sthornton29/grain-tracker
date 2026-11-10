@@ -220,13 +220,20 @@ checks(seq, migration, evidence, applied) as (values
   (108, '0103_ops_action_log',              'table ops_action_log, its applied-key unique index, org_isolation policy',
         exists (select 1 from tbls where t = 'ops_action_log')
         and exists (select 1 from pg_indexes where tablename = 'ops_action_log' and indexname = 'ops_action_log_applied_key')
-        and exists (select 1 from pg_policies where tablename = 'ops_action_log' and policyname = 'ops_action_log_org_isolation'))
+        and exists (select 1 from pg_policies where tablename = 'ops_action_log' and policyname = 'ops_action_log_org_isolation')),
+  -- 0104 (supabase/migrations/): the brokerage account a statement prints, stamped on the lots it records or matches;
+  -- the ledger trigger ignores a broker_account-only update.
+  (109, '0104_broker_account',              'futures_positions.broker_account, options_positions.broker_account, ledger trigger skips the stamp',
+        exists (select 1 from cols where t = 'futures_positions' and c = 'broker_account')
+        and exists (select 1 from cols where t = 'options_positions' and c = 'broker_account')
+        and exists (select 1 from fns where f = 'hedge_position_event_trigger'
+                    and pg_get_functiondef(oid) like '%- ''broker_account''%'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 103'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 104'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

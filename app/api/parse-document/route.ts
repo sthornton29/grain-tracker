@@ -334,10 +334,13 @@ TRADE (EXECUTION) CODES: lines in the CONFIRMATION section carry a short trade c
 
 BROKER: broker is the issuing firm's name as printed on the statement (e.g. "StoneX", "R.J. O'Brien"); null if not shown.
 
+ACCOUNT NUMBER: account_number is the account number printed in the statement header (e.g. "ACCOUNT NUMBER: 490JP046" -> "490JP046"), exactly as printed; null if not shown.
+
 Respond ONLY in JSON with no other text, no markdown backticks:
 {
   "statement_date": "YYYY-MM-DD",
   "broker": "string or null",
+  "account_number": "string or null",
   "open_positions": [
     {
       "trade_date": "YYYY-MM-DD",
