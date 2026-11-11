@@ -709,6 +709,28 @@ nothing. Up to 500 per call.
   "counts": { "settlements": 1, "upserted": 1, "refused": 0 } }
 ```
 
+### POST /kept-for-seed and DELETE /kept-for-seed?reference= (`settlements:write`)
+
+Grain kept back for seed (0105, 2026-11-10): Turnrow Farm's saved seed lot
+took these bushels of the crop year as next year's seed at the year's
+average price. Grain counts them as SOLD at that price: each row enters
+the marketing engine as a fully priced flat-cash sale through the spot
+seam (lib/kept-for-seed.ts), so they leave unsold, and the marketing
+pull's settled figures carry them with a basis note "kept for seed".
+
+```json
+{ "crop_year": 2026, "crop": "wheat", "bushels": 741, "price_per_bu": 5.737, "kept_on": "2026-06-04",
+  "reference": "turnrow-farm:saved_seed_lot:<id>", "label": "26R59", "entity_farm_uid": "uuid|null" }
+```
+
+- Upserted by `reference`: a second POST is the lot edited. `DELETE
+  ?reference=` removes it (the lot voided). Response: the row, or
+  `{ deleted: n }`.
+- A contract closed short (contract page, Close short) keeps the bushels
+  delivered as `contracted_bushels` and what was signed in
+  `original_contracted_bushels`, so the engine values only what was
+  delivered and the bushels kept for seed are not counted twice.
+
 ## The landowner partner API's `settlements` scope
 
 A landowner share (Turnrow Landowner) with the **Rent statements** switch on

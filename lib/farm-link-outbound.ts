@@ -6,6 +6,7 @@
 // uuids from the id map; nothing is recomputed. The pure shapers are exported
 // for tests; the load* functions are the service-role, org-scoped loaders.
 
+import { KEPT_FOR_SEED_SELECT, keptForSeedByCrop, type KeptForSeedRow } from '@/lib/kept-for-seed'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { IdMap } from '@/lib/farm-link'
 import { fetchAll } from '@/lib/partner-api-server'
@@ -384,7 +385,8 @@ async function loadSalesStatus(supabase: SupabaseClient, org: string, year: numb
 
 type SettledByCrop = Map<string, { quantity: number; revenue: number; updatedAt: string | null }>
 
-async function loadSettledByCrop(supabase: SupabaseClient, org: string, year: number, crops: readonly Crop[]): Promise<{ byCrop: SettledByCrop; records: PartnerSettlement[]; checkoff: Map<string, number>; fees: Map<string, number> }> {
+async function loadSettledByCrop(supabase: SupabaseClient, org: string, year: number, crops: readonly Crop[]): Promise<{ byCrop: SettledByCrop; records: PartnerSettlement[]; checkoff: Map<string, number>; fees: Map<string, number>; keptNotes: Map<string, string> }> {
+  const keptNotes = new Map<string, string>()
   const [settlements, lines, loads, buyers] = await Promise.all([
     fetchAll<{ id: string; buyer_id: string; settlement_date: string; settlement_number: string | null; updated_at: string | null }>((f, t) =>
       supabase.from('settlements').select('id, buyer_id, settlement_date, settlement_number, updated_at').eq('org_id', org).order('id').range(f, t)),
@@ -436,7 +438,19 @@ async function loadSettledByCrop(supabase: SupabaseClient, org: string, year: nu
       fees.set(cropId, (fees.get(cropId) ?? 0) + settlementFeeDollars(rows as never))
     }
   } catch { /* 074/086 not applied */ }
-  return { byCrop, records, checkoff, fees }
+  // 0105: grain kept back for seed is settled at its price (the saved seed
+  // lot's), so the settled average and revenue carry it once.
+  try {
+    const kept = await fetchAll<KeptForSeedRow>((f, t) => supabase.from('kept_for_seed').select(KEPT_FOR_SEED_SELECT).eq('org_id', org).eq('crop_year', year).order('id').range(f, t))
+    for (const [cropId, k] of keptForSeedByCrop(kept, year)) {
+      const cur = byCrop.get(cropId) ?? { quantity: 0, revenue: 0, updatedAt: null }
+      cur.quantity += k.quantity
+      cur.revenue += k.revenue
+      byCrop.set(cropId, cur)
+      keptNotes.set(cropId, `kept for seed: ${Math.round(k.quantity * 100) / 100} bu at $${(k.revenue / k.quantity).toFixed(3)} (Turnrow Farm saved seed)`)
+    }
+  } catch { /* 0105 not applied */ }
+  return { byCrop, records, checkoff, fees, keptNotes }
 }
 
 function farmingEntities(production: ProductionInputs): Array<{ id: string; name: string }> {
@@ -460,7 +474,10 @@ export async function loadMarketingPayload(supabase: SupabaseClient, org: string
   const out: FarmLinkMarketingRecord[] = []
   for (const row of rows) {
     const s = settled.byCrop.get(row.cropId)
-    out.push(shapeMarketingRecord({ row, cropYear: year, entity: null, settled: s ? { ...s, share: 1 } : null, isFinal: finalCrops.has(row.cropId), asOf, assumption: assumptionByCrop.get(row.cropId) ?? null }))
+    const rec = shapeMarketingRecord({ row, cropYear: year, entity: null, settled: s ? { ...s, share: 1 } : null, isFinal: finalCrops.has(row.cropId), asOf, assumption: assumptionByCrop.get(row.cropId) ?? null })
+    const kept = settled.keptNotes.get(row.cropId)
+    if (kept) rec.basis_notes.push(kept)
+    out.push(rec)
   }
   for (const e of farmingEntities(production)) {
     const scope = buildEntityScope({ entityId: e.id, farms: production.farms, fields: production.fields, entities: production.entities })

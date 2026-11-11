@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { fetchLoadSales, type LoadSale } from '@/lib/load-sales'
 import { buildSpotInputs } from '@/lib/spot-contracts'
+import { KEPT_FOR_SEED_SELECT, type KeptForSeedRow } from '@/lib/kept-for-seed'
 import { computeMarketing, aggregateMarketing, breakevenAvgPrice, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, assumedAcresTotal, assumedSegmentAcres, resolveAcresByCrop, segmentTotalAcres, DEFAULT_BALE_LBS, type MarketingRow, type SegmentAcres } from '@/lib/marketing'
 import { marketingCropYearOptions } from '@/lib/crop-years'
 import { quoteFromWire, quoteMapFromWire, type Quote } from '@/lib/quotes'
@@ -178,6 +179,7 @@ export default function MarketingPage() {
   const [plantings, setPlantings] = useState<PlantingRow[]>([])
   const [contracts, setContracts] = useState<Contract[]>([])
   const [loadSales, setLoadSales] = useState<LoadSale[]>([])
+  const [keptForSeed, setKeptForSeed] = useState<KeptForSeedRow[]>([])
   const [futures, setFutures] = useState<FuturesPosition[]>([])
   const [options, setOptions] = useState<OptionPosition[]>([])
   const [assumptions, setAssumptions] = useState<CropAssumption[]>([])
@@ -271,6 +273,9 @@ export default function MarketingPage() {
     // How each buyer load was sold (094) — the spot contracts build from these.
     // A database before 094 reads as no rows.
     setLoadSales(await fetchLoadSales(supabase, { loadIds: (((ld.data as LoadRow[]) ?? []).filter((l) => l.to_type === 'buyer')).map((l) => l.id) }).catch(() => []))
+    // Grain kept back for seed (0105) — sold at the year's average; none before 0105.
+    const kfs = await supabase.from('kept_for_seed').select(KEPT_FOR_SEED_SELECT).eq('crop_year', cropYear)
+    setKeptForSeed(kfs.error ? [] : ((kfs.data as KeptForSeedRow[]) ?? []))
     setGinReceipts(((gr.data as unknown) as Array<Pick<GinReceipt, 'id' | 'bales_count' | 'total_bale_weight' | 'entity_id' | 'farm_id' | 'field_id'>>) ?? [])
     setCottonBales(((cb.data as unknown) as Array<Pick<CottonBale, 'gin_receipt_id' | 'net_weight_lbs'>>) ?? [])
 
@@ -416,8 +421,8 @@ export default function MarketingPage() {
   // "Spot (N loads)". The entity filter flows it down pro-rata like any
   // agent-held contract. Price-later bushels stay unpriced — nothing to add.
   const spotInputs = useMemo(
-    () => buildSpotInputs({ loads, sales: loadSales, crops, entities, fields, farms, splits }),
-    [loads, loadSales, crops, entities, fields, farms, splits],
+    () => buildSpotInputs({ loads, sales: loadSales, crops, entities, fields, farms, splits, keptForSeed }),
+    [loads, loadSales, crops, entities, fields, farms, splits, keptForSeed],
   )
   const contractsWithSpot = useMemo<Contract[]>(() => spotInputs.contractsWithSpot(contracts), [spotInputs, contracts])
   const scopedContracts = useMemo(() => attribution.contracts(contractsWithSpot), [attribution, contractsWithSpot])

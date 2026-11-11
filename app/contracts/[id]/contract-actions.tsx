@@ -14,6 +14,9 @@ export default function ContractActions({
   isAutoComplete,
   editHref,
   hideEdit = false,
+  contractedBu,
+  deliveredBu,
+  originalContractedBu = null,
 }: {
   contractId: string
   contractNumber: string
@@ -24,11 +27,15 @@ export default function ContractActions({
   editHref?: string
   /** Leave the Edit button out entirely (the caller renders its own). */
   hideEdit?: boolean
+  /** 0105 close short: the contract's bushels, the delivered bushels, and what was signed when closed short. */
+  contractedBu?: number
+  deliveredBu?: number
+  originalContractedBu?: number | null
 }) {
   const router = useRouter()
-  const [busy, setBusy] = useState<null | 'delete' | 'complete'>(null)
+  const [busy, setBusy] = useState<null | 'delete' | 'complete' | 'short'>(null)
   const [err, setErr] = useState<string | null>(null)
-  const [ask, setAsk] = useState<null | 'delete' | 'reopen' | 'complete'>(null)
+  const [ask, setAsk] = useState<null | 'delete' | 'reopen' | 'complete' | 'short'>(null)
 
   async function doDelete() {
     setBusy('delete')
@@ -62,13 +69,33 @@ export default function ContractActions({
     const supabase = createClient()
     setBusy('complete')
     setErr(null)
+    // Reopening a contract closed short (0105) restores what was signed.
     const { error } = isManuallyComplete
-      ? await supabase.from('contracts').update({ completed_at: null }).eq('id', contractId)
+      ? await supabase.from('contracts').update(originalContractedBu != null ? { completed_at: null, contracted_bushels: originalContractedBu, original_contracted_bushels: null } : { completed_at: null }).eq('id', contractId)
       : await supabase.from('contracts').update({ completed_at: new Date().toISOString() }).eq('id', contractId)
     setBusy(null)
     setAsk(null)
     if (error) {
       setErr(reportError(error, { action: isManuallyComplete ? 'reopen this contract' : 'mark this contract complete', noun: 'contract' }))
+      return
+    }
+    router.refresh()
+  }
+
+  // Close short (0105): the contract keeps the bushels delivered, the
+  // signed amount is kept beside it, and every engine values the delivered
+  // bushels only. Reopen puts the signed amount back.
+  const canCloseShort = !isManuallyComplete && !isAutoComplete && contractedBu != null && deliveredBu != null && deliveredBu > 0 && deliveredBu < contractedBu
+  async function doCloseShort() {
+    if (contractedBu == null || deliveredBu == null) return
+    const supabase = createClient()
+    setBusy('short')
+    setErr(null)
+    const { error } = await supabase.from('contracts').update({ original_contracted_bushels: contractedBu, contracted_bushels: Math.round(deliveredBu * 100) / 100, completed_at: new Date().toISOString() }).eq('id', contractId)
+    setBusy(null)
+    setAsk(null)
+    if (error) {
+      setErr(reportError(error, { action: 'close this contract short', noun: 'contract' }))
       return
     }
     router.refresh()
@@ -99,6 +126,11 @@ export default function ContractActions({
       >
         {completeLabel}
       </button>
+      {canCloseShort && (
+        <button type="button" onClick={() => setAsk('short')} disabled={busy !== null} className={`${btn} border border-slate-300 bg-white text-slate-700`}>
+          {busy === 'short' ? 'Closing…' : 'Close short'}
+        </button>
+      )}
       <button
         type="button"
         onClick={() => setAsk('delete')}
@@ -116,6 +148,15 @@ export default function ContractActions({
         danger
         busy={busy === 'delete'}
         onConfirm={doDelete}
+        onCancel={() => setAsk(null)}
+      />
+      <ConfirmDialog
+        open={ask === 'short'}
+        title={`Close #${contractNumber} short?`}
+        body={<p>It keeps the {Math.round(deliveredBu ?? 0).toLocaleString('en-US')} bu delivered and is complete; the {Math.round(contractedBu ?? 0).toLocaleString('en-US')} bu signed for stay on record. Marketing and revenue then count only what was delivered, and the rest of your production shows as unsold (or kept for seed). Reopen puts the signed amount back.</p>}
+        confirmLabel="Close short"
+        busy={busy === 'short'}
+        onConfirm={doCloseShort}
         onCancel={() => setAsk(null)}
       />
       <ConfirmDialog

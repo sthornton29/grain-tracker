@@ -51,7 +51,7 @@ export function parsePriceLaterPoolId(id: string): { cropId: string; cropYear: n
   return { cropId, cropYear, buyerId }
 }
 export function isVirtualContractId(id: string | null | undefined): boolean {
-  return !!id && (id.startsWith(SPOT_ID_PREFIX) || id.startsWith(PRICE_LATER_ID_PREFIX))
+  return !!id && (id.startsWith(SPOT_ID_PREFIX) || id.startsWith(PRICE_LATER_ID_PREFIX) || id.startsWith('kept-seed:'))
 }
 
 /** A load as the virtual builders need it. */

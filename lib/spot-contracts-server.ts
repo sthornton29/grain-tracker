@@ -10,6 +10,7 @@
 // spot contracts or pools — the pre-migration state is tolerated, never an
 // error.
 
+import { KEPT_FOR_SEED_SELECT, type KeptForSeedRow } from '@/lib/kept-for-seed'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { fetchLoadSales } from '@/lib/load-sales'
@@ -57,5 +58,7 @@ export async function loadSpotInputs(
     fetchLoadSales(supabase, { loadIds, orgId: org }),
     loadIds.length === 0 ? Promise.resolve([] as SplitRow[]) : table<SplitRow>('load_splits', 'load_id, field_id, percentage'),
   ])
-  return buildSpotInputs({ loads, sales, crops, entities, fields, farms, splits })
+  // 0105: grain kept back for seed; a database before 0105 reads as none.
+  const keptForSeed = await table<KeptForSeedRow>('kept_for_seed', KEPT_FOR_SEED_SELECT, { crop_year: opts.cropYear }).catch(() => [] as KeptForSeedRow[])
+  return buildSpotInputs({ loads, sales, crops, entities, fields, farms, splits, keptForSeed })
 }

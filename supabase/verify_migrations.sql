@@ -227,13 +227,20 @@ checks(seq, migration, evidence, applied) as (values
         exists (select 1 from cols where t = 'futures_positions' and c = 'broker_account')
         and exists (select 1 from cols where t = 'options_positions' and c = 'broker_account')
         and exists (select 1 from fns where f = 'hedge_position_event_trigger'
-                    and pg_get_functiondef(oid) like '%- ''broker_account''%'))
+                    and pg_get_functiondef(oid) like '%- ''broker_account''%')),
+  -- 0105 (supabase/migrations/): grain kept back for seed (Turnrow Farm saved seed lots, sold at the year's average)
+  -- and a contract closed short (original_contracted_bushels keeps what was signed).
+  (110, '0105_kept_for_seed',               'table kept_for_seed, its reference unique index, org_isolation policy, contracts.original_contracted_bushels',
+        exists (select 1 from tbls where t = 'kept_for_seed')
+        and exists (select 1 from pg_indexes where tablename = 'kept_for_seed' and indexname = 'kept_for_seed_org_reference')
+        and exists (select 1 from pg_policies where tablename = 'kept_for_seed' and policyname = 'kept_for_seed_org_isolation')
+        and exists (select 1 from cols where t = 'contracts' and c = 'original_contracted_bushels'))
 )
 select status, migration, evidence
 from (
   select 0 as ord,
     case
-      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 104'
+      when bool_and(applied) then '✅ ALL ' || count(*) filter (where applied is not null) || ' verifiable migrations applied — schema is at 105'
       else '❌ ' || count(*) filter (where applied = false) || ' migration(s) MISSING — run the ✗ files below in ascending order'
     end as status,
     '' as migration, '' as evidence

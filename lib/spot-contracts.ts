@@ -12,6 +12,7 @@
 // lib/spot-contracts-server.ts fetches the rows; client pages hand in what
 // they already loaded. Tested in lib/spot-contracts-server.test.ts.
 
+import { keptForSeedContracts, type KeptForSeedRow, type toKeptForSeedContract } from '@/lib/kept-for-seed'
 import { computeBushels } from '@/lib/shrink'
 import type { LoadSale } from '@/lib/load-sales'
 import { spotSummary } from '@/lib/spot-price'
@@ -127,8 +128,8 @@ export type SpotInputs = {
   pools: PriceLaterPool[]
   /** The org's marketing agent, when it has one. */
   marketingAgentEntityId: string | null
-  /** Real contracts + the spot contracts, for any engine consumer. */
-  contractsWithSpot<C extends Contract>(contracts: ReadonlyArray<C>): Array<C | ReturnType<typeof withSpotContracts>[number]>
+  /** Real contracts + the spot contracts + the grain kept for seed (0105), for any engine consumer. */
+  contractsWithSpot<C extends Contract>(contracts: ReadonlyArray<C>): Array<C | ReturnType<typeof withSpotContracts>[number] | ReturnType<typeof toKeptForSeedContract>>
 }
 
 export type SpotInputArgs = {
@@ -139,6 +140,8 @@ export type SpotInputArgs = {
   fields?: ReadonlyArray<{ id: string; farm_id: string | null }>
   farms?: ReadonlyArray<{ id: string; entity_id: string | null }>
   splits?: ReadonlyArray<{ load_id: string; field_id: string; percentage?: number | string | null }>
+  /** Grain kept back for seed (0105): sold at the year's average, the same seam as spot. */
+  keptForSeed?: ReadonlyArray<KeptForSeedRow>
 }
 
 /** Everything a marketing consumer needs from the sale rows, built one way. */
@@ -160,7 +163,7 @@ export function buildSpotInputs(args: SpotInputArgs): SpotInputs {
     spots,
     pools,
     marketingAgentEntityId: agent,
-    contractsWithSpot: (contracts) => withSpotContracts(contracts, spots),
+    contractsWithSpot: (contracts) => [...withSpotContracts(contracts, spots), ...keptForSeedContracts(args.keptForSeed ?? [])],
   }
 }
 

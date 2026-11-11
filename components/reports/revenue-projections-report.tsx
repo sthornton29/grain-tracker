@@ -12,6 +12,7 @@ import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { fetchLoadSales, type LoadSale } from '@/lib/load-sales'
 import { buildSpotInputs } from '@/lib/spot-contracts'
+import { KEPT_FOR_SEED_SELECT, type KeptForSeedRow } from '@/lib/kept-for-seed'
 import { computeMarketing, segmentAcresByCrop, expectedProductionFromBreakout, isCottonCrop, assumedAcresTotal, type Planting } from '@/lib/marketing'
 import { marketingCropYearOptions } from '@/lib/crop-years'
 import { fetchCottonPhysical, type CottonPhysicalData } from '@/lib/cotton-physical-fetch'
@@ -101,6 +102,7 @@ export default function RevenueProjectionsReport({ onPayloadChange, headerAction
   const [loads, setLoads] = useState<LoadRow[]>([])
   const [splits, setSplits] = useState<SplitRow[]>([])
   const [loadSales, setLoadSales] = useState<LoadSale[]>([])
+  const [keptForSeed, setKeptForSeed] = useState<KeptForSeedRow[]>([])
   const [combineEntries, setCombineEntries] = useState<CombineEntryLike[]>([])
   const [policies, setPolicies] = useState<CropInsurancePolicy[]>([])
   const [scos, setScos] = useState<CropInsuranceSco[]>([])
@@ -166,6 +168,9 @@ export default function RevenueProjectionsReport({ onPayloadChange, headerAction
         fetchGovernmentActuals(supabase),
       ])
       setLoadSales(ls)
+      // Grain kept back for seed (0105) — sold at the year's average; none before 0105.
+      const kfs = await supabase.from('kept_for_seed').select(KEPT_FOR_SEED_SELECT)
+      setKeptForSeed(kfs.error ? [] : ((kfs.data as KeptForSeedRow[]) ?? []))
       setGovActuals(ga)
       setEntities((en.data as Entity[]) || [])
       setFarms((fa.data as Array<{ id: string; entity_id: string | null }>) || [])
@@ -228,8 +233,8 @@ export default function RevenueProjectionsReport({ onPayloadChange, headerAction
   // appended to the real contracts so crop sales revenue prices them exactly
   // as the Marketing dashboard does (the RevProj − Marketing identity holds).
   const spotInputs = useMemo(
-    () => buildSpotInputs({ loads, sales: loadSales, crops, entities, fields, farms, splits }),
-    [loads, loadSales, crops, entities, fields, farms, splits],
+    () => buildSpotInputs({ loads, sales: loadSales, crops, entities, fields, farms, splits, keptForSeed }),
+    [loads, loadSales, crops, entities, fields, farms, splits, keptForSeed],
   )
   const contractsWithSpot = useMemo<Contract[]>(() => spotInputs.contractsWithSpot(contracts), [spotInputs, contracts])
   const scopedContracts = useMemo(() => attribution.contracts(contractsWithSpot), [attribution, contractsWithSpot])
