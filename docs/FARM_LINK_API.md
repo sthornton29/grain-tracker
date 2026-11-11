@@ -400,6 +400,27 @@ Per bin × crop.
   crop year (+ that year's positive combine remainders) on or before `as_of`.
 - Transfers are not loads and never touch production or marketing.
 
+### GET /bin-loads?crop_year=2026&bin_id= (`bins:read`)
+
+Every load delivered INTO a bin in the crop year, one record per load
+(lib/farm-link-bin-loads.ts); `bin_id` (the bins pull's `bin_id`) narrows
+it to one bin. Turnrow Farm drafts its saved seed lots from the loads into
+a seed bin (2026-11-10).
+
+```json
+{ "id": "load uuid", "date": "2026-06-04", "ticket_number": "3-17", "crop_id": "uuid", "crop": "Wheat", "crop_year": 2026,
+  "to_bin_id": "uuid", "to_bin_name": "Wheat Seed",
+  "from_type": "field", "from_field_id": "uuid", "from_field_name": "Robert Allen", "from_field_farm_uid": "uuid|null",
+  "from_bin_id": null, "from_bin_name": null, "varieties": ["Pioneer 26R59"],
+  "net_weight_lb": 44460, "moisture_pct": 12.9, "test_weight": 58.8, "dry_bushels": 741, "updated_at": "…" }
+```
+
+- `dry_bushels` is the load's dry bushels under the crop's bases, the
+  figure /loads and the bin inventory show.
+- `varieties` are those on the source field's planting of the load's crop
+  and season; a load moved from another bin (`from_type: "bin"`) carries
+  none and names the bin instead.
+
 ### GET /insurance?crop_year=2026 (`insurance:read`)
 
 The crop insurance premiums Grain already allocates by entity and crop, so the
