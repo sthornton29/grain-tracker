@@ -205,6 +205,11 @@ export function createServiceClient(): SupabaseClient | null {
   if (!url || !key) return null
   return createSupabaseClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
+    // Every read is live (2026-11-10): Next 14 can answer a server fetch
+    // from its data cache, and the farm link served 2026 wheat with a
+    // contract closed short an hour earlier still at its signed bushels while
+    // a new query in the same request read fresh.
+    global: { fetch: (input: RequestInfo | URL, init?: RequestInit) => fetch(input, { ...init, cache: 'no-store' }) },
   })
 }
 
