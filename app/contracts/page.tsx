@@ -594,7 +594,7 @@ export default async function ContractsPage({
               </Link>
               <Link href="/settings/contracts" className="block px-3 py-2 text-sm hover:bg-slate-50">
                 Several at once
-                <span className="block text-xs text-slate-400">From a spreadsheet or a contract document</span>
+                <span className="block text-xs text-slate-400">From a spreadsheet</span>
               </Link>
             </div>
           </details>

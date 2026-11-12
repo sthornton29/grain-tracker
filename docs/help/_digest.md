@@ -1,6 +1,6 @@
 # Turnrow capabilities digest
 
-Generated 2026-11-10 · version 0.1.0 · build a480a68. Compiled from docs/help — regenerate with `npm run help:build`.
+Generated 2026-11-12 · version 0.1.0 · build b875bcb. Compiled from docs/help — regenerate with `npm run help:build`.
 
 # What Turnrow does NOT do
 
@@ -147,7 +147,7 @@ The contract tracker shows every grain contract with how much you've delivered a
 - Cards at the top total what's on screen: contracted, delivered, remaining to deliver, delivered-but-unpaid (with the dollars waiting at contract price), and the share fully priced. Pick a crop year and a **Sold vs unsold** bar appears: fully priced and seed contracts in green, contracts with a pricing leg still open in amber, and the rest of that year's expected production as unsold. It uses the expected yields you keep on the Marketing page — until those are entered for the year it shows the sold totals only.
 - Each row shows the buyer, type, crop year, date sold, where it delivers, the delivery window, contracted versus delivered bushels, progress (percent delivered for grain, percent priced for seed), price, contract value, and paid versus unpaid bushels with the unpaid dollars. A totals row closes the table. Tap anywhere on a row to open the contract; the contract number stays put while you scroll a wide table sideways on an iPad.
 - Tap a contract to open its printable detail page: the full terms, every load delivered against it (your dry bushels beside the buyer's settled net bushels), attachments, and actions to mark it complete or delete it.
-- Press **New Contract** to type in one grain contract — buyer, crop, crop year, and contracted bushels are required, and the form points out anything missing before it saves. The small caret beside the button holds **Seed contract** for acreage-based seed production agreements and **Several at once** for entering from a spreadsheet or a contract document (Settings → Contracts).
+- Press **New Contract** to enter one grain contract — buyer, crop, crop year, and contracted bushels are required, and the form points out anything missing before it saves. Have the buyer's contract? Press **Upload contract PDF or photo** at the top of the form and the fields fill in from the document; check them, then save, and the document attaches to the contract. The small caret beside the button holds **Seed contract** for acreage-based seed production agreements and **Several at once** for entering from a spreadsheet (Settings → Contracts).
 - Attach the signed paper contract on the detail page so it's always at hand.
 
 ## Contract types in plain words

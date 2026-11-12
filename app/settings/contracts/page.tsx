@@ -14,50 +14,14 @@ import {
   emptyContractForm,
   type ContractFormState,
 } from '@/components/contract-form'
-import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL, basisFromCashFutures } from '@/lib/contracts'
-import { MAX_PDF_BYTES, PdfTooLargeError, uploadFileToStorage, type ContractExtraction } from '@/lib/pdf-upload'
-import { parseDocumentChunked } from '@/lib/parse-chunked'
-import { mergeContracts } from '@/lib/parse-merge'
-import { imagesToPdf } from '@/lib/image-capture'
+import { CONTRACT_TYPE_LABEL, PRICING_STATUS_LABEL } from '@/lib/contracts'
+import { MAX_PDF_BYTES, PdfTooLargeError } from '@/lib/pdf-upload'
+import { contractExtractionToForm, readContractDocument, attachContractDocument } from '@/components/contract-document'
 import DocumentCapture, { type DocumentSource } from '@/components/document-capture'
-import { findBestMatch } from '@/lib/fuzzy'
 import Link from 'next/link'
 import { reportError } from '@/lib/friendly-error'
 import { useDialogs, plural } from '@/components/use-dialogs'
 import type { Buyer, Contract, Crop, DeliveryLocation, Entity, FieldPlanting } from '@/lib/types'
-
-// Map an AI contract extraction onto the editable form. Buyer/crop are fuzzy-
-// matched to existing records; everything is editable before saving.
-function contractExtractionToForm(x: ContractExtraction, buyers: Buyer[], crops: Crop[], baseEntityId: string): ContractFormState {
-  const buyer = x.buyer_name ? findBestMatch(x.buyer_name, buyers, (b) => b.name) : null
-  const crop = x.crop ? findBestMatch(x.crop, crops, (c) => c.name) : null
-  const fee = x.service_fee ?? 0
-  // When the contract gives both a futures and a cash price, derive the basis
-  // (cash − futures + fee) so it's internally consistent — the AI sometimes
-  // flips the basis sign. Otherwise keep whatever basis was extracted.
-  const basisStr = x.futures_price != null && x.cash_price != null
-    ? String(basisFromCashFutures(x.cash_price, x.futures_price, fee))
-    : x.basis != null ? String(x.basis) : ''
-  return {
-    ...emptyContractForm,
-    entity_id: baseEntityId,
-    contract_number: x.contract_number ?? '',
-    buyer_id: buyer?.id ?? '',
-    crop_id: crop?.id ?? '',
-    contract_type: x.contract_type ?? 'forward',
-    contract_month: x.contract_month ? x.contract_month.toUpperCase() : '',
-    crop_year: x.crop_year != null ? String(x.crop_year) : '',
-    contracted_bushels: x.contracted_bushels != null ? String(x.contracted_bushels) : '',
-    futures_price: x.futures_price != null ? String(x.futures_price) : '',
-    basis: basisStr,
-    cash_price: x.cash_price != null ? String(x.cash_price) : '',
-    service_fee: x.service_fee != null ? String(x.service_fee) : '',
-    delivery_type: x.delivery_type ?? 'pickup',
-    delivery_start_date: x.delivery_start_date ?? '',
-    delivery_end_date: x.delivery_end_date ?? '',
-    notes: x.notes ?? '',
-  }
-}
 
 export default function ContractsSettingsPage() {
   const supabase = useMemo(() => createClient(), [])
@@ -119,13 +83,7 @@ export default function ContractsSettingsPage() {
     try {
       await new Promise((r) => setTimeout(r, 200))
       setAiStage('Extracting…')
-      // Chunked parse for long contract packets: one contract per document,
-      // so later chunks only fill fields page 1 lacked (mergeContracts).
-      const { data: x, warning } = await parseDocumentChunked<ContractExtraction>(
-        src.kind === 'pdf' ? src.file : src.images,
-        'contract',
-        { onProgress: setAiStage, merge: mergeContracts },
-      )
+      const { data: x, warning } = await readContractDocument(src, setAiStage)
       setForm(contractExtractionToForm(x, buyers, crops, form.entity_id))
       setSource(src)
       if (warning) setErr(warning)
@@ -145,17 +103,7 @@ export default function ContractsSettingsPage() {
     const { data, error } = await supabase.from('contracts').insert(contractFormToPayload(form)).select('id').single()
     if (error) { setErr(reportError(error, { action: 'add the contract', noun: 'contract', name: form.contract_number || undefined })); return }
     // Auto-attach the AI-uploaded PDF to the new contract (best-effort).
-    if (source && data?.id) {
-      try {
-        const attach = source.kind === 'pdf' ? source.file : await imagesToPdf(source.images, 'contract')
-        const { publicUrl, path } = await uploadFileToStorage(supabase, attach, 'contract-attachments')
-        await supabase.from('contract_attachments').insert({
-          contract_id: (data as { id: string }).id,
-          file_url: publicUrl, file_path: path, file_name: attach.name,
-          mime_type: attach.type || null, file_size: attach.size,
-        })
-      } catch { /* contract saved; attachment is best-effort */ }
-    }
+    if (source && data?.id) await attachContractDocument(supabase, (data as { id: string }).id, source)
     setForm(emptyContractForm); setSource(null); setAiBanner(null); setErr(null); refresh()
   }
 
