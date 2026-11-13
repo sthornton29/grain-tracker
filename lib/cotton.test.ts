@@ -89,6 +89,46 @@ describe('grade CSV parsing (real-file quirks: preamble, CRLF, blank cells)', ()
     expect(ex.extraneous).toBe('11')
     expect(ex.remarks).toBe('77')
   })
+
+  it('reads the View Celeste export: class date from the preamble, Date Ginned never the class date, totals footer skipped (2026-11-13)', () => {
+    // The real file's shape: a one-line preamble carrying the classing date,
+    // a blank line, "Date Ginned" + "Pk" + "_B" columns, and a totals footer
+    // whose first cell is "Total Bales: 23".
+    const csv = [
+      'Date Classing Imported: 2026-11-12 Producer: 52 VIEW CEL',
+      '',
+      'Bale #,NetWt,Prod,Farm,Field ID,Date Ginned,Pk,Gr,Lf,St,Mic,Ex,Rm,Str,Cgr,Rd,_B,Tr,Unif,Len,Total Value',
+      '192670,497,52 VIEW CEL,7560,PUMP FIELDS,11/03/2026,1,41,4,37,4.4,,,30.5,41-1,73.7,7.8,7,84.4,114,285.78',
+      '192671,493,52 VIEW CEL,7560,PUMP FIELDS,11/03/2026,1,41,4,37,4.6,,,29.2,41-1,74.6,7.9,7,82.9,114,281.75',
+      'Total Bales: 2,Total lbs: 990',
+      '',
+    ].join('\r\n')
+    const r = parseGradeCsv(csv)
+    expect(r.error).toBeNull()
+    expect(r.rows.map((x) => x.pbi_number)).toEqual(['192670', '192671'])
+    expect(r.skippedLines).toBe(1)
+    expect(r.preambleClassDate).toBe('2026-11-12')
+    expect(r.rows[0].class_date).toBe('2026-11-12')
+    expect(r.unknownHeaders).toEqual([])
+    expect(r.rows[0]).toMatchObject({ color_grade: '41', staple_32nds: 37, plus_b: 7.8, composite_grade: '41-1', loan_value_total: 285.78 })
+    const { matched, unmatched } = matchGradesToBales(r.rows, [
+      { id: 'a', pbi_number: '192670', net_weight_lbs: 497 },
+      { id: 'b', pbi_number: '192671', net_weight_lbs: 493 },
+    ])
+    expect(matched.map((m) => m.bale.id)).toEqual(['a', 'b'])
+    expect(unmatched).toEqual([])
+  })
+
+  it('a class-date column still wins over the preamble date', () => {
+    const r = parseGradeCsv('Classed: 11/12/2026\r\nBale #,Date,Gr\r\n4661001,10/14/2026,31\r\n4661002,,31\r\n')
+    expect(r.rows[0].class_date).toBe('2026-10-14')
+    expect(r.rows[1].class_date).toBe('2026-11-12')
+  })
+
+  it("a gin receipt export is not read as a classing file (the Gin Receipts page's misdrop check)", () => {
+    const gin = 'Producer:,52 VIEW CEL\r\n ,PBI,Date Ginned,Net\r\n1,183387,10/16/2026,507\r\n'
+    expect(parseGradeCsv(gin).error).not.toBeNull()
+  })
 })
 
 describe('bale ↔ grade matching', () => {

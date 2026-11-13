@@ -28,6 +28,7 @@ import { usePersistentState } from '@/lib/use-persistent-state'
 import { findBestMatch } from '@/lib/fuzzy'
 import { PdfTooLargeError, type GinReceiptExtraction } from '@/lib/pdf-upload'
 import { GinReceiptCsvError, parseGinReceiptCsv } from '@/lib/gin-receipt-csv'
+import { parseGradeCsv } from '@/lib/cotton-grades'
 import { DEFAULT_MAX_TOKENS, parseDocumentChunked } from '@/lib/parse-chunked'
 import { planPagesPerBatch } from '@/lib/chunk-plan'
 import { mergeGinReceipts } from '@/lib/parse-merge'
@@ -330,7 +331,15 @@ export default function GinReceiptsPage() {
     setErr(null); setMsg(null); setNotes([]); setSource(null); setReviews([]); setCsvName(file.name)
     setStage('Reading the gin’s export…')
     try {
-      const { pages, warnings } = parseGinReceiptCsv(await file.text(), { cropYear })
+      const text = await file.text()
+      // A classing file dropped here by mistake: say where it goes.
+      const grades = parseGradeCsv(text)
+      if (!grades.error && grades.rows.length > 0) {
+        setCsvName(null)
+        setErr('This is a classing (grades) file, not a gin receipt. Import it on Bales & Grades — it matches to the bales already on your gin receipts.')
+        return
+      }
+      const { pages, warnings } = parseGinReceiptCsv(text, { cropYear })
       const statements = groupStatementPages(pages)
       if (statements.length === 0) { setErr('No statement could be read from this file.'); setCsvName(null); return }
       startReviews(statements)

@@ -36,6 +36,11 @@ export type GradeCsvResult = {
   preambleLines: number
   /** Header labels the mapper didn't recognize (informational). */
   unknownHeaders: string[]
+  /** The classing date printed above the header ("Date Classing Imported:
+   *  2026-11-12"), used for rows whose file has no class-date column. */
+  preambleClassDate: string | null
+  /** Lines after the header that are not bale rows ("Total Bales: 23,…"). */
+  skippedLines: number
   error: string | null
 }
 
@@ -62,6 +67,28 @@ const HEADER_ALIASES: Record<string, keyof ParsedGradeRow> = {
   'ex': 'extraneous', 'extr': 'extraneous', 'extraneous': 'extraneous', 'extraneousmatter': 'extraneous', 'em': 'extraneous',
   'rm': 'remarks', 'remarks': 'remarks', 'rmk': 'remarks', 'rmks': 'remarks', 'remark': 'remarks',
   'totalvalue': 'loan_value_total', 'value': 'loan_value_total', 'loanvalue': 'loan_value_total',
+}
+
+// Columns some offices print that the grade record doesn't keep — known, so
+// they are not reported as unrecognized. "Date Ginned" is the GIN's date and
+// must never be read as the class date (2026-11-13, the View Celeste export).
+const KNOWN_UNUSED_HEADERS = new Set(['dateginned', 'ginned', 'gindate', 'datgin', 'pk', 'pkg', 'crop', 'cropyear'])
+
+/** A bale-number cell: digits, with any spaces or dashes a print adds. A
+ *  totals footer ("Total Bales: 23") or a note line is not a bale. */
+const isBaleNumberCell = (s: string) => /^\s*\d[\d\s-]*\s*$/.test(s)
+
+/** The classing date a preamble line names ("Date Classing Imported:
+ *  2026-11-12 Producer: …", "Classed: 11/12/2026"). Null when none does. */
+function preambleClassDate(lines: readonly string[]): string | null {
+  for (const line of lines) {
+    const m = line.match(/class\w*[^:]*:\s*([0-9]{1,4}[\/\-.][0-9]{1,2}[\/\-.][0-9]{1,4})/i)
+    if (m) {
+      const d = parseDateCell(m[1])
+      if (d) return d
+    }
+  }
+  return null
 }
 
 const normHeader = (h: string) => h.trim().toLowerCase().replace(/[^a-z0-9+_#]/g, '')
@@ -128,7 +155,9 @@ function splitCsvLine(line: string): string[] {
 /**
  * Parse the classing CSV: skip preamble lines until the row whose first cell
  * maps to the bale number (the header row), map every column by header name,
- * then parse each bale row. Rows without a bale number are skipped.
+ * then parse each bale row. Lines whose bale cell is not a number (a totals
+ * footer) are skipped. A row with no class date takes the date the preamble
+ * names, when it names one.
  */
 export function parseGradeCsv(text: string): GradeCsvResult {
   const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
@@ -143,15 +172,19 @@ export function parseGradeCsv(text: string): GradeCsvResult {
     }
   }
   if (headerIdx === -1) {
-    return { rows: [], preambleLines: 0, unknownHeaders: [], error: 'No header row found — expected a "Bale #" column within the first 20 lines.' }
+    return { rows: [], preambleLines: 0, unknownHeaders: [], preambleClassDate: null, skippedLines: 0, error: 'No header row found — expected a "Bale #" column within the first 20 lines.' }
   }
   const fieldByCol: Array<keyof ParsedGradeRow | null> = headers.map((h) => HEADER_ALIASES[normHeader(h)] ?? null)
-  const unknownHeaders = headers.filter((h, i) => h.trim() !== '' && fieldByCol[i] == null)
+  const unknownHeaders = headers.filter((h, i) => h.trim() !== '' && fieldByCol[i] == null && !KNOWN_UNUSED_HEADERS.has(normHeader(h)))
+  const baleCol = fieldByCol.indexOf('pbi_number')
+  const fileClassDate = preambleClassDate(lines.slice(0, headerIdx))
+  let skippedLines = 0
 
   const rows: ParsedGradeRow[] = []
   for (let i = headerIdx + 1; i < lines.length; i++) {
     if (lines[i].trim() === '') continue
     const cells = splitCsvLine(lines[i])
+    if (!isBaleNumberCell(cells[baleCol] ?? '')) { skippedLines++; continue }
     const row: ParsedGradeRow = {
       pbi_number: '', net_weight_lbs: null, producer: null, farm: null, field_id_text: null,
       class_date: null, color_grade: null, leaf_grade: null, staple_32nds: null, micronaire: null,
@@ -171,10 +204,11 @@ export function parseGradeCsv(text: string): GradeCsvResult {
       }
     }
     if (!row.pbi_number) continue
+    if (row.class_date == null) row.class_date = fileClassDate
     if (row.loan_value_total != null && row.net_weight_lbs != null) {
       row.loan_value_cents_per_lb = loanCentsPerLb(row.loan_value_total, row.net_weight_lbs)
     }
     rows.push(row)
   }
-  return { rows, preambleLines: headerIdx, unknownHeaders, error: null }
+  return { rows, preambleLines: headerIdx, unknownHeaders, preambleClassDate: fileClassDate, skippedLines, error: null }
 }

@@ -107,7 +107,8 @@ export default function CottonBalesPage() {
     })
     setRepeatedInFile(repeats)
     setPreview(matchGradesToBales(rows, yearBales))
-    setMsg(`Parsed ${parsed.rows.length} grade rows (${parsed.preambleLines} preamble lines skipped${parsed.unknownHeaders.length ? `; unrecognized columns: ${parsed.unknownHeaders.join(', ')}` : ''})${repeats.length ? ` — ${repeats.length} PBI${repeats.length === 1 ? '' : 's'} repeated in the file, kept once` : ''}.`)
+    const undated = parsed.rows.filter((r) => r.class_date == null).length
+    setMsg(`Read ${parsed.rows.length} bale${parsed.rows.length === 1 ? '' : 's'} from the file${parsed.preambleClassDate ? `, classed ${parsed.preambleClassDate}` : ''}${parsed.unknownHeaders.length ? ` (columns not used: ${parsed.unknownHeaders.join(', ')})` : ''}${repeats.length ? ` — ${repeats.length} PBI${repeats.length === 1 ? '' : 's'} repeated in the file, kept once` : ''}${undated ? ` — ${undated} with no class date printed` : ''}.`)
   }
 
   async function saveGrades() {
