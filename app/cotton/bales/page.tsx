@@ -6,6 +6,11 @@
 // a bale by PBI number. Unmatched rows (receipt not entered yet) stay visible
 // with a "no matching bale" flag and import later; NetWt cross-checks the
 // bale's receipt weight (>1% flagged). Standard preview → confirm → save.
+// DUPLICATES (2026-11-14): lib/cotton-grades planGradeImport is the one rule —
+// a bale already graded with the same values is skipped, a changed grade is
+// held until the user ticks "replace", a bale the file repeats is kept once
+// (or held out when the copies disagree). The import stays closed until the
+// bales have loaded: a file dropped onto the empty list matched nothing.
 // The list sorts by PBI # or by harvest date — the picked dates of the seed
 // cotton loads on the bale's gin receipt (lib/bale-quality-report
 // harvestSpanOf, the same span the Bale Quality report groups by).
@@ -14,13 +19,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { fetchAllRows } from '@/lib/fetch-all-rows'
 import { usePersistentState } from '@/lib/use-persistent-state'
-import { parseGradeCsv, type ParsedGradeRow } from '@/lib/cotton-grades'
-import { cottonLoadDate, matchGradesToBales } from '@/lib/cotton'
+import { parseGradeCsv, planGradeImport, type ParsedGradeRow } from '@/lib/cotton-grades'
+import { cottonLoadDate } from '@/lib/cotton'
 import { harvestSpanOf } from '@/lib/bale-quality-report'
 import type { CottonBale, CottonBaleGrade, GinReceipt, Farm, Field } from '@/lib/types'
 import Dropzone, { rejectMessage } from '@/components/dropzone'
 import { reportError } from '@/lib/friendly-error'
-import { pbiKey } from '@/lib/number-key'
+import { fmtDate } from '@/lib/format-date'
 import { EmptyState, SummaryCards, fmtInt, fmtNum, theadCls, type SummaryCardData } from '@/components/reports/report-kit'
 import { CottonPageHeader, CottonSection } from '@/components/cotton/cotton-page-header'
 
@@ -39,7 +44,11 @@ export default function CottonBalesPage() {
   const [cropYear, setCropYear] = usePersistentState<number>('cotton:cropYear', new Date().getFullYear())
   const [err, setErr] = useState<string | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
-  const [preview, setPreview] = useState<ReturnType<typeof matchGradesToBales<ParsedGradeRow>> | null>(null)
+  // The parsed file; the plan is DERIVED from it and the loaded bales/grades,
+  // so it can never be computed against a list that has not arrived yet.
+  const [fileRows, setFileRows] = useState<ParsedGradeRow[] | null>(null)
+  const [replaceChanged, setReplaceChanged] = useState(false)
+  const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
 
   async function refresh() {
@@ -59,6 +68,9 @@ export default function CottonBalesPage() {
     setFields((fl.data as Field[]) || [])
     setReceiptLoads((rl.data as Array<{ receipt_id: string; cotton_load_id: string }>) || [])
     setLoadDates((ld.data as Array<{ id: string; picked_date: string | null; delivered_date: string | null }>) || [])
+    const failed = [b, g, r].find((x) => x.error)
+    if (failed?.error) { setErr(reportError(failed.error, { action: 'load your bales', noun: 'bale' })); return }
+    setLoaded(true)
   }
   useEffect(() => { refresh() /* eslint-disable-line */ }, [])
 
@@ -86,36 +98,28 @@ export default function CottonBalesPage() {
   const farmById = useMemo(() => new Map(farms.map((f) => [f.id, f])), [farms])
   const fieldById = useMemo(() => new Map(fields.map((f) => [f.id, f])), [fields])
 
-  // PBIs the file repeats: kept once (the first row), named on screen — the
-  // same rule the gin-receipt review applies to its bale list.
-  const [repeatedInFile, setRepeatedInFile] = useState<string[]>([])
+  const preview = useMemo(() => {
+    if (!fileRows || !loaded) return null
+    const savedGrades = new Map(grades.map((g) => [g.bale_id, g as unknown as Record<string, string | number | null>]))
+    return planGradeImport(fileRows, yearBales, savedGrades, bales.filter((b) => b.crop_year !== cropYear))
+  }, [fileRows, loaded, grades, yearBales, bales, cropYear])
 
   async function onCsv(file: File) {
-    setErr(null); setMsg(null); setPreview(null); setRepeatedInFile([])
+    setErr(null); setMsg(null); setFileRows(null); setReplaceChanged(false)
     const text = await file.text()
     const parsed = parseGradeCsv(text)
     if (parsed.error) { setErr(parsed.error); return }
     if (parsed.rows.length === 0) { setErr('No bale rows found in the CSV.'); return }
-    const seen = new Set<string>()
-    const repeats: string[] = []
-    const rows = parsed.rows.filter((r) => {
-      const k = pbiKey(r.pbi_number) ?? ''
-      if (!k) return true
-      if (seen.has(k)) { repeats.push(r.pbi_number); return false }
-      seen.add(k)
-      return true
-    })
-    setRepeatedInFile(repeats)
-    setPreview(matchGradesToBales(rows, yearBales))
+    setFileRows(parsed.rows)
     const undated = parsed.rows.filter((r) => r.class_date == null).length
-    setMsg(`Read ${parsed.rows.length} bale${parsed.rows.length === 1 ? '' : 's'} from the file${parsed.preambleClassDate ? `, classed ${parsed.preambleClassDate}` : ''}${parsed.unknownHeaders.length ? ` (columns not used: ${parsed.unknownHeaders.join(', ')})` : ''}${repeats.length ? ` — ${repeats.length} PBI${repeats.length === 1 ? '' : 's'} repeated in the file, kept once` : ''}${undated ? ` — ${undated} with no class date printed` : ''}.`)
+    setMsg(`Read ${fmtInt(parsed.rows.length)} bale${parsed.rows.length === 1 ? '' : 's'} from ${file.name}${parsed.preambleClassDate ? `, classed ${fmtDate(parsed.preambleClassDate)}` : ''}${parsed.unknownHeaders.length ? ` (columns not used: ${parsed.unknownHeaders.join(', ')})` : ''}${undated ? ` — ${undated} with no class date printed` : ''}.`)
   }
 
   async function saveGrades() {
     if (!preview) return
     setSaving(true); setErr(null)
     try {
-      const rows = preview.matched.map(({ row, bale }) => ({
+      const toRow = ({ row, bale }: { row: ParsedGradeRow; bale: { id: string } }) => ({
         bale_id: bale.id,
         class_date: row.class_date,
         color_grade: row.color_grade, leaf_grade: row.leaf_grade, staple_32nds: row.staple_32nds,
@@ -124,12 +128,28 @@ export default function CottonBalesPage() {
         length_100ths: row.length_100ths, extraneous: row.extraneous, remarks: row.remarks,
         loan_value_total: row.loan_value_total, loan_value_cents_per_lb: row.loan_value_cents_per_lb,
         source: 'csv_import',
-      }))
-      if (rows.length === 0) { setErr('No rows matched a bale — enter the gin receipt first, then re-import this file.'); return }
-      const { error } = await supabase.from('cotton_bale_grades').upsert(rows, { onConflict: 'bale_id' })
-      if (error) { setErr(reportError(error, { action: 'save the classing data', noun: 'bale' })); return }
-      setMsg(`Saved classing data for ${rows.length} bale${rows.length === 1 ? '' : 's'}${preview.unmatched.length ? ` — ${preview.unmatched.length} unmatched row${preview.unmatched.length === 1 ? '' : 's'} left for later (no matching bale yet)` : ''}.`)
-      setPreview(null); refresh()
+      })
+      const fresh = preview.new.map(toRow)
+      const replaced = replaceChanged ? preview.changed.map(toRow) : []
+      if (fresh.length + replaced.length === 0) { setErr('Nothing new to save from this file.'); return }
+      // New grades never overwrite: a grade saved meanwhile (another device) is left alone.
+      for (let i = 0; i < fresh.length; i += 500) {
+        const { error } = await supabase.from('cotton_bale_grades').upsert(fresh.slice(i, i + 500), { onConflict: 'bale_id', ignoreDuplicates: true })
+        if (error) { setErr(reportError(error, { action: 'save the classing data', noun: 'bale' })); return }
+      }
+      for (let i = 0; i < replaced.length; i += 500) {
+        const { error } = await supabase.from('cotton_bale_grades').upsert(replaced.slice(i, i + 500), { onConflict: 'bale_id' })
+        if (error) { setErr(reportError(error, { action: 'replace the changed grades', noun: 'bale' })); return }
+      }
+      const parts = [
+        `Saved grades for ${fmtInt(fresh.length)} new bale${fresh.length === 1 ? '' : 's'}`,
+        replaced.length ? `replaced ${fmtInt(replaced.length)} changed grade${replaced.length === 1 ? '' : 's'}` : '',
+        preview.unchanged.length ? `${fmtInt(preview.unchanged.length)} already on file, left as they were` : '',
+        preview.changed.length && !replaced.length ? `${fmtInt(preview.changed.length)} changed grade${preview.changed.length === 1 ? '' : 's'} not replaced` : '',
+        preview.unmatched.length ? `${fmtInt(preview.unmatched.length)} with no matching bale yet` : '',
+      ].filter(Boolean)
+      setMsg(`${parts.join(' · ')}.`)
+      setFileRows(null); refresh()
     } finally {
       setSaving(false)
     }
@@ -166,6 +186,9 @@ export default function CottonBalesPage() {
 
       <CottonSection title="Import classing data" sub="The classing office’s CSV is read as-is: rows match bales by PBI number (leading zeros don’t matter); farm and field columns only double-check.">
         <div className="p-4 space-y-3">
+        {!loaded ? (
+          <p className="text-sm text-slate-600" role="status">Loading your bales — the import opens once they are in, so every row can be checked against them.</p>
+        ) : (
         <Dropzone
           onFiles={(files) => void onCsv(files[0])}
           onReject={(rejected) => setErr(rejectMessage("Use the classing office's CSV file.", rejected))}
@@ -180,30 +203,75 @@ export default function CottonBalesPage() {
             className="text-sm"
           />
         </Dropzone>
-        {preview && (
+        )}
+        {preview && (() => {
+          const otherYears = [...new Set(preview.otherYear.map((o) => o.cropYear))].sort()
+          const toSave = preview.new.length + (replaceChanged ? preview.changed.length : 0)
+          const weightFlags = [...preview.new, ...preview.changed].filter((m) => m.weightMismatch).length
+          const chip = (n: number, label: string, tone: 'good' | 'warn' | 'bad' | 'muted') => (
+            <span className={`rounded-full px-2 py-0.5 font-semibold ${n === 0 ? 'bg-slate-100 text-slate-500' : tone === 'good' ? 'bg-green-100 text-green-800' : tone === 'warn' ? 'bg-amber-100 text-amber-800' : tone === 'bad' ? 'bg-red-100 text-red-800' : 'bg-slate-100 text-slate-700'}`}>{fmtInt(n)} {label}</span>
+          )
+          const gradeCells = (row: ParsedGradeRow) => (
+            <>
+              <td className="px-1 py-0.5 font-mono">{row.pbi_number}</td>
+              <td className="px-1 py-0.5 text-right">{row.net_weight_lbs ?? '—'}</td>
+              <td className="px-1 py-0.5">{row.color_grade ?? '—'}</td>
+              <td className="px-1 py-0.5">{fmt(row.staple_32nds, 0)}</td>
+              <td className="px-1 py-0.5">{fmt(row.micronaire, 1)}</td>
+              <td className="px-1 py-0.5">{fmt(row.strength_g_tex, 1)}</td>
+              <td className="px-1 py-0.5 text-right">{row.loan_value_cents_per_lb != null ? `$${(Number(row.loan_value_cents_per_lb) / 100).toFixed(4)}` : '—'}</td>
+            </>
+          )
+          return (
           <div className="space-y-2 text-sm">
             <div className="flex flex-wrap gap-2 text-xs">
-              <span className="rounded-full bg-green-100 text-green-800 px-2 py-0.5 font-semibold">{preview.matched.length} matched</span>
-              <span className={`rounded-full px-2 py-0.5 font-semibold ${preview.unmatched.length ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-500'}`}>{preview.unmatched.length} no matching bale</span>
-              {repeatedInFile.length > 0 && <span className="rounded-full bg-amber-100 text-amber-800 px-2 py-0.5 font-semibold" title={repeatedInFile.join(', ')}>{repeatedInFile.length} repeated in the file, kept once: {repeatedInFile.slice(0, 5).join(', ')}{repeatedInFile.length > 5 ? '…' : ''}</span>}
-              <span className={`rounded-full px-2 py-0.5 font-semibold ${preview.matched.some((m) => m.weightMismatch) ? 'bg-red-100 text-red-800' : 'bg-slate-100 text-slate-500'}`}>
-                {preview.matched.filter((m) => m.weightMismatch).length} weight mismatches (&gt;1%)
-              </span>
+              {chip(preview.new.length, 'new — will be saved', 'good')}
+              {chip(preview.unchanged.length, 'already on file, same grades — skipped', 'muted')}
+              {chip(preview.changed.length, 'already on file with different grades', 'warn')}
+              {chip(preview.repeatedSame.length, 'repeated in the file — kept once', 'muted')}
+              {chip(preview.repeatedConflict.length, 'listed twice with different grades — held out', 'bad')}
+              {chip(preview.unmatched.length, 'no matching bale', 'warn')}
+              {chip(weightFlags, 'weight differs >1% from the gin receipt', 'bad')}
             </div>
+            {otherYears.length > 0 && (
+              <p className="text-sm text-amber-800" role="alert">
+                {fmtInt(preview.otherYear.length)} bale{preview.otherYear.length === 1 ? ' is' : 's are'} on {otherYears.join(' / ')} gin receipts, not {cropYear}. Switch the crop year at the top to {otherYears[0]} to import {preview.otherYear.length === 1 ? 'it' : 'them'}.
+              </p>
+            )}
+            {preview.changed.length > 0 && (
+              <label className="flex items-center gap-2 min-h-11 text-sm">
+                <input type="checkbox" className="h-5 w-5" checked={replaceChanged} onChange={(e) => setReplaceChanged(e.target.checked)} />
+                Replace the {fmtInt(preview.changed.length)} saved grade{preview.changed.length === 1 ? '' : 's'} that differ with this file’s (a re-class or a corrected file)
+              </label>
+            )}
             <div className="overflow-x-auto max-h-72 overflow-y-auto">
               <table className="min-w-full text-xs">
                 <thead className="text-slate-500 sticky top-0 bg-white"><tr>{['PBI #', 'NetWt', 'Gr', 'St', 'Mic', 'Str', 'Loan $/lb', 'Status'].map((h) => <th key={h} className="text-left px-1 py-1">{h}</th>)}</tr></thead>
                 <tbody>
-                  {preview.matched.map(({ row, weightMismatch }, i) => (
+                  {preview.repeatedConflict.flatMap(({ rows }, i) => rows.map((row, j) => (
+                    <tr key={`x${i}-${j}`} className="border-t border-slate-100 bg-red-50">
+                      {gradeCells(row)}
+                      <td className="px-1 py-0.5 text-red-700">listed {rows.length} times with different grades — not saved; ask the classing office which is right</td>
+                    </tr>
+                  )))}
+                  {preview.changed.map(({ row, diffs, weightMismatch }, i) => (
+                    <tr key={`c${i}`} className="border-t border-slate-100 bg-amber-50">
+                      {gradeCells(row)}
+                      <td className="px-1 py-0.5 text-amber-800">{replaceChanged ? 'will replace' : 'kept as saved'}: {diffs.join(', ')}{weightMismatch ? ' · NetWt differs >1%' : ''}</td>
+                    </tr>
+                  ))}
+                  {preview.new.map(({ row, weightMismatch }, i) => (
                     <tr key={`m${i}`} className="border-t border-slate-100">
+                      {gradeCells(row)}
+                      <td className="px-1 py-0.5">{weightMismatch ? <span className="text-red-700">new · NetWt differs &gt;1% from the receipt bale</span> : <span className="text-green-700">new</span>}</td>
+                    </tr>
+                  ))}
+                  {preview.otherYear.map(({ row, cropYear: y }, i) => (
+                    <tr key={`o${i}`} className="border-t border-slate-100 bg-amber-50">
                       <td className="px-1 py-0.5 font-mono">{row.pbi_number}</td>
                       <td className="px-1 py-0.5 text-right">{row.net_weight_lbs ?? '—'}</td>
-                      <td className="px-1 py-0.5">{row.color_grade ?? '—'}</td>
-                      <td className="px-1 py-0.5">{fmt(row.staple_32nds, 0)}</td>
-                      <td className="px-1 py-0.5">{fmt(row.micronaire, 1)}</td>
-                      <td className="px-1 py-0.5">{fmt(row.strength_g_tex, 1)}</td>
-                      <td className="px-1 py-0.5 text-right">{row.loan_value_cents_per_lb != null ? `$${(Number(row.loan_value_cents_per_lb) / 100).toFixed(4)}` : '—'}</td>
-                      <td className="px-1 py-0.5">{weightMismatch ? <span className="text-red-700">NetWt differs &gt;1% from the receipt bale</span> : <span className="text-green-700">ok</span>}</td>
+                      <td className="px-1 py-0.5" colSpan={5}>{row.farm ? `farm ${row.farm}` : ''} {row.field_id_text ?? ''}</td>
+                      <td className="px-1 py-0.5 text-amber-800">on a {y} gin receipt — switch the crop year to import</td>
                     </tr>
                   ))}
                   {preview.unmatched.map((row, i) => (
@@ -217,21 +285,25 @@ export default function CottonBalesPage() {
                 </tbody>
               </table>
             </div>
+            {preview.unchanged.length > 0 && <p className="text-xs text-slate-600">{fmtInt(preview.unchanged.length)} bale{preview.unchanged.length === 1 ? ' is' : 's are'} already saved with exactly these grades and {preview.unchanged.length === 1 ? 'is' : 'are'} left untouched.</p>}
             <div className="flex gap-2">
-              <button onClick={saveGrades} disabled={saving || preview.matched.length === 0} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold disabled:opacity-50">
-                {saving ? 'Saving…' : `Save ${preview.matched.length} matched grades`}
+              <button onClick={saveGrades} disabled={saving || toSave === 0} className="rounded-lg bg-brand hover:bg-brand-deep text-white px-4 min-h-11 font-semibold disabled:opacity-50">
+                {saving ? 'Saving…' : toSave === 0 ? 'Nothing new to save' : `Save ${fmtInt(toSave)} grade${toSave === 1 ? '' : 's'}`}
               </button>
-              <button onClick={() => setPreview(null)} className="rounded-lg bg-white border border-slate-300 px-4 min-h-11">Cancel</button>
+              <button onClick={() => setFileRows(null)} className="rounded-lg bg-white border border-slate-300 px-4 min-h-11">Cancel</button>
             </div>
           </div>
-        )}
+          )
+        })()}
         </div>
       </CottonSection>
 
       {err && <p className="text-sm text-red-600" role="alert">{err}</p>}
       {msg && <p className="text-sm text-green-700" role="status">{msg}</p>}
 
-      {yearBales.length === 0 ? (
+      {!loaded ? (
+        <p className="text-sm text-slate-600" role="status">Loading bales…</p>
+      ) : yearBales.length === 0 ? (
         <EmptyState message={`No ${cropYear} bales yet.`} hint="Bales come from gin receipts — upload a Statement of Ginning and they appear here." linkHref="/cotton/receipts" linkLabel="Open Gin Receipts" />
       ) : (
       <CottonSection title="Bales" sub={`${cropYear} crop · ${fmtInt(yearBales.length)} bales · ${fmtInt(gradedCount)} classed`}>

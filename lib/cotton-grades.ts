@@ -4,7 +4,8 @@
 // are mapped by HEADER NAME; each bale row parses into the cotton_bale_grades
 // shape (loan ¢/lb derived from the Total Value $ ÷ NetWt).
 
-import { loanCentsPerLb } from './cotton'
+import { loanCentsPerLb, matchGradesToBales, type BaleLite } from './cotton'
+import { pbiKey } from './number-key'
 
 export type ParsedGradeRow = {
   pbi_number: string
@@ -211,4 +212,118 @@ export function parseGradeCsv(text: string): GradeCsvResult {
     rows.push(row)
   }
   return { rows, preambleLines: headerIdx, unknownHeaders, preambleClassDate: fileClassDate, skippedLines, error: null }
+}
+
+// ---------- Import plan: the ONE duplicate rule for classing files ----------
+//
+// 2026-11-14: the gin's "2nd run" files repeat every bale of the 1st run (513
+// bales, identical grades), and the office warned more repeats are likely.
+// The bale is the identity — a PBI resolves to ONE saved bale (the DB holds
+// one bale per org × crop year × PBI key and one grade row per bale), so
+// every row is placed in exactly one bucket:
+//
+//   new        → the bale has no grade yet: saved
+//   unchanged  → the bale's saved grade equals this row: skipped, never rewritten
+//   changed    → the bale's saved grade differs: held unless the user opts in
+//   repeatedSame / repeatedConflict → the FILE names one bale twice; identical
+//                copies keep one, conflicting copies hold every copy out
+//   unmatched  → no bale this crop year (otherYear when another year has it)
+//
+// The class date alone never makes a row "changed": a re-sent bale carries
+// the re-run file's date, and the first date is the real one.
+
+/** The graded values compared to decide "same bale, same grades". */
+export const GRADE_VALUE_FIELDS = [
+  'color_grade', 'leaf_grade', 'staple_32nds', 'micronaire', 'strength_g_tex', 'composite_grade',
+  'rd', 'plus_b', 'trash_pct', 'uniformity_pct', 'length_100ths', 'extraneous', 'remarks', 'loan_value_total',
+] as const
+export type GradeValueField = (typeof GRADE_VALUE_FIELDS)[number]
+export type GradeValues = { [K in GradeValueField]?: string | number | null }
+
+const GRADE_FIELD_LABELS: Record<GradeValueField, string> = {
+  color_grade: 'Gr', leaf_grade: 'Lf', staple_32nds: 'St', micronaire: 'Mic', strength_g_tex: 'Str',
+  composite_grade: 'Cgr', rd: 'Rd', plus_b: '+b', trash_pct: 'Tr', uniformity_pct: 'Unif',
+  length_100ths: 'Len', extraneous: 'Ex', remarks: 'Rm', loan_value_total: 'Value',
+}
+
+function sameValue(a: string | number | null | undefined, b: string | number | null | undefined): boolean {
+  const blank = (v: unknown) => v == null || (typeof v === 'string' && v.trim() === '')
+  if (blank(a) || blank(b)) return blank(a) && blank(b)
+  const na = Number(a), nb = Number(b)
+  if (Number.isFinite(na) && Number.isFinite(nb)) return Math.abs(na - nb) < 1e-9
+  return String(a).trim().toUpperCase() === String(b).trim().toUpperCase()
+}
+
+/** The fields whose values differ, labeled the way the file prints them
+ *  ("Mic 4.2 → 4.4"). Empty = the same grades. */
+export function gradeDiffs(saved: GradeValues, incoming: GradeValues): string[] {
+  const out: string[] = []
+  for (const f of GRADE_VALUE_FIELDS) {
+    if (!sameValue(saved[f], incoming[f])) out.push(`${GRADE_FIELD_LABELS[f]} ${saved[f] ?? '—'} → ${incoming[f] ?? '—'}`)
+  }
+  return out
+}
+
+export type PlanBale = BaleLite & { crop_year?: number }
+export type GradeImportPlan<T> = {
+  new: Array<{ row: T; bale: PlanBale; weightMismatch: boolean }>
+  unchanged: Array<{ row: T; bale: PlanBale }>
+  changed: Array<{ row: T; bale: PlanBale; weightMismatch: boolean; diffs: string[] }>
+  /** Extra identical copies of a bale the file already listed (one copy is planned). */
+  repeatedSame: T[]
+  /** A bale the file lists more than once with DIFFERENT grades — every copy held out. */
+  repeatedConflict: Array<{ pbi: string; rows: T[] }>
+  unmatched: T[]
+  /** Unmatched rows whose bale is on another crop year's receipts. */
+  otherYear: Array<{ row: T; cropYear: number }>
+}
+
+/**
+ * Sort every classing row into exactly one bucket (see above). `yearBales`
+ * are the selected crop year's bales; `otherBales` (optional) every other
+ * year's, only to tell the user a file belongs to another year. `savedGrades`
+ * are the grades already on file, keyed by bale id.
+ */
+export function planGradeImport<T extends ParsedGradeRow>(
+  rows: readonly T[],
+  yearBales: readonly PlanBale[],
+  savedGrades: ReadonlyMap<string, GradeValues>,
+  otherBales: readonly PlanBale[] = [],
+): GradeImportPlan<T> {
+  const plan: GradeImportPlan<T> = { new: [], unchanged: [], changed: [], repeatedSame: [], repeatedConflict: [], unmatched: [], otherYear: [] }
+  const { matched, unmatched } = matchGradesToBales(rows, yearBales)
+
+  // Group by the bale each row resolved to — a 7-digit and a 12-digit PBI for
+  // the same bale are one bale, not two.
+  const byBale = new Map<string, Array<{ row: T; bale: PlanBale; weightMismatch: boolean }>>()
+  for (const m of matched) byBale.set(m.bale.id, [...(byBale.get(m.bale.id) ?? []), m as { row: T; bale: PlanBale; weightMismatch: boolean }])
+  for (const group of byBale.values()) {
+    const [first, ...rest] = group
+    if (rest.some((r) => gradeDiffs(first.row, r.row).length > 0)) {
+      plan.repeatedConflict.push({ pbi: first.bale.pbi_number, rows: group.map((g) => g.row) })
+      continue
+    }
+    plan.repeatedSame.push(...rest.map((r) => r.row))
+    const saved = savedGrades.get(first.bale.id)
+    if (!saved) { plan.new.push(first); continue }
+    const diffs = gradeDiffs(saved, first.row)
+    if (diffs.length === 0) plan.unchanged.push({ row: first.row, bale: first.bale })
+    else plan.changed.push({ ...first, diffs })
+  }
+
+  // Unmatched rows: repeats collapse by PBI key too, then look in other years.
+  const seen = new Set<string>()
+  const left: T[] = []
+  for (const row of unmatched) {
+    const k = pbiKey(row.pbi_number) ?? row.pbi_number
+    if (seen.has(k)) { plan.repeatedSame.push(row); continue }
+    seen.add(k)
+    left.push(row)
+  }
+  if (otherBales.length && left.length) {
+    const other = matchGradesToBales(left, otherBales)
+    for (const m of other.matched) plan.otherYear.push({ row: m.row, cropYear: (m.bale as PlanBale).crop_year ?? 0 })
+    plan.unmatched.push(...other.unmatched)
+  } else plan.unmatched.push(...left)
+  return plan
 }
