@@ -738,9 +738,16 @@ export function planLandSync(batch: SyncBatch, state: LandState, opts: { lastSyn
     }
     const refValues: Record<string, unknown> = {}
     const comparable: Record<string, unknown> = {
-      name, fsa_number: str(f.farm_code), county_id: county.id, is_share_rent: shareRent,
+      name, county_id: county.id, is_share_rent: shareRent,
       landlord_share_percentage: sharePct, cash_rent_per_acre: num(f.cash_rent_per_acre),
     }
+    // A blank farm_code NEVER clears an FSA number Grain holds (2026-11-14:
+    // Farm moved its numbers to fsa_farm_numbers, kept pushing the empty
+    // scalar, and one land/sync blanked all 29 farms — every VS2026 bale went
+    // "not eligible", ARC/PLC lost its farm keys). Farm can set or change a
+    // number; it cannot erase one.
+    const farmCode = str(f.farm_code)
+    if (farmCode != null || !current) comparable.fsa_number = farmCode
     if (f.entity_farm_uid !== undefined) {
       comparable.entity_id = typeof entityRef === 'string' ? entityRef : null
       if (entityRef && typeof entityRef !== 'string') refValues.entity_id = entityRef

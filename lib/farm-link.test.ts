@@ -290,6 +290,17 @@ describe('planLandSync', () => {
     expect(plan.ops).toHaveLength(0)
   })
 
+  it('FSA NUMBER: a blank farm_code never erases the number Grain holds; a sent number still sets or changes it', () => {
+    const farm = { farm_uid: 'F-FARM-1', name: 'Home Place', entity_farm_uid: 'F-ENT-1', county: 'Lawrence', state: 'AL', is_share_rent: false }
+    for (const blank of [null, undefined, '', '  ']) {
+      const plan = planLandSync({ farms: [{ ...farm, farm_code: blank }] }, seededState(), { lastSyncAt: '2026-08-01T00:00:00Z' })
+      expect(plan.results[0]).toMatchObject({ action: 'unchanged', grain_id: 'farm-1' })
+      expect(opsOf(plan, 'update', 'farms')).toEqual([])
+    }
+    const changed = planLandSync({ farms: [{ ...farm, farm_code: '5678' }] }, seededState(), { lastSyncAt: '2026-08-01T00:00:00Z' })
+    expect(opsOf(changed, 'update', 'farms')).toEqual([{ op: 'update', table: 'farms', id: 'farm-1', values: { fsa_number: '5678', managed_by: 'turnrow_farm' } }])
+  })
+
   it('updates only the changed columns on a managed row (Farm wins) and reports unchanged when nothing differs', () => {
     const plan = planLandSync(
       { fields: [{ farm_uid: 'F-FIELD-1', farm_farm_uid: 'F-FARM-1', name_or_number: 'North 40', total_acres: 42, irrigated_acres: 0 }] },
