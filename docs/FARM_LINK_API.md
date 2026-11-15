@@ -308,6 +308,15 @@ the Yields pages show.
 - `source`: Grain's precedence — a combine entry replaces weighed loads for
   the field × crop × year (`combine_yield_entries`), else `loads`; cotton
   is `gin_receipts`.
+- `gin` (cotton records only, 2026-11-15): the field's Statements of Ginning
+  summed, `{ receipts, modules, seed_cotton_lbs, bales, lint_lbs,
+  cottonseed_lbs, receipts_without_cottonseed, last_receipt_date }`, or
+  `null` when the field has no statement yet. `lint_lbs` is the statements'
+  total bale weight; `cottonseed_lbs` is null until a statement states it
+  and `receipts_without_cottonseed` counts the statements that do not. The
+  figures are final for the field once `harvest_status` is `complete` and
+  `lint_basis` is `actual` (every seed cotton load is on a statement).
+  Turnrow Farm settles a share lease's cottonseed and ginning on them.
 
 ### GET /marketing?crop_year=2026
 
@@ -338,6 +347,24 @@ Per crop (whole operation, `entity_id: null`) and per farming entity.
   production, capped at 100; cotton uses sold lint ÷ production.
 - `hedging_realized.net` = closed futures (net of commission) + closed
   options, the figure the dashboard folds into the price.
+- `open_hedges` and `total_average_price` (whole-operation rows only,
+  2026-11-15). `projected_average_price` already holds the realized hedging
+  and values the unsold production under open futures at the hedge price; it
+  does not hold the mark to market on open futures PAST the unsold
+  production (a crop sold in the cash market with the futures still open).
+  `open_hedges` is `{ quantity, average_price, covered_quantity,
+  unpriced_quantity, unrealized, unrealized_beyond_unsold,
+  unquoted_positions, quote_date, open_option_contracts }`: the open short
+  futures of the crop year in the crop's unit, the part covering unsold
+  production, the unsold production nothing covers, the dollars every open
+  future makes or loses at the current quote (live, else the operation's
+  manual quote; null when a position has no quote), and the share of those
+  dollars on the futures past the unsold production (pro rata by quantity).
+  `total_average_price` = `projected_average_price` +
+  `unrealized_beyond_unsold` per unit of production: the average with
+  realized AND unrealized hedging in. Null when a quote is missing. Open
+  options are counted, never valued. Turnrow Farm works the year's
+  provisional price for a share lease from it.
 - `expected_yield` (2026-10-14) is the crop year's yield assumption as
   entered on the Marketing page's settings: `{ unit, blended, irrigated,
   dryland, double_crop_irrigated, double_crop_dryland, harvest_complete }`,

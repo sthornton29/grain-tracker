@@ -23,6 +23,9 @@ import { buildProjectedYieldRecords, type ProjectedYieldRecord } from '@/lib/par
 import { loadMarketingInputs, loadProductionInputs, type MarketingInputs, type ProductionInputs } from '@/lib/marketing-inputs'
 import { computeEntityMarketingRows } from '@/lib/entity-marketing'
 import { headlineAvgPrice, type MarketingRow } from '@/lib/marketing'
+import { cropToHedgeCommodity } from '@/lib/contracts'
+import { pnlSizeFor } from '@/lib/hedging'
+import { resolveQuotes } from '@/lib/quote-resolution'
 import { buildEntityScope } from '@/lib/entity-scope'
 import { buildLoadDetail, weightedAverage, type DetailLoadLike } from '@/lib/yield-detail'
 import { fieldCropAggregates, withLoadBreakouts, type CombineEntryLike } from '@/lib/yields'
@@ -84,7 +87,61 @@ export type FarmLinkProductionRecord = {
   /** Cotton, module on (092): 'actual' | 'estimated_turnout' | 'mixed'; the turnout % behind an estimate. */
   lint_basis?: LintBasis | null
   turnout_pct?: number | null
+  /** Cotton only (2026-11-15): the field's Statements of Ginning summed, the
+   *  figures a share lease settles the cottonseed and the ginning on. Null
+   *  when the field has no statement yet. Final for the field once
+   *  harvest_status is 'complete' and lint_basis is 'actual' (every load is
+   *  on a statement). */
+  gin?: FarmLinkGin | null
   updated_at: string | null
+}
+
+export type FarmLinkGin = {
+  /** Statements of Ginning on the field this crop year. */
+  receipts: number
+  modules: number | null
+  seed_cotton_lbs: number | null
+  bales: number
+  /** Lint pounds: the statements' total bale weight. */
+  lint_lbs: number
+  /** Cottonseed pounds off the statements; null until one states them. */
+  cottonseed_lbs: number | null
+  /** Statements of the field that state no cottonseed pounds. */
+  receipts_without_cottonseed: number
+  last_receipt_date: string | null
+}
+
+export type GinReceiptFigures = {
+  field_id: string | null
+  modules_count?: number | string | null
+  total_seed_cotton_weight?: number | string | null
+  bales_count?: number | string | null
+  total_bale_weight?: number | string | null
+  seed_lbs?: number | string | null
+  receipt_date?: string | null
+}
+
+/** A field's Statements of Ginning summed. A statement with no field is left
+ *  out (Grain's own yield card says so); cottonseed stays null until a
+ *  statement states it, and the count of statements without it rides along
+ *  so a consumer never reads a partial figure as the whole. */
+export function ginByField(receipts: readonly GinReceiptFigures[]): Map<string, FarmLinkGin> {
+  const out = new Map<string, FarmLinkGin>()
+  const has = (v: unknown) => v !== null && v !== undefined && v !== ''
+  for (const g of receipts) {
+    if (!g.field_id) continue
+    const cur = out.get(g.field_id) ?? { receipts: 0, modules: null, seed_cotton_lbs: null, bales: 0, lint_lbs: 0, cottonseed_lbs: null, receipts_without_cottonseed: 0, last_receipt_date: null }
+    cur.receipts += 1
+    if (has(g.modules_count)) cur.modules = (cur.modules ?? 0) + num(g.modules_count)
+    if (has(g.total_seed_cotton_weight)) cur.seed_cotton_lbs = r2((cur.seed_cotton_lbs ?? 0) + num(g.total_seed_cotton_weight))
+    cur.bales += num(g.bales_count)
+    cur.lint_lbs = r2(cur.lint_lbs + num(g.total_bale_weight))
+    if (has(g.seed_lbs)) cur.cottonseed_lbs = r2((cur.cottonseed_lbs ?? 0) + num(g.seed_lbs))
+    else cur.receipts_without_cottonseed += 1
+    if (g.receipt_date && (!cur.last_receipt_date || g.receipt_date > cur.last_receipt_date)) cur.last_receipt_date = g.receipt_date
+    out.set(g.field_id, cur)
+  }
+  return out
 }
 
 export function shapeProductionRecords(args: {
@@ -98,6 +155,8 @@ export function shapeProductionRecords(args: {
   moistureByKey: ReadonlyMap<string, number | null>
   idMap: IdMap
   year: number
+  /** The statements of ginning by field (ginByField); cotton records carry theirs. */
+  ginByField?: ReadonlyMap<string, FarmLinkGin>
 }): FarmLinkProductionRecord[] {
   const cropIdByName = new Map(args.crops.map((c) => [c.name, c.id]))
   const plantingByKey = new Map(args.plantings.map((p) => [`${p.field_id}|${p.crop_id}|${p.season_year}`, p]))
@@ -136,6 +195,7 @@ export function shapeProductionRecords(args: {
       moisture: p.unit === 'lbs' ? null : (key ? args.moistureByKey.get(key) ?? null : null),
       source,
       ...(p.lint_basis !== undefined ? { lint_basis: p.lint_basis, turnout_pct: p.turnout_pct ?? null } : {}),
+      ...(p.unit === 'lbs' && args.ginByField ? { gin: args.ginByField.get(p.field_id) ?? null } : {}),
       updated_at: maxIso(p.updated_at, planting?.updated_at),
     }
   })
@@ -153,8 +213,8 @@ export async function loadProductionPayload(supabase: SupabaseClient, org: strin
         .eq('org_id', org).eq('crop_year', year).order('id').range(f, t)),
     fetchAll<{ load_id: string; field_id: string; crop_id: string; dry_bushels: number | null }>((f, t) =>
       supabase.from('load_splits').select('load_id, field_id, crop_id, dry_bushels').eq('org_id', org).order('id').range(f, t)),
-    fetchAll<{ id: string; field_id: string | null; crop_year: number; total_bale_weight: number | string | null; updated_at: string | null }>((f, t) =>
-      supabase.from('gin_receipts').select('id, field_id, crop_year, total_bale_weight, updated_at').eq('org_id', org).eq('crop_year', year).order('id').range(f, t)),
+    fetchAll<{ id: string; field_id: string | null; crop_year: number; total_bale_weight: number | string | null; updated_at: string | null } & GinReceiptFigures>((f, t) =>
+      supabase.from('gin_receipts').select('id, field_id, crop_year, total_bale_weight, bales_count, seed_lbs, total_seed_cotton_weight, modules_count, receipt_date, updated_at').eq('org_id', org).eq('crop_year', year).order('id').range(f, t)),
     fetchAll<{ id: string; farm_id: string | null; name_or_number: string; total_acres: number | string | null; irrigated_acres: number | string | null; dryland_acres: number | string | null; updated_at: string | null }>((f, t) =>
       supabase.from('fields').select('id, farm_id, name_or_number, total_acres, irrigated_acres, dryland_acres, updated_at').eq('org_id', org).order('id').range(f, t)),
     fetchAll<{ id: string; name: string; fsa_number: string | null; entity_id: string | null; updated_at: string | null; is_share_rent?: boolean | null; landlord_share_percentage?: number | string | null }>((f, t) =>
@@ -237,7 +297,7 @@ export async function loadProductionPayload(supabase: SupabaseClient, org: strin
   const loadKeys = new Set<string>()
   for (const [k, agg] of aggByKey) if ((agg.totalLoads ?? 0) > 0 || agg.dryBu > 0) loadKeys.add(k)
 
-  return shapeProductionRecords({ partner, projected, plantings, crops, fields, combineKeys, loadKeys, moistureByKey, idMap, year })
+  return shapeProductionRecords({ partner, projected, plantings, crops, fields, combineKeys, loadKeys, moistureByKey, idMap, year, ginByField: ginByField(ginReceipts) })
 }
 
 // ---------------------------------------------------------------------------
@@ -275,6 +335,16 @@ export type FarmLinkMarketingRecord = {
   total_production: number
   production_basis: 'estimated' | 'actual'
   hedging_realized: { net: number; per_unit: number }
+  /** Whole-operation rows only (2026-11-15): the open short futures of the
+   *  crop year marked to the current quote, and the open options counted
+   *  (never valued). Absent on entity rows. */
+  open_hedges?: FarmLinkOpenHedges | null
+  /** The average with realized AND unrealized hedging in (whole-operation
+   *  rows): projected_average_price, which already holds the realized results
+   *  and values the unsold production under open futures at the hedge price,
+   *  plus the mark to market on the open futures past the unsold production,
+   *  per unit of production. Null when a position has no quote. */
+  total_average_price?: number | null
   basis_notes: string[]
   as_of: string
   updated_at: string
@@ -298,6 +368,73 @@ export type FarmLinkExpectedYield = {
   harvest_complete: boolean
 }
 
+export type FarmLinkOpenHedges = {
+  /** Open short futures of the crop year, in the crop's unit (bu, or lbs of lint). */
+  quantity: number
+  average_price: number | null
+  /** The part of them covering unsold production: inside projected_average_price at the hedge price. */
+  covered_quantity: number
+  /** Unsold production no open future covers: priced at the market in projected_average_price. */
+  unpriced_quantity: number
+  /** Dollars: every open short future at the current quote (a short gains as the price falls). Null when one has no quote. */
+  unrealized: number | null
+  /** Dollars: the share of `unrealized` on the futures past the unsold production, which projected_average_price does not hold. */
+  unrealized_beyond_unsold: number | null
+  unquoted_positions: number
+  /** The oldest quote date used. */
+  quote_date: string | null
+  /** Open option contracts of the crop year; counted, not valued. */
+  open_option_contracts: number
+}
+
+type OpenFuture = { status?: string | null; side?: string | null; num_contracts?: number | string | null; trade_price?: number | string | null; contract_symbol?: string | null }
+
+/** The open hedges of a crop marked to market, and the total average price
+ *  with them in. Pure: the futures are the crop's own (commodity and crop
+ *  year already filtered), the quotes are keyed by contract symbol in the
+ *  crop's price unit. The mark on the futures past the unsold production is
+ *  taken pro rata by quantity (the open futures are one book). */
+export function openHedgesBlock(args: {
+  row: Pick<MarketingRow, 'unit' | 'openHedgeBu' | 'openHedgeAvg' | 'unpricedBu' | 'totalProduction' | 'cottonPhysical'>
+  /** Sold production, the figure percent_sold is worked on. */
+  sold: number
+  projected: number | null
+  futures: readonly OpenFuture[]
+  optionContracts: number
+  /** Dollars per 1.00 of price per contract (pnlSizeFor). */
+  pnlSize: number
+  quotes: ReadonlyMap<string, { price: number; price_date: string | null }>
+}): { open_hedges: FarmLinkOpenHedges; total_average_price: number | null } {
+  const { row } = args
+  const open = args.futures.filter((f) => f.status === 'open' && f.side === 'short')
+  const quantity = num(row.openHedgeBu)
+  const production = num(row.totalProduction)
+  const unsold = Math.max(0, production - args.sold)
+  const hedgedUnsold = (row.cottonPhysical as { hedgedUnsoldLbs?: number } | null | undefined)?.hedgedUnsoldLbs
+  const covered = row.unit === 'lbs' && hedgedUnsold != null ? num(hedgedUnsold) : num(row.unpricedBu) > 0 ? quantity : Math.min(quantity, unsold)
+  let unrealized = 0
+  let unquoted = 0
+  let quoteDate: string | null = null
+  for (const f of open) {
+    const q = f.contract_symbol ? args.quotes.get(f.contract_symbol.trim().toUpperCase()) : undefined
+    if (!q || !Number.isFinite(q.price)) { unquoted += 1; continue }
+    unrealized += (num(f.trade_price) - q.price) * num(f.num_contracts) * args.pnlSize
+    if (q.price_date && (!quoteDate || q.price_date < quoteDate)) quoteDate = q.price_date
+  }
+  const net = unquoted > 0 ? null : r2(unrealized)
+  const beyondShare = quantity > 0 ? Math.max(0, quantity - covered) / quantity : 0
+  const beyond = net == null ? null : r2(net * beyondShare)
+  const perUnit = beyond == null || !(production > 0) ? null : (row.unit === 'lbs' ? (beyond * 100) / production : beyond / production)
+  const total = args.projected == null ? null : open.length === 0 ? args.projected : perUnit == null ? null : r4(args.projected + perUnit)
+  return {
+    open_hedges: {
+      quantity: r2(quantity), average_price: row.openHedgeAvg == null ? null : r4(row.openHedgeAvg), covered_quantity: r2(covered), unpriced_quantity: r2(num(row.unpricedBu)),
+      unrealized: net, unrealized_beyond_unsold: beyond, unquoted_positions: unquoted, quote_date: quoteDate, open_option_contracts: args.optionContracts,
+    },
+    total_average_price: total,
+  }
+}
+
 type ExpectedYieldSource = Pick<CropAssumption, 'expected_yield' | 'expected_yield_irr' | 'expected_yield_dry' | 'expected_yield_dc_irr' | 'expected_yield_dc_dry' | 'harvest_complete'>
 
 export function expectedYieldBlock(a: ExpectedYieldSource | null | undefined, cotton: boolean): FarmLinkExpectedYield {
@@ -319,6 +456,8 @@ export function shapeMarketingRecord(args: {
   asOf: string
   /** The crop year's assumption row for the crop (org-level); null when none is set. */
   assumption?: ExpectedYieldSource | null
+  /** Whole-operation rows: the crop's futures and options of the crop year with the quotes, for the open hedges block. */
+  hedges?: { futures: readonly OpenFuture[]; optionContracts: number; pnlSize: number; quotes: ReadonlyMap<string, { price: number; price_date: string | null }> } | null
 }): FarmLinkMarketingRecord {
   const { row } = args
   const cotton = row.unit === 'lbs'
@@ -345,6 +484,8 @@ export function shapeMarketingRecord(args: {
   if (row.assumedFutures != null) notes.push(`unpriced ${row.unit === 'lbs' ? 'pounds' : 'bushels'} valued at the standing assumed futures price`)
   if (row.acresSource === 'assumed') notes.push('acres are the crop year\'s assumed acres (no plantings yet)')
   const headline = headlineAvgPrice(row)
+  const projected = headline == null || !Number.isFinite(headline) ? null : r4(headline)
+  const marked = args.hedges ? openHedgesBlock({ row, sold, projected, ...args.hedges }) : null
   return {
     id: `${row.cropId}|${args.entity?.id ?? 'all'}`,
     crop_id: row.cropId,
@@ -359,7 +500,7 @@ export function shapeMarketingRecord(args: {
     settled_quantity: r2(settledQty),
     settled_revenue: r2(settledRev),
     settled_attribution: args.entity ? 'by_acres' : 'operation',
-    projected_average_price: headline == null || !Number.isFinite(headline) ? null : r4(headline),
+    projected_average_price: projected,
     price_is_final: args.isFinal,
     basis: {
       average: r4(row.avgBasis), state: row.basisState, assumed: r4(row.assumedBasis),
@@ -370,6 +511,7 @@ export function shapeMarketingRecord(args: {
     total_production: r2(row.totalProduction),
     production_basis: row.yieldLabel === 'Actual' ? 'actual' : 'estimated',
     hedging_realized: { net: r2(row.hedgeRealizedPnl), per_unit: r4(row.hedgeAdjPerBu) },
+    ...(marked ? { open_hedges: marked.open_hedges, total_average_price: marked.total_average_price } : {}),
     basis_notes: notes,
     as_of: args.asOf,
     updated_at: args.asOf,
@@ -471,10 +613,31 @@ export async function loadMarketingPayload(supabase: SupabaseClient, org: string
   const [finalCrops, settled] = await Promise.all([loadSalesStatus(supabase, org, year), loadSettledByCrop(supabase, org, year, production.crops)])
   const asOf = new Date().toISOString()
   const assumptionByCrop = new Map<string, CropAssumption>(inputs.production.assumptions.filter((a) => a.crop_year === year).map((a) => [a.crop_id, a] as const))
+  // The open futures of the year at the current quote (live, else the
+  // operation's manual quote), for the whole-operation rows' open hedges.
+  const openFutures = entityInputs.futures.filter((f) => f.status === 'open' && f.side === 'short' && f.crop_year === year)
+  const quotes = new Map<string, { price: number; price_date: string | null }>()
+  const symbols = Array.from(new Set(openFutures.map((f) => (f.contract_symbol ?? '').trim().toUpperCase()).filter(Boolean)))
+  if (symbols.length > 0) {
+    try {
+      const resolved = await resolveQuotes({ supabase, symbols, orgId: org })
+      for (const p of resolved.prices) if (p.price != null) quotes.set(p.symbol.toUpperCase(), { price: Number(p.price), price_date: p.price_date ?? null })
+    } catch (e) {
+      console.error('[farm-link] marketing: quotes unavailable, open hedges go out unmarked:', e instanceof Error ? e.message : e)
+    }
+  }
   const out: FarmLinkMarketingRecord[] = []
   for (const row of rows) {
     const s = settled.byCrop.get(row.cropId)
-    const rec = shapeMarketingRecord({ row, cropYear: year, entity: null, settled: s ? { ...s, share: 1 } : null, isFinal: finalCrops.has(row.cropId), asOf, assumption: assumptionByCrop.get(row.cropId) ?? null })
+    const commodity = row.unit === 'lbs' ? 'Cotton' : cropToHedgeCommodity(row.cropName)
+    const hedges = commodity
+      ? {
+          futures: openFutures.filter((f) => f.commodity === commodity),
+          optionContracts: entityInputs.options.filter((o) => o.commodity === commodity && o.crop_year === year && o.status === 'open').reduce((n, o) => n + num(o.num_contracts), 0),
+          pnlSize: pnlSizeFor(commodity), quotes,
+        }
+      : null
+    const rec = shapeMarketingRecord({ row, cropYear: year, entity: null, settled: s ? { ...s, share: 1 } : null, isFinal: finalCrops.has(row.cropId), asOf, assumption: assumptionByCrop.get(row.cropId) ?? null, hedges })
     const kept = settled.keptNotes.get(row.cropId)
     if (kept) rec.basis_notes.push(kept)
     out.push(rec)
