@@ -113,7 +113,7 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
   const [trucks, setTrucks] = useState<Array<{ id: string; name_or_number: string }>>([])
   const [bins, setBins] = useState<Array<{ id: string; name_or_number: string }>>([])
   const [buyers, setBuyers] = useState<Array<{ id: string; name: string }>>([])
-  const [loading, setLoading] = useState(true)
+  const [dataLoading, setLoading] = useState(true)
 
   // Filters persist across visits; the crop year follows the one report rule
   // (current year by default, never overwritten on load; "All" stays on
@@ -186,6 +186,11 @@ export default function YieldsByLandowner({ onPayloadChange, headerActions, cont
   const ownResolved = useMemo(() => resolveCropAssumptions(assumptions, viewerA.overrides).rows, [assumptions, viewerA.overrides])
   const effAssumptions = controlled?.assumptions ?? ownResolved
   const cottonYields = useCottonYields(supabase, { crops, assumptions: effAssumptions })
+  // Nothing on this page is shown or exported until the cotton records have
+  // settled too. They take a few seconds on a farm with a season of bales,
+  // and a figure worked out without them is wrong, not just early (the
+  // 2026-11-17 export with 1,432 cotton acres and no production).
+  const loading = dataLoading || cottonYields.loading
   const cottonModel = cottonYields.model
   const cottonOn = cottonYields.on === true
   const isCottonId = (id: string) => cottonOn && cottonModel.cottonCropIds.has(id)

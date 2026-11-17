@@ -47,6 +47,7 @@ import { fetchLoadSales, isMissingRelation, saleAllocations, writeManyLoadSales,
 import { contractNumberKey, type SaleLine } from '@/lib/settlement-sales'
 import { buildApplyPlan, buildSaleReview, withSaleType, type ContractLinks, type ReviewContract, type SaleChoice } from '@/lib/settlement-sale-review'
 import SettlementSaleReview, { SaleChip } from '@/components/settlement-sale-review'
+import { reshrinkSplits } from '@/lib/load-splits'
 
 type LoadMatch = {
   id: string
@@ -859,6 +860,18 @@ export default function NewSettlementPage() {
           wErr = Object.keys(rest).length > 0 ? (await supabase.from('loads').update(rest).eq('id', m.load.id)).error : null
         }
         if (wErr) { writebackFailed = true; reportError(wErr, { action: 'update a matched load', noun: 'load' }) }
+        // A split load keeps each field's bushels as saved. Filling in the
+        // moisture changes the shrink, so its portions are shrunk again here
+        // (lib/load-splits reshrinkSplits) — otherwise the fields would keep
+        // unshrunk bushels that no longer match the load.
+        if (!wErr && 'moisture' in patch) {
+          const sp = await supabase.from('load_splits').select('id, net_weight, wet_bushels, dry_bushels').eq('load_id', m.load.id)
+          const updates = reshrinkSplits({ moisture: Number(patch.moisture), crop: m.load.crop ?? null, splits: (sp.data as Array<{ id: string; net_weight: number | null; wet_bushels: number | null; dry_bushels: number | null }> | null) ?? [] })
+          for (const u of updates) {
+            const { error: sErr } = await supabase.from('load_splits').update({ wet_bushels: u.wet_bushels, dry_bushels: u.dry_bushels }).eq('id', u.id)
+            if (sErr) { writebackFailed = true; reportError(sErr, { action: 'update a split load\'s bushels', noun: 'load' }) }
+          }
+        }
       }
     }
 

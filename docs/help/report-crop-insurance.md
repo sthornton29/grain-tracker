@@ -62,9 +62,10 @@ The Excel file is laid out for the person you send it to. It opens on the same r
 
 - **Settlement Balance** (balanced only) — settled, delivered-not-settled and still-in-bins, the balanced total, the factor, and a check.
 - **Field Production** — one row per field and practice: farm, field, FSA farm number, county, crop, acres, where the production came from (scale tickets, the combine monitor, or gin receipts), how it was split between practices, production and yield, and the rule in plain words. A field name is a link to its loads.
-- **Load Data** — one row per load that counts (a split load gets one row per field share): date, ticket numbers, truck, farm, field, destination, gross / tare / net pounds, moisture, and the shrink to dry bushels. Each row has an **Open** link to the load in Turnrow.
+- **Load Data** (grain) — one row per load that counts (a split load gets one row per field share): date, ticket numbers, truck, farm, field, destination, gross / tare / net pounds, moisture, and the shrink to dry bushels. Each row has an **Open** link to the load in Turnrow.
 - **Combine Entries** (when any) — bushels from the yield monitor and the calibration adjustment.
-- **Gin Receipts** and **Bales** (cotton) — receipts with modules, seed cotton, bales, lint pounds and turnout; cotton picked but not yet ginned is its own row marked "estimated, not ginned".
+- **Gin Data** (cotton) — cotton's version of Load Data: one row per Statement of Ginning that counts, each field's statements together in date order. It shows the date, the statement, an **Open** link to it in Turnrow, the gin, farm and field, the modules and seed cotton that went in, and the bales, lint and turnout that came out. A statement the gin printed a number on shows that number; one it didn't is named for its field and date ("Bootleggers · 11/4/2026"). Cotton picked but not ginned yet is its own row marked "Estimated, not ginned". When a statement's printed lint and its bale list don't agree, the Note column says which one is counted (the bale list).
+- **Bales** (cotton) — every bale behind those statements: bale number, statement, farm, field and net weight. A cotton field's name on Field Production links to its statements on Gin Data.
 - **Settlements** and **Unsettled Deliveries** (balanced only) — every settlement line counted, and every delivered load with no settlement yet.
 - **Notes** — how the numbers are worked out, a guide to every column, and a check that the workbook's totals equal the totals on your screen (OK or CHECK).
 
@@ -78,6 +79,7 @@ The Excel file is laid out for the person you send it to. It opens on the same r
 
 ## Common questions
 
+- **Why does the page say Loading for a few seconds?** On a farm with cotton, the report waits until your gin receipts and bales are read before it shows or exports anything, so cotton is never left out of a file. If the cotton records can't be read, the report says so and holds the export buttons until you reload.
 - **Why is a field missing?** Its harvest probably isn't complete yet — it is listed under the filters as still harvesting. If it is truly done, tap Count anyway there or on the Yields page.
 - **Why is the report blocked?** One or more mixed-practice fields finished harvest without a production breakout. Enter the irrigated/dryland split on the Yields page, or accept the option to roll it into dryland.
 - **Can I report one crop at a time?** Yes — use the crop chips. Only the selected crops (and their fields) count.

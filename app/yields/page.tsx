@@ -102,7 +102,7 @@ export default function YieldsPage() {
   const [bins, setBins] = useState<Array<{ id: string; name_or_number: string }>>([])
   const [buyers, setBuyers] = useState<Array<{ id: string; name: string }>>([])
   const [combineEntries, setCombineEntries] = useState<CombineYieldEntry[]>([])
-  const [loading, setLoading] = useState(true)
+  const [dataLoading, setLoading] = useState(true)
   // Viewer private assumption overrides (052): the expected-yield bar and the
   // cotton turnout (092) resolve through them, like on Marketing.
   const viewerA = useViewerAssumptions(supabase, viewer)
@@ -114,6 +114,11 @@ export default function YieldsPage() {
   // estimate come from this one model. Off → inert (no cotton reads, cotton
   // plantings classify exactly as before).
   const cottonYields = useCottonYields(supabase, { crops, assumptions: effAssumptions })
+  // Nothing on this page is shown or exported until the cotton records have
+  // settled too. They take a few seconds on a farm with a season of bales,
+  // and a figure worked out without them is wrong, not just early (the
+  // 2026-11-17 export with 1,432 cotton acres and no production).
+  const loading = dataLoading || cottonYields.loading
   const cottonModel = cottonYields.model
   const cottonOn = cottonYields.on === true
   // One confirmation dialog for the page's "are you sure" moments (replaces

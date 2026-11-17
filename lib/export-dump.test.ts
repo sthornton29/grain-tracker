@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { dumpExport } from '@/lib/export-dump'
 import { buildProductionAuditPayload } from '@/lib/production-audit-workbook'
 import { buildInventoryPayload } from '@/components/export-inventory-csv'
-import { sampleAuditInput, sampleBalancedAuditInput, sampleReportPayload, sampleStackedPayload } from '@/lib/export-sample-fixtures'
+import { sampleAuditInput, sampleBalancedAuditInput, sampleCottonAuditInput, sampleReportPayload, sampleStackedPayload } from '@/lib/export-sample-fixtures'
 import type { ExportPayload } from '@/lib/exports'
 
 // Writes real .xlsx / .pdf files a person can open:
@@ -22,6 +22,9 @@ describe('sample workbooks build', () => {
   })
   it('crop insurance production (balanced to settlements)', async () => {
     await dump('crop-insurance-production-balanced', buildProductionAuditPayload(sampleBalancedAuditInput()))
+  })
+  it('crop insurance production (with cotton: the Gin Data and Bales tabs)', async () => {
+    await dump('crop-insurance-production-cotton', buildProductionAuditPayload(sampleCottonAuditInput()))
   })
   it('a titled multi-section report', async () => {
     await dump('titled-report', sampleReportPayload())

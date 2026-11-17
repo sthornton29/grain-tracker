@@ -173,7 +173,7 @@ export default function MarketingPage() {
   const [yearValue, setYearValue] = useReportCropYear('marketing:cropYear')
   const year: number | null = typeof yearValue === 'number' ? yearValue : null
   const setYear = useCallback((v: number | null) => { if (v != null) setYearValue(v) }, [setYearValue])
-  const [loading, setLoading] = useState(false)
+  const [dataLoading, setLoading] = useState(false)
 
   const [crops, setCrops] = useState<Crop[]>([])
   const [plantings, setPlantings] = useState<PlantingRow[]>([])
@@ -313,6 +313,11 @@ export default function MarketingPage() {
   // (the adapter), and the cotton row's actual production is receipts + the
   // turnout estimate on seed cotton still on the yard. Inert when off.
   const cottonYields = useCottonYields(supabase, { crops, assumptions: effAssumptions })
+  // Nothing on this page is shown or exported until the cotton records have
+  // settled too. They take a few seconds on a farm with a season of bales,
+  // and a figure worked out without them is wrong, not just early (the
+  // 2026-11-17 export with 1,432 cotton acres and no production).
+  const loading = dataLoading || cottonYields.loading
   const cottonModel = cottonYields.model
 
   // Assumed acres (081) stand in for a crop with no plantings this year — but

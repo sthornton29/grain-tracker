@@ -92,7 +92,7 @@ const price2 = (n: number | null | undefined) =>
 
 export default function RevenueProjectionsReport({ onPayloadChange, headerActions }: Props) {
   const supabase = useMemo(() => createClient(), [])
-  const [loading, setLoading] = useState(true)
+  const [dataLoading, setLoading] = useState(true)
   const [crops, setCrops] = useState<Crop[]>([])
   const [plantings, setPlantings] = useState<FieldPlanting[]>([])
   const [contracts, setContracts] = useState<Contract[]>([])
@@ -213,6 +213,11 @@ export default function RevenueProjectionsReport({ onPayloadChange, headerAction
   // Cotton module (092): the seed-cotton classifier adapter + the turnout
   // estimate on unginned cotton, the same model the dashboard uses. Inert off.
   const cottonYields = useCottonYields(supabase, { crops, assumptions: effAssumptions })
+  // Nothing on this page is shown or exported until the cotton records have
+  // settled too. They take a few seconds on a farm with a season of bales,
+  // and a figure worked out without them is wrong, not just early (the
+  // 2026-11-17 export with 1,432 cotton acres and no production).
+  const loading = dataLoading || cottonYields.loading
   const cottonModel = cottonYields.model
 
   // Shared entity scoping — the SAME layer the Marketing dashboard applies, so

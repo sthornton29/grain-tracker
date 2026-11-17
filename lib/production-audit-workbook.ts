@@ -44,9 +44,14 @@
 //   production; the weighed loads from that field are netted inside it (they
 //   are listed on Load Data and summed in the field row for the record, but
 //   the row's production is the combine figure).
-// Cotton: lint lbs = Σ receipts (bale rows' weights when any, else the
-//   receipt's stated bale weight) + picked-but-unginned seed cotton × the
-//   resolved turnout, the estimate in its own row marked "estimated, not ginned".
+// Cotton: lint lbs = Σ statements of ginning (the bale weights when the bales
+//   are listed, else the lint the statement states) + picked-but-unginned
+//   seed cotton × the resolved turnout, the estimate in its own row marked
+//   "Estimated, not ginned". GIN DATA is cotton's Load Data: one row per
+//   Statement of Ginning counted (date, gin, farm, field, modules, seed
+//   cotton, bales, lint, turnout), each field's statements together, with the
+//   Bales tab behind it. A statement the gin printed no number on is named for
+//   its field and date — never by the internal record key.
 // Balanced to settlements (lib/production-balance.ts): a Settlement Balance
 //   tab computes settled + delivered-not-settled + still-in-bins ÷ measured
 //   as a live factor per grain crop; Field Production gains a balanced
@@ -55,6 +60,8 @@
 //   Measured stays visible as its own group.
 
 import { computeBushels } from '@/lib/shrink'
+import { isSynthesizedReceiptNumber } from '@/lib/gin-statements'
+import { fmtDate } from '@/lib/format-date'
 import { truckExportLabel } from '@/lib/trucks'
 import { evaluatePayload, formulaLayout, type ExportCell, type ExportColumn, type ExportPayload, type ExportSection, type NumFmt, type PreludeRow } from '@/lib/exports'
 import {
@@ -165,8 +172,8 @@ export const AUDIT = {
 /** Section key of the i-th county × practice sheet (report.detailSheets order). */
 export const countySheetKey = (i: number): string => `county_${i}`
 
-export const ESTIMATED_KIND = 'estimated, not ginned'
-export const GINNED_KIND = 'ginned'
+export const ESTIMATED_KIND = 'Estimated, not ginned'
+export const GINNED_KIND = 'Ginned'
 export const NO_STATE = '(none)'
 const BRAND_GREEN = 'FF36B449'
 const TAB_GRAY = 'FF9CA3AF'
@@ -363,7 +370,9 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
   if (cotton) {
     for (const r of sortedResolved) {
       if (r.source !== 'cotton') continue
-      const receipts = cotton.receipts.filter((x) => x.field_id === r.planting.field_id && x.crop_year === r.planting.season_year)
+      const receipts = cotton.receipts
+        .filter((x) => x.field_id === r.planting.field_id && x.crop_year === r.planting.season_year)
+        .sort((a, b) => (a.receipt_date ?? '9999').localeCompare(b.receipt_date ?? '9999') || a.id.localeCompare(b.id))
       for (const rc of receipts) {
         ginRows.push({ kind: GINNED_KIND, r, receipt: rc, est: null })
         for (const b of cotton.bales) if (b.gin_receipt_id === rc.id) baleRows.push({ bale: b, receipt: rc })
@@ -374,20 +383,26 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
   }
   const hasCotton = ginRows.length > 0
   const hasBales = baleRows.length > 0
-  // The receipt as the gin numbers it — the text the Bales tab matches on. A
-  // number that repeats (two gins, a reissued statement) is told apart "(2)".
+  // How a statement is named — the text the Bales tab matches on. The number
+  // the gin printed when it printed one; otherwise the field and the date
+  // ("Bootleggers · 11/4/2026"), as the app lists it. Never the stored record
+  // key (a statement with no number carries a made-up one nobody should see).
+  // A name that repeats is told apart "(2)".
+  const printedNumber = (rc: AuditCottonReceipt): string =>
+    (rc.statement_number ?? '').trim() || (isSynthesizedReceiptNumber(rc.receipt_number) ? '' : (rc.receipt_number ?? '').trim())
   const receiptLabel = new Map<string, string>()
   {
     const taken = new Set<string>()
     for (const g of ginRows) {
       if (!g.receipt || receiptLabel.has(g.receipt.id)) continue
-      const base = criteriaText(g.receipt.statement_number || g.receipt.receipt_number || 'receipt')
+      const base = criteriaText(printedNumber(g.receipt) || `${displayField(g.r.planting)} · ${g.receipt.receipt_date ? fmtDate(g.receipt.receipt_date) : 'no date'}`)
       let label = base
       for (let n = 2; taken.has(label.toLowerCase()); n++) label = `${base} (${n})`
       taken.add(label.toLowerCase())
       receiptLabel.set(g.receipt.id, label)
     }
   }
+  const openReceipt = (id: string): ExportCell => (input0.appOrigin ? { v: 'Open', link: `${input0.appOrigin}/cotton/receipts/${id}` } : '')
   const hasCombine = combineRows.length > 0
 
   // =========================================================================
@@ -493,14 +508,14 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     { key: 'unit', label: 'Unit', note: 'bu for grain; lbs (lint) for cotton.' },
     { key: 'practice', label: 'Practice', note: 'Irrigated or Dryland. A mixed planting has one row per practice.' },
     { key: 'status', label: 'Harvest status', note: 'complete, counted anyway (the user overrode an in-progress flag), or not harvested (acres only).' },
-    { key: 'source', label: 'Production source', note: 'scale tickets (Load Data), combine monitor (Combine Entries), or gin receipts (cotton).' },
+    { key: 'source', label: 'Production source', note: 'scale tickets (Load Data), combine monitor (Combine Entries), or gin receipts (cotton — Gin Data).' },
     { key: 'breakout', label: 'Practice split', note: 'single practice; entered breakout (Yields page); from load tags (every load tagged); rolled into dryland (no breakout, generated as dryland).' },
     { key: 'acres', label: 'Acres', format: 'acres2', align: 'right', note: 'Certified acres for this practice: the planting\'s irrigated or dryland acres (blue input).' },
     { key: 'scale_bu', label: 'Scale ticket bu', format: 'bu', align: 'right', note: 'SUMIFS over Load Data dry bushels for this Farm + Field + Crop + Crop Year (and this Practice when the load tags decide the split).' },
     { key: 'combine_bu', label: 'Combine entry bu', format: 'bu', align: 'right', note: 'SUMIFS over Combine Entries adjusted bushels for this field. Blank when no field uses a combine entry.' },
     ...(hasCotton ? [
-      { key: 'ginned_lint', label: 'Ginned lint (lbs)', format: 'lbs' as NumFmt, align: 'right' as const, note: 'SUMIFS over Gin Receipts lint lbs for this field, ginned rows only.' },
-      { key: 'est_lint', label: 'Estimated lint, not ginned (lbs)', format: 'lbs' as NumFmt, align: 'right' as const, note: 'SUMIFS over Gin Receipts for this field, the "estimated, not ginned" rows: seed cotton still on the yard × the resolved turnout.' },
+      { key: 'ginned_lint', label: 'Ginned lint (lbs)', format: 'lbs' as NumFmt, align: 'right' as const, note: 'SUMIFS over Gin Data lint for this field, ginned rows only.' },
+      { key: 'est_lint', label: 'Estimated lint, not ginned (lbs)', format: 'lbs' as NumFmt, align: 'right' as const, note: 'SUMIFS over Gin Data for this field, the "Estimated, not ginned" rows: seed cotton still on the yard × the resolved turnout.' },
     ] : []),
     { key: 'entered_irr', label: 'Entered irrigated bu', format: 'bu', align: 'right', note: 'The breakout entered on the Yields page (blue input). Blank unless the split was entered.' },
     { key: 'entered_dry', label: 'Entered dryland bu', format: 'bu', align: 'right', note: 'The breakout entered on the Yields page (blue input). Blank unless the split was entered.' },
@@ -901,33 +916,51 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     }),
   } : null
 
-  // --- Gin Receipts + Bales (cotton) -----------------------------------------
+  // What a reader should know about a statement's lint: which figure is
+  // counted when the statement and its bale list do not say the same thing.
+  const statementNote = (rc: AuditCottonReceipt, balesHere: ReadonlyArray<{ bale: AuditCottonSources['bales'][number] }>): string => {
+    if (!hasBales) return ''
+    if (balesHere.length === 0) return 'No bale list on file: the lint on the statement is counted.'
+    const stated = rc.total_bale_weight == null ? 0 : Number(rc.total_bale_weight)
+    const listed = balesHere.reduce((a, x) => a + (Number(x.bale.net_weight_lbs) || 0), 0)
+    if (stated > 0 && Math.abs(listed - stated) > Math.max(1, stated * 0.001)) {
+      return `The statement prints ${Math.round(stated).toLocaleString('en-US')} lb; its ${balesHere.length} listed bales add up to ${Math.round(listed).toLocaleString('en-US')} lb, which is what is counted.`
+    }
+    return ''
+  }
+
+  // --- Gin Data + Bales (cotton) -----------------------------------------------
+  // Cotton's Load Data: one row per Statement of Ginning counted, each field's
+  // statements together in date order, laid out like Load Data (date, the
+  // statement, a link to its record, where it came from, then the weights).
   const ginSection: ExportSection | null = hasCotton ? {
     key: S.ginReceipts,
-    title: 'Gin Receipts',
+    title: 'Gin Data',
     plain: true,
     freezeColumns: 2,
-    prelude: sheetHead('Gin Receipts', `Lint per receipt: the bale weights when the bales are listed, else the receipt's stated bale weight. "${ESTIMATED_KIND}" rows are seed cotton picked but not yet ginned, valued at the turnout.`, 2),
+    prelude: sheetHead('Gin Data', `One row per Statement of Ginning that counts: the gin's modules, seed cotton, bales and lint for a field. Cotton picked but not ginned yet is its own row, marked "${ESTIMATED_KIND}".`, 2),
     columns: colsOf([
-      { key: 'kind', label: 'Kind', note: '"ginned" (a receipt) or "estimated, not ginned" (seed cotton still on the yard).' },
-      { key: 'receipt', label: 'Receipt / statement #', note: 'The gin\'s receipt or statement number (a repeated number is told apart with "(2)"). The Bales tab matches on this text.' },
+      { key: 'date', label: 'Date', format: 'date', note: 'The date on the Statement of Ginning.' },
+      // A fixed width keeps Date + Statement inside the frozen strip; a long field name wraps onto a second line.
+      { key: 'receipt', label: 'Statement', width: 30, note: 'The statement number the gin printed; when it printed none, the field and the date. The Bales tab matches on this text.' },
+      { key: 'record', label: 'Statement record', note: 'Opens the statement in Turnrow.' },
+      { key: 'kind', label: 'Status', note: `"${GINNED_KIND}" (a statement from the gin) or "${ESTIMATED_KIND}" (seed cotton still on the yard).` },
       { key: 'gin', label: 'Gin' },
-      { key: 'date', label: 'Date', format: 'date' },
-      { key: 'farm', label: 'Farm' },
-      { key: 'field', label: 'Field' },
+      { key: 'farm', label: 'Farm', note: 'Field Production matches on this text.' },
+      { key: 'field', label: 'Field', note: 'Field Production matches on this text.' },
       { key: 'county', label: 'County' },
       { key: 'state', label: 'State' },
       { key: 'crop', label: 'Crop' },
       { key: 'crop_year', label: 'Crop year', format: 'text' },
       { key: 'practice', label: 'Practice' },
-      { key: 'modules', label: 'Modules', format: 'int', align: 'right' },
-      { key: 'seed_lbs', label: 'Seed cotton (lb)', format: 'lbs', align: 'right' },
-      { key: 'bales', label: 'Bales', format: 'int', align: 'right' },
-      { key: 'stated_lint', label: 'Stated bale weight (lb)', format: 'lbs', align: 'right' },
-      { key: 'bale_lbs', label: 'Bale rows (lb)', format: 'lbs', align: 'right', note: 'SUMIFS over the Bales tab for this receipt.' },
-      { key: 'turnout', label: 'Turnout (%)', format: 'pct1', align: 'right', note: 'Lint ÷ seed cotton × 100; on an estimate row the resolved turnout (blue input).' },
-      { key: 'lint_lbs', label: 'Lint (lb)', format: 'lbs', align: 'right', note: 'Bale rows when any, else the stated bale weight; on an estimate row seed cotton × turnout.' },
-      { key: 'basis', label: 'Basis' },
+      { key: 'modules', label: 'Modules', format: 'int', align: 'right', note: 'Modules (or loads) ginned on the statement (blue input).' },
+      { key: 'seed_lbs', label: 'Seed cotton (lb)', format: 'lbs', align: 'right', note: 'Seed cotton weight on the statement (blue input); on an estimate row, the seed cotton still on the yard.' },
+      { key: 'bales', label: 'Bales', format: 'int', align: 'right', note: 'Bales on the statement (blue input).' },
+      { key: 'stated_lint', label: 'Lint on the statement (lb)', format: 'lbs', align: 'right', note: 'The total bale weight the statement states (blue input).' },
+      ...(hasBales ? [{ key: 'bale_lbs', label: 'Bale weights (lb)', format: 'lbs' as NumFmt, align: 'right' as const, note: 'The statement\'s bales added up from the Bales tab.' }] : []),
+      { key: 'turnout', label: 'Turnout (%)', format: 'pct1', align: 'right', note: 'Lint ÷ seed cotton × 100; on an estimate row, the turnout used (blue input).' },
+      { key: 'lint_lbs', label: 'Lint counted (lb)', format: 'lbs', align: 'right', note: 'The bale weights when the bales are listed, else the lint on the statement; on an estimate row, seed cotton × turnout. This is the production Field Production adds up.' },
+      { key: 'note', label: 'Note', width: 44 },
     ]),
     rows: ginRows.map((g) => {
       const place = placeOf(g.r.planting.field_id)
@@ -935,48 +968,57 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
       const common = [place.farmName, displayField(g.r.planting), place.countyLabel, place.state, cropName(g.r.planting.crop_id), g.r.planting.season_year, practice]
       if (g.receipt) {
         const rc = g.receipt
-        const balesHere = baleRows.filter((b) => b.receipt.id === rc.id)
-        const baleLbs = hasBales ? formula(sumifs(BL('net_lbs'), [BL('receipt'), exactCriterion(self('receipt'))]), 'lbs') : ''
+        const balesHere = baleRows.filter((x) => x.receipt.id === rc.id)
         const lint = hasBales ? formula(iff(gt(self('bale_lbs'), num(0)), self('bale_lbs'), self('stated_lint')), 'lbs') : formula(self('stated_lint'), 'lbs')
         return [
-          GINNED_KIND, receiptLabel.get(rc.id) ?? '', ginById.get(rc.gin_id ?? '') ?? '', rc.receipt_date ?? '',
+          rc.receipt_date ?? '', receiptLabel.get(rc.id) ?? '', openReceipt(rc.id), GINNED_KIND, ginById.get(rc.gin_id ?? '') ?? '',
           ...common,
           input(rc.modules_count ?? null, 'int'),
           input(rc.total_seed_cotton_weight == null ? null : Number(rc.total_seed_cotton_weight), 'lbs'),
           input(balesHere.length > 0 ? balesHere.length : rc.bales_count ?? null, 'int'),
           input(rc.total_bale_weight == null ? null : Number(rc.total_bale_weight), 'lbs'),
-          baleLbs,
+          ...(hasBales ? [formula(sumifs(BL('net_lbs'), [BL('receipt'), exactCriterion(self('receipt'))]), 'lbs')] : []),
           formula(iferror(div(mul(self('lint_lbs'), num(100)), self('seed_lbs')), num(0)), 'pct1'),
           lint,
-          'ginned',
+          statementNote(rc, balesHere),
         ]
       }
       const est = g.est!
       return [
-        ESTIMATED_KIND, '(estimate)', '', '',
+        '', `${displayField(g.r.planting)} · not ginned yet`, '', ESTIMATED_KIND, '',
         ...common,
-        '', input(est.seedLbs, 'lbs'), '', '', '',
+        '', input(est.seedLbs, 'lbs'), '', '',
+        ...(hasBales ? [''] : []),
         input(est.turnoutPct, 'pct1'),
         formula(div(mul(self('seed_lbs'), self('turnout')), num(100)), 'lbs'),
-        `estimated, not ginned: ${est.label}`,
+        `Seed cotton picked and still on the yard, at a turnout of ${est.label}.`,
       ]
     }),
   } : null
 
+  // The bales behind each statement, in statement order then bale number.
   const balesSection: ExportSection | null = hasBales ? {
     key: S.bales,
     title: 'Bales',
     plain: true,
-    prelude: sheetHead('Bales', 'The bale weights behind each gin receipt.', 1),
+    prelude: sheetHead('Bales', 'Every bale behind the statements on Gin Data, with the weight the gin recorded.', 1),
     columns: colsOf([
-      { key: 'pbi', label: 'PBI' },
-      { key: 'receipt', label: 'Receipt / statement #' },
-      { key: 'net_lbs', label: 'Net (lb)', format: 'lbs', align: 'right' },
+      { key: 'pbi', label: 'Bale number (PBI)' },
+      { key: 'receipt', label: 'Statement', note: 'The statement the bale is on, named as on Gin Data.' },
+      { key: 'farm', label: 'Farm' },
+      { key: 'field', label: 'Field' },
+      { key: 'net_lbs', label: 'Net (lb)', format: 'lbs', align: 'right', note: 'The bale\'s net weight (blue input).' },
     ]),
-    rows: baleRows.map(({ bale, receipt }) => [
-      bale.pbi_number, receiptLabel.get(receipt.id) ?? '',
-      input(bale.net_weight_lbs == null ? null : Number(bale.net_weight_lbs), 'lbs'),
-    ]),
+    rows: ginRows.filter((g) => g.receipt).flatMap((g) => {
+      const place = placeOf(g.r.planting.field_id)
+      return baleRows
+        .filter((x) => x.receipt.id === g.receipt!.id)
+        .sort((x, y) => String(x.bale.pbi_number).localeCompare(String(y.bale.pbi_number)))
+        .map(({ bale, receipt }): ExportCell[] => [
+          bale.pbi_number, receiptLabel.get(receipt.id) ?? '', place.farmName, displayField(g.r.planting),
+          input(bale.net_weight_lbs == null ? null : Number(bale.net_weight_lbs), 'lbs'),
+        ])
+    }),
   } : null
 
   // --- Settlements + Unsettled Deliveries (balanced only) --------------------
@@ -1075,6 +1117,13 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
     line('Balancing is a report option only: Yields, Marketing, the Claims Monitor and the partner API keep measured production. Cotton is never balanced; it already reports the gin\'s lint.')
     line('')
   }
+  if (hasCotton) {
+    heading('Cotton')
+    line('Cotton production is pounds of lint from the gin. Gin Data lists every Statement of Ginning that counts, one row per statement, the way Load Data lists every load of grain: the gin, the date, the farm and field, the modules and seed cotton that went in, and the bales and lint that came out.')
+    line(`The lint counted for a statement is its bales added up from the Bales tab when the bale list is on file, otherwise the lint the statement states. Cotton picked but not ginned yet has its own row, marked "${ESTIMATED_KIND}": the seed cotton still on the yard times the turnout shown on that row.`)
+    line('Field Production adds a field\'s Gin Data rows by Farm + Field + Crop + Crop Year, the same way it adds a grain field\'s loads.')
+    line('')
+  }
   heading('Colors')
   line('Blue cells are values taken straight from Turnrow records: weights, moisture, acres, overrides, entered breakouts, combine entries, gin receipts, settlement lines. Black cells are formulas. Change a blue cell and the formulas follow.')
   line('')
@@ -1131,7 +1180,7 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
 
   // Tab order: the report first (Summary, then each county × practice), then
   // the records behind it — Settlement Balance, Field Production, Load Data,
-  // Combine Entries / Gin Receipts / Bales, Settlements, Unsettled, Notes.
+  // Combine Entries / Gin Data / Bales, Settlements, Unsettled, Notes.
   const sections: ExportSection[] = [summarySection, ...countySections]
   if (balanceSection) sections.push(balanceSection)
   sections.push(fpSection, loadDataSection)
@@ -1166,10 +1215,10 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
   const about: Record<string, string> = {
     [S.balance]: 'How production was balanced to the bushels the buyers paid for',
     [S.fieldProduction]: 'One row per field and practice: how each field\'s production was worked out',
-    [S.loadData]: 'Every scale ticket counted, with the shrink to dry bushels',
+    [S.loadData]: 'Grain: every scale ticket counted, with the shrink to dry bushels',
     [S.combine]: 'Fields measured by the combine yield monitor',
-    [S.ginReceipts]: 'Cotton lint by gin receipt',
-    [S.bales]: 'The bale weights behind the gin receipts',
+    [S.ginReceipts]: 'Cotton: every Statement of Ginning counted, with its bales and lint',
+    [S.bales]: 'Every bale behind those statements',
     [S.settlements]: 'The settlement lines counted in the balance',
     [S.unsettled]: 'Loads delivered but not yet settled',
     [S.notes]: 'How the numbers are worked out, and the check against Turnrow',
@@ -1189,12 +1238,18 @@ export function buildProductionAuditPayload(input0: ProductionAuditInput): Expor
   const fpFieldIdx = fpColumns.findIndex((c) => c.key === 'field')
   const firstLoadRowByPlanting = new Map<string, number>()
   loadRows.forEach((x, i) => { if (!firstLoadRowByPlanting.has(x.resolved.planting.id)) firstLoadRowByPlanting.set(x.resolved.planting.id, i) })
+  const gd = ginSection ? layout[S.ginReceipts] : null
+  const firstGinRowByPlanting = new Map<string, number>()
+  ginRows.forEach((g, i) => { if (!firstGinRowByPlanting.has(g.r.planting.id)) firstGinRowByPlanting.set(g.r.planting.id, i) })
   fpRows.forEach(({ r }, i) => {
+    // A cotton field jumps to its statements on Gin Data; a grain field to its loads.
+    const ginIdx = r.source === 'cotton' ? firstGinRowByPlanting.get(r.planting.id) : undefined
     const idx = firstLoadRowByPlanting.get(r.planting.id)
-    if (idx == null) return
+    const target = ginIdx != null && gd ? `#${sheetRef(gd.sheetName)}!A${gd.firstRow + ginIdx}` : idx != null ? `#${sheetRef(ld.sheetName)}!A${ld.firstRow + idx}` : null
+    if (!target) return
     const cellRef = fpSection.rows[i][fpFieldIdx]
     const name = typeof cellRef === 'string' ? cellRef : (cellRef as { v: string | number | null }).v
-    fpSection.rows[i][fpFieldIdx] = { v: name as string, link: `#${sheetRef(ld.sheetName)}!A${ld.firstRow + idx}` }
+    fpSection.rows[i][fpFieldIdx] = { v: name as string, link: target }
   })
 
   // Cache every formula's result so viewers that never recalculate still show

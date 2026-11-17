@@ -63,7 +63,7 @@ const BASIS_LABEL: Record<ProductionBasis, string> = { measured: 'Measured (scal
 
 export default function CropInsuranceReport() {
   const supabase = useMemo(() => createClient(), [])
-  const [loading, setLoading] = useState(true)
+  const [dataLoading, setLoading] = useState(true)
   const [crops, setCrops] = useState<Crop[]>([])
   const [entities, setEntities] = useState<Entity[]>([])
   const [farms, setFarms] = useState<Farm[]>([])
@@ -86,7 +86,7 @@ export default function CropInsuranceReport() {
   // overwritten on load; only an untouched default falls back to the newest
   // year with plantings.
   const [plantingYears, setPlantingYears] = useState<number[]>([])
-  const [cropYear, setCropYear] = useReportCropYear('crop-insurance:cropYear', { options: plantingYears, loaded: !loading })
+  const [cropYear, setCropYear] = useReportCropYear('crop-insurance:cropYear', { options: plantingYears, loaded: !dataLoading })
   const [entityId, setEntityId] = usePersistentState('crop-insurance:entityId', '')
   // Optional crop filter — empty means all crops. Multi-select via toggle chips.
   const [cropIds, setCropIds] = usePersistentState<string[]>('crop-insurance:cropIds', [])
@@ -179,6 +179,11 @@ export default function CropInsuranceReport() {
   // and report lint lbs (receipts + the turnout estimate on unginned seed
   // cotton) as their production. Inert when the module is off.
   const cottonYields = useCottonYields(supabase, { crops, assumptions: effAssumptions })
+  // Nothing on this page is shown or exported until the cotton records have
+  // settled too. They take a few seconds on a farm with a season of bales,
+  // and a figure worked out without them is wrong, not just early (the
+  // 2026-11-17 export with 1,432 cotton acres and no production).
+  const loading = dataLoading || cottonYields.loading
   const cottonModel = cottonYields.model
 
   const cropById = useMemo(() => new Map(crops.map((c) => [c.id, c])), [crops])
@@ -385,7 +390,11 @@ export default function CropInsuranceReport() {
   // Exports go through the shared ExportBar; it appears only once the report
   // can be generated (a year picked, no breakout gate, at least one sheet) —
   // the same rule the old per-button disabled state enforced.
-  const canExport = cropYear !== '' && !isBlocked && detailSheets.length > 0
+  // Cotton that could not be read is not "no cotton": with cotton planted and
+  // its records unreadable, the report says so and offers no export — a file
+  // with cotton acres and no lint must never reach an agent.
+  const cottonUnread = cottonYields.failed && reportCrops.some((c) => cottonModel.cottonCropIds.has(c.id))
+  const canExport = cropYear !== '' && !isBlocked && detailSheets.length > 0 && !cottonUnread
   const filterSummary = filterSummaryOf(
     cropYear === '' ? null : cropYearLabel(cropYear),
     entityName || 'All Entities',
@@ -459,6 +468,16 @@ export default function CropInsuranceReport() {
         )}
       </ReportFilterBar>
       <SupersededNotice show={viewerA.superseded} onDismiss={viewerA.dismissSuperseded} />
+
+      {cottonUnread && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 text-sm text-amber-900 no-print">
+          <div className="font-semibold">Cotton isn&rsquo;t included yet</div>
+          <p className="mt-1">
+            Your gin receipts and bales couldn&rsquo;t be read just now, so the cotton shows its acres with no production
+            and the export buttons are held back. Reload the page to try again. If it keeps happening, contact support.
+          </p>
+        </div>
+      )}
 
       <ConfirmDialog
         open={countAsk != null}

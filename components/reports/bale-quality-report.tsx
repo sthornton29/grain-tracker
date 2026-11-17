@@ -265,8 +265,11 @@ export default function BaleQualityReport() {
         filterSummary={filterSummary}
         actions={(
           <div className="flex flex-wrap gap-2 items-center">
-            <ExportBar buildPayload={buildPayload} buildExcelPayload={buildExcel} />
-            {contractChoice && view && (
+            {/* The contract projection reads the cotton yield records: no export
+                until they have settled (cottonYields.loading), or the file
+                would carry the fallback estimate instead of the crop's own. */}
+            {!cottonYields.loading && <ExportBar buildPayload={buildPayload} buildExcelPayload={buildExcel} />}
+            {contractChoice && view && !cottonYields.loading && (
               <button type="button" onClick={() => void exportQualifying()} disabled={qualifyingBusy || view.summary.meets === 0} className="rounded-lg bg-white border border-brand text-brand-deep font-semibold px-3 min-h-11 text-sm disabled:opacity-50">
                 {qualifyingBusy ? 'Exporting…' : `Export qualifying bales (${view.summary.meets.toLocaleString()})`}
               </button>

@@ -4,7 +4,7 @@ import { buildExcelWorkbook, buildPdfDocument, excelFileBytes, excelNumFmt, form
 import { cell, sum, rows as rowsRange } from '@/lib/formula'
 import { buildInventoryPayload, type InventoryCsvRow } from '@/components/export-inventory-csv'
 import { buildProductionAuditPayload } from '@/lib/production-audit-workbook'
-import { sampleAuditInput, sampleReportPayload, sampleStackedPayload } from '@/lib/export-sample-fixtures'
+import { sampleAuditInput, sampleCottonAuditInput, sampleReportPayload, sampleStackedPayload } from '@/lib/export-sample-fixtures'
 
 // THE EXCEL LAYOUT CONTRACT (lib/exports.ts) — what a person sees when the
 // file opens. These pin the rules that went wrong before: a Summary sheet
@@ -162,6 +162,40 @@ describe('the crop insurance workbook opens on the report', () => {
     expect([ws.getCell('A5').value, ws.getCell('B5').value]).toEqual(['Farm', 'FSA farm #'])
     expect([ws.getCell('A6').value, ws.getCell('B6').value]).toEqual(['Home Place', '1234'])
     expect([ws.getCell('A7').value, ws.getCell('A8').value]).toEqual(['Wheeler Farm', 'Total'])
+  })
+})
+
+describe('cotton in the crop insurance workbook', () => {
+  it('the lint reaches the Summary, and Gin Data sits beside Load Data with the bales behind it', async () => {
+    const input = sampleCottonAuditInput()
+    const payload = buildProductionAuditPayload(input)
+    const wb = await buildExcelWorkbook(payload)
+    expectContract(wb)
+    const names = wb.worksheets.map((w: any) => w.name)
+    expect(names.slice(-5)).toEqual(['Field Production', 'Load Data', 'Gin Data', 'Bales', 'Notes'])
+    // The Summary's cotton columns carry pounds of lint, not a blank.
+    const sm = wb.getWorksheet('Summary')
+    const header = (sm.getRow(5).values as unknown[]).map((v) => String(v ?? ''))
+    const lintCol = header.indexOf('Cotton (lbs)')
+    expect(lintCol).toBeGreaterThan(0)
+    let total = 0
+    sm.eachRow((row: any) => { if (row.getCell(1).value === 'Total') total = Number(row.getCell(lintCol).value?.result ?? 0) })
+    const onScreen = input.report.summaryTotals.get('cotton')!.bu
+    expect(onScreen).toBeGreaterThan(800000)
+    expect(total).toBeCloseTo(onScreen, 3) // the workbook's formulas land on the screen's lint
+    // Gin Data: frozen under Date + Statement like Load Data; a statement the
+    // gin printed no number on is named for its field and date.
+    const gd = wb.getWorksheet('Gin Data')
+    expect(frozen(gd)).toMatchObject({ rows: 4, cols: 2 })
+    expect([gd.getCell('A4').value, gd.getCell('B4').value, gd.getCell('C4').value, gd.getCell('D4').value]).toEqual(['Date', 'Statement', 'Statement record', 'Status'])
+    const statements: string[] = []
+    gd.eachRow((row: any, n: number) => { if (n > 4) statements.push(String(row.getCell(2).value)) })
+    expect(statements).toContain('Wheeler Big Field · 10/22/2026')
+    expect(statements).toContain('7741')
+    expect(statements).toContain('Cedar Lane Bottom · no date')
+    expect(statements).toContain('Cedar Lane Bottom · not ginned yet')
+    expect(statements.some((x) => /40614|NODATE/.test(x))).toBe(false) // never the made-up record key
+    expect(frozen(wb.getWorksheet('Bales'))).toMatchObject({ rows: 4 })
   })
 })
 

@@ -55,3 +55,43 @@ export async function fetchAllRows<T>(
   }
   return { data: out, error: null }
 }
+
+/**
+ * The same full read with the pages fetched TOGETHER — for a table known to
+ * be big. The cotton per-bale tables are the case: 7,600 bales is eight
+ * round trips one after another (about eight seconds on a phone), and every
+ * cotton report has to wait for them before it can show a number.
+ *
+ * `count` asks the server how many rows the query matches (a head-only
+ * count, same filters); the pages are then requested at once and stitched in
+ * order.
+ *
+ * It never trusts itself. If the count fails, a page errors, or the rows that
+ * come back do not add up to the count (a server cap lower than `pageSize`, a
+ * row written between the count and the pages), it falls back to the
+ * sequential, cap-agnostic fetchAllRows — slower, never truncated.
+ */
+export async function fetchAllRowsParallel<T>(
+  count: () => PromiseLike<{ count: number | null; error: PageError }>,
+  build: PageBuilder,
+  pageSize = SUPABASE_PAGE_SIZE,
+): Promise<{ data: T[]; error: PageError }> {
+  let total: number | null = null
+  try {
+    const c = await count()
+    total = c && !c.error && typeof c.count === 'number' ? c.count : null
+  } catch {
+    total = null
+  }
+  // No usable count, or nothing to fetch in parallel: the plain loop decides.
+  if (total == null || total <= pageSize) return fetchAllRows<T>(build, pageSize)
+  const pages = Math.ceil(total / pageSize)
+  const results = await Promise.all(Array.from({ length: pages }, (_, i) => build(i * pageSize, (i + 1) * pageSize - 1)))
+  const out: T[] = []
+  for (const r of results) {
+    if (r.error) return fetchAllRows<T>(build, pageSize)
+    out.push(...(((r.data as unknown) as T[]) ?? []))
+  }
+  if (out.length !== total) return fetchAllRows<T>(build, pageSize)
+  return { data: out, error: null }
+}

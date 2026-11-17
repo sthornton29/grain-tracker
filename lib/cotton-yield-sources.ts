@@ -13,7 +13,7 @@
 // app_settings row); service-role callers pass their org explicitly.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { fetchAllRowsParallel } from '@/lib/fetch-all-rows'
 import {
   cottonPlantingYield, cottonProductionTotals, cottonYieldAdapter, turnoutResolver,
   type CottonPlantingYield, type CottonProduction, type SeedCottonLoadLike, type TurnoutReceiptLike, type TurnoutResolution,
@@ -74,12 +74,22 @@ export async function fetchCottonYieldSources(
   if (!(flag.data as { cotton_module_enabled?: boolean } | null)?.cotton_module_enabled) return null
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // Pages fetched together: every cotton report waits on this read before it
+  // shows a number, and a season of bales is eight pages (see fetchAllRowsParallel
+  // — it falls back to the one-page-at-a-time loop on any doubt).
   const from = (table: string, select: string): Promise<{ data: any; error: { message: string } | null }> =>
-    fetchAllRows((f, t) => {
-      let q = supabase.from(table).select(select)
-      if (orgId) q = q.eq('org_id', orgId)
-      return q.order('id').range(f, t)
-    })
+    fetchAllRowsParallel(
+      () => {
+        let q = supabase.from(table).select('id', { count: 'exact', head: true })
+        if (orgId) q = q.eq('org_id', orgId)
+        return q
+      },
+      (f, t) => {
+        let q = supabase.from(table).select(select)
+        if (orgId) q = q.eq('org_id', orgId)
+        return q.order('id').range(f, t)
+      },
+    )
   const extra = opts?.updatedAt ? ', updated_at' : ''
   const [l, r, b, g, j, gn] = await Promise.all([
     from('cotton_loads', LOAD_SELECT + extra),

@@ -92,7 +92,7 @@ export default function CottonMarketingPage() {
   const [specOpen, setSpecOpen] = useState<string | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [banner, setBanner] = useState<string | null>(null)
-  const [loaded, setLoaded] = useState(false)
+  const [dataLoaded, setLoaded] = useState(false)
 
   async function refresh() {
     const [en, by, fa, fi, gr, cb, bg, dp, ct, pp, lo, lb, ld, ldb, fe, fs, aw, sp, gi, pl, va, cr, asm] = await Promise.all([
@@ -171,6 +171,11 @@ export default function CottonMarketingPage() {
   const baleRows = useMemo(() => buildBaleRows(qualityInputs), [qualityInputs])
   const appEstimatedBales = useMemo(() => estimatedBalesFromAssumptions(qualityInputs, assumptions), [qualityInputs, assumptions])
   const cottonYields = useCottonYields(supabase, { crops, assumptions })
+  // Nothing on this page is shown or exported until the cotton records have
+  // settled too. They take a few seconds on a farm with a season of bales,
+  // and a figure worked out without them is wrong, not just early (the
+  // 2026-11-17 export with 1,432 cotton acres and no production).
+  const loaded = dataLoaded && !cottonYields.loading
   const pickedEstimatedBales = useMemo(() => estimatedBalesFromPicked({ cropYear, plantings, assumptions, cotton: cottonYields.model, bales })?.bales ?? null, [cropYear, plantings, assumptions, cottonYields.model, bales])
   const specByContract = useMemo(() => new Map(specRows.map((s) => [s.contract_id, specFromRow(s as unknown as Record<string, unknown>)])), [specRows])
 

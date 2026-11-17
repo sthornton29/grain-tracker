@@ -7,6 +7,7 @@ import {
   PCT_TOLERANCE,
   type SplitDraft,
   type ParentLoadForAllocation,
+  reshrinkSplits,
 } from '@/lib/load-splits'
 import { computeBushels } from '@/lib/shrink'
 import type { Crop } from '@/lib/types'
@@ -282,5 +283,37 @@ describe('exported tolerances', () => {
   it('exposes the documented tolerances', () => {
     expect(WEIGHT_TOLERANCE_LB).toBe(1)
     expect(PCT_TOLERANCE).toBe(0.05)
+  })
+})
+
+// A settlement fills in a moisture the ticket never had: the stored portions
+// of a split load are shrunk again (the 2026-11-17 soybean load).
+describe('reshrinkSplits', () => {
+  const SOY = { base_moisture_pct: 13, base_lb_per_bushel: 60 }
+  // Ticket 1-47-0502289: 58,320 lb of soybeans across three fields, saved with no moisture.
+  const saved = [
+    { id: 'low', net_weight: 10220, wet_bushels: 170.33, dry_bushels: 170.33 },
+    { id: 'spring', net_weight: 21440, wet_bushels: 357.33, dry_bushels: 357.33 },
+    { id: 'summer', net_weight: 26660, wet_bushels: 444.33, dry_bushels: 444.33 },
+  ]
+  it('13.4% on a 13% base shrinks every portion: 170.33 → 169.55, 357.33 → 355.69, 444.33 → 442.29', () => {
+    const out = reshrinkSplits({ moisture: 13.4, crop: SOY, splits: saved })
+    expect(out).toEqual([
+      { id: 'low', wet_bushels: 170.33, dry_bushels: 169.55 },
+      { id: 'spring', wet_bushels: 357.33, dry_bushels: 355.69 },
+      { id: 'summer', wet_bushels: 444.33, dry_bushels: 442.29 },
+    ])
+    // 972.00 unshrunk → 967.53: the 4.46 bu (to the cent, 4.47) the three fields were high by.
+    expect(out.reduce((a, r) => a + (r.dry_bushels ?? 0), 0)).toBeCloseTo(967.53, 2)
+  })
+  it('a moisture at or under the base changes nothing, so nothing is written', () => {
+    expect(reshrinkSplits({ moisture: 13, crop: SOY, splits: saved })).toEqual([])
+    expect(reshrinkSplits({ moisture: 12.1, crop: SOY, splits: saved })).toEqual([])
+    expect(reshrinkSplits({ moisture: null, crop: SOY, splits: saved })).toEqual([])
+  })
+  it('portions already shrunk are left alone; a portion read without its stored figures is always returned', () => {
+    const fixed = [{ id: 'spring', net_weight: 21440, wet_bushels: 357.33, dry_bushels: 355.69 }]
+    expect(reshrinkSplits({ moisture: 13.4, crop: SOY, splits: fixed })).toEqual([])
+    expect(reshrinkSplits({ moisture: 13.4, crop: SOY, splits: [{ id: 'spring', net_weight: 21440 }] })).toEqual([{ id: 'spring', wet_bushels: 357.33, dry_bushels: 355.69 }])
   })
 })

@@ -75,7 +75,7 @@ export default function SeasonSummaryPage() {
   const [entities, setEntities] = useState<Entity[]>([])
   const [farms, setFarms] = useState<Array<{ id: string; name: string; entity_id: string | null }>>([])
   const [fields, setFields] = useState<Array<{ id: string; name_or_number: string; farm_id: string | null }>>([])
-  const [loading, setLoading] = useState(true)
+  const [dataLoading, setLoading] = useState(true)
   // Filters persist across visits. The crop year follows the one report rule
   // (lib/report-filters): current year by default, never overwritten on load.
   const [yearValue, setYear] = useReportCropYear('season:year')
@@ -115,6 +115,11 @@ export default function SeasonSummaryPage() {
   // Cotton module (092): the seed-cotton classifier adapter + lint estimates;
   // inert (no reads) when the module is off.
   const cottonYields = useCottonYields(supabase, { crops, assumptions })
+  // Nothing on this page is shown or exported until the cotton records have
+  // settled too. They take a few seconds on a farm with a season of bales,
+  // and a figure worked out without them is wrong, not just early (the
+  // 2026-11-17 export with 1,432 cotton acres and no production).
+  const loading = dataLoading || cottonYields.loading
   const cottonModel = cottonYields.model
   const cottonOn = cottonYields.on === true
 

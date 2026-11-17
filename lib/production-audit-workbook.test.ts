@@ -643,9 +643,9 @@ describe('audit workbook — cotton', () => {
         yieldFor: () => ({ yardSeedLbs: 10000, estimatedLintLbs: 4000, actualLintLbs: 35000, turnout: { fraction: 0.4, pct: 40, label: '40.0% from your ginned cotton' } }),
       },
     }))
-    expect(payload.sections.map((s) => s.title)).toEqual(['Summary', 'Lawrence County Dryland', 'Field Production', 'Load Data', 'Gin Receipts', 'Notes'])
-    // Receipts read as the gin numbers them (the statement number when there is one) — never a record id.
-    expect(rowsOf(payload, AUDIT.ginReceipts).map((r) => r.receipt)).toEqual(['S-1001', 'R-2', '(estimate)'])
+    expect(payload.sections.map((s) => s.title)).toEqual(['Summary', 'Lawrence County Dryland', 'Field Production', 'Load Data', 'Gin Data', 'Notes'])
+    // Statements read as the gin numbers them (the statement number when there is one) — never a record id.
+    expect(rowsOf(payload, AUDIT.ginReceipts).map((r) => r.receipt)).toEqual(['S-1001', 'R-2', 'South 80 · not ginned yet'])
     expect(auditSection(payload, AUDIT.ginReceipts).columns.some((c) => /id$/i.test(c.label))).toBe(false)
     // The county sheet shows the cotton in lint pounds, as the screen does.
     const county = rowsOf(payload, countySheetKey(0))
@@ -658,5 +658,121 @@ describe('audit workbook — cotton', () => {
     near(fp[0].ginned_lint, 35000); near(fp[0].est_lint, 4000); near(fp[0].production, 39000); near(fp[0].yield, 487.5)
     near(rowsOf(payload, AUDIT.summary)[1]['prod:cotton'], 39000)
     expect(rowsOf(payload, AUDIT.notes).find((r) => r.item === 'Cotton: Difference')!.check).toBe('OK')
+  })
+
+  // Gin Data is cotton's Load Data: one row per Statement of Ginning, laid out
+  // the same way, with the bales behind it — and never a record key in sight.
+  describe('Gin Data — the gin\'s statements, like Load Data for grain', () => {
+    const CF = field('cot', 'South 80', 'f-home', 0, 80)
+    const CG = field('cot2', 'Bootleggers', 'f-pruitt', 0, 30)
+    const ri = reportInput({
+      crops: [CORN, COTTON], fields: [CF, CG], farms: [farms[0], farms[1]],
+      plantings: [planting('p-cot', 'cot', 0, 80, {}, 'cotton'), planting('p-cot2', 'cot2', 0, 30, {}, 'cotton')], loads: [], splits: [], combineEntries: [],
+      assumptions: [{ crop_id: 'cotton', crop_year: 2026, expected_yield: null, harvest_complete: true }],
+      cotton: { on: true, cottonCropIds: new Set(['cotton']), adapter: null, yieldFor: (p) => ({ lintLbs: p.field_id === 'cot' ? 2010 + 1480 : 1500 }) },
+    })
+    // South 80: two statements. The gin printed no number on either, so each
+    // carries the app's made-up record key (never shown). The later one's bale
+    // list (3 bales, 1,480 lb) disagrees with the 1,500 lb it prints.
+    // Bootleggers: one numbered statement with no bale list on file.
+    const build = () => buildProductionAuditPayload(auditInput(ri, {
+      cotton: {
+        receipts: [
+          { id: 'rc-late', gin_id: 'g1', receipt_number: '40614-20261104-1234-SOUTH-80-3-3700-3', statement_number: null, receipt_date: '2026-11-04', field_id: 'cot', crop_year: 2026, modules_count: 3, total_seed_cotton_weight: 3700, bales_count: 3, total_bale_weight: 1500 },
+          { id: 'rc-early', gin_id: 'g1', receipt_number: '40614-20261017-1234-SOUTH-80-4-5000-4', statement_number: null, receipt_date: '2026-10-17', field_id: 'cot', crop_year: 2026, modules_count: 4, total_seed_cotton_weight: 5000, bales_count: 4, total_bale_weight: 2010 },
+          { id: 'rc-boot', gin_id: null, receipt_number: 'NA-NODATE-2218-BOOTLEGGERS-2-3800-3', statement_number: '7741', receipt_date: null, field_id: 'cot2', crop_year: 2026, modules_count: 2, total_seed_cotton_weight: 3800, bales_count: 3, total_bale_weight: 1500 },
+        ],
+        bales: [
+          { id: 'b3', gin_receipt_id: 'rc-early', pbi_number: '192850', net_weight_lbs: 505 }, { id: 'b1', gin_receipt_id: 'rc-early', pbi_number: '192848', net_weight_lbs: 500 },
+          { id: 'b2', gin_receipt_id: 'rc-early', pbi_number: '192849', net_weight_lbs: 495 }, { id: 'b4', gin_receipt_id: 'rc-early', pbi_number: '192851', net_weight_lbs: 510 },
+          { id: 'b5', gin_receipt_id: 'rc-late', pbi_number: '193001', net_weight_lbs: 490 }, { id: 'b6', gin_receipt_id: 'rc-late', pbi_number: '193002', net_weight_lbs: 495 }, { id: 'b7', gin_receipt_id: 'rc-late', pbi_number: '193003', net_weight_lbs: 495 },
+        ],
+        gins: [{ id: 'g1', name: 'Servico, Inc.' }],
+        yieldFor: () => ({ yardSeedLbs: 0, estimatedLintLbs: 0, actualLintLbs: 0, turnout: { fraction: 0.4, pct: 40, label: '40.0%' } }),
+      },
+    }))
+
+    it('one row per statement, each field\'s statements together in date order, named for the field and date when the gin printed no number', () => {
+      const payload = build()
+      expect(payload.sections.map((s) => s.title)).toEqual(['Summary', 'Lawrence County Dryland', 'Field Production', 'Load Data', 'Gin Data', 'Bales', 'Notes'])
+      const gd = rowsOf(payload, AUDIT.ginReceipts)
+      expect(gd.map((r) => [r.date, r.receipt, r.kind, r.gin, r.farm, r.field])).toEqual([
+        ['2026-10-17', 'South 80 · 10/17/2026', GINNED_KIND, 'Servico, Inc.', 'Home Place Farm', 'South 80'],
+        ['2026-11-04', 'South 80 · 11/4/2026', GINNED_KIND, 'Servico, Inc.', 'Home Place Farm', 'South 80'],
+        ['', '7741', GINNED_KIND, '', 'Pruitt Farm', 'Bootleggers'],
+      ])
+      // The columns follow Load Data: the date, the statement, a link to its record, then where and how much.
+      expect(auditSection(payload, AUDIT.ginReceipts).columns.map((c) => c.label)).toEqual([
+        'Date', 'Statement', 'Statement record', 'Status', 'Gin', 'Farm', 'Field', 'County', 'State', 'Crop', 'Crop year', 'Practice',
+        'Modules', 'Seed cotton (lb)', 'Bales', 'Lint on the statement (lb)', 'Bale weights (lb)', 'Turnout (%)', 'Lint counted (lb)', 'Note',
+      ])
+      expect(auditSection(payload, AUDIT.ginReceipts).columns[0].format).toBe('date')
+      expect(auditSection(payload, AUDIT.ginReceipts).freezeColumns).toBe(2)
+      // The made-up record keys and the record ids appear nowhere in the file.
+      const flat = JSON.stringify(payload.sections.map((x) => x.rows.map((row) => row.map((c) => (c != null && typeof c === 'object' ? c.v : c)))))
+      expect(flat).not.toContain('40614-2026')
+      expect(flat).not.toContain('NODATE')
+      expect(flat).not.toContain('rc-early')
+      // Each statement opens its own record in Turnrow.
+      const rec = auditSection(payload, AUDIT.ginReceipts).rows[0][2] as { v: string; link: string }
+      expect(rec).toEqual({ v: 'Open', link: 'https://app.turnrow.farm/cotton/receipts/rc-early' })
+    })
+
+    it('lint counted is the bale list when it is on file, else the statement; a statement that disagrees with its bales says so', () => {
+      const payload = build()
+      const gd = rowsOf(payload, AUDIT.ginReceipts)
+      near(gd[0].bale_lbs, 2010); near(gd[0].lint_lbs, 2010); near(gd[0].turnout, 40.2); expect(gd[0].note).toBe('')
+      near(gd[1].stated_lint, 1500); near(gd[1].bale_lbs, 1480); near(gd[1].lint_lbs, 1480)
+      expect(gd[1].note).toBe('The statement prints 1,500 lb; its 3 listed bales add up to 1,480 lb, which is what is counted.')
+      near(gd[2].bale_lbs, 0); near(gd[2].lint_lbs, 1500)
+      expect(gd[2].note).toBe('No bale list on file: the lint on the statement is counted.')
+      // Bale weights are a SUMIFS over the Bales tab by the statement's name; data starts on row 5 (title, link line, spacer, header).
+      expect(formulaTextOf(payload, AUDIT.ginReceipts, 0, 'bale_lbs')).toBe(`SUMIFS('Bales'!$E$5:$E$11,'Bales'!$B$5:$B$11,${esc('B5')})`)
+      expect(formulaTextOf(payload, AUDIT.ginReceipts, 0, 'lint_lbs')).toBe('IF(Q5>0,Q5,P5)')
+      // The Bales tab: each statement's bales together, in bale-number order.
+      const bales = rowsOf(payload, AUDIT.bales)
+      expect(bales.map((b) => [b.pbi, b.receipt, b.field, b.net_lbs])).toEqual([
+        ['192848', 'South 80 · 10/17/2026', 'South 80', 500], ['192849', 'South 80 · 10/17/2026', 'South 80', 495], ['192850', 'South 80 · 10/17/2026', 'South 80', 505], ['192851', 'South 80 · 10/17/2026', 'South 80', 510],
+        ['193001', 'South 80 · 11/4/2026', 'South 80', 490], ['193002', 'South 80 · 11/4/2026', 'South 80', 495], ['193003', 'South 80 · 11/4/2026', 'South 80', 495],
+      ])
+    })
+
+    it('Field Production adds a cotton field\'s statements the way it adds a grain field\'s loads, and links to them', () => {
+      const payload = build()
+      const fp = rowsOf(payload, AUDIT.fieldProduction)
+      const south = fp.find((r) => r.field === 'South 80')!
+      const boot = fp.find((r) => r.field === 'Bootleggers')!
+      near(south.ginned_lint, 3490); near(south.production, 3490); near(boot.production, 1500)
+      expect(south.source).toBe('gin receipts')
+      const sec = auditSection(payload, AUDIT.fieldProduction)
+      const fieldIdx = sec.columns.findIndex((c) => c.key === 'field')
+      const link = (name: string) => (sec.rows.find((r) => (r[fieldIdx] as { v: string }).v === name)![fieldIdx] as { link: string }).link
+      expect(link('South 80')).toBe("#'Gin Data'!A5") // its first statement
+      expect(link('Bootleggers')).toBe("#'Gin Data'!A7")
+      // … and the report sheets carry the lint: the county page and the Summary.
+      const county = rowsOf(payload, countySheetKey(0))
+      expect(county.map((r) => [r.farm, r['prod:cotton']])).toEqual([['Home Place Farm', 3490], ['Pruitt Farm', 1500], ['Total', 4990]])
+      const sm = rowsOf(payload, AUDIT.summary)
+      near(sm[sm.length - 1]['prod:cotton'], 4990)
+      expect(rowsOf(payload, AUDIT.notes).find((r) => r.item === 'Cotton: Difference')!.check).toBe('OK')
+      // The Summary's contents list names the tab and what it is.
+      const contents = auditSection(payload, AUDIT.summary).postlude!.filter((p) => p.kind === 'links').map((p) => [(p.cells[0] as { v: string }).v, p.cells[3]])
+      expect(contents).toContainEqual(['Gin Data', 'Cotton: every Statement of Ginning counted, with its bales and lint'])
+      expect(contents).toContainEqual(['Load Data', 'Grain: every scale ticket counted, with the shrink to dry bushels'])
+    })
+
+    it('the written sheet is frozen under Date + Statement with real dates, like Load Data', async () => {
+      const wb = await buildExcelWorkbook(build())
+      const ws = wb.getWorksheet('Gin Data')
+      expect(ws.getCell('A1').value).toBe('Gin Data')
+      expect(ws.getCell('A2').value).toMatchObject({ text: '← Summary' })
+      expect(ws.getRow(4).getCell(1).value).toBe('Date')
+      expect(ws.views[0]).toMatchObject({ state: 'frozen', ySplit: 4, xSplit: 2, activeCell: 'C5' })
+      expect(ws.getCell('A5').value).toEqual(new Date(Date.UTC(2026, 9, 17)))
+      expect(ws.getCell('A7').value).toBeNull() // the statement with no date: an empty cell
+      expect(ws.getCell('C5').value).toMatchObject({ text: 'Open', hyperlink: 'https://app.turnrow.farm/cotton/receipts/rc-early' })
+      expect(ws.getCell('S5').value).toMatchObject({ result: 2010 })
+      expect(ws.autoFilter).toBeTruthy()
+    })
   })
 })

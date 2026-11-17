@@ -15,6 +15,10 @@ export type CottonYieldsState = {
   loading: boolean
   /** The module flag as read; null while loading. */
   on: boolean | null
+  /** The cotton records could not be read this visit. The model is then the
+   *  inert "off" one — so a page that must not leave cotton out silently (the
+   *  insurance production report) says so instead of showing zero. */
+  failed: boolean
   model: CottonYieldModel
   /** Re-read the sources (after a save). */
   refresh: () => void
@@ -30,6 +34,7 @@ export function useCottonYields(
   const [sources, setSources] = useState<CottonYieldSources | null>(null)
   const [on, setOn] = useState<boolean | null>(null)
   const [loading, setLoading] = useState(true)
+  const [failed, setFailed] = useState(false)
   const [nonce, setNonce] = useState(0)
 
   useEffect(() => {
@@ -40,12 +45,14 @@ export function useCottonYields(
         if (cancelled) return
         setSources(s)
         setOn(s != null)
+        setFailed(false)
       } catch {
         // A read error degrades to "module off" for this visit — the grain
         // views still work; cotton rows simply classify as before.
         if (cancelled) return
         setSources(null)
         setOn(false)
+        setFailed(true)
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -57,5 +64,5 @@ export function useCottonYields(
     () => buildCottonYieldModel({ sources, crops: args.crops, assumptions: args.assumptions }),
     [sources, args.crops, args.assumptions],
   )
-  return { loading, on, model, refresh: () => setNonce((n) => n + 1) }
+  return { loading, on, failed, model, refresh: () => setNonce((n) => n + 1) }
 }

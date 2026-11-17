@@ -71,6 +71,36 @@ export function allocateSplits(
   })
 }
 
+// A split load stores each portion's bushels (they are not worked out on the
+// fly the way a whole load's are). So when the parent's moisture changes AFTER
+// the split was saved — a settlement filling in a moisture the ticket never
+// had — the stored portions must be shrunk again, or the fields keep unshrunk
+// bushels while the same load anywhere else shows them shrunk. (Found
+// 2026-11-17: ticket 1-47-0502289, soybeans at 13.4%, three fields 4.46 bu
+// high and the insurance workbook's check reading CHECK.) Pure: returns the
+// rows to write; a portion whose figures are already right is left out.
+export function reshrinkSplits(args: {
+  moisture: number | null
+  crop: Pick<Crop, 'base_moisture_pct' | 'base_lb_per_bushel'> | null
+  splits: ReadonlyArray<{ id: string; net_weight: number | string | null; wet_bushels?: number | string | null; dry_bushels?: number | string | null }>
+}): Array<{ id: string; wet_bushels: number | null; dry_bushels: number | null }> {
+  const out: Array<{ id: string; wet_bushels: number | null; dry_bushels: number | null }> = []
+  for (const sp of args.splits) {
+    const { wetBushels, dryBushels } = computeBushels({
+      netWeightLb: sp.net_weight == null ? null : Number(sp.net_weight),
+      moisturePct: args.moisture,
+      baseMoisturePct: args.crop?.base_moisture_pct ?? null,
+      baseLbPerBushel: args.crop?.base_lb_per_bushel ?? null,
+    })
+    const wet = wetBushels == null ? null : round2(wetBushels)
+    const dry = dryBushels == null ? null : round2(dryBushels)
+    const same = (a: number | null, b: number | string | null | undefined) => (a == null ? b == null : b != null && Math.abs(Number(b) - a) < 0.005)
+    if (sp.wet_bushels !== undefined && sp.dry_bushels !== undefined && same(wet, sp.wet_bushels) && same(dry, sp.dry_bushels)) continue
+    out.push({ id: sp.id, wet_bushels: wet, dry_bushels: dry })
+  }
+  return out
+}
+
 // Validates a list of drafts against the parent net weight. Returns null on
 // success or a human-readable error message.
 export function validateSplitDrafts(

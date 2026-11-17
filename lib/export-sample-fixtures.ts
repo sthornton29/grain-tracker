@@ -9,7 +9,7 @@
 import { buildProductionReport, type ProductionReportInput } from '@/lib/production-report'
 import { buildProductionBalance, balanceFactors, type BalanceSettlement, type BalanceSettlementLine } from '@/lib/production-balance'
 import { computeBushels } from '@/lib/shrink'
-import type { AuditLoadRow, ProductionAuditInput } from '@/lib/production-audit-workbook'
+import type { AuditCottonReceipt, AuditLoadRow, ProductionAuditInput } from '@/lib/production-audit-workbook'
 import type { ExportPayload } from '@/lib/exports'
 import type { CombineEntryLike } from '@/lib/yields'
 import type { County, Crop, Farm, Field, FieldPlanting, LoadSplit } from '@/lib/types'
@@ -176,6 +176,70 @@ export function sampleBalancedAuditInput(): ProductionAuditInput {
   })
   const report = buildProductionReport({ ...ri, balanceFactorByCrop: balanceFactors(balance) })
   return sampleAuditInput({ report, basis: 'balanced', balance, settlements: settlements.map((x) => ({ id: x.id, settlement_number: x.settlement_number })) })
+}
+
+/** The same farm with cotton on four fields: gin statements the gin printed no
+ *  number on (named for the field and date), one numbered statement, a bale
+ *  list behind most of them, and one field with seed cotton still on the yard
+ *  (an estimate row). What the Gin Data and Bales tabs look like. */
+export function sampleCottonAuditInput(): ProductionAuditInput {
+  const base = sampleProductionInput()
+  const cottonCrop = { id: 'cotton', name: 'Cotton', base_moisture_pct: null, base_lb_per_bushel: null, harvest_category: 'fall', double_crop: false, combine_adjustment_bu_per_acre: null, rma_type_override: null } as unknown as Crop
+  const specs = [
+    { id: 'cot1', farm: 'farm1', name: 'Home Place Cotton Patch', acres: 96.4, statements: [{ date: '2026-10-19', bales: 172, seed: 207300 }, { date: '2026-11-06', bales: 98, seed: 119700 }], yardSeed: 0 },
+    { id: 'cot2', farm: 'farm3', name: 'Wheeler Big Field', acres: 261.1, statements: [{ date: '2026-10-22', bales: 344, seed: 414900 }, { date: '2026-11-09', bales: 462, seed: 596600 }], yardSeed: 0 },
+    { id: 'cot3', farm: 'farm5', name: 'Moore Clubhouse', acres: 147.7, statements: [{ date: '2026-10-20', bales: 399, seed: 494260, number: '7741' }], yardSeed: 0 },
+    { id: 'cot4', farm: 'farm8', name: 'Cedar Lane Bottom', acres: 80.3, statements: [{ date: null, bales: 120, seed: 147000, noBaleList: true }], yardSeed: 61800 },
+  ] as Array<{ id: string; farm: string; name: string; acres: number; statements: Array<{ date: string | null; bales: number; seed: number; number?: string; noBaleList?: boolean }>; yardSeed: number }>
+  const fields = [...base.fields]
+  const plantings = [...base.plantings]
+  const receipts: AuditCottonReceipt[] = []
+  const bales: Array<{ id: string; gin_receipt_id: string; pbi_number: string; net_weight_lbs: number }> = []
+  const lintByField = new Map<string, { actual: number; yard: number }>()
+  let pbi = 192800
+  for (const f of specs) {
+    fields.push({ id: f.id, farm_id: f.farm, name_or_number: f.name, total_acres: f.acres, irrigated_acres: 0, dryland_acres: f.acres, county_id: null })
+    plantings.push({
+      id: `p-${f.id}`, field_id: f.id, crop_id: 'cotton', season_year: 2026, planted_acres: f.acres, irrigated_acres: 0, dryland_acres: f.acres,
+      irrigated_bushels: null, dryland_bushels: null, yield_breakout_entered: false, planting_date: null, paired_planting_id: null, notes: null, yield_include_override: null,
+    } as FieldPlanting)
+    let actual = 0
+    f.statements.forEach((st, i) => {
+      const id = `rc-${f.id}-${i}`
+      let listed = 0
+      if (!st.noBaleList) {
+        for (let b = 0; b < st.bales; b++) {
+          const w = 470 + ((b * 37 + i * 11) % 60)
+          listed += w
+          bales.push({ id: `bale-${pbi}`, gin_receipt_id: id, pbi_number: String(pbi++), net_weight_lbs: w })
+        }
+      }
+      const stated = st.noBaleList ? st.bales * 496 : listed
+      actual += stated
+      receipts.push({
+        id, gin_id: 'gin1', statement_number: st.number ?? null,
+        // A statement the gin printed no number on carries the app's made-up record key — never shown.
+        receipt_number: st.number ?? `40614-${(st.date ?? 'NODATE').replace(/-/g, '')}-1234-${f.name.toUpperCase().replace(/[^A-Z0-9]+/g, '-')}-${i + 3}-${st.seed}-${st.bales}`,
+        receipt_date: st.date, field_id: f.id, crop_year: 2026, modules_count: Math.round(st.seed / 31000), total_seed_cotton_weight: st.seed, bales_count: st.bales, total_bale_weight: stated,
+      })
+    })
+    lintByField.set(f.id, { actual, yard: f.yardSeed })
+  }
+  const turnout = { fraction: 0.41, pct: 41, label: '41% (your ginned cotton so far)' }
+  const lintOf = (fieldId: string) => { const x = lintByField.get(fieldId); return x ? x.actual + x.yard * turnout.fraction : 0 }
+  const ri = {
+    ...base, crops: [...SAMPLE_CROPS, cottonCrop], fields, plantings,
+    assumptions: [{ crop_id: 'cotton', crop_year: 2026, expected_yield: null, harvest_complete: true }],
+    cotton: { on: true as const, cottonCropIds: new Set(['cotton']), adapter: null, yieldFor: (p: { field_id: string }) => ({ lintLbs: lintOf(p.field_id) }) },
+  } as unknown as ProductionReportInput
+  const report = buildProductionReport(ri)
+  return sampleAuditInput({
+    report, crops: ri.crops, fields, loads: base.loads,
+    cotton: {
+      receipts, bales, gins: [{ id: 'gin1', name: 'Servico, Inc.' }],
+      yieldFor: (p) => { const x = lintByField.get(p.field_id); return x ? { yardSeedLbs: x.yard, estimatedLintLbs: x.yard * turnout.fraction, actualLintLbs: x.actual, turnout } : null },
+    },
+  })
 }
 
 // ---------------------------------------------------------------------------
